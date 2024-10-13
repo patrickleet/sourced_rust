@@ -15,11 +15,10 @@ sourced_rust/
 ├── src/
 │   ├── lib.rs
 │   ├── entity.rs
-│   ├── event_emitter.rs
 │   └── repository.rs
 ├── examples/
+│   ├── main.rs
 │   └── todos/
-│       ├── main.rs
 │       ├── todo_repository.rs
 │       └── todo.rs
 ├── Cargo.toml
@@ -38,7 +37,7 @@ sourced_rust = { path = "path/to/sourced_rust" }
 Then, in your Rust code:
 
 ```rust
-use sourced_rust::{Entity, Event, CommandRecord, EventEmitter, Repository};
+use sourced_rust::{Entity, Event, EventRecord, EventEmitter, Repository};
 
 // Implement your domain-specific entities, events, and repositories
 ```

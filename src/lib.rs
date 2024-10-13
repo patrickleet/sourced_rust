@@ -1,7 +1,7 @@
 mod entity;
 mod repository;
 
-pub use entity::{Entity, Event, CommandRecord};
+pub use entity::{Entity, Event, EventRecord};
 pub use repository::Repository;
 
 // Re-export the EventEmitter from the event_emitter_rs crate

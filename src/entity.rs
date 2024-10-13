@@ -4,8 +4,8 @@ use event_emitter_rs::EventEmitter;
 use serde::{Serialize, Deserialize};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct CommandRecord {
-    pub command_name: String,
+pub struct EventRecord {
+    pub event_name: String,
     pub args: Vec<String>,
 }
 
@@ -34,7 +34,7 @@ impl Event for LocalEvent {
 pub struct Entity {
     pub id: String,
     pub version: i32,
-    pub commands: Vec<CommandRecord>,
+    pub events: Vec<EventRecord>,
     #[serde(skip)]
     pub events_to_emit: Vec<LocalEvent>,
     pub replaying: bool,
@@ -49,7 +49,7 @@ impl fmt::Debug for Entity {
         f.debug_struct("Entity")
             .field("id", &self.id)
             .field("version", &self.version)
-            .field("commands", &self.commands)
+            .field("events", &self.events)
             .field("events_to_emit", &self.events_to_emit)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
@@ -63,7 +63,7 @@ impl Clone for Entity {
         Entity {
             id: self.id.clone(),
             version: self.version,
-            commands: self.commands.clone(),
+            events: self.events.clone(),
             events_to_emit: self.events_to_emit.clone(),
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
@@ -78,7 +78,7 @@ impl Entity {
         Entity {
             id: String::new(),
             version: 0,
-            commands: Vec::new(),
+            events: Vec::new(),
             events_to_emit: Vec::new(),
             replaying: false,
             snapshot_version: 0,
@@ -91,8 +91,8 @@ impl Entity {
         if self.replaying {
             return;
         }
-        self.commands.push(CommandRecord {
-            command_name: name,
+        self.events.push(EventRecord {
+            event_name: name,
             args,
         });
         self.version += 1;
@@ -120,18 +120,18 @@ impl Entity {
 
     pub fn rehydrate(&mut self) -> Result<(), String> {
         self.replaying = true;
-        for command in self.commands.clone() {
-            if let Err(e) = self.replay_command(command) {
+        for event in self.events.clone() {
+            if let Err(e) = self.replay_event(event) {
                 self.replaying = false;
-                return Err(format!("Error replaying command: {}", e));
+                return Err(format!("Error replaying event: {}", e));
             }
         }
         self.replaying = false;
         Ok(())
     }
 
-    fn replay_command(&mut self, command_record: CommandRecord) -> Result<(), String> {
-        println!("Replaying command: {} with args: {:?}", command_record.command_name, command_record.args);
+    fn replay_event(&mut self, event_record: EventRecord) -> Result<(), String> {
+        println!("Replaying event: {} with args: {:?}", event_record.event_name, event_record.args);
         Ok(())
     }
 
