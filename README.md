@@ -2,6 +2,10 @@
 
 Sourced Rust is a robust Rust implementation of event sourcing patterns, providing a solid foundation for building event-driven applications. This library empowers developers to create scalable, maintainable, and auditable systems by leveraging the power of event sourcing.
 
+## Project Inspiration
+
+Sourced Rust is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) project by Matt Walters. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript version, has brought these concepts to Rust, extending and refactoring it for the Rust ecosystem.
+
 ## What is Event Sourcing?
 
 Event sourcing is an architectural pattern where the state of your application is determined by a sequence of events. Instead of storing just the current state, event sourcing systems store all changes to the application state as a sequence of events. This approach offers several benefits:
@@ -14,11 +18,10 @@ Event sourcing is an architectural pattern where the state of your application i
 
 Sourced Rust provides several key components to implement event sourcing in your Rust applications:
 
-- **Entity**: Represents domain objects with associated events. Entities are the core of your domain model and encapsulate business logic.
-- **Event**: Represents something that has happened in the domain. Events are immutable and represent facts.
-- **EventRecord**: Stores metadata about an event, such as timestamp and sequence number.
+- **Entity**: Represents domain objects with associated events and commands. Entities are the core of your domain model and encapsulate business logic.
+- **Event Emitter**: Manages event publishing and subscription. This allows for loose coupling between components and enables reactive programming patterns. From event-emitter-rs.
 - **Repository**: Handles entity persistence and event storage. It provides an abstraction layer over the storage mechanism, making it easy to switch between different storage solutions.
-- **EventEmitter**: Manages event publishing and subscription. This allows for loose coupling between components and enables reactive programming patterns. Re-exported from the event-emitter-rs crate.
+- **Event**: Represents something that has happened in the domain. Events are immutable and represent facts.
 
 ## Installation
 
@@ -26,12 +29,58 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sourced_rust = { git = "https://github.com/patrickleet/sourced_rust.git" }
+sourced_rust = { git = "https://github.com/yourusername/sourced_rust.git" }
 ```
 
 ## Usage
 
-See [examples/main.rs](https://github.com/patrickleet/sourced_rust/blob/main/examples/main.rs).
+Here's a basic example of how to use Sourced Rust in your project:
+
+```rust
+use sourced_rust::{Entity, Event, EventRecord, EventEmitter, Repository};
+
+// Define your domain-specific entity
+struct Todo {
+    id: String,
+    title: String,
+    completed: bool,
+}
+
+// Implement the Entity trait for your struct
+impl Entity for Todo {
+    // Implement required methods
+}
+
+// Define your events
+enum TodoEvent {
+    Created { title: String },
+    Completed,
+}
+
+// Implement event handling logic
+impl Todo {
+    fn apply(&mut self, event: TodoEvent) {
+        match event {
+            TodoEvent::Created { title } => {
+                self.title = title;
+                self.completed = false;
+            },
+            TodoEvent::Completed => {
+                self.completed = true;
+            },
+        }
+    }
+}
+
+// Use the Repository to store and retrieve entities
+let mut repo = TodoRepository::new();
+let todo = Todo::new("1", "Buy milk");
+repo.save(&todo);
+
+// Emit events
+let emitter = EventEmitter::new();
+emitter.emit(TodoEvent::Created { title: "Buy milk".to_string() });
+```
 
 ## Project Structure
 
