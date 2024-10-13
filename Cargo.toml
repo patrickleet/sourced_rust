@@ -11,7 +11,8 @@ name = "todos"
 path = "examples/main.rs"
 
 [dependencies]
-# Add any external dependencies here if needed
+event-emitter-rs = "0.1.4"
+serde = "1.0.210"
 
 [dev-dependencies]
 # Add any development dependencies here if needed

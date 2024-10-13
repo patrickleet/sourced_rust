@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::entity::{Entity, CommandRecord};
-use crate::event_emitter::EventEmitter;
 
 pub struct Repository {
     storage: Arc<Mutex<HashMap<String, Vec<CommandRecord>>>>,
@@ -21,9 +20,6 @@ impl Repository {
             let mut entity = Entity::new();
             entity.id = id.to_string();
             entity.commands = commands.clone();
-            
-            // Initialize EventEmitter
-            entity.event_emitter = Some(EventEmitter::new());
             
             // Rehydrate the entity
             if let Err(e) = entity.rehydrate() {

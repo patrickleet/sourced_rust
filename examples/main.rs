@@ -15,11 +15,11 @@ fn main() -> Result<(), String> {
     todo.initialize("1".to_string(), "user1".to_string(), "Buy groceries".to_string());
 
     // Add event listeners
-    todo.on("ToDoInitialized".to_string(), |_| {
+    todo.on("ToDoInitialized", |_| {
         println!("Todo Initialized");
     });
     
-    todo.on("ToDoCompleted".to_string(), |_| {
+    todo.on("ToDoCompleted", |_| {
         println!("Todo Completed");
     });
 
