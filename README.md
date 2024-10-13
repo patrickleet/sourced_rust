@@ -29,7 +29,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sourced_rust = { git = "https://github.com/yourusername/sourced_rust.git" }
+sourced_rust = { git = "https://github.com/patrickleet/sourced_rust.git" }
 ```
 
 ## Usage
@@ -130,7 +130,7 @@ Sourced Rust is currently in active development. We are working on expanding the
 
 ## Reporting Issues
 
-If you encounter any bugs or have feature requests, please file an issue on the [GitHub issue tracker](https://github.com/yourusername/sourced_rust/issues).
+If you encounter any bugs or have feature requests, please file an issue on the [GitHub issue tracker](https://github.com/patrickleet/sourced_rust/issues).
 
 ## License
 
