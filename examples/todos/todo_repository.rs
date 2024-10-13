@@ -33,8 +33,4 @@ impl TodoRepository {
     pub fn commit(&self, todo: &mut Todo) -> Result<(), String> {
         self.repository.commit(&mut todo.entity)
     }
-
-    pub fn save(&self, todo: &Todo) -> Result<(), String> {
-        self.repository.save(&todo.entity)
-    }
 }

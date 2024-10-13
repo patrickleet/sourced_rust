@@ -15,16 +15,12 @@ fn main() -> Result<(), String> {
     todo.initialize("1".to_string(), "user1".to_string(), "Buy groceries".to_string());
 
     // Add event listeners
-    todo.on("ToDoInitialized".to_string(), |data| {
-        if let Some(todo_instance) = data.downcast_ref::<Todo>() {
-            println!("Todo Initialized: {:?}", todo_instance.snapshot());
-        } else {
-            println!("Error casting event data");
-        }
+    todo.on("ToDoInitialized".to_string(), |_| {
+        println!("Todo Initialized");
     });
-
-    todo.on("ToDoCompleted".to_string(), |data| {
-        println!("Todo completed: {:?}", data);
+    
+    todo.on("ToDoCompleted".to_string(), |_| {
+        println!("Todo Completed");
     });
 
     // Commit the Todo to the repository

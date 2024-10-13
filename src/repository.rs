@@ -48,15 +48,6 @@ impl Repository {
         
         Ok(())
     }
-
-    pub fn save(&self, entity: &Entity) -> Result<(), String> {
-        let mut storage = self.storage.lock().unwrap();
-        
-        // Store the command log
-        storage.insert(entity.id.clone(), entity.commands.clone());
-        
-        Ok(())
-    }
 }
 
 impl Default for Repository {
