@@ -1,0 +1,17 @@
+[package]
+name = "sourced_rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "todos"
+path = "examples/main.rs"
+
+[dependencies]
+# Add any external dependencies here if needed
+
+[dev-dependencies]
+# Add any development dependencies here if needed
