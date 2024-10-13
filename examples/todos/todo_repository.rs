@@ -17,13 +17,13 @@ impl TodoRepository {
         if let Some(rehydrated_entity) = self.repository.find_by_id(id) {
             let mut todo = Todo::new();
             todo.entity = rehydrated_entity;
-
+            
             // Use the rehydrate method we added to Todo
             if let Err(e) = todo.rehydrate() {
                 eprintln!("Error rehydrating todo: {}", e);
                 return None;
             }
-
+            
             Some(todo)
         } else {
             None
