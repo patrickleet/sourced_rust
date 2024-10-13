@@ -16,7 +16,11 @@ fn main() -> Result<(), String> {
 
     // Add event listeners
     todo.on("ToDoInitialized".to_string(), |data| {
-        println!("Todo initialized: {:?}", data);
+        if let Some(todo_instance) = data.downcast_ref::<Todo>() {
+            println!("Todo Initialized: {:?}", todo_instance.snapshot());
+        } else {
+            println!("Error casting event data");
+        }
     });
 
     todo.on("ToDoCompleted".to_string(), |data| {
