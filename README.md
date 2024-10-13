@@ -34,53 +34,7 @@ sourced_rust = { git = "https://github.com/patrickleet/sourced_rust.git" }
 
 ## Usage
 
-Here's a basic example of how to use Sourced Rust in your project:
-
-```rust
-use sourced_rust::{Entity, Event, EventRecord, EventEmitter, Repository};
-
-// Define your domain-specific entity
-struct Todo {
-    id: String,
-    title: String,
-    completed: bool,
-}
-
-// Implement the Entity trait for your struct
-impl Entity for Todo {
-    // Implement required methods
-}
-
-// Define your events
-enum TodoEvent {
-    Created { title: String },
-    Completed,
-}
-
-// Implement event handling logic
-impl Todo {
-    fn apply(&mut self, event: TodoEvent) {
-        match event {
-            TodoEvent::Created { title } => {
-                self.title = title;
-                self.completed = false;
-            },
-            TodoEvent::Completed => {
-                self.completed = true;
-            },
-        }
-    }
-}
-
-// Use the Repository to store and retrieve entities
-let mut repo = TodoRepository::new();
-let todo = Todo::new("1", "Buy milk");
-repo.save(&todo);
-
-// Emit events
-let emitter = EventEmitter::new();
-emitter.emit(TodoEvent::Created { title: "Buy milk".to_string() });
-```
+See [examples/](https://github.com/patrickleet/sourced_rust/tree/main/examples)
 
 ## Project Structure
 
