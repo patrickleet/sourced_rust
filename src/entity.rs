@@ -1,8 +1,9 @@
 use std::time::SystemTime;
-use crate::event_emitter::EventEmitter;
+use event_emitter_rs::EventEmitter;
+use serde::{Serialize, Deserialize};
 
 // CommandRecord holds information about a digested command
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CommandRecord {
     pub command_name: String,
     pub args: Vec<String>,
@@ -39,7 +40,7 @@ pub struct Entity {
     pub replaying: bool,
     pub snapshot_version: i32,
     pub timestamp: SystemTime,
-    pub event_emitter: Option<EventEmitter>,
+    pub event_emitter: EventEmitter,
 }
 
 impl Entity {
@@ -52,7 +53,7 @@ impl Entity {
             replaying: false,
             snapshot_version: 0,
             timestamp: SystemTime::now(),
-            event_emitter: Some(EventEmitter::new()),
+            event_emitter: EventEmitter::new(),
         }
     }
 
@@ -79,12 +80,9 @@ impl Entity {
     }
 
     pub fn emit_queued_events(&mut self) {
-        if let Some(emitter) = &self.event_emitter {
-            for event in self.events_to_emit.drain(..) {
-                emitter.emit(event.event_type(), event.get_data());
-            }
-        } else {
-            eprintln!("Warning: No event emitter available to emit queued events");
+        let event_types: Vec<String> = self.events_to_emit.drain(..).map(|event| event.event_type().to_string()).collect();
+        for event_type in event_types {
+            self.emit(&event_type);
         }
     }
 
@@ -107,22 +105,14 @@ impl Entity {
         Ok(())
     }
 
-    pub fn emit(&self, event: &str) {
-        if let Some(emitter) = &self.event_emitter {
-            emitter.emit(event, &()); // No data passed
-        } else {
-            eprintln!("Warning: No event emitter available to emit event: {}", event);
-        }
+    pub fn emit(&mut self, event: &str) {
+        self.event_emitter.emit(event, ());
     }
 
-    pub fn on<F>(&self, event: String, listener: F)
+    pub fn on<F>(&mut self, event: &str, listener: F)
     where
-        F: Fn(&dyn std::any::Any) + Send + Sync + 'static,
+        F: Fn(()) + Send + Sync + 'static,
     {
-        if let Some(emitter) = &self.event_emitter {
-            emitter.on(event, listener);
-        } else {
-            eprintln!("Warning: No event emitter available to register listener for event: {}", event);
-        }
+        self.event_emitter.on(event, listener);
     }
 }

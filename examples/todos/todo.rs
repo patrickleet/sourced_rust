@@ -1,5 +1,4 @@
 use sourced_rust::{Entity, CommandRecord};
-use std::any::Any;
 
 pub struct Todo {
     pub entity: Entity,
@@ -68,9 +67,9 @@ impl Todo {
         }
     }
 
-    pub fn on<F>(&self, event: String, listener: F)
+    pub fn on<F>(&mut self, event: &str, listener: F)
     where
-        F: Fn(&dyn Any) + Send + Sync + 'static,
+        F: Fn(()) + Send + Sync + 'static,
     {
         self.entity.on(event, listener);
     }
