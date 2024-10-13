@@ -52,7 +52,7 @@ impl Todo {
         }
     }
 
-    pub fn replay_command(&mut self, cmd: CommandRecord) -> Result<(), String> {
+    pub fn replay_command(&mut self, cmd: CommandRecord) -> Result<Option<String>, String> {
         match cmd.command_name.as_str() {
             "Initialize" => {
                 if cmd.args.len() == 3 {
@@ -61,14 +61,14 @@ impl Todo {
                         cmd.args[1].clone(),
                         cmd.args[2].clone(),
                     );
-                    Ok(())
+                    Ok(Some("ToDoInitialized".to_string()))
                 } else {
                     Err("Invalid number of arguments for Initialize command".to_string())
                 }
             }
             "Complete" => {
                 self.complete();
-                Ok(())
+                Ok(Some("ToDoCompleted".to_string()))
             }
             _ => Err(format!("Unknown command: {}", cmd.command_name)),
         }
@@ -92,10 +92,21 @@ impl Todo {
 
     pub fn rehydrate(&mut self) -> Result<(), String> {
         self.entity.replaying = true;
+        let mut events_to_emit = Vec::new();
         for command in self.entity.commands.clone() {
-            self.replay_command(command)?;
+            if let Ok(Some(event)) = self.replay_command(command) {
+                events_to_emit.push(event);
+            }
         }
         self.entity.replaying = false;
+
+        // Emit events after replaying
+        for event in events_to_emit {
+            let serialized = serde_json::to_string(self).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+            self.entity.enqueue(event, serialized);
+        }
+        self.entity.emit_queued_events();
+
         Ok(())
     }
 
