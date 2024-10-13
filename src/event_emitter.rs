@@ -40,8 +40,8 @@ impl EventEmitter {
         let mut listeners = self.listeners.write().unwrap();
         if let Some(event_listeners) = listeners.get_mut(event) {
             event_listeners.retain(|listener| {
-                // Compare function pointers
-                listener.as_ref() as *const _ != &listener_to_remove as *const _
+                // Use std::ptr::addr_eq to compare the function pointers
+                !std::ptr::addr_eq(listener.as_ref(), &listener_to_remove)
             });
         }
     }

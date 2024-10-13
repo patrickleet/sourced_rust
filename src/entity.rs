@@ -1,4 +1,4 @@
-use std::{any::Any, time::SystemTime};
+use std::time::SystemTime;
 use crate::event_emitter::EventEmitter;
 
 // CommandRecord holds information about a digested command
