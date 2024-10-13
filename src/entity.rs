@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::{any::Any, time::SystemTime};
 use crate::event_emitter::EventEmitter;
 
 // CommandRecord holds information about a digested command
@@ -68,13 +68,13 @@ impl Entity {
         self.timestamp = SystemTime::now();
     }
 
-    pub fn enqueue(&mut self, event_type: String, data: Box<dyn std::any::Any + Send + Sync>) {
+    pub fn enqueue(&mut self, event_type: String) {
         if self.replaying {
             return;
         }
         self.events_to_emit.push(Box::new(LocalEvent {
             event_type,
-            data,
+            data: Box::new(()), // No data passed
         }));
     }
 
@@ -107,9 +107,9 @@ impl Entity {
         Ok(())
     }
 
-    pub fn emit(&self, event: &str, data: Box<dyn std::any::Any + Send + Sync>) {
+    pub fn emit(&self, event: &str) {
         if let Some(emitter) = &self.event_emitter {
-            emitter.emit(event, data.as_ref());
+            emitter.emit(event, &()); // No data passed
         } else {
             eprintln!("Warning: No event emitter available to emit event: {}", event);
         }

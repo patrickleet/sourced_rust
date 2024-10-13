@@ -25,7 +25,7 @@ impl Todo {
         self.completed = false;
 
         self.entity.digest("Initialize".to_string(), vec![id, user_id, task]);
-        self.entity.enqueue("ToDoInitialized".to_string(), Box::new(self.snapshot()));
+        self.entity.enqueue("ToDoInitialized".to_string());
     }
 
     pub fn complete(&mut self) {
@@ -33,7 +33,7 @@ impl Todo {
             self.completed = true;
 
             self.entity.digest("Complete".to_string(), vec![self.entity.id.clone()]);
-            self.entity.enqueue("ToDoCompleted".to_string(), Box::new(self.snapshot()));
+            self.entity.enqueue("ToDoCompleted".to_string());
         }
     }
 
@@ -66,10 +66,6 @@ impl Todo {
             task: self.task.clone(),
             completed: self.completed,
         }
-    }
-
-    pub fn emit_queued_events(&mut self) {
-        self.entity.emit_queued_events();
     }
 
     pub fn on<F>(&self, event: String, listener: F)
