@@ -36,7 +36,7 @@ fn main() -> Result<(), String> {
         retrieved_todo.on("ToDoCompleted", |data| {
             match Todo::deserialize(&data) {
                 Ok(deserialized_todo) => {
-                    println!("Todo Completed: {:?}", deserialized_todo);
+                    println!("Todo Completed: {:?}", deserialized_todo.snapshot());
                 },
                 Err(e) => {
                     println!("Error deserializing Todo: {}", e);
@@ -52,7 +52,7 @@ fn main() -> Result<(), String> {
 
         // Retrieve the Todo again to demonstrate that events are fired on retrieval
         if let Some(updated_todo) = repo.find_by_id("1") {
-            println!("Updated Todo: {:?}", updated_todo);
+            println!("Updated Todo: {:?}", updated_todo.snapshot());
         } else {
             println!("Updated Todo not found");
         }
