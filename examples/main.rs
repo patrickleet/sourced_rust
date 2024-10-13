@@ -15,27 +15,37 @@ fn main() -> Result<(), String> {
     todo.initialize("1".to_string(), "user1".to_string(), "Buy groceries".to_string());
 
     // Add event listeners
-    todo.on("ToDoInitialized", |_| {
-        println!("Todo Initialized");
+    todo.on("ToDoInitialized", |data| {
+        match Todo::deserialize(&data) {
+            Ok(deserialized_todo) => {
+                println!("Todo Initialized: {:?}", deserialized_todo.snapshot());
+            },
+            Err(e) => {
+                println!("Error deserializing Todo: {}", e);
+            }
+        }
     });
     
-    todo.on("ToDoCompleted", |_| {
-        println!("Todo Completed");
+    todo.on("ToDoCompleted", |data| {
+        match Todo::deserialize(&data) {
+            Ok(deserialized_todo) => {
+                println!("Todo Completed: {:?}", deserialized_todo.snapshot());
+            },
+            Err(e) => {
+                println!("Error deserializing Todo: {}", e);
+            }
+        }
     });
 
     // Commit the Todo to the repository
     repo.commit(&mut todo)?;
 
-    // Complete the Todo
-    todo.complete();
-
-    // Commit the changes
-    repo.commit(&mut todo)?;
-
     // Retrieve the Todo from the repository
     match repo.find_by_id("1") {
         Some(retrieved_todo) => {
-            println!("Retrieved Todo: {:?}", retrieved_todo.snapshot());
+            println!("Retrieved Todo: {:?}", retrieved_todo);
+
+            // retrieved_todo.complete();
         }
         None => {
             println!("Todo not found");
