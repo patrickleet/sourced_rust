@@ -13,15 +13,10 @@ impl TodoRepository {
     }
 
     pub fn find_by_id(&self, id: &str) -> Option<Todo> {
-        // Get the generic entity from the base repository
         let entity = self.repository.find_by_id(id)?;
-        
         let mut todo = Todo::new();
         todo.entity = entity;
-        
-        // Use the rehydrate method we added to Todo
-        todo.rehydrate().ok()?;  // Simplify error handling with `?`
-        
+        todo.rehydrate().ok()?; 
         Some(todo)
     }
 
