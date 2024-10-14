@@ -120,12 +120,17 @@ impl Entity {
 
     pub fn rehydrate(&mut self) -> Result<(), String> {
         self.replaying = true;
-        for event in self.events.clone() {
+    
+        // Collect references to events first to avoid borrowing self immutably
+        let events_to_replay: Vec<_> = self.events.iter().cloned().collect();
+    
+        for event in events_to_replay {
             if let Err(e) = self.replay_event(event) {
                 self.replaying = false;
                 return Err(format!("Error replaying event: {}", e));
             }
         }
+    
         self.replaying = false;
         Ok(())
     }
