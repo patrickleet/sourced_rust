@@ -15,7 +15,7 @@ fn main() -> Result<(), String> {
     todo.initialize("1".to_string(), "user1".to_string(), "Buy groceries".to_string());
 
     // Add event listeners
-    todo.on("ToDoInitialized", |data| {
+    todo.entity.on("ToDoInitialized", |data| {
         match Todo::deserialize(&data) {
             Ok(deserialized_todo) => {
                 println!("Todo Initialized: {:?}", deserialized_todo.snapshot());
@@ -33,7 +33,7 @@ fn main() -> Result<(), String> {
     if let Some(mut retrieved_todo) = repo.find_by_id("1") {
         println!("Retrieved Todo: {:?}", retrieved_todo);
 
-        retrieved_todo.on("ToDoCompleted", |data| {
+        retrieved_todo.entity.on("ToDoCompleted", |data| {
             match Todo::deserialize(&data) {
                 Ok(deserialized_todo) => {
                     println!("Todo Completed: {:?}", deserialized_todo.snapshot());

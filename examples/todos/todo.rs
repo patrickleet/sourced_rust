@@ -33,22 +33,19 @@ impl Todo {
 
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.id = id.clone();
-        self.user_id = user_id.clone();
-        self.task = task.clone();
+        self.user_id = user_id;
+        self.task = task;
         self.completed = false;
 
-        self.entity.digest("Initialize".to_string(), vec![id, user_id.clone(), task.clone()]);
-        let serialized = serde_json::to_string(self).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
-        self.entity.enqueue("ToDoInitialized".to_string(), serialized);
+        self.entity.digest("Initialize".to_string(), vec![id, self.user_id.clone(), self.task.clone()]);
+        self.entity.enqueue("ToDoInitialized".to_string(), serde_json::to_string(self).unwrap());
     }
 
     pub fn complete(&mut self) {
         if !self.completed {
             self.completed = true;
-
             self.entity.digest("Complete".to_string(), vec![self.entity.id.clone()]);
-            let serialized = serde_json::to_string(self).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
-            self.entity.enqueue("ToDoCompleted".to_string(), serialized);
+            self.entity.enqueue("ToDoCompleted".to_string(), serde_json::to_string(self).unwrap());
         }
     }
 
@@ -77,13 +74,6 @@ impl Todo {
             task: self.task.clone(),
             completed: self.completed,
         }
-    }
-
-    pub fn on<F>(&mut self, event: &str, listener: F)
-    where
-        F: Fn(String) + Send + Sync + 'static,
-    {
-        self.entity.on(event, listener);
     }
 
     pub fn rehydrate(&mut self) -> Result<(), String> {
