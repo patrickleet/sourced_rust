@@ -12,7 +12,6 @@ Cargo.lock
 *.pdb
 
 # IDE-specific files
-.vscode/
 .idea/
 
 # macOS-specific files
