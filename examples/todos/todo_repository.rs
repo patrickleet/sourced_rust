@@ -14,20 +14,15 @@ impl TodoRepository {
 
     pub fn find_by_id(&self, id: &str) -> Option<Todo> {
         // Get the generic entity from the base repository
-        if let Some(rehydrated_entity) = self.repository.find_by_id(id) {
-            let mut todo = Todo::new();
-            todo.entity = rehydrated_entity;
-            
-            // Use the rehydrate method we added to Todo
-            if let Err(e) = todo.rehydrate() {
-                eprintln!("Error rehydrating todo: {}", e);
-                return None;
-            }
-            
-            Some(todo)
-        } else {
-            None
-        }
+        let entity = self.repository.find_by_id(id)?;
+        
+        let mut todo = Todo::new();
+        todo.entity = entity;
+        
+        // Use the rehydrate method we added to Todo
+        todo.rehydrate().ok()?;  // Simplify error handling with `?`
+        
+        Some(todo)
     }
 
     pub fn commit(&self, todo: &mut Todo) -> Result<(), String> {
