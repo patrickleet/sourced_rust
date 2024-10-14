@@ -1,20 +1,20 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use crate::entity::{Entity, EventRecord};
 
 pub struct Repository {
-    storage: Arc<Mutex<HashMap<String, Vec<EventRecord>>>>,
+    storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
 }
 
 impl Repository {
     pub fn new() -> Self {
         Repository {
-            storage: Arc::new(Mutex::new(HashMap::new())),
+            storage: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub fn find_by_id(&self, id: &str) -> Option<Entity> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self.storage.read().unwrap();  // Read lock
         
         if let Some(events) = storage.get(id) {
             let mut entity = Entity::new();
@@ -34,7 +34,7 @@ impl Repository {
     }
 
     pub fn commit(&self, entity: &mut Entity) -> Result<(), String> {
-        let mut storage = self.storage.lock().unwrap();
+        let mut storage = self.storage.write().unwrap();  // Write lock for modification
         
         // Store the event log
         storage.insert(entity.id.clone(), entity.events.clone());
