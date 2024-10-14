@@ -76,26 +76,6 @@ impl Todo {
         }
     }
 
-    pub fn rehydrate(&mut self) -> Result<(), String> {
-        self.entity.replaying = true;
-        let mut events_to_emit = Vec::new();
-        for event in self.entity.events.clone() {
-            if let Ok(Some(event)) = self.replay_event(event) {
-                events_to_emit.push(event);
-            }
-        }
-        self.entity.replaying = false;
-
-        // Emit events after replaying
-        for event in events_to_emit {
-            let serialized = serde_json::to_string(self).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
-            self.entity.enqueue(event, serialized);
-        }
-        self.entity.emit_queued_events();
-
-        Ok(())
-    }
-
     pub fn deserialize(data: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(data)
     }
