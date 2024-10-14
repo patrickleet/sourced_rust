@@ -54,18 +54,14 @@ impl Todo {
 
     pub fn replay_event(&mut self, event: EventRecord) -> Result<Option<String>, String> {
         match event.event_name.as_str() {
-            "Initialize" => {
-                if event.args.len() == 3 {
-                    self.initialize(
-                        event.args[0].clone(),
-                        event.args[1].clone(),
-                        event.args[2].clone(),
-                    );
-                    Ok(Some("ToDoInitialized".to_string()))
-                } else {
-                    Err("Invalid number of arguments for Initialize method".to_string())
-                }
+            "Initialize" if event.args.len() == 3 => {
+                self.initialize(
+                    event.args[0].clone(), 
+                    event.args[1].clone(), 
+                    event.args[2].clone());
+                Ok(Some("ToDoInitialized".to_string()))
             }
+            "Initialize" => Err("Invalid number of arguments for Initialize method".to_string()),
             "Complete" => {
                 self.complete();
                 Ok(Some("ToDoCompleted".to_string()))
