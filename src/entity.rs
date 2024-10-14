@@ -110,11 +110,12 @@ impl Entity {
     }
 
     pub fn emit_queued_events(&mut self) {
-        let events: Vec<(String, String)> = self.events_to_emit.drain(..)
-            .map(|event| (event.event_type().to_string(), event.get_data().to_string()))
-            .collect();
-        for (event_type, data) in events {
-            self.emit(&event_type, &data);
+        let events: Vec<_> = self.events_to_emit.drain(..).collect();
+    
+        for event in events {
+            let event_type = event.event_type();  // Assuming this returns &str
+            let data = event.get_data();          // Assuming this returns &str
+            self.emit(event_type, data);
         }
     }
 
