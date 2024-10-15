@@ -60,5 +60,23 @@ fn main() -> Result<(), String> {
         println!("Todo not found");
     }
 
+    let mut todo2 = Todo::new();
+    todo2.initialize("2".to_string(), "user1".to_string(), "Buy Sauna".to_string());
+
+    let mut todo3 = Todo::new();
+    todo3.initialize("3".to_string(), "user2".to_string(), "Chew bubblegum".to_string()); 
+
+
+    // Commit multiple Todos to the repository
+    repo.commit_all(&mut [&mut todo2, &mut todo3])?;
+
+    // get all the todos from the repository
+    let all_todos = repo.get_all(&["1", "2", "3"]);
+    if all_todos.len() > 0 {
+        println!("All Todos: {:?}", all_todos);
+    } else {
+        println!("No Todos found");
+    }
+
     Ok(())
 }
