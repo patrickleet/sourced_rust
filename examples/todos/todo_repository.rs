@@ -12,8 +12,8 @@ impl TodoRepository {
         }
     }
 
-    pub fn find_by_id(&self, id: &str) -> Option<Todo> {
-        let entity = self.repository.find_by_id(id)?;
+    pub fn get(&self, id: &str) -> Option<Todo> {
+        let entity = self.repository.get(id)?;
         let mut todo = Todo::new();
         todo.entity = entity;
 

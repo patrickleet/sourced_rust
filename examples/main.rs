@@ -30,7 +30,7 @@ fn main() -> Result<(), String> {
     repo.commit(&mut todo)?;
 
     // Retrieve the Todo from the repository
-    if let Some(mut retrieved_todo) = repo.find_by_id("1") {
+    if let Some(mut retrieved_todo) = repo.get("1") {
         println!("Retrieved Todo: {:?}", retrieved_todo);
 
         retrieved_todo.entity.on("ToDoCompleted", |data| {
@@ -51,7 +51,7 @@ fn main() -> Result<(), String> {
         repo.commit(&mut retrieved_todo)?;
 
         // Retrieve the Todo again to demonstrate that events are fired on retrieval
-        if let Some(updated_todo) = repo.find_by_id("1") {
+        if let Some(updated_todo) = repo.get("1") {
             println!("Updated Todo: {:?}", updated_todo.snapshot());
         } else {
             println!("Updated Todo not found");

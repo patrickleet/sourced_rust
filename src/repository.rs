@@ -13,7 +13,7 @@ impl Repository {
         }
     }
 
-    pub fn find_by_id(&self, id: &str) -> Option<Entity> {
+    pub fn get(&self, id: &str) -> Option<Entity> {
         let storage = self.storage.read().unwrap();  // Read lock
         
         if let Some(events) = storage.get(id) {
