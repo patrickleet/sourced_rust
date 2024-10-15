@@ -3,7 +3,7 @@ use std::fmt;
 use event_emitter_rs::EventEmitter;
 use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,
     pub args: Vec<String>,
@@ -14,7 +14,7 @@ pub trait Event: Send + Sync {
     fn get_data(&self) -> &str;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LocalEvent {
     event_type: String,
     data: String,
@@ -126,10 +126,7 @@ impl Entity {
         let events_to_replay: Vec<_> = self.events.iter().cloned().collect();
     
         for event in events_to_replay {
-            if let Err(e) = self.replay_event(event) {
-                self.replaying = false;
-                return Err(format!("Error replaying event: {}", e));
-            }
+            self.replay_event(event)?;
         }
     
         self.replaying = false;
@@ -150,5 +147,153 @@ impl Entity {
         F: Fn(String) + Send + Sync + 'static,
     {
         self.event_emitter.on(event, listener);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_entity_new() {
+        // Test the default state of a new Entity instance
+        // This test ensures that a new Entity is initialized with the correct default values
+        let entity = Entity::new();
+        assert_eq!(entity.id, String::new());
+        assert_eq!(entity.version, 0);
+        assert!(entity.events.is_empty());
+        assert!(entity.events_to_emit.is_empty());
+        assert!(!entity.replaying);
+        assert_eq!(entity.snapshot_version, 0);
+    }
+
+    #[test]
+    fn test_entity_digest() {
+        // Test the digest method to ensure it correctly updates the entity's state
+        // This test checks that the digest method adds an event and increments the version
+        let mut entity = Entity::new();
+        entity.digest("test_event".to_string(), vec!["arg1".to_string(), "arg2".to_string()]);
+        
+        assert_eq!(entity.version, 1);
+        assert_eq!(entity.events.len(), 1);
+        assert_eq!(entity.events[0].event_name, "test_event");
+        assert_eq!(entity.events[0].args, vec!["arg1", "arg2"]);
+    }
+
+    #[test]
+    fn test_entity_enqueue() {
+        // Test the enqueue method to ensure it correctly queues events for emission
+        // This test verifies that events are added to the events_to_emit vector
+        let mut entity = Entity::new();
+        entity.enqueue("test_event".to_string(), "test_data".to_string());
+        
+        assert_eq!(entity.events_to_emit.len(), 1);
+        assert_eq!(entity.events_to_emit[0].event_type(), "test_event");
+        assert_eq!(entity.events_to_emit[0].get_data(), "test_data");
+    }
+
+    #[test]
+    fn test_entity_emit_queued_events() {
+        // Test the emit_queued_events method to ensure it processes all queued events
+        // This test checks that events are emitted and the queue is cleared
+        let mut entity = Entity::new();
+        entity.enqueue("test_event1".to_string(), "test_data1".to_string());
+        entity.enqueue("test_event2".to_string(), "test_data2".to_string());
+        
+        assert_eq!(entity.events_to_emit.len(), 2);
+        
+        entity.emit_queued_events();
+        
+        assert!(entity.events_to_emit.is_empty());
+    }
+
+    #[test]
+    fn test_entity_rehydrate() {
+        // Test the rehydrate method to ensure it replays all events correctly
+        // This test verifies that the rehydrate method processes all events without errors
+        let mut entity = Entity::new();
+        entity.digest("test_event1".to_string(), vec!["arg1".to_string()]);
+        entity.digest("test_event2".to_string(), vec!["arg2".to_string()]);
+        
+        assert_eq!(entity.events.len(), 2);
+        assert_eq!(entity.version, 2);
+        
+        let result = entity.rehydrate();
+        
+        assert!(result.is_ok());
+        assert!(!entity.replaying);
+    }
+
+    #[test]
+    fn test_entity_clone() {
+        // Test the Clone implementation for Entity
+        // This test ensures that cloning an Entity creates a new instance with the same data
+        let entity = Entity::new();
+        let cloned_entity = entity.clone();
+        
+        assert_eq!(entity.id, cloned_entity.id);
+        assert_eq!(entity.version, cloned_entity.version);
+        assert_eq!(entity.events, cloned_entity.events);
+        assert_eq!(entity.events_to_emit, cloned_entity.events_to_emit);
+        assert_eq!(entity.replaying, cloned_entity.replaying);
+        assert_eq!(entity.snapshot_version, cloned_entity.snapshot_version);
+    }
+
+    #[test]
+    fn test_entity_debug() {
+        // Test the Debug implementation for Entity
+        // This test checks that the debug string representation of an Entity is formatted correctly
+        let entity = Entity::new();
+        let debug_str = format!("{:?}", entity);
+        
+        assert!(debug_str.contains("Entity"));
+        assert!(debug_str.contains("id: \"\""));
+        assert!(debug_str.contains("version: 0"));
+    }
+
+    #[test]
+    fn test_entity_serialize_deserialize() {
+        // Test the Serialize and Deserialize implementations for Entity
+        // This test ensures that an Entity can be serialized to JSON and deserialized back without data loss
+        let entity = Entity::new();
+        let serialized: String = serde_json::to_string(&entity).unwrap();
+        let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(entity.id, deserialized.id);
+        assert_eq!(entity.version, deserialized.version);
+        assert_eq!(entity.events, deserialized.events);
+        assert_eq!(entity.replaying, deserialized.replaying);
+        assert_eq!(entity.snapshot_version, deserialized.snapshot_version);
+    }
+
+    #[test]
+    fn test_entity_emit_and_on() {
+        // Test the emit method to ensure it emits events correctly
+        let mut entity = Entity::new();
+        let event_name = "test_event";
+        let event_data = "test_data";
+
+        entity.on(event_name, move |data| {
+            assert_eq!(*event_data, data);
+        });
+
+        entity.emit(event_name, event_data);
+    }
+
+    #[test]
+    fn test_entity_replaying_state() {
+        // Test edge cases when the entity is in replaying state
+        let mut entity = Entity::new();
+        entity.replaying = true;
+
+        // Ensure digest does not modify state when replaying
+        entity.digest("test_event".to_string(), vec!["arg1".to_string()]);
+        assert!(entity.events.is_empty());
+
+        // Ensure enqueue does not modify state when replaying
+        entity.enqueue("test_event".to_string(), "test_data".to_string());
+        assert!(entity.events_to_emit.is_empty());
     }
 }
