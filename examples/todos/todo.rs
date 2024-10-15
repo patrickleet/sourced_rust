@@ -10,17 +10,6 @@ pub struct Todo {
     completed: bool,
 }
 
-impl Clone for Todo {
-    fn clone(&self) -> Self {
-        Todo {
-            entity: self.entity.clone(),
-            user_id: self.user_id.clone(),
-            task: self.task.clone(),
-            completed: self.completed,
-        }
-    }
-}
-
 impl Todo {
     pub fn new() -> Self {
         Todo {
