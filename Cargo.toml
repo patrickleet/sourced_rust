@@ -8,7 +8,7 @@ path = "src/lib.rs"
 
 [[example]]
 name = "todos"
-path = "examples/main.rs"
+path = "examples/todos/lib.rs"
 
 [dependencies]
 cargo-llvm-cov = "0.6.14"

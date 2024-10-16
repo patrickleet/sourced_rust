@@ -154,7 +154,6 @@ impl Entity {
 mod tests {
     use super::*;
     use serde_json;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_entity_new() {

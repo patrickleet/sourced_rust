@@ -70,8 +70,50 @@ impl Repository {
     }
 }
 
-impl Default for Repository {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::Entity;
+
+    #[test]
+    fn test_new() {
+        let repo = Repository::new();
+        assert!(repo.storage.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_workflow() {
+        let repo = Repository::new();
+        let id = "test_id";
+        let mut entity = Entity::new();
+        entity.id = id.to_string();
+
+        let args = vec!["arg1".to_string(), "arg2".to_string()];
+        entity.digest("test_event".to_string(), args);
+
+        entity.enqueue("test_event".to_string(), "test_data".to_string());
+
+        entity.on("test_event", |data| {
+            println!("Event listener called with data: {}", data);
+            assert!(data == "test_data");
+        });
+
+        repo.commit(&mut entity).unwrap();
+
+        let fetched_entity = repo.get(id).unwrap();
+        assert_eq!(fetched_entity.id, id);
+        assert_eq!(fetched_entity.events, entity.events);
+
+        let args2 = vec!["arg1".to_string(), "arg2".to_string()];
+
+        let mut entity2 = Entity::new();
+        entity2.id = "test_id_2".to_string();
+        entity2.digest("test_event".to_string(), args2);
+
+        let result = repo.commit_all(&mut [&mut entity, &mut entity2]);
+        assert!(result.is_ok());
+
+        let all_entities = repo.get_all(&[id, "test_id_2"]);
+        assert_eq!(all_entities.len(), 2);
     }
 }
