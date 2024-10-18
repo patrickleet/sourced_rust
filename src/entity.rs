@@ -2,33 +2,9 @@ use std::time::SystemTime;
 use std::fmt;
 use event_emitter_rs::EventEmitter;
 use serde::{Serialize, Deserialize};
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub struct EventRecord {
-    pub event_name: String,
-    pub args: Vec<String>,
-}
-
-pub trait Event: Send + Sync {
-    fn event_type(&self) -> &str;
-    fn get_data(&self) -> &str;
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LocalEvent {
-    event_type: String,
-    data: String,
-}
-
-impl Event for LocalEvent {
-    fn event_type(&self) -> &str {
-        &self.event_type
-    }
-
-    fn get_data(&self) -> &str {
-        &self.data
-    }
-}
+use crate::local_event::LocalEvent;
+use crate::event_record::EventRecord;
+use crate::event::Event;
 
 #[derive(Serialize, Deserialize)]
 pub struct Entity {

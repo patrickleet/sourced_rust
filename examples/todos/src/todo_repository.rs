@@ -1,15 +1,15 @@
-use sourced_rust::{Entity, Repository};
+use sourced_rust::{Entity, Repository, HashMapRepository};
 use super::todo::Todo;
 use rayon::prelude::*; 
 
 pub struct TodoRepository {
-    repository: Repository,
+    repository: HashMapRepository,
 }
 
 impl TodoRepository {
     pub fn new() -> Self {
         TodoRepository {
-            repository: Repository::new(),
+            repository: HashMapRepository::new(),
         }
     }
 
