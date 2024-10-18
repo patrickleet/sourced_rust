@@ -6,10 +6,6 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
-[[example]]
-name = "todos"
-path = "examples/main.rs"
-
 [dependencies]
 cargo-llvm-cov = "0.6.14"
 event-emitter-rs = "0.1.4"
