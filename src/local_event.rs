@@ -15,3 +15,18 @@ impl Event for LocalEvent {
         &self.data
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_event_type_and_data() {
+        let event = LocalEvent {
+            event_type: String::from("test_event"),
+            data: String::from("test_data"),
+        };
+        assert_eq!(event.event_type(), "test_event");
+        assert_eq!(event.get_data(), "test_data");
+    }
+}

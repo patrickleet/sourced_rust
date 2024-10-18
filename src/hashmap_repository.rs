@@ -82,13 +82,13 @@ mod tests {
     use crate::entity::Entity;
 
     #[test]
-    fn test_new() {
+    fn new() {
         let repo = HashMapRepository::new();
         assert!(repo.storage.read().unwrap().is_empty());
     }
 
     #[test]
-    fn test_workflow() {
+    fn full_workflow() {
         let repo = HashMapRepository::new();
         let id = "test_id";
         let mut entity = Entity::new();

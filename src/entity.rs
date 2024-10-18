@@ -132,7 +132,7 @@ mod tests {
     use serde_json;
 
     #[test]
-    fn test_entity_new() {
+    fn new() {
         // Test the default state of a new Entity instance
         // This test ensures that a new Entity is initialized with the correct default values
         let entity = Entity::new();
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_digest() {
+    fn digest() {
         // Test the digest method to ensure it correctly updates the entity's state
         // This test checks that the digest method adds an event and increments the version
         let mut entity = Entity::new();
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_enqueue() {
+    fn enqueue() {
         // Test the enqueue method to ensure it correctly queues events for emission
         // This test verifies that events are added to the events_to_emit vector
         let mut entity = Entity::new();
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_emit_queued_events() {
+    fn emit_queued_events() {
         // Test the emit_queued_events method to ensure it processes all queued events
         // This test checks that events are emitted and the queue is cleared
         let mut entity = Entity::new();
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_rehydrate() {
+    fn rehydrate() {
         // Test the rehydrate method to ensure it replays all events correctly
         // This test verifies that the rehydrate method processes all events without errors
         let mut entity = Entity::new();
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_clone() {
+    fn clone() {
         // Test the Clone implementation for Entity
         // This test ensures that cloning an Entity creates a new instance with the same data
         let entity = Entity::new();
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_debug() {
+    fn debug() {
         // Test the Debug implementation for Entity
         // This test checks that the debug string representation of an Entity is formatted correctly
         let entity = Entity::new();
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_serialize_deserialize() {
+    fn serialize_deserialize() {
         // Test the Serialize and Deserialize implementations for Entity
         // This test ensures that an Entity can be serialized to JSON and deserialized back without data loss
         let entity = Entity::new();
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_emit_and_on() {
+    fn emit_and_on() {
         // Test the emit method to ensure it emits events correctly
         let mut entity = Entity::new();
         let event_name = "test_event";
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_replaying_state() {
+    fn replaying_state() {
         // Test edge cases when the entity is in replaying state
         let mut entity = Entity::new();
         entity.replaying = true;
