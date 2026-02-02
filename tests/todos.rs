@@ -107,6 +107,48 @@ fn todos() {
 }
 
 #[test]
+fn get_commit_roundtrip() {
+    let repo = TodoRepository::new();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string());
+
+    repo.commit(&mut todo).unwrap();
+
+    let retrieved = repo.get(&id).unwrap().expect("Todo not found");
+    assert_eq!(retrieved.snapshot().id, id);
+    assert_eq!(retrieved.snapshot().user_id, "user1");
+    assert_eq!(retrieved.snapshot().task, "Roundtrip");
+    assert!(!retrieved.snapshot().completed);
+
+    repo.abort(&retrieved).unwrap();
+}
+
+#[test]
+fn get_all_commit_all_roundtrip() {
+    let repo = TodoRepository::new();
+
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(id1.clone(), "user1".to_string(), "First".to_string());
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "user2".to_string(), "Second".to_string());
+
+    repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
+
+    let todos = repo.get_all(&[&id1, &id2]).unwrap();
+    assert_eq!(todos.len(), 2);
+    assert_eq!(todos[0].snapshot().id, id1);
+    assert_eq!(todos[1].snapshot().id, id2);
+
+    for todo in &todos {
+        repo.abort(todo).unwrap();
+    }
+}
+
+#[test]
 fn queued_repo_blocks_get_until_commit() {
     let repo = Arc::new(TodoRepository::new());
     let mut todo = Todo::new();
@@ -129,6 +171,30 @@ fn queued_repo_blocks_get_until_commit() {
     });
 
     rx_started.recv().unwrap();
+
+    let (tx_peek_done, rx_peek_done) = mpsc::channel();
+    let repo_peek = Arc::clone(&repo);
+    let id_peek = id.clone();
+    thread::spawn(move || {
+        let _ = repo_peek.peek(&id_peek).unwrap();
+        tx_peek_done.send(()).unwrap();
+    });
+
+    let (tx_peek_all_done, rx_peek_all_done) = mpsc::channel();
+    let repo_peek_all = Arc::clone(&repo);
+    let id_peek_all = id.clone();
+    thread::spawn(move || {
+        let ids = [id_peek_all.as_str()];
+        let _ = repo_peek_all.peek_all(&ids).unwrap();
+        tx_peek_all_done.send(()).unwrap();
+    });
+
+    assert!(rx_peek_done
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok());
+    assert!(rx_peek_all_done
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok());
 
     let (tx_done, rx_done) = mpsc::channel();
     let repo_b = Arc::clone(&repo);

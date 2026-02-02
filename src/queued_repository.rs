@@ -60,6 +60,18 @@ impl<R> QueuedRepository<R> {
     }
 }
 
+impl<R: Repository> QueuedRepository<R> {
+    // Read without taking the queue lock; may return stale data during in-flight writes.
+    pub fn peek(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
+        self.inner.get(id)
+    }
+
+    // Read without taking the queue lock; may return stale data during in-flight writes.
+    pub fn peek_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
+        self.inner.get_all(ids)
+    }
+}
+
 impl<R: Repository> Repository for QueuedRepository<R> {
     fn get(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
         let lock = self.ensure_lock(id)?;

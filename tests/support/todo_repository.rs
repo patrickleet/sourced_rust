@@ -65,6 +65,33 @@ impl TodoRepository {
         Ok(todos)
     }
 
+    pub fn peek(&self, id: &str) -> Result<Option<Todo>, TodoRepositoryError> {
+        let entity = self.repository.peek(id)?;
+        let Some(entity) = entity else {
+            return Ok(None);
+        };
+
+        let mut todo = Todo::new();
+        todo.entity = entity;
+        self.replay_events(&mut todo)?;
+
+        Ok(Some(todo))
+    }
+
+    pub fn peek_all(&self, ids: &[&str]) -> Result<Vec<Todo>, TodoRepositoryError> {
+        let entities = self.repository.peek_all(ids)?;
+        let mut todos = Vec::with_capacity(entities.len());
+
+        for entity in entities {
+            let mut todo = Todo::new();
+            todo.entity = entity;
+            self.replay_events(&mut todo)?;
+            todos.push(todo);
+        }
+
+        Ok(todos)
+    }
+
     pub fn commit(&self, todo: &mut Todo) -> Result<(), TodoRepositoryError> {
         self.repository.commit(&mut todo.entity)?;
         Ok(())
