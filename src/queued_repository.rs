@@ -29,6 +29,10 @@ impl<R> QueuedRepository<R> {
         Ok(())
     }
 
+    pub fn abort(&self, id: impl AsRef<str>) -> Result<(), RepositoryError> {
+        self.unlock(id)
+    }
+
     fn ensure_lock(&self, id: &str) -> Result<Arc<Lock>, RepositoryError> {
         let mut locks = self
             .locks

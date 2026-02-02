@@ -20,14 +20,9 @@ fn todos() {
 
     // Create a new Todo
     let mut todo = Todo::new();
-    let id1 = next_id();
-    todo.initialize(
-        id1.clone(),
-        "user1".to_string(),
-        "Buy groceries".to_string(),
-    );
 
     // Add event listeners
+    let id1 = next_id();
     let id1_for_init = id1.clone();
     todo.entity.on("ToDoInitialized", move |data| {
         match Todo::deserialize(&data) {
@@ -43,10 +38,16 @@ fn todos() {
         }
     });
 
+    todo.initialize(
+        id1.clone(),
+        "user1".to_string(),
+        "Buy groceries".to_string(),
+    );
+
     // Commit the Todo to the repository
     let _ = repo.commit(&mut todo);
 
-    // Retrieve the Todo from the repository
+    // Retrieve the Todo from the repository and complete it, then commit again
     if let Some(mut retrieved_todo) = repo.get(&id1).unwrap() {
         let id1_for_complete = id1.clone();
         retrieved_todo.entity.on("ToDoCompleted", move |data| {
@@ -63,24 +64,22 @@ fn todos() {
             }
         });
 
-        // Complete the Todo
         retrieved_todo.complete();
 
-        // Commit the changes
         let _ = repo.commit(&mut retrieved_todo);
 
-        // Retrieve the Todo again to demonstrate that events are fired on retrieval
-        if let Some(mut updated_todo) = repo.get(&id1).unwrap() {
-            assert!(updated_todo.snapshot().id == id1);
-            assert!(updated_todo.snapshot().user_id == "user1");
-            assert!(updated_todo.snapshot().task == "Buy groceries");
-            assert!(updated_todo.snapshot().completed);
-            let _ = repo.commit(&mut updated_todo);
+        if let Some(mut completed_todo) = repo.get(&id1).unwrap() {
+            assert!(completed_todo.snapshot().id == id1);
+            assert!(completed_todo.snapshot().user_id == "user1");
+            assert!(completed_todo.snapshot().task == "Buy groceries");
+            assert!(completed_todo.snapshot().completed);
+
+            repo.abort(&completed_todo).unwrap();
         } else {
-            println!("Updated Todo not found");
+            panic!("Updated Todo not found");
         }
     } else {
-        println!("Todo not found");
+        panic!("Todo not found");
     }
 
     let mut todo2 = Todo::new();

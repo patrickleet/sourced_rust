@@ -77,6 +77,11 @@ impl TodoRepository {
         Ok(())
     }
 
+    pub fn abort(&self, todo: &Todo) -> Result<(), TodoRepositoryError> {
+        self.repository.unlock(todo.entity.id())?;
+        Ok(())
+    }
+
     fn replay_events(&self, todo: &mut Todo) -> Result<(), TodoRepositoryError> {
         let events = todo.entity.events().to_vec();
         todo.entity.set_replaying(true);
