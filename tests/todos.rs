@@ -1,257 +1,147 @@
-use serde::{Deserialize, Serialize};
-use serde_json;
-use sourced_rust::{Entity, EventRecord, Repository, HashMapRepository};
-use rayon::prelude::*; 
+mod support;
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Todo {
-    pub entity: Entity,
-    user_id: String,
-    task: String,
-    completed: bool,
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
+use support::todo::Todo;
+use support::todo_repository::TodoRepository;
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_id() -> String {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("todo-{}", id)
 }
 
-impl Todo {
-    pub fn new() -> Self {
-        Todo {
-            entity: Entity::new(),
-            user_id: String::new(),
-            task: String::new(),
-            completed: false,
-        }
-    }
+#[test]
+fn todos() {
+    let repo = TodoRepository::new();
 
-    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
-        self.entity.id = id.clone();
-        self.user_id = user_id;
-        self.task = task;
-        self.completed = false;
+    // Create a new Todo
+    let mut todo = Todo::new();
+    let id1 = next_id();
+    todo.initialize(
+        id1.clone(),
+        "user1".to_string(),
+        "Buy groceries".to_string(),
+    );
 
-        self.entity.digest(
-            "Initialize".to_string(),
-            vec![id, self.user_id.clone(), self.task.clone()],
-        );
-        self.entity.enqueue(
-            "ToDoInitialized".to_string(),
-            serde_json::to_string(self).unwrap(),
-        );
-    }
-
-    pub fn complete(&mut self) {
-        if !self.completed {
-            self.completed = true;
-            self.entity
-                .digest("Complete".to_string(), vec![self.entity.id.clone()]);
-            self.entity.enqueue(
-                "ToDoCompleted".to_string(),
-                serde_json::to_string(self).unwrap(),
-            );
-        }
-    }
-
-    pub fn replay_event(&mut self, event: EventRecord) -> Result<Option<String>, String> {
-        match event.event_name.as_str() {
-            "Initialize" if event.args.len() == 3 => {
-                self.initialize(
-                    event.args[0].clone(),
-                    event.args[1].clone(),
-                    event.args[2].clone(),
-                );
-                Ok(Some("ToDoInitialized".to_string()))
+    // Add event listeners
+    let id1_for_init = id1.clone();
+    todo.entity.on("ToDoInitialized", move |data| {
+        match Todo::deserialize(&data) {
+            Ok(deserialized_todo) => {
+                assert!(deserialized_todo.snapshot().id == id1_for_init);
+                assert!(deserialized_todo.snapshot().user_id == "user1");
+                assert!(deserialized_todo.snapshot().task == "Buy groceries");
+                assert!(!deserialized_todo.snapshot().completed);
             }
-            "Initialize" => Err("Invalid number of arguments for Initialize method".to_string()),
-            "Complete" => {
-                self.complete();
-                Ok(Some("ToDoCompleted".to_string()))
+            Err(e) => {
+                println!("Error deserializing Todo: {}", e);
             }
-            _ => Err(format!("Unknown method: {}", event.event_name)),
         }
-    }
+    });
 
-    pub fn snapshot(&self) -> TodoSnapshot {
-        TodoSnapshot {
-            id: self.entity.id.clone(),
-            user_id: self.user_id.clone(),
-            task: self.task.clone(),
-            completed: self.completed,
-        }
-    }
+    // Commit the Todo to the repository
+    let _ = repo.commit(&mut todo);
 
-    pub fn deserialize(data: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(data)
-    }
-}
-
-pub struct TodoRepository {
-    repository: HashMapRepository,
-}
-
-impl TodoRepository {
-    pub fn new() -> Self {
-        TodoRepository {
-            repository: HashMapRepository::new(),
-        }
-    }
-
-    pub fn get(&self, id: &str) -> Option<Todo> {
-        let entity = self.repository.get(id)?;
-        let mut todo = Todo::new();
-        todo.entity = entity;
-
-        self.replay_events(&mut todo);
-
-        Some(todo)
-    }
-
-    pub fn get_all(&self, ids: &[&str]) -> Vec<Todo> {
-        self.repository.get_all(ids)
-            .into_par_iter()  // Use parallel iterator
-            .map(|entity| {
-                let mut todo = Todo::new();
-                todo.entity = entity;
-
-                self.replay_events(&mut todo);
-
-                todo
-            })
-            .collect()
-    }
-
-    pub fn commit(&self, todo: &mut Todo) -> Result<(), String> {
-        self.repository.commit(&mut todo.entity)
-    }
-
-    pub fn commit_all(&self, todos: &mut [&mut Todo]) -> Result<(), String> {
-        // Extract entities from todos
-        let mut entities: Vec<&mut Entity> = todos.iter_mut().map(|todo| &mut todo.entity).collect();
-        
-        // Commit the entities in the repository
-        self.repository.commit_all(&mut entities)?;
-
-        // Replay events for each todo after committing
-        todos.par_iter_mut().for_each(|todo| {
-            self.replay_events(todo);
-        });
-
-        Ok(())
-    }
-
-    fn replay_events(&self, todo: &mut Todo) {
-        todo.entity.replaying = true;
-        for event in todo.entity.events.clone() {
-            todo.replay_event(event).ok();  // Ignore return value if no further processing is needed
-        }
-        todo.entity.replaying = false;
-    }
-}
-
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TodoSnapshot {
-    pub id: String,
-    pub user_id: String,
-    pub task: String,
-    pub completed: bool,
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Todo;
-    use crate::TodoRepository;
-
-    #[test]
-    fn todos() {
-        let repo = TodoRepository::new();
-
-        // Create a new Todo
-        let mut todo = Todo::new();
-        todo.initialize(
-            "1".to_string(),
-            "user1".to_string(),
-            "Buy groceries".to_string(),
-        );
-
-        // Add event listeners
-        todo.entity
-            .on("ToDoInitialized", |data| match Todo::deserialize(&data) {
+    // Retrieve the Todo from the repository
+    if let Some(mut retrieved_todo) = repo.get(&id1).unwrap() {
+        let id1_for_complete = id1.clone();
+        retrieved_todo.entity.on("ToDoCompleted", move |data| {
+            match Todo::deserialize(&data) {
                 Ok(deserialized_todo) => {
-                    println!("Todo Initialized: {:?}", deserialized_todo.snapshot());
-                    assert!(deserialized_todo.snapshot().id == "1");
+                    assert!(deserialized_todo.snapshot().id == id1_for_complete);
                     assert!(deserialized_todo.snapshot().user_id == "user1");
                     assert!(deserialized_todo.snapshot().task == "Buy groceries");
-                    assert!(!deserialized_todo.snapshot().completed);
+                    assert!(deserialized_todo.snapshot().completed);
                 }
                 Err(e) => {
                     println!("Error deserializing Todo: {}", e);
                 }
-            });
-
-        // Commit the Todo to the repository
-        let _ = repo.commit(&mut todo);
-
-        // Retrieve the Todo from the repository
-        if let Some(mut retrieved_todo) = repo.get("1") {
-            println!("Retrieved Todo: {:?}", retrieved_todo);
-
-            retrieved_todo
-                .entity
-                .on("ToDoCompleted", |data| match Todo::deserialize(&data) {
-                    Ok(deserialized_todo) => {
-                        println!("Todo Completed: {:?}", deserialized_todo.snapshot());
-                        assert!(deserialized_todo.snapshot().id == "1");
-                        assert!(deserialized_todo.snapshot().user_id == "user1");
-                        assert!(deserialized_todo.snapshot().task == "Buy groceries");
-                        assert!(deserialized_todo.snapshot().completed);
-                    }
-                    Err(e) => {
-                        println!("Error deserializing Todo: {}", e);
-                    }
-                });
-
-            // Complete the Todo
-            retrieved_todo.complete();
-
-            // Commit the changes
-            let _ = repo.commit(&mut retrieved_todo);
-
-            // Retrieve the Todo again to demonstrate that events are fired on retrieval
-            if let Some(updated_todo) = repo.get("1") {
-                println!("Updated Todo: {:?}", updated_todo.snapshot());
-                assert!(updated_todo.snapshot().id == "1");
-                assert!(updated_todo.snapshot().user_id == "user1");
-                assert!(updated_todo.snapshot().task == "Buy groceries");
-                assert!(updated_todo.snapshot().completed);
-            } else {
-                println!("Updated Todo not found");
             }
+        });
+
+        // Complete the Todo
+        retrieved_todo.complete();
+
+        // Commit the changes
+        let _ = repo.commit(&mut retrieved_todo);
+
+        // Retrieve the Todo again to demonstrate that events are fired on retrieval
+        if let Some(mut updated_todo) = repo.get(&id1).unwrap() {
+            assert!(updated_todo.snapshot().id == id1);
+            assert!(updated_todo.snapshot().user_id == "user1");
+            assert!(updated_todo.snapshot().task == "Buy groceries");
+            assert!(updated_todo.snapshot().completed);
+            let _ = repo.commit(&mut updated_todo);
         } else {
-            println!("Todo not found");
+            println!("Updated Todo not found");
         }
-
-        let mut todo2 = Todo::new();
-        todo2.initialize(
-            "2".to_string(),
-            "user1".to_string(),
-            "Buy Sauna".to_string(),
-        );
-
-        let mut todo3 = Todo::new();
-        todo3.initialize(
-            "3".to_string(),
-            "user2".to_string(),
-            "Chew bubblegum".to_string(),
-        );
-
-        // Commit multiple Todos to the repository
-        let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
-
-        // get all the todos from the repository
-        let all_todos = repo.get_all(&["1", "2", "3"]);
-        if all_todos.len() > 0 {
-            println!("All Todos: {:?}", all_todos);
-            assert!(all_todos.len() == 3);
-        } else {
-            println!("No Todos found");
-        }
+    } else {
+        println!("Todo not found");
     }
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "user1".to_string(), "Buy Sauna".to_string());
+
+    let mut todo3 = Todo::new();
+    let id3 = next_id();
+    todo3.initialize(
+        id3.clone(),
+        "user2".to_string(),
+        "Chew bubblegum".to_string(),
+    );
+
+    // Commit multiple Todos to the repository
+    let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
+
+    // get all the todos from the repository
+    let all_todos = repo.get_all(&[&id1, &id2, &id3]).unwrap();
+    if !all_todos.is_empty() {
+        assert!(all_todos.len() == 3);
+    } else {
+        println!("No Todos found");
+    }
+}
+
+#[test]
+fn queued_repo_blocks_get_until_commit() {
+    let repo = Arc::new(TodoRepository::new());
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string());
+    repo.commit(&mut todo).unwrap();
+
+    let (tx_started, rx_started) = mpsc::channel();
+    let (tx_release, rx_release) = mpsc::channel();
+    let (tx_committed, rx_committed) = mpsc::channel();
+
+    let repo_a = Arc::clone(&repo);
+    let id_a = id.clone();
+    thread::spawn(move || {
+        let mut todo = repo_a.get(&id_a).unwrap().unwrap();
+        tx_started.send(()).unwrap();
+        rx_release.recv().unwrap();
+        let _ = repo_a.commit(&mut todo);
+        tx_committed.send(()).unwrap();
+    });
+
+    rx_started.recv().unwrap();
+
+    let (tx_done, rx_done) = mpsc::channel();
+    let repo_b = Arc::clone(&repo);
+    let id_b = id.clone();
+    thread::spawn(move || {
+        let mut todo = repo_b.get(&id_b).unwrap().unwrap();
+        let _ = repo_b.commit(&mut todo);
+        tx_done.send(()).unwrap();
+    });
+
+    assert!(rx_done.recv_timeout(Duration::from_millis(200)).is_err());
+    tx_release.send(()).unwrap();
+    rx_committed.recv().unwrap();
+    assert!(rx_done.recv_timeout(Duration::from_millis(500)).is_ok());
 }
