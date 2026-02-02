@@ -46,32 +46,11 @@ impl Repository for HashMapRepository {
     }
 
     fn commit(&self, entity: &mut Entity) -> Result<(), RepositoryError> {
-        let expected_version = entity.version();
-        let id = entity.id().to_string();
-
         let mut storage = self
             .storage
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
-        let stream = storage.entry(id.clone()).or_default();
-        let actual_version = stream.len() as u64;
-
-        if actual_version != expected_version {
-            return Err(RepositoryError::ConcurrentWrite {
-                id,
-                expected: expected_version,
-                actual: actual_version,
-            });
-        }
-
-        let pending = entity.take_uncommitted();
-        if pending.is_empty() {
-            entity.emit_queued_events();
-            return Ok(());
-        }
-
-        stream.extend(pending.iter().cloned());
-        entity.mark_committed(pending);
+        storage.insert(entity.id().to_string(), entity.events().to_vec());
         entity.emit_queued_events();
 
         Ok(())
@@ -83,32 +62,8 @@ impl Repository for HashMapRepository {
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
-        for entity in entities.iter() {
-            let expected_version = entity.version();
-            let actual_version = storage
-                .get(entity.id())
-                .map(|events| events.len() as u64)
-                .unwrap_or(0);
-
-            if actual_version != expected_version {
-                return Err(RepositoryError::ConcurrentWrite {
-                    id: entity.id().to_string(),
-                    expected: expected_version,
-                    actual: actual_version,
-                });
-            }
-        }
-
         for entity in entities.iter_mut() {
-            let id = entity.id().to_string();
-            let stream = storage.entry(id).or_default();
-            let pending = entity.take_uncommitted();
-
-            if !pending.is_empty() {
-                stream.extend(pending.iter().cloned());
-                entity.mark_committed(pending);
-            }
-
+            storage.insert(entity.id().to_string(), entity.events().to_vec());
             entity.emit_queued_events();
         }
 
@@ -133,7 +88,7 @@ mod tests {
         let mut entity = Entity::with_id(id);
 
         let args = vec!["arg1".to_string(), "arg2".to_string()];
-        entity.record_event("test_event", args);
+        entity.digest("test_event", args);
 
         entity.enqueue("test_event", "test_data");
 
@@ -150,7 +105,7 @@ mod tests {
         let args2 = vec!["arg1".to_string(), "arg2".to_string()];
 
         let mut entity2 = Entity::with_id("test_id_2");
-        entity2.record_event("test_event", args2);
+        entity2.digest("test_event", args2);
 
         let result = repo.commit_all(&mut [&mut entity, &mut entity2]);
         assert!(result.is_ok());

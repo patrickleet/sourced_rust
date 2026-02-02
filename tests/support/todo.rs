@@ -25,7 +25,7 @@ impl Todo {
         self.user_id = user_id;
         self.task = task;
         self.completed = false;
-        self.entity.record_event(
+        self.entity.digest(
             "Initialize",
             vec![id, self.user_id.clone(), self.task.clone()],
         );
@@ -37,7 +37,7 @@ impl Todo {
         if !self.completed {
             self.completed = true;
             self.entity
-                .record_event("Complete", vec![self.entity.id().to_string()]);
+                .digest("Complete", vec![self.entity.id().to_string()]);
             self.entity
                 .enqueue("ToDoCompleted", serde_json::to_string(self).unwrap());
         }

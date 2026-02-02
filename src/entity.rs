@@ -17,8 +17,6 @@ pub struct Entity {
     version: u64,
     events: Vec<EventRecord>,
     #[serde(skip, default)]
-    uncommitted_events: Vec<EventRecord>,
-    #[serde(skip, default)]
     events_to_emit: Vec<LocalEvent>,
     #[serde(skip, default)]
     replaying: bool,
@@ -34,7 +32,6 @@ impl Default for Entity {
             id: String::new(),
             version: 0,
             events: Vec::new(),
-            uncommitted_events: Vec::new(),
             events_to_emit: Vec::new(),
             replaying: false,
             snapshot_version: 0,
@@ -50,7 +47,6 @@ impl fmt::Debug for Entity {
             .field("id", &self.id)
             .field("version", &self.version)
             .field("events", &self.events)
-            .field("uncommitted_events", &self.uncommitted_events)
             .field("events_to_emit", &self.events_to_emit)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
@@ -65,7 +61,6 @@ impl Clone for Entity {
             id: self.id.clone(),
             version: self.version,
             events: self.events.clone(),
-            uncommitted_events: self.uncommitted_events.clone(),
             events_to_emit: self.events_to_emit.clone(),
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
@@ -127,30 +122,20 @@ impl Entity {
         &self.events
     }
 
-    pub fn uncommitted_events(&self) -> &[EventRecord] {
-        &self.uncommitted_events
-    }
-
     pub fn queued_events_len(&self) -> usize {
         self.events_to_emit.len()
     }
 
-    fn next_sequence(&self) -> u64 {
-        self.version + self.uncommitted_events.len() as u64 + 1
-    }
-
-    pub fn record_event(&mut self, name: impl Into<String>, args: Vec<String>) {
+    pub fn digest(&mut self, name: impl Into<String>, args: Vec<String>) {
         if self.replaying {
             return;
         }
 
-        let record = EventRecord::new(name, args, self.next_sequence());
-        self.uncommitted_events.push(record);
+        let sequence = self.events.len() as u64 + 1;
+        let record = EventRecord::new(name, args, sequence);
+        self.events.push(record);
+        self.version = self.events.len() as u64;
         self.timestamp = SystemTime::now();
-    }
-
-    pub fn digest(&mut self, name: String, args: Vec<String>) {
-        self.record_event(name, args);
     }
 
     pub fn enqueue(&mut self, event_type: impl Into<String>, data: impl Into<String>) {
@@ -185,25 +170,10 @@ impl Entity {
 
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
         self.events = history;
-        self.uncommitted_events.clear();
         self.version = self.events.len() as u64;
     }
 
-    pub fn take_uncommitted(&mut self) -> Vec<EventRecord> {
-        self.uncommitted_events.drain(..).collect()
-    }
-
-    pub fn mark_committed(&mut self, committed: Vec<EventRecord>) {
-        if committed.is_empty() {
-            return;
-        }
-
-        self.events.extend(committed);
-        self.uncommitted_events.clear();
-        self.version = self.events.len() as u64;
-    }
-
-    pub fn rehydrate_with<F, E>(&mut self, mut apply: F) -> Result<(), E>
+    pub fn rehydrate<F, E>(&mut self, mut apply: F) -> Result<(), E>
     where
         F: FnMut(&EventRecord) -> Result<(), E>,
     {
@@ -236,25 +206,24 @@ mod tests {
         assert_eq!(entity.id(), "");
         assert_eq!(entity.version(), 0);
         assert!(entity.events().is_empty());
-        assert!(entity.uncommitted_events().is_empty());
         assert_eq!(entity.queued_events_len(), 0);
         assert!(!entity.is_replaying());
         assert_eq!(entity.snapshot_version(), 0);
     }
 
     #[test]
-    fn record_event() {
+    fn digest() {
         let mut entity = Entity::new();
-        entity.record_event(
+        entity.digest(
             "test_event",
             vec!["arg1".to_string(), "arg2".to_string()],
         );
 
-        assert_eq!(entity.version(), 0);
-        assert_eq!(entity.uncommitted_events().len(), 1);
-        assert_eq!(entity.uncommitted_events()[0].event_name, "test_event");
-        assert_eq!(entity.uncommitted_events()[0].args, vec!["arg1", "arg2"]);
-        assert_eq!(entity.uncommitted_events()[0].sequence, 1);
+        assert_eq!(entity.version(), 1);
+        assert_eq!(entity.events().len(), 1);
+        assert_eq!(entity.events()[0].event_name, "test_event");
+        assert_eq!(entity.events()[0].args, vec!["arg1", "arg2"]);
+        assert_eq!(entity.events()[0].sequence, 1);
     }
 
     #[test]
@@ -279,16 +248,13 @@ mod tests {
     }
 
     #[test]
-    fn rehydrate_with() {
+    fn rehydrate() {
         let mut entity = Entity::new();
-        entity.record_event("test_event1", vec!["arg1".to_string()]);
-        entity.record_event("test_event2", vec!["arg2".to_string()]);
-
-        let pending = entity.take_uncommitted();
-        entity.mark_committed(pending);
+        entity.digest("test_event1", vec!["arg1".to_string()]);
+        entity.digest("test_event2", vec!["arg2".to_string()]);
 
         let mut replayed = Vec::new();
-        let result = entity.rehydrate_with(|event| {
+        let result = entity.rehydrate(|event| {
             replayed.push(event.event_name.clone());
             Ok::<(), ()>(())
         });
@@ -306,7 +272,6 @@ mod tests {
         assert_eq!(entity.id(), cloned_entity.id());
         assert_eq!(entity.version(), cloned_entity.version());
         assert_eq!(entity.events(), cloned_entity.events());
-        assert_eq!(entity.uncommitted_events(), cloned_entity.uncommitted_events());
         assert_eq!(entity.snapshot_version(), cloned_entity.snapshot_version());
     }
 
@@ -323,9 +288,7 @@ mod tests {
     #[test]
     fn serialize_deserialize() {
         let mut entity = Entity::new();
-        entity.record_event("test_event1", vec!["arg1".to_string()]);
-        let pending = entity.take_uncommitted();
-        entity.mark_committed(pending);
+        entity.digest("test_event1", vec!["arg1".to_string()]);
 
         let serialized: String = serde_json::to_string(&entity).unwrap();
         let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
@@ -355,8 +318,8 @@ mod tests {
         let mut entity = Entity::new();
         entity.replaying = true;
 
-        entity.record_event("test_event", vec!["arg1".to_string()]);
-        assert!(entity.uncommitted_events().is_empty());
+        entity.digest("test_event", vec!["arg1".to_string()]);
+        assert!(entity.events().is_empty());
 
         entity.enqueue("test_event", "test_data");
         assert_eq!(entity.queued_events_len(), 0);
