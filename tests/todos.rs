@@ -103,7 +103,7 @@ fn todos() {
     let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
 
     // get all the todos from the repository
-    let all_todos = repo.get_all(&[&id1, &id2, &id3]).unwrap();
+    let all_todos = repo.peek_all(&[&id1, &id2, &id3]).unwrap();
     if !all_todos.is_empty() {
         assert!(all_todos.len() == 3);
     } else {
@@ -120,13 +120,11 @@ fn get_commit_roundtrip() {
 
     repo.commit(&mut todo).unwrap();
 
-    let retrieved = repo.get(&id).unwrap().expect("Todo not found");
+    let retrieved = repo.peek(&id).unwrap().expect("Todo not found");
     assert_eq!(retrieved.snapshot().id, id);
     assert_eq!(retrieved.snapshot().user_id, "user1");
     assert_eq!(retrieved.snapshot().task, "Roundtrip");
     assert!(!retrieved.snapshot().completed);
-
-    repo.abort(&retrieved).unwrap();
 }
 
 #[test]
@@ -143,14 +141,10 @@ fn get_all_commit_all_roundtrip() {
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
-    let todos = repo.get_all(&[&id1, &id2]).unwrap();
+    let todos = repo.peek_all(&[&id1, &id2]).unwrap();
     assert_eq!(todos.len(), 2);
     assert_eq!(todos[0].snapshot().id, id1);
     assert_eq!(todos[1].snapshot().id, id2);
-
-    for todo in &todos {
-        repo.abort(todo).unwrap();
-    }
 }
 
 #[test]
@@ -288,6 +282,76 @@ fn outbox_worker_local_emitter_publisher() {
     assert_eq!(published.id, snapshot.id);
     assert_eq!(published.user_id, snapshot.user_id);
     assert_eq!(published.task, snapshot.task);
+}
+
+#[test]
+fn abort_releases_lock_after_get() {
+    let repo = Arc::new(TodoRepository::new());
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string());
+    repo.commit(&mut todo).unwrap();
+
+    let locked = repo.get(&id).unwrap().unwrap();
+
+    let (tx_started, rx_started) = mpsc::channel();
+    let (tx_got, rx_got) = mpsc::channel();
+    let repo_other = Arc::clone(&repo);
+    let id_other = id.clone();
+    thread::spawn(move || {
+        tx_started.send(()).unwrap();
+        let _ = repo_other.get(&id_other).unwrap();
+        tx_got.send(()).unwrap();
+    });
+
+    rx_started.recv().unwrap();
+    assert!(rx_got
+        .recv_timeout(Duration::from_millis(200))
+        .is_err());
+
+    repo.abort(&locked).unwrap();
+    assert!(rx_got
+        .recv_timeout(Duration::from_millis(500))
+        .is_ok());
+}
+
+#[test]
+fn abort_releases_lock_after_get_all() {
+    let repo = Arc::new(TodoRepository::new());
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(id1.clone(), "user1".to_string(), "Abort get_all 1".to_string());
+    repo.commit(&mut todo1).unwrap();
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "user2".to_string(), "Abort get_all 2".to_string());
+    repo.commit(&mut todo2).unwrap();
+
+    let locked = repo.get_all(&[&id1, &id2]).unwrap();
+
+    let (tx_started, rx_started) = mpsc::channel();
+    let (tx_got, rx_got) = mpsc::channel();
+    let repo_other = Arc::clone(&repo);
+    let id_other = id1.clone();
+    thread::spawn(move || {
+        tx_started.send(()).unwrap();
+        let _ = repo_other.get(&id_other).unwrap();
+        tx_got.send(()).unwrap();
+    });
+
+    rx_started.recv().unwrap();
+    assert!(rx_got
+        .recv_timeout(Duration::from_millis(200))
+        .is_err());
+
+    for todo in &locked {
+        repo.abort(todo).unwrap();
+    }
+
+    assert!(rx_got
+        .recv_timeout(Duration::from_millis(500))
+        .is_ok());
 }
 
 #[test]
