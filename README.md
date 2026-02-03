@@ -14,6 +14,81 @@ Sourced Rust is inspired by the original sourced project by Matt Walters. Patric
 - Keep storage pluggable and testable.
 - Add optional queue-based locking for serialized workflows.
 
+## Quick Start: Microservice Example (With Syntactic Sugar)
+
+```rust
+use sourced_rust::{
+    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, LogPublisher,
+    OutboxWorker, Outboxable, Queueable, RepositoryError,
+};
+use std::time::Duration;
+
+#[derive(Default)]
+struct Todo {
+    entity: Entity,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
+
+enum TodoEvent {
+    Initialize { id: String, user_id: String, task: String },
+    Complete { id: String },
+}
+
+impl TodoEvent {
+    fn apply(self, todo: &mut Todo) {
+        match self {
+            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Complete { id: _ } => todo.complete(),
+        }
+    }
+}
+
+impl Todo {
+    fn initialize(&mut self, id: String, user_id: String, task: String) {
+        self.entity.set_id(&id);
+        self.user_id = user_id;
+        self.task = task;
+        self.completed = false;
+        self.entity.digest("Initialize", vec![id, self.user_id.clone(), self.task.clone()]);
+    }
+
+    fn complete(&mut self) {
+        if !self.completed {
+            self.completed = true;
+            self.entity.digest("Complete", vec![self.entity.id().to_string()]);
+        }
+    }
+
+    fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
+        TodoEvent::try_from(event)?.apply(self);
+        Ok(())
+    }
+}
+
+aggregate!(Todo, entity, replay_event, TodoEvent, {
+    "Initialize" => (id, user_id, task) => Initialize,
+    "Complete" => (id) => Complete,
+});
+
+fn main() -> Result<(), RepositoryError> {
+    // App-side repository with queue locking + outbox support.
+    let repo = HashMapRepository::new().queued().with_outbox().aggregate::<Todo>();
+
+    let mut todo = Todo::default();
+    todo.initialize("todo-1".to_string(), "user-1".to_string(), "Ship it".to_string());
+    repo.commit(&mut todo)?;
+
+    if let Some(mut todo) = repo.get("todo-1")? {
+        todo.complete();
+        repo.commit(&mut todo)?;
+    }
+
+    Ok(())
+}
+```
+
 ## Core Concepts
 
 - **Entity**: Holds the event history and a lightweight event emitter. You embed it in your domain structs.
