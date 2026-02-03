@@ -44,6 +44,14 @@ macro_rules! impl_aggregate {
     };
 }
 
+#[macro_export]
+macro_rules! aggregate {
+    ($ty:ty, $entity:ident, $replay:ident, $event_ty:ty, { $($events:tt)* }) => {
+        $crate::event_map!($event_ty, { $($events)* });
+        $crate::impl_aggregate!($ty, $entity, $replay);
+    };
+}
+
 pub trait UnlockableRepository {
     fn unlock(&self, id: &str) -> Result<(), RepositoryError>;
 }
@@ -68,6 +76,89 @@ impl<R: Repository> PeekableRepository for QueuedRepository<R> {
         QueuedRepository::peek_all(self, ids)
     }
 }
+
+pub trait RepositoryExt: Repository {
+    fn get_aggregate<A: Aggregate>(&self, id: &str) -> Result<Option<A>, RepositoryError> {
+        let entity = self.get(id)?;
+        let Some(entity) = entity else {
+            return Ok(None);
+        };
+        Ok(Some(hydrate::<A>(entity)?))
+    }
+
+    fn get_all_aggregates<A: Aggregate>(
+        &self,
+        ids: &[&str],
+    ) -> Result<Vec<A>, RepositoryError> {
+        let entities = self.get_all(ids)?;
+        let mut aggregates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            aggregates.push(hydrate::<A>(entity)?);
+        }
+        Ok(aggregates)
+    }
+
+    fn commit_aggregate<A: Aggregate>(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
+        self.commit(aggregate.entity_mut())
+    }
+
+    fn commit_all_aggregates<A: Aggregate>(
+        &self,
+        aggregates: &mut [&mut A],
+    ) -> Result<(), RepositoryError> {
+        let mut entities: Vec<&mut Entity> = aggregates
+            .iter_mut()
+            .map(|aggregate| (*aggregate).entity_mut())
+            .collect();
+        self.commit_all(&mut entities)
+    }
+
+    fn peek_aggregate<A: Aggregate>(
+        &self,
+        id: &str,
+    ) -> Result<Option<A>, RepositoryError>
+    where
+        Self: PeekableRepository,
+    {
+        let entity = self.peek(id)?;
+        let Some(entity) = entity else {
+            return Ok(None);
+        };
+        Ok(Some(hydrate::<A>(entity)?))
+    }
+
+    fn peek_all_aggregates<A: Aggregate>(
+        &self,
+        ids: &[&str],
+    ) -> Result<Vec<A>, RepositoryError>
+    where
+        Self: PeekableRepository,
+    {
+        let entities = self.peek_all(ids)?;
+        let mut aggregates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            aggregates.push(hydrate::<A>(entity)?);
+        }
+        Ok(aggregates)
+    }
+
+    fn abort_aggregate<A: Aggregate>(&self, aggregate: &A) -> Result<(), RepositoryError>
+    where
+        Self: UnlockableRepository,
+    {
+        self.unlock(aggregate.entity().id())
+    }
+}
+
+impl<R: Repository> RepositoryExt for R {}
+
+pub trait AggregateBuilder: Repository + Sized {
+    fn aggregate<A: Aggregate>(self) -> AggregateRepository<Self, A> {
+        AggregateRepository::new(self)
+    }
+}
+
+impl<R: Repository> AggregateBuilder for R {}
 
 pub struct AggregateRepository<R, A> {
     repo: R,

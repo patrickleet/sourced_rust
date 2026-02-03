@@ -9,11 +9,14 @@ mod outbox;
 mod queued;
 mod repository;
 
-pub use aggregate::{Aggregate, AggregateRepository, PeekableRepository, UnlockableRepository};
+pub use aggregate::{
+    Aggregate, AggregateBuilder, AggregateRepository, PeekableRepository, RepositoryExt,
+    UnlockableRepository,
+};
 pub use entity::Entity;
 pub use error::RepositoryError;
 pub use event::Event;
-pub use event_record::EventRecord;
+pub use event_record::{ArgCountError, ArgParseError, EventRecord};
 pub use hashmap::HashMapRepository;
 pub use local_event::LocalEvent;
 pub use outbox::{

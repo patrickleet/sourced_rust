@@ -1,4 +1,7 @@
-use sourced_rust::{AggregateRepository, HashMapRepository, Outboxable, Queueable, QueuedRepository};
+use sourced_rust::{
+    AggregateBuilder, AggregateRepository, HashMapRepository, Outboxable, Queueable,
+    QueuedRepository,
+};
 
 use super::todo::Todo;
 
@@ -9,7 +12,10 @@ pub struct TodoRepository {
 impl TodoRepository {
     pub fn new() -> Self {
         TodoRepository {
-            inner: AggregateRepository::new(HashMapRepository::new().queued().with_outbox()),
+            inner: HashMapRepository::new()
+                .queued()
+                .with_outbox()
+                .aggregate::<Todo>(),
         }
     }
 }

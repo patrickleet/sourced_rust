@@ -203,6 +203,58 @@ repo.abort("todo-1")?;
 let _ = repo.peek("todo-1")?;
 ```
 
+### Aggregate Helpers (Low Boilerplate)
+
+You can keep domain code tiny and let the library handle hydration:
+
+```rust
+use sourced_rust::{aggregate, Entity, EventRecord};
+
+#[derive(Default)]
+pub struct Todo {
+    pub entity: Entity,
+    // domain fields...
+}
+
+enum TodoEvent {
+    Initialize { id: String, user_id: String, task: String },
+    Complete { id: String },
+}
+
+impl TodoEvent {
+    fn apply(self, todo: &mut Todo) {
+        match self {
+            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Complete { id: _ } => todo.complete(),
+        }
+    }
+}
+
+impl Todo {
+    pub fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
+        TodoEvent::try_from(event)?.apply(self);
+        Ok(())
+    }
+}
+
+aggregate!(Todo, entity, replay_event, TodoEvent, {
+    "Initialize" => (id, user_id, task) => Initialize,
+    "Complete" => (id) => Complete,
+});
+```
+
+Repository ergonomics:
+
+```rust
+use sourced_rust::{AggregateBuilder, HashMapRepository, Outboxable, Queueable, RepositoryExt};
+
+let repo = HashMapRepository::new().queued().with_outbox();
+let todo = repo.get_aggregate::<Todo>("todo-1")?;
+
+let repo = HashMapRepository::new().queued().with_outbox().aggregate::<Todo>();
+let todo = repo.get("todo-1")?;
+```
+
 ### Outbox (In-Memory Example)
 
 ```rust
@@ -256,7 +308,7 @@ use sourced_rust::{EventEmitter, HashMapRepository, OutboxRepository, Outboxable
 use std::time::Duration;
 
 let repo = HashMapRepository::new().with_outbox();
-let emitter = EventEmitter::new();
+let mut emitter = EventEmitter::new();
 
 emitter.on("TodoInitialized", |payload| {
     println!("local handler: {}", payload);
@@ -268,6 +320,21 @@ for record in &batch {
 }
 let ids: Vec<u64> = batch.iter().map(|record| record.id).collect();
 repo.complete_outbox(&ids)?;
+```
+
+#### 3) Outbox Worker + Publisher
+
+```rust
+use sourced_rust::{HashMapRepository, LogPublisher, OutboxWorker, Outboxable};
+use std::time::Duration;
+
+let repo = HashMapRepository::new().with_outbox();
+let mut worker = OutboxWorker::new(repo, LogPublisher::new());
+
+worker.drain_once("logger-1", 100, Duration::from_secs(30), 3)?;
+
+// Or run a loop with exponential backoff when idle:
+// worker.drain_loop("logger-1", 100, Duration::from_secs(30), 3, Duration::from_secs(1), Duration::from_secs(30), || false)?;
 ```
 
 #### Helpers: attempt_outbox / deliver_outbox

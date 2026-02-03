@@ -64,38 +64,25 @@ impl Todo {
 
 enum TodoEvent {
     Initialize { id: String, user_id: String, task: String },
-    Complete,
+    Complete { id: String },
 }
 
 impl TodoEvent {
     fn apply(self, todo: &mut Todo) {
         match self {
             TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Complete => todo.complete(),
+            TodoEvent::Complete { id } => {
+                let _ = id;
+                todo.complete();
+            }
         }
     }
 }
 
-impl TryFrom<&EventRecord> for TodoEvent {
-    type Error = String;
-
-    fn try_from(event: &EventRecord) -> Result<Self, Self::Error> {
-        match event.event_name.as_str() {
-            "Initialize" => match event.args.as_slice() {
-                [id, user_id, task] => Ok(TodoEvent::Initialize {
-                    id: id.clone(),
-                    user_id: user_id.clone(),
-                    task: task.clone(),
-                }),
-                _ => Err("Invalid number of arguments for Initialize method".to_string()),
-            },
-            "Complete" => Ok(TodoEvent::Complete),
-            _ => Err(format!("Unknown method: {}", event.event_name)),
-        }
-    }
-}
-
-sourced_rust::impl_aggregate!(Todo, entity, replay_event);
+sourced_rust::aggregate!(Todo, entity, replay_event, TodoEvent, {
+    "Initialize" => (id, user_id, task) => Initialize,
+    "Complete" => (id) => Complete,
+});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TodoSnapshot {
