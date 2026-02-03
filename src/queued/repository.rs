@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::lock::Lock;
+use super::lock::Lock;
 use crate::{Entity, Repository, RepositoryError};
 
 pub struct QueuedRepository<R> {
@@ -15,6 +15,10 @@ impl<R> QueuedRepository<R> {
             inner,
             locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn inner(&self) -> &R {
+        &self.inner
     }
 
     pub fn lock(&self, id: impl AsRef<str>) -> Result<(), RepositoryError> {

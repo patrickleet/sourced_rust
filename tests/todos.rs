@@ -1,10 +1,15 @@
 mod support;
 
+use serde_json;
+use sourced_rust::{
+    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxDelivery,
+    OutboxDeliveryResult, OutboxRepository, OutboxStatus, OutboxWorker, Repository,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use support::todo::Todo;
+use support::todo::{Todo, TodoSnapshot};
 use support::todo_repository::TodoRepository;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -68,7 +73,7 @@ fn todos() {
 
         let _ = repo.commit(&mut retrieved_todo);
 
-        if let Some(mut completed_todo) = repo.get(&id1).unwrap() {
+        if let Some(completed_todo) = repo.get(&id1).unwrap() {
             assert!(completed_todo.snapshot().id == id1);
             assert!(completed_todo.snapshot().user_id == "user1");
             assert!(completed_todo.snapshot().task == "Buy groceries");
@@ -149,12 +154,158 @@ fn get_all_commit_all_roundtrip() {
 }
 
 #[test]
+fn outbox_records_persisted() {
+    let repo = HashMapRepository::new();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
+    let snapshot = todo.snapshot();
+    todo.entity
+        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
+
+    repo.commit(&mut todo.entity).unwrap();
+
+    let outbox = repo
+        .claim_outbox("worker-1", 10, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].aggregate_id, id);
+    assert_eq!(outbox[0].event_type, "TodoInitialized");
+    assert_eq!(outbox[0].status, OutboxStatus::InFlight);
+    let published: TodoSnapshot = serde_json::from_str(&outbox[0].payload).unwrap();
+    assert_eq!(published.id, snapshot.id);
+    assert_eq!(published.user_id, snapshot.user_id);
+    assert_eq!(published.task, snapshot.task);
+    assert_eq!(published.completed, snapshot.completed);
+
+    repo.complete_outbox(&[outbox[0].id]).unwrap();
+    let remaining = repo.peek_outbox().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].status, OutboxStatus::Published);
+}
+
+#[test]
+fn outbox_delivery_helpers() {
+    let repo = HashMapRepository::new();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(
+        id.clone(),
+        "user1".to_string(),
+        "Outbox retries".to_string(),
+    );
+    let snapshot = todo.snapshot();
+    todo.entity
+        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
+    repo.commit(&mut todo.entity).unwrap();
+
+    let result = repo
+        .deliver_outbox("worker-1", 10, Duration::from_secs(30), 1, |_record| {
+            Err::<(), _>("boom")
+        })
+        .unwrap();
+
+    assert_eq!(
+        result,
+        OutboxDeliveryResult {
+            claimed: 1,
+            completed: 0,
+            released: 0,
+            failed: 1,
+        }
+    );
+
+    let outbox = repo.peek_outbox().unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].status, OutboxStatus::Failed);
+}
+
+#[test]
+fn outbox_worker_log_publisher() {
+    let repo = HashMapRepository::new();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(
+        id.clone(),
+        "user1".to_string(),
+        "Outbox log publisher".to_string(),
+    );
+    let snapshot = todo.snapshot();
+    todo.entity
+        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
+    repo.commit(&mut todo.entity).unwrap();
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
+    let mut worker = OutboxWorker::new(repo, publisher);
+
+    let result = worker
+        .drain_once("logger-1", 10, Duration::from_secs(30), 3)
+        .unwrap();
+    assert_eq!(result.completed, 1);
+
+    let lines = buffer.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("TodoInitialized"));
+    assert!(lines[0].contains(&snapshot.id));
+
+    let outbox = worker.repo().peek_outbox().unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].status, OutboxStatus::Published);
+}
+
+#[test]
+fn outbox_worker_local_emitter_publisher() {
+    let repo = HashMapRepository::new();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(
+        id.clone(),
+        "user1".to_string(),
+        "Outbox local emitter".to_string(),
+    );
+    let snapshot = todo.snapshot();
+    todo.entity
+        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
+    repo.commit(&mut todo.entity).unwrap();
+
+    let mut emitter = EventEmitter::new();
+    let (tx, rx) = mpsc::channel::<String>();
+    emitter.on("TodoInitialized", move |payload: String| {
+        tx.send(payload).unwrap();
+    });
+
+    let publisher = LocalEmitterPublisher::new(emitter);
+    let mut worker = OutboxWorker::new(repo, publisher);
+
+    let result = worker
+        .drain_once("emitter-1", 10, Duration::from_secs(30), 3)
+        .unwrap();
+    assert_eq!(result.completed, 1);
+
+    let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let published: TodoSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(published.id, snapshot.id);
+    assert_eq!(published.user_id, snapshot.user_id);
+    assert_eq!(published.task, snapshot.task);
+}
+
+#[test]
 fn queued_repo_blocks_get_until_commit() {
     let repo = Arc::new(TodoRepository::new());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string());
     repo.commit(&mut todo).unwrap();
+
+    let mut other_todo = Todo::new();
+    let other_id = next_id();
+    other_todo.initialize(
+        other_id.clone(),
+        "user2".to_string(),
+        "Independent queue".to_string(),
+    );
+    repo.commit(&mut other_todo).unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
     let (tx_release, rx_release) = mpsc::channel();
@@ -171,6 +322,15 @@ fn queued_repo_blocks_get_until_commit() {
     });
 
     rx_started.recv().unwrap();
+
+    let (tx_other_done, rx_other_done) = mpsc::channel();
+    let repo_other = Arc::clone(&repo);
+    let other_id_clone = other_id.clone();
+    thread::spawn(move || {
+        let todo = repo_other.get(&other_id_clone).unwrap().unwrap();
+        repo_other.abort(&todo).unwrap();
+        tx_other_done.send(()).unwrap();
+    });
 
     let (tx_peek_done, rx_peek_done) = mpsc::channel();
     let repo_peek = Arc::clone(&repo);
@@ -193,6 +353,9 @@ fn queued_repo_blocks_get_until_commit() {
         .recv_timeout(Duration::from_millis(200))
         .is_ok());
     assert!(rx_peek_all_done
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok());
+    assert!(rx_other_done
         .recv_timeout(Duration::from_millis(200))
         .is_ok());
 

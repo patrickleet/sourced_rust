@@ -11,6 +11,12 @@ fn default_event_emitter() -> EventEmitter {
     EventEmitter::new()
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct OutboxEvent {
+    pub(crate) event_type: String,
+    pub(crate) payload: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Entity {
     id: String,
@@ -18,6 +24,8 @@ pub struct Entity {
     events: Vec<EventRecord>,
     #[serde(skip, default)]
     events_to_emit: Vec<LocalEvent>,
+    #[serde(skip, default)]
+    outbox_events: Vec<OutboxEvent>,
     #[serde(skip, default)]
     replaying: bool,
     snapshot_version: u64,
@@ -33,6 +41,7 @@ impl Default for Entity {
             version: 0,
             events: Vec::new(),
             events_to_emit: Vec::new(),
+            outbox_events: Vec::new(),
             replaying: false,
             snapshot_version: 0,
             timestamp: SystemTime::now(),
@@ -48,6 +57,7 @@ impl fmt::Debug for Entity {
             .field("version", &self.version)
             .field("events", &self.events)
             .field("events_to_emit", &self.events_to_emit)
+            .field("outbox_events", &self.outbox_events)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
             .field("timestamp", &self.timestamp)
@@ -62,6 +72,7 @@ impl Clone for Entity {
             version: self.version,
             events: self.events.clone(),
             events_to_emit: self.events_to_emit.clone(),
+            outbox_events: self.outbox_events.clone(),
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
             timestamp: self.timestamp,
@@ -126,6 +137,10 @@ impl Entity {
         self.events_to_emit.len()
     }
 
+    pub fn outbox_len(&self) -> usize {
+        self.outbox_events.len()
+    }
+
     pub fn digest(&mut self, name: impl Into<String>, args: Vec<String>) {
         if self.replaying {
             return;
@@ -147,6 +162,27 @@ impl Entity {
             event_type: event_type.into(),
             data: data.into(),
         });
+    }
+
+    pub fn outbox(&mut self, event_type: impl Into<String>, payload: impl Into<String>) {
+        if self.replaying {
+            return;
+        }
+
+        // Outbox events are persisted by repositories that implement OutboxRepository,
+        // ideally in the same transaction as the event stream.
+        self.outbox_events.push(OutboxEvent {
+            event_type: event_type.into(),
+            payload: payload.into(),
+        });
+    }
+
+    pub(crate) fn outbox_events(&self) -> &[OutboxEvent] {
+        &self.outbox_events
+    }
+
+    pub(crate) fn clear_outbox(&mut self) {
+        self.outbox_events.clear();
     }
 
     pub fn emit_queued_events(&mut self) {
@@ -171,6 +207,8 @@ impl Entity {
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
         self.events = history;
         self.version = self.events.len() as u64;
+        self.events_to_emit.clear();
+        self.outbox_events.clear();
     }
 
     pub fn rehydrate<F, E>(&mut self, mut apply: F) -> Result<(), E>
@@ -207,6 +245,7 @@ mod tests {
         assert_eq!(entity.version(), 0);
         assert!(entity.events().is_empty());
         assert_eq!(entity.queued_events_len(), 0);
+        assert_eq!(entity.outbox_len(), 0);
         assert!(!entity.is_replaying());
         assert_eq!(entity.snapshot_version(), 0);
     }
@@ -232,6 +271,15 @@ mod tests {
         entity.enqueue("test_event", "test_data");
 
         assert_eq!(entity.queued_events_len(), 1);
+    }
+
+    #[test]
+    fn outbox() {
+        let mut entity = Entity::new();
+        entity.outbox("DomainEvent", "{\"ok\":true}");
+
+        assert_eq!(entity.outbox_len(), 1);
+        assert_eq!(entity.outbox_events()[0].event_type, "DomainEvent");
     }
 
     #[test]
@@ -323,5 +371,8 @@ mod tests {
 
         entity.enqueue("test_event", "test_data");
         assert_eq!(entity.queued_events_len(), 0);
+
+        entity.outbox("DomainEvent", "{\"ok\":true}");
+        assert_eq!(entity.outbox_len(), 0);
     }
 }

@@ -8,6 +8,7 @@ pub enum RepositoryError {
         expected: u64,
         actual: u64,
     },
+    Replay(String),
 }
 
 impl fmt::Display for RepositoryError {
@@ -25,6 +26,7 @@ impl fmt::Display for RepositoryError {
                 "concurrent write detected for entity {} (expected version {}, got {})",
                 id, expected, actual
             ),
+            RepositoryError::Replay(message) => write!(f, "replay error: {}", message),
         }
     }
 }
