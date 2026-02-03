@@ -1,3 +1,4 @@
+mod aggregate;
 mod entity;
 mod error;
 mod event;
@@ -8,6 +9,7 @@ mod outbox;
 mod queued;
 mod repository;
 
+pub use aggregate::{Aggregate, AggregateRepository, PeekableRepository, UnlockableRepository};
 pub use entity::Entity;
 pub use error::RepositoryError;
 pub use event::Event;

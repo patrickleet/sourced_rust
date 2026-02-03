@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
-use sourced_rust::{Entity, EventRecord};
+use sourced_rust::{Aggregate, Entity, EventRecord};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Todo {
@@ -73,6 +73,26 @@ impl Todo {
 
     pub fn deserialize(data: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(data)
+    }
+}
+
+impl Aggregate for Todo {
+    type ReplayError = String;
+
+    fn new_empty() -> Self {
+        Todo::new()
+    }
+
+    fn entity(&self) -> &Entity {
+        &self.entity
+    }
+
+    fn entity_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+
+    fn replay_event(&mut self, event: &EventRecord) -> Result<(), Self::ReplayError> {
+        Todo::replay_event(self, event)
     }
 }
 
