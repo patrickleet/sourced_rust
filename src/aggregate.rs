@@ -6,13 +6,42 @@ use crate::event_record::EventRecord;
 use crate::queued::QueuedRepository;
 use crate::{Entity, Repository};
 
-pub trait Aggregate: Sized {
+pub trait Aggregate: Sized + Default {
     type ReplayError: fmt::Display;
 
-    fn new_empty() -> Self;
+    fn new_empty() -> Self {
+        Self::default()
+    }
     fn entity(&self) -> &Entity;
     fn entity_mut(&mut self) -> &mut Entity;
     fn replay_event(&mut self, event: &EventRecord) -> Result<(), Self::ReplayError>;
+}
+
+#[macro_export]
+macro_rules! impl_aggregate {
+    ($ty:ty, $entity:ident, $replay:ident) => {
+        $crate::impl_aggregate!($ty, $entity, $replay, String);
+    };
+    ($ty:ty, $entity:ident, $replay:ident, $err:ty) => {
+        impl $crate::Aggregate for $ty {
+            type ReplayError = $err;
+
+            fn entity(&self) -> &$crate::Entity {
+                &self.$entity
+            }
+
+            fn entity_mut(&mut self) -> &mut $crate::Entity {
+                &mut self.$entity
+            }
+
+            fn replay_event(
+                &mut self,
+                event: &$crate::EventRecord,
+            ) -> Result<(), Self::ReplayError> {
+                Self::$replay(self, event)
+            }
+        }
+    };
 }
 
 pub trait UnlockableRepository {

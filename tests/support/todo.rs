@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
-use sourced_rust::{Aggregate, Entity, EventRecord};
+use sourced_rust::{Entity, EventRecord};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Todo {
     pub entity: Entity,
     user_id: String,
@@ -44,22 +44,8 @@ impl Todo {
     }
 
     pub fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
-        match event.event_name.as_str() {
-            "Initialize" if event.args.len() == 3 => {
-                self.initialize(
-                    event.args[0].clone(),
-                    event.args[1].clone(),
-                    event.args[2].clone(),
-                );
-                Ok(())
-            }
-            "Initialize" => Err("Invalid number of arguments for Initialize method".to_string()),
-            "Complete" => {
-                self.complete();
-                Ok(())
-            }
-            _ => Err(format!("Unknown method: {}", event.event_name)),
-        }
+        TodoEvent::try_from(event)?.apply(self);
+        Ok(())
     }
 
     pub fn snapshot(&self) -> TodoSnapshot {
@@ -76,25 +62,40 @@ impl Todo {
     }
 }
 
-impl Aggregate for Todo {
-    type ReplayError = String;
+enum TodoEvent {
+    Initialize { id: String, user_id: String, task: String },
+    Complete,
+}
 
-    fn new_empty() -> Self {
-        Todo::new()
-    }
-
-    fn entity(&self) -> &Entity {
-        &self.entity
-    }
-
-    fn entity_mut(&mut self) -> &mut Entity {
-        &mut self.entity
-    }
-
-    fn replay_event(&mut self, event: &EventRecord) -> Result<(), Self::ReplayError> {
-        Todo::replay_event(self, event)
+impl TodoEvent {
+    fn apply(self, todo: &mut Todo) {
+        match self {
+            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Complete => todo.complete(),
+        }
     }
 }
+
+impl TryFrom<&EventRecord> for TodoEvent {
+    type Error = String;
+
+    fn try_from(event: &EventRecord) -> Result<Self, Self::Error> {
+        match event.event_name.as_str() {
+            "Initialize" => match event.args.as_slice() {
+                [id, user_id, task] => Ok(TodoEvent::Initialize {
+                    id: id.clone(),
+                    user_id: user_id.clone(),
+                    task: task.clone(),
+                }),
+                _ => Err("Invalid number of arguments for Initialize method".to_string()),
+            },
+            "Complete" => Ok(TodoEvent::Complete),
+            _ => Err(format!("Unknown method: {}", event.event_name)),
+        }
+    }
+}
+
+sourced_rust::impl_aggregate!(Todo, entity, replay_event);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TodoSnapshot {
