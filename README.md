@@ -1,6 +1,6 @@
 # Sourced Rust
 
-Sourced Rust is a small event-sourcing toolkit for Rust. It keeps your domain model as a plain struct (PORO), inspired by POCO/POJO, while giving you append-only events, replay, and persistence.
+Sourced Rust is a small event-sourcing toolkit for Rust. It keeps your domain model as a plain struct (PORS), inspired by POCO/POJO, while giving you append-only events, replay, and persistence.
 
 ## Project Inspiration
 
