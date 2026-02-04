@@ -2,9 +2,13 @@
 extern crate self as sourced_rust;
 
 pub mod core;
+#[cfg(feature = "emitter")]
 pub mod emitter;
+#[cfg(feature = "bus")]
+pub mod bus;
 mod hashmap;
 mod outbox;
+mod outbox_worker;
 pub mod queued;
 
 // Re-export core types at crate root for convenience
@@ -24,16 +28,25 @@ pub use core::{
 
 pub use hashmap::HashMapRepository;
 
+// Outbox: commit concerns (atomic aggregate + outbox commit)
 pub use outbox::{
-    // Core outbox message aggregate
+    OutboxCommit, OutboxCommitExt,
     OutboxMessage, OutboxMessageStatus,
-    // Commit helpers
-    OutboxCommit, OutboxCommitExt, OutboxRepositoryExt,
+};
+
+// Outbox Worker: drain and publish concerns
+pub use outbox_worker::{
+    // Repository extension for claiming/completing messages
+    OutboxRepositoryExt,
     // Publishers
-    LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher,
+    LogPublisher, LogPublisherError, OutboxPublisher,
     // Worker
     DrainResult, OutboxWorker, ProcessOneResult,
 };
+
+// LocalEmitterPublisher requires the emitter feature
+#[cfg(feature = "emitter")]
+pub use outbox_worker::LocalEmitterPublisher;
 
 pub use queued::{
     // Queued repository
@@ -42,8 +55,13 @@ pub use queued::{
     FindOneWithOpts, FindWithOpts, GetAllWithOpts, GetWithOpts, ReadOpts,
 };
 
-// Re-export the EventEmitter from the event_emitter_rs crate
+// Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
+#[cfg(feature = "emitter")]
 pub use event_emitter_rs::EventEmitter;
 
 // Re-export proc macros
 pub use sourced_rust_macros::{aggregate, digest};
+
+// Re-export enqueue macro (requires "emitter" feature)
+#[cfg(feature = "emitter")]
+pub use sourced_rust_macros::enqueue;

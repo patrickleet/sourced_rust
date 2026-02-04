@@ -7,6 +7,10 @@ use crate::core::{
 };
 
 /// In-memory repository implementation using HashMap.
+///
+/// This repository is cheap to clone because it uses `Arc<RwLock<...>>`
+/// internally - cloning creates another handle to the same storage.
+#[derive(Clone)]
 pub struct HashMapRepository {
     storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
 }

@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "emitter")]
 use crate::EventEmitter;
 
 /// Trait for publishing outbox records to external systems.
@@ -70,16 +71,20 @@ impl OutboxPublisher for LogPublisher {
 }
 
 /// A publisher that emits events via an EventEmitter for in-process subscribers.
+/// Requires the `emitter` feature to be enabled.
+#[cfg(feature = "emitter")]
 pub struct LocalEmitterPublisher {
     emitter: EventEmitter,
 }
 
+#[cfg(feature = "emitter")]
 impl LocalEmitterPublisher {
     pub fn new(emitter: EventEmitter) -> Self {
         LocalEmitterPublisher { emitter }
     }
 }
 
+#[cfg(feature = "emitter")]
 impl OutboxPublisher for LocalEmitterPublisher {
     type Error = std::convert::Infallible;
 

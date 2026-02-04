@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::outbox_message::OutboxMessage;
+use crate::outbox::OutboxMessage;
 use super::publisher::OutboxPublisher;
 
 /// Result of a batch drain operation.
@@ -160,7 +160,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outbox::LogPublisher;
+    use crate::LogPublisher;
 
     #[test]
     fn worker_builder() {
