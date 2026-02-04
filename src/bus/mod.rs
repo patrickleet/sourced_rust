@@ -22,7 +22,7 @@
 //!          ▼                  ▼                     ▼
 //! ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐
 //! │InMemoryQueue│    │ KafkaQueue  │    │ RedisStreamQueue    │
-//! │ (tests only)│    │ (external)  │    │    (external)       │
+//! │ (included)  │    │ (external)  │    │    (external)       │
 //! └─────────────┘    └─────────────┘    └─────────────────────┘
 //! ```
 //!
@@ -41,7 +41,9 @@
 //! ```
 
 mod bus;
+mod in_memory_queue;
 mod publisher;
 
 pub use bus::Bus;
+pub use in_memory_queue::InMemoryQueue;
 pub use publisher::{Event, EventBus, PublishError, Publisher, Subscriber};

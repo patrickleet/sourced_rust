@@ -73,6 +73,11 @@ impl OutboxMessage {
         Ok(Self::create(id, event_type, bytes))
     }
 
+    /// Decode the payload from bitcode binary format.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, bitcode::Error> {
+        bitcode::deserialize(&self.payload)
+    }
+
     // Getters
     pub fn id(&self) -> &str {
         self.entity.id()

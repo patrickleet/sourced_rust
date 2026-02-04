@@ -1,8 +1,9 @@
+use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sourced_rust::{digest, Entity};
 
 /// Represents a line item in an order
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Encode, Decode)]
 pub struct OrderItem {
     pub sku: String,
     pub quantity: u32,
