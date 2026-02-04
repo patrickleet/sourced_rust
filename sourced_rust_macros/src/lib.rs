@@ -18,9 +18,9 @@ use syn::{
 /// }
 /// ```
 ///
-/// With `id` shorthand (expands to `self.entity.id().to_string()`):
+/// With guard condition:
 /// ```ignore
-/// #[digest("Completed", id, when = !self.completed)]
+/// #[digest("Completed", when = !self.completed)]
 /// fn complete(&mut self) {
 ///     self.completed = true;
 /// }
@@ -36,7 +36,6 @@ use syn::{
 ///
 /// The macro supports:
 /// - Default entity field name: `entity` (can be overridden by specifying field name first)
-/// - `id` shorthand: expands to `self.<entity_field>.id().to_string()`
 /// - `when = condition`: guard that wraps the entire method body
 #[proc_macro_attribute]
 pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -46,72 +45,35 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let entity_field = &args.entity_field;
     let event_name = &args.event_name;
 
-    // Process custom args, expanding `id` shorthand
-    let expanded_args: Vec<proc_macro2::TokenStream> = args
-        .custom_args
+    // Use function parameters - serialize as tuple
+    let param_names: Vec<_> = func
+        .sig
+        .inputs
         .iter()
-        .map(|arg| {
-            // Check if it's the `id` shorthand
-            if let Expr::Path(path) = arg {
-                if path.path.is_ident("id") {
-                    return quote! { self.#entity_field.id().to_string() };
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some(&pat_ident.ident);
                 }
             }
-            quote! { #arg }
+            None
         })
         .collect();
 
-    // Build the digest call based on whether custom expressions were provided
-    let digest_call = if args.custom_args.is_empty() {
-        // Use function parameters - serialize as tuple
-        let param_names: Vec<_> = func
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|arg| {
-                if let FnArg::Typed(pat_type) = arg {
-                    if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                        return Some(&pat_ident.ident);
-                    }
-                }
-                None
-            })
-            .collect();
-
-        if param_names.is_empty() {
-            quote! {
-                self.#entity_field.digest_empty(#event_name);
-            }
-        } else if param_names.len() == 1 {
-            // Single-element tuple needs trailing comma: (x,) not (x)
-            let param = &param_names[0];
-            quote! {
-                self.#entity_field.digest(#event_name, &(#param.clone(),));
-            }
-        } else {
-            // Multi-element tuple
-            quote! {
-                self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*));
-            }
+    let digest_call = if param_names.is_empty() {
+        quote! {
+            self.#entity_field.digest_empty(#event_name);
+        }
+    } else if param_names.len() == 1 {
+        // Single-element tuple needs trailing comma: (x,) not (x)
+        let param = &param_names[0];
+        quote! {
+            self.#entity_field.digest(#event_name, &(#param.clone(),));
         }
     } else {
-        // Use custom expressions
-        let temp_names: Vec<_> = (0..expanded_args.len())
-            .map(|i| format_ident!("__digest_arg_{}", i))
-            .collect();
-
-        if temp_names.len() == 1 {
-            let temp = &temp_names[0];
-            let expanded = &expanded_args[0];
-            quote! {
-                let #temp = #expanded;
-                self.#entity_field.digest(#event_name, &(#temp,));
-            }
-        } else {
-            quote! {
-                #(let #temp_names = #expanded_args;)*
-                self.#entity_field.digest(#event_name, &(#(#temp_names),*));
-            }
+        // Multi-element tuple
+        quote! {
+            self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*));
         }
     };
 
@@ -144,7 +106,6 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct DigestArgs {
     entity_field: syn::Ident,
     event_name: LitStr,
-    custom_args: Vec<Expr>,
     guard: Option<Expr>,
 }
 
@@ -162,33 +123,25 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
         (first_ident, event_name)
     };
 
-    let mut custom_args = Vec::new();
     let mut guard = None;
 
-    // Parse optional custom expressions and/or guard
-    while input.peek(Token![,]) {
+    // Parse optional guard: `when = condition`
+    if input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
 
-        // Check for `when = expr`
         if input.peek(syn::Ident) {
             let ident: syn::Ident = input.fork().parse()?;
             if ident == "when" {
                 input.parse::<syn::Ident>()?; // consume "when"
                 input.parse::<Token![=]>()?;
                 guard = Some(input.parse()?);
-                continue;
             }
         }
-
-        // Otherwise it's a custom arg expression
-        let expr: Expr = input.parse()?;
-        custom_args.push(expr);
     }
 
     Ok(DigestArgs {
         entity_field,
         event_name,
-        custom_args,
         guard,
     })
 }
@@ -204,16 +157,15 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
 /// ```ignore
 /// sourced_rust::aggregate!(Todo, entity {
 ///     "Initialized"(id, user_id, task) => initialize,
-///     "Completed"(id) => complete(),  // () means method takes no args
+///     "Completed"() => complete(),
 /// });
 /// ```
 ///
 /// This generates the `Aggregate` trait impl that handles replaying events.
 /// Events are stored as serialized payloads and deserialized on replay.
 ///
-/// Note: Use `=> method()` (with parens) when the method takes no arguments,
-/// even if the event has args. Use `=> method` (no parens) to pass all event
-/// args to the method.
+/// Note: Use `=> method()` (with parens) when the method takes no arguments.
+/// Use `=> method` (no parens) to pass all event args to the method.
 #[proc_macro]
 pub fn aggregate(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AggregateInput);

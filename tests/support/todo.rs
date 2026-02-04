@@ -21,7 +21,7 @@ impl Todo {
         self.task = task;
     }
 
-    #[digest("Completed", id, when = !self.completed)]
+    #[digest("Completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
@@ -38,7 +38,7 @@ impl Todo {
 
 sourced_rust::aggregate!(Todo, entity {
     "Initialized"(id, user_id, task) => initialize,
-    "Completed"(id) => complete(),
+    "Completed"() => complete(),
 });
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

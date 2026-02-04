@@ -136,7 +136,7 @@ impl OutboxMessage {
         self.leased_until = None;
     }
 
-    #[digest("MessageReleased", error.clone(), when = self.is_in_flight())]
+    #[digest("MessageReleased", when = self.is_in_flight())]
     pub fn release(&mut self, error: String) {
         self.status = OutboxMessageStatus::Pending;
         self.last_error = if error.is_empty() { None } else { Some(error) };
@@ -144,7 +144,7 @@ impl OutboxMessage {
         self.leased_until = None;
     }
 
-    #[digest("MessageFailed", error.clone(), when = self.can_fail())]
+    #[digest("MessageFailed", when = self.can_fail())]
     pub fn fail(&mut self, error: String) {
         self.status = OutboxMessageStatus::Failed;
         self.last_error = if error.is_empty() { None } else { Some(error) };
