@@ -2,8 +2,8 @@ mod support;
 
 use serde_json;
 use sourced_rust::{
-    DomainEvent, EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
-    OutboxWorker, Repository, RepositoryExt,
+    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxCommitExt,
+    OutboxMessage, OutboxWorker, Repository, RepositoryExt,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -34,20 +34,18 @@ fn todos() {
     );
 
     // Add an outbox event for the initialization
-    let mut init_message = DomainEvent::new(
+    let mut init_message = OutboxMessage::new(
         format!("{}:init", id1),
         "TodoInitialized",
         serde_json::to_string(&todo.snapshot()).unwrap(),
     );
 
     // Commit the Todo + Outbox message to the repository
-    let _ = repo
-        .repo()
-        .commit(&mut [&mut todo.entity, &mut init_message.entity]);
+    let _ = repo.outbox(&mut init_message).commit(&mut todo);
 
     // Verify the outbox event was captured
     {
-        let pending = repo.repo().inner().domain_events_pending().unwrap();
+        let pending = repo.repo().inner().outbox_messages_pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "TodoInitialized");
     }
@@ -57,19 +55,17 @@ fn todos() {
         retrieved_todo.complete();
 
         // Add an outbox event for the completion
-        let mut complete_message = DomainEvent::new(
+        let mut complete_message = OutboxMessage::new(
             format!("{}:complete", id1),
             "TodoCompleted",
             serde_json::to_string(&retrieved_todo.snapshot()).unwrap(),
         );
 
-        let _ = repo
-            .repo()
-            .commit(&mut [&mut retrieved_todo.entity, &mut complete_message.entity]);
+        let _ = repo.outbox(&mut complete_message).commit(&mut retrieved_todo);
 
         // Verify we now have 2 outbox events
         {
-            let pending = repo.repo().inner().domain_events_pending().unwrap();
+            let pending = repo.repo().inner().outbox_messages_pending().unwrap();
             assert_eq!(pending.len(), 2);
             assert!(pending.iter().any(|msg| msg.event_type == "TodoInitialized"));
             assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));
@@ -156,7 +152,7 @@ fn outbox_records_persisted() {
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
     let snapshot = todo.snapshot();
-    let mut message = DomainEvent::new(
+    let mut message = OutboxMessage::new(
         format!("{}:init", id),
         "TodoInitialized",
         serde_json::to_string(&snapshot).unwrap(),
@@ -166,7 +162,7 @@ fn outbox_records_persisted() {
         .unwrap();
 
     // Check pending outbox messages
-    let pending = repo.domain_events_pending().unwrap();
+    let pending = repo.outbox_messages_pending().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "TodoInitialized");
 
@@ -188,7 +184,7 @@ fn outbox_worker_log_publisher() {
         "Outbox log publisher".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = DomainEvent::new(
+    let mut message = OutboxMessage::new(
         format!("{}:init", id),
         "TodoInitialized",
         serde_json::to_string(&snapshot).unwrap(),
@@ -207,7 +203,7 @@ fn outbox_worker_log_publisher() {
 
     // Claim pending messages and process
     let mut claimed = repo
-        .claim_domain_events("logger-1", 10, Duration::from_secs(30))
+        .claim_outbox_messages("logger-1", 10, Duration::from_secs(30))
         .unwrap();
     let result = worker.process_batch(&mut claimed);
     assert_eq!(result.completed, 1);
@@ -221,7 +217,7 @@ fn outbox_worker_log_publisher() {
 
     // Check record is marked as published
     let published = repo
-        .get_aggregate::<DomainEvent>(&message_id)
+        .get_aggregate::<OutboxMessage>(&message_id)
         .unwrap()
         .unwrap();
     assert!(published.is_published());
@@ -238,7 +234,7 @@ fn outbox_worker_local_emitter_publisher() {
         "Outbox local emitter".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = DomainEvent::new(
+    let mut message = OutboxMessage::new(
         format!("{}:init", id),
         "TodoInitialized",
         serde_json::to_string(&snapshot).unwrap(),
@@ -260,7 +256,7 @@ fn outbox_worker_local_emitter_publisher() {
 
     // Claim pending messages and process
     let mut claimed = repo
-        .claim_domain_events("emitter-1", 10, Duration::from_secs(30))
+        .claim_outbox_messages("emitter-1", 10, Duration::from_secs(30))
         .unwrap();
     let result = worker.process_batch(&mut claimed);
     assert_eq!(result.completed, 1);
@@ -442,12 +438,21 @@ fn outbox_worker_process_next_with_commit() {
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    let mut message1 =
-        DomainEvent::new(format!("{}:1", id), "Event1", serde_json::to_string(&snapshot).unwrap());
-    let mut message2 =
-        DomainEvent::new(format!("{}:2", id), "Event2", serde_json::to_string(&snapshot).unwrap());
-    let mut message3 =
-        DomainEvent::new(format!("{}:3", id), "Event3", serde_json::to_string(&snapshot).unwrap());
+    let mut message1 = OutboxMessage::new(
+        format!("{}:1", id),
+        "Event1",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
+    let mut message2 = OutboxMessage::new(
+        format!("{}:2", id),
+        "Event2",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
+    let mut message3 = OutboxMessage::new(
+        format!("{}:3", id),
+        "Event3",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
 
     let message_ids = vec![
         message1.id().to_string(),
@@ -475,7 +480,7 @@ fn outbox_worker_process_next_with_commit() {
 
     loop {
         let mut claimed = repo
-            .claim_domain_events("safe-worker", 1, Duration::from_secs(30))
+            .claim_outbox_messages("safe-worker", 1, Duration::from_secs(30))
             .unwrap();
         if claimed.is_empty() {
             break;
@@ -489,10 +494,10 @@ fn outbox_worker_process_next_with_commit() {
 
     assert_eq!(processed, 3);
     for id in &message_ids {
-        let message = repo.get_aggregate::<DomainEvent>(id).unwrap().unwrap();
+        let message = repo.get_aggregate::<OutboxMessage>(id).unwrap().unwrap();
         assert!(message.is_published());
     }
-    assert_eq!(repo.domain_events_pending().unwrap().len(), 0);
+    assert_eq!(repo.outbox_messages_pending().unwrap().len(), 0);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);

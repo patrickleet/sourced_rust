@@ -1,9 +1,13 @@
-mod domain_event;
+mod outbox_message;
+mod commit;
 mod publisher;
 mod worker;
 
-// Event-sourced domain event message
-pub use domain_event::{DomainEvent, DomainEventStatus};
+// Event-sourced outbox message
+pub use outbox_message::{OutboxMessage, OutboxMessageStatus};
+
+// Commit helpers
+pub use commit::{OutboxCommit, OutboxCommitExt};
 
 // Publishers
 pub use publisher::{LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher};

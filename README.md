@@ -20,8 +20,8 @@ Sourced Rust is inspired by the original sourced project by Matt Walters. Patric
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sourced_rust::{
-    aggregate, AggregateBuilder, DomainEvent, Entity, EventRecord, HashMapRepository, Queueable,
-    Repository,
+    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, OutboxMessage,
+    OutboxCommitExt, Queueable,
 };
 
 #[derive(Default)]
@@ -97,23 +97,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut todo = Todo::default();
     todo.initialize("todo-1".to_string(), "user-1".to_string(), "Ship it".to_string());
-    let mut created = DomainEvent::new(
+    let mut created = OutboxMessage::new(
         format!("{}:init", todo.entity.id()),
         "TodoInitialized",
         serde_json::to_string(&todo.snapshot())?,
     );
-    repo.repo()
-        .commit(&mut [&mut todo.entity, &mut created.entity])?;
+    repo.outbox(&mut created).commit(&mut todo)?;
 
     if let Some(mut todo) = repo.get("todo-1")? {
         todo.complete();
-        let mut completed = DomainEvent::new(
+        let mut completed = OutboxMessage::new(
             format!("{}:completed", todo.entity.id()),
             "TodoCompleted",
             serde_json::to_string(&todo.snapshot())?,
         );
-        repo.repo()
-            .commit(&mut [&mut todo.entity, &mut completed.entity])?;
+
+        repo
+            .outbox(&mut completed)
+            .commit(&mut todo)?;
     }
 
     Ok(())
@@ -127,8 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking (get locks until commit or abort for that ID only).
-- **DomainEvent**: A CQRS integration event to put in the outbox about what has changed.
-- **Outbox Worker**: Runs in a separate process to publish domain events.
+- **OutboxMessage**: A CQRS integration event to put in the outbox about what has changed.
+- **Outbox Worker**: Runs in a separate process to publish outbox messages.
 - **Event Emitter**: Provided by event-emitter-rs and used for local, in-process notifications.
 
 ## How It Works
@@ -173,18 +174,18 @@ The flow is:
 - `enqueue(...)` registers a local event to emit after commit.
 - `commit(...)` persists events and then calls `emit_queued_events()`.
 
-### Outbox (Durable Domain Events)
+### Outbox (Durable Messages)
 
-Each domain event is its **own aggregate**. You create one `DomainEvent` per integration event and commit it alongside your domain entity in the **same transaction**. A separate worker process then claims and publishes pending messages.
+Each outbox message is its **own aggregate**. You create one `OutboxMessage` per integration event and commit it alongside your domain entity in the **same transaction**. A separate worker process then claims and publishes pending messages.
 
-**Why `DomainEvent` lives in `outbox/`**
+**Why `OutboxMessage` lives in `outbox/`**
 
-`DomainEvent` is a durable integration event, not a core entity primitive. Keeping it in `outbox/` makes the optional outbox pattern explicit: if you don’t want the pattern, you don’t have to use it, and the core stays focused on event-sourced entities.
+`OutboxMessage` is a durable integration event, not a core entity primitive. Keeping it in `outbox/` makes the optional outbox pattern explicit: if you don’t want the pattern, you don’t have to use it, and the core stays focused on event-sourced entities.
 
 ```mermaid
 sequenceDiagram
     participant Domain
-    participant Msg as Domain Event
+    participant Msg as Outbox Message
     participant Repo
     participant Worker as Outbox Worker
     participant Bus as Message Bus
@@ -397,33 +398,33 @@ let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 let todo = repo.get("todo-1")?;
 ```
 
-### Domain Events (Separate Aggregates)
+### Outbox Messages (Separate Aggregates)
 
-Each domain event is its own aggregate. You commit your domain entity and one or more domain event entities in the same repository commit.
+Each outbox message is its own aggregate. You commit your domain entity and one or more outbox message entities in the same repository commit.
 
 ```rust
 use serde_json;
-use sourced_rust::{DomainEvent, HashMapRepository, Repository};
+use sourced_rust::{AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage};
 
-let repo = HashMapRepository::new();
+let repo = HashMapRepository::new().aggregate::<Todo>();
 
 let mut todo = Todo::default();
 todo.initialize("todo-1".to_string(), "user-1".to_string(), "Buy milk".to_string());
 let snapshot = serde_json::to_string(&todo.snapshot())?;
 
-let mut message = DomainEvent::new(
+let mut message = OutboxMessage::new(
     format!("{}:init", todo.entity.id()),
     "TodoInitialized",
     snapshot,
 );
 
 // Commit both entities atomically
-repo.commit(&mut [&mut todo.entity, &mut message.entity])?;
+repo.outbox(&mut message).commit(&mut todo)?;
 ```
 
 ### Outbox Drainer (Separate Process)
 
-Run a separate process (or worker) that claims pending domain events, publishes them, and persists the status updates.
+Run a separate process (or worker) that claims pending outbox messages, publishes them, and persists the status updates.
 
 ```rust
 use sourced_rust::{HashMapRepository, LogPublisher, OutboxWorker, Repository};
@@ -432,7 +433,7 @@ use std::time::Duration;
 let repo = HashMapRepository::new();
 let mut worker = OutboxWorker::new(LogPublisher::new());
 
-let mut claimed = repo.claim_domain_events("worker-1", 100, Duration::from_secs(30))?;
+let mut claimed = repo.claim_outbox_messages("worker-1", 100, Duration::from_secs(30))?;
 let _ = worker.process_batch(&mut claimed);
 
 for message in &mut claimed {

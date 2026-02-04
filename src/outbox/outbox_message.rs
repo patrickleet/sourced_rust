@@ -5,22 +5,22 @@ use serde::{Deserialize, Serialize};
 use crate::core::{Entity, EventRecord};
 use crate::impl_aggregate;
 
-/// Status of a domain event message.
+/// Status of an outbox message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DomainEventStatus {
+pub enum OutboxMessageStatus {
     Pending,
     InFlight,
     Published,
     Failed,
 }
 
-/// Event-sourced domain event message.
+/// Event-sourced outbox message.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DomainEvent {
+pub struct OutboxMessage {
     pub entity: Entity,
     pub event_type: String,
     pub payload: String,
-    pub status: DomainEventStatus,
+    pub status: OutboxMessageStatus,
     pub created_at: SystemTime,
     pub attempts: u32,
     pub last_error: Option<String>,
@@ -28,13 +28,13 @@ pub struct DomainEvent {
     pub leased_until: Option<SystemTime>,
 }
 
-impl Default for DomainEvent {
+impl Default for OutboxMessage {
     fn default() -> Self {
         Self {
             entity: Entity::new(),
             event_type: String::new(),
             payload: String::new(),
-            status: DomainEventStatus::Pending,
+            status: OutboxMessageStatus::Pending,
             created_at: SystemTime::now(),
             attempts: 0,
             last_error: None,
@@ -44,7 +44,7 @@ impl Default for DomainEvent {
     }
 }
 
-impl DomainEvent {
+impl OutboxMessage {
     pub const ID_PREFIX: &'static str = "outbox:";
 
     pub fn new(
@@ -60,7 +60,7 @@ impl DomainEvent {
             entity: Entity::with_id(id),
             event_type: event_type.clone(),
             payload: payload.clone(),
-            status: DomainEventStatus::Pending,
+            status: OutboxMessageStatus::Pending,
             created_at: SystemTime::now(),
             attempts: 0,
             last_error: None,
@@ -80,23 +80,23 @@ impl DomainEvent {
     }
 
     pub fn is_pending(&self) -> bool {
-        self.status == DomainEventStatus::Pending
+        self.status == OutboxMessageStatus::Pending
     }
 
     pub fn is_in_flight(&self) -> bool {
-        self.status == DomainEventStatus::InFlight
+        self.status == OutboxMessageStatus::InFlight
     }
 
     pub fn is_published(&self) -> bool {
-        self.status == DomainEventStatus::Published
+        self.status == OutboxMessageStatus::Published
     }
 
     pub fn is_failed(&self) -> bool {
-        self.status == DomainEventStatus::Failed
+        self.status == OutboxMessageStatus::Failed
     }
 
     pub fn claim(&mut self, worker_id: &str, lease: Duration) {
-        if self.status != DomainEventStatus::Pending {
+        if self.status != OutboxMessageStatus::Pending {
             return;
         }
 
@@ -107,7 +107,7 @@ impl DomainEvent {
             .unwrap_or_default()
             .as_secs();
 
-        self.status = DomainEventStatus::InFlight;
+        self.status = OutboxMessageStatus::InFlight;
         self.attempts += 1;
         self.worker_id = Some(worker_id.to_string());
         self.leased_until = Some(until);
@@ -119,15 +119,15 @@ impl DomainEvent {
     }
 
     pub fn complete(&mut self) {
-        if self.status == DomainEventStatus::InFlight {
-            self.status = DomainEventStatus::Published;
+        if self.status == OutboxMessageStatus::InFlight {
+            self.status = OutboxMessageStatus::Published;
             self.entity.digest("MessagePublished", Vec::new());
         }
     }
 
     pub fn release(&mut self, error: Option<&str>) {
-        if self.status == DomainEventStatus::InFlight {
-            self.status = DomainEventStatus::Pending;
+        if self.status == OutboxMessageStatus::InFlight {
+            self.status = OutboxMessageStatus::Pending;
             self.last_error = error.map(String::from);
             self.worker_id = None;
             self.leased_until = None;
@@ -137,10 +137,10 @@ impl DomainEvent {
     }
 
     pub fn fail(&mut self, error: Option<&str>) {
-        if self.status != DomainEventStatus::Published
-            && self.status != DomainEventStatus::Failed
+        if self.status != OutboxMessageStatus::Published
+            && self.status != OutboxMessageStatus::Failed
         {
-            self.status = DomainEventStatus::Failed;
+            self.status = OutboxMessageStatus::Failed;
             self.last_error = error.map(String::from);
             self.worker_id = None;
             self.leased_until = None;
@@ -164,7 +164,7 @@ impl DomainEvent {
                 let (event_type, payload) = event.args2().map_err(|e| e.to_string())?;
                 self.event_type = event_type.to_string();
                 self.payload = payload.to_string();
-                self.status = DomainEventStatus::Pending;
+                self.status = OutboxMessageStatus::Pending;
                 self.created_at = event.timestamp;
             }
             "MessageClaimed" => {
@@ -174,19 +174,19 @@ impl DomainEvent {
                     .map_err(|e: std::num::ParseIntError| e.to_string())?;
                 let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
 
-                self.status = DomainEventStatus::InFlight;
+                self.status = OutboxMessageStatus::InFlight;
                 self.attempts += 1;
                 self.worker_id = Some(worker_id.to_string());
                 self.leased_until = Some(until_time);
             }
             "MessagePublished" => {
-                self.status = DomainEventStatus::Published;
+                self.status = OutboxMessageStatus::Published;
                 self.worker_id = None;
                 self.leased_until = None;
             }
             "MessageReleased" => {
                 let error = event.arg(0).unwrap_or("");
-                self.status = DomainEventStatus::Pending;
+                self.status = OutboxMessageStatus::Pending;
                 self.worker_id = None;
                 self.leased_until = None;
                 self.last_error = if error.is_empty() {
@@ -197,7 +197,7 @@ impl DomainEvent {
             }
             "MessageFailed" => {
                 let error = event.arg(0).unwrap_or("");
-                self.status = DomainEventStatus::Failed;
+                self.status = OutboxMessageStatus::Failed;
                 self.worker_id = None;
                 self.leased_until = None;
                 self.last_error = if error.is_empty() {
@@ -212,7 +212,7 @@ impl DomainEvent {
     }
 }
 
-impl_aggregate!(DomainEvent, entity, replay);
+impl_aggregate!(OutboxMessage, entity, replay);
 
 #[cfg(test)]
 mod tests {
@@ -220,14 +220,14 @@ mod tests {
 
     #[test]
     fn new_message_is_pending() {
-        let message = DomainEvent::new("msg-1", "UserCreated", r#"{"id":"123"}"#);
+        let message = OutboxMessage::new("msg-1", "UserCreated", r#"{"id":"123"}"#);
         assert_eq!(message.event_type, "UserCreated");
         assert!(message.is_pending());
     }
 
     #[test]
     fn claim_and_complete() {
-        let mut message = DomainEvent::new("msg-1", "Event1", "{}");
+        let mut message = OutboxMessage::new("msg-1", "Event1", "{}");
         message.claim("worker-1", Duration::from_secs(60));
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn release_and_fail() {
-        let mut message = DomainEvent::new("msg-1", "Event1", "{}");
+        let mut message = OutboxMessage::new("msg-1", "Event1", "{}");
         message.claim("worker-1", Duration::from_secs(60));
 
         message.release(Some("timeout"));

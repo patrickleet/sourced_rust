@@ -15,7 +15,9 @@ pub use hashmap::HashMapRepository;
 
 pub use outbox::{
     // Core outbox message aggregate
-    DomainEvent, DomainEventStatus,
+    OutboxMessage, OutboxMessageStatus,
+    // Commit helpers
+    OutboxCommit, OutboxCommitExt,
     // Publishers
     LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher,
     // Worker

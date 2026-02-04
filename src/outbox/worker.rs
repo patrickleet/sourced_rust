@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::domain_event::DomainEvent;
+use super::outbox_message::OutboxMessage;
 use super::publisher::OutboxPublisher;
 
 /// Result of a batch drain operation.
@@ -90,7 +90,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     /// If the message is pending, it will be claimed by this worker before
     /// publishing. The caller is responsible for persisting the updated
     /// message entity after processing.
-    pub fn process_message(&mut self, message: &mut DomainEvent) -> ProcessOneResult {
+    pub fn process_message(&mut self, message: &mut OutboxMessage) -> ProcessOneResult {
         if message.is_published() || message.is_failed() {
             return ProcessOneResult::default();
         }
@@ -134,7 +134,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     }
 
     /// Process a batch of outbox messages.
-    pub fn process_batch(&mut self, messages: &mut [DomainEvent]) -> DrainResult {
+    pub fn process_batch(&mut self, messages: &mut [OutboxMessage]) -> DrainResult {
         let mut result = DrainResult::default();
 
         for message in messages.iter_mut().take(self.batch_size) {
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn process_message_noop_for_published() {
-        let mut message = DomainEvent::new("msg-1", "Event", "{}");
+        let mut message = OutboxMessage::new("msg-1", "Event", "{}");
         message.claim("worker", Duration::from_secs(1));
         message.complete();
 
