@@ -140,6 +140,17 @@ pub trait Subscriber: Send + Sync {
     fn nack(&self, event_id: &str, reason: &str) -> Result<(), PublishError>;
 }
 
+/// Trait for subscribers that can create independent subscriber instances.
+///
+/// This enables filtered subscriptions via `Bus::subscribe()`.
+pub trait Subscribable: Subscriber + Sized {
+    /// Create a new independent subscriber sharing the same event source.
+    ///
+    /// The new subscriber has its own read position, allowing multiple
+    /// independent consumers of the same event stream.
+    fn new_subscriber(&self) -> Self;
+}
+
 /// Combined trait for bidirectional bus communication.
 pub trait EventBus: Publisher + Subscriber {}
 

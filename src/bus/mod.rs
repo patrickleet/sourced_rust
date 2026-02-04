@@ -45,5 +45,5 @@ mod in_memory_queue;
 mod publisher;
 
 pub use bus::Bus;
-pub use in_memory_queue::InMemoryQueue;
-pub use publisher::{Event, EventBus, PublishError, Publisher, Subscriber};
+pub use in_memory_queue::{EventReceiver, InMemoryQueue};
+pub use publisher::{Event, EventBus, PublishError, Publisher, Subscribable, Subscriber};

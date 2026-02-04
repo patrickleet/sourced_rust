@@ -6,10 +6,11 @@
 //! - Single-process applications
 //! - Development and prototyping
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use super::{Event, PublishError, Publisher, Subscriber};
+use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
 
 /// In-memory queue for testing and single-process scenarios.
 ///
@@ -38,7 +39,7 @@ use super::{Event, PublishError, Publisher, Subscriber};
 /// ## Multiple Subscribers
 ///
 /// ```
-/// use sourced_rust::bus::{InMemoryQueue, Publisher, Subscriber, Event};
+/// use sourced_rust::bus::{InMemoryQueue, Publisher, Subscriber, Subscribable, Event};
 ///
 /// let queue = InMemoryQueue::new();
 /// queue.publish(Event::with_string_payload("evt-1", "Event1", "{}")).unwrap();
@@ -72,17 +73,6 @@ impl InMemoryQueue {
     pub fn new() -> Self {
         Self {
             log: Arc::new(RwLock::new(Vec::new())),
-            position: Arc::new(Mutex::new(0)),
-            acked: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    /// Create a new subscriber that shares the same log but has its own position.
-    ///
-    /// This allows multiple independent consumers of the same event stream.
-    pub fn new_subscriber(&self) -> Self {
-        Self {
-            log: Arc::clone(&self.log),
             position: Arc::new(Mutex::new(0)),
             acked: Arc::new(Mutex::new(Vec::new())),
         }
@@ -155,6 +145,103 @@ impl InMemoryQueue {
         *self.position.lock().unwrap() = 0;
         self.acked.lock().unwrap().clear();
     }
+
+    /// Subscribe to specific event types, returning a filtered receiver.
+    ///
+    /// The returned `EventReceiver` will only deliver events matching the
+    /// specified types. Other events are skipped (but still consumed from
+    /// this subscriber's position).
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use sourced_rust::bus::{InMemoryQueue, Publisher, Event};
+    ///
+    /// let queue = InMemoryQueue::new();
+    /// queue.publish(Event::with_string_payload("evt-1", "OrderCreated", "{}")).unwrap();
+    /// queue.publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}")).unwrap();
+    /// queue.publish(Event::with_string_payload("evt-3", "OrderCreated", "{}")).unwrap();
+    ///
+    /// // Subscribe only to OrderCreated events
+    /// let receiver = queue.subscribe(&["OrderCreated"]);
+    ///
+    /// // Only receives OrderCreated events
+    /// let event1 = receiver.recv(100).unwrap().unwrap();
+    /// assert_eq!(event1.event_type, "OrderCreated");
+    /// assert_eq!(event1.id, "evt-1");
+    ///
+    /// let event2 = receiver.recv(100).unwrap().unwrap();
+    /// assert_eq!(event2.event_type, "OrderCreated");
+    /// assert_eq!(event2.id, "evt-3");
+    /// ```
+    pub fn subscribe(&self, event_types: &[&str]) -> EventReceiver<Self> {
+        EventReceiver::new(self.new_subscriber(), event_types)
+    }
+}
+
+/// A filtered event receiver that only delivers events of subscribed types.
+///
+/// Created via [`InMemoryQueue::subscribe`] or [`Bus::subscribe`]. Each receiver
+/// has its own position in the event log and only returns events matching the
+/// subscribed types.
+pub struct EventReceiver<S: Subscriber> {
+    subscriber: S,
+    event_types: HashSet<String>,
+}
+
+impl<S: Subscriber> EventReceiver<S> {
+    /// Create a new event receiver with the given subscriber and event type filter.
+    pub fn new(subscriber: S, event_types: &[&str]) -> Self {
+        Self {
+            subscriber,
+            event_types: event_types.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Receive the next matching event, blocking until one is available or timeout.
+    ///
+    /// Returns `Ok(Some(event))` if a matching event was found,
+    /// `Ok(None)` if the timeout was reached with no matching events.
+    pub fn recv(&self, timeout_ms: u64) -> Result<Option<Event>, PublishError> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+
+            match self.subscriber.poll(remaining.as_millis() as u64)? {
+                Some(event) if self.event_types.contains(&event.event_type) => {
+                    return Ok(Some(event));
+                }
+                Some(_) => {
+                    // Skip non-matching event, continue polling
+                    continue;
+                }
+                None => {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    /// Try to receive an event without blocking.
+    ///
+    /// Returns immediately with `Ok(None)` if no matching event is available.
+    pub fn try_recv(&self) -> Result<Option<Event>, PublishError> {
+        self.recv(0)
+    }
+
+    /// Acknowledge that an event has been processed.
+    pub fn ack(&self, event_id: &str) -> Result<(), PublishError> {
+        self.subscriber.ack(event_id)
+    }
+
+    /// Get the event types this receiver is subscribed to.
+    pub fn subscribed_types(&self) -> &HashSet<String> {
+        &self.event_types
+    }
 }
 
 impl Publisher for InMemoryQueue {
@@ -203,6 +290,16 @@ impl Subscriber for InMemoryQueue {
     fn nack(&self, _event_id: &str, _reason: &str) -> Result<(), PublishError> {
         // In-memory queue doesn't support redelivery; events stay in log
         Ok(())
+    }
+}
+
+impl Subscribable for InMemoryQueue {
+    fn new_subscriber(&self) -> Self {
+        Self {
+            log: Arc::clone(&self.log),
+            position: Arc::new(Mutex::new(0)),
+            acked: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
@@ -328,5 +425,84 @@ mod tests {
         assert_eq!(queue.len(), 0);
         assert_eq!(queue.current_position(), 0);
         assert!(queue.acknowledged().is_empty());
+    }
+
+    #[test]
+    fn subscribe_filters_events() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .publish(Event::with_string_payload("evt-1", "OrderCreated", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-3", "InventoryReserved", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-4", "OrderCreated", "{}"))
+            .unwrap();
+
+        // Subscribe only to OrderCreated
+        let receiver = queue.subscribe(&["OrderCreated"]);
+
+        // Should only get OrderCreated events
+        let event1 = receiver.recv(100).unwrap().unwrap();
+        assert_eq!(event1.id, "evt-1");
+        assert_eq!(event1.event_type, "OrderCreated");
+
+        let event2 = receiver.recv(100).unwrap().unwrap();
+        assert_eq!(event2.id, "evt-4");
+        assert_eq!(event2.event_type, "OrderCreated");
+
+        // No more matching events
+        assert!(receiver.recv(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn subscribe_multiple_types() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .publish(Event::with_string_payload("evt-1", "OrderCreated", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-3", "OrderCompleted", "{}"))
+            .unwrap();
+
+        // Subscribe to multiple event types
+        let receiver = queue.subscribe(&["OrderCreated", "OrderCompleted"]);
+
+        let event1 = receiver.recv(100).unwrap().unwrap();
+        assert_eq!(event1.id, "evt-1");
+
+        let event2 = receiver.recv(100).unwrap().unwrap();
+        assert_eq!(event2.id, "evt-3");
+
+        assert!(receiver.recv(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn multiple_subscribers_independent() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .publish(Event::with_string_payload("evt-1", "OrderCreated", "{}"))
+            .unwrap();
+        queue
+            .publish(Event::with_string_payload("evt-2", "PaymentSucceeded", "{}"))
+            .unwrap();
+
+        // Two subscribers with different filters
+        let orders = queue.subscribe(&["OrderCreated"]);
+        let payments = queue.subscribe(&["PaymentSucceeded"]);
+
+        // Each gets their own events
+        assert_eq!(orders.recv(100).unwrap().unwrap().id, "evt-1");
+        assert_eq!(payments.recv(100).unwrap().unwrap().id, "evt-2");
     }
 }
