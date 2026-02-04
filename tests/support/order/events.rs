@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 
 use super::OrderItem;
 
+/// Payload for SagaStarted event - initiates the saga.
+#[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct SagaStartedPayload {
+    pub saga_id: String,
+    pub order_id: String,
+    pub customer_id: String,
+    pub items: Vec<OrderItem>,
+    pub total_cents: u32,
+}
+
 /// Payload for OrderCreated event.
 #[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct OrderCreatedPayload {
@@ -27,4 +37,11 @@ pub struct InventoryReservedPayload {
 pub struct PaymentSucceededPayload {
     pub order_id: String,
     pub payment_id: String,
+}
+
+/// Payload for SagaCompleted event - saga finished successfully.
+#[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct SagaCompletedPayload {
+    pub saga_id: String,
+    pub order_id: String,
 }
