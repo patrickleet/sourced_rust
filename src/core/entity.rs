@@ -5,19 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use super::event_record::EventRecord;
 
-#[derive(Clone, Debug)]
-pub struct OutboxEvent {
-    pub event_type: String,
-    pub payload: String,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct Entity {
     id: String,
     version: u64,
     events: Vec<EventRecord>,
-    #[serde(skip, default)]
-    outbox_events: Vec<OutboxEvent>,
     #[serde(skip, default)]
     replaying: bool,
     snapshot_version: u64,
@@ -30,7 +22,6 @@ impl Default for Entity {
             id: String::new(),
             version: 0,
             events: Vec::new(),
-            outbox_events: Vec::new(),
             replaying: false,
             snapshot_version: 0,
             timestamp: SystemTime::now(),
@@ -44,7 +35,6 @@ impl fmt::Debug for Entity {
             .field("id", &self.id)
             .field("version", &self.version)
             .field("events", &self.events)
-            .field("outbox_events", &self.outbox_events)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
             .field("timestamp", &self.timestamp)
@@ -58,7 +48,6 @@ impl Clone for Entity {
             id: self.id.clone(),
             version: self.version,
             events: self.events.clone(),
-            outbox_events: self.outbox_events.clone(),
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
             timestamp: self.timestamp,
@@ -118,10 +107,6 @@ impl Entity {
         &self.events
     }
 
-    pub fn outbox_len(&self) -> usize {
-        self.outbox_events.len()
-    }
-
     pub fn digest(&mut self, name: impl Into<String>, args: Vec<String>) {
         if self.replaying {
             return;
@@ -134,29 +119,9 @@ impl Entity {
         self.timestamp = SystemTime::now();
     }
 
-    pub fn outbox(&mut self, event_type: impl Into<String>, payload: impl Into<String>) {
-        if self.replaying {
-            return;
-        }
-
-        self.outbox_events.push(OutboxEvent {
-            event_type: event_type.into(),
-            payload: payload.into(),
-        });
-    }
-
-    pub fn outbox_events(&self) -> &[OutboxEvent] {
-        &self.outbox_events
-    }
-
-    pub fn clear_outbox(&mut self) {
-        self.outbox_events.clear();
-    }
-
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
         self.events = history;
         self.version = self.events.len() as u64;
-        self.outbox_events.clear();
     }
 
     pub fn rehydrate<F, E>(&mut self, mut apply: F) -> Result<(), E>
@@ -192,7 +157,6 @@ mod tests {
         assert_eq!(entity.id(), "");
         assert_eq!(entity.version(), 0);
         assert!(entity.events().is_empty());
-        assert_eq!(entity.outbox_len(), 0);
         assert!(!entity.is_replaying());
         assert_eq!(entity.snapshot_version(), 0);
     }
@@ -210,15 +174,6 @@ mod tests {
         assert_eq!(entity.events()[0].event_name, "test_event");
         assert_eq!(entity.events()[0].args, vec!["arg1", "arg2"]);
         assert_eq!(entity.events()[0].sequence, 1);
-    }
-
-    #[test]
-    fn outbox() {
-        let mut entity = Entity::new();
-        entity.outbox("DomainEvent", "{\"ok\":true}");
-
-        assert_eq!(entity.outbox_len(), 1);
-        assert_eq!(entity.outbox_events()[0].event_type, "DomainEvent");
     }
 
     #[test]
@@ -281,8 +236,5 @@ mod tests {
 
         entity.digest("test_event", vec!["arg1".to_string()]);
         assert!(entity.events().is_empty());
-
-        entity.outbox("DomainEvent", "{\"ok\":true}");
-        assert_eq!(entity.outbox_len(), 0);
     }
 }

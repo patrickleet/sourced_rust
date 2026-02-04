@@ -1,17 +1,23 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::core::{Committable, Entity, EventRecord, Repository, RepositoryError};
+use std::time::Duration;
+
+use crate::core::{hydrate, Committable, Entity, EventRecord, Repository, RepositoryError};
+use crate::outbox::{DomainEvent, DomainEventStatus};
 
 /// In-memory repository implementation using HashMap.
 ///
 /// This is a simple storage implementation suitable for testing and prototyping.
-/// For outbox support, wrap with `OutboxRepository`:
+/// For outbox support, commit `DomainEvent` entities alongside your entity:
 ///
 /// ```ignore
-/// use sourced_rust::{HashMapRepository, WithOutbox};
+/// use sourced_rust::{DomainEvent, HashMapRepository, Repository};
 ///
-/// let repo = HashMapRepository::new().with_outbox();
+/// let repo = HashMapRepository::new();
+/// let mut message = DomainEvent::new("msg-1", "TodoInitialized", "{}");
+/// // ... mutate domain entity and message ...
+/// repo.commit(&mut [&mut entity, &mut message.entity])?;
 /// ```
 pub struct HashMapRepository {
     storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
@@ -29,6 +35,77 @@ impl HashMapRepository {
         HashMapRepository {
             storage: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Return all outbox messages with the given status.
+    pub fn domain_events_by_status(
+        &self,
+        status: DomainEventStatus,
+    ) -> Result<Vec<DomainEvent>, RepositoryError> {
+        let storage = self
+            .storage
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("read"))?;
+
+        let mut messages = Vec::new();
+        for (id, events) in storage.iter() {
+            if !id.starts_with(DomainEvent::ID_PREFIX) {
+                continue;
+            }
+
+            let mut entity = Entity::with_id(id.to_string());
+            entity.load_from_history(events.clone());
+            let message = hydrate::<DomainEvent>(entity)?;
+
+            if message.status == status {
+                messages.push(message);
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Return all pending outbox messages.
+    pub fn domain_events_pending(&self) -> Result<Vec<DomainEvent>, RepositoryError> {
+        self.domain_events_by_status(DomainEventStatus::Pending)
+    }
+
+    /// Claim pending outbox messages for processing.
+    ///
+    /// This is repo-specific and intended for single-process usage or tests.
+    pub fn claim_domain_events(
+        &self,
+        worker_id: &str,
+        max: usize,
+        lease: Duration,
+    ) -> Result<Vec<DomainEvent>, RepositoryError> {
+        let mut storage = self
+            .storage
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("write"))?;
+
+        let mut claimed = Vec::new();
+        for (id, events) in storage.iter_mut() {
+            if !id.starts_with(DomainEvent::ID_PREFIX) {
+                continue;
+            }
+
+            let mut entity = Entity::with_id(id.to_string());
+            entity.load_from_history(events.clone());
+            let mut message = hydrate::<DomainEvent>(entity)?;
+
+            if message.is_pending() {
+                message.claim(worker_id, lease);
+                *events = message.entity.events().to_vec();
+                claimed.push(message);
+            }
+
+            if claimed.len() >= max {
+                break;
+            }
+        }
+
+        Ok(claimed)
     }
 }
 
@@ -60,11 +137,6 @@ impl Repository for HashMapRepository {
     }
 
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
-        // Collect outbox events (and clear them from the committable)
-        // Even though we don't process them here, we need to clear them
-        // so that wrapping repositories (like OutboxRepository) can work correctly
-        let _ = committable.take_outbox_events();
-
         let entities = committable.entities_mut();
 
         let mut storage = self
@@ -124,16 +196,16 @@ mod tests {
     }
 
     #[test]
-    fn outbox_events_are_cleared() {
-        // Even without OutboxRepository, outbox events should be cleared
+    fn domain_events_pending_finds_messages() {
         let repo = HashMapRepository::new();
         let mut entity = Entity::with_id("test");
-
         entity.digest("Created", vec!["test".to_string()]);
-        entity.outbox("EntityCreated", r#"{"id":"test"}"#);
 
-        assert_eq!(entity.outbox_len(), 1);
-        repo.commit(&mut entity).unwrap();
-        assert_eq!(entity.outbox_len(), 0);
+        let mut message = DomainEvent::new("msg-1", "EntityCreated", r#"{"id":"test"}"#);
+        repo.commit(&mut [&mut entity, &mut message.entity]).unwrap();
+
+        let pending = repo.domain_events_pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_type, "EntityCreated");
     }
 }

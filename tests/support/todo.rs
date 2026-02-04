@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{Entity, EventRecord};
 
-#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Todo {
     pub entity: Entity,
     user_id: String,
@@ -33,8 +32,8 @@ impl Todo {
     pub fn complete(&mut self) {
         if !self.completed {
             self.completed = true;
-            self.entity
-                .digest("Complete", vec![self.entity.id().to_string()]);
+            let id = self.entity.id().to_string();
+            self.entity.digest("Complete", vec![id]);
         }
     }
 
@@ -52,6 +51,12 @@ impl Todo {
         }
     }
 
+}
+
+impl Default for Todo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 enum TodoEvent {

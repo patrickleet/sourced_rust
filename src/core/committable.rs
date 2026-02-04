@@ -10,22 +10,6 @@ use super::entity::Entity;
 pub trait Committable {
     /// Returns mutable references to all entities to be committed.
     fn entities_mut(&mut self) -> Vec<&mut Entity>;
-
-    /// Collect and clear all outbox events.
-    ///
-    /// Returns a vector of (event_type, payload) tuples.
-    /// Default implementation collects from all entities.
-    fn take_outbox_events(&mut self) -> Vec<(String, String)> {
-        let entities = self.entities_mut();
-        let mut events = Vec::new();
-        for entity in entities {
-            for outbox_event in entity.outbox_events() {
-                events.push((outbox_event.event_type.clone(), outbox_event.payload.clone()));
-            }
-            entity.clear_outbox();
-        }
-        events
-    }
 }
 
 // Single Entity

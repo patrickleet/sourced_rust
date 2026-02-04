@@ -2,8 +2,8 @@ mod support;
 
 use serde_json;
 use sourced_rust::{
-    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
-    OutboxWorker, Repository, WithOutbox,
+    DomainEvent, EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
+    OutboxWorker, Repository, RepositoryExt,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -23,7 +23,7 @@ fn next_id() -> String {
 fn todos() {
     let repo = TodoRepository::new();
 
-    // Create a new Todo
+    // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
     let id1 = next_id();
 
@@ -34,19 +34,22 @@ fn todos() {
     );
 
     // Add an outbox event for the initialization
-    todo.entity.outbox(
+    let mut init_message = DomainEvent::new(
+        format!("{}:init", id1),
         "TodoInitialized",
         serde_json::to_string(&todo.snapshot()).unwrap(),
     );
 
-    // Commit the Todo to the repository
-    let _ = repo.commit(&mut todo);
+    // Commit the Todo + Outbox message to the repository
+    let _ = repo
+        .repo()
+        .commit(&mut [&mut todo.entity, &mut init_message.entity]);
 
     // Verify the outbox event was captured
     {
-        let outbox = repo.outbox();
-        assert_eq!(outbox.pending_count(), 1);
-        assert_eq!(outbox.pending()[0].event_type, "TodoInitialized");
+        let pending = repo.repo().inner().domain_events_pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_type, "TodoInitialized");
     }
 
     // Retrieve the Todo from the repository and complete it, then commit again
@@ -54,18 +57,22 @@ fn todos() {
         retrieved_todo.complete();
 
         // Add an outbox event for the completion
-        retrieved_todo.entity.outbox(
+        let mut complete_message = DomainEvent::new(
+            format!("{}:complete", id1),
             "TodoCompleted",
             serde_json::to_string(&retrieved_todo.snapshot()).unwrap(),
         );
 
-        let _ = repo.commit(&mut retrieved_todo);
+        let _ = repo
+            .repo()
+            .commit(&mut [&mut retrieved_todo.entity, &mut complete_message.entity]);
 
         // Verify we now have 2 outbox events
         {
-            let outbox = repo.outbox();
-            assert_eq!(outbox.pending_count(), 2);
-            assert_eq!(outbox.pending()[1].event_type, "TodoCompleted");
+            let pending = repo.repo().inner().domain_events_pending().unwrap();
+            assert_eq!(pending.len(), 2);
+            assert!(pending.iter().any(|msg| msg.event_type == "TodoInitialized"));
+            assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));
         }
 
         if let Some(completed_todo) = repo.get(&id1).unwrap() {
@@ -144,21 +151,23 @@ fn get_all_commit_all_roundtrip() {
 
 #[test]
 fn outbox_records_persisted() {
-    let repo = HashMapRepository::new().with_outbox();
+    let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
     let snapshot = todo.snapshot();
-    todo.entity
-        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
+    let mut message = DomainEvent::new(
+        format!("{}:init", id),
+        "TodoInitialized",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
 
-    repo.commit(&mut todo.entity).unwrap();
+    repo.commit(&mut [&mut todo.entity, &mut message.entity])
+        .unwrap();
 
-    // Check outbox via new aggregate API
-    let outbox = repo.outbox();
-    assert_eq!(outbox.pending_count(), 1);
-
-    let pending: Vec<_> = outbox.pending();
+    // Check pending outbox messages
+    let pending = repo.domain_events_pending().unwrap();
+    assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "TodoInitialized");
 
     let published: TodoSnapshot = serde_json::from_str(&pending[0].payload).unwrap();
@@ -170,7 +179,7 @@ fn outbox_records_persisted() {
 
 #[test]
 fn outbox_worker_log_publisher() {
-    let repo = HashMapRepository::new().with_outbox();
+    let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -179,9 +188,14 @@ fn outbox_worker_log_publisher() {
         "Outbox log publisher".to_string(),
     );
     let snapshot = todo.snapshot();
-    todo.entity
-        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
-    repo.commit(&mut todo.entity).unwrap();
+    let mut message = DomainEvent::new(
+        format!("{}:init", id),
+        "TodoInitialized",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
+    let message_id = message.id().to_string();
+    repo.commit(&mut [&mut todo.entity, &mut message.entity])
+        .unwrap();
 
     // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -191,25 +205,31 @@ fn outbox_worker_log_publisher() {
         .with_batch_size(10)
         .with_max_attempts(3);
 
-    // Get mutable access to outbox and drain
-    // The outbox state is updated directly on put(), so no replay needed
-    let mut outbox = repo.outbox_mut();
-
-    let result = worker.drain_once(&mut outbox);
+    // Claim pending messages and process
+    let mut claimed = repo
+        .claim_domain_events("logger-1", 10, Duration::from_secs(30))
+        .unwrap();
+    let result = worker.process_batch(&mut claimed);
     assert_eq!(result.completed, 1);
+    for message in &mut claimed {
+        repo.commit(&mut message.entity).unwrap();
+    }
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("TodoInitialized"));
 
     // Check record is marked as published
-    let published: Vec<_> = outbox.published();
-    assert_eq!(published.len(), 1);
+    let published = repo
+        .get_aggregate::<DomainEvent>(&message_id)
+        .unwrap()
+        .unwrap();
+    assert!(published.is_published());
 }
 
 #[test]
 fn outbox_worker_local_emitter_publisher() {
-    let repo = HashMapRepository::new().with_outbox();
+    let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -218,9 +238,13 @@ fn outbox_worker_local_emitter_publisher() {
         "Outbox local emitter".to_string(),
     );
     let snapshot = todo.snapshot();
-    todo.entity
-        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
-    repo.commit(&mut todo.entity).unwrap();
+    let mut message = DomainEvent::new(
+        format!("{}:init", id),
+        "TodoInitialized",
+        serde_json::to_string(&snapshot).unwrap(),
+    );
+    repo.commit(&mut [&mut todo.entity, &mut message.entity])
+        .unwrap();
 
     let mut emitter = EventEmitter::new();
     let (tx, rx) = mpsc::channel::<String>();
@@ -234,11 +258,15 @@ fn outbox_worker_local_emitter_publisher() {
         .with_batch_size(10)
         .with_max_attempts(3);
 
-    // Get mutable access to outbox and drain
-    let mut outbox = repo.outbox_mut();
-
-    let result = worker.drain_once(&mut outbox);
+    // Claim pending messages and process
+    let mut claimed = repo
+        .claim_domain_events("emitter-1", 10, Duration::from_secs(30))
+        .unwrap();
+    let result = worker.process_batch(&mut claimed);
     assert_eq!(result.completed, 1);
+    for message in &mut claimed {
+        repo.commit(&mut message.entity).unwrap();
+    }
 
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
     let published: TodoSnapshot = serde_json::from_str(&payload).unwrap();
@@ -403,7 +431,7 @@ fn queued_repo_blocks_get_until_commit() {
 
 #[test]
 fn outbox_worker_process_next_with_commit() {
-    let repo = HashMapRepository::new().with_outbox();
+    let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -414,10 +442,26 @@ fn outbox_worker_process_next_with_commit() {
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    todo.entity.outbox("Event1", serde_json::to_string(&snapshot).unwrap());
-    todo.entity.outbox("Event2", serde_json::to_string(&snapshot).unwrap());
-    todo.entity.outbox("Event3", serde_json::to_string(&snapshot).unwrap());
-    repo.commit(&mut todo.entity).unwrap();
+    let mut message1 =
+        DomainEvent::new(format!("{}:1", id), "Event1", serde_json::to_string(&snapshot).unwrap());
+    let mut message2 =
+        DomainEvent::new(format!("{}:2", id), "Event2", serde_json::to_string(&snapshot).unwrap());
+    let mut message3 =
+        DomainEvent::new(format!("{}:3", id), "Event3", serde_json::to_string(&snapshot).unwrap());
+
+    let message_ids = vec![
+        message1.id().to_string(),
+        message2.id().to_string(),
+        message3.id().to_string(),
+    ];
+
+    repo.commit(&mut [
+        &mut todo.entity,
+        &mut message1.entity,
+        &mut message2.entity,
+        &mut message3.entity,
+    ])
+    .unwrap();
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
@@ -427,22 +471,29 @@ fn outbox_worker_process_next_with_commit() {
         .with_max_attempts(3);
 
     // Process one at a time with commits
-    let mut outbox = repo.outbox_mut();
     let mut processed = 0;
 
-    while worker.process_next(&mut outbox).did_work {
-        // Each message is committed immediately after processing
-        drop(outbox); // Release lock before commit
-        repo.commit_outbox().unwrap();
-        outbox = repo.outbox_mut();
-        processed += 1;
+    loop {
+        let mut claimed = repo
+            .claim_domain_events("safe-worker", 1, Duration::from_secs(30))
+            .unwrap();
+        if claimed.is_empty() {
+            break;
+        }
+        let result = worker.process_batch(&mut claimed);
+        processed += result.completed + result.released + result.failed;
+        for message in &mut claimed {
+            repo.commit(&mut message.entity).unwrap();
+        }
     }
 
     assert_eq!(processed, 3);
-    assert_eq!(outbox.published().len(), 3);
-    assert_eq!(outbox.pending_count(), 0);
+    for id in &message_ids {
+        let message = repo.get_aggregate::<DomainEvent>(id).unwrap().unwrap();
+        assert!(message.is_published());
+    }
+    assert_eq!(repo.domain_events_pending().unwrap().len(), 0);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);
 }
-

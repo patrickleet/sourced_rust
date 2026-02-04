@@ -14,12 +14,8 @@ pub use core::{
 pub use hashmap::HashMapRepository;
 
 pub use outbox::{
-    // Core Outbox aggregate
-    Outbox, OutboxMessage, OutboxMessageStatus,
-    // OutboxEntity wrapper
-    HasOutbox, OutboxEntity, OutboxEvent,
-    // OutboxRepository wrapper
-    OutboxRepository, WithOutbox,
+    // Core outbox message aggregate
+    DomainEvent, DomainEventStatus,
     // Publishers
     LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher,
     // Worker

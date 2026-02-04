@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use super::aggregate::Outbox;
+use super::aggregate::DomainEvent;
 use super::publisher::OutboxPublisher;
 
-/// Result of a single drain operation.
+/// Result of a batch drain operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DrainResult {
     pub claimed: usize,
@@ -25,24 +25,10 @@ pub struct ProcessOneResult {
     pub failed: bool,
 }
 
-/// Worker for processing outbox records.
+/// Worker for processing outbox messages.
 ///
-/// The worker claims records from an Outbox aggregate, attempts to publish them,
-/// and marks them as completed, released, or failed based on the outcome.
-///
-/// # Example
-///
-/// ```ignore
-/// let worker = OutboxWorker::new(MyPublisher::new())
-///     .with_worker_id("worker-1")
-///     .with_batch_size(20)
-///     .with_max_attempts(5);
-///
-/// // Get outbox from repository
-/// let mut outbox = repo.outbox_mut();
-/// let result = worker.drain_once(&mut outbox);
-/// // Then commit the outbox to persist state changes
-/// ```
+/// The repository is responsible for claiming pending messages. The worker
+/// processes messages that are already loaded and (optionally) claimed.
 pub struct OutboxWorker<P> {
     publisher: P,
     worker_id: String,
@@ -69,7 +55,7 @@ impl<P> OutboxWorker<P> {
         self
     }
 
-    /// Set the batch size (max records to claim per drain).
+    /// Set the batch size (max records to process per drain).
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
@@ -99,45 +85,27 @@ impl<P> OutboxWorker<P> {
 }
 
 impl<P: OutboxPublisher> OutboxWorker<P> {
-    /// Process a single message from the outbox.
+    /// Process a single outbox message.
     ///
-    /// This method:
-    /// 1. Claims one pending message
-    /// 2. Attempts to publish it
-    /// 3. Marks it as completed, released, or failed
-    ///
-    /// The caller should commit the outbox after each call to persist
-    /// the state change immediately. This ensures that if the process
-    /// crashes, already-published messages won't be reprocessed.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut outbox = repo.outbox_mut();
-    /// while worker.process_next(&mut outbox).did_work {
-    ///     repo.commit_outbox()?;  // persist immediately
-    /// }
-    /// ```
-    pub fn process_next(&mut self, outbox: &mut Outbox) -> ProcessOneResult {
-        // Claim just one message
-        let claimed_ids = outbox.claim(&self.worker_id, 1, self.lease);
-        if claimed_ids.is_empty() {
+    /// If the message is pending, it will be claimed by this worker before
+    /// publishing. The caller is responsible for persisting the updated
+    /// message entity after processing.
+    pub fn process_message(&mut self, message: &mut DomainEvent) -> ProcessOneResult {
+        if message.is_published() || message.is_failed() {
             return ProcessOneResult::default();
         }
 
-        let id = claimed_ids[0];
-        let (event_type, payload, attempts) = {
-            let message = outbox.get(id).unwrap();
-            (
-                message.event_type.clone(),
-                message.payload.clone(),
-                message.attempts,
-            )
-        };
+        if message.is_pending() {
+            message.claim(&self.worker_id, self.lease);
+        }
 
-        match self.publisher.publish(&event_type, &payload) {
+        if !message.is_in_flight() {
+            return ProcessOneResult::default();
+        }
+
+        match self.publisher.publish(&message.event_type, &message.payload) {
             Ok(()) => {
-                outbox.complete(id);
+                message.complete();
                 ProcessOneResult {
                     did_work: true,
                     completed: true,
@@ -146,15 +114,15 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             }
             Err(err) => {
                 let error_msg = err.to_string();
-                if attempts >= self.max_attempts {
-                    outbox.fail(id, Some(&error_msg));
+                if message.attempts >= self.max_attempts {
+                    message.fail(Some(&error_msg));
                     ProcessOneResult {
                         did_work: true,
                         failed: true,
                         ..Default::default()
                     }
                 } else {
-                    outbox.release(id, Some(&error_msg));
+                    message.release(Some(&error_msg));
                     ProcessOneResult {
                         did_work: true,
                         released: true,
@@ -165,56 +133,23 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
         }
     }
 
-    /// Process one batch of outbox records.
-    ///
-    /// This method:
-    /// 1. Claims pending records from the outbox
-    /// 2. Attempts to publish each record
-    /// 3. Marks records as completed, released, or failed
-    ///
-    /// **Warning**: State changes are only in memory until committed.
-    /// If the process crashes before commit, published messages may be
-    /// reprocessed. For safer at-least-once delivery, use `process_next`
-    /// with commits after each message.
-    pub fn drain_once(&mut self, outbox: &mut Outbox) -> DrainResult {
-        // Claim records
-        let claimed_ids = outbox.claim(&self.worker_id, self.batch_size, self.lease);
-        if claimed_ids.is_empty() {
-            return DrainResult::default();
-        }
+    /// Process a batch of outbox messages.
+    pub fn process_batch(&mut self, messages: &mut [DomainEvent]) -> DrainResult {
+        let mut result = DrainResult::default();
 
-        let mut result = DrainResult {
-            claimed: claimed_ids.len(),
-            ..Default::default()
-        };
-
-        // Process each record
-        for id in claimed_ids {
-            // Get record info before processing
-            let (event_type, payload, attempts) = {
-                let record = outbox.get(id).unwrap();
-                (
-                    record.event_type.clone(),
-                    record.payload.clone(),
-                    record.attempts,
-                )
-            };
-
-            match self.publisher.publish(&event_type, &payload) {
-                Ok(()) => {
-                    outbox.complete(id);
-                    result.completed += 1;
-                }
-                Err(err) => {
-                    let error_msg = err.to_string();
-                    if attempts >= self.max_attempts {
-                        outbox.fail(id, Some(&error_msg));
-                        result.failed += 1;
-                    } else {
-                        outbox.release(id, Some(&error_msg));
-                        result.released += 1;
-                    }
-                }
+        for message in messages.iter_mut().take(self.batch_size) {
+            let processed = self.process_message(message);
+            if processed.did_work {
+                result.claimed += 1;
+            }
+            if processed.completed {
+                result.completed += 1;
+            }
+            if processed.released {
+                result.released += 1;
+            }
+            if processed.failed {
+                result.failed += 1;
             }
         }
 
@@ -242,12 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn drain_empty_outbox() {
-        let mut worker = OutboxWorker::new(LogPublisher::default());
-        let mut outbox = Outbox::new("test");
+    fn process_message_noop_for_published() {
+        let mut message = DomainEvent::new("msg-1", "Event", "{}");
+        message.claim("worker", Duration::from_secs(1));
+        message.complete();
 
-        let result = worker.drain_once(&mut outbox);
-        assert_eq!(result.claimed, 0);
-        assert_eq!(result.completed, 0);
+        let mut worker = OutboxWorker::new(LogPublisher::default());
+        let result = worker.process_message(&mut message);
+        assert!(!result.did_work);
     }
 }

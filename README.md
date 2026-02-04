@@ -18,10 +18,8 @@ Sourced Rust is inspired by the original sourced project by Matt Walters. Patric
 
 ```rust
 use sourced_rust::{
-    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, LogPublisher,
-    OutboxWorker, Outboxable, Queueable, RepositoryError,
+    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, Queueable, RepositoryError,
 };
-use std::time::Duration;
 
 #[derive(Default)]
 struct Todo {
@@ -73,8 +71,8 @@ aggregate!(Todo, entity, replay_event, TodoEvent, {
 });
 
 fn main() -> Result<(), RepositoryError> {
-    // App-side repository with queue locking + outbox support.
-    let repo = HashMapRepository::new().queued().with_outbox().aggregate::<Todo>();
+    // App-side repository with queue locking.
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo = Todo::default();
     todo.initialize("todo-1".to_string(), "user-1".to_string(), "Ship it".to_string());
@@ -96,8 +94,8 @@ fn main() -> Result<(), RepositoryError> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking (get locks until commit or abort for that ID only).
-- **OutboxRecord**: A persisted domain event intended for external publication.
-- **OutboxRepository**: Access to pending outbox records (peek or drain).
+- **DomainEvent**: An event-sourced integration event (one message per aggregate).
+- **Outbox Worker**: Runs in a separate process to publish domain events.
 - **Event Emitter**: Provided by event-emitter-rs and used for local, in-process notifications.
 
 ## How It Works
@@ -144,24 +142,22 @@ The flow is:
 
 ### Outbox (Durable Domain Events)
 
-`outbox` records a **domain event meant for other services**. The repository persists it alongside the event stream, and a separate worker publishes it to your message bus. This keeps local event-sourcing events distinct from cross-service integration events.
-
-Repositories that support outbox are expected to persist the event stream and outbox in the **same transaction**. The in-memory repository does this for tests; SQL backends should do the same to preserve the outbox guarantees.
+Each domain event is its **own aggregate**. You create one `DomainEvent` per integration event and commit it alongside your domain entity in the **same transaction**. A separate worker process then claims and publishes pending messages.
 
 ```mermaid
 sequenceDiagram
     participant Domain
-    participant Entity
+    participant Msg as Domain Event
     participant Repo
-    participant Outbox as Outbox Worker
+    participant Worker as Outbox Worker
     participant Bus as Message Bus
-    Domain->>Entity: outbox(event_type, payload)
-    Domain->>Repo: commit(entity)
-    Repo->>Repo: persist events + outbox
-    Outbox->>Repo: claim_outbox(worker, batch, lease)
-    Outbox->>Bus: publish
-    Outbox->>Repo: complete_outbox(ids)
-    Note right of Outbox: on failure -> release_outbox or fail_outbox
+    Domain->>Msg: new(event_type, payload)
+    Domain->>Repo: commit(entity + message)
+    Repo->>Repo: persist events + message
+    Worker->>Repo: claim pending messages
+    Worker->>Bus: publish
+    Worker->>Repo: commit(message)
+    Note right of Worker: on failure -> release or fail message
 ```
 
 ### Queued Repository Locking (Per Entity)
@@ -263,9 +259,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Queued Repository (Serialized Workflows)
 
 ```rust
-use sourced_rust::{HashMapRepository, Outboxable, Queueable, Repository};
+use sourced_rust::{HashMapRepository, Queueable, Repository};
 
-let repo = HashMapRepository::new().queued().with_outbox(); // per-entity queue locks + outbox
+let repo = HashMapRepository::new().queued(); // per-entity queue locks
 
 let mut entity = repo.get("todo-1")?.expect("todo missing");
 // ... mutate entity ...
@@ -321,117 +317,50 @@ aggregate!(Todo, entity, replay_event, TodoEvent, {
 Repository ergonomics:
 
 ```rust
-use sourced_rust::{AggregateBuilder, HashMapRepository, Outboxable, Queueable, RepositoryExt};
+use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable, RepositoryExt};
 
-let repo = HashMapRepository::new().queued().with_outbox();
+let repo = HashMapRepository::new().queued();
 let todo = repo.get_aggregate::<Todo>("todo-1")?;
 
-let repo = HashMapRepository::new().queued().with_outbox().aggregate::<Todo>();
+let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 let todo = repo.get("todo-1")?;
 ```
 
-### Outbox (In-Memory Example)
+### Domain Events (Separate Aggregates)
+
+Each domain event is its own aggregate. You commit your domain entity and one or more domain event entities in the same repository commit.
 
 ```rust
-use sourced_rust::{Entity, HashMapRepository, OutboxRepository, Outboxable, Repository};
-use std::time::Duration;
+use sourced_rust::{DomainEvent, Entity, HashMapRepository, Repository};
 
-let repo = HashMapRepository::new().with_outbox();
+let repo = HashMapRepository::new();
+
 let mut entity = Entity::with_id("todo-1");
+entity.digest("Initialized", vec!["todo-1".to_string()]);
 
-entity.outbox("TodoInitialized", "{\"id\":\"todo-1\"}".to_string());
-repo.commit(&mut entity)?;
+let mut message = DomainEvent::new("todo-1:init", "TodoInitialized", "{\"id\":\"todo-1\"}");
 
-let batch = repo.claim_outbox("worker-1", 100, Duration::from_secs(30))?;
-for record in &batch {
-    // publish to your message bus
-    let _ = (record.event_type, record.payload);
+// Commit both entities atomically
+repo.commit(&mut [&mut entity, &mut message.entity])?;
+```
+
+### Outbox Drainer (Separate Process)
+
+Run a separate process (or worker) that claims pending domain events, publishes them, and persists the status updates.
+
+```rust
+use sourced_rust::{DomainEvent, HashMapRepository, LogPublisher, OutboxWorker, Repository};
+use std::time::Duration;
+
+let repo = HashMapRepository::new();
+let mut worker = OutboxWorker::new(LogPublisher::new());
+
+let mut claimed = repo.claim_domain_events("worker-1", 100, Duration::from_secs(30))?;
+let _ = worker.process_batch(&mut claimed);
+
+for message in &mut claimed {
+    repo.commit(&mut message.entity)?;
 }
-let ids: Vec<u64> = batch.iter().map(|record| record.id).collect();
-repo.complete_outbox(&ids)?;
-```
-
-### Outbox Strategies
-
-Below are two simple ways to consume the outbox. Both use `claim_outbox(...)` and `complete_outbox(...)` to keep the pipeline explicit.
-
-#### 1) Log and Complete
-
-```rust
-use sourced_rust::{HashMapRepository, OutboxRepository, Outboxable};
-use std::time::Duration;
-
-let repo = HashMapRepository::new().with_outbox();
-let batch = repo.claim_outbox("logger-1", 100, Duration::from_secs(30))?;
-for record in &batch {
-    println!(
-        "[OUTBOX] {} v{} {} {}",
-        record.aggregate_id,
-        record.aggregate_version,
-        record.event_type,
-        record.payload
-    );
-}
-let ids: Vec<u64> = batch.iter().map(|record| record.id).collect();
-repo.complete_outbox(&ids)?;
-```
-
-#### 2) Local Event Emitter
-
-```rust
-use sourced_rust::{EventEmitter, HashMapRepository, OutboxRepository, Outboxable};
-use std::time::Duration;
-
-let repo = HashMapRepository::new().with_outbox();
-let mut emitter = EventEmitter::new();
-
-emitter.on("TodoInitialized", |payload| {
-    println!("local handler: {}", payload);
-});
-
-let batch = repo.claim_outbox("emitter-1", 100, Duration::from_secs(30))?;
-for record in &batch {
-    emitter.emit(&record.event_type, record.payload.clone());
-}
-let ids: Vec<u64> = batch.iter().map(|record| record.id).collect();
-repo.complete_outbox(&ids)?;
-```
-
-#### 3) Outbox Worker + Publisher
-
-```rust
-use sourced_rust::{HashMapRepository, LogPublisher, OutboxWorker, Outboxable};
-use std::time::Duration;
-
-let repo = HashMapRepository::new().with_outbox();
-let mut worker = OutboxWorker::new(repo, LogPublisher::new());
-
-worker.drain_once("logger-1", 100, Duration::from_secs(30), 3)?;
-
-// Or run a loop with exponential backoff when idle:
-// worker.drain_loop("logger-1", 100, Duration::from_secs(30), 3, Duration::from_secs(1), Duration::from_secs(30), || false)?;
-```
-
-#### Helpers: attempt_outbox / deliver_outbox
-
-If you want built-in retry handling, the outbox module provides two helpers:
-
-- `attempt_outbox(...)` — claim + handle + release on error.
-- `deliver_outbox(...)` — same as attempt, but fails after `max_attempts`.
-
-```rust
-use sourced_rust::{HashMapRepository, OutboxDelivery, Outboxable};
-use std::time::Duration;
-
-let repo = HashMapRepository::new().with_outbox();
-
-let result = repo.deliver_outbox("worker-1", 100, Duration::from_secs(30), 3, |record| {
-    // publish to your bus
-    let _ = &record.payload;
-    Ok::<_, std::io::Error>(())
-})?;
-
-assert!(result.claimed >= result.completed);
 ```
 
 ## Patterns for Simple Models (PORO)
@@ -449,17 +378,12 @@ That is the same spirit as POCO/POJO: keep models simple, put infrastructure at 
 
 ```
 src/
-  entity.rs            # Entity implementation
-  event.rs             # Event trait
-  event_record.rs      # EventRecord definition
-  local_event.rs       # Local event queue item
-  outbox_record.rs     # Outbox record definition
-  outbox_repository.rs # Outbox access trait
-  repository.rs        # Repository trait
-  hashmap/repository.rs# In-memory repository
-  queued_repository.rs # Queue-based locking wrapper
-  lock.rs              # Internal lock primitive
-  error.rs             # Repository error types
+  core/                # Entity, events, repository traits, aggregate helpers
+  emitter/             # In-process event emitter helpers
+  hashmap/             # In-memory repository
+  queued/              # Queue-based locking wrapper
+  outbox/              # Outbox message aggregate + worker + publishers
+  lib.rs               # Public exports
 ```
 
 ## Running Tests
