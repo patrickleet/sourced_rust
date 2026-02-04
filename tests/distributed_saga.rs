@@ -24,8 +24,8 @@
 mod support;
 
 use sourced_rust::{
-    bus::Subscriber, AggregateBuilder, HashMapRepository, InMemoryQueue, OutboxCommitExt,
-    OutboxMessage, OutboxWorkerThread, Queueable,
+    bus::Bus, AggregateBuilder, HashMapRepository, InMemoryQueue, OutboxCommitExt, OutboxMessage,
+    OutboxWorkerThread, Queueable,
 };
 use std::sync::mpsc::channel;
 use std::thread;
@@ -33,7 +33,6 @@ use std::time::Duration;
 use support::order::{
     Inventory, InventoryReservedPayload, Order, OrderCreatedPayload, OrderFulfillmentSaga,
     OrderItem, Payment, PaymentSucceededPayload, SagaCompletedPayload, SagaStartedPayload,
-    SagaStatus,
 };
 
 // ============================================================================
@@ -61,6 +60,9 @@ fn distributed_saga_with_threads() {
             Duration::from_millis(10),
         );
         let saga_repo = repo.queued().aggregate::<OrderFulfillmentSaga>();
+
+        // Create a bus for this service
+        let bus = Bus::from_queue(saga_queue);
 
         // === Start the saga ===
         let saga_id = "saga-001".to_string();
@@ -94,14 +96,22 @@ fn distributed_saga_with_threads() {
         .unwrap();
         saga_repo.outbox(&mut outbox).commit(&mut saga).unwrap();
 
-        println!("[Saga Orchestrator] Started saga {}, waiting for events...", saga_id);
+        println!(
+            "[Saga Orchestrator] Started saga {}, waiting for events...",
+            saga_id
+        );
 
-        // === Listen for events and advance saga state ===
-        let subscriber = saga_queue.new_subscriber();
+        // === Subscribe to events that advance saga state ===
+        let events = bus.subscribe(&[
+            "OrderCreated",
+            "InventoryReserved",
+            "PaymentSucceeded",
+            "OrderCompleted",
+        ]);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
 
         while std::time::Instant::now() < deadline {
-            if let Ok(Some(event)) = subscriber.poll(100) {
+            if let Ok(Some(event)) = events.recv(100) {
                 match event.event_type.as_str() {
                     "OrderCreated" => {
                         let data: OrderCreatedPayload = event.decode().unwrap();
@@ -153,13 +163,16 @@ fn distributed_saga_with_threads() {
                             break;
                         }
                     }
-                    _ => {}
+                    _ => unreachable!("Subscribed events are filtered"),
                 }
             }
         }
 
         let final_saga = saga_repo.peek(&saga_id).unwrap().unwrap();
-        println!("[Saga Orchestrator] Final saga status: {:?}", final_saga.status());
+        println!(
+            "[Saga Orchestrator] Final saga status: {:?}",
+            final_saga.status()
+        );
 
         worker.stop();
     });
@@ -177,14 +190,18 @@ fn distributed_saga_with_threads() {
         );
         let order_repo = repo.queued().aggregate::<Order>();
 
+        // Create a bus for this service
+        let bus = Bus::from_queue(order_queue);
+
         println!("[Order Service] Waiting for SagaStarted...");
 
-        let subscriber = order_queue.new_subscriber();
+        // Subscribe only to events this service cares about
+        let events = bus.subscribe(&["SagaStarted", "PaymentSucceeded"]);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut order_id: Option<String> = None;
 
         while std::time::Instant::now() < deadline {
-            if let Ok(Some(event)) = subscriber.poll(100) {
+            if let Ok(Some(event)) = events.recv(100) {
                 match event.event_type.as_str() {
                     "SagaStarted" => {
                         let data: SagaStartedPayload = event.decode().unwrap();
@@ -218,7 +235,9 @@ fn distributed_saga_with_threads() {
                     "PaymentSucceeded" => {
                         let data: PaymentSucceededPayload = event.decode().unwrap();
                         if Some(&data.order_id) == order_id.as_ref() {
-                            println!("[Order Service] Received PaymentSucceeded, completing order...");
+                            println!(
+                                "[Order Service] Received PaymentSucceeded, completing order..."
+                            );
 
                             let mut order = order_repo.get(&data.order_id).unwrap().unwrap();
                             order.mark_inventory_reserved();
@@ -238,7 +257,7 @@ fn distributed_saga_with_threads() {
                             break;
                         }
                     }
-                    _ => {}
+                    _ => unreachable!("Subscribed events are filtered"),
                 }
             }
         }
@@ -259,45 +278,49 @@ fn distributed_saga_with_threads() {
         );
         let inventory_repo = repo.queued().aggregate::<Inventory>();
 
+        // Create a bus for this service
+        let bus = Bus::from_queue(inventory_queue);
+
         // Initialize inventory first
         let mut inv = Inventory::new();
         inv.initialize("WIDGET-001".to_string(), 100);
         inventory_repo.commit(&mut inv).unwrap();
 
-        println!("[Inventory Service] Initialized with 100 WIDGET-001, waiting for OrderCreated...");
+        println!(
+            "[Inventory Service] Initialized with 100 WIDGET-001, waiting for OrderCreated..."
+        );
 
-        let subscriber = inventory_queue.new_subscriber();
+        // Subscribe only to OrderCreated events
+        let events = bus.subscribe(&["OrderCreated"]);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
 
         while std::time::Instant::now() < deadline {
-            if let Ok(Some(event)) = subscriber.poll(100) {
-                if event.event_type == "OrderCreated" {
-                    let data: OrderCreatedPayload = event.decode().unwrap();
-                    println!("[Inventory Service] Received OrderCreated, reserving inventory...");
+            if let Ok(Some(event)) = events.recv(100) {
+                let data: OrderCreatedPayload = event.decode().unwrap();
+                println!("[Inventory Service] Received OrderCreated, reserving inventory...");
 
-                    let item = &data.items[0];
-                    let mut inv = inventory_repo.get(&item.sku).unwrap().unwrap();
+                let item = &data.items[0];
+                let mut inv = inventory_repo.get(&item.sku).unwrap().unwrap();
 
-                    if inv.can_reserve(item.quantity) {
-                        inv.reserve(data.order_id.clone(), item.quantity);
+                if inv.can_reserve(item.quantity) {
+                    inv.reserve(data.order_id.clone(), item.quantity);
 
-                        let mut outbox = OutboxMessage::encode(
-                            &format!("{}:reserved", data.order_id),
-                            "InventoryReserved",
-                            &InventoryReservedPayload {
-                                order_id: data.order_id.clone(),
-                                sku: item.sku.clone(),
-                                quantity: item.quantity,
-                            },
-                        )
-                        .unwrap();
-                        inventory_repo.outbox(&mut outbox).commit(&mut inv).unwrap();
+                    let mut outbox = OutboxMessage::encode(
+                        &format!("{}:reserved", data.order_id),
+                        "InventoryReserved",
+                        &InventoryReservedPayload {
+                            order_id: data.order_id.clone(),
+                            sku: item.sku.clone(),
+                            quantity: item.quantity,
+                        },
+                    )
+                    .unwrap();
+                    inventory_repo.outbox(&mut outbox).commit(&mut inv).unwrap();
 
-                        println!("[Inventory Service] Reserved {} units", item.quantity);
-                        thread::sleep(Duration::from_millis(50));
-                    }
-                    break;
+                    println!("[Inventory Service] Reserved {} units", item.quantity);
+                    thread::sleep(Duration::from_millis(50));
                 }
+                break;
             }
         }
 
@@ -317,38 +340,40 @@ fn distributed_saga_with_threads() {
         );
         let payment_repo = repo.queued().aggregate::<Payment>();
 
+        // Create a bus for this service
+        let bus = Bus::from_queue(payment_queue);
+
         println!("[Payment Service] Waiting for InventoryReserved...");
 
-        let subscriber = payment_queue.new_subscriber();
+        // Subscribe only to InventoryReserved events
+        let events = bus.subscribe(&["InventoryReserved"]);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
 
         while std::time::Instant::now() < deadline {
-            if let Ok(Some(event)) = subscriber.poll(100) {
-                if event.event_type == "InventoryReserved" {
-                    let data: InventoryReservedPayload = event.decode().unwrap();
-                    println!("[Payment Service] Received InventoryReserved, processing payment...");
+            if let Ok(Some(event)) = events.recv(100) {
+                let data: InventoryReservedPayload = event.decode().unwrap();
+                println!("[Payment Service] Received InventoryReserved, processing payment...");
 
-                    let mut payment = Payment::new();
-                    let payment_id = format!("pay-{}", data.order_id);
-                    payment.initiate(payment_id.clone(), data.order_id.clone(), 5000);
-                    payment.authorize("txn-123".to_string());
-                    payment.capture();
+                let mut payment = Payment::new();
+                let payment_id = format!("pay-{}", data.order_id);
+                payment.initiate(payment_id.clone(), data.order_id.clone(), 5000);
+                payment.authorize("txn-123".to_string());
+                payment.capture();
 
-                    let mut outbox = OutboxMessage::encode(
-                        &format!("{}:paid", data.order_id),
-                        "PaymentSucceeded",
-                        &PaymentSucceededPayload {
-                            order_id: data.order_id.clone(),
-                            payment_id,
-                        },
-                    )
-                    .unwrap();
-                    payment_repo.outbox(&mut outbox).commit(&mut payment).unwrap();
+                let mut outbox = OutboxMessage::encode(
+                    &format!("{}:paid", data.order_id),
+                    "PaymentSucceeded",
+                    &PaymentSucceededPayload {
+                        order_id: data.order_id.clone(),
+                        payment_id,
+                    },
+                )
+                .unwrap();
+                payment_repo.outbox(&mut outbox).commit(&mut payment).unwrap();
 
-                    println!("[Payment Service] Payment succeeded!");
-                    thread::sleep(Duration::from_millis(50));
-                    break;
-                }
+                println!("[Payment Service] Payment succeeded!");
+                thread::sleep(Duration::from_millis(50));
+                break;
             }
         }
 

@@ -1,6 +1,7 @@
 //! Service Bus - wraps publisher and subscriber for a service.
 
-use super::{Event, PublishError, Publisher, Subscriber};
+use super::in_memory_queue::EventReceiver;
+use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
 
 /// Service bus - wraps publisher and subscriber for a service.
 ///
@@ -73,6 +74,31 @@ impl<P: Publisher, S: Subscriber> Bus<P, S> {
     /// Get a reference to the underlying subscriber.
     pub fn subscriber(&self) -> &S {
         &self.subscriber
+    }
+}
+
+impl<P: Publisher, S: Subscribable> Bus<P, S> {
+    /// Subscribe to specific event types, returning a filtered receiver.
+    ///
+    /// The returned `EventReceiver` will only deliver events matching the
+    /// specified types. Other events are skipped.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let bus = Bus::from_queue(InMemoryQueue::new());
+    ///
+    /// // Subscribe to specific events
+    /// let orders = bus.subscribe(&["OrderCreated", "OrderCompleted"]);
+    /// let payments = bus.subscribe(&["PaymentSucceeded"]);
+    ///
+    /// // Each receiver only gets its subscribed event types
+    /// while let Ok(Some(event)) = orders.recv(100) {
+    ///     // event.event_type is "OrderCreated" or "OrderCompleted"
+    /// }
+    /// ```
+    pub fn subscribe(&self, event_types: &[&str]) -> EventReceiver<S> {
+        EventReceiver::new(self.subscriber.new_subscriber(), event_types)
     }
 }
 
