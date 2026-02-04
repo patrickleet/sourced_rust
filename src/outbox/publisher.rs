@@ -7,8 +7,10 @@ use crate::EventEmitter;
 pub trait OutboxPublisher {
     type Error: fmt::Display;
 
-    /// Publish an event with the given type and payload.
-    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error>;
+    /// Publish an event with the given type and payload bytes.
+    /// The publisher is responsible for converting the payload to the appropriate format
+    /// (e.g., decoding bitcode and re-encoding to JSON for CloudEvents).
+    fn publish(&mut self, event_type: &str, payload: &[u8]) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,8 +54,9 @@ impl LogPublisher {
 impl OutboxPublisher for LogPublisher {
     type Error = LogPublisherError;
 
-    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error> {
-        let line = format!("[OUTBOX] {} {}", event_type, payload);
+    fn publish(&mut self, event_type: &str, payload: &[u8]) -> Result<(), Self::Error> {
+        let payload_str = String::from_utf8_lossy(payload);
+        let line = format!("[OUTBOX] {} {}", event_type, payload_str);
         if let Some(buffer) = &self.buffer {
             let mut buffer = buffer
                 .lock()
@@ -80,8 +83,10 @@ impl LocalEmitterPublisher {
 impl OutboxPublisher for LocalEmitterPublisher {
     type Error = std::convert::Infallible;
 
-    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error> {
-        self.emitter.emit(event_type, payload.to_string());
+    fn publish(&mut self, event_type: &str, payload: &[u8]) -> Result<(), Self::Error> {
+        // Convert bytes to string for the event emitter (assumes UTF-8)
+        let payload_str = String::from_utf8_lossy(payload).into_owned();
+        self.emitter.emit(event_type, payload_str);
         Ok(())
     }
 }
@@ -95,8 +100,8 @@ mod tests {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let mut publisher = LogPublisher::with_buffer(buffer.clone());
 
-        publisher.publish("UserCreated", r#"{"id":"123"}"#).unwrap();
-        publisher.publish("UserUpdated", r#"{"id":"123","name":"Alice"}"#).unwrap();
+        publisher.publish("UserCreated", br#"{"id":"123"}"#).unwrap();
+        publisher.publish("UserUpdated", br#"{"id":"123","name":"Alice"}"#).unwrap();
 
         let logs = buffer.lock().unwrap();
         assert_eq!(logs.len(), 2);

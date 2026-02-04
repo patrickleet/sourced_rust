@@ -39,10 +39,6 @@ impl Lock {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_locked(&self) -> bool {
-        *self.state.lock().unwrap()
-    }
 }
 
 #[cfg(test)]
@@ -52,14 +48,15 @@ mod tests {
     #[test]
     fn test_lock_new() {
         let lock = Lock::new();
-        assert!(!lock.is_locked());
+        assert!(lock.try_lock()); // unlocked by default
+        lock.unlock();
     }
 
     #[test]
     fn test_lock_lock() {
         let lock = Lock::new();
         lock.lock();
-        assert!(lock.is_locked());
+        assert!(!lock.try_lock()); // already locked
     }
 
     #[test]
@@ -76,16 +73,6 @@ mod tests {
         let lock = Lock::new();
         lock.lock();
         lock.unlock();
-        assert!(!lock.is_locked());
-    }
-
-    #[test]
-    fn test_lock_is_locked() {
-        let lock = Lock::new();
-        assert!(!lock.is_locked());
-        lock.lock();
-        assert!(lock.is_locked());
-        lock.unlock();
-        assert!(!lock.is_locked());
+        assert!(lock.try_lock()); // can lock again after unlock
     }
 }

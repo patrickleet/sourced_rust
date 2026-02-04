@@ -76,7 +76,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             let mut message = hydrate::<OutboxMessage>(entity)?;
 
             if message.is_pending() {
-                message.claim(worker_id, lease);
+                message.claim_for(worker_id, lease);
                 *events = message.entity.events().to_vec();
                 claimed.push(message);
             }

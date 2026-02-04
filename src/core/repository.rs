@@ -1,27 +1,58 @@
-use super::committable::Committable;
 use super::entity::Entity;
 use super::error::RepositoryError;
+use super::gettable::{GetMany, GetOne, Gettable};
 
-/// Core repository trait for persisting entities.
-///
-/// # Examples
-///
-/// ```ignore
-/// // Single entity
-/// repo.commit(&mut entity)?;
-///
-/// // Multiple entities
-/// repo.commit(&mut [&mut a, &mut b])?;
-/// ```
-pub trait Repository {
-    /// Get an entity by ID.
-    fn get(&self, id: &str) -> Result<Option<Entity>, RepositoryError>;
+/// Get one or more entities by ID(s).
+pub trait Get: GetOne + GetMany {
+    fn get<G: Gettable>(&self, gettable: G) -> Result<G::Output, RepositoryError>
+    where
+        Self: Sized,
+    {
+        gettable.get_from(self)
+    }
+}
 
-    /// Get multiple entities by IDs.
-    fn get_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError>;
+// Blanket implementation: anything implementing GetOne + GetMany is Get
+impl<T: GetOne + GetMany> Get for T {}
 
-    /// Commit one or more entities atomically.
-    ///
-    /// Accepts single entities or slices via the `Committable` trait.
+/// Find all entities matching a predicate.
+pub trait Find {
+    fn find<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool;
+}
+
+/// Find the first entity matching a predicate.
+pub trait FindOne {
+    fn find_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool;
+}
+
+/// Check if any entity matches a predicate.
+pub trait Exists {
+    fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool;
+}
+
+/// Count entities matching a predicate.
+pub trait Count {
+    fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool;
+}
+
+use super::committable::Committable;
+
+/// Commit one or more entities.
+pub trait Commit {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError>;
 }
+
+/// Full repository trait combining all capabilities.
+pub trait Repository: Get + Find + FindOne + Exists + Count + Commit {}
+
+// Blanket implementation: anything implementing all traits is a Repository
+impl<T> Repository for T where T: Get + Find + FindOne + Exists + Count + Commit {}
+

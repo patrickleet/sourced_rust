@@ -4,25 +4,8 @@ use crate::core::{Entity, LocalEvent};
 
 /// Extension wrapper that adds event emitter capabilities to an Entity.
 ///
-/// This provides the `enqueue`, `on`, and `emit` functionality that allows
-/// running callbacks after successful commits.
-///
-/// # Example
-///
-/// ```ignore
-/// use sourced_rust::emitter::EntityEmitter;
-///
-/// let mut emitter = EntityEmitter::new(entity);
-///
-/// emitter.on("TodoCreated", |data| {
-///     println!("Todo created: {}", data);
-/// });
-///
-/// emitter.enqueue("TodoCreated", payload);
-///
-/// // After commit, call emit_queued to fire callbacks
-/// emitter.emit_queued();
-/// ```
+/// Provides `enqueue`, `on`, and `emit` functionality for running
+/// callbacks after successful commits.
 pub struct EntityEmitter {
     entity: Entity,
     event_emitter: EventEmitter,

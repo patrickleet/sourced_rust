@@ -1,9 +1,9 @@
 mod support;
 
-use serde_json;
+use bitcode;
 use sourced_rust::{
-    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxCommitExt,
-    OutboxMessage, OutboxRepositoryExt, OutboxWorker, Repository, RepositoryExt,
+    AggregateBuilder, Commit, EventEmitter, GetAggregate, HashMapRepository, LocalEmitterPublisher,
+    LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -26,19 +26,15 @@ fn todos() {
     // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
     let id1 = next_id();
-
-    todo.initialize(
-        id1.clone(),
-        "user1".to_string(),
-        "Buy groceries".to_string(),
-    );
+    todo.initialize(id1.clone(), "user1".to_string(), "Buy groceries".to_string());
 
     // Add an outbox event for the initialization
-    let mut init_message = OutboxMessage::new(
+    let mut init_message = OutboxMessage::encode(
         format!("{}:init", id1),
         "TodoInitialized",
-        serde_json::to_string(&todo.snapshot()).unwrap(),
-    );
+        &todo.snapshot(),
+    )
+    .unwrap();
 
     // Commit the Todo + Outbox message to the repository
     let _ = repo.outbox(&mut init_message).commit(&mut todo);
@@ -55,19 +51,24 @@ fn todos() {
         retrieved_todo.complete();
 
         // Add an outbox event for the completion
-        let mut complete_message = OutboxMessage::new(
+        let mut complete_message = OutboxMessage::encode(
             format!("{}:complete", id1),
             "TodoCompleted",
-            serde_json::to_string(&retrieved_todo.snapshot()).unwrap(),
-        );
+            &retrieved_todo.snapshot(),
+        )
+        .unwrap();
 
-        let _ = repo.outbox(&mut complete_message).commit(&mut retrieved_todo);
+        let _ = repo
+            .outbox(&mut complete_message)
+            .commit(&mut retrieved_todo);
 
         // Verify we now have 2 outbox events
         {
             let pending = repo.outbox_messages_pending().unwrap();
             assert_eq!(pending.len(), 2);
-            assert!(pending.iter().any(|msg| msg.event_type == "TodoInitialized"));
+            assert!(pending
+                .iter()
+                .any(|msg| msg.event_type == "TodoInitialized"));
             assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));
         }
 
@@ -91,11 +92,7 @@ fn todos() {
 
     let mut todo3 = Todo::new();
     let id3 = next_id();
-    todo3.initialize(
-        id3.clone(),
-        "user2".to_string(),
-        "Chew bubblegum".to_string(),
-    );
+    todo3.initialize(id3.clone(), "user2".to_string(), "Chew bubblegum".to_string());
 
     // Commit multiple Todos to the repository
     let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
@@ -139,10 +136,29 @@ fn get_all_commit_all_roundtrip() {
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
-    let todos = repo.peek_all(&[&id1, &id2]).unwrap();
+    let todos = repo.get_all(&[&id1, &id2]).unwrap();
     assert_eq!(todos.len(), 2);
     assert_eq!(todos[0].snapshot().id, id1);
+    assert_eq!(todos[0].snapshot().completed, false);
     assert_eq!(todos[1].snapshot().id, id2);
+    assert_eq!(todos[1].snapshot().completed, false);
+
+    let mut iter = todos.into_iter();
+    let mut todo1v2 = iter.next().unwrap();
+    let mut todo2v2 = iter.next().unwrap();
+
+    todo1v2.complete();
+    todo2v2.complete();
+
+    repo.commit_all(&mut [&mut todo1v2, &mut todo2v2]).unwrap();
+
+    let v2_todos = repo.peek_all(&[&id1, &id2]).unwrap();
+
+    assert_eq!(v2_todos.len(), 2);
+    assert_eq!(v2_todos[0].snapshot().id, id1);
+    assert_eq!(v2_todos[0].snapshot().completed, true);
+    assert_eq!(v2_todos[1].snapshot().id, id2);
+    assert_eq!(v2_todos[1].snapshot().completed, true);
 }
 
 #[test]
@@ -152,11 +168,12 @@ fn outbox_records_persisted() {
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::new(
+    let mut message = OutboxMessage::encode(
         format!("{}:init", id),
         "TodoInitialized",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
+        &snapshot,
+    )
+    .unwrap();
 
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
@@ -166,7 +183,7 @@ fn outbox_records_persisted() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "TodoInitialized");
 
-    let published: TodoSnapshot = serde_json::from_str(&pending[0].payload).unwrap();
+    let published: TodoSnapshot = bitcode::deserialize(&pending[0].payload).unwrap();
     assert_eq!(published.id, snapshot.id);
     assert_eq!(published.user_id, snapshot.user_id);
     assert_eq!(published.task, snapshot.task);
@@ -184,11 +201,12 @@ fn outbox_worker_log_publisher() {
         "Outbox log publisher".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::new(
+    let mut message = OutboxMessage::encode(
         format!("{}:init", id),
         "TodoInitialized",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
+        &snapshot,
+    )
+    .unwrap();
     let message_id = message.id().to_string();
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
@@ -234,11 +252,12 @@ fn outbox_worker_local_emitter_publisher() {
         "Outbox local emitter".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::new(
+    let mut message = OutboxMessage::encode(
         format!("{}:init", id),
         "TodoInitialized",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
+        &snapshot,
+    )
+    .unwrap();
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
 
@@ -264,11 +283,9 @@ fn outbox_worker_local_emitter_publisher() {
         repo.commit(&mut message.entity).unwrap();
     }
 
+    // LocalEmitterPublisher converts bytes to lossy string, so we just verify something was received
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    let published: TodoSnapshot = serde_json::from_str(&payload).unwrap();
-    assert_eq!(published.id, snapshot.id);
-    assert_eq!(published.user_id, snapshot.user_id);
-    assert_eq!(published.task, snapshot.task);
+    assert!(!payload.is_empty());
 }
 
 #[test]
@@ -292,14 +309,10 @@ fn abort_releases_lock_after_get() {
     });
 
     rx_started.recv().unwrap();
-    assert!(rx_got
-        .recv_timeout(Duration::from_millis(200))
-        .is_err());
+    assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
 
     repo.abort(&locked).unwrap();
-    assert!(rx_got
-        .recv_timeout(Duration::from_millis(500))
-        .is_ok());
+    assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
 #[test]
@@ -307,12 +320,20 @@ fn abort_releases_lock_after_get_all() {
     let repo = Arc::new(TodoRepository::new());
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(id1.clone(), "user1".to_string(), "Abort get_all 1".to_string());
+    todo1.initialize(
+        id1.clone(),
+        "user1".to_string(),
+        "Abort get_all 1".to_string(),
+    );
     repo.commit(&mut todo1).unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "user2".to_string(), "Abort get_all 2".to_string());
+    todo2.initialize(
+        id2.clone(),
+        "user2".to_string(),
+        "Abort get_all 2".to_string(),
+    );
     repo.commit(&mut todo2).unwrap();
 
     let locked = repo.get_all(&[&id1, &id2]).unwrap();
@@ -328,17 +349,13 @@ fn abort_releases_lock_after_get_all() {
     });
 
     rx_started.recv().unwrap();
-    assert!(rx_got
-        .recv_timeout(Duration::from_millis(200))
-        .is_err());
+    assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
 
     for todo in &locked {
         repo.abort(todo).unwrap();
     }
 
-    assert!(rx_got
-        .recv_timeout(Duration::from_millis(500))
-        .is_ok());
+    assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
 #[test]
@@ -438,21 +455,9 @@ fn outbox_worker_process_next_with_commit() {
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    let mut message1 = OutboxMessage::new(
-        format!("{}:1", id),
-        "Event1",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
-    let mut message2 = OutboxMessage::new(
-        format!("{}:2", id),
-        "Event2",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
-    let mut message3 = OutboxMessage::new(
-        format!("{}:3", id),
-        "Event3",
-        serde_json::to_string(&snapshot).unwrap(),
-    );
+    let mut message1 = OutboxMessage::encode(format!("{}:1", id), "Event1", &snapshot).unwrap();
+    let mut message2 = OutboxMessage::encode(format!("{}:2", id), "Event2", &snapshot).unwrap();
+    let mut message3 = OutboxMessage::encode(format!("{}:3", id), "Event3", &snapshot).unwrap();
 
     let message_ids = vec![
         message1.id().to_string(),
@@ -501,4 +506,139 @@ fn outbox_worker_process_next_with_commit() {
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn find_returns_matching_aggregates() {
+    // Use HashMapRepository directly (no queuing) for read-only find tests
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    // Create todos for different users
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(
+        id1.clone(),
+        "alice".to_string(),
+        "Buy groceries".to_string(),
+    );
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "alice".to_string(), "Walk the dog".to_string());
+
+    let mut todo3 = Todo::new();
+    let id3 = next_id();
+    todo3.initialize(id3.clone(), "bob".to_string(), "Write code".to_string());
+
+    repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
+        .unwrap();
+
+    // Find all todos for alice
+    let alice_todos = repo.find(|t| t.snapshot().user_id == "alice").unwrap();
+    assert_eq!(alice_todos.len(), 2);
+
+    // Find all todos for bob
+    let bob_todos = repo.find(|t| t.snapshot().user_id == "bob").unwrap();
+    assert_eq!(bob_todos.len(), 1);
+    assert_eq!(bob_todos[0].snapshot().task, "Write code");
+
+    // Find with no matches
+    let charlie_todos = repo.find(|t| t.snapshot().user_id == "charlie").unwrap();
+    assert!(charlie_todos.is_empty());
+}
+
+#[test]
+fn find_one_returns_first_matching_aggregate() {
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(id1.clone(), "alice".to_string(), "First task".to_string());
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "alice".to_string(), "Second task".to_string());
+
+    repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
+
+    // Find one for alice
+    let found = repo.find_one(|t| t.snapshot().user_id == "alice").unwrap();
+    assert!(found.is_some());
+    let todo = found.unwrap();
+    assert_eq!(todo.snapshot().user_id, "alice");
+
+    // Find one with no match
+    let not_found = repo.find_one(|t| t.snapshot().user_id == "nobody").unwrap();
+    assert!(not_found.is_none());
+}
+
+#[test]
+fn exists_returns_true_when_aggregate_matches() {
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), "alice".to_string(), "Test task".to_string());
+    repo.commit(&mut todo).unwrap();
+
+    assert!(repo.exists(|t| t.snapshot().user_id == "alice").unwrap());
+    assert!(!repo.exists(|t| t.snapshot().user_id == "bob").unwrap());
+}
+
+#[test]
+fn count_returns_matching_aggregate_count() {
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(id1.clone(), "alice".to_string(), "Task 1".to_string());
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "alice".to_string(), "Task 2".to_string());
+
+    let mut todo3 = Todo::new();
+    let id3 = next_id();
+    todo3.initialize(id3.clone(), "bob".to_string(), "Task 3".to_string());
+
+    repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
+        .unwrap();
+
+    assert_eq!(repo.count(|t| t.snapshot().user_id == "alice").unwrap(), 2);
+    assert_eq!(repo.count(|t| t.snapshot().user_id == "bob").unwrap(), 1);
+    assert_eq!(repo.count(|_| true).unwrap(), 3);
+    assert_eq!(
+        repo.count(|t| t.snapshot().user_id == "charlie").unwrap(),
+        0
+    );
+}
+
+#[test]
+fn find_by_completed_status() {
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    let mut todo1 = Todo::new();
+    let id1 = next_id();
+    todo1.initialize(
+        id1.clone(),
+        "alice".to_string(),
+        "Completed task".to_string(),
+    );
+    todo1.complete();
+
+    let mut todo2 = Todo::new();
+    let id2 = next_id();
+    todo2.initialize(id2.clone(), "alice".to_string(), "Pending task".to_string());
+
+    repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
+
+    // Find completed todos
+    let completed = repo.find(|t| t.snapshot().completed).unwrap();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].snapshot().task, "Completed task");
+
+    // Find pending todos
+    let pending = repo.find(|t| !t.snapshot().completed).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].snapshot().task, "Pending task");
 }

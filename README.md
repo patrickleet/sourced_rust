@@ -18,9 +18,8 @@ Sourced Rust is inspired by the original sourced project by Matt Walters. Patric
 
 ```rust
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sourced_rust::{
-    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, OutboxMessage,
+    aggregate, digest, AggregateBuilder, Entity, HashMapRepository, OutboxMessage,
     OutboxCommitExt, Queueable,
 };
 
@@ -40,40 +39,17 @@ struct TodoSnapshot {
     completed: bool,
 }
 
-enum TodoEvent {
-    Initialized { id: String, user_id: String, task: String },
-    Completed { id: String },
-}
-
-impl TodoEvent {
-    fn apply(self, todo: &mut Todo) {
-        match self {
-            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Completed { id: _ } => todo.complete(),
-        }
-    }
-}
-
 impl Todo {
+    #[digest(entity, "Initialized")]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
-        self.completed = false;
-        self.entity
-            .digest("Initialized", vec![id, self.user_id.clone(), self.task.clone()]);
     }
 
+    #[digest(entity, "Completed", self.entity.id().to_string(), when = !self.completed)]
     fn complete(&mut self) {
-        if !self.completed {
-            self.completed = true;
-            self.entity.digest("Completed", vec![self.entity.id().to_string()]);
-        }
-    }
-
-    fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
-        TodoEvent::try_from(event)?.apply(self);
-        Ok(())
+        self.completed = true;
     }
 
     fn snapshot(&self) -> TodoSnapshot {
@@ -86,9 +62,10 @@ impl Todo {
     }
 }
 
-aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialized" => (id, user_id, task) => Initialized,
-    "Completed" => (id) => Completed,
+// Generates: TodoEvent enum, TryFrom impl, apply method, and Aggregate trait impl
+aggregate!(Todo, entity {
+    "Initialized"(id, user_id, task) => initialize,
+    "Completed"(id) => complete(),
 });
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -97,20 +74,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut todo = Todo::default();
     todo.initialize("todo-1".to_string(), "user-1".to_string(), "Ship it".to_string());
-    let mut created = OutboxMessage::new(
+    let mut created = OutboxMessage::encode(
         format!("{}:init", todo.entity.id()),
         "TodoInitialized",
-        serde_json::to_string(&todo.snapshot())?,
-    );
-    repo.outbox(&mut created).commit(&mut todo)?;
+        &todo.snapshot(),
+    )?;
+
+    repo
+        .outbox(&mut created)
+        .commit(&mut todo)?;
 
     if let Some(mut todo) = repo.get("todo-1")? {
         todo.complete();
-        let mut completed = OutboxMessage::new(
+        let mut completed = OutboxMessage::encode(
             format!("{}:completed", todo.entity.id()),
             "TodoCompleted",
-            serde_json::to_string(&todo.snapshot())?,
-        );
+            &todo.snapshot(),
+        )?;
 
         repo
             .outbox(&mut completed)
@@ -233,7 +213,7 @@ flowchart LR
 
 ```rust
 use serde::{Deserialize, Serialize};
-use sourced_rust::{Entity, EventRecord, HashMapRepository, Repository};
+use sourced_rust::{aggregate, digest, Entity, HashMapRepository, Repository, hydrate};
 
 #[derive(Default)]
 struct Todo {
@@ -251,42 +231,17 @@ struct TodoSnapshot {
     completed: bool,
 }
 
-enum TodoEvent {
-    Initialized { id: String, user_id: String, task: String },
-    Completed { id: String },
-}
-
-impl TodoEvent {
-    fn apply(self, todo: &mut Todo) {
-        match self {
-            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Completed { id: _ } => todo.complete(),
-        }
-    }
-}
-
 impl Todo {
+    #[digest(entity, "Initialized")]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
-        self.entity.set_id(id.clone());
+        self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
-        self.completed = false;
-
-        self.entity
-            .digest("Initialized", vec![id, self.user_id.clone(), self.task.clone()]);
     }
 
+    #[digest(entity, "Completed", self.entity.id().to_string(), when = !self.completed)]
     fn complete(&mut self) {
-        if !self.completed {
-            self.completed = true;
-            self.entity
-                .digest("Completed", vec![self.entity.id().to_string()]);
-        }
-    }
-
-    fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
-        TodoEvent::try_from(event)?.apply(self);
-        Ok(())
+        self.completed = true;
     }
 
     fn snapshot(&self) -> TodoSnapshot {
@@ -299,9 +254,10 @@ impl Todo {
     }
 }
 
-sourced_rust::aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialized" => (id, user_id, task) => Initialized,
-    "Completed" => (id) => Completed,
+// Generates: TodoEvent enum, TryFrom, apply(), Aggregate trait
+aggregate!(Todo, entity {
+    "Initialized"(id, user_id, task) => initialize,
+    "Completed"(id) => complete(),
 });
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -312,17 +268,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     repo.commit(&mut todo.entity)?;
 
+    // Hydrate rebuilds the aggregate by replaying events
     let entity = repo.get("todo-1")?.expect("todo missing");
-    let mut rebuilt = Todo::default();
-    rebuilt.entity = entity;
-
-    // Explicit replay keeps your domain model plain.
-    let events = rebuilt.entity.events().to_vec();
-    rebuilt.entity.set_replaying(true);
-    for event in &events {
-        rebuilt.replay_event(event)?;
-    }
-    rebuilt.entity.set_replaying(false);
+    let rebuilt: Todo = hydrate(entity)?;
 
     Ok(())
 }
@@ -346,43 +294,89 @@ repo.abort("todo-1")?;
 let _ = repo.peek("todo-1")?;
 ```
 
-### Aggregate Helpers (Low Boilerplate)
+### The `#[digest]` Macro
 
-Using the same `Todo` and `TodoEvent` shape above, the macro wires the event mapping for hydration:
+The `#[digest]` attribute macro automatically inserts a digest call at the beginning of a method.
+
+**Basic usage** - captures function parameters as event arguments:
 
 ```rust
-use sourced_rust::{aggregate, Entity, EventRecord};
+use sourced_rust::digest;
+
+impl Todo {
+    #[digest(entity, "Initialized")]
+    fn initialize(&mut self, id: String, user_id: String, task: String) {
+        self.entity.set_id(&id);
+        self.user_id = user_id;
+        self.task = task;
+        self.completed = false;
+    }
+}
+```
+
+**Custom expressions** - for computed values not from function parameters:
+
+```rust
+#[digest(entity, "Completed", self.entity.id().to_string())]
+fn complete(&mut self) {
+    self.completed = true;
+}
+```
+
+**Guard conditions** - only emit event when condition is true:
+
+```rust
+#[digest(entity, "Completed", self.entity.id().to_string(), when = !self.completed)]
+fn complete(&mut self) {
+    self.completed = true;
+}
+```
+
+This wraps the entire method body in `if !self.completed { ... }`, ensuring the event is only emitted when the state actually changes.
+
+The macro arguments:
+- **entity field** (required): The field name holding the Entity (e.g., `entity`)
+- **event name** (required): String literal for the event name (e.g., `"Initialized"`)
+- **custom expressions** (optional): Comma-separated expressions to use instead of function parameters
+- **when = condition** (optional): Guard condition that must be true for the event to be emitted
+
+### The `aggregate!` Macro
+
+The `aggregate!` macro generates all the boilerplate for event-sourced aggregates:
+
+```rust
+use sourced_rust::{aggregate, digest, Entity};
 
 #[derive(Default)]
 pub struct Todo {
     pub entity: Entity,
-    // domain fields...
-}
-
-enum TodoEvent {
-    Initialized { id: String, user_id: String, task: String },
-    Completed { id: String },
-}
-
-impl TodoEvent {
-    fn apply(self, todo: &mut Todo) {
-        match self {
-            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Completed { id: _ } => todo.complete(),
-        }
-    }
+    user_id: String,
+    task: String,
+    completed: bool,
 }
 
 impl Todo {
-    pub fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
-        TodoEvent::try_from(event)?.apply(self);
-        Ok(())
+    #[digest(entity, "Initialized")]
+    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
+        self.entity.set_id(&id);
+        self.user_id = user_id;
+        self.task = task;
+    }
+
+    #[digest(entity, "Completed", self.entity.id().to_string(), when = !self.completed)]
+    pub fn complete(&mut self) {
+        self.completed = true;
     }
 }
 
-aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialized" => (id, user_id, task) => Initialized,
-    "Completed" => (id) => Completed,
+// This single line generates:
+// - enum TodoEvent { Initialized { id, user_id, task }, Completed { id } }
+// - impl TryFrom<&EventRecord> for TodoEvent
+// - impl TodoEvent { fn apply(self, agg: &mut Todo) { ... } }
+// - impl Aggregate for Todo { ... }
+aggregate!(Todo, entity {
+    "Initialized"(id, user_id, task) => initialize,
+    "Completed"(id) => complete(),  // () means method takes no args
 });
 ```
 
@@ -403,24 +397,24 @@ let todo = repo.get("todo-1")?;
 Each outbox message is its own aggregate. You commit your domain entity and one or more outbox message entities in the same repository commit.
 
 ```rust
-use serde_json;
 use sourced_rust::{AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage};
 
 let repo = HashMapRepository::new().aggregate::<Todo>();
 
 let mut todo = Todo::default();
 todo.initialize("todo-1".to_string(), "user-1".to_string(), "Buy milk".to_string());
-let snapshot = serde_json::to_string(&todo.snapshot())?;
 
-let mut message = OutboxMessage::new(
+let mut message = OutboxMessage::encode(
     format!("{}:init", todo.entity.id()),
     "TodoInitialized",
-    snapshot,
-);
+    &todo.snapshot(),
+)?;
 
 // Commit both entities atomically
 repo.outbox(&mut message).commit(&mut todo)?;
 ```
+
+The outbox uses `bitcode` for fast, compact binary serialization. The publisher receives raw bytes and can decode/re-encode to other formats (e.g., JSON for CloudEvents) as needed.
 
 ### Outbox Drainer (Separate Process)
 

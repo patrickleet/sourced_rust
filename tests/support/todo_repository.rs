@@ -13,9 +13,7 @@ pub struct TodoRepository {
 impl TodoRepository {
     pub fn new() -> Self {
         TodoRepository {
-            inner: HashMapRepository::new()
-                .queued()
-                .aggregate::<Todo>(),
+            inner: HashMapRepository::new().queued().aggregate::<Todo>(),
         }
     }
 }
