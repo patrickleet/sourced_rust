@@ -12,6 +12,12 @@ pub struct EntityEmitter {
     events_to_emit: Vec<LocalEvent>,
 }
 
+impl Default for EntityEmitter {
+    fn default() -> Self {
+        Self::new(Entity::new())
+    }
+}
+
 impl EntityEmitter {
     /// Wrap an entity with emitter capabilities.
     pub fn new(entity: Entity) -> Self {
@@ -47,6 +53,38 @@ impl EntityEmitter {
             event_type: event_type.into(),
             data: data.into(),
         });
+    }
+
+    /// Queue an event with a serializable payload.
+    /// The payload is serialized to JSON.
+    pub fn enqueue_with<T: serde::Serialize>(
+        &mut self,
+        event_type: impl Into<String>,
+        payload: &T,
+    ) {
+        if self.entity.is_replaying() {
+            return;
+        }
+        let data = serde_json::to_string(payload).unwrap_or_default();
+        self.events_to_emit.push(LocalEvent {
+            event_type: event_type.into(),
+            data,
+        });
+    }
+
+    /// Drain all queued events for external emission.
+    pub fn drain_queued_events(&mut self) -> Vec<LocalEvent> {
+        self.events_to_emit.drain(..).collect()
+    }
+
+    /// Check if the underlying entity is replaying.
+    pub fn is_replaying(&self) -> bool {
+        self.entity.is_replaying()
+    }
+
+    /// Set the replaying flag on the underlying entity.
+    pub fn set_replaying(&mut self, replaying: bool) {
+        self.entity.set_replaying(replaying);
     }
 
     /// Register a listener for an event type.

@@ -6,6 +6,157 @@ use syn::{
     parse_macro_input, Expr, FnArg, Ident, ItemFn, LitStr, Pat, Token,
 };
 
+// ============================================================================
+// #[enqueue] attribute macro
+// ============================================================================
+
+/// Attribute macro that automatically queues a local event for emission.
+///
+/// Similar to `#[digest]`, this macro captures function parameters and
+/// serializes them as the event data (using JSON). Events are queued
+/// during method execution and can be emitted after a successful commit.
+///
+/// **Requires the `emitter` feature to be enabled.**
+///
+/// # Usage
+///
+/// Basic usage with function parameters (automatically captured):
+/// ```ignore
+/// #[enqueue("OrderCreated")]
+/// fn create(&mut self, id: String, items: Vec<Item>) {
+///     // enqueue call auto-inserted, params serialized as JSON
+///     // calls self.emitter.enqueue_with(...)
+/// }
+/// ```
+///
+/// With guard condition:
+/// ```ignore
+/// #[enqueue("StepCompleted", when = self.can_complete())]
+/// fn complete_step(&mut self) {
+///     self.completed = true;
+/// }
+/// ```
+///
+/// With custom emitter field name:
+/// ```ignore
+/// #[enqueue(my_emitter, "Created")]
+/// fn create(&mut self, name: String) {
+///     // uses self.my_emitter instead of self.emitter
+/// }
+/// ```
+///
+/// The macro supports:
+/// - Default emitter field name: `emitter` (can be overridden by specifying field name first)
+/// - `when = condition`: guard that wraps the entire method body
+#[proc_macro_attribute]
+pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr with parse_enqueue_args);
+    let mut func = parse_macro_input!(item as ItemFn);
+
+    let emitter_field = &args.emitter_field;
+    let event_name = &args.event_name;
+
+    // Use function parameters - serialize as tuple to JSON
+    let param_names: Vec<_> = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some(&pat_ident.ident);
+                }
+            }
+            None
+        })
+        .collect();
+
+    let enqueue_call = if param_names.is_empty() {
+        quote! {
+            self.#emitter_field.enqueue(#event_name, "");
+        }
+    } else if param_names.len() == 1 {
+        // Single-element tuple needs trailing comma: (x,) not (x)
+        let param = &param_names[0];
+        quote! {
+            self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),));
+        }
+    } else {
+        // Multi-element tuple
+        quote! {
+            self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*));
+        }
+    };
+
+    // Build the new function body
+    let original_stmts = &func.block.stmts;
+    let new_body = if let Some(guard) = &args.guard {
+        // Wrap everything in the guard condition
+        syn::parse_quote! {
+            {
+                if #guard {
+                    #enqueue_call
+                    #(#original_stmts)*
+                }
+            }
+        }
+    } else {
+        // No guard - just prepend enqueue
+        syn::parse_quote! {
+            {
+                #enqueue_call
+                #(#original_stmts)*
+            }
+        }
+    };
+    func.block = Box::new(new_body);
+
+    TokenStream::from(quote! { #func })
+}
+
+struct EnqueueArgs {
+    emitter_field: syn::Ident,
+    event_name: LitStr,
+    guard: Option<Expr>,
+}
+
+fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs> {
+    // Check if first token is an identifier (potential emitter field) or a string literal (event name)
+    let (emitter_field, event_name) = if input.peek(LitStr) {
+        // No emitter field specified, use default "emitter"
+        let event_name: LitStr = input.parse()?;
+        (format_ident!("emitter"), event_name)
+    } else {
+        // First token is an identifier - emitter field name, event name follows
+        let first_ident: syn::Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let event_name: LitStr = input.parse()?;
+        (first_ident, event_name)
+    };
+
+    let mut guard = None;
+
+    // Parse optional guard: `when = condition`
+    if input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+
+        if input.peek(syn::Ident) {
+            let ident: syn::Ident = input.fork().parse()?;
+            if ident == "when" {
+                input.parse::<syn::Ident>()?; // consume "when"
+                input.parse::<Token![=]>()?;
+                guard = Some(input.parse()?);
+            }
+        }
+    }
+
+    Ok(EnqueueArgs {
+        emitter_field,
+        event_name,
+        guard,
+    })
+}
+
 /// Attribute macro that automatically inserts a digest call at the beginning of a method.
 ///
 /// # Usage
