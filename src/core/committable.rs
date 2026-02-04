@@ -1,12 +1,6 @@
 use super::entity::Entity;
 
 /// Trait for types that can be committed to a repository.
-///
-/// Enables flexible `commit` signatures:
-/// ```ignore
-/// repo.commit(&mut entity)?;                // single entity
-/// repo.commit(&mut [&mut a, &mut b])?;      // multiple entities
-/// ```
 pub trait Committable {
     /// Returns mutable references to all entities to be committed.
     fn entities_mut(&mut self) -> Vec<&mut Entity>;

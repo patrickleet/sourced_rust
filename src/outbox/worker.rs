@@ -96,7 +96,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
         }
 
         if message.is_pending() {
-            message.claim(&self.worker_id, self.lease);
+            message.claim_for(&self.worker_id, self.lease);
         }
 
         if !message.is_in_flight() {
@@ -115,14 +115,14 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             Err(err) => {
                 let error_msg = err.to_string();
                 if message.attempts >= self.max_attempts {
-                    message.fail(Some(&error_msg));
+                    message.fail(error_msg);
                     ProcessOneResult {
                         did_work: true,
                         failed: true,
                         ..Default::default()
                     }
                 } else {
-                    message.release(Some(&error_msg));
+                    message.release(error_msg);
                     ProcessOneResult {
                         did_work: true,
                         released: true,
@@ -178,8 +178,8 @@ mod tests {
 
     #[test]
     fn process_message_noop_for_published() {
-        let mut message = OutboxMessage::new("msg-1", "Event", "{}");
-        message.claim("worker", Duration::from_secs(1));
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec());
+        message.claim_for("worker", Duration::from_secs(1));
         message.complete();
 
         let mut worker = OutboxWorker::new(LogPublisher::default());

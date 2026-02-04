@@ -43,7 +43,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository};
+    use crate::{impl_aggregate, AggregateBuilder, Entity, EventRecord, Get, HashMapRepository};
 
     #[derive(Default)]
     struct Dummy {
@@ -55,7 +55,7 @@ mod tests {
             if self.entity.id().is_empty() {
                 self.entity.set_id("dummy-1");
             }
-            self.entity.digest("Touched", Vec::new());
+            self.entity.digest_empty("Touched");
         }
 
         fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
@@ -72,7 +72,7 @@ mod tests {
         let mut aggregate = Dummy::default();
         aggregate.touch();
 
-        let mut event = OutboxMessage::new("msg-1", "DummyTouched", "{}");
+        let mut event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec());
 
         repo.outbox(&mut event).commit(&mut aggregate).unwrap();
 

@@ -107,16 +107,24 @@ impl Entity {
         &self.events
     }
 
-    pub fn digest(&mut self, name: impl Into<String>, args: Vec<String>) {
+    /// Record an event with a serializable payload.
+    /// The payload is serialized using bitcode for compact, fast storage.
+    pub fn digest<T: serde::Serialize>(&mut self, name: impl Into<String>, payload: &T) {
         if self.replaying {
             return;
         }
 
+        let bytes = bitcode::serialize(payload).expect("failed to serialize payload");
         let sequence = self.events.len() as u64 + 1;
-        let record = EventRecord::new(name, args, sequence);
+        let record = EventRecord::new(name, bytes, sequence);
         self.events.push(record);
         self.version = self.events.len() as u64;
         self.timestamp = SystemTime::now();
+    }
+
+    /// Record an event with no payload.
+    pub fn digest_empty(&mut self, name: impl Into<String>) {
+        self.digest(name, &());
     }
 
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
@@ -164,23 +172,21 @@ mod tests {
     #[test]
     fn digest() {
         let mut entity = Entity::new();
-        entity.digest(
-            "test_event",
-            vec!["arg1".to_string(), "arg2".to_string()],
-        );
+        entity.digest("test_event", &("arg1", "arg2"));
 
         assert_eq!(entity.version(), 1);
         assert_eq!(entity.events().len(), 1);
         assert_eq!(entity.events()[0].event_name, "test_event");
-        assert_eq!(entity.events()[0].args, vec!["arg1", "arg2"]);
+        let decoded: (String, String) = entity.events()[0].decode().unwrap();
+        assert_eq!(decoded, ("arg1".to_string(), "arg2".to_string()));
         assert_eq!(entity.events()[0].sequence, 1);
     }
 
     #[test]
     fn rehydrate() {
         let mut entity = Entity::new();
-        entity.digest("test_event1", vec!["arg1".to_string()]);
-        entity.digest("test_event2", vec!["arg2".to_string()]);
+        entity.digest("test_event1", &"arg1");
+        entity.digest("test_event2", &"arg2");
 
         let mut replayed = Vec::new();
         let result = entity.rehydrate(|event| {
@@ -217,7 +223,7 @@ mod tests {
     #[test]
     fn serialize_deserialize() {
         let mut entity = Entity::new();
-        entity.digest("test_event1", vec!["arg1".to_string()]);
+        entity.digest("test_event1", &"arg1");
 
         let serialized: String = serde_json::to_string(&entity).unwrap();
         let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
@@ -234,7 +240,7 @@ mod tests {
         let mut entity = Entity::new();
         entity.replaying = true;
 
-        entity.digest("test_event", vec!["arg1".to_string()]);
+        entity.digest("test_event", &"arg1");
         assert!(entity.events().is_empty());
     }
 }

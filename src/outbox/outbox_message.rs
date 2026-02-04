@@ -2,12 +2,13 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Entity, EventRecord};
-use crate::impl_aggregate;
+use crate::core::Entity;
+use crate::digest;
 
 /// Status of an outbox message.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutboxMessageStatus {
+    #[default]
     Pending,
     InFlight,
     Published,
@@ -19,7 +20,7 @@ pub enum OutboxMessageStatus {
 pub struct OutboxMessage {
     pub entity: Entity,
     pub event_type: String,
-    pub payload: String,
+    pub payload: Vec<u8>,
     pub status: OutboxMessageStatus,
     pub created_at: SystemTime,
     pub attempts: u32,
@@ -31,11 +32,11 @@ pub struct OutboxMessage {
 impl Default for OutboxMessage {
     fn default() -> Self {
         Self {
-            entity: Entity::new(),
+            entity: Entity::default(),
             event_type: String::new(),
-            payload: String::new(),
-            status: OutboxMessageStatus::Pending,
-            created_at: SystemTime::now(),
+            payload: Vec::new(),
+            status: OutboxMessageStatus::default(),
+            created_at: SystemTime::UNIX_EPOCH,
             attempts: 0,
             last_error: None,
             worker_id: None,
@@ -47,36 +48,38 @@ impl Default for OutboxMessage {
 impl OutboxMessage {
     pub const ID_PREFIX: &'static str = "outbox:";
 
-    pub fn new(
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new outbox message with raw bytes payload.
+    pub fn create(
         id: impl Into<String>,
         event_type: impl Into<String>,
-        payload: impl Into<String>,
+        payload: Vec<u8>,
     ) -> Self {
-        let event_type = event_type.into();
-        let payload = payload.into();
-        let id = Self::normalize_id(id);
-
-        let mut message = Self {
-            entity: Entity::with_id(id),
-            event_type: event_type.clone(),
-            payload: payload.clone(),
-            status: OutboxMessageStatus::Pending,
-            created_at: SystemTime::now(),
-            attempts: 0,
-            last_error: None,
-            worker_id: None,
-            leased_until: None,
-        };
-
-        message
-            .entity
-            .digest("MessageCreated", vec![event_type, payload]);
-
+        let mut message = Self::new();
+        message.initialize(id.into(), event_type.into(), payload);
         message
     }
 
+    /// Create a new outbox message with bitcode (fast binary) serialization.
+    pub fn encode<T: Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, bitcode::Error> {
+        let bytes = bitcode::serialize(payload)?;
+        Ok(Self::create(id, event_type, bytes))
+    }
+
+    // Getters
     pub fn id(&self) -> &str {
         self.entity.id()
+    }
+
+    pub fn payload_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.payload).ok()
     }
 
     pub fn is_pending(&self) -> bool {
@@ -95,58 +98,62 @@ impl OutboxMessage {
         self.status == OutboxMessageStatus::Failed
     }
 
-    pub fn claim(&mut self, worker_id: &str, lease: Duration) {
-        if self.status != OutboxMessageStatus::Pending {
-            return;
-        }
+    // Commands
+    #[digest("MessageCreated")]
+    pub fn initialize(&mut self, id: String, event_type: String, payload: Vec<u8>) {
+        let normalized_id = Self::normalize_id(id);
+        self.entity.set_id(&normalized_id);
+        self.event_type = event_type;
+        self.payload = payload;
+        self.status = OutboxMessageStatus::Pending;
+        self.created_at = SystemTime::now();
+    }
 
+    #[digest("MessageClaimed", when = self.is_pending())]
+    pub fn claim(&mut self, worker_id: String, until_secs: u64) {
+        let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
+        self.status = OutboxMessageStatus::InFlight;
+        self.attempts += 1;
+        self.worker_id = Some(worker_id);
+        self.leased_until = Some(until_time);
+    }
+
+    /// Claim with a Duration (convenience method that computes until_secs)
+    pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) {
         let now = SystemTime::now();
         let until = now + lease;
         let until_secs = until
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-
-        self.status = OutboxMessageStatus::InFlight;
-        self.attempts += 1;
-        self.worker_id = Some(worker_id.to_string());
-        self.leased_until = Some(until);
-
-        self.entity.digest(
-            "MessageClaimed",
-            vec![worker_id.to_string(), until_secs.to_string()],
-        );
+        self.claim(worker_id.into(), until_secs);
     }
 
+    #[digest("MessagePublished", when = self.is_in_flight())]
     pub fn complete(&mut self) {
-        if self.status == OutboxMessageStatus::InFlight {
-            self.status = OutboxMessageStatus::Published;
-            self.entity.digest("MessagePublished", Vec::new());
-        }
+        self.status = OutboxMessageStatus::Published;
+        self.worker_id = None;
+        self.leased_until = None;
     }
 
-    pub fn release(&mut self, error: Option<&str>) {
-        if self.status == OutboxMessageStatus::InFlight {
-            self.status = OutboxMessageStatus::Pending;
-            self.last_error = error.map(String::from);
-            self.worker_id = None;
-            self.leased_until = None;
-            self.entity
-                .digest("MessageReleased", vec![error.unwrap_or("").to_string()]);
-        }
+    #[digest("MessageReleased", error.clone(), when = self.is_in_flight())]
+    pub fn release(&mut self, error: String) {
+        self.status = OutboxMessageStatus::Pending;
+        self.last_error = if error.is_empty() { None } else { Some(error) };
+        self.worker_id = None;
+        self.leased_until = None;
     }
 
-    pub fn fail(&mut self, error: Option<&str>) {
-        if self.status != OutboxMessageStatus::Published
-            && self.status != OutboxMessageStatus::Failed
-        {
-            self.status = OutboxMessageStatus::Failed;
-            self.last_error = error.map(String::from);
-            self.worker_id = None;
-            self.leased_until = None;
-            self.entity
-                .digest("MessageFailed", vec![error.unwrap_or("").to_string()]);
-        }
+    #[digest("MessageFailed", error.clone(), when = self.can_fail())]
+    pub fn fail(&mut self, error: String) {
+        self.status = OutboxMessageStatus::Failed;
+        self.last_error = if error.is_empty() { None } else { Some(error) };
+        self.worker_id = None;
+        self.leased_until = None;
+    }
+
+    fn can_fail(&self) -> bool {
+        self.status != OutboxMessageStatus::Published && self.status != OutboxMessageStatus::Failed
     }
 
     fn normalize_id(id: impl Into<String>) -> String {
@@ -157,62 +164,15 @@ impl OutboxMessage {
             format!("{}{}", Self::ID_PREFIX, id)
         }
     }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        match event.event_name.as_str() {
-            "MessageCreated" => {
-                let (event_type, payload) = event.args2().map_err(|e| e.to_string())?;
-                self.event_type = event_type.to_string();
-                self.payload = payload.to_string();
-                self.status = OutboxMessageStatus::Pending;
-                self.created_at = event.timestamp;
-            }
-            "MessageClaimed" => {
-                let (worker_id, until) = event.args2().map_err(|e| e.to_string())?;
-                let until_secs: u64 = until
-                    .parse()
-                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
-                let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
-
-                self.status = OutboxMessageStatus::InFlight;
-                self.attempts += 1;
-                self.worker_id = Some(worker_id.to_string());
-                self.leased_until = Some(until_time);
-            }
-            "MessagePublished" => {
-                self.status = OutboxMessageStatus::Published;
-                self.worker_id = None;
-                self.leased_until = None;
-            }
-            "MessageReleased" => {
-                let error = event.arg(0).unwrap_or("");
-                self.status = OutboxMessageStatus::Pending;
-                self.worker_id = None;
-                self.leased_until = None;
-                self.last_error = if error.is_empty() {
-                    None
-                } else {
-                    Some(error.to_string())
-                };
-            }
-            "MessageFailed" => {
-                let error = event.arg(0).unwrap_or("");
-                self.status = OutboxMessageStatus::Failed;
-                self.worker_id = None;
-                self.leased_until = None;
-                self.last_error = if error.is_empty() {
-                    None
-                } else {
-                    Some(error.to_string())
-                };
-            }
-            _ => return Err(format!("Unknown event: {}", event.event_name)),
-        }
-        Ok(())
-    }
 }
 
-impl_aggregate!(OutboxMessage, entity, replay);
+crate::aggregate!(OutboxMessage, entity {
+    "MessageCreated"(id, event_type, payload) => initialize,
+    "MessageClaimed"(worker_id, until_secs) => claim,
+    "MessagePublished"() => complete,
+    "MessageReleased"(error) => release,
+    "MessageFailed"(error) => fail,
+});
 
 #[cfg(test)]
 mod tests {
@@ -220,15 +180,21 @@ mod tests {
 
     #[test]
     fn new_message_is_pending() {
-        let message = OutboxMessage::new("msg-1", "UserCreated", r#"{"id":"123"}"#);
+        let mut message = OutboxMessage::new();
+        message.initialize(
+            "msg-1".into(),
+            "UserCreated".into(),
+            br#"{"id":"123"}"#.to_vec(),
+        );
         assert_eq!(message.event_type, "UserCreated");
         assert!(message.is_pending());
     }
 
     #[test]
     fn claim_and_complete() {
-        let mut message = OutboxMessage::new("msg-1", "Event1", "{}");
-        message.claim("worker-1", Duration::from_secs(60));
+        let mut message = OutboxMessage::new();
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec());
+        message.claim_for("worker-1", Duration::from_secs(60));
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
 
@@ -238,15 +204,16 @@ mod tests {
 
     #[test]
     fn release_and_fail() {
-        let mut message = OutboxMessage::new("msg-1", "Event1", "{}");
-        message.claim("worker-1", Duration::from_secs(60));
+        let mut message = OutboxMessage::new();
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec());
+        message.claim_for("worker-1", Duration::from_secs(60));
 
-        message.release(Some("timeout"));
+        message.release("timeout".into());
         assert!(message.is_pending());
         assert_eq!(message.last_error.as_deref(), Some("timeout"));
 
-        message.claim("worker-1", Duration::from_secs(60));
-        message.fail(Some("max retries"));
+        message.claim_for("worker-1", Duration::from_secs(60));
+        message.fail("max retries".into());
         assert!(message.is_failed());
     }
 }

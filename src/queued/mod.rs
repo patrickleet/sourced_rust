@@ -1,4 +1,7 @@
 mod lock;
 mod repository;
 
-pub use repository::{Queueable, QueuedRepository};
+pub use repository::{
+    FindOneWithOpts, FindWithOpts, GetAllWithOpts, GetWithOpts, Queueable, QueuedRepository,
+    ReadOpts, UnlockableRepository,
+};
