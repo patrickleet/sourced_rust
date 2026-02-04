@@ -27,6 +27,21 @@ impl Event {
         }
     }
 
+    /// Create an event with bitcode-serialized payload.
+    pub fn encode<T: serde::Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, bitcode::Error> {
+        let bytes = bitcode::serialize(payload)?;
+        Ok(Self::new(id, event_type, bytes))
+    }
+
+    /// Decode the payload from bitcode binary format.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, bitcode::Error> {
+        bitcode::deserialize(&self.payload)
+    }
+
     /// Create an event with a string payload.
     pub fn with_string_payload(
         id: impl Into<String>,

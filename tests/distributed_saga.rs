@@ -22,7 +22,6 @@
 
 mod support;
 
-use serde::{Deserialize, Serialize};
 use sourced_rust::{
     bus::Subscriber,
     AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, Queueable,
@@ -31,33 +30,11 @@ use std::sync::mpsc::channel;
 use std::thread;
 use std::time::Duration;
 use support::in_memory_queue::InMemoryQueue;
-use support::order::{Inventory, Order, OrderItem, Payment};
+use support::order::{
+    Inventory, InventoryReservedPayload, Order, OrderCreatedPayload, OrderItem, Payment,
+    PaymentSucceededPayload,
+};
 use support::outbox_worker_thread::OutboxWorkerThread;
-
-// ============================================================================
-// Event Payloads (shared contract between services)
-// ============================================================================
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OrderCreatedPayload {
-    pub order_id: String,
-    pub customer_id: String,
-    pub items: Vec<OrderItem>,
-    pub total_cents: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InventoryReservedPayload {
-    pub order_id: String,
-    pub sku: String,
-    pub quantity: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaymentSucceededPayload {
-    pub order_id: String,
-    pub payment_id: String,
-}
 
 // ============================================================================
 // Test
@@ -99,19 +76,17 @@ fn distributed_saga_with_threads() {
         let mut order = Order::new();
         order.create("order-001".to_string(), "customer-001".to_string(), items.clone());
 
-        let payload = serde_json::to_string(&OrderCreatedPayload {
-            order_id: "order-001".to_string(),
-            customer_id: "customer-001".to_string(),
-            items,
-            total_cents: 5000,
-        })
-        .unwrap();
-
-        let mut outbox = OutboxMessage::create(
+        let mut outbox = OutboxMessage::encode(
             "order-001:created",
             "OrderCreated",
-            payload.into_bytes(),
-        );
+            &OrderCreatedPayload {
+                order_id: "order-001".to_string(),
+                customer_id: "customer-001".to_string(),
+                items,
+                total_cents: 5000,
+            },
+        )
+        .unwrap();
         order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
 
         println!("[Order Service] Created order-001, waiting for PaymentSucceeded...");
@@ -123,8 +98,7 @@ fn distributed_saga_with_threads() {
         while std::time::Instant::now() < deadline {
             if let Ok(Some(event)) = subscriber.poll(100) {
                 if event.event_type == "PaymentSucceeded" {
-                    let data: PaymentSucceededPayload =
-                        serde_json::from_str(event.payload_str().unwrap()).unwrap();
+                    let data: PaymentSucceededPayload = event.decode().unwrap();
 
                     if data.order_id == "order-001" {
                         println!("[Order Service] Received PaymentSucceeded, completing order...");
@@ -134,12 +108,12 @@ fn distributed_saga_with_threads() {
                         order.mark_payment_processed();
                         order.complete();
 
-                        let payload = serde_json::to_string(&data).unwrap();
-                        let mut outbox = OutboxMessage::create(
+                        let mut outbox = OutboxMessage::encode(
                             "order-001:completed",
                             "OrderCompleted",
-                            payload.into_bytes(),
-                        );
+                            &data,
+                        )
+                        .unwrap();
                         order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
 
                         // Wait for outbox worker to publish
@@ -183,8 +157,7 @@ fn distributed_saga_with_threads() {
         while std::time::Instant::now() < deadline {
             if let Ok(Some(event)) = subscriber.poll(100) {
                 if event.event_type == "OrderCreated" {
-                    let data: OrderCreatedPayload =
-                        serde_json::from_str(event.payload_str().unwrap()).unwrap();
+                    let data: OrderCreatedPayload = event.decode().unwrap();
 
                     if data.order_id == "order-001" {
                         println!("[Inventory Service] Received OrderCreated, reserving inventory...");
@@ -195,18 +168,16 @@ fn distributed_saga_with_threads() {
                         if inv.can_reserve(item.quantity) {
                             inv.reserve(data.order_id.clone(), item.quantity);
 
-                            let payload = serde_json::to_string(&InventoryReservedPayload {
-                                order_id: data.order_id.clone(),
-                                sku: item.sku.clone(),
-                                quantity: item.quantity,
-                            })
-                            .unwrap();
-
-                            let mut outbox = OutboxMessage::create(
+                            let mut outbox = OutboxMessage::encode(
                                 "order-001:reserved",
                                 "InventoryReserved",
-                                payload.into_bytes(),
-                            );
+                                &InventoryReservedPayload {
+                                    order_id: data.order_id.clone(),
+                                    sku: item.sku.clone(),
+                                    quantity: item.quantity,
+                                },
+                            )
+                            .unwrap();
                             inventory_repo.outbox(&mut outbox).commit(&mut inv).unwrap();
 
                             println!("[Inventory Service] Reserved {} units", item.quantity);
@@ -245,8 +216,7 @@ fn distributed_saga_with_threads() {
         while std::time::Instant::now() < deadline {
             if let Ok(Some(event)) = subscriber.poll(100) {
                 if event.event_type == "InventoryReserved" {
-                    let data: InventoryReservedPayload =
-                        serde_json::from_str(event.payload_str().unwrap()).unwrap();
+                    let data: InventoryReservedPayload = event.decode().unwrap();
 
                     if data.order_id == "order-001" {
                         println!("[Payment Service] Received InventoryReserved, processing payment...");
@@ -257,17 +227,15 @@ fn distributed_saga_with_threads() {
                         payment.authorize("txn-123".to_string());
                         payment.capture();
 
-                        let payload = serde_json::to_string(&PaymentSucceededPayload {
-                            order_id: data.order_id.clone(),
-                            payment_id,
-                        })
-                        .unwrap();
-
-                        let mut outbox = OutboxMessage::create(
+                        let mut outbox = OutboxMessage::encode(
                             "order-001:paid",
                             "PaymentSucceeded",
-                            payload.into_bytes(),
-                        );
+                            &PaymentSucceededPayload {
+                                order_id: data.order_id.clone(),
+                                payment_id,
+                            },
+                        )
+                        .unwrap();
                         payment_repo.outbox(&mut outbox).commit(&mut payment).unwrap();
 
                         println!("[Payment Service] Payment succeeded!");

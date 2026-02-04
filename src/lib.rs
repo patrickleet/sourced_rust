@@ -44,6 +44,14 @@ pub use outbox_worker::{
     DrainResult, OutboxWorker, ProcessOneResult,
 };
 
+// Threaded outbox worker (requires bus feature)
+#[cfg(feature = "bus")]
+pub use outbox_worker::{OutboxWorkerThread, WorkerStats};
+
+// In-memory queue for testing and development (requires bus feature)
+#[cfg(feature = "bus")]
+pub use bus::InMemoryQueue;
+
 // LocalEmitterPublisher requires the emitter feature
 #[cfg(feature = "emitter")]
 pub use outbox_worker::LocalEmitterPublisher;

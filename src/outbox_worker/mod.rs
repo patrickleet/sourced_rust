@@ -31,6 +31,8 @@
 
 mod publisher;
 mod repository_ext;
+#[cfg(feature = "bus")]
+mod thread;
 mod worker;
 
 // Publishers
@@ -43,3 +45,7 @@ pub use repository_ext::OutboxRepositoryExt;
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
+
+// Threaded worker (requires bus feature)
+#[cfg(feature = "bus")]
+pub use thread::{OutboxWorkerThread, WorkerStats};
