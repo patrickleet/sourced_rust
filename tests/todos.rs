@@ -2,8 +2,8 @@ mod support;
 
 use serde_json;
 use sourced_rust::{
-    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxDelivery,
-    OutboxDeliveryResult, OutboxRepository, OutboxStatus, OutboxWorker, Repository,
+    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
+    OutboxWorker, Repository, WithOutbox,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -25,23 +25,7 @@ fn todos() {
 
     // Create a new Todo
     let mut todo = Todo::new();
-
-    // Add event listeners
     let id1 = next_id();
-    let id1_for_init = id1.clone();
-    todo.entity.on("ToDoInitialized", move |data| {
-        match Todo::deserialize(&data) {
-            Ok(deserialized_todo) => {
-                assert!(deserialized_todo.snapshot().id == id1_for_init);
-                assert!(deserialized_todo.snapshot().user_id == "user1");
-                assert!(deserialized_todo.snapshot().task == "Buy groceries");
-                assert!(!deserialized_todo.snapshot().completed);
-            }
-            Err(e) => {
-                println!("Error deserializing Todo: {}", e);
-            }
-        }
-    });
 
     todo.initialize(
         id1.clone(),
@@ -49,29 +33,40 @@ fn todos() {
         "Buy groceries".to_string(),
     );
 
+    // Add an outbox event for the initialization
+    todo.entity.outbox(
+        "TodoInitialized",
+        serde_json::to_string(&todo.snapshot()).unwrap(),
+    );
+
     // Commit the Todo to the repository
     let _ = repo.commit(&mut todo);
 
+    // Verify the outbox event was captured
+    {
+        let outbox = repo.outbox();
+        assert_eq!(outbox.pending_count(), 1);
+        assert_eq!(outbox.pending()[0].event_type, "TodoInitialized");
+    }
+
     // Retrieve the Todo from the repository and complete it, then commit again
     if let Some(mut retrieved_todo) = repo.get(&id1).unwrap() {
-        let id1_for_complete = id1.clone();
-        retrieved_todo.entity.on("ToDoCompleted", move |data| {
-            match Todo::deserialize(&data) {
-                Ok(deserialized_todo) => {
-                    assert!(deserialized_todo.snapshot().id == id1_for_complete);
-                    assert!(deserialized_todo.snapshot().user_id == "user1");
-                    assert!(deserialized_todo.snapshot().task == "Buy groceries");
-                    assert!(deserialized_todo.snapshot().completed);
-                }
-                Err(e) => {
-                    println!("Error deserializing Todo: {}", e);
-                }
-            }
-        });
-
         retrieved_todo.complete();
 
+        // Add an outbox event for the completion
+        retrieved_todo.entity.outbox(
+            "TodoCompleted",
+            serde_json::to_string(&retrieved_todo.snapshot()).unwrap(),
+        );
+
         let _ = repo.commit(&mut retrieved_todo);
+
+        // Verify we now have 2 outbox events
+        {
+            let outbox = repo.outbox();
+            assert_eq!(outbox.pending_count(), 2);
+            assert_eq!(outbox.pending()[1].event_type, "TodoCompleted");
+        }
 
         if let Some(completed_todo) = repo.get(&id1).unwrap() {
             assert!(completed_todo.snapshot().id == id1);
@@ -149,7 +144,7 @@ fn get_all_commit_all_roundtrip() {
 
 #[test]
 fn outbox_records_persisted() {
-    let repo = HashMapRepository::new();
+    let repo = HashMapRepository::new().with_outbox();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
@@ -159,64 +154,23 @@ fn outbox_records_persisted() {
 
     repo.commit(&mut todo.entity).unwrap();
 
-    let outbox = repo
-        .claim_outbox("worker-1", 10, Duration::from_secs(30))
-        .unwrap();
-    assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].aggregate_id, id);
-    assert_eq!(outbox[0].event_type, "TodoInitialized");
-    assert_eq!(outbox[0].status, OutboxStatus::InFlight);
-    let published: TodoSnapshot = serde_json::from_str(&outbox[0].payload).unwrap();
+    // Check outbox via new aggregate API
+    let outbox = repo.outbox();
+    assert_eq!(outbox.pending_count(), 1);
+
+    let pending: Vec<_> = outbox.pending();
+    assert_eq!(pending[0].event_type, "TodoInitialized");
+
+    let published: TodoSnapshot = serde_json::from_str(&pending[0].payload).unwrap();
     assert_eq!(published.id, snapshot.id);
     assert_eq!(published.user_id, snapshot.user_id);
     assert_eq!(published.task, snapshot.task);
     assert_eq!(published.completed, snapshot.completed);
-
-    repo.complete_outbox(&[outbox[0].id]).unwrap();
-    let remaining = repo.peek_outbox().unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].status, OutboxStatus::Published);
-}
-
-#[test]
-fn outbox_delivery_helpers() {
-    let repo = HashMapRepository::new();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(
-        id.clone(),
-        "user1".to_string(),
-        "Outbox retries".to_string(),
-    );
-    let snapshot = todo.snapshot();
-    todo.entity
-        .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
-    repo.commit(&mut todo.entity).unwrap();
-
-    let result = repo
-        .deliver_outbox("worker-1", 10, Duration::from_secs(30), 1, |_record| {
-            Err::<(), _>("boom")
-        })
-        .unwrap();
-
-    assert_eq!(
-        result,
-        OutboxDeliveryResult {
-            claimed: 1,
-            completed: 0,
-            released: 0,
-            failed: 1,
-        }
-    );
-
-    let outbox = repo.peek_outbox().unwrap();
-    assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].status, OutboxStatus::Failed);
 }
 
 #[test]
 fn outbox_worker_log_publisher() {
-    let repo = HashMapRepository::new();
+    let repo = HashMapRepository::new().with_outbox();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -229,28 +183,33 @@ fn outbox_worker_log_publisher() {
         .outbox("TodoInitialized", serde_json::to_string(&snapshot).unwrap());
     repo.commit(&mut todo.entity).unwrap();
 
+    // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
-    let mut worker = OutboxWorker::new(repo, publisher);
+    let mut worker = OutboxWorker::new(publisher)
+        .with_worker_id("logger-1")
+        .with_batch_size(10)
+        .with_max_attempts(3);
 
-    let result = worker
-        .drain_once("logger-1", 10, Duration::from_secs(30), 3)
-        .unwrap();
+    // Get mutable access to outbox and drain
+    // The outbox state is updated directly on put(), so no replay needed
+    let mut outbox = repo.outbox_mut();
+
+    let result = worker.drain_once(&mut outbox);
     assert_eq!(result.completed, 1);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("TodoInitialized"));
-    assert!(lines[0].contains(&snapshot.id));
 
-    let outbox = worker.repo().peek_outbox().unwrap();
-    assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].status, OutboxStatus::Published);
+    // Check record is marked as published
+    let published: Vec<_> = outbox.published();
+    assert_eq!(published.len(), 1);
 }
 
 #[test]
 fn outbox_worker_local_emitter_publisher() {
-    let repo = HashMapRepository::new();
+    let repo = HashMapRepository::new().with_outbox();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -270,11 +229,15 @@ fn outbox_worker_local_emitter_publisher() {
     });
 
     let publisher = LocalEmitterPublisher::new(emitter);
-    let mut worker = OutboxWorker::new(repo, publisher);
+    let mut worker = OutboxWorker::new(publisher)
+        .with_worker_id("emitter-1")
+        .with_batch_size(10)
+        .with_max_attempts(3);
 
-    let result = worker
-        .drain_once("emitter-1", 10, Duration::from_secs(30), 3)
-        .unwrap();
+    // Get mutable access to outbox and drain
+    let mut outbox = repo.outbox_mut();
+
+    let result = worker.drain_once(&mut outbox);
     assert_eq!(result.completed, 1);
 
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -437,3 +400,49 @@ fn queued_repo_blocks_get_until_commit() {
     rx_committed.recv().unwrap();
     assert!(rx_done.recv_timeout(Duration::from_millis(500)).is_ok());
 }
+
+#[test]
+fn outbox_worker_process_next_with_commit() {
+    let repo = HashMapRepository::new().with_outbox();
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(
+        id.clone(),
+        "user1".to_string(),
+        "Process next test".to_string(),
+    );
+    let snapshot = todo.snapshot();
+
+    // Queue 3 messages
+    todo.entity.outbox("Event1", serde_json::to_string(&snapshot).unwrap());
+    todo.entity.outbox("Event2", serde_json::to_string(&snapshot).unwrap());
+    todo.entity.outbox("Event3", serde_json::to_string(&snapshot).unwrap());
+    repo.commit(&mut todo.entity).unwrap();
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
+    let mut worker = OutboxWorker::new(publisher)
+        .with_worker_id("safe-worker")
+        .with_batch_size(10)
+        .with_max_attempts(3);
+
+    // Process one at a time with commits
+    let mut outbox = repo.outbox_mut();
+    let mut processed = 0;
+
+    while worker.process_next(&mut outbox).did_work {
+        // Each message is committed immediately after processing
+        drop(outbox); // Release lock before commit
+        repo.commit_outbox().unwrap();
+        outbox = repo.outbox_mut();
+        processed += 1;
+    }
+
+    assert_eq!(processed, 3);
+    assert_eq!(outbox.published().len(), 3);
+    assert_eq!(outbox.pending_count(), 0);
+
+    let lines = buffer.lock().unwrap();
+    assert_eq!(lines.len(), 3);
+}
+

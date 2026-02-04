@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::lock::Lock;
-use crate::{Entity, Repository, RepositoryError};
+use crate::core::{
+    Committable, Entity, PeekableRepository, Repository, RepositoryError, UnlockableRepository,
+};
 
 pub struct QueuedRepository<R> {
     inner: R,
@@ -17,7 +19,8 @@ impl<R> QueuedRepository<R> {
         }
     }
 
-    pub(crate) fn inner(&self) -> &R {
+    /// Access the inner repository.
+    pub fn inner(&self) -> &R {
         &self.inner
     }
 
@@ -65,12 +68,12 @@ impl<R> QueuedRepository<R> {
 }
 
 impl<R: Repository> QueuedRepository<R> {
-    // Read without taking the queue lock; may return stale data during in-flight writes.
+    /// Read without taking the queue lock; may return stale data during in-flight writes.
     pub fn peek(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
         self.inner.get(id)
     }
 
-    // Read without taking the queue lock; may return stale data during in-flight writes.
+    /// Read without taking the queue lock; may return stale data during in-flight writes.
     pub fn peek_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
         self.inner.get_all(ids)
     }
@@ -83,28 +86,24 @@ impl<R: Repository> Repository for QueuedRepository<R> {
         self.inner.get(id)
     }
 
-    fn commit(&self, entity: &mut Entity) -> Result<(), RepositoryError> {
-        let lock = self.ensure_lock(entity.id())?;
-        let result = self.inner.commit(entity);
-        if result.is_ok() {
-            lock.unlock();
-        }
-        result
-    }
-
     fn get_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
         let _locks = self.lock_ids_in_order(ids)?;
         self.inner.get_all(ids)
     }
 
-    fn commit_all(&self, entities: &mut [&mut Entity]) -> Result<(), RepositoryError> {
+    fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
+        // Get entity IDs and acquire locks
+        let entities = committable.entities_mut();
         let ids: Vec<&str> = entities.iter().map(|entity| entity.id()).collect();
         let mut locks = Vec::with_capacity(ids.len());
-        for id in ids {
+        for id in &ids {
             locks.push(self.ensure_lock(id)?);
         }
 
-        let result = self.inner.commit_all(entities);
+        // Delegate to inner repository
+        let result = self.inner.commit(committable);
+
+        // Unlock on success
         if result.is_ok() {
             for lock in locks {
                 lock.unlock();
@@ -112,6 +111,22 @@ impl<R: Repository> Repository for QueuedRepository<R> {
         }
 
         result
+    }
+}
+
+impl<R> UnlockableRepository for QueuedRepository<R> {
+    fn unlock(&self, id: &str) -> Result<(), RepositoryError> {
+        QueuedRepository::unlock(self, id)
+    }
+}
+
+impl<R: Repository> PeekableRepository for QueuedRepository<R> {
+    fn peek(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
+        QueuedRepository::peek(self, id)
+    }
+
+    fn peek_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
+        QueuedRepository::peek_all(self, ids)
     }
 }
 

@@ -1,9 +1,20 @@
-mod record;
+mod aggregate;
+mod outbox_entity;
 mod publisher;
 mod repository;
 mod worker;
 
-pub use record::{OutboxRecord, OutboxStatus};
+// Event-sourced Outbox aggregate
+pub use aggregate::{Outbox, OutboxMessage, OutboxMessageStatus};
+
+// OutboxEntity wrapper
+pub use outbox_entity::{HasOutbox, OutboxEntity, OutboxEvent};
+
+// OutboxRepository wrapper
+pub use repository::{OutboxRepository, WithOutbox};
+
+// Publishers
 pub use publisher::{LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher};
-pub use repository::{OutboxDelivery, OutboxDeliveryResult, OutboxRepository, Outboxable};
-pub use worker::OutboxWorker;
+
+// Worker
+pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};

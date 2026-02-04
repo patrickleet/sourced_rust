@@ -1,10 +1,10 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::error::RepositoryError;
-use crate::event_record::EventRecord;
-use crate::queued::QueuedRepository;
-use crate::{Entity, Repository};
+use super::entity::Entity;
+use super::error::RepositoryError;
+use super::event_record::EventRecord;
+use super::repository::Repository;
 
 pub trait Aggregate: Sized + Default {
     type ReplayError: fmt::Display;
@@ -52,31 +52,36 @@ macro_rules! aggregate {
     };
 }
 
+/// Hydrate an aggregate from an entity by replaying its events.
+pub fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
+    let mut aggregate = A::new_empty();
+    *aggregate.entity_mut() = entity;
+
+    let events = aggregate.entity().events().to_vec();
+    aggregate.entity_mut().set_replaying(true);
+    for event in &events {
+        if let Err(err) = aggregate.replay_event(event) {
+            aggregate.entity_mut().set_replaying(false);
+            return Err(RepositoryError::Replay(err.to_string()));
+        }
+    }
+    aggregate.entity_mut().set_replaying(false);
+
+    Ok(aggregate)
+}
+
+/// Trait for repositories that support unlocking entities.
 pub trait UnlockableRepository {
     fn unlock(&self, id: &str) -> Result<(), RepositoryError>;
 }
 
+/// Trait for repositories that support non-locking reads.
 pub trait PeekableRepository {
     fn peek(&self, id: &str) -> Result<Option<Entity>, RepositoryError>;
     fn peek_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError>;
 }
 
-impl<R> UnlockableRepository for QueuedRepository<R> {
-    fn unlock(&self, id: &str) -> Result<(), RepositoryError> {
-        QueuedRepository::unlock(self, id)
-    }
-}
-
-impl<R: Repository> PeekableRepository for QueuedRepository<R> {
-    fn peek(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
-        QueuedRepository::peek(self, id)
-    }
-
-    fn peek_all(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
-        QueuedRepository::peek_all(self, ids)
-    }
-}
-
+/// Extension trait adding aggregate-aware methods to any Repository.
 pub trait RepositoryExt: Repository {
     fn get_aggregate<A: Aggregate>(&self, id: &str) -> Result<Option<A>, RepositoryError> {
         let entity = self.get(id)?;
@@ -110,48 +115,13 @@ pub trait RepositoryExt: Repository {
             .iter_mut()
             .map(|aggregate| (*aggregate).entity_mut())
             .collect();
-        self.commit_all(&mut entities)
-    }
-
-    fn peek_aggregate<A: Aggregate>(
-        &self,
-        id: &str,
-    ) -> Result<Option<A>, RepositoryError>
-    where
-        Self: PeekableRepository,
-    {
-        let entity = self.peek(id)?;
-        let Some(entity) = entity else {
-            return Ok(None);
-        };
-        Ok(Some(hydrate::<A>(entity)?))
-    }
-
-    fn peek_all_aggregates<A: Aggregate>(
-        &self,
-        ids: &[&str],
-    ) -> Result<Vec<A>, RepositoryError>
-    where
-        Self: PeekableRepository,
-    {
-        let entities = self.peek_all(ids)?;
-        let mut aggregates = Vec::with_capacity(entities.len());
-        for entity in entities {
-            aggregates.push(hydrate::<A>(entity)?);
-        }
-        Ok(aggregates)
-    }
-
-    fn abort_aggregate<A: Aggregate>(&self, aggregate: &A) -> Result<(), RepositoryError>
-    where
-        Self: UnlockableRepository,
-    {
-        self.unlock(aggregate.entity().id())
+        self.commit(&mut entities[..])
     }
 }
 
 impl<R: Repository> RepositoryExt for R {}
 
+/// Builder trait for creating typed aggregate repositories.
 pub trait AggregateBuilder: Repository + Sized {
     fn aggregate<A: Aggregate>(self) -> AggregateRepository<Self, A> {
         AggregateRepository::new(self)
@@ -160,6 +130,7 @@ pub trait AggregateBuilder: Repository + Sized {
 
 impl<R: Repository> AggregateBuilder for R {}
 
+/// A repository wrapper that provides typed access to a specific aggregate type.
 pub struct AggregateRepository<R, A> {
     repo: R,
     _marker: PhantomData<A>,
@@ -213,9 +184,8 @@ where
             .iter_mut()
             .map(|aggregate| (*aggregate).entity_mut())
             .collect();
-        self.repo.commit_all(&mut entities)
+        self.repo.commit(&mut entities[..])
     }
-
 }
 
 impl<R, A> AggregateRepository<R, A>
@@ -249,21 +219,4 @@ where
         }
         Ok(aggregates)
     }
-}
-
-fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
-    let mut aggregate = A::new_empty();
-    *aggregate.entity_mut() = entity;
-
-    let events = aggregate.entity().events().to_vec();
-    aggregate.entity_mut().set_replaying(true);
-    for event in &events {
-        if let Err(err) = aggregate.replay_event(event) {
-            aggregate.entity_mut().set_replaying(false);
-            return Err(RepositoryError::Replay(err.to_string()));
-        }
-    }
-    aggregate.entity_mut().set_replaying(false);
-
-    Ok(aggregate)
 }
