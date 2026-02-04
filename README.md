@@ -75,6 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
 - **OutboxMessage**: A durable integration event for the outbox pattern.
 - **Outbox Worker**: Publishes outbox messages to external systems.
+- **Bus**: Service bus for publishing and subscribing to events.
+- **EventReceiver**: Filtered subscription that only receives specified event types.
 
 ## The `#[digest]` Macro
 
@@ -180,11 +182,128 @@ for message in &mut claimed {
 }
 ```
 
+## Service Bus
+
+The service bus provides event-driven communication between services using a publish/subscribe pattern.
+
+### Basic Usage
+
+```rust
+use sourced_rust::bus::{Bus, InMemoryQueue, Publisher};
+
+// Create a shared queue
+let queue = InMemoryQueue::new();
+
+// Create a bus for your service
+let bus = Bus::from_queue(queue);
+
+// Publish events
+bus.publish(Event::with_string_payload("evt-1", "OrderCreated", r#"{"id":"123"}"#))?;
+```
+
+### Filtered Subscriptions
+
+Subscribe to specific event types with `bus.subscribe()`. Each subscriber only receives events matching its subscribed types:
+
+```rust
+use sourced_rust::bus::{Bus, InMemoryQueue};
+
+let queue = InMemoryQueue::new();
+let bus = Bus::from_queue(queue);
+
+// Subscribe to specific event types
+let order_events = bus.subscribe(&["OrderCreated", "OrderCompleted"]);
+let payment_events = bus.subscribe(&["PaymentSucceeded", "PaymentFailed"]);
+
+// Each receiver only gets its subscribed events
+while let Ok(Some(event)) = order_events.recv(100) {
+    match event.event_type.as_str() {
+        "OrderCreated" => { /* handle */ }
+        "OrderCompleted" => { /* handle */ }
+        _ => unreachable!(),
+    }
+}
+```
+
+### Distributed Services
+
+For multi-threaded or distributed scenarios, each service creates its own `Bus` from a shared queue:
+
+```rust
+use std::thread;
+use sourced_rust::bus::{Bus, InMemoryQueue};
+
+let queue = InMemoryQueue::new();
+
+// Order Service thread
+let order_queue = queue.clone();
+thread::spawn(move || {
+    let bus = Bus::from_queue(order_queue);
+    let events = bus.subscribe(&["SagaStarted"]);
+
+    while let Ok(Some(event)) = events.recv(1000) {
+        // Handle SagaStarted events
+    }
+});
+
+// Payment Service thread
+let payment_queue = queue.clone();
+thread::spawn(move || {
+    let bus = Bus::from_queue(payment_queue);
+    let events = bus.subscribe(&["InventoryReserved"]);
+
+    while let Ok(Some(event)) = events.recv(1000) {
+        // Handle InventoryReserved events
+    }
+});
+```
+
+### With Outbox Worker
+
+Combine the outbox pattern with the service bus for reliable event publishing:
+
+```rust
+use sourced_rust::{
+    bus::Bus, HashMapRepository, InMemoryQueue, OutboxWorkerThread,
+    OutboxCommitExt, OutboxMessage, AggregateBuilder, Queueable,
+};
+use std::time::Duration;
+
+let queue = InMemoryQueue::new();
+let repo = HashMapRepository::new();
+
+// Start outbox worker - publishes messages to the queue
+let worker = OutboxWorkerThread::spawn(
+    repo.clone(),
+    queue.clone(),
+    Duration::from_millis(100),
+);
+
+// Create bus for this service
+let bus = Bus::from_queue(queue);
+let order_repo = repo.queued().aggregate::<Order>();
+
+// Commit entity with outbox message
+let mut order = Order::new();
+order.create("order-1".into(), "customer-1".into());
+
+let mut outbox = OutboxMessage::encode(
+    "order-1:created",
+    "OrderCreated",
+    &OrderCreatedPayload { order_id: "order-1".into() },
+)?;
+order_repo.outbox(&mut outbox).commit(&mut order)?;
+
+// Other services receive the event via their subscriptions
+let events = bus.subscribe(&["OrderCreated"]);
+```
+
 ## Project Structure
 
 ```
 src/
   core/       # Entity, events, repository traits, aggregate helpers
+  bus/        # Service bus, publishers, subscribers
   emitter/    # In-process event emitter helpers
   hashmap/    # In-memory repository
   queued/     # Queue-based locking wrapper
@@ -200,7 +319,9 @@ cargo test
 
 ## Examples
 
-See `tests/todos.rs` and `tests/support/` for full workflow examples.
+- `tests/todos.rs` - Basic entity workflow
+- `tests/distributed_saga.rs` - Multi-service saga with outbox pattern and bus subscriptions
+- `tests/support/` - Domain models for tests
 
 ## License
 
