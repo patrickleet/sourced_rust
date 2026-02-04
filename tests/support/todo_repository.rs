@@ -1,7 +1,8 @@
 use sourced_rust::{
-    AggregateBuilder, AggregateRepository, HashMapRepository, Outboxable, Queueable,
-    QueuedRepository,
+    AggregateBuilder, AggregateRepository, HashMapRepository, OutboxMessage, OutboxMessageStatus,
+    OutboxRepositoryExt, Queueable, QueuedRepository, RepositoryError,
 };
+use std::time::Duration;
 
 use super::todo::Todo;
 
@@ -14,9 +15,29 @@ impl TodoRepository {
         TodoRepository {
             inner: HashMapRepository::new()
                 .queued()
-                .with_outbox()
                 .aggregate::<Todo>(),
         }
+    }
+}
+
+impl OutboxRepositoryExt for TodoRepository {
+    fn outbox_messages_by_status(
+        &self,
+        status: OutboxMessageStatus,
+    ) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        self.inner.repo().inner().outbox_messages_by_status(status)
+    }
+
+    fn claim_outbox_messages(
+        &self,
+        worker_id: &str,
+        max: usize,
+        lease: Duration,
+    ) -> Result<Vec<OutboxMessage>, RepositoryError> {
+        self.inner
+            .repo()
+            .inner()
+            .claim_outbox_messages(worker_id, max, lease)
     }
 }
 

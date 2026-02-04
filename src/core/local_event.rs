@@ -1,4 +1,4 @@
-use crate::event::Event;
+use super::event::Event;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalEvent {

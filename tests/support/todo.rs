@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sourced_rust::{Entity, EventRecord};
 
-#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Todo {
     pub entity: Entity,
     user_id: String,
@@ -26,20 +24,16 @@ impl Todo {
         self.task = task;
         self.completed = false;
         self.entity.digest(
-            "Initialize",
+            "Initialized",
             vec![id, self.user_id.clone(), self.task.clone()],
         );
-        self.entity
-            .enqueue("ToDoInitialized", serde_json::to_string(self).unwrap());
     }
 
     pub fn complete(&mut self) {
         if !self.completed {
             self.completed = true;
-            self.entity
-                .digest("Complete", vec![self.entity.id().to_string()]);
-            self.entity
-                .enqueue("ToDoCompleted", serde_json::to_string(self).unwrap());
+            let id = self.entity.id().to_string();
+            self.entity.digest("Completed", vec![id]);
         }
     }
 
@@ -57,21 +51,30 @@ impl Todo {
         }
     }
 
-    pub fn deserialize(data: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(data)
+}
+
+impl Default for Todo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 enum TodoEvent {
-    Initialize { id: String, user_id: String, task: String },
-    Complete { id: String },
+    Initialized {
+        id: String,
+        user_id: String,
+        task: String,
+    },
+    Completed {
+        id: String,
+    },
 }
 
 impl TodoEvent {
     fn apply(self, todo: &mut Todo) {
         match self {
-            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Complete { id } => {
+            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Completed { id } => {
                 let _ = id;
                 todo.complete();
             }
@@ -80,8 +83,8 @@ impl TodoEvent {
 }
 
 sourced_rust::aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialize" => (id, user_id, task) => Initialize,
-    "Complete" => (id) => Complete,
+    "Initialized" => (id, user_id, task) => Initialized,
+    "Completed" => (id) => Completed,
 });
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

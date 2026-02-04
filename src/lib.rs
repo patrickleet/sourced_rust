@@ -1,33 +1,30 @@
-mod aggregate;
-mod entity;
-mod error;
-mod event;
-mod event_record;
+pub mod core;
+pub mod emitter;
 mod hashmap;
-mod local_event;
 mod outbox;
 mod queued;
-mod repository;
 
-pub use aggregate::{
-    Aggregate, AggregateBuilder, AggregateRepository, PeekableRepository, RepositoryExt,
-    UnlockableRepository,
+// Re-export core types at crate root for convenience
+pub use core::{
+    Aggregate, AggregateBuilder, AggregateRepository, ArgCountError, ArgParseError, Committable,
+    Entity, Event, EventRecord, LocalEvent, PeekableRepository, Repository, RepositoryError,
+    RepositoryExt, UnlockableRepository,
 };
-pub use entity::Entity;
-pub use error::RepositoryError;
-pub use event::Event;
-pub use event_record::{ArgCountError, ArgParseError, EventRecord};
+
 pub use hashmap::HashMapRepository;
-pub use local_event::LocalEvent;
+
 pub use outbox::{
-    LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxDelivery,
-    OutboxDeliveryResult, OutboxPublisher, OutboxRecord, OutboxRepository, OutboxStatus,
-    OutboxWorker, Outboxable,
+    // Core outbox message aggregate
+    OutboxMessage, OutboxMessageStatus,
+    // Commit helpers
+    OutboxCommit, OutboxCommitExt, OutboxRepositoryExt,
+    // Publishers
+    LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher,
+    // Worker
+    DrainResult, OutboxWorker, ProcessOneResult,
 };
+
 pub use queued::{Queueable, QueuedRepository};
-pub use repository::Repository;
 
 // Re-export the EventEmitter from the event_emitter_rs crate
 pub use event_emitter_rs::EventEmitter;
-
-// Re-export any other types or functions that should be part of the public API

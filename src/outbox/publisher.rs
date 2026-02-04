@@ -3,11 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::EventEmitter;
 
-use super::record::OutboxRecord;
-
+/// Trait for publishing outbox records to external systems.
 pub trait OutboxPublisher {
     type Error: fmt::Display;
-    fn publish(&mut self, record: &OutboxRecord) -> Result<(), Self::Error>;
+
+    /// Publish an event with the given type and payload.
+    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +26,15 @@ impl fmt::Display for LogPublisherError {
 
 impl std::error::Error for LogPublisherError {}
 
+/// A simple publisher that logs events to stdout or a buffer.
 pub struct LogPublisher {
     buffer: Option<Arc<Mutex<Vec<String>>>>,
+}
+
+impl Default for LogPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LogPublisher {
@@ -39,20 +47,13 @@ impl LogPublisher {
             buffer: Some(buffer),
         }
     }
-
-    fn format_line(record: &OutboxRecord) -> String {
-        format!(
-            "[OUTBOX] {} v{} {} {}",
-            record.aggregate_id, record.aggregate_version, record.event_type, record.payload
-        )
-    }
 }
 
 impl OutboxPublisher for LogPublisher {
     type Error = LogPublisherError;
 
-    fn publish(&mut self, record: &OutboxRecord) -> Result<(), Self::Error> {
-        let line = Self::format_line(record);
+    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error> {
+        let line = format!("[OUTBOX] {} {}", event_type, payload);
         if let Some(buffer) = &self.buffer {
             let mut buffer = buffer
                 .lock()
@@ -65,6 +66,7 @@ impl OutboxPublisher for LogPublisher {
     }
 }
 
+/// A publisher that emits events via an EventEmitter for in-process subscribers.
 pub struct LocalEmitterPublisher {
     emitter: EventEmitter,
 }
@@ -78,10 +80,27 @@ impl LocalEmitterPublisher {
 impl OutboxPublisher for LocalEmitterPublisher {
     type Error = std::convert::Infallible;
 
-    fn publish(&mut self, record: &OutboxRecord) -> Result<(), Self::Error> {
-        let _ = self
-            .emitter
-            .emit(&record.event_type, record.payload.clone());
+    fn publish(&mut self, event_type: &str, payload: &str) -> Result<(), Self::Error> {
+        self.emitter.emit(event_type, payload.to_string());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_publisher_to_buffer() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let mut publisher = LogPublisher::with_buffer(buffer.clone());
+
+        publisher.publish("UserCreated", r#"{"id":"123"}"#).unwrap();
+        publisher.publish("UserUpdated", r#"{"id":"123","name":"Alice"}"#).unwrap();
+
+        let logs = buffer.lock().unwrap();
+        assert_eq!(logs.len(), 2);
+        assert!(logs[0].contains("UserCreated"));
+        assert!(logs[1].contains("UserUpdated"));
     }
 }
