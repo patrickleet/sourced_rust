@@ -3,7 +3,7 @@ mod support;
 use serde_json;
 use sourced_rust::{
     EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxCommitExt,
-    OutboxMessage, OutboxWorker, Repository, RepositoryExt,
+    OutboxMessage, OutboxRepositoryExt, OutboxWorker, Repository, RepositoryExt,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -45,7 +45,7 @@ fn todos() {
 
     // Verify the outbox event was captured
     {
-        let pending = repo.repo().inner().outbox_messages_pending().unwrap();
+        let pending = repo.outbox_messages_pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "TodoInitialized");
     }
@@ -65,7 +65,7 @@ fn todos() {
 
         // Verify we now have 2 outbox events
         {
-            let pending = repo.repo().inner().outbox_messages_pending().unwrap();
+            let pending = repo.outbox_messages_pending().unwrap();
             assert_eq!(pending.len(), 2);
             assert!(pending.iter().any(|msg| msg.event_type == "TodoInitialized"));
             assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));

@@ -427,7 +427,7 @@ repo.outbox(&mut message).commit(&mut todo)?;
 Run a separate process (or worker) that claims pending outbox messages, publishes them, and persists the status updates.
 
 ```rust
-use sourced_rust::{HashMapRepository, LogPublisher, OutboxWorker, Repository};
+use sourced_rust::{HashMapRepository, LogPublisher, OutboxRepositoryExt, OutboxWorker, Repository};
 use std::time::Duration;
 
 let repo = HashMapRepository::new();

@@ -17,7 +17,7 @@ pub use outbox::{
     // Core outbox message aggregate
     OutboxMessage, OutboxMessageStatus,
     // Commit helpers
-    OutboxCommit, OutboxCommitExt,
+    OutboxCommit, OutboxCommitExt, OutboxRepositoryExt,
     // Publishers
     LocalEmitterPublisher, LogPublisher, LogPublisherError, OutboxPublisher,
     // Worker

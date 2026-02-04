@@ -1,24 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use std::time::Duration;
-
-use crate::core::{hydrate, Committable, Entity, EventRecord, Repository, RepositoryError};
-use crate::outbox::{OutboxMessage, OutboxMessageStatus};
+use crate::core::{Committable, Entity, EventRecord, Repository, RepositoryError};
 
 /// In-memory repository implementation using HashMap.
-///
-/// This is a simple storage implementation suitable for testing and prototyping.
-/// For outbox support, commit `OutboxMessage` entities alongside your entity:
-///
-/// ```ignore
-/// use sourced_rust::{OutboxMessage, HashMapRepository, Repository};
-///
-/// let repo = HashMapRepository::new();
-/// let mut message = OutboxMessage::new("msg-1", "TodoInitialized", "{}");
-/// // ... mutate domain entity and message ...
-/// repo.commit(&mut [&mut entity, &mut message.entity])?;
-/// ```
+
 pub struct HashMapRepository {
     storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
 }
@@ -37,75 +23,8 @@ impl HashMapRepository {
         }
     }
 
-    /// Return all outbox messages with the given status.
-    pub fn outbox_messages_by_status(
-        &self,
-        status: OutboxMessageStatus,
-    ) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| RepositoryError::LockPoisoned("read"))?;
-
-        let mut messages = Vec::new();
-        for (id, events) in storage.iter() {
-            if !id.starts_with(OutboxMessage::ID_PREFIX) {
-                continue;
-            }
-
-            let mut entity = Entity::with_id(id.to_string());
-            entity.load_from_history(events.clone());
-            let message = hydrate::<OutboxMessage>(entity)?;
-
-            if message.status == status {
-                messages.push(message);
-            }
-        }
-
-        Ok(messages)
-    }
-
-    /// Return all pending outbox messages.
-    pub fn outbox_messages_pending(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        self.outbox_messages_by_status(OutboxMessageStatus::Pending)
-    }
-
-    /// Claim pending outbox messages for processing.
-    ///
-    /// This is repo-specific and intended for single-process usage or tests.
-    pub fn claim_outbox_messages(
-        &self,
-        worker_id: &str,
-        max: usize,
-        lease: Duration,
-    ) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("write"))?;
-
-        let mut claimed = Vec::new();
-        for (id, events) in storage.iter_mut() {
-            if !id.starts_with(OutboxMessage::ID_PREFIX) {
-                continue;
-            }
-
-            let mut entity = Entity::with_id(id.to_string());
-            entity.load_from_history(events.clone());
-            let mut message = hydrate::<OutboxMessage>(entity)?;
-
-            if message.is_pending() {
-                message.claim(worker_id, lease);
-                *events = message.entity.events().to_vec();
-                claimed.push(message);
-            }
-
-            if claimed.len() >= max {
-                break;
-            }
-        }
-
-        Ok(claimed)
+    pub(crate) fn storage(&self) -> &RwLock<HashMap<String, Vec<EventRecord>>> {
+        self.storage.as_ref()
     }
 }
 
@@ -195,17 +114,4 @@ mod tests {
         assert_eq!(all_entities.len(), 2);
     }
 
-    #[test]
-    fn outbox_messages_pending_finds_messages() {
-        let repo = HashMapRepository::new();
-        let mut entity = Entity::with_id("test");
-        entity.digest("Created", vec!["test".to_string()]);
-
-        let mut message = OutboxMessage::new("msg-1", "EntityCreated", r#"{"id":"test"}"#);
-        repo.commit(&mut [&mut entity, &mut message.entity]).unwrap();
-
-        let pending = repo.outbox_messages_pending().unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].event_type, "EntityCreated");
-    }
 }
