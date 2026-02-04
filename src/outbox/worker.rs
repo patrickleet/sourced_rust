@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::aggregate::DomainEvent;
+use super::domain_event::DomainEvent;
 use super::publisher::OutboxPublisher;
 
 /// Result of a batch drain operation.

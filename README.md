@@ -17,8 +17,11 @@ Sourced Rust is inspired by the original sourced project by Matt Walters. Patric
 ## Quick Start: Microservice Example (With Syntactic Sugar)
 
 ```rust
+use serde::{Deserialize, Serialize};
+use serde_json;
 use sourced_rust::{
-    aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, Queueable, RepositoryError,
+    aggregate, AggregateBuilder, DomainEvent, Entity, EventRecord, HashMapRepository, Queueable,
+    Repository,
 };
 
 #[derive(Default)]
@@ -29,16 +32,24 @@ struct Todo {
     completed: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TodoSnapshot {
+    id: String,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
+
 enum TodoEvent {
-    Initialize { id: String, user_id: String, task: String },
-    Complete { id: String },
+    Initialized { id: String, user_id: String, task: String },
+    Completed { id: String },
 }
 
 impl TodoEvent {
     fn apply(self, todo: &mut Todo) {
         match self {
-            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Complete { id: _ } => todo.complete(),
+            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Completed { id: _ } => todo.complete(),
         }
     }
 }
@@ -49,13 +60,14 @@ impl Todo {
         self.user_id = user_id;
         self.task = task;
         self.completed = false;
-        self.entity.digest("Initialize", vec![id, self.user_id.clone(), self.task.clone()]);
+        self.entity
+            .digest("Initialized", vec![id, self.user_id.clone(), self.task.clone()]);
     }
 
     fn complete(&mut self) {
         if !self.completed {
             self.completed = true;
-            self.entity.digest("Complete", vec![self.entity.id().to_string()]);
+            self.entity.digest("Completed", vec![self.entity.id().to_string()]);
         }
     }
 
@@ -63,24 +75,45 @@ impl Todo {
         TodoEvent::try_from(event)?.apply(self);
         Ok(())
     }
+
+    fn snapshot(&self) -> TodoSnapshot {
+        TodoSnapshot {
+            id: self.entity.id().to_string(),
+            user_id: self.user_id.clone(),
+            task: self.task.clone(),
+            completed: self.completed,
+        }
+    }
 }
 
 aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialize" => (id, user_id, task) => Initialize,
-    "Complete" => (id) => Complete,
+    "Initialized" => (id, user_id, task) => Initialized,
+    "Completed" => (id) => Completed,
 });
 
-fn main() -> Result<(), RepositoryError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // App-side repository with queue locking.
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo = Todo::default();
     todo.initialize("todo-1".to_string(), "user-1".to_string(), "Ship it".to_string());
-    repo.commit(&mut todo)?;
+    let mut created = DomainEvent::new(
+        format!("{}:init", todo.entity.id()),
+        "TodoInitialized",
+        serde_json::to_string(&todo.snapshot())?,
+    );
+    repo.repo()
+        .commit(&mut [&mut todo.entity, &mut created.entity])?;
 
     if let Some(mut todo) = repo.get("todo-1")? {
         todo.complete();
-        repo.commit(&mut todo)?;
+        let mut completed = DomainEvent::new(
+            format!("{}:completed", todo.entity.id()),
+            "TodoCompleted",
+            serde_json::to_string(&todo.snapshot())?,
+        );
+        repo.repo()
+            .commit(&mut [&mut todo.entity, &mut completed.entity])?;
     }
 
     Ok(())
@@ -94,7 +127,7 @@ fn main() -> Result<(), RepositoryError> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking (get locks until commit or abort for that ID only).
-- **DomainEvent**: An event-sourced integration event (one message per aggregate).
+- **DomainEvent**: A CQRS integration event to put in the outbox about what has changed.
 - **Outbox Worker**: Runs in a separate process to publish domain events.
 - **Event Emitter**: Provided by event-emitter-rs and used for local, in-process notifications.
 
@@ -143,6 +176,10 @@ The flow is:
 ### Outbox (Durable Domain Events)
 
 Each domain event is its **own aggregate**. You create one `DomainEvent` per integration event and commit it alongside your domain entity in the **same transaction**. A separate worker process then claims and publishes pending messages.
+
+**Why `DomainEvent` lives in `outbox/`**
+
+`DomainEvent` is a durable integration event, not a core entity primitive. Keeping it in `outbox/` makes the optional outbox pattern explicit: if you don’t want the pattern, you don’t have to use it, and the core stays focused on event-sourced entities.
 
 ```mermaid
 sequenceDiagram
@@ -194,6 +231,7 @@ flowchart LR
 ### Minimal Domain Model
 
 ```rust
+use serde::{Deserialize, Serialize};
 use sourced_rust::{Entity, EventRecord, HashMapRepository, Repository};
 
 #[derive(Default)]
@@ -204,6 +242,28 @@ struct Todo {
     completed: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TodoSnapshot {
+    id: String,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
+
+enum TodoEvent {
+    Initialized { id: String, user_id: String, task: String },
+    Completed { id: String },
+}
+
+impl TodoEvent {
+    fn apply(self, todo: &mut Todo) {
+        match self {
+            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Completed { id: _ } => todo.complete(),
+        }
+    }
+}
+
 impl Todo {
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(id.clone());
@@ -211,26 +271,37 @@ impl Todo {
         self.task = task;
         self.completed = false;
 
-        self.entity.digest(
-            "Initialize",
-            vec![id, self.user_id.clone(), self.task.clone()],
-        );
+        self.entity
+            .digest("Initialized", vec![id, self.user_id.clone(), self.task.clone()]);
     }
 
-    fn apply(&mut self, event: &EventRecord) -> Result<(), String> {
-        match event.event_name.as_str() {
-            "Initialize" if event.args.len() == 3 => {
-                self.entity.set_id(event.args[0].clone());
-                self.user_id = event.args[1].clone();
-                self.task = event.args[2].clone();
-                self.completed = false;
-                Ok(())
-            }
-            "Initialize" => Err("Invalid Initialize args".to_string()),
-            _ => Err(format!("Unknown event: {}", event.event_name)),
+    fn complete(&mut self) {
+        if !self.completed {
+            self.completed = true;
+            self.entity
+                .digest("Completed", vec![self.entity.id().to_string()]);
+        }
+    }
+
+    fn replay_event(&mut self, event: &EventRecord) -> Result<(), String> {
+        TodoEvent::try_from(event)?.apply(self);
+        Ok(())
+    }
+
+    fn snapshot(&self) -> TodoSnapshot {
+        TodoSnapshot {
+            id: self.entity.id().to_string(),
+            user_id: self.user_id.clone(),
+            task: self.task.clone(),
+            completed: self.completed,
         }
     }
 }
+
+sourced_rust::aggregate!(Todo, entity, replay_event, TodoEvent, {
+    "Initialized" => (id, user_id, task) => Initialized,
+    "Completed" => (id) => Completed,
+});
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = HashMapRepository::new();
@@ -248,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let events = rebuilt.entity.events().to_vec();
     rebuilt.entity.set_replaying(true);
     for event in &events {
-        rebuilt.apply(event)?;
+        rebuilt.replay_event(event)?;
     }
     rebuilt.entity.set_replaying(false);
 
@@ -276,7 +347,7 @@ let _ = repo.peek("todo-1")?;
 
 ### Aggregate Helpers (Low Boilerplate)
 
-You can keep domain code tiny and let the library handle hydration:
+Using the same `Todo` and `TodoEvent` shape above, the macro wires the event mapping for hydration:
 
 ```rust
 use sourced_rust::{aggregate, Entity, EventRecord};
@@ -288,15 +359,15 @@ pub struct Todo {
 }
 
 enum TodoEvent {
-    Initialize { id: String, user_id: String, task: String },
-    Complete { id: String },
+    Initialized { id: String, user_id: String, task: String },
+    Completed { id: String },
 }
 
 impl TodoEvent {
     fn apply(self, todo: &mut Todo) {
         match self {
-            TodoEvent::Initialize { id, user_id, task } => todo.initialize(id, user_id, task),
-            TodoEvent::Complete { id: _ } => todo.complete(),
+            TodoEvent::Initialized { id, user_id, task } => todo.initialize(id, user_id, task),
+            TodoEvent::Completed { id: _ } => todo.complete(),
         }
     }
 }
@@ -309,8 +380,8 @@ impl Todo {
 }
 
 aggregate!(Todo, entity, replay_event, TodoEvent, {
-    "Initialize" => (id, user_id, task) => Initialize,
-    "Complete" => (id) => Complete,
+    "Initialized" => (id, user_id, task) => Initialized,
+    "Completed" => (id) => Completed,
 });
 ```
 
@@ -331,17 +402,23 @@ let todo = repo.get("todo-1")?;
 Each domain event is its own aggregate. You commit your domain entity and one or more domain event entities in the same repository commit.
 
 ```rust
-use sourced_rust::{DomainEvent, Entity, HashMapRepository, Repository};
+use serde_json;
+use sourced_rust::{DomainEvent, HashMapRepository, Repository};
 
 let repo = HashMapRepository::new();
 
-let mut entity = Entity::with_id("todo-1");
-entity.digest("Initialized", vec!["todo-1".to_string()]);
+let mut todo = Todo::default();
+todo.initialize("todo-1".to_string(), "user-1".to_string(), "Buy milk".to_string());
+let snapshot = serde_json::to_string(&todo.snapshot())?;
 
-let mut message = DomainEvent::new("todo-1:init", "TodoInitialized", "{\"id\":\"todo-1\"}");
+let mut message = DomainEvent::new(
+    format!("{}:init", todo.entity.id()),
+    "TodoInitialized",
+    snapshot,
+);
 
 // Commit both entities atomically
-repo.commit(&mut [&mut entity, &mut message.entity])?;
+repo.commit(&mut [&mut todo.entity, &mut message.entity])?;
 ```
 
 ### Outbox Drainer (Separate Process)
@@ -349,7 +426,7 @@ repo.commit(&mut [&mut entity, &mut message.entity])?;
 Run a separate process (or worker) that claims pending domain events, publishes them, and persists the status updates.
 
 ```rust
-use sourced_rust::{DomainEvent, HashMapRepository, LogPublisher, OutboxWorker, Repository};
+use sourced_rust::{HashMapRepository, LogPublisher, OutboxWorker, Repository};
 use std::time::Duration;
 
 let repo = HashMapRepository::new();
@@ -382,7 +459,7 @@ src/
   emitter/             # In-process event emitter helpers
   hashmap/             # In-memory repository
   queued/              # Queue-based locking wrapper
-  outbox/              # Outbox message aggregate + worker + publishers
+  outbox/              # Domain event aggregate + worker + publishers
   lib.rs               # Public exports
 ```
 

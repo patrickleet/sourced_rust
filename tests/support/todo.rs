@@ -33,7 +33,7 @@ impl Todo {
         if !self.completed {
             self.completed = true;
             let id = self.entity.id().to_string();
-            self.entity.digest("Complete", vec![id]);
+            self.entity.digest("Completed", vec![id]);
         }
     }
 
@@ -84,7 +84,7 @@ impl TodoEvent {
 
 sourced_rust::aggregate!(Todo, entity, replay_event, TodoEvent, {
     "Initialized" => (id, user_id, task) => Initialized,
-    "Complete" => (id) => Completed,
+    "Completed" => (id) => Completed,
 });
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
