@@ -28,6 +28,7 @@ pub struct Payment {
     transaction_id: Option<String>,
 }
 
+#[allow(dead_code)]
 impl Payment {
     pub fn new() -> Self {
         Self::default()

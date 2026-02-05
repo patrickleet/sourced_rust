@@ -1,9 +1,4 @@
-//! Saga Pattern Example
-//!
-//! This module demonstrates the saga pattern using event sourcing.
-//! A saga is an event-sourced aggregate that coordinates a multi-step
-//! business process across multiple aggregates, with compensation
-//! (rollback) capabilities when steps fail.
+//! Saga Orchestration Tests
 //!
 //! ## The Order Fulfillment Saga
 //!
@@ -18,19 +13,10 @@
 //! - Releasing inventory reservations
 //! - Refunding payments
 //! - Cancelling the order
-//!
-//! ## Key Concepts
-//!
-//! - **Saga as Aggregate**: The saga itself is event-sourced, so its state
-//!   can be rebuilt from its event history
-//! - **Compensation State**: Tracks what actions need to be undone on failure
-//! - **Idempotency**: Each step can be retried safely
-
-mod support;
 
 use sourced_rust::{AggregateBuilder, HashMapRepository};
-use support::order::{
-    Inventory, Order, OrderFulfillmentSaga, OrderItem, Payment, PaymentStatus, SagaStatus,
+use super::order::{
+    Inventory, Order, OrderFulfillmentSaga, OrderItem, OrderStatus, Payment, PaymentStatus, SagaStatus,
 };
 
 #[test]
@@ -130,10 +116,7 @@ fn saga_happy_path_completes_order() {
     assert!(final_saga.is_complete());
 
     let final_order = order_repo.get(&order_id).unwrap().unwrap();
-    assert_eq!(
-        final_order.status(),
-        support::order::OrderStatus::Completed
-    );
+    assert_eq!(final_order.status(), OrderStatus::Completed);
 
     let final_inventory = inventory_repo.get("WIDGET-001").unwrap().unwrap();
     assert_eq!(final_inventory.available(), 95); // 100 - 5
@@ -241,10 +224,7 @@ fn saga_compensates_on_payment_failure() {
     );
 
     let final_order = order_repo.get(&order_id).unwrap().unwrap();
-    assert_eq!(
-        final_order.status(),
-        support::order::OrderStatus::Cancelled
-    );
+    assert_eq!(final_order.status(), OrderStatus::Cancelled);
 
     // Inventory should be restored
     let final_inventory = inventory_repo.get("WIDGET-002").unwrap().unwrap();
@@ -318,10 +298,7 @@ fn saga_compensates_on_inventory_failure() {
     assert!(final_saga.is_complete());
 
     let final_order = order_repo.get(&order_id).unwrap().unwrap();
-    assert_eq!(
-        final_order.status(),
-        support::order::OrderStatus::Cancelled
-    );
+    assert_eq!(final_order.status(), OrderStatus::Cancelled);
 
     // Inventory unchanged
     let final_inventory = inventory_repo.get("WIDGET-003").unwrap().unwrap();

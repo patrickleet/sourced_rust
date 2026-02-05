@@ -20,15 +20,14 @@
 //! }
 //!
 //! // Load or create
-//! let mut view = repo.projections::<GameView>().get("123")?
-//!     .unwrap_or_else(|| Projection::new(GameView { id: "123".into(), score: 0 }));
+//! let mut view = repo.projections::<GameView>().upsert(GameView { id: "123".into(), score: 0 })?;
 //!
 //! // Update
 //! view.data_mut().score = 100;
 //!
-//! // Commit atomically with aggregate
+//! // Commit atomically with aggregate (takes ownership of view)
 //! repo
-//!     .projection(&mut view)
+//!     .projection(view)
 //!     .commit(&mut game)?;
 //! ```
 
@@ -140,9 +139,10 @@ impl<T: ProjectionSchema> Projection<T> {
         }
     }
 
-    /// Get mutable reference to the underlying entity.
-    pub(crate) fn entity_mut(&mut self) -> &mut Entity {
-        &mut self.entity
+    /// Consume the projection, sync data, and return the underlying entity.
+    pub(crate) fn into_entity(mut self) -> Entity {
+        self.sync();
+        self.entity
     }
 }
 

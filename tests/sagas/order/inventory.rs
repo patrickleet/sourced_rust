@@ -20,6 +20,7 @@ pub struct Inventory {
     reservations: HashMap<String, u32>, // order_id -> quantity
 }
 
+#[allow(dead_code)]
 impl Inventory {
     pub fn new() -> Self {
         Self::default()

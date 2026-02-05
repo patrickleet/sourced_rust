@@ -63,6 +63,7 @@ const FIVE_MINUTES_MS: u64 = 5 * 60 * 1000;
 const FIVE_SECONDS_MS: u64 = 5 * 1000;
 const TIME_TO_END: u64 = FIVE_MINUTES_MS + FIVE_SECONDS_MS;
 
+#[allow(dead_code)]
 impl BlobGame {
     pub fn new() -> Self {
         Self::default()

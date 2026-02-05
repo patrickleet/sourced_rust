@@ -37,6 +37,7 @@ impl Default for OrderStatus {
     }
 }
 
+#[allow(dead_code)]
 impl Order {
     pub fn new() -> Self {
         Self::default()

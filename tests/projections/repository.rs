@@ -7,25 +7,21 @@ use super::aggregate::Counter;
 
 type Inner = AggregateRepository<HashMapRepository, Counter>;
 
-/// Repository for Counter aggregates.
-/// Wraps HashMapRepository with typed aggregate access.
+/// Repository for Counter aggregates with projection support.
 pub struct CounterRepository {
     inner: Inner,
-    base: HashMapRepository,
 }
 
 impl CounterRepository {
     pub fn new() -> Self {
-        let base = HashMapRepository::new();
         Self {
-            inner: base.clone().aggregate::<Counter>(),
-            base,
+            inner: HashMapRepository::new().aggregate::<Counter>(),
         }
     }
 
-    /// Access the base repository for projections and other operations.
-    pub fn base(&self) -> &HashMapRepository {
-        &self.base
+    /// Access the underlying repository for projection and commit operations.
+    pub fn repo(&self) -> &HashMapRepository {
+        self.inner.repo()
     }
 }
 

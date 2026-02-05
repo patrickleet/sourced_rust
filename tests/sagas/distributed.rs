@@ -21,8 +21,6 @@
 //!  └───────────┘ └───────────┘ └───────────┘ └───────────┘
 //! ```
 
-mod support;
-
 use sourced_rust::{
     bus::Bus, AggregateBuilder, HashMapRepository, InMemoryQueue, OutboxCommitExt, OutboxMessage,
     OutboxWorkerThread, Queueable,
@@ -30,14 +28,10 @@ use sourced_rust::{
 use std::sync::mpsc::channel;
 use std::thread;
 use std::time::Duration;
-use support::order::{
+use super::order::{
     Inventory, InventoryReservedPayload, Order, OrderCreatedPayload, OrderFulfillmentSaga,
     OrderItem, Payment, PaymentSucceededPayload, SagaCompletedPayload, SagaStartedPayload,
 };
-
-// ============================================================================
-// Test
-// ============================================================================
 
 #[test]
 fn distributed_saga_with_threads() {
