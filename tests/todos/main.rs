@@ -1,17 +1,15 @@
 mod aggregate;
-mod repository;
 
 use bitcode;
 use sourced_rust::{
     AggregateBuilder, Commit, EventEmitter, GetAggregate, HashMapRepository, LocalEmitterPublisher,
-    LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker,
+    LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker, Queueable,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use aggregate::{Todo, TodoSnapshot};
-use repository::TodoRepository;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -22,7 +20,7 @@ fn next_id() -> String {
 
 #[test]
 fn todos() {
-    let repo = TodoRepository::new();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
@@ -114,7 +112,7 @@ fn todos() {
 
 #[test]
 fn get_commit_roundtrip() {
-    let repo = TodoRepository::new();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string());
@@ -130,7 +128,7 @@ fn get_commit_roundtrip() {
 
 #[test]
 fn get_all_commit_all_roundtrip() {
-    let repo = TodoRepository::new();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
@@ -284,7 +282,7 @@ fn outbox_worker_local_emitter_publisher() {
 
 #[test]
 fn abort_releases_lock_after_get() {
-    let repo = Arc::new(TodoRepository::new());
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string());
@@ -311,7 +309,7 @@ fn abort_releases_lock_after_get() {
 
 #[test]
 fn abort_releases_lock_after_get_all() {
-    let repo = Arc::new(TodoRepository::new());
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo1 = Todo::new();
     let id1 = next_id();
     todo1.initialize(
@@ -354,7 +352,7 @@ fn abort_releases_lock_after_get_all() {
 
 #[test]
 fn queued_repo_blocks_get_until_commit() {
-    let repo = Arc::new(TodoRepository::new());
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string());
@@ -504,7 +502,6 @@ fn outbox_worker_process_next_with_commit() {
 
 #[test]
 fn find_returns_matching_aggregates() {
-    // Use HashMapRepository directly (no queuing) for read-only find tests
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     // Create todos for different users
