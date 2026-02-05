@@ -9,6 +9,7 @@ pub enum RepositoryError {
         actual: u64,
     },
     Replay(String),
+    Projection(String),
 }
 
 impl fmt::Display for RepositoryError {
@@ -27,6 +28,7 @@ impl fmt::Display for RepositoryError {
                 id, expected, actual
             ),
             RepositoryError::Replay(message) => write!(f, "replay error: {}", message),
+            RepositoryError::Projection(message) => write!(f, "projection error: {}", message),
         }
     }
 }

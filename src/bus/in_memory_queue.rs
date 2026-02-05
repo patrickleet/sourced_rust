@@ -6,11 +6,20 @@
 //! - Single-process applications
 //! - Development and prototyping
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
+
+/// Internal data for a named point-to-point queue.
+#[derive(Default)]
+struct PointToPointQueue {
+    /// Messages in this queue
+    messages: Vec<Event>,
+    /// Shared position - all listeners compete for messages
+    position: usize,
+}
 
 /// In-memory queue for testing and single-process scenarios.
 ///
@@ -54,12 +63,14 @@ use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
 /// ```
 #[derive(Clone)]
 pub struct InMemoryQueue {
-    /// Shared event log
+    /// Shared event log (for pub/sub - fan-out)
     log: Arc<RwLock<Vec<Event>>>,
-    /// Per-subscriber read position
+    /// Per-subscriber read position (for pub/sub)
     position: Arc<Mutex<usize>>,
     /// Acknowledged event IDs
     acked: Arc<Mutex<Vec<String>>>,
+    /// Named queues for point-to-point messaging (send/listen)
+    queues: Arc<RwLock<HashMap<String, PointToPointQueue>>>,
 }
 
 impl Default for InMemoryQueue {
@@ -75,6 +86,7 @@ impl InMemoryQueue {
             log: Arc::new(RwLock::new(Vec::new())),
             position: Arc::new(Mutex::new(0)),
             acked: Arc::new(Mutex::new(Vec::new())),
+            queues: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -299,6 +311,7 @@ impl Subscribable for InMemoryQueue {
             log: Arc::clone(&self.log),
             position: Arc::new(Mutex::new(0)),
             acked: Arc::new(Mutex::new(Vec::new())),
+            queues: Arc::clone(&self.queues),
         }
     }
 }
