@@ -4,9 +4,9 @@
 //!
 //! ```ignore
 //! repo
-//!     .projection(&mut game_view)
-//!     .projection(&mut player_stats)
-//!     .outbox(&mut message)
+//!     .projection(game_view)
+//!     .projection(player_stats)
+//!     .outbox(message)
 //!     .commit(&mut game)?;
 //! ```
 
@@ -19,7 +19,7 @@ use crate::projection::{Projection, ProjectionError, ProjectionSchema};
 /// Builder for chaining multiple items into a single atomic commit.
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
-    entities: Vec<&'a mut Entity>,
+    entities: Vec<Entity>,
 }
 
 impl<'a, R> CommitBuilder<'a, R> {
@@ -30,26 +30,26 @@ impl<'a, R> CommitBuilder<'a, R> {
         }
     }
 
-    /// Add a projection to the commit.
-    pub fn projection<T: ProjectionSchema>(mut self, proj: &'a mut Projection<T>) -> Self {
-        proj.sync();
-        self.entities.push(proj.entity_mut());
+    /// Add a projection to the commit (takes ownership).
+    pub fn projection<T: ProjectionSchema>(mut self, proj: Projection<T>) -> Self {
+        self.entities.push(proj.into_entity());
         self
     }
 
-    /// Add an outbox message to the commit.
-    pub fn outbox(mut self, msg: &'a mut OutboxMessage) -> Self {
-        self.entities.push(msg.entity_mut());
+    /// Add an outbox message to the commit (takes ownership).
+    pub fn outbox(mut self, msg: OutboxMessage) -> Self {
+        self.entities.push(msg.into_entity());
         self
     }
 
     /// Commit all items plus the primary aggregate.
-    pub fn commit<A: Aggregate>(mut self, aggregate: &'a mut A) -> Result<(), RepositoryError>
+    pub fn commit<A: Aggregate>(mut self, aggregate: &mut A) -> Result<(), RepositoryError>
     where
         R: Commit,
     {
-        self.entities.push(aggregate.entity_mut());
-        self.repo.commit(&mut self.entities[..])
+        let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
+        entity_refs.push(aggregate.entity_mut());
+        self.repo.commit(&mut entity_refs[..])
     }
 
     /// Commit without a primary aggregate.
@@ -60,17 +60,15 @@ impl<'a, R> CommitBuilder<'a, R> {
         if self.entities.is_empty() {
             return Ok(());
         }
-        self.repo.commit(&mut self.entities[..])
+        let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
+        self.repo.commit(&mut entity_refs[..])
     }
 }
 
 /// Extension trait to start a commit builder chain.
 pub trait CommitBuilderExt: Commit + Sized {
-    /// Start a commit builder chain with a projection.
-    fn projection<'a, T: ProjectionSchema>(
-        &'a self,
-        proj: &'a mut Projection<T>,
-    ) -> CommitBuilder<'a, Self> {
+    /// Start a commit builder chain with a projection (takes ownership).
+    fn projection<T: ProjectionSchema>(&self, proj: Projection<T>) -> CommitBuilder<'_, Self> {
         CommitBuilder::new(self).projection(proj)
     }
 }
@@ -110,6 +108,14 @@ where
                 Err(e) => Err(RepositoryError::Projection(e.to_string())),
             },
             None => Ok(None),
+        }
+    }
+
+    /// Load existing projection or create new one with the provided default.
+    pub fn upsert(&self, default: T) -> Result<Projection<T>, RepositoryError> {
+        match self.get(default.id())? {
+            Some(proj) => Ok(proj),
+            None => Ok(Projection::new(default)),
         }
     }
 }
@@ -167,7 +173,7 @@ mod tests {
     fn commit_projection_and_aggregate() {
         let repo = HashMapRepository::new();
 
-        let mut view = Projection::new(TestView {
+        let view = Projection::new(TestView {
             id: "1".into(),
             counter: 42,
         });
@@ -175,7 +181,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.projection(&mut view).commit(&mut agg).unwrap();
+        repo.projection(view).commit(&mut agg).unwrap();
 
         // Verify both stored
         let loaded: Option<Projection<TestView>> = repo.projections().get("1").unwrap();
@@ -187,11 +193,11 @@ mod tests {
     fn commit_multiple_projections() {
         let repo = HashMapRepository::new();
 
-        let mut view1 = Projection::new(TestView {
+        let view1 = Projection::new(TestView {
             id: "1".into(),
             counter: 10,
         });
-        let mut view2 = Projection::new(TestView {
+        let view2 = Projection::new(TestView {
             id: "2".into(),
             counter: 20,
         });
@@ -199,8 +205,8 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.projection(&mut view1)
-            .projection(&mut view2)
+        repo.projection(view1)
+            .projection(view2)
             .commit(&mut agg)
             .unwrap();
 
@@ -214,20 +220,17 @@ mod tests {
     fn commit_projection_with_outbox() {
         let repo = HashMapRepository::new();
 
-        let mut view = Projection::new(TestView {
+        let view = Projection::new(TestView {
             id: "1".into(),
             counter: 42,
         });
 
-        let mut outbox = OutboxMessage::create("msg-1", "TestEvent", b"{}".to_vec());
+        let outbox = OutboxMessage::create("msg-1", "TestEvent", b"{}".to_vec());
 
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.projection(&mut view)
-            .outbox(&mut outbox)
-            .commit(&mut agg)
-            .unwrap();
+        repo.projection(view).outbox(outbox).commit(&mut agg).unwrap();
 
         let loaded: Projection<TestView> = repo.projections().get("1").unwrap().unwrap();
         assert_eq!(loaded.data().counter, 42);
@@ -238,5 +241,48 @@ mod tests {
         let repo = HashMapRepository::new();
         let result: Option<Projection<TestView>> = repo.projections().get("nonexistent").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn upsert_creates_new_projection() {
+        let repo = HashMapRepository::new();
+
+        let view = repo
+            .projections()
+            .upsert(TestView {
+                id: "new-1".into(),
+                counter: 0,
+            })
+            .unwrap();
+
+        assert!(view.is_dirty());
+        assert_eq!(view.data().id, "new-1");
+    }
+
+    #[test]
+    fn upsert_loads_existing_projection() {
+        let repo = HashMapRepository::new();
+
+        // First, create and store a projection
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        let initial = Projection::new(TestView {
+            id: "existing-1".into(),
+            counter: 99,
+        });
+        repo.projection(initial).commit(&mut agg).unwrap();
+
+        // Now upsert should load the existing one
+        let loaded = repo
+            .projections()
+            .upsert(TestView {
+                id: "existing-1".into(),
+                counter: 0, // default value ignored
+            })
+            .unwrap();
+
+        assert!(!loaded.is_dirty());
+        assert_eq!(loaded.data().counter, 99); // loaded from storage, not default
     }
 }

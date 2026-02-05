@@ -66,8 +66,4 @@ impl UserCountersIndex {
         }
         self.total_value += value;
     }
-
-    pub fn update_value(&mut self, delta: i32) {
-        self.total_value += delta;
-    }
 }

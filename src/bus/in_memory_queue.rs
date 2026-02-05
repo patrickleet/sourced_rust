@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
 
 /// Internal data for a named point-to-point queue.
+/// Note: Point-to-point messaging is planned but not yet implemented.
 #[derive(Default)]
+#[allow(dead_code)]
 struct PointToPointQueue {
     /// Messages in this queue
     messages: Vec<Event>,

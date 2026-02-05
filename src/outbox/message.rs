@@ -169,6 +169,16 @@ impl OutboxMessage {
             format!("{}{}", Self::ID_PREFIX, id)
         }
     }
+
+    /// Get mutable reference to the underlying entity.
+    pub fn entity_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+
+    /// Consume the message and return the underlying entity.
+    pub fn into_entity(self) -> Entity {
+        self.entity
+    }
 }
 
 crate::aggregate!(OutboxMessage, entity {

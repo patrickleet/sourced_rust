@@ -52,6 +52,7 @@ pub struct OrderFulfillmentSaga {
     failure_reason: Option<String>,
 }
 
+#[allow(dead_code)]
 impl OrderFulfillmentSaga {
     pub fn new() -> Self {
         Self::default()

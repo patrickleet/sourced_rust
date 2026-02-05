@@ -1,9 +1,13 @@
 //! Integration tests for projections.
 
-mod support;
+mod aggregate;
+mod repository;
+mod views;
 
-use sourced_rust::{CommitBuilderExt, Get, OutboxMessage, Projection, ProjectionsExt};
-use support::counter::{Counter, CounterRepository, CounterView, UserCountersIndex};
+use sourced_rust::{CommitBuilderExt, OutboxMessage, Projection, ProjectionsExt};
+use aggregate::Counter;
+use repository::CounterRepository;
+use views::{CounterView, UserCountersIndex};
 
 #[test]
 fn projection_commits_with_aggregate() {
@@ -15,12 +19,21 @@ fn projection_commits_with_aggregate() {
     counter.increment(5);
 
     // Create projection from aggregate state
-    let mut view = Projection::new(CounterView::new("counter-1", "Page Views", "user-1"));
+    let mut view = repo
+        .repo()
+        .projections()
+        .upsert(CounterView::new("counter-1", "Page Views", "user-1"))
+        .unwrap();
     view.data_mut().set_value(counter.value());
 
-    // Commit both atomically
-    repo.base()
-        .projection(&mut view)
+    // Create outbox message to broadcast the change
+    let outbox =
+        OutboxMessage::encode("counter-1:created", "CounterCreated", view.data()).unwrap();
+
+    // Commit projection, outbox, and aggregate together
+    repo.repo()
+        .projection(view)
+        .outbox(outbox)
         .commit(&mut counter)
         .unwrap();
 
@@ -31,7 +44,7 @@ fn projection_commits_with_aggregate() {
 
     // Verify projection was stored
     let stored_view: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("counter-1")
         .unwrap()
@@ -50,23 +63,36 @@ fn multiple_projections_commit_together() {
     counter.increment(10);
 
     // Create counter view projection
-    let mut counter_view = Projection::new(CounterView::new("counter-2", "Clicks", "user-abc"));
+    let mut counter_view = repo
+        .repo()
+        .projections()
+        .upsert(CounterView::new("counter-2", "Clicks", "user-abc"))
+        .unwrap();
     counter_view.data_mut().set_value(counter.value());
 
     // Create user index projection
-    let mut user_index = Projection::new(UserCountersIndex::new("user-abc"));
+    let mut user_index = repo
+        .repo()
+        .projections()
+        .upsert(UserCountersIndex::new("user-abc"))
+        .unwrap();
     user_index.data_mut().add_counter("counter-2", counter.value());
 
+    // Create outbox message
+    let outbox =
+        OutboxMessage::encode("counter-2:created", "CounterCreated", counter_view.data()).unwrap();
+
     // Commit all together
-    repo.base()
-        .projection(&mut counter_view)
-        .projection(&mut user_index)
+    repo.repo()
+        .projection(counter_view)
+        .projection(user_index)
+        .outbox(outbox)
         .commit(&mut counter)
         .unwrap();
 
-    // Verify all stored
+    // Verify projections stored
     let view: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("counter-2")
         .unwrap()
@@ -74,7 +100,7 @@ fn multiple_projections_commit_together() {
     assert_eq!(view.data().value, 10);
 
     let index: Projection<UserCountersIndex> = repo
-        .base()
+        .repo()
         .projections()
         .get("user-abc")
         .unwrap()
@@ -84,41 +110,56 @@ fn multiple_projections_commit_together() {
 }
 
 #[test]
-fn projection_with_outbox() {
+fn projection_update_with_outbox() {
     let repo = CounterRepository::new();
 
+    // Initial creation
     let mut counter = Counter::new();
     counter.create("counter-3".into(), "Downloads".into(), "user-xyz".into());
-    counter.increment(3);
 
-    let mut view = Projection::new(CounterView::new("counter-3", "Downloads", "user-xyz"));
-    view.data_mut().set_value(counter.value());
+    let view = repo
+        .repo()
+        .projections()
+        .upsert(CounterView::new("counter-3", "Downloads", "user-xyz"))
+        .unwrap();
 
-    // Create outbox message
-    let mut outbox = OutboxMessage::encode(
-        format!("counter-3:v{}", counter.entity.version()),
-        "CounterUpdated",
-        view.data(),
-    )
-    .unwrap();
+    let create_outbox =
+        OutboxMessage::encode("counter-3:v1", "CounterCreated", view.data()).unwrap();
 
-    // Commit projection, outbox, and aggregate together
-    repo.base()
-        .projection(&mut view)
-        .outbox(&mut outbox)
+    repo.repo()
+        .projection(view)
+        .outbox(create_outbox)
         .commit(&mut counter)
         .unwrap();
 
-    // Verify all stored
-    assert!(repo.get("counter-3").unwrap().is_some());
-    let stored_view: Projection<CounterView> = repo
-        .base()
+    // Now increment and update
+    counter.increment(3);
+
+    let mut loaded_view: Projection<CounterView> = repo
+        .repo()
         .projections()
         .get("counter-3")
         .unwrap()
         .unwrap();
-    assert_eq!(stored_view.data().value, 3);
-    assert!(repo.base().get(outbox.id()).unwrap().is_some());
+    loaded_view.data_mut().set_value(counter.value());
+
+    let update_outbox =
+        OutboxMessage::encode("counter-3:v2", "CounterUpdated", loaded_view.data()).unwrap();
+
+    repo.repo()
+        .projection(loaded_view)
+        .outbox(update_outbox)
+        .commit(&mut counter)
+        .unwrap();
+
+    // Verify final state
+    let final_view: Projection<CounterView> = repo
+        .repo()
+        .projections()
+        .get("counter-3")
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_view.data().value, 3);
 }
 
 #[test]
@@ -129,17 +170,24 @@ fn projection_load_and_update() {
     let mut counter = Counter::new();
     counter.create("counter-4".into(), "Likes".into(), "user-456".into());
 
-    let mut view = Projection::new(CounterView::new("counter-4", "Likes", "user-456"));
-    view.data_mut().set_value(counter.value());
+    let view = repo
+        .repo()
+        .projections()
+        .upsert(CounterView::new("counter-4", "Likes", "user-456"))
+        .unwrap();
 
-    repo.base()
-        .projection(&mut view)
+    let outbox =
+        OutboxMessage::encode("counter-4:created", "CounterCreated", view.data()).unwrap();
+
+    repo.repo()
+        .projection(view)
+        .outbox(outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Load projection and verify initial state
     let mut loaded_view: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("counter-4")
         .unwrap()
@@ -152,15 +200,19 @@ fn projection_load_and_update() {
     loaded_view.data_mut().set_value(counter.value());
     assert!(loaded_view.is_dirty());
 
+    let update_outbox =
+        OutboxMessage::encode("counter-4:updated", "CounterUpdated", loaded_view.data()).unwrap();
+
     // Commit updated projection
-    repo.base()
-        .projection(&mut loaded_view)
+    repo.repo()
+        .projection(loaded_view)
+        .outbox(update_outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Load again and verify updated state
     let final_view: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("counter-4")
         .unwrap()
@@ -173,7 +225,7 @@ fn get_projection_returns_none_for_missing() {
     let repo = CounterRepository::new();
 
     let result: Option<Projection<CounterView>> =
-        repo.base().projections().get("nonexistent").unwrap();
+        repo.repo().projections().get("nonexistent").unwrap();
 
     assert!(result.is_none());
 }
@@ -182,23 +234,23 @@ fn get_projection_returns_none_for_missing() {
 fn commit_all_without_aggregate() {
     let repo = CounterRepository::new();
 
-    let mut view1 = Projection::new(CounterView::new("standalone-1", "View 1", "user-1"));
-    let mut view2 = Projection::new(CounterView::new("standalone-2", "View 2", "user-2"));
+    let view1 = Projection::new(CounterView::new("standalone-1", "View 1", "user-1"));
+    let view2 = Projection::new(CounterView::new("standalone-2", "View 2", "user-2"));
 
-    repo.base()
-        .projection(&mut view1)
-        .projection(&mut view2)
+    repo.repo()
+        .projection(view1)
+        .projection(view2)
         .commit_all()
         .unwrap();
 
     let loaded1: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("standalone-1")
         .unwrap()
         .unwrap();
     let loaded2: Projection<CounterView> = repo
-        .base()
+        .repo()
         .projections()
         .get("standalone-2")
         .unwrap()

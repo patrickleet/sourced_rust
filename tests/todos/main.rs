@@ -1,4 +1,5 @@
-mod support;
+mod aggregate;
+mod repository;
 
 use bitcode;
 use sourced_rust::{
@@ -9,7 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use support::todo::{Todo, TodoRepository, TodoSnapshot};
+use aggregate::{Todo, TodoSnapshot};
+use repository::TodoRepository;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -25,22 +27,23 @@ fn todos() {
     // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
     let id1 = next_id();
-    todo.initialize(id1.clone(), "user1".to_string(), "Buy groceries".to_string());
+    todo.initialize(
+        id1.clone(),
+        "user1".to_string(),
+        "Buy groceries".to_string(),
+    );
 
     // Add an outbox event for the initialization
-    let mut init_message = OutboxMessage::encode(
-        format!("{}:init", id1),
-        "TodoInitialized",
-        &todo.snapshot(),
-    )
-    .unwrap();
+    let mut init_message =
+        OutboxMessage::encode(format!("{}:init", id1), "TodoInitialized", &todo.snapshot())
+            .unwrap();
 
     // Commit the Todo + Outbox message to the repository
     let _ = repo.outbox(&mut init_message).commit(&mut todo);
 
     // Verify the outbox event was captured
     {
-        let pending = repo.outbox_messages_pending().unwrap();
+        let pending = repo.repo().inner().outbox_messages_pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "TodoInitialized");
     }
@@ -63,7 +66,7 @@ fn todos() {
 
         // Verify we now have 2 outbox events
         {
-            let pending = repo.outbox_messages_pending().unwrap();
+            let pending = repo.repo().inner().outbox_messages_pending().unwrap();
             assert_eq!(pending.len(), 2);
             assert!(pending
                 .iter()
@@ -91,7 +94,11 @@ fn todos() {
 
     let mut todo3 = Todo::new();
     let id3 = next_id();
-    todo3.initialize(id3.clone(), "user2".to_string(), "Chew bubblegum".to_string());
+    todo3.initialize(
+        id3.clone(),
+        "user2".to_string(),
+        "Chew bubblegum".to_string(),
+    );
 
     // Commit multiple Todos to the repository
     let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
@@ -167,12 +174,8 @@ fn outbox_records_persisted() {
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::encode(
-        format!("{}:init", id),
-        "TodoInitialized",
-        &snapshot,
-    )
-    .unwrap();
+    let mut message =
+        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
 
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
@@ -200,12 +203,8 @@ fn outbox_worker_log_publisher() {
         "Outbox log publisher".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::encode(
-        format!("{}:init", id),
-        "TodoInitialized",
-        &snapshot,
-    )
-    .unwrap();
+    let mut message =
+        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
     let message_id = message.id().to_string();
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
@@ -251,12 +250,8 @@ fn outbox_worker_local_emitter_publisher() {
         "Outbox local emitter".to_string(),
     );
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::encode(
-        format!("{}:init", id),
-        "TodoInitialized",
-        &snapshot,
-    )
-    .unwrap();
+    let mut message =
+        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
     repo.commit(&mut [&mut todo.entity, &mut message.entity])
         .unwrap();
 

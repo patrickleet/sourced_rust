@@ -33,14 +33,6 @@ impl Counter {
         self.value -= amount;
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn user_id(&self) -> &str {
-        &self.user_id
-    }
-
     pub fn value(&self) -> i32 {
         self.value
     }

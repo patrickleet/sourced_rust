@@ -1,7 +1,7 @@
-mod support;
+mod aggregate;
 
 use sourced_rust::{AggregateBuilder, HashMapRepository};
-use support::blob_game::{BlobGame, TileState};
+use aggregate::{BlobGame, TileState};
 
 // Tile state shortcuts
 const P: TileState = TileState::Player;
