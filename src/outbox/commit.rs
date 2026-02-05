@@ -1,4 +1,5 @@
-use crate::core::{Aggregate, AggregateRepository, Repository, RepositoryError};
+use crate::aggregate::{Aggregate, AggregateRepository};
+use crate::repository::{Repository, RepositoryError};
 use crate::outbox::OutboxMessage;
 
 /// Helper returned by [`OutboxCommitExt::outbox`] to commit an aggregate and outbox

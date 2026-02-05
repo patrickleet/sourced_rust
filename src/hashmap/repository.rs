@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::core::{
-    Commit, Committable, Count, Entity, EventRecord, Exists, Find, FindOne, GetMany, GetOne,
-    RepositoryError,
+use crate::entity::{Committable, Entity, EventRecord};
+use crate::repository::{
+    Commit, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
 };
 
 /// In-memory repository implementation using HashMap.
@@ -173,7 +173,7 @@ impl Commit for HashMapRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Get;
+    use crate::repository::Get;
 
     #[test]
     fn new() {

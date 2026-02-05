@@ -12,7 +12,9 @@
 
 use std::marker::PhantomData;
 
-use crate::core::{Aggregate, Commit, Entity, Get, RepositoryError};
+use crate::aggregate::Aggregate;
+use crate::entity::Entity;
+use crate::repository::{Commit, Get, RepositoryError};
 use crate::outbox::OutboxMessage;
 use crate::projection::{Projection, ProjectionError, ProjectionSchema};
 

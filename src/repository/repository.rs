@@ -1,4 +1,4 @@
-use super::entity::Entity;
+use crate::entity::Entity;
 use super::error::RepositoryError;
 use super::gettable::{GetMany, GetOne, Gettable};
 
@@ -43,7 +43,7 @@ pub trait Count {
         F: Fn(&Entity) -> bool;
 }
 
-use super::committable::Committable;
+use crate::entity::Committable;
 
 /// Commit one or more entities.
 pub trait Commit {

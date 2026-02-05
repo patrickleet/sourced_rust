@@ -1,7 +1,10 @@
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as sourced_rust;
 
-pub mod core;
+pub mod aggregate;
+pub mod entity;
+pub mod repository;
+
 #[cfg(feature = "emitter")]
 pub mod emitter;
 #[cfg(feature = "bus")]
@@ -13,18 +16,19 @@ mod outbox_worker;
 pub mod projection;
 pub mod queued;
 
-// Re-export core types at crate root for convenience
-pub use core::{
-    // Aggregate support
-    hydrate, Aggregate, AggregateBuilder, AggregateRepository,
-    // Aggregate extension traits
-    CommitAggregate, CountAggregate, ExistsAggregate, FindAggregate, FindOneAggregate,
-    GetAggregate, GetAllAggregates,
-    // Entity/Event types
-    Committable, Entity, Event, EventRecord, LocalEvent, PayloadError,
-    // Repository traits
+// Re-export entity types at crate root for convenience
+pub use entity::{Committable, Entity, Event, EventRecord, LocalEvent, PayloadError};
+
+// Re-export repository traits at crate root for convenience
+pub use repository::{
     Commit, Count, Exists, Find, FindOne, Get, GetMany, GetOne, Gettable, Repository,
-    RepositoryError, RepositoryExt,
+    RepositoryError,
+};
+
+// Re-export aggregate types at crate root for convenience
+pub use aggregate::{
+    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, CountAggregate,
+    ExistsAggregate, FindAggregate, FindOneAggregate, GetAggregate, GetAllAggregates, RepositoryExt,
     UnlockableRepository,
 };
 

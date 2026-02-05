@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::core::{hydrate, Entity, RepositoryError};
+use crate::aggregate::hydrate;
+use crate::entity::Entity;
+use crate::repository::RepositoryError;
 use crate::hashmap::HashMapRepository;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 

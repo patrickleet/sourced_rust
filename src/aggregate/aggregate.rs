@@ -1,10 +1,8 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use super::entity::Entity;
-use super::error::RepositoryError;
-use super::event_record::EventRecord;
-use super::repository::{Commit, Find, Get, Repository};
+use crate::entity::{Entity, EventRecord};
+use crate::repository::{Commit, Find, Get, Repository, RepositoryError};
 
 /// Trait for domain aggregates that can be event-sourced.
 pub trait Aggregate: Sized + Default {

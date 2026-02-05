@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::lock::Lock;
-use crate::core::{
-    Commit, Committable, Count, Entity, Exists, Find, FindOne, Get, GetMany, GetOne,
-    RepositoryError,
+use crate::entity::{Committable, Entity};
+use crate::repository::{
+    Commit, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
 };
 
 /// Options for read operations.
