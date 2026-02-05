@@ -1,4 +1,4 @@
-use super::event::Event;
+use super::Event;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalEvent {

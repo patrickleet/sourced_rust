@@ -34,7 +34,7 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
 
-use crate::core::Entity;
+use crate::entity::Entity;
 
 /// Error type for projection operations.
 #[derive(Debug, Clone, PartialEq, Eq)]

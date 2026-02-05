@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::event_record::EventRecord;
+use super::EventRecord;
 
 #[derive(Serialize, Deserialize)]
 pub struct Entity {

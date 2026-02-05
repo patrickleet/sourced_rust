@@ -1,4 +1,4 @@
-use super::entity::Entity;
+use super::Entity;
 
 /// Trait for types that can be committed to a repository.
 pub trait Committable {

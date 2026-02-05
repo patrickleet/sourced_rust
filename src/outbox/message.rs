@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::Entity;
+use crate::entity::Entity;
 use crate::digest;
 
 /// Status of an outbox message.

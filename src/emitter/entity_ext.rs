@@ -1,6 +1,6 @@
 use event_emitter_rs::EventEmitter;
 
-use crate::core::{Entity, LocalEvent};
+use crate::entity::{Entity, LocalEvent};
 
 /// Extension wrapper that adds event emitter capabilities to an Entity.
 ///
