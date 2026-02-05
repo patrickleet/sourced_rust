@@ -1,17 +1,17 @@
 //! Integration tests for projections (now using Model + ModelStore).
 
 mod aggregate;
-mod repository;
 mod views;
 
-use sourced_rust::{CommitBuilderExt, ModelsExt, OutboxMessage};
+use sourced_rust::{
+    AggregateBuilder, CommitBuilderExt, HashMapRepository, ModelsExt, OutboxMessage,
+};
 use aggregate::Counter;
-use repository::CounterRepository;
 use views::{CounterView, UserCountersIndex};
 
 #[test]
 fn projection_commits_with_aggregate() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     // Create and modify aggregate
     let mut counter = Counter::new();
@@ -27,20 +27,19 @@ fn projection_commits_with_aggregate() {
         OutboxMessage::encode("counter-1:created", "CounterCreated", &view).unwrap();
 
     // Commit projection, outbox, and aggregate together
-    repo.repo()
-        .projection(&view)
+    repo.projection(&view)
         .outbox(outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Verify aggregate was stored
-    let stored = repo.get("counter-1").unwrap();
+    let agg_repo = repo.clone().aggregate::<Counter>();
+    let stored = agg_repo.get("counter-1").unwrap();
     assert!(stored.is_some());
     assert_eq!(stored.unwrap().value(), 5);
 
     // Verify projection was stored
     let stored_view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-1")
         .unwrap()
@@ -51,7 +50,7 @@ fn projection_commits_with_aggregate() {
 
 #[test]
 fn multiple_projections_commit_together() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     // Create aggregate
     let mut counter = Counter::new();
@@ -71,8 +70,7 @@ fn multiple_projections_commit_together() {
         OutboxMessage::encode("counter-2:created", "CounterCreated", &counter_view).unwrap();
 
     // Commit all together
-    repo.repo()
-        .projection(&counter_view)
+    repo.projection(&counter_view)
         .projection(&user_index)
         .outbox(outbox)
         .commit(&mut counter)
@@ -80,7 +78,6 @@ fn multiple_projections_commit_together() {
 
     // Verify projections stored
     let view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-2")
         .unwrap()
@@ -88,7 +85,6 @@ fn multiple_projections_commit_together() {
     assert_eq!(view.data.value, 10);
 
     let index = repo
-        .repo()
         .models::<UserCountersIndex>()
         .get("user-abc")
         .unwrap()
@@ -99,7 +95,7 @@ fn multiple_projections_commit_together() {
 
 #[test]
 fn projection_update_with_outbox() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     // Initial creation
     let mut counter = Counter::new();
@@ -110,8 +106,7 @@ fn projection_update_with_outbox() {
     let create_outbox =
         OutboxMessage::encode("counter-3:v1", "CounterCreated", &view).unwrap();
 
-    repo.repo()
-        .projection(&view)
+    repo.projection(&view)
         .outbox(create_outbox)
         .commit(&mut counter)
         .unwrap();
@@ -120,7 +115,6 @@ fn projection_update_with_outbox() {
     counter.increment(3);
 
     let mut loaded_view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-3")
         .unwrap()
@@ -131,15 +125,13 @@ fn projection_update_with_outbox() {
     let update_outbox =
         OutboxMessage::encode("counter-3:v2", "CounterUpdated", &loaded_view).unwrap();
 
-    repo.repo()
-        .projection(&loaded_view)
+    repo.projection(&loaded_view)
         .outbox(update_outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Verify final state
     let final_view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-3")
         .unwrap()
@@ -149,7 +141,7 @@ fn projection_update_with_outbox() {
 
 #[test]
 fn projection_load_and_update() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     // Initial commit
     let mut counter = Counter::new();
@@ -160,15 +152,13 @@ fn projection_load_and_update() {
     let outbox =
         OutboxMessage::encode("counter-4:created", "CounterCreated", &view).unwrap();
 
-    repo.repo()
-        .projection(&view)
+    repo.projection(&view)
         .outbox(outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Load projection and verify initial state
     let loaded = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-4")
         .unwrap()
@@ -185,15 +175,13 @@ fn projection_load_and_update() {
         OutboxMessage::encode("counter-4:updated", "CounterUpdated", &updated_view).unwrap();
 
     // Commit updated projection
-    repo.repo()
-        .projection(&updated_view)
+    repo.projection(&updated_view)
         .outbox(update_outbox)
         .commit(&mut counter)
         .unwrap();
 
     // Load again and verify updated state
     let final_view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-4")
         .unwrap()
@@ -204,10 +192,9 @@ fn projection_load_and_update() {
 
 #[test]
 fn get_projection_returns_none_for_missing() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     let result = repo
-        .repo()
         .models::<CounterView>()
         .get("nonexistent")
         .unwrap();
@@ -217,25 +204,22 @@ fn get_projection_returns_none_for_missing() {
 
 #[test]
 fn commit_all_without_aggregate() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     let view1 = CounterView::new("standalone-1", "View 1", "user-1");
     let view2 = CounterView::new("standalone-2", "View 2", "user-2");
 
-    repo.repo()
-        .projection(&view1)
+    repo.projection(&view1)
         .projection(&view2)
         .commit_all()
         .unwrap();
 
     let loaded1 = repo
-        .repo()
         .models::<CounterView>()
         .get("standalone-1")
         .unwrap()
         .unwrap();
     let loaded2 = repo
-        .repo()
         .models::<CounterView>()
         .get("standalone-2")
         .unwrap()
@@ -246,7 +230,7 @@ fn commit_all_without_aggregate() {
 
 #[test]
 fn outbox_then_projection_order() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     let mut counter = Counter::new();
     counter.create("counter-5".into(), "Shares".into(), "user-999".into());
@@ -259,14 +243,12 @@ fn outbox_then_projection_order() {
         OutboxMessage::encode("counter-5:created", "CounterCreated", &view).unwrap();
 
     // Outbox THEN projection — order shouldn't matter
-    repo.repo()
-        .outbox(outbox)
+    repo.outbox(outbox)
         .projection(&view)
         .commit(&mut counter)
         .unwrap();
 
     let stored_view = repo
-        .repo()
         .models::<CounterView>()
         .get("counter-5")
         .unwrap()
@@ -276,15 +258,14 @@ fn outbox_then_projection_order() {
 
 #[test]
 fn standalone_model_crud() {
-    let repo = CounterRepository::new();
+    let repo = HashMapRepository::new();
 
     // Save directly via models()
     let view = CounterView::new("direct-1", "Direct", "user-direct");
-    repo.repo().models::<CounterView>().save(&view).unwrap();
+    repo.models::<CounterView>().save(&view).unwrap();
 
     // Load back
     let loaded = repo
-        .repo()
         .models::<CounterView>()
         .get("direct-1")
         .unwrap()
@@ -295,10 +276,9 @@ fn standalone_model_crud() {
     // Update
     let mut updated = loaded.data;
     updated.set_value(100);
-    repo.repo().models::<CounterView>().save(&updated).unwrap();
+    repo.models::<CounterView>().save(&updated).unwrap();
 
     let reloaded = repo
-        .repo()
         .models::<CounterView>()
         .get("direct-1")
         .unwrap()
@@ -307,6 +287,6 @@ fn standalone_model_crud() {
     assert_eq!(reloaded.version, 2);
 
     // Delete
-    assert!(repo.repo().models::<CounterView>().delete("direct-1").unwrap());
-    assert!(repo.repo().models::<CounterView>().get("direct-1").unwrap().is_none());
+    assert!(repo.models::<CounterView>().delete("direct-1").unwrap());
+    assert!(repo.models::<CounterView>().get("direct-1").unwrap().is_none());
 }
