@@ -152,6 +152,17 @@ impl Entity {
     pub fn set_replaying(&mut self, replaying: bool) {
         self.replaying = replaying;
     }
+
+    /// Replace all events with a single snapshot event.
+    /// Used by projections to store current state.
+    pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) {
+        let payload = bitcode::serialize(data).expect("failed to serialize snapshot");
+        self.events.clear();
+        let record = EventRecord::new("Snapshot", payload, 1);
+        self.events.push(record);
+        self.version = 1;
+        self.timestamp = SystemTime::now();
+    }
 }
 
 #[cfg(test)]

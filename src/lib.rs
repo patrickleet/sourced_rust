@@ -6,9 +6,11 @@ pub mod core;
 pub mod emitter;
 #[cfg(feature = "bus")]
 pub mod bus;
+mod commit_builder;
 mod hashmap;
 mod outbox;
 mod outbox_worker;
+pub mod projection;
 pub mod queued;
 
 // Re-export core types at crate root for convenience
@@ -61,6 +63,14 @@ pub use queued::{
     Queueable, QueuedRepository,
     // WithOpts traits for opting out of locking
     FindOneWithOpts, FindWithOpts, GetAllWithOpts, GetWithOpts, ReadOpts,
+};
+
+// Projections: read models / query views
+pub use projection::{Projection, ProjectionError, ProjectionSchema};
+
+// CommitBuilder: atomic commits of projections, outbox, and aggregates
+pub use commit_builder::{
+    CommitBuilder, CommitBuilderExt, ProjectionRepository, ProjectionsExt,
 };
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
