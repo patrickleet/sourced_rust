@@ -11,9 +11,9 @@ pub mod emitter;
 pub mod bus;
 mod commit_builder;
 mod hashmap;
+pub mod model;
 mod outbox;
 mod outbox_worker;
-pub mod projection;
 pub mod queued;
 
 // Re-export entity types at crate root for convenience
@@ -69,13 +69,13 @@ pub use queued::{
     FindOneWithOpts, FindWithOpts, GetAllWithOpts, GetWithOpts, ReadOpts,
 };
 
-// Projections: read models / query views
-pub use projection::{Projection, ProjectionError, ProjectionSchema};
-
-// CommitBuilder: atomic commits of projections, outbox, and aggregates
-pub use commit_builder::{
-    CommitBuilder, CommitBuilderExt, ProjectionRepository, ProjectionsExt,
+// Models: projections and non-ES entities
+pub use model::{
+    InMemoryModelStore, Model, ModelError, ModelStore, ModelsExt, Versioned,
 };
+
+// CommitBuilder: atomic commits of models, outbox, and aggregates
+pub use commit_builder::{CommitBuilder, CommitBuilderExt};
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
 #[cfg(feature = "emitter")]

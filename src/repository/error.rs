@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::model::ModelError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryError {
     LockPoisoned(&'static str),
@@ -9,7 +11,7 @@ pub enum RepositoryError {
         actual: u64,
     },
     Replay(String),
-    Projection(String),
+    Model(String),
 }
 
 impl fmt::Display for RepositoryError {
@@ -28,9 +30,15 @@ impl fmt::Display for RepositoryError {
                 id, expected, actual
             ),
             RepositoryError::Replay(message) => write!(f, "replay error: {}", message),
-            RepositoryError::Projection(message) => write!(f, "projection error: {}", message),
+            RepositoryError::Model(message) => write!(f, "model error: {}", message),
         }
     }
 }
 
 impl std::error::Error for RepositoryError {}
+
+impl From<ModelError> for RepositoryError {
+    fn from(err: ModelError) -> Self {
+        RepositoryError::Model(err.to_string())
+    }
+}
