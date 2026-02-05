@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::entity::{Committable, Entity, EventRecord};
+use crate::model::{InMemoryModelStore, Model, ModelError, ModelStore, Versioned};
 use crate::repository::{
     Commit, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
 };
@@ -10,9 +11,11 @@ use crate::repository::{
 ///
 /// This repository is cheap to clone because it uses `Arc<RwLock<...>>`
 /// internally - cloning creates another handle to the same storage.
+/// Also includes an embedded `InMemoryModelStore` for model/projection storage.
 #[derive(Clone)]
 pub struct HashMapRepository {
     storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
+    model_store: InMemoryModelStore,
 }
 
 impl Default for HashMapRepository {
@@ -26,11 +29,17 @@ impl HashMapRepository {
     pub fn new() -> Self {
         HashMapRepository {
             storage: Arc::new(RwLock::new(HashMap::new())),
+            model_store: InMemoryModelStore::new(),
         }
     }
 
     pub(crate) fn storage(&self) -> &RwLock<HashMap<String, Vec<EventRecord>>> {
         self.storage.as_ref()
+    }
+
+    /// Access the embedded model store directly.
+    pub fn model_store(&self) -> &InMemoryModelStore {
+        &self.model_store
     }
 }
 
@@ -167,6 +176,43 @@ impl Commit for HashMapRepository {
             storage.insert(entity.id().to_string(), entity.events().to_vec());
         }
         Ok(())
+    }
+}
+
+impl ModelStore for HashMapRepository {
+    fn get_model<M: Model>(&self, id: &str) -> Result<Option<Versioned<M>>, ModelError> {
+        self.model_store.get_model(id)
+    }
+
+    fn save_model<M: Model>(&self, model: &M) -> Result<Versioned<M>, ModelError> {
+        self.model_store.save_model(model)
+    }
+
+    fn insert_model<M: Model>(&self, model: &M) -> Result<Versioned<M>, ModelError> {
+        self.model_store.insert_model(model)
+    }
+
+    fn update_model<M: Model>(
+        &self,
+        model: &M,
+        expected_version: u64,
+    ) -> Result<Versioned<M>, ModelError> {
+        self.model_store.update_model(model, expected_version)
+    }
+
+    fn delete_model<M: Model>(&self, id: &str) -> Result<bool, ModelError> {
+        self.model_store.delete_model::<M>(id)
+    }
+
+    fn find_models<M: Model>(
+        &self,
+        predicate: &dyn Fn(&M) -> bool,
+    ) -> Result<Vec<Versioned<M>>, ModelError> {
+        self.model_store.find_models(predicate)
+    }
+
+    fn save_model_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ModelError> {
+        self.model_store.save_model_raw(key, bytes)
     }
 }
 

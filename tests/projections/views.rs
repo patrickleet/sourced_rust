@@ -1,7 +1,7 @@
 //! Projection views for Counter.
 
 use serde::{Deserialize, Serialize};
-use sourced_rust::ProjectionSchema;
+use sourced_rust::Model;
 
 /// A read-optimized view of a single counter.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -12,8 +12,8 @@ pub struct CounterView {
     pub value: i32,
 }
 
-impl ProjectionSchema for CounterView {
-    const PREFIX: &'static str = "counter_view";
+impl Model for CounterView {
+    const COLLECTION: &'static str = "counter_views";
 
     fn id(&self) -> &str {
         &self.id
@@ -43,8 +43,8 @@ pub struct UserCountersIndex {
     pub total_value: i32,
 }
 
-impl ProjectionSchema for UserCountersIndex {
-    const PREFIX: &'static str = "user_counters";
+impl Model for UserCountersIndex {
+    const COLLECTION: &'static str = "user_counters";
 
     fn id(&self) -> &str {
         &self.user_id
