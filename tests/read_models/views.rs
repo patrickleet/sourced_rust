@@ -32,14 +32,14 @@ impl CounterView {
 /// Index of all counters belonging to a user.
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[readmodel(collection = "user_counters")]
-pub struct UserCountersIndex {
+pub struct UserCountersIndexView {
     #[readmodel(id)]
     pub user_id: String,
     pub counter_ids: Vec<String>,
     pub total_value: i32,
 }
 
-impl UserCountersIndex {
+impl UserCountersIndexView {
     pub fn new(user_id: &str) -> Self {
         Self {
             user_id: user_id.to_string(),

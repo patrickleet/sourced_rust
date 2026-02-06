@@ -10,11 +10,12 @@ pub mod emitter;
 #[cfg(feature = "bus")]
 pub mod bus;
 mod commit_builder;
-mod hashmap;
+mod hashmap_repo;
+pub(crate) mod lock;
 pub mod read_model;
 mod outbox;
 mod outbox_worker;
-pub mod queued;
+pub mod queued_repo;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{Committable, Entity, Event, EventRecord, LocalEvent, PayloadError};
@@ -32,7 +33,7 @@ pub use aggregate::{
     UnlockableRepository,
 };
 
-pub use hashmap::HashMapRepository;
+pub use hashmap_repo::HashMapRepository;
 
 // Outbox: commit concerns (atomic aggregate + outbox commit)
 pub use outbox::{
@@ -62,7 +63,7 @@ pub use bus::InMemoryQueue;
 #[cfg(feature = "emitter")]
 pub use outbox_worker::LocalEmitterPublisher;
 
-pub use queued::{
+pub use queued_repo::{
     // Queued repository
     Queueable, QueuedRepository,
     // WithOpts traits for opting out of locking
@@ -71,7 +72,8 @@ pub use queued::{
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, ReadModelsExt, Versioned,
+    InMemoryReadModelStore, QueuedReadModelStore, ReadModel, ReadModelError, ReadModelStore,
+    ReadModelsExt, Versioned,
 };
 
 // CommitBuilder: atomic commits of read models, outbox, and aggregates
