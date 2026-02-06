@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::aggregate::hydrate;
 use crate::entity::Entity;
 use crate::repository::RepositoryError;
-use crate::hashmap::HashMapRepository;
+use crate::hashmap_repo::HashMapRepository;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 
 /// Extension trait for repositories that expose outbox message operations.

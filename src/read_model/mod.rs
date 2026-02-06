@@ -22,6 +22,7 @@
 //! ```
 
 mod in_memory;
+mod queued;
 mod repository;
 mod store;
 
@@ -88,5 +89,6 @@ impl fmt::Display for ReadModelError {
 impl std::error::Error for ReadModelError {}
 
 pub use in_memory::InMemoryReadModelStore;
+pub use queued::QueuedReadModelStore;
 pub use repository::{ReadModelRepository, ReadModelsExt};
 pub use store::ReadModelStore;

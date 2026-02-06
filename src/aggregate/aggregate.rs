@@ -343,7 +343,7 @@ where
 }
 
 // Re-export from queued module for backward compatibility
-pub use crate::queued::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
+pub use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 
 impl<R, A> AggregateRepository<R, A>
 where

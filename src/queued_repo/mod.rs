@@ -1,4 +1,3 @@
-mod lock;
 mod repository;
 
 pub use repository::{
