@@ -1,3 +1,5 @@
+mod read_model;
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
@@ -465,4 +467,32 @@ impl Parse for AggregateInput {
             events,
         })
     }
+}
+
+// ============================================================================
+// #[derive(ReadModel)] derive macro
+// ============================================================================
+
+/// Derive macro for the `ReadModel` trait.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[derive(Clone, Serialize, Deserialize, ReadModel)]
+/// #[readmodel(collection = "counter_views")]
+/// struct CounterView {
+///     #[readmodel(id)]
+///     pub id: String,
+///     pub name: String,
+///     pub value: i32,
+/// }
+/// ```
+///
+/// - `#[readmodel(collection = "...")]` sets the collection name.
+///   If omitted, defaults to snake_case struct name + "s".
+/// - `#[readmodel(id)]` marks the field used as the unique identifier.
+///   If omitted, defaults to a field named `id`.
+#[proc_macro_derive(ReadModel, attributes(readmodel))]
+pub fn derive_read_model(input: TokenStream) -> TokenStream {
+    read_model::derive_read_model(input)
 }

@@ -1,4 +1,4 @@
-//! Simple Counter aggregate for testing projections.
+//! Simple Counter aggregate for testing read models.
 
 use sourced_rust::{digest, Entity};
 

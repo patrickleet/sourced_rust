@@ -1,27 +1,27 @@
-//! CommitBuilder - Chain projections, outbox, and aggregates for atomic commits.
+//! CommitBuilder - Chain read models, outbox, and aggregates for atomic commits.
 //!
 //! ## Example
 //!
 //! ```ignore
 //! // All of these are equivalent - chain methods in any order:
 //! repo
-//!     .projection(&game_view)
+//!     .readmodel(&game_view)
 //!     .outbox(message)
 //!     .commit(&mut game)?;
 //!
 //! repo
 //!     .outbox(message)
-//!     .projection(&game_view)
+//!     .readmodel(&game_view)
 //!     .commit(&mut game)?;
 //! ```
 
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
-use crate::model::{Model, ModelStore};
+use crate::read_model::{ReadModel, ReadModelStore};
 use crate::outbox::OutboxMessage;
 use crate::repository::{Commit, RepositoryError};
 
-/// A queued model save (type-erased).
+/// A queued read model save (type-erased).
 struct QueuedModel {
     /// Storage key: "COLLECTION:id"
     key: String,
@@ -45,10 +45,10 @@ impl<'a, R> CommitBuilder<'a, R> {
         }
     }
 
-    /// Add a model (projection) to the commit.
-    pub fn projection<M: Model>(mut self, model: &M) -> Self {
+    /// Add a read model to the commit.
+    pub fn readmodel<M: ReadModel>(mut self, model: &M) -> Self {
         let key = format!("{}:{}", M::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(model).expect("model serialization should not fail");
+        let bytes = serde_json::to_vec(model).expect("read model serialization should not fail");
         self.models.push(QueuedModel { key, bytes });
         self
     }
@@ -62,17 +62,17 @@ impl<'a, R> CommitBuilder<'a, R> {
     /// Commit all items plus the primary aggregate.
     pub fn commit<A: Aggregate>(mut self, aggregate: &mut A) -> Result<(), RepositoryError>
     where
-        R: Commit + ModelStore,
+        R: Commit + ReadModelStore,
     {
         // Commit entities (outbox messages + aggregate)
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         entity_refs.push(aggregate.entity_mut());
         self.repo.commit(&mut entity_refs[..])?;
 
-        // Write queued models
+        // Write queued read models
         for queued in self.models {
             self.repo
-                .save_model_raw(&queued.key, queued.bytes)?;
+                .upsert_raw(&queued.key, queued.bytes)?;
         }
 
         Ok(())
@@ -81,7 +81,7 @@ impl<'a, R> CommitBuilder<'a, R> {
     /// Commit without a primary aggregate.
     pub fn commit_all(mut self) -> Result<(), RepositoryError>
     where
-        R: Commit + ModelStore,
+        R: Commit + ReadModelStore,
     {
         // Commit entities if any
         if !self.entities.is_empty() {
@@ -89,21 +89,21 @@ impl<'a, R> CommitBuilder<'a, R> {
             self.repo.commit(&mut entity_refs[..])?;
         }
 
-        // Write queued models
+        // Write queued read models
         for queued in self.models {
             self.repo
-                .save_model_raw(&queued.key, queued.bytes)?;
+                .upsert_raw(&queued.key, queued.bytes)?;
         }
 
         Ok(())
     }
 }
 
-/// Extension trait to start a commit builder chain from a projection or outbox.
-pub trait CommitBuilderExt: Commit + ModelStore + Sized {
-    /// Start a commit builder chain with a projection (model).
-    fn projection<M: Model>(&self, model: &M) -> CommitBuilder<'_, Self> {
-        CommitBuilder::new(self).projection(model)
+/// Extension trait to start a commit builder chain from a read model or outbox.
+pub trait CommitBuilderExt: Commit + ReadModelStore + Sized {
+    /// Start a commit builder chain with a read model.
+    fn readmodel<M: ReadModel>(&self, model: &M) -> CommitBuilder<'_, Self> {
+        CommitBuilder::new(self).readmodel(model)
     }
 
     /// Start a commit builder chain with an outbox message.
@@ -112,13 +112,13 @@ pub trait CommitBuilderExt: Commit + ModelStore + Sized {
     }
 }
 
-impl<R: Commit + ModelStore> CommitBuilderExt for R {}
+impl<R: Commit + ReadModelStore> CommitBuilderExt for R {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{impl_aggregate, Entity, EventRecord, HashMapRepository};
-    use crate::model::ModelsExt;
+    use crate::read_model::ReadModelsExt;
     use serde::{Deserialize, Serialize};
 
     #[derive(Default)]
@@ -147,7 +147,7 @@ mod tests {
         counter: i32,
     }
 
-    impl Model for TestView {
+    impl ReadModel for TestView {
         const COLLECTION: &'static str = "test_view";
         fn id(&self) -> &str {
             &self.id
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_projection_and_aggregate() {
+    fn commit_readmodel_and_aggregate() {
         let repo = HashMapRepository::new();
 
         let view = TestView {
@@ -166,16 +166,16 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.projection(&view).commit(&mut agg).unwrap();
+        repo.readmodel(&view).commit(&mut agg).unwrap();
 
-        // Verify model stored
-        let loaded = repo.models::<TestView>().get("1").unwrap();
+        // Verify read model stored
+        let loaded = repo.read_models::<TestView>().get("1").unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 42);
     }
 
     #[test]
-    fn commit_multiple_projections() {
+    fn commit_multiple_readmodels() {
         let repo = HashMapRepository::new();
 
         let view1 = TestView {
@@ -190,19 +190,19 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.projection(&view1)
-            .projection(&view2)
+        repo.readmodel(&view1)
+            .readmodel(&view2)
             .commit(&mut agg)
             .unwrap();
 
-        let loaded1 = repo.models::<TestView>().get("1").unwrap().unwrap();
-        let loaded2 = repo.models::<TestView>().get("2").unwrap().unwrap();
+        let loaded1 = repo.read_models::<TestView>().get("1").unwrap().unwrap();
+        let loaded2 = repo.read_models::<TestView>().get("2").unwrap().unwrap();
         assert_eq!(loaded1.data.counter, 10);
         assert_eq!(loaded2.data.counter, 20);
     }
 
     #[test]
-    fn commit_projection_with_outbox() {
+    fn commit_readmodel_with_outbox() {
         let repo = HashMapRepository::new();
 
         let view = TestView {
@@ -215,19 +215,19 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        // projection then outbox
-        repo.projection(&view)
+        // readmodel then outbox
+        repo.readmodel(&view)
             .outbox(outbox)
             .commit(&mut agg)
             .unwrap();
 
-        let loaded = repo.models::<TestView>().get("1").unwrap();
+        let loaded = repo.read_models::<TestView>().get("1").unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 42);
     }
 
     #[test]
-    fn commit_outbox_then_projection() {
+    fn commit_outbox_then_readmodel() {
         let repo = HashMapRepository::new();
 
         let view = TestView {
@@ -240,13 +240,13 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        // outbox then projection — same result
+        // outbox then readmodel — same result
         repo.outbox(outbox)
-            .projection(&view)
+            .readmodel(&view)
             .commit(&mut agg)
             .unwrap();
 
-        let loaded = repo.models::<TestView>().get("1").unwrap();
+        let loaded = repo.read_models::<TestView>().get("1").unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 99);
     }
@@ -264,13 +264,13 @@ mod tests {
             counter: 2,
         };
 
-        repo.projection(&view1)
-            .projection(&view2)
+        repo.readmodel(&view1)
+            .readmodel(&view2)
             .commit_all()
             .unwrap();
 
-        let loaded1 = repo.models::<TestView>().get("standalone-1").unwrap().unwrap();
-        let loaded2 = repo.models::<TestView>().get("standalone-2").unwrap().unwrap();
+        let loaded1 = repo.read_models::<TestView>().get("standalone-1").unwrap().unwrap();
+        let loaded2 = repo.read_models::<TestView>().get("standalone-2").unwrap().unwrap();
         assert_eq!(loaded1.data.id, "standalone-1");
         assert_eq!(loaded2.data.id, "standalone-2");
     }

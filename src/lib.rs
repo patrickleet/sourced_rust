@@ -11,7 +11,7 @@ pub mod emitter;
 pub mod bus;
 mod commit_builder;
 mod hashmap;
-pub mod model;
+pub mod read_model;
 mod outbox;
 mod outbox_worker;
 pub mod queued;
@@ -69,12 +69,12 @@ pub use queued::{
     FindOneWithOpts, FindWithOpts, GetAllWithOpts, GetWithOpts, ReadOpts,
 };
 
-// Models: projections and non-ES entities
-pub use model::{
-    InMemoryModelStore, Model, ModelError, ModelStore, ModelsExt, Versioned,
+// Read models: projections and read-optimized views
+pub use read_model::{
+    InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, ReadModelsExt, Versioned,
 };
 
-// CommitBuilder: atomic commits of models, outbox, and aggregates
+// CommitBuilder: atomic commits of read models, outbox, and aggregates
 pub use commit_builder::{CommitBuilder, CommitBuilderExt};
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
@@ -82,7 +82,7 @@ pub use commit_builder::{CommitBuilder, CommitBuilderExt};
 pub use event_emitter_rs::EventEmitter;
 
 // Re-export proc macros
-pub use sourced_rust_macros::{aggregate, digest};
+pub use sourced_rust_macros::{aggregate, digest, ReadModel};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]
