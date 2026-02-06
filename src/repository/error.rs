@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::model::ModelError;
+use crate::read_model::ReadModelError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryError {
@@ -37,8 +37,8 @@ impl fmt::Display for RepositoryError {
 
 impl std::error::Error for RepositoryError {}
 
-impl From<ModelError> for RepositoryError {
-    fn from(err: ModelError) -> Self {
+impl From<ReadModelError> for RepositoryError {
+    fn from(err: ReadModelError) -> Self {
         RepositoryError::Model(err.to_string())
     }
 }

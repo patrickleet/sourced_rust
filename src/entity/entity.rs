@@ -154,7 +154,7 @@ impl Entity {
     }
 
     /// Replace all events with a single snapshot event.
-    /// Used by projections to store current state.
+    /// Used by read models to store current state.
     pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) {
         let payload = bitcode::serialize(data).expect("failed to serialize snapshot");
         self.events.clear();

@@ -1,23 +1,17 @@
-//! Projection views for Counter.
+//! Read model views for Counter.
 
 use serde::{Deserialize, Serialize};
-use sourced_rust::Model;
+use sourced_rust::ReadModel;
 
 /// A read-optimized view of a single counter.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
+#[readmodel(collection = "counter_views")]
 pub struct CounterView {
+    #[readmodel(id)]
     pub id: String,
     pub name: String,
     pub user_id: String,
     pub value: i32,
-}
-
-impl Model for CounterView {
-    const COLLECTION: &'static str = "counter_views";
-
-    fn id(&self) -> &str {
-        &self.id
-    }
 }
 
 impl CounterView {
@@ -36,19 +30,13 @@ impl CounterView {
 }
 
 /// Index of all counters belonging to a user.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
+#[readmodel(collection = "user_counters")]
 pub struct UserCountersIndex {
+    #[readmodel(id)]
     pub user_id: String,
     pub counter_ids: Vec<String>,
     pub total_value: i32,
-}
-
-impl Model for UserCountersIndex {
-    const COLLECTION: &'static str = "user_counters";
-
-    fn id(&self) -> &str {
-        &self.user_id
-    }
 }
 
 impl UserCountersIndex {
