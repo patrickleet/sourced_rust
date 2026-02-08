@@ -73,9 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
-- **OutboxMessage**: A durable integration event for the outbox pattern.
-- **Outbox Worker**: Publishes outbox messages to external systems.
-- **Bus**: Service bus for publishing and subscribing to events.
+- **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing.
+- **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
+- **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
 
 ## The `#[digest]` Macro
@@ -184,20 +184,20 @@ for message in &mut claimed {
 
 ## Service Bus
 
-The service bus provides event-driven communication between services using a publish/subscribe pattern.
+The service bus supports two messaging patterns:
 
-### Basic Usage
+- **Publish/Subscribe (fan-out)**: Every subscriber receives every event. Use `publish()` / `subscribe()`.
+- **Send/Listen (point-to-point)**: Each message goes to a named queue where only one listener consumes it. Use `send()` / `listen()`.
+
+### Publish/Subscribe (Fan-Out)
 
 ```rust
-use sourced_rust::bus::{Bus, InMemoryQueue, Publisher};
+use sourced_rust::bus::{Bus, InMemoryQueue, Publisher, Event};
 
-// Create a shared queue
 let queue = InMemoryQueue::new();
-
-// Create a bus for your service
 let bus = Bus::from_queue(queue);
 
-// Publish events
+// Publish events (all subscribers see them)
 bus.publish(Event::with_string_payload("evt-1", "OrderCreated", r#"{"id":"123"}"#))?;
 ```
 
@@ -225,9 +225,28 @@ while let Ok(Some(event)) = order_events.recv(100) {
 }
 ```
 
-### Distributed Services
+### Send/Listen (Point-to-Point)
 
-For multi-threaded or distributed scenarios, each service creates its own `Bus` from a shared queue:
+Send messages to named queues. Each message is consumed by exactly one listener (competing consumers):
+
+```rust
+use sourced_rust::bus::{Bus, InMemoryQueue, Event};
+
+let queue = InMemoryQueue::new();
+let bus = Bus::from_queue(queue);
+
+// Send to a named queue
+bus.send("orders", Event::with_string_payload("evt-1", "ProcessOrder", r#"{"id":"123"}"#))?;
+
+// Listen on a named queue (blocks until message or timeout)
+if let Ok(Some(event)) = bus.listen("orders", 1000) {
+    // Only one listener gets each message
+}
+```
+
+### Distributed Services (Fan-Out)
+
+For multi-threaded or distributed scenarios with fan-out, each service creates its own `Bus` from a shared queue and subscribes to event types:
 
 ```rust
 use std::thread;
@@ -258,7 +277,38 @@ thread::spawn(move || {
 });
 ```
 
-### With Outbox Worker
+### Distributed Services (Point-to-Point)
+
+For point-to-point messaging, each service listens on its own named queue:
+
+```rust
+use std::thread;
+use sourced_rust::bus::{Bus, InMemoryQueue};
+
+let queue = InMemoryQueue::new();
+
+// Order Service listens on its own queue
+let order_queue = queue.clone();
+thread::spawn(move || {
+    let bus = Bus::from_queue(order_queue);
+
+    while let Ok(Some(event)) = bus.listen("orders", 1000) {
+        // Handle messages sent to the "orders" queue
+    }
+});
+
+// Payment Service listens on its own queue
+let payment_queue = queue.clone();
+thread::spawn(move || {
+    let bus = Bus::from_queue(payment_queue);
+
+    while let Ok(Some(event)) = bus.listen("payments", 1000) {
+        // Handle messages sent to the "payments" queue
+    }
+});
+```
+
+### With Outbox Worker (Fan-Out)
 
 Combine the outbox pattern with the service bus for reliable event publishing:
 
@@ -272,7 +322,7 @@ use std::time::Duration;
 let queue = InMemoryQueue::new();
 let repo = HashMapRepository::new();
 
-// Start outbox worker - publishes messages to the queue
+// Start outbox worker - publishes messages to the queue (fan-out)
 let worker = OutboxWorkerThread::spawn(
     repo.clone(),
     queue.clone(),
@@ -298,6 +348,50 @@ order_repo.outbox(&mut outbox).commit(&mut order)?;
 let events = bus.subscribe(&["OrderCreated"]);
 ```
 
+### With Outbox Worker (Point-to-Point)
+
+Use `OutboxMessage::encode_to()` to set a destination queue, and `spawn_routed` to route messages:
+
+```rust
+use sourced_rust::{
+    CommitBuilderExt, HashMapRepository, InMemoryQueue, OutboxWorkerThread,
+    OutboxMessage,
+};
+use std::time::Duration;
+
+let queue = InMemoryQueue::new();
+let repo = HashMapRepository::new();
+
+// spawn_routed: sends to named queues when destination is set,
+// falls back to publish (fan-out) when destination is None
+let worker = OutboxWorkerThread::spawn_routed(
+    repo.clone(),
+    queue.clone(),
+    Duration::from_millis(100),
+);
+
+// Create outbox messages with destinations
+let outbox_saga = OutboxMessage::encode_to(
+    "order-1:created:saga",
+    "OrderCreated",
+    "saga",   // destination queue
+    &payload,
+)?;
+let outbox_inventory = OutboxMessage::encode_to(
+    "order-1:created:inventory",
+    "OrderCreated",
+    "inventory",  // destination queue
+    &payload,
+)?;
+
+// Commit aggregate + multiple outbox messages atomically
+repo.outbox(outbox_saga)
+    .outbox(outbox_inventory)
+    .commit(&mut order)?;
+
+// Worker drains outbox and sends each message to its destination queue
+```
+
 ## Project Structure
 
 ```
@@ -319,8 +413,9 @@ cargo test
 
 ## Examples
 
-- `tests/todos.rs` - Basic entity workflow
-- `tests/distributed_saga.rs` - Multi-service saga with outbox pattern and bus subscriptions
+- `tests/todos/` - Basic entity workflow
+- `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
+- `tests/sagas/orchestration.rs` - Saga orchestration with compensation
 - `tests/support/` - Domain models for tests
 
 ## License

@@ -43,11 +43,15 @@
 mod bus;
 mod event_bus;
 mod in_memory_queue;
+mod listener;
 mod publisher;
+mod sender;
 mod subscriber;
 
 pub use bus::Bus;
 pub use event_bus::EventBus;
 pub use in_memory_queue::{EventReceiver, InMemoryQueue};
+pub use listener::Listener;
 pub use publisher::{Event, PublishError, Publisher};
+pub use sender::Sender;
 pub use subscriber::{Subscribable, Subscriber};

@@ -1,7 +1,7 @@
 //! Service Bus - wraps publisher and subscriber for a service.
 
 use super::in_memory_queue::EventReceiver;
-use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
+use super::{Event, Listener, PublishError, Publisher, Sender, Subscribable, Subscriber};
 
 /// Service bus - wraps publisher and subscriber for a service.
 ///
@@ -74,6 +74,27 @@ impl<P: Publisher, S: Subscriber> Bus<P, S> {
     /// Get a reference to the underlying subscriber.
     pub fn subscriber(&self) -> &S {
         &self.subscriber
+    }
+}
+
+impl<P: Publisher + Sender, S: Subscriber> Bus<P, S> {
+    /// Send an event to a named queue (point-to-point).
+    ///
+    /// Unlike `publish` (fan-out), `send` delivers the message to a specific
+    /// named queue where only one listener consumes each message.
+    pub fn send(&self, queue: &str, event: Event) -> Result<(), PublishError> {
+        self.publisher.send(queue, event)
+    }
+}
+
+impl<P: Publisher, S: Subscriber + Listener> Bus<P, S> {
+    /// Listen for the next event on a named queue (point-to-point).
+    ///
+    /// Unlike `poll` (fan-out where each subscriber sees all events),
+    /// `listen` competes with other listeners — each message is delivered
+    /// to exactly one listener.
+    pub fn listen(&self, queue: &str, timeout_ms: u64) -> Result<Option<Event>, PublishError> {
+        self.subscriber.listen(queue, timeout_ms)
     }
 }
 

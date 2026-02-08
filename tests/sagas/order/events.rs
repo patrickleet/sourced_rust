@@ -7,7 +7,7 @@ use super::OrderItem;
 
 /// Payload for SagaStarted event - initiates the saga.
 #[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
-pub struct SagaStartedPayload {
+pub struct OrderFulfillmentStartedPayload {
     pub saga_id: String,
     pub order_id: String,
     pub customer_id: String,
@@ -41,7 +41,7 @@ pub struct PaymentSucceededPayload {
 
 /// Payload for SagaCompleted event - saga finished successfully.
 #[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
-pub struct SagaCompletedPayload {
+pub struct OrderFulfillmentCompletedPayload {
     pub saga_id: String,
     pub order_id: String,
 }

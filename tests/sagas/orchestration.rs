@@ -45,16 +45,16 @@ fn saga_happy_path_completes_order() {
     order_repo.commit(&mut order).unwrap();
 
     // === Step 2: Start Saga ===
-    let mut saga = OrderFulfillmentSaga::new();
-    saga.start(
+    let mut order_fulfillment_saga =OrderFulfillmentSaga::new();
+    order_fulfillment_saga.start(
         "saga-123".to_string(),
         order_id.clone(),
         "customer-456".to_string(),
         items,
         5000, // 5 widgets * 1000 cents
     );
-    assert_eq!(saga.status(), SagaStatus::Started);
-    saga_repo.commit(&mut saga).unwrap();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Started);
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Step 3: Reserve Inventory ===
     let mut inventory = inventory_repo.get("WIDGET-001").unwrap().unwrap();
@@ -63,11 +63,11 @@ fn saga_happy_path_completes_order() {
     inventory_repo.commit(&mut inventory).unwrap();
 
     // Update saga state
-    let mut saga = saga_repo.get("saga-123").unwrap().unwrap();
-    saga.inventory_reserved();
-    assert_eq!(saga.status(), SagaStatus::InventoryReserved);
-    assert!(saga.compensation().inventory_reserved);
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-123").unwrap().unwrap();
+    order_fulfillment_saga.inventory_reserved();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::InventoryReserved);
+    assert!(order_fulfillment_saga.compensation().inventory_reserved);
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // Update order state
     let mut order = order_repo.get(&order_id).unwrap().unwrap();
@@ -83,11 +83,11 @@ fn saga_happy_path_completes_order() {
     payment_repo.commit(&mut payment).unwrap();
 
     // Update saga state
-    let mut saga = saga_repo.get("saga-123").unwrap().unwrap();
-    saga.payment_succeeded();
-    assert_eq!(saga.status(), SagaStatus::PaymentProcessed);
-    assert!(saga.compensation().payment_processed);
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-123").unwrap().unwrap();
+    order_fulfillment_saga.payment_succeeded();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::PaymentProcessed);
+    assert!(order_fulfillment_saga.compensation().payment_processed);
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // Update order state
     let mut order = order_repo.get(&order_id).unwrap().unwrap();
@@ -95,10 +95,10 @@ fn saga_happy_path_completes_order() {
     order_repo.commit(&mut order).unwrap();
 
     // === Step 5: Complete Saga ===
-    let mut saga = saga_repo.get("saga-123").unwrap().unwrap();
-    saga.complete();
-    assert_eq!(saga.status(), SagaStatus::Completed);
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-123").unwrap().unwrap();
+    order_fulfillment_saga.complete();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Completed);
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // Commit the inventory reservation (no longer reversible)
     let mut inventory = inventory_repo.get("WIDGET-001").unwrap().unwrap();
@@ -111,9 +111,9 @@ fn saga_happy_path_completes_order() {
     order_repo.commit(&mut order).unwrap();
 
     // === Verify Final State ===
-    let final_saga = saga_repo.get("saga-123").unwrap().unwrap();
-    assert_eq!(final_saga.status(), SagaStatus::Completed);
-    assert!(final_saga.is_complete());
+    let final_order_fulfillment_saga = saga_repo.get("saga-123").unwrap().unwrap();
+    assert_eq!(final_order_fulfillment_saga.status(), SagaStatus::Completed);
+    assert!(final_order_fulfillment_saga.is_complete());
 
     let final_order = order_repo.get(&order_id).unwrap().unwrap();
     assert_eq!(final_order.status(), OrderStatus::Completed);
@@ -149,24 +149,24 @@ fn saga_compensates_on_payment_failure() {
     order_repo.commit(&mut order).unwrap();
 
     // === Start Saga ===
-    let mut saga = OrderFulfillmentSaga::new();
-    saga.start(
+    let mut order_fulfillment_saga =OrderFulfillmentSaga::new();
+    order_fulfillment_saga.start(
         "saga-fail-456".to_string(),
         order_id.clone(),
         "customer-789".to_string(),
         items,
         5000,
     );
-    saga_repo.commit(&mut saga).unwrap();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Reserve Inventory (succeeds) ===
     let mut inventory = inventory_repo.get("WIDGET-002").unwrap().unwrap();
     inventory.reserve(order_id.clone(), 10);
     inventory_repo.commit(&mut inventory).unwrap();
 
-    let mut saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
-    saga.inventory_reserved();
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-fail-456").unwrap().unwrap();
+    order_fulfillment_saga.inventory_reserved();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     let mut order = order_repo.get(&order_id).unwrap().unwrap();
     order.mark_inventory_reserved();
@@ -186,22 +186,22 @@ fn saga_compensates_on_payment_failure() {
     payment_repo.commit(&mut payment).unwrap();
 
     // === Saga enters compensation mode ===
-    let mut saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
-    saga.step_failed("Payment".to_string(), "Insufficient funds".to_string());
-    assert_eq!(saga.status(), SagaStatus::Compensating);
-    assert!(saga.needs_inventory_compensation());
-    assert!(!saga.needs_payment_compensation()); // Payment wasn't successful
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-fail-456").unwrap().unwrap();
+    order_fulfillment_saga.step_failed("Payment".to_string(), "Insufficient funds".to_string());
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Compensating);
+    assert!(order_fulfillment_saga.needs_inventory_compensation());
+    assert!(!order_fulfillment_saga.needs_payment_compensation()); // Payment wasn't successful
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Compensate: Release Inventory ===
     let mut inventory = inventory_repo.get("WIDGET-002").unwrap().unwrap();
     inventory.release_reservation(order_id.clone());
     inventory_repo.commit(&mut inventory).unwrap();
 
-    let mut saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
-    saga.inventory_compensated();
-    assert!(!saga.needs_inventory_compensation());
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-fail-456").unwrap().unwrap();
+    order_fulfillment_saga.inventory_compensated();
+    assert!(!order_fulfillment_saga.needs_inventory_compensation());
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Cancel Order ===
     let mut order = order_repo.get(&order_id).unwrap().unwrap();
@@ -209,17 +209,17 @@ fn saga_compensates_on_payment_failure() {
     order_repo.commit(&mut order).unwrap();
 
     // === Mark Saga as Failed ===
-    let mut saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
-    saga.mark_failed();
-    assert_eq!(saga.status(), SagaStatus::Failed);
-    assert!(saga.is_complete());
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-fail-456").unwrap().unwrap();
+    order_fulfillment_saga.mark_failed();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Failed);
+    assert!(order_fulfillment_saga.is_complete());
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Verify Final State ===
-    let final_saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
-    assert_eq!(final_saga.status(), SagaStatus::Failed);
+    let final_order_fulfillment_saga = saga_repo.get("saga-fail-456").unwrap().unwrap();
+    assert_eq!(final_order_fulfillment_saga.status(), SagaStatus::Failed);
     assert_eq!(
-        final_saga.failure_reason(),
+        final_order_fulfillment_saga.failure_reason(),
         Some("Payment: Insufficient funds")
     );
 
@@ -256,31 +256,31 @@ fn saga_compensates_on_inventory_failure() {
     order_repo.commit(&mut order).unwrap();
 
     // === Start Saga ===
-    let mut saga = OrderFulfillmentSaga::new();
-    saga.start(
+    let mut order_fulfillment_saga =OrderFulfillmentSaga::new();
+    order_fulfillment_saga.start(
         "saga-inv-fail".to_string(),
         order_id.clone(),
         "customer-xyz".to_string(),
         items,
         5000,
     );
-    saga_repo.commit(&mut saga).unwrap();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Try to Reserve Inventory (fails - not enough stock) ===
     let inventory = inventory_repo.get("WIDGET-003").unwrap().unwrap();
     assert!(!inventory.can_reserve(10)); // Can't reserve 10 when only 5 available
 
     // Saga fails at first step
-    let mut saga = saga_repo.get("saga-inv-fail").unwrap().unwrap();
-    saga.step_failed(
+    let mut order_fulfillment_saga =saga_repo.get("saga-inv-fail").unwrap().unwrap();
+    order_fulfillment_saga.step_failed(
         "Inventory".to_string(),
         "Insufficient stock for WIDGET-003".to_string(),
     );
-    assert_eq!(saga.status(), SagaStatus::Compensating);
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Compensating);
     // No compensation needed - nothing was reserved yet
-    assert!(!saga.needs_inventory_compensation());
-    assert!(!saga.needs_payment_compensation());
-    saga_repo.commit(&mut saga).unwrap();
+    assert!(!order_fulfillment_saga.needs_inventory_compensation());
+    assert!(!order_fulfillment_saga.needs_payment_compensation());
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // Cancel order
     let mut order = order_repo.get(&order_id).unwrap().unwrap();
@@ -288,14 +288,14 @@ fn saga_compensates_on_inventory_failure() {
     order_repo.commit(&mut order).unwrap();
 
     // Mark saga as failed (no compensation needed)
-    let mut saga = saga_repo.get("saga-inv-fail").unwrap().unwrap();
-    saga.mark_failed();
-    saga_repo.commit(&mut saga).unwrap();
+    let mut order_fulfillment_saga =saga_repo.get("saga-inv-fail").unwrap().unwrap();
+    order_fulfillment_saga.mark_failed();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // === Verify Final State ===
-    let final_saga = saga_repo.get("saga-inv-fail").unwrap().unwrap();
-    assert_eq!(final_saga.status(), SagaStatus::Failed);
-    assert!(final_saga.is_complete());
+    let final_order_fulfillment_saga = saga_repo.get("saga-inv-fail").unwrap().unwrap();
+    assert_eq!(final_order_fulfillment_saga.status(), SagaStatus::Failed);
+    assert!(final_order_fulfillment_saga.is_complete());
 
     let final_order = order_repo.get(&order_id).unwrap().unwrap();
     assert_eq!(final_order.status(), OrderStatus::Cancelled);
@@ -317,19 +317,19 @@ fn saga_is_replayable_from_events() {
     }];
 
     // Create and progress a saga
-    let mut saga = OrderFulfillmentSaga::new();
-    saga.start(
+    let mut order_fulfillment_saga =OrderFulfillmentSaga::new();
+    order_fulfillment_saga.start(
         "saga-replay".to_string(),
         "order-replay".to_string(),
         "customer-replay".to_string(),
         items,
         4500,
     );
-    saga.inventory_reserved();
-    saga.payment_succeeded();
+    order_fulfillment_saga.inventory_reserved();
+    order_fulfillment_saga.payment_succeeded();
 
     // Commit to repository
-    saga_repo.commit(&mut saga).unwrap();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
 
     // Retrieve and verify state is reconstructed from events
     let restored = saga_repo.get("saga-replay").unwrap().unwrap();
@@ -346,8 +346,8 @@ fn saga_is_replayable_from_events() {
     restored.complete();
     saga_repo.commit(&mut restored).unwrap();
 
-    let final_saga = saga_repo.get("saga-replay").unwrap().unwrap();
-    assert_eq!(final_saga.status(), SagaStatus::Completed);
+    let final_order_fulfillment_saga = saga_repo.get("saga-replay").unwrap().unwrap();
+    assert_eq!(final_order_fulfillment_saga.status(), SagaStatus::Completed);
 }
 
 #[test]
@@ -361,8 +361,8 @@ fn saga_tracks_compensation_state_correctly() {
     }];
 
     // Progress saga through multiple steps
-    let mut saga = OrderFulfillmentSaga::new();
-    saga.start(
+    let mut order_fulfillment_saga =OrderFulfillmentSaga::new();
+    order_fulfillment_saga.start(
         "saga-comp".to_string(),
         "order-comp".to_string(),
         "customer-comp".to_string(),
@@ -371,42 +371,42 @@ fn saga_tracks_compensation_state_correctly() {
     );
 
     // Initially no compensation needed
-    assert!(!saga.compensation().inventory_reserved);
-    assert!(!saga.compensation().payment_processed);
+    assert!(!order_fulfillment_saga.compensation().inventory_reserved);
+    assert!(!order_fulfillment_saga.compensation().payment_processed);
 
     // After inventory reserved
-    saga.inventory_reserved();
-    assert!(saga.compensation().inventory_reserved);
-    assert!(!saga.compensation().payment_processed);
+    order_fulfillment_saga.inventory_reserved();
+    assert!(order_fulfillment_saga.compensation().inventory_reserved);
+    assert!(!order_fulfillment_saga.compensation().payment_processed);
 
     // After payment processed
-    saga.payment_succeeded();
-    assert!(saga.compensation().inventory_reserved);
-    assert!(saga.compensation().payment_processed);
+    order_fulfillment_saga.payment_succeeded();
+    assert!(order_fulfillment_saga.compensation().inventory_reserved);
+    assert!(order_fulfillment_saga.compensation().payment_processed);
 
     // Fail after both steps completed
-    saga.step_failed("FinalStep".to_string(), "Something went wrong".to_string());
-    assert_eq!(saga.status(), SagaStatus::Compensating);
-    assert!(saga.needs_inventory_compensation());
-    assert!(saga.needs_payment_compensation());
+    order_fulfillment_saga.step_failed("FinalStep".to_string(), "Something went wrong".to_string());
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Compensating);
+    assert!(order_fulfillment_saga.needs_inventory_compensation());
+    assert!(order_fulfillment_saga.needs_payment_compensation());
 
     // Compensate payment first
-    saga.payment_compensated();
-    assert!(saga.needs_inventory_compensation());
-    assert!(!saga.needs_payment_compensation());
+    order_fulfillment_saga.payment_compensated();
+    assert!(order_fulfillment_saga.needs_inventory_compensation());
+    assert!(!order_fulfillment_saga.needs_payment_compensation());
 
     // Compensate inventory
-    saga.inventory_compensated();
-    assert!(!saga.needs_inventory_compensation());
-    assert!(!saga.needs_payment_compensation());
+    order_fulfillment_saga.inventory_compensated();
+    assert!(!order_fulfillment_saga.needs_inventory_compensation());
+    assert!(!order_fulfillment_saga.needs_payment_compensation());
 
     // Now can mark as failed
-    saga.mark_failed();
-    assert_eq!(saga.status(), SagaStatus::Failed);
-    assert!(saga.is_complete());
+    order_fulfillment_saga.mark_failed();
+    assert_eq!(order_fulfillment_saga.status(), SagaStatus::Failed);
+    assert!(order_fulfillment_saga.is_complete());
 
     // Verify it persists correctly
-    saga_repo.commit(&mut saga).unwrap();
+    saga_repo.commit(&mut order_fulfillment_saga).unwrap();
     let restored = saga_repo.get("saga-comp").unwrap().unwrap();
     assert_eq!(restored.status(), SagaStatus::Failed);
     assert!(!restored.compensation().inventory_reserved);
