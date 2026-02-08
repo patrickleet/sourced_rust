@@ -78,6 +78,33 @@ impl<'a, R> CommitBuilder<'a, R> {
         Ok(())
     }
 
+    /// Commit multiple entities atomically (along with any queued read models and outbox).
+    ///
+    /// Use `entity_mut()` on each aggregate to get the entity references:
+    /// ```ignore
+    /// repo.readmodel(&view)
+    ///     .commit_many(&mut [player.entity_mut(), monster.entity_mut()])?;
+    /// ```
+    pub fn commit_many(
+        mut self,
+        entities: &mut [&mut Entity],
+    ) -> Result<(), RepositoryError>
+    where
+        R: Commit + ReadModelStore,
+    {
+        let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
+        for e in entities.iter_mut() {
+            entity_refs.push(e);
+        }
+        self.repo.commit(&mut entity_refs[..])?;
+
+        for queued in self.models {
+            self.repo.upsert_raw(&queued.key, queued.bytes)?;
+        }
+
+        Ok(())
+    }
+
     /// Commit without a primary aggregate.
     pub fn commit_all(mut self) -> Result<(), RepositoryError>
     where
@@ -117,7 +144,7 @@ impl<R: Commit + ReadModelStore> CommitBuilderExt for R {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, Entity, EventRecord, HashMapRepository};
+    use crate::{impl_aggregate, Entity, EventRecord, Get, HashMapRepository};
     use crate::read_model::ReadModelsExt;
     use serde::{Deserialize, Serialize};
 
@@ -273,5 +300,37 @@ mod tests {
         let loaded2 = repo.read_models::<TestView>().get("standalone-2").unwrap().unwrap();
         assert_eq!(loaded1.data.id, "standalone-1");
         assert_eq!(loaded2.data.id, "standalone-2");
+    }
+
+    #[test]
+    fn commit_many_multiple_aggregates() {
+        let repo = HashMapRepository::new();
+
+        let view = TestView {
+            id: "multi".into(),
+            counter: 77,
+        };
+
+        let mut agg1 = TestAggregate::default();
+        agg1.touch();
+        agg1.entity.set_id("agg-1");
+
+        let mut agg2 = TestAggregate::default();
+        agg2.touch();
+        agg2.entity.set_id("agg-2");
+
+        repo.readmodel(&view)
+            .commit_many(&mut [agg1.entity_mut(), agg2.entity_mut()])
+            .unwrap();
+
+        // Verify read model stored
+        let loaded = repo.read_models::<TestView>().get("multi").unwrap().unwrap();
+        assert_eq!(loaded.data.counter, 77);
+
+        // Verify both aggregates stored
+        let e1 = repo.get("agg-1").unwrap();
+        assert!(e1.is_some());
+        let e2 = repo.get("agg-2").unwrap();
+        assert!(e2.is_some());
     }
 }
