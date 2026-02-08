@@ -10,12 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use super::{Event, PublishError, Publisher, Subscribable, Subscriber};
+use super::{Event, Listener, PublishError, Publisher, Sender, Subscribable, Subscriber};
 
 /// Internal data for a named point-to-point queue.
-/// Note: Point-to-point messaging is planned but not yet implemented.
 #[derive(Default)]
-#[allow(dead_code)]
 struct PointToPointQueue {
     /// Messages in this queue
     messages: Vec<Event>,
@@ -318,6 +316,43 @@ impl Subscribable for InMemoryQueue {
     }
 }
 
+impl Sender for InMemoryQueue {
+    fn send(&self, queue: &str, event: Event) -> Result<(), PublishError> {
+        let mut queues = self.queues.write().unwrap();
+        queues
+            .entry(queue.to_string())
+            .or_default()
+            .messages
+            .push(event);
+        Ok(())
+    }
+}
+
+impl Listener for InMemoryQueue {
+    fn listen(&self, queue: &str, timeout_ms: u64) -> Result<Option<Event>, PublishError> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
+        loop {
+            {
+                let mut queues = self.queues.write().unwrap();
+                if let Some(q) = queues.get_mut(queue) {
+                    if q.position < q.messages.len() {
+                        let event = q.messages[q.position].clone();
+                        q.position += 1;
+                        return Ok(Some(event));
+                    }
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +534,91 @@ mod tests {
         assert_eq!(event2.id, "evt-3");
 
         assert!(receiver.recv(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn send_and_listen() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .send(
+                "orders",
+                Event::with_string_payload("evt-1", "ProcessOrder", r#"{"id":"123"}"#),
+            )
+            .unwrap();
+
+        let event = queue.listen("orders", 100).unwrap();
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.event_type, "ProcessOrder");
+        assert_eq!(event.id, "evt-1");
+    }
+
+    #[test]
+    fn listen_timeout_when_empty() {
+        let queue = InMemoryQueue::new();
+        let event = queue.listen("orders", 10).unwrap();
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn send_listen_competing_consumers() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .send(
+                "tasks",
+                Event::with_string_payload("evt-1", "Task", "{}"),
+            )
+            .unwrap();
+        queue
+            .send(
+                "tasks",
+                Event::with_string_payload("evt-2", "Task", "{}"),
+            )
+            .unwrap();
+
+        // Two clones share the same queues (competing consumers)
+        let consumer1 = queue.clone();
+        let consumer2 = queue.clone();
+
+        // Each consumer gets a different message
+        let e1 = consumer1.listen("tasks", 100).unwrap().unwrap();
+        let e2 = consumer2.listen("tasks", 100).unwrap().unwrap();
+        assert_eq!(e1.id, "evt-1");
+        assert_eq!(e2.id, "evt-2");
+
+        // No more messages
+        assert!(queue.listen("tasks", 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn send_listen_separate_queues() {
+        let queue = InMemoryQueue::new();
+
+        queue
+            .send(
+                "orders",
+                Event::with_string_payload("evt-1", "Order", "{}"),
+            )
+            .unwrap();
+        queue
+            .send(
+                "payments",
+                Event::with_string_payload("evt-2", "Payment", "{}"),
+            )
+            .unwrap();
+
+        // Each queue is independent
+        let order = queue.listen("orders", 100).unwrap().unwrap();
+        assert_eq!(order.id, "evt-1");
+
+        let payment = queue.listen("payments", 100).unwrap().unwrap();
+        assert_eq!(payment.id, "evt-2");
+
+        // Queues don't cross-contaminate
+        assert!(queue.listen("orders", 10).unwrap().is_none());
+        assert!(queue.listen("payments", 10).unwrap().is_none());
     }
 
     #[test]

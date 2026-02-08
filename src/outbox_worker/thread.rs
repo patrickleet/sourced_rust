@@ -7,7 +7,7 @@ use std::sync::mpsc::{channel, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::bus::{Event, Publisher};
+use crate::bus::{Event, Publisher, Sender as BusSender};
 use crate::OutboxRepositoryExt;
 
 /// Statistics from the outbox worker.
@@ -117,6 +117,85 @@ impl OutboxWorkerThread {
                     Err(_) => {
                         // Repository error, continue polling
                     }
+                }
+
+                thread::sleep(poll_interval);
+            }
+
+            stats
+        });
+
+        Self {
+            stop_tx,
+            handle: Some(handle),
+        }
+    }
+
+    /// Spawn a worker that routes messages based on their destination.
+    ///
+    /// Messages with a `destination` are sent point-to-point via `Sender::send()`.
+    /// Messages without a destination are published fan-out via `Publisher::publish()`.
+    pub fn spawn_routed<R, P>(repo: R, publisher: P, poll_interval: Duration) -> Self
+    where
+        R: OutboxRepositoryExt + Clone + Send + 'static,
+        P: Publisher + BusSender + 'static,
+    {
+        Self::spawn_routed_with_id(repo, publisher, poll_interval, "outbox-worker")
+    }
+
+    /// Spawn a routed worker with a custom worker ID.
+    pub fn spawn_routed_with_id<R, P>(
+        repo: R,
+        publisher: P,
+        poll_interval: Duration,
+        worker_id: &str,
+    ) -> Self
+    where
+        R: OutboxRepositoryExt + Clone + Send + 'static,
+        P: Publisher + BusSender + 'static,
+    {
+        let (stop_tx, stop_rx) = channel();
+        let worker_id = worker_id.to_string();
+
+        let handle = thread::spawn(move || {
+            let mut stats = WorkerStats::default();
+            let lease = Duration::from_secs(60);
+
+            loop {
+                match stop_rx.try_recv() {
+                    Ok(()) | Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty) => {}
+                }
+
+                stats.polls += 1;
+
+                match repo.claim_outbox_messages(&worker_id, 100, lease) {
+                    Ok(messages) => {
+                        for msg in messages {
+                            let event =
+                                Event::new(msg.id(), &msg.event_type, msg.payload.clone());
+
+                            let result = if let Some(dest) = &msg.destination {
+                                publisher.send(dest, event)
+                            } else {
+                                publisher.publish(event)
+                            };
+
+                            match result {
+                                Ok(()) => {
+                                    if repo.complete_outbox_message(msg.id()).is_ok() {
+                                        stats.messages_published += 1;
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ =
+                                        repo.release_outbox_message(msg.id(), "publish failed");
+                                    stats.messages_failed += 1;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {}
                 }
 
                 thread::sleep(poll_interval);

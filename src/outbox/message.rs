@@ -27,6 +27,10 @@ pub struct OutboxMessage {
     pub last_error: Option<String>,
     pub worker_id: Option<String>,
     pub leased_until: Option<SystemTime>,
+    /// Optional destination queue for point-to-point delivery via `send/listen`.
+    /// When set, the outbox worker uses `Sender::send(destination, event)` instead
+    /// of `Publisher::publish(event)`.
+    pub destination: Option<String>,
 }
 
 impl Default for OutboxMessage {
@@ -41,6 +45,7 @@ impl Default for OutboxMessage {
             last_error: None,
             worker_id: None,
             leased_until: None,
+            destination: None,
         }
     }
 }
@@ -59,7 +64,22 @@ impl OutboxMessage {
         payload: Vec<u8>,
     ) -> Self {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload);
+        message.initialize(id.into(), event_type.into(), payload, None);
+        message
+    }
+
+    /// Create a new outbox message with raw bytes payload and a destination queue.
+    ///
+    /// When a destination is set, the outbox worker uses `Sender::send(destination, event)`
+    /// (point-to-point) instead of `Publisher::publish(event)` (fan-out).
+    pub fn create_to(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        destination: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Self {
+        let mut message = Self::new();
+        message.initialize(id.into(), event_type.into(), payload, Some(destination.into()));
         message
     }
 
@@ -71,6 +91,20 @@ impl OutboxMessage {
     ) -> Result<Self, bitcode::Error> {
         let bytes = bitcode::serialize(payload)?;
         Ok(Self::create(id, event_type, bytes))
+    }
+
+    /// Create a new outbox message with bitcode serialization and a destination queue.
+    ///
+    /// When a destination is set, the outbox worker uses `Sender::send(destination, event)`
+    /// (point-to-point) instead of `Publisher::publish(event)` (fan-out).
+    pub fn encode_to<T: Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        destination: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, bitcode::Error> {
+        let bytes = bitcode::serialize(payload)?;
+        Ok(Self::create_to(id, event_type, destination, bytes))
     }
 
     /// Decode the payload from bitcode binary format.
@@ -105,11 +139,12 @@ impl OutboxMessage {
 
     // Commands
     #[digest("MessageCreated")]
-    pub fn initialize(&mut self, id: String, event_type: String, payload: Vec<u8>) {
+    pub fn initialize(&mut self, id: String, event_type: String, payload: Vec<u8>, destination: Option<String>) {
         let normalized_id = Self::normalize_id(id);
         self.entity.set_id(&normalized_id);
         self.event_type = event_type;
         self.payload = payload;
+        self.destination = destination;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
     }
@@ -182,7 +217,7 @@ impl OutboxMessage {
 }
 
 crate::aggregate!(OutboxMessage, entity {
-    "MessageCreated"(id, event_type, payload) => initialize,
+    "MessageCreated"(id, event_type, payload, destination) => initialize,
     "MessageClaimed"(worker_id, until_secs) => claim,
     "MessagePublished"() => complete,
     "MessageReleased"(error) => release,
@@ -200,6 +235,7 @@ mod tests {
             "msg-1".into(),
             "UserCreated".into(),
             br#"{"id":"123"}"#.to_vec(),
+            None,
         );
         assert_eq!(message.event_type, "UserCreated");
         assert!(message.is_pending());
@@ -208,7 +244,7 @@ mod tests {
     #[test]
     fn claim_and_complete() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec());
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None);
         message.claim_for("worker-1", Duration::from_secs(60));
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
@@ -220,7 +256,7 @@ mod tests {
     #[test]
     fn release_and_fail() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec());
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None);
         message.claim_for("worker-1", Duration::from_secs(60));
 
         message.release("timeout".into());
