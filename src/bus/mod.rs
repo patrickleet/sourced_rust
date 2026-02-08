@@ -41,9 +41,13 @@
 //! ```
 
 mod bus;
+mod event_bus;
 mod in_memory_queue;
 mod publisher;
+mod subscriber;
 
 pub use bus::Bus;
+pub use event_bus::EventBus;
 pub use in_memory_queue::{EventReceiver, InMemoryQueue};
-pub use publisher::{Event, EventBus, PublishError, Publisher, Subscribable, Subscriber};
+pub use publisher::{Event, PublishError, Publisher};
+pub use subscriber::{Subscribable, Subscriber};
