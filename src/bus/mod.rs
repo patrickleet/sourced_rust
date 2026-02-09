@@ -55,3 +55,10 @@ pub use listener::Listener;
 pub use publisher::{Event, PublishError, Publisher};
 pub use sender::Sender;
 pub use subscriber::{Subscribable, Subscriber};
+
+/// Type alias for `Event` when used in a command/message context.
+///
+/// Commands and events are both messages — the distinction is in how they're
+/// routed: `publish/subscribe` = events (fan-out), `send/listen` = commands
+/// (point-to-point). This alias makes command handler signatures read naturally.
+pub type Message = Event;

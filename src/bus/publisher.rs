@@ -42,6 +42,21 @@ impl Event {
         bitcode::deserialize(&self.payload)
     }
 
+    /// Create an event with JSON-serialized payload.
+    pub fn json_encode<T: serde::Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, serde_json::Error> {
+        let bytes = serde_json::to_vec(payload)?;
+        Ok(Self::new(id, event_type, bytes))
+    }
+
+    /// Decode the payload from JSON format.
+    pub fn json_decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.payload)
+    }
+
     /// Create an event with a string payload.
     pub fn with_string_payload(
         id: impl Into<String>,
