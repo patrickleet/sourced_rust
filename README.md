@@ -1,10 +1,16 @@
 # Sourced Rust
 
-Sourced Rust is a small event-sourcing toolkit for Rust. It keeps your domain model as a plain struct (PORS), inspired by POCO/POJO, while giving you append-only events, replay, and persistence.
+Sourced Rust started as a small event-sourcing toolkit for Rust before expanding to become a full CQRS/ES+AR framework. 
+
+It keeps your domain model as a plain struct (PORS), inspired by POCO/POJO, while giving you append-only events, replay, and persistence.
+
+It also provides you with tools for producing and consuming events for use locally in a multi-threaded process, or distributed across networks.
+
+It is built with stateless vertical and horizontal scaling in Cloud Native environments in mind, and can be used to build a single service that can easily be broken into many later for partition based scaling.
 
 ## Project Inspiration
 
-Sourced Rust is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) Node.js project by Matt Walters. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript version, brought these concepts to Rust and refactored them for the Rust ecosystem.
+Sourced Rust is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) Node.js project by Matt Walters and his accompanying [servicebus](https://github.com/mateodelnorte/servicebus) library for distributed messaging. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript versions, brought these concepts to Rust and refactored them for the Rust ecosystem.
 
 ## Design Goals
 
