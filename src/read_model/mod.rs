@@ -62,6 +62,8 @@ pub enum ReadModelError {
     Storage(String),
     /// Read model not found.
     NotFound { collection: String, id: String },
+    /// Lock error.
+    Lock(crate::lock::LockError),
 }
 
 impl fmt::Display for ReadModelError {
@@ -82,11 +84,18 @@ impl fmt::Display for ReadModelError {
             ReadModelError::NotFound { collection, id } => {
                 write!(f, "read model not found: {}:{}", collection, id)
             }
+            ReadModelError::Lock(err) => write!(f, "read model lock error: {}", err),
         }
     }
 }
 
 impl std::error::Error for ReadModelError {}
+
+impl From<crate::lock::LockError> for ReadModelError {
+    fn from(err: crate::lock::LockError) -> Self {
+        ReadModelError::Lock(err)
+    }
+}
 
 pub use in_memory::InMemoryReadModelStore;
 pub use queued::QueuedReadModelStore;

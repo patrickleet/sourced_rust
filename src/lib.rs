@@ -13,7 +13,7 @@ pub mod bus;
 pub mod service;
 mod commit_builder;
 mod hashmap_repo;
-pub(crate) mod lock;
+pub mod lock;
 pub mod read_model;
 mod outbox;
 mod outbox_worker;
@@ -36,6 +36,9 @@ pub use aggregate::{
 };
 
 pub use hashmap_repo::HashMapRepository;
+
+// Re-export lock traits and types at crate root for convenience
+pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};
 
 // Outbox: commit concerns (atomic aggregate + outbox commit)
 pub use outbox::{

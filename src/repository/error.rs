@@ -1,10 +1,12 @@
 use std::fmt;
 
+use crate::lock::LockError;
 use crate::read_model::ReadModelError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryError {
     LockPoisoned(&'static str),
+    Lock(LockError),
     ConcurrentWrite {
         id: String,
         expected: u64,
@@ -20,6 +22,7 @@ impl fmt::Display for RepositoryError {
             RepositoryError::LockPoisoned(operation) => {
                 write!(f, "repository lock poisoned during {}", operation)
             }
+            RepositoryError::Lock(err) => write!(f, "repository lock error: {}", err),
             RepositoryError::ConcurrentWrite {
                 id,
                 expected,
@@ -36,6 +39,12 @@ impl fmt::Display for RepositoryError {
 }
 
 impl std::error::Error for RepositoryError {}
+
+impl From<LockError> for RepositoryError {
+    fn from(err: LockError) -> Self {
+        RepositoryError::Lock(err)
+    }
+}
 
 impl From<ReadModelError> for RepositoryError {
     fn from(err: ReadModelError) -> Self {

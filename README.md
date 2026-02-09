@@ -78,6 +78,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
 
+## Pluggable by Default
+
+Every infrastructure concern in `sourced_rust` follows the same pattern: a **trait** defines the contract, an **in-memory implementation** ships out of the box for testing and development, and you swap in your own for production.
+
+| Concern | Trait | In-memory default | Swap in for production |
+|---|---|---|---|
+| Storage | `Repository` (`Get + Find + Commit + ...`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
+| Messaging | `Publisher` + `Subscriber` | `InMemoryQueue` | Kafka, Redis Streams, SQS, etc. |
+| Read model store | `ReadModelStore` | `InMemoryReadModelStore` | Postgres, MongoDB, etc. |
+| Outbox publishing | `OutboxPublisher` | `LogPublisher` | Any `Publisher` impl |
+| Locking | `Lock` + `LockManager` | `InMemoryLockManager` | Redis, Postgres advisory, etc. |
+
+All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-threaded tests and multi-threaded servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — no other code changes needed.
+
 ## The `#[digest]` Macro
 
 The `#[digest]` attribute macro automatically records events when methods are called.
@@ -141,6 +155,15 @@ repo.abort(&todo)?;
 
 // Read without locking:
 let _ = repo.peek("todo-1")?;
+```
+
+By default, locking is in-memory. For distributed deployments, plug in a custom `LockManager`:
+
+```rust
+let redis_locks = MyRedisLockManager::new(/* ... */);
+let repo = HashMapRepository::new()
+    .queued_with(redis_locks)
+    .aggregate::<Todo>();
 ```
 
 ## Outbox Pattern
@@ -392,6 +415,49 @@ repo.outbox(outbox_saga)
 // Worker drains outbox and sends each message to its destination queue
 ```
 
+## Read Models
+
+Read models are denormalized views derived from event-sourced aggregates. They give you fast, purpose-built query models shaped for your UI or API consumers.
+
+### Defining a Read Model
+
+```rust
+use serde::{Deserialize, Serialize};
+use sourced_rust::ReadModel;
+
+#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
+#[readmodel(collection = "game_views")]
+pub struct GameView {
+    #[readmodel(id)]
+    pub id: String,
+    pub player_name: String,
+    pub score: i32,
+}
+```
+
+### Atomic Commits (Read Model + Aggregate)
+
+When the response to a command must include the fully consistent, updated view, you can commit the aggregate and read model together:
+
+```rust
+use sourced_rust::CommitBuilderExt;
+
+// Player submits a move
+game.make_move(player_move);
+
+// Build the view from the updated aggregate
+let view = GameView::from(&game);
+
+// Commit aggregate + view atomically
+repo.readmodel(&view).commit(&mut game)?;
+
+// Return `view` to the client — it reflects the committed state
+```
+
+This is a deliberate CAP theorem tradeoff: you're choosing **consistency** over **partition tolerance**. The read model is always in sync with the aggregate because they're written in the same transaction, but this only works within a single process against a single store. For cross-service or cross-database views, use the eventually consistent outbox pattern instead.
+
+See [`docs/read-models.md`](docs/read-models.md) for the full guide, including eventually consistent projections, `QueuedReadModelStore`, and a decision flowchart.
+
 ## Project Structure
 
 ```
@@ -400,7 +466,9 @@ src/
   bus/        # Service bus, publishers, subscribers
   emitter/    # In-process event emitter helpers
   hashmap/    # In-memory repository
+  lock/       # Lock trait, LockManager trait, InMemoryLock
   queued/     # Queue-based locking wrapper
+  read_model/ # Read model store traits and InMemoryReadModelStore
   outbox/     # Outbox message aggregate + worker + publishers
   lib.rs      # Public exports
 ```

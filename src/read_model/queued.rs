@@ -4,11 +4,10 @@
 //! `get_model` acquires a lock, write operations (`upsert`, `insert`, `update`,
 //! `delete`, `upsert_raw`) release it. Callers can also release manually via `unlock`.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::entity::Committable;
-use crate::lock::Lock;
+use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::queued_repo::ReadOpts;
 use crate::repository::{Commit, RepositoryError};
 
@@ -23,16 +22,26 @@ use super::{ReadModel, ReadModelError, ReadModelStore, Versioned};
 ///
 /// Lock keys are `"collection:id"`, so different read model types with the same ID
 /// do not contend with each other.
-pub struct QueuedReadModelStore<S> {
+pub struct QueuedReadModelStore<S, L: LockManager = InMemoryLockManager> {
     inner: S,
-    locks: Mutex<HashMap<String, Arc<Lock>>>,
+    lock_manager: L,
 }
 
 impl<S> QueuedReadModelStore<S> {
     pub fn new(inner: S) -> Self {
         QueuedReadModelStore {
             inner,
-            locks: Mutex::new(HashMap::new()),
+            lock_manager: InMemoryLockManager::new(),
+        }
+    }
+}
+
+impl<S, L: LockManager> QueuedReadModelStore<S, L> {
+    /// Create a `QueuedReadModelStore` with a custom lock manager.
+    pub fn with_lock_manager(inner: S, lock_manager: L) -> Self {
+        QueuedReadModelStore {
+            inner,
+            lock_manager,
         }
     }
 
@@ -41,11 +50,16 @@ impl<S> QueuedReadModelStore<S> {
         &self.inner
     }
 
+    /// Access the lock manager.
+    pub fn lock_manager(&self) -> &L {
+        &self.lock_manager
+    }
+
     /// Manually lock a read model instance.
     pub fn lock<M: ReadModel>(&self, id: &str) -> Result<(), ReadModelError> {
         let key = Self::make_key(M::COLLECTION, id);
         let lock = self.ensure_lock(&key)?;
-        lock.lock();
+        lock.lock()?;
         Ok(())
     }
 
@@ -53,7 +67,7 @@ impl<S> QueuedReadModelStore<S> {
     pub fn unlock<M: ReadModel>(&self, id: &str) -> Result<(), ReadModelError> {
         let key = Self::make_key(M::COLLECTION, id);
         let lock = self.ensure_lock(&key)?;
-        lock.unlock();
+        lock.unlock()?;
         Ok(())
     }
 
@@ -63,25 +77,16 @@ impl<S> QueuedReadModelStore<S> {
     }
 
     fn release(&self, key: &str) {
-        if let Ok(locks) = self.locks.lock() {
-            if let Some(lock) = locks.get(key) {
-                lock.unlock();
-            }
+        if let Ok(lock) = self.lock_manager.get_lock(key) {
+            let _ = lock.unlock();
         }
     }
 
-    fn ensure_lock(&self, key: &str) -> Result<Arc<Lock>, ReadModelError> {
-        let mut locks = self
-            .locks
-            .lock()
-            .map_err(|_| ReadModelError::Storage("queue lock map poisoned".into()))?;
-        Ok(locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(Lock::new()))
-            .clone())
+    fn ensure_lock(&self, key: &str) -> Result<Arc<L::Lock>, ReadModelError> {
+        Ok(self.lock_manager.get_lock(key)?)
     }
 
-    fn lock_ids_in_order(&self, keys: &[String]) -> Result<Vec<Arc<Lock>>, ReadModelError> {
+    fn lock_ids_in_order(&self, keys: &[String]) -> Result<Vec<Arc<L::Lock>>, ReadModelError> {
         let mut unique = keys.to_vec();
         unique.sort_unstable();
         unique.dedup();
@@ -89,7 +94,7 @@ impl<S> QueuedReadModelStore<S> {
         let mut locks = Vec::with_capacity(unique.len());
         for key in &unique {
             let lock = self.ensure_lock(key)?;
-            lock.lock();
+            lock.lock()?;
             locks.push(lock);
         }
 
@@ -105,11 +110,11 @@ impl<S> QueuedReadModelStore<S> {
 // ReadModelStore implementation (locking by default)
 // ============================================================================
 
-impl<S: ReadModelStore> ReadModelStore for QueuedReadModelStore<S> {
+impl<S: ReadModelStore, L: LockManager> ReadModelStore for QueuedReadModelStore<S, L> {
     fn get_model<M: ReadModel>(&self, id: &str) -> Result<Option<Versioned<M>>, ReadModelError> {
         let key = Self::make_key(M::COLLECTION, id);
         let lock = self.ensure_lock(&key)?;
-        lock.lock();
+        lock.lock()?;
         self.inner.get_model(id)
     }
 
@@ -198,7 +203,7 @@ impl<S: ReadModelStore> ReadModelStore for QueuedReadModelStore<S> {
             let id = versioned.data.id().to_string();
             let key = Self::make_key(M::COLLECTION, &id);
             let lock = self.ensure_lock(&key)?;
-            lock.lock();
+            lock.lock()?;
 
             // Phase 2: re-fetch with lock held
             if let Some(current) = self.inner.get_model::<M>(&id)? {
@@ -207,7 +212,7 @@ impl<S: ReadModelStore> ReadModelStore for QueuedReadModelStore<S> {
                 }
             }
             // No longer matches, unlock
-            lock.unlock();
+            lock.unlock()?;
         }
 
         Ok(None)
@@ -226,7 +231,7 @@ impl<S: ReadModelStore> ReadModelStore for QueuedReadModelStore<S> {
 // Commit delegation (needed for CommitBuilder integration)
 // ============================================================================
 
-impl<S: Commit> Commit for QueuedReadModelStore<S> {
+impl<S: Commit, L: LockManager> Commit for QueuedReadModelStore<S, L> {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
         self.inner.commit(committable)
     }
@@ -236,7 +241,7 @@ impl<S: Commit> Commit for QueuedReadModelStore<S> {
 // WithOpts methods for opting out of locking
 // ============================================================================
 
-impl<S: ReadModelStore> QueuedReadModelStore<S> {
+impl<S: ReadModelStore, L: LockManager> QueuedReadModelStore<S, L> {
     /// Get a read model with options (opt out of locking with `ReadOpts::no_lock()`).
     pub fn get_model_with<M: ReadModel>(
         &self,

@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::lock::Lock;
+use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::entity::{Committable, Entity};
 use crate::repository::{
     Commit, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
@@ -27,16 +26,26 @@ impl ReadOpts {
     }
 }
 
-pub struct QueuedRepository<R> {
+pub struct QueuedRepository<R, L: LockManager = InMemoryLockManager> {
     inner: R,
-    locks: Mutex<HashMap<String, Arc<Lock>>>,
+    lock_manager: L,
 }
 
 impl<R> QueuedRepository<R> {
     pub fn new(inner: R) -> Self {
         QueuedRepository {
             inner,
-            locks: Mutex::new(HashMap::new()),
+            lock_manager: InMemoryLockManager::new(),
+        }
+    }
+}
+
+impl<R, L: LockManager> QueuedRepository<R, L> {
+    /// Create a `QueuedRepository` with a custom lock manager.
+    pub fn with_lock_manager(inner: R, lock_manager: L) -> Self {
+        QueuedRepository {
+            inner,
+            lock_manager,
         }
     }
 
@@ -45,15 +54,20 @@ impl<R> QueuedRepository<R> {
         &self.inner
     }
 
+    /// Access the lock manager.
+    pub fn lock_manager(&self) -> &L {
+        &self.lock_manager
+    }
+
     pub fn lock(&self, id: impl AsRef<str>) -> Result<(), RepositoryError> {
         let lock = self.ensure_lock(id.as_ref())?;
-        let _ = lock.try_lock();
+        let _ = lock.try_lock()?;
         Ok(())
     }
 
     pub fn unlock(&self, id: impl AsRef<str>) -> Result<(), RepositoryError> {
         let lock = self.ensure_lock(id.as_ref())?;
-        lock.unlock();
+        lock.unlock()?;
         Ok(())
     }
 
@@ -61,18 +75,11 @@ impl<R> QueuedRepository<R> {
         self.unlock(id)
     }
 
-    fn ensure_lock(&self, id: &str) -> Result<Arc<Lock>, RepositoryError> {
-        let mut locks = self
-            .locks
-            .lock()
-            .map_err(|_| RepositoryError::LockPoisoned("queue map"))?;
-        Ok(locks
-            .entry(id.to_string())
-            .or_insert_with(|| Arc::new(Lock::new()))
-            .clone())
+    fn ensure_lock(&self, id: &str) -> Result<Arc<L::Lock>, RepositoryError> {
+        Ok(self.lock_manager.get_lock(id)?)
     }
 
-    fn lock_ids_in_order(&self, ids: &[&str]) -> Result<Vec<Arc<Lock>>, RepositoryError> {
+    fn lock_ids_in_order(&self, ids: &[&str]) -> Result<Vec<Arc<L::Lock>>, RepositoryError> {
         let mut unique: Vec<&str> = ids.iter().copied().collect();
         unique.sort_unstable();
         unique.dedup();
@@ -80,7 +87,7 @@ impl<R> QueuedRepository<R> {
         let mut locks = Vec::with_capacity(unique.len());
         for id in unique {
             let lock = self.ensure_lock(id)?;
-            lock.lock();
+            lock.lock()?;
             locks.push(lock);
         }
 
@@ -92,22 +99,22 @@ impl<R> QueuedRepository<R> {
 // Core trait implementations (with locking by default)
 // ============================================================================
 
-impl<R: GetOne> GetOne for QueuedRepository<R> {
+impl<R: GetOne, L: LockManager> GetOne for QueuedRepository<R, L> {
     fn get_one(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
         let lock = self.ensure_lock(id)?;
-        lock.lock();
+        lock.lock()?;
         self.inner.get_one(id)
     }
 }
 
-impl<R: GetMany + GetOne> GetMany for QueuedRepository<R> {
+impl<R: GetMany + GetOne, L: LockManager> GetMany for QueuedRepository<R, L> {
     fn get_many(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
         let _locks = self.lock_ids_in_order(ids)?;
         self.inner.get_many(ids)
     }
 }
 
-impl<R: Find + GetOne> Find for QueuedRepository<R> {
+impl<R: Find + GetOne, L: LockManager> Find for QueuedRepository<R, L> {
     fn find<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
@@ -132,7 +139,7 @@ impl<R: Find + GetOne> Find for QueuedRepository<R> {
     }
 }
 
-impl<R: FindOne + GetOne> FindOne for QueuedRepository<R> {
+impl<R: FindOne + GetOne, L: LockManager> FindOne for QueuedRepository<R, L> {
     fn find_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
@@ -143,7 +150,7 @@ impl<R: FindOne + GetOne> FindOne for QueuedRepository<R> {
         if let Some(entity) = entity {
             // Lock the entity
             let lock = self.ensure_lock(entity.id())?;
-            lock.lock();
+            lock.lock()?;
 
             // Re-fetch with lock held to ensure consistency
             if let Some(entity) = self.inner.get_one(entity.id())? {
@@ -152,13 +159,13 @@ impl<R: FindOne + GetOne> FindOne for QueuedRepository<R> {
                 }
             }
             // Entity no longer matches, unlock
-            lock.unlock();
+            lock.unlock()?;
         }
         Ok(None)
     }
 }
 
-impl<R: Exists> Exists for QueuedRepository<R> {
+impl<R: Exists, L: LockManager> Exists for QueuedRepository<R, L> {
     /// Check if any entity matches (non-locking - just a read check).
     fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
@@ -168,7 +175,7 @@ impl<R: Exists> Exists for QueuedRepository<R> {
     }
 }
 
-impl<R: Count> Count for QueuedRepository<R> {
+impl<R: Count, L: LockManager> Count for QueuedRepository<R, L> {
     /// Count matching entities (non-locking - just a read check).
     fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
@@ -178,7 +185,7 @@ impl<R: Count> Count for QueuedRepository<R> {
     }
 }
 
-impl<R: Commit> Commit for QueuedRepository<R> {
+impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
         let entities = committable.entities_mut();
 
@@ -194,7 +201,7 @@ impl<R: Commit> Commit for QueuedRepository<R> {
         // Unlock on success
         if result.is_ok() {
             for lock in locks {
-                lock.unlock();
+                lock.unlock()?;
             }
         }
 
@@ -234,7 +241,7 @@ pub trait FindOneWithOpts: FindOne {
         F: Fn(&Entity) -> bool;
 }
 
-impl<R: GetOne + GetMany> GetWithOpts for QueuedRepository<R> {
+impl<R: GetOne + GetMany, L: LockManager> GetWithOpts for QueuedRepository<R, L> {
     fn get_with(&self, id: &str, opts: ReadOpts) -> Result<Option<Entity>, RepositoryError> {
         if opts.lock {
             self.get_one(id)
@@ -244,7 +251,7 @@ impl<R: GetOne + GetMany> GetWithOpts for QueuedRepository<R> {
     }
 }
 
-impl<R: GetMany + GetOne> GetAllWithOpts for QueuedRepository<R> {
+impl<R: GetMany + GetOne, L: LockManager> GetAllWithOpts for QueuedRepository<R, L> {
     fn get_all_with(&self, ids: &[&str], opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError> {
         if opts.lock {
             self.get_many(ids)
@@ -254,7 +261,7 @@ impl<R: GetMany + GetOne> GetAllWithOpts for QueuedRepository<R> {
     }
 }
 
-impl<R: Find + GetOne> FindWithOpts for QueuedRepository<R> {
+impl<R: Find + GetOne, L: LockManager> FindWithOpts for QueuedRepository<R, L> {
     fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
@@ -267,7 +274,7 @@ impl<R: Find + GetOne> FindWithOpts for QueuedRepository<R> {
     }
 }
 
-impl<R: FindOne + GetOne> FindOneWithOpts for QueuedRepository<R> {
+impl<R: FindOne + GetOne, L: LockManager> FindOneWithOpts for QueuedRepository<R, L> {
     fn find_one_with<F>(
         &self,
         predicate: F,
@@ -293,7 +300,7 @@ pub trait UnlockableRepository {
     fn unlock(&self, id: &str) -> Result<(), RepositoryError>;
 }
 
-impl<R> UnlockableRepository for QueuedRepository<R> {
+impl<R, L: LockManager> UnlockableRepository for QueuedRepository<R, L> {
     fn unlock(&self, id: &str) -> Result<(), RepositoryError> {
         QueuedRepository::unlock(self, id)
     }
@@ -303,6 +310,10 @@ impl<R> UnlockableRepository for QueuedRepository<R> {
 pub trait Queueable: Sized {
     fn queued(self) -> QueuedRepository<Self> {
         QueuedRepository::new(self)
+    }
+
+    fn queued_with<L: LockManager>(self, lock_manager: L) -> QueuedRepository<Self, L> {
+        QueuedRepository::with_lock_manager(self, lock_manager)
     }
 }
 
