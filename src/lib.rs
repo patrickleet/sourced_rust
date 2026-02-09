@@ -9,6 +9,8 @@ pub mod repository;
 pub mod emitter;
 #[cfg(feature = "bus")]
 pub mod bus;
+#[cfg(feature = "bus")]
+pub mod service;
 mod commit_builder;
 mod hashmap_repo;
 pub(crate) mod lock;
@@ -58,6 +60,18 @@ pub use outbox_worker::{OutboxWorkerThread, WorkerStats};
 // In-memory queue for testing and development (requires bus feature)
 #[cfg(feature = "bus")]
 pub use bus::InMemoryQueue;
+
+// Message alias for command contexts (requires bus feature)
+#[cfg(feature = "bus")]
+pub use bus::Message;
+
+// Domain service: command handler registration and dispatch (requires bus feature)
+#[cfg(feature = "bus")]
+pub use service::{DomainService, DomainServiceThread, HandlerError, ServiceStats};
+
+// HTTP adapter types for domain service (requires http feature)
+#[cfg(feature = "http")]
+pub use service::{CommandRequest, CommandResponse};
 
 // LocalEmitterPublisher requires the emitter feature
 #[cfg(feature = "emitter")]
