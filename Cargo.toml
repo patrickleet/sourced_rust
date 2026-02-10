@@ -2,6 +2,12 @@
 name = "sourced_rust"
 version = "0.1.0"
 edition = "2021"
+description = "CQRS/ES framework for Rust using Plain Old Rust Structs — append-only events, replay, snapshots, outbox, service bus, and pluggable infrastructure"
+license = "MIT"
+repository = "https://github.com/patrickleet/sourced_rust"
+readme = "README.md"
+keywords = ["event-sourcing", "cqrs", "ddd", "aggregate", "domain-driven-design"]
+categories = ["data-structures", "database"]
 
 [lib]
 path = "src/lib.rs"
