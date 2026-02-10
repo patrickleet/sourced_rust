@@ -154,10 +154,10 @@ The `emitter` feature (enabled by default) adds in-process event-driven choreogr
 
 ### The `#[enqueue]` Macro
 
-Similar to `#[digest]`, but queues a local event for in-process emission instead of recording to the event stream:
+Works alongside `#[digest]` — `#[digest]` records the event to the entity's stream for replay, while `#[enqueue]` queues a local copy for in-process emission. You'll typically use both together:
 
 ```rust
-use sourced_rust::{enqueue, Entity};
+use sourced_rust::{aggregate, digest, enqueue, Entity};
 use sourced_rust::emitter::EntityEmitter;
 
 #[derive(Default)]
@@ -170,17 +170,25 @@ struct OrderSaga {
 }
 
 impl OrderSaga {
+    #[digest("OrderStarted")]
     #[enqueue("OrderStarted")]
     fn start(&mut self, order_id: String) {
+        self.entity.set_id(&order_id);
         self.order_id = order_id;
         self.status = "started".into();
     }
 
+    #[digest("StepCompleted", when = self.status == "started")]
     #[enqueue("StepCompleted", when = self.status == "started")]
     fn complete_step(&mut self) {
         self.status = "completed".into();
     }
 }
+
+aggregate!(OrderSaga, entity {
+    "OrderStarted"(order_id) => start,
+    "StepCompleted"() => complete_step(),
+});
 ```
 
 **Custom emitter field** — when your emitter field isn't named `emitter`:
@@ -197,8 +205,6 @@ fn create(&mut self, name: String) {
 Queued events are held until you explicitly emit them after a successful commit:
 
 ```rust
-use std::sync::{Arc, Mutex};
-
 let mut saga = OrderSaga::default();
 saga.start("order-1".into());
 
