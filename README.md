@@ -148,6 +148,82 @@ aggregate!(Todo, entity {
 This generates:
 - `impl Aggregate for Todo` with `entity()`, `entity_mut()`, and `replay_event()`
 
+## In-Process Event Choreography (requires `emitter` feature)
+
+The `emitter` feature (enabled by default) adds in-process event-driven choreography — queue local events during commands and emit them after commit for reactive workflows within a process.
+
+### The `#[enqueue]` Macro
+
+Similar to `#[digest]`, but queues a local event for in-process emission instead of recording to the event stream:
+
+```rust
+use sourced_rust::{enqueue, Entity};
+use sourced_rust::emitter::EntityEmitter;
+
+#[derive(Default)]
+struct OrderSaga {
+    entity: Entity,
+    #[serde(skip, default)]
+    emitter: EntityEmitter,
+    order_id: String,
+    status: String,
+}
+
+impl OrderSaga {
+    #[enqueue("OrderStarted")]
+    fn start(&mut self, order_id: String) {
+        self.order_id = order_id;
+        self.status = "started".into();
+    }
+
+    #[enqueue("StepCompleted", when = self.status == "started")]
+    fn complete_step(&mut self) {
+        self.status = "completed".into();
+    }
+}
+```
+
+**Custom emitter field** — when your emitter field isn't named `emitter`:
+
+```rust
+#[enqueue(my_emitter, "Created")]
+fn create(&mut self, name: String) {
+    // uses self.my_emitter instead of self.emitter
+}
+```
+
+### Emitting After Commit
+
+Queued events are held until you explicitly emit them after a successful commit:
+
+```rust
+use std::sync::{Arc, Mutex};
+
+let mut saga = OrderSaga::default();
+saga.start("order-1".into());
+
+// Commit the aggregate...
+repo.commit(&mut saga)?;
+
+// Then emit queued events to registered listeners
+saga.emitter.emit_queued();
+```
+
+### Registering Listeners
+
+Register callbacks that fire when events are emitted:
+
+```rust
+let shared_state = Arc::new(Mutex::new(Vec::new()));
+let state = Arc::clone(&shared_state);
+
+saga.emitter.on("OrderStarted", move |payload: String| {
+    state.lock().unwrap().push(payload);
+});
+```
+
+This pattern is useful for reactive workflows where one aggregate's events trigger actions in other aggregates or services within the same process. For cross-service messaging, use the [Outbox Pattern](#outbox-pattern) and [Service Bus](#service-bus) instead.
+
 ## Queued Repository
 
 Per-entity locking for serialized workflows:

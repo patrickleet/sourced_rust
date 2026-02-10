@@ -73,20 +73,28 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
+    let entity_field = &args.entity_field;
+
     let enqueue_call = if param_names.is_empty() {
         quote! {
-            self.#emitter_field.enqueue(#event_name, "");
+            if !self.#entity_field.is_replaying() {
+                self.#emitter_field.enqueue(#event_name, "");
+            }
         }
     } else if param_names.len() == 1 {
         // Single-element tuple needs trailing comma: (x,) not (x)
         let param = &param_names[0];
         quote! {
-            self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),));
+            if !self.#entity_field.is_replaying() {
+                self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),));
+            }
         }
     } else {
         // Multi-element tuple
         quote! {
-            self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*));
+            if !self.#entity_field.is_replaying() {
+                self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*));
+            }
         }
     };
 
@@ -118,6 +126,7 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct EnqueueArgs {
     emitter_field: syn::Ident,
+    entity_field: syn::Ident,
     event_name: LitStr,
     guard: Option<Expr>,
 }
@@ -154,6 +163,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 
     Ok(EnqueueArgs {
         emitter_field,
+        entity_field: format_ident!("entity"),
         event_name,
         guard,
     })
