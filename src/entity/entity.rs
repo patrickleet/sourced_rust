@@ -13,6 +13,8 @@ pub struct Entity {
     #[serde(skip, default)]
     replaying: bool,
     snapshot_version: u64,
+    #[serde(skip, default)]
+    committed_version: u64,
     timestamp: SystemTime,
 }
 
@@ -24,6 +26,7 @@ impl Default for Entity {
             events: Vec::new(),
             replaying: false,
             snapshot_version: 0,
+            committed_version: 0,
             timestamp: SystemTime::now(),
         }
     }
@@ -37,6 +40,7 @@ impl fmt::Debug for Entity {
             .field("events", &self.events)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
+            .field("committed_version", &self.committed_version)
             .field("timestamp", &self.timestamp)
             .finish()
     }
@@ -50,6 +54,7 @@ impl Clone for Entity {
             events: self.events.clone(),
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
+            committed_version: self.committed_version,
             timestamp: self.timestamp,
         }
     }
@@ -103,8 +108,22 @@ impl Entity {
         self.snapshot_version = snapshot_version;
     }
 
+    pub fn committed_version(&self) -> u64 {
+        self.committed_version
+    }
+
     pub fn events(&self) -> &[EventRecord] {
         &self.events
+    }
+
+    /// Returns events added since the entity was loaded (not yet persisted).
+    pub fn new_events(&self) -> &[EventRecord] {
+        &self.events[self.committed_version as usize..]
+    }
+
+    /// Mark all current events as committed. Called by repository after successful commit.
+    pub fn mark_committed(&mut self) {
+        self.committed_version = self.version;
     }
 
     /// Record an event with a serializable payload.
@@ -130,6 +149,7 @@ impl Entity {
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
         self.events = history;
         self.version = self.events.len() as u64;
+        self.committed_version = self.version;
     }
 
     pub fn rehydrate<F, E>(&mut self, mut apply: F) -> Result<(), E>
@@ -178,6 +198,7 @@ mod tests {
         assert!(entity.events().is_empty());
         assert!(!entity.is_replaying());
         assert_eq!(entity.snapshot_version(), 0);
+        assert_eq!(entity.committed_version(), 0);
     }
 
     #[test]
@@ -219,6 +240,10 @@ mod tests {
         assert_eq!(entity.version(), cloned_entity.version());
         assert_eq!(entity.events(), cloned_entity.events());
         assert_eq!(entity.snapshot_version(), cloned_entity.snapshot_version());
+        assert_eq!(
+            entity.committed_version(),
+            cloned_entity.committed_version()
+        );
     }
 
     #[test]
@@ -244,6 +269,8 @@ mod tests {
         assert_eq!(entity.events(), deserialized.events());
         assert_eq!(entity.snapshot_version(), deserialized.snapshot_version());
         assert_eq!(entity.timestamp, deserialized.timestamp);
+        // committed_version is serde(skip) — not serialized, defaults to 0
+        assert_eq!(deserialized.committed_version(), 0);
     }
 
     #[test]
@@ -253,5 +280,83 @@ mod tests {
 
         entity.digest("test_event", &"arg1");
         assert!(entity.events().is_empty());
+    }
+
+    #[test]
+    fn load_from_history_sets_committed_version() {
+        let mut entity = Entity::new();
+        assert_eq!(entity.committed_version(), 0);
+
+        let mut source = Entity::new();
+        source.digest("e1", &"a");
+        source.digest("e2", &"b");
+
+        entity.load_from_history(source.events().to_vec());
+        assert_eq!(entity.version(), 2);
+        assert_eq!(entity.committed_version(), 2);
+        assert_eq!(entity.snapshot_version(), 0);
+    }
+
+    #[test]
+    fn new_events_on_fresh_entity() {
+        let mut entity = Entity::new();
+        assert!(entity.new_events().is_empty());
+
+        entity.digest("e1", &"a");
+        entity.digest("e2", &"b");
+        assert_eq!(entity.new_events().len(), 2);
+        assert_eq!(entity.new_events()[0].event_name, "e1");
+        assert_eq!(entity.new_events()[1].event_name, "e2");
+    }
+
+    #[test]
+    fn new_events_after_load_and_digest() {
+        let mut source = Entity::new();
+        source.digest("e1", &"a");
+        source.digest("e2", &"b");
+
+        let mut entity = Entity::new();
+        entity.load_from_history(source.events().to_vec());
+        assert!(entity.new_events().is_empty());
+
+        entity.digest("e3", &"c");
+        assert_eq!(entity.new_events().len(), 1);
+        assert_eq!(entity.new_events()[0].event_name, "e3");
+    }
+
+    #[test]
+    fn mark_committed_resets_new_events() {
+        let mut entity = Entity::new();
+        entity.digest("e1", &"a");
+        entity.digest("e2", &"b");
+        assert_eq!(entity.new_events().len(), 2);
+
+        entity.mark_committed();
+        assert!(entity.new_events().is_empty());
+        assert_eq!(entity.committed_version(), 2);
+        assert_eq!(entity.snapshot_version(), 0);
+        assert_eq!(entity.version(), 2);
+        assert_eq!(entity.events().len(), 2);
+    }
+
+    #[test]
+    fn snapshot_version_not_affected_by_load_or_commit() {
+        let mut entity = Entity::new();
+        assert_eq!(entity.snapshot_version(), 0);
+
+        // digest doesn't touch snapshot_version
+        entity.digest("e1", &"a");
+        entity.digest("e2", &"b");
+        assert_eq!(entity.snapshot_version(), 0);
+
+        // mark_committed doesn't touch snapshot_version
+        entity.mark_committed();
+        assert_eq!(entity.snapshot_version(), 0);
+
+        // load_from_history doesn't touch snapshot_version
+        let mut entity2 = Entity::new();
+        entity2.load_from_history(entity.events().to_vec());
+        assert_eq!(entity2.snapshot_version(), 0);
+        assert_eq!(entity2.committed_version(), 2);
     }
 }

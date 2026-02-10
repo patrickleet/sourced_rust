@@ -43,7 +43,7 @@ impl OutboxRepositoryExt for HashMapRepository {
         status: OutboxMessageStatus,
     ) -> Result<Vec<OutboxMessage>, RepositoryError> {
         let storage = self
-            .storage()
+            .event_store()
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -72,7 +72,7 @@ impl OutboxRepositoryExt for HashMapRepository {
         lease: Duration,
     ) -> Result<Vec<OutboxMessage>, RepositoryError> {
         let mut storage = self
-            .storage()
+            .event_store()
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
@@ -89,6 +89,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             if message.is_pending() {
                 message.claim_for(worker_id, lease);
                 *events = message.entity.events().to_vec();
+                message.entity.mark_committed();
                 claimed.push(message);
             }
 
@@ -108,7 +109,7 @@ impl OutboxRepositoryExt for HashMapRepository {
         };
 
         let mut storage = self
-            .storage()
+            .event_store()
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
@@ -120,6 +121,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             if message.is_in_flight() {
                 message.complete();
                 *events = message.entity.events().to_vec();
+                message.entity.mark_committed();
             }
         }
 
@@ -134,7 +136,7 @@ impl OutboxRepositoryExt for HashMapRepository {
         };
 
         let mut storage = self
-            .storage()
+            .event_store()
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
@@ -146,6 +148,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             if message.is_in_flight() {
                 message.release(error.to_string());
                 *events = message.entity.events().to_vec();
+                message.entity.mark_committed();
             }
         }
 
@@ -160,7 +163,7 @@ impl OutboxRepositoryExt for HashMapRepository {
         };
 
         let mut storage = self
-            .storage()
+            .event_store()
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
@@ -171,6 +174,7 @@ impl OutboxRepositoryExt for HashMapRepository {
 
             message.fail(error.to_string());
             *events = message.entity.events().to_vec();
+            message.entity.mark_committed();
         }
 
         Ok(())

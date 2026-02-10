@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 
 use crate::entity::{Entity, EventRecord};
 use crate::repository::{Commit, Find, Get, Repository, RepositoryError};
+use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
 /// Trait for domain aggregates that can be event-sourced.
 pub trait Aggregate: Sized + Default {
@@ -352,6 +353,17 @@ where
 {
     pub fn abort(&self, aggregate: &A) -> Result<(), RepositoryError> {
         self.repo.unlock(aggregate.entity().id())
+    }
+}
+
+impl<R, A> AggregateRepository<R, A>
+where
+    R: SnapshotStore,
+    A: Snapshottable,
+{
+    /// Wrap this repository with snapshot support at the given event frequency.
+    pub fn with_snapshots(self, frequency: u64) -> SnapshotAggregateRepository<R, A> {
+        SnapshotAggregateRepository::new(self, frequency)
     }
 }
 

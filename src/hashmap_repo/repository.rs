@@ -6,6 +6,7 @@ use crate::read_model::{InMemoryReadModelStore, ReadModel, ReadModelError, ReadM
 use crate::repository::{
     Commit, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
 };
+use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
 
 /// In-memory repository implementation using HashMap.
 ///
@@ -14,8 +15,9 @@ use crate::repository::{
 /// Also includes an embedded `InMemoryReadModelStore` for read model storage.
 #[derive(Clone)]
 pub struct HashMapRepository {
-    storage: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
+    event_store: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
     model_store: InMemoryReadModelStore,
+    snapshot_store: InMemorySnapshotStore,
 }
 
 impl Default for HashMapRepository {
@@ -28,25 +30,31 @@ impl HashMapRepository {
     /// Create a new empty repository.
     pub fn new() -> Self {
         HashMapRepository {
-            storage: Arc::new(RwLock::new(HashMap::new())),
+            event_store: Arc::new(RwLock::new(HashMap::new())),
             model_store: InMemoryReadModelStore::new(),
+            snapshot_store: InMemorySnapshotStore::new(),
         }
     }
 
-    pub(crate) fn storage(&self) -> &RwLock<HashMap<String, Vec<EventRecord>>> {
-        self.storage.as_ref()
+    pub(crate) fn event_store(&self) -> &RwLock<HashMap<String, Vec<EventRecord>>> {
+        self.event_store.as_ref()
     }
 
     /// Access the embedded read model store directly.
     pub fn model_store(&self) -> &InMemoryReadModelStore {
         &self.model_store
     }
+
+    /// Access the embedded snapshot store directly.
+    pub fn snapshot_store(&self) -> &InMemorySnapshotStore {
+        &self.snapshot_store
+    }
 }
 
 impl GetOne for HashMapRepository {
     fn get_one(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
         let storage = self
-            .storage
+            .event_store
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -79,7 +87,7 @@ impl Find for HashMapRepository {
         F: Fn(&Entity) -> bool,
     {
         let storage = self
-            .storage
+            .event_store
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -102,7 +110,7 @@ impl FindOne for HashMapRepository {
         F: Fn(&Entity) -> bool,
     {
         let storage = self
-            .storage
+            .event_store
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -124,7 +132,7 @@ impl Exists for HashMapRepository {
         F: Fn(&Entity) -> bool,
     {
         let storage = self
-            .storage
+            .event_store
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -146,7 +154,7 @@ impl Count for HashMapRepository {
         F: Fn(&Entity) -> bool,
     {
         let storage = self
-            .storage
+            .event_store
             .read()
             .map_err(|_| RepositoryError::LockPoisoned("read"))?;
 
@@ -168,13 +176,30 @@ impl Commit for HashMapRepository {
         let entities = committable.entities_mut();
 
         let mut storage = self
-            .storage
+            .event_store
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
 
+        // Phase 1: Validate (optimistic concurrency check)
         for entity in &entities {
-            storage.insert(entity.id().to_string(), entity.events().to_vec());
+            let stored_len = storage.get(entity.id()).map(|v| v.len() as u64).unwrap_or(0);
+            if stored_len != entity.committed_version() {
+                return Err(RepositoryError::ConcurrentWrite {
+                    id: entity.id().to_string(),
+                    expected: entity.committed_version(),
+                    actual: stored_len,
+                });
+            }
         }
+
+        // Phase 2: Append new events and mark committed
+        for entity in entities {
+            let new_events = entity.new_events().to_vec();
+            let stored = storage.entry(entity.id().to_string()).or_insert_with(Vec::new);
+            stored.extend(new_events);
+            entity.mark_committed();
+        }
+
         Ok(())
     }
 }
@@ -223,6 +248,20 @@ impl ReadModelStore for HashMapRepository {
     }
 }
 
+impl SnapshotStore for HashMapRepository {
+    fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError> {
+        self.snapshot_store.get_snapshot(id)
+    }
+
+    fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError> {
+        self.snapshot_store.save_snapshot(record)
+    }
+
+    fn delete_snapshot(&self, id: &str) -> Result<bool, RepositoryError> {
+        self.snapshot_store.delete_snapshot(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,7 +270,7 @@ mod tests {
     #[test]
     fn new() {
         let repo = HashMapRepository::new();
-        assert!(repo.storage.read().unwrap().is_empty());
+        assert!(repo.event_store.read().unwrap().is_empty());
     }
 
     #[test]

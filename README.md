@@ -79,6 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
+- **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration.
+- **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
 - **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing.
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
@@ -93,6 +95,7 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 | Storage | `Repository` (`Get + Find + Commit + ...`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
 | Messaging | `Publisher` + `Subscriber` | `InMemoryQueue` | Kafka, Redis Streams, SQS, etc. |
 | Read model store | `ReadModelStore` | `InMemoryReadModelStore` | Postgres, MongoDB, etc. |
+| Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, S3, etc. |
 | Outbox publishing | `OutboxPublisher` | `LogPublisher` | Any `Publisher` impl |
 | Locking | `Lock` + `LockManager` | `InMemoryLockManager` | Redis, Postgres advisory, etc. |
 
@@ -464,6 +467,58 @@ This is a deliberate CAP theorem tradeoff: you're choosing **consistency** over 
 
 See [`docs/read-models.md`](docs/read-models.md) for the full guide, including eventually consistent projections, `QueuedReadModelStore`, and a decision flowchart.
 
+## Snapshots
+
+As aggregates accumulate events, replaying from scratch gets expensive. Snapshots let you periodically capture an aggregate's state and restore from it, replaying only the events that came after.
+
+### Making an Aggregate Snapshottable
+
+Implement the `Snapshottable` trait on your aggregate:
+
+```rust
+use sourced_rust::Snapshottable;
+
+impl Snapshottable for Todo {
+    type Snapshot = TodoSnapshot;
+
+    fn create_snapshot(&self) -> TodoSnapshot {
+        self.snapshot()
+    }
+
+    fn restore_from_snapshot(&mut self, s: TodoSnapshot) {
+        self.entity.set_id(&s.id);
+        self.user_id = s.user_id;
+        self.task = s.task;
+        self.completed = s.completed;
+    }
+}
+```
+
+### Using Snapshots
+
+Chain `.with_snapshots(frequency)` onto any `AggregateRepository`. The frequency is how many events between automatic snapshots:
+
+```rust
+let repo = HashMapRepository::new()
+    .queued()
+    .aggregate::<Todo>()
+    .with_snapshots(10); // snapshot every 10 events
+
+// Commit works normally — snapshots are created automatically at the threshold
+let mut todo = Todo::default();
+todo.initialize("todo-1".into(), "user-1".into(), "Ship it".into());
+repo.commit(&mut todo)?;
+
+// Load transparently restores from latest snapshot + replays newer events
+let todo = repo.get("todo-1")?.unwrap();
+```
+
+### How It Works
+
+- **On commit**: If `entity.version() >= snapshot_version + frequency`, the aggregate's state is serialized via `create_snapshot()` and saved to the snapshot store.
+- **On load**: If a snapshot exists, the aggregate is restored from it and only events with `sequence > snapshot.version` are replayed. If no snapshot exists, full replay is used as a fallback.
+- **Storage**: Snapshots are stored separately from the event stream. `HashMapRepository` embeds an `InMemorySnapshotStore`; for production, implement the `SnapshotStore` trait for your backend.
+
 ## Project Structure
 
 ```
@@ -475,6 +530,7 @@ src/
   lock/       # Lock trait, LockManager trait, InMemoryLock
   queued/     # Queue-based locking wrapper
   read_model/ # Read model store traits and InMemoryReadModelStore
+  snapshot/   # Snapshot store traits, InMemorySnapshotStore, SnapshotAggregateRepository
   outbox/     # Outbox message aggregate + worker + publishers
   lib.rs      # Public exports
 ```
@@ -488,9 +544,9 @@ cargo test
 ## Examples
 
 - `tests/todos/` - Basic entity workflow
+- `tests/snapshots/` - Snapshot creation, loading, and partial replay
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
 - `tests/sagas/orchestration.rs` - Saga orchestration with compensation
-- `tests/support/` - Domain models for tests
 
 ## License
 

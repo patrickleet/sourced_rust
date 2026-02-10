@@ -5,6 +5,7 @@ use crate::entity::{Committable, Entity};
 use crate::repository::{
     Commit, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
 };
+use crate::snapshot::{SnapshotRecord, SnapshotStore};
 
 /// Options for read operations.
 #[derive(Debug, Clone, Copy)]
@@ -303,6 +304,24 @@ pub trait UnlockableRepository {
 impl<R, L: LockManager> UnlockableRepository for QueuedRepository<R, L> {
     fn unlock(&self, id: &str) -> Result<(), RepositoryError> {
         QueuedRepository::unlock(self, id)
+    }
+}
+
+// ============================================================================
+// SnapshotStore delegation
+// ============================================================================
+
+impl<R: SnapshotStore, L: LockManager> SnapshotStore for QueuedRepository<R, L> {
+    fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError> {
+        self.inner.get_snapshot(id)
+    }
+
+    fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError> {
+        self.inner.save_snapshot(record)
+    }
+
+    fn delete_snapshot(&self, id: &str) -> Result<bool, RepositoryError> {
+        self.inner.delete_snapshot(id)
     }
 }
 

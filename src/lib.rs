@@ -18,6 +18,7 @@ pub mod read_model;
 mod outbox;
 mod outbox_worker;
 pub mod queued_repo;
+pub mod snapshot;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{Committable, Entity, Event, EventRecord, LocalEvent, PayloadError};
@@ -95,6 +96,12 @@ pub use read_model::{
 
 // CommitBuilder: atomic commits of read models, outbox, and aggregates
 pub use commit_builder::{CommitBuilder, CommitBuilderExt};
+
+// Snapshot: periodic aggregate snapshots for fast hydration
+pub use snapshot::{
+    hydrate_from_snapshot, InMemorySnapshotStore, Snapshottable, SnapshotAggregateRepository,
+    SnapshotRecord, SnapshotStore,
+};
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
 #[cfg(feature = "emitter")]
