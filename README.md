@@ -23,11 +23,7 @@ Sourced Rust is inspired by the original [sourced](https://github.com/mateodelno
 ## Quick Start
 
 ```rust
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
-    aggregate, digest, AggregateBuilder, Entity, HashMapRepository,
-    OutboxCommitExt, OutboxMessage, Queueable,
-};
+use sourced_rust::{sourced, AggregateBuilder, Entity, HashMapRepository, Queueable};
 
 #[derive(Default)]
 struct Todo {
@@ -37,24 +33,25 @@ struct Todo {
     completed: bool,
 }
 
+#[sourced(entity)]
 impl Todo {
-    #[digest("Initialized")]
+    #[event("Initialized")]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[event("Completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
 }
 
-aggregate!(Todo, entity {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
-});
+// The #[sourced] macro automatically generates:
+// - TodoEvent enum with Initialized { id, user_id, task } and Completed variants
+// - TryFrom<&EventRecord> for TodoEvent
+// - impl Aggregate for Todo (entity accessors + replay logic)
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
@@ -67,6 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         todo.complete();
         repo.commit(&mut todo)?;
     }
+
+    // Use the generated typed event enum
+    let event = TodoEvent::try_from(&todo.entity.events()[0]).unwrap();
+    assert_eq!(event.event_name(), "Initialized");
 
     Ok(())
 }
@@ -102,7 +103,161 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-threaded tests and multi-threaded servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — no other code changes needed.
 
-## The `#[digest]` Macro
+## The `#[sourced]` Macro
+
+The `#[sourced]` attribute macro is the recommended way to define event-sourced aggregates. Place it on an impl block and annotate command methods with `#[event("Name")]`. It replaces both `#[digest]` and `aggregate!()`, and auto-generates a typed event enum.
+
+### Basic Usage
+
+```rust
+use sourced_rust::{sourced, Entity};
+
+#[derive(Default)]
+struct Todo {
+    entity: Entity,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
+
+#[sourced(entity)]
+impl Todo {
+    #[event("Initialized")]
+    fn initialize(&mut self, id: String, user_id: String, task: String) {
+        self.entity.set_id(&id);
+        self.user_id = user_id;
+        self.task = task;
+    }
+
+    #[event("Completed", when = !self.completed)]
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+```
+
+This generates:
+
+```rust
+// Typed event enum with named fields from method parameters
+#[derive(Debug, Clone, PartialEq)]
+pub enum TodoEvent {
+    Initialized { id: String, user_id: String, task: String },
+    Completed,
+}
+
+// event_name() accessor
+impl TodoEvent {
+    pub fn event_name(&self) -> &'static str { /* ... */ }
+}
+
+// Convert stored events to typed enum
+impl TryFrom<&EventRecord> for TodoEvent { /* ... */ }
+
+// Full Aggregate trait impl (entity accessors + replay logic)
+impl Aggregate for Todo { /* ... */ }
+```
+
+### Using the Typed Event Enum
+
+The generated enum enables exhaustive matching — if you add or remove an event, the compiler tells you everywhere that needs updating:
+
+```rust
+let record: &EventRecord = &todo.entity.events()[0];
+let event = TodoEvent::try_from(record).unwrap();
+
+match event {
+    TodoEvent::Initialized { id, user_id, task } => {
+        println!("Todo {} created by {}: {}", id, user_id, task);
+    }
+    TodoEvent::Completed => {
+        println!("Todo completed");
+    }
+}
+```
+
+### Custom Enum Name
+
+Override the default `{StructName}Event` naming:
+
+```rust
+#[sourced(entity, events = "TodoCommand")]
+impl Todo {
+    // generates TodoCommand enum instead of TodoEvent
+}
+```
+
+### Versioned Events
+
+Create events at a specific version for [upcasting](#event-upcasting--versioning):
+
+```rust
+#[sourced(entity, upcasters(
+    ("Initialized", 1 => 2, upcast_init_v1_v2),
+))]
+impl TodoV2 {
+    #[event("Initialized", version = 2)]
+    fn initialize(&mut self, id: String, task: String, priority: u8) {
+        // creates events at version 2
+    }
+
+    #[event("Completed", when = !self.completed)]
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+```
+
+### Custom Entity Field
+
+When your entity field isn't named `entity`:
+
+```rust
+#[sourced(my_entity)]
+impl MyAggregate {
+    #[event("Created")]
+    fn create(&mut self, name: String) {
+        // uses self.my_entity
+    }
+}
+```
+
+### With `#[enqueue]` for Choreography
+
+`#[sourced]` composes with `#[enqueue]` — `#[event]` records to the entity stream for replay, `#[enqueue]` queues for in-process emission:
+
+```rust
+use sourced_rust::{sourced, enqueue, Entity};
+use sourced_rust::emitter::EntityEmitter;
+
+struct Order {
+    entity: Entity,
+    emitter: EntityEmitter,
+    status: String,
+}
+
+#[sourced(entity)]
+impl Order {
+    #[event("OrderCreated")]
+    #[enqueue("OrderCreated")]
+    fn create(&mut self, order_id: String, customer: String) {
+        self.entity.set_id(&order_id);
+        self.status = "created".into();
+    }
+
+    #[event("OrderShipped", when = self.status == "created")]
+    #[enqueue("OrderShipped", when = self.status == "created")]
+    fn ship(&mut self) {
+        self.status = "shipped".into();
+    }
+}
+```
+
+## The `#[digest]` Macro and `aggregate!()` Macro
+
+The `#[digest]` and `aggregate!()` macros are the lower-level building blocks that `#[sourced]` replaces. They're still fully supported and useful when you want more granular control.
+
+### The `#[digest]` Macro
 
 The `#[digest]` attribute macro automatically records events when methods are called.
 
@@ -144,7 +299,7 @@ fn create(&mut self, name: String) {
 }
 ```
 
-## The `aggregate!` Macro
+### The `aggregate!` Macro
 
 Generates the `Aggregate` trait implementation with replay logic:
 
@@ -175,7 +330,7 @@ Metadata lets you attach cross-cutting context — correlation IDs, causation ID
 
 ### Setting Metadata on an Entity
 
-Set metadata on the entity before calling command methods. Every event produced by `#[digest]` automatically inherits it:
+Set metadata on the entity before calling command methods. Every event produced by `#[digest]` or `#[event]` (within `#[sourced]`) automatically inherits it:
 
 ```rust
 let mut todo = Todo::default();
@@ -244,10 +399,10 @@ The `emitter` feature (enabled by default) adds in-process event-driven choreogr
 
 ### The `#[enqueue]` Macro
 
-Works alongside `#[digest]` — `#[digest]` records the event to the entity's stream for replay, while `#[enqueue]` queues a local copy for in-process emission. You'll typically use both together:
+Works alongside `#[event]` (or `#[digest]`) — `#[event]` records the event to the entity's stream for replay, while `#[enqueue]` queues a local copy for in-process emission. You'll typically use both together:
 
 ```rust
-use sourced_rust::{aggregate, digest, enqueue, Entity};
+use sourced_rust::{sourced, enqueue, Entity};
 use sourced_rust::emitter::EntityEmitter;
 
 #[derive(Default)]
@@ -259,8 +414,9 @@ struct OrderSaga {
     status: String,
 }
 
+#[sourced(entity)]
 impl OrderSaga {
-    #[digest("OrderStarted")]
+    #[event("OrderStarted")]
     #[enqueue("OrderStarted")]
     fn start(&mut self, order_id: String) {
         self.entity.set_id(&order_id);
@@ -268,17 +424,13 @@ impl OrderSaga {
         self.status = "started".into();
     }
 
-    #[digest("StepCompleted", when = self.status == "started")]
+    #[event("StepCompleted", when = self.status == "started")]
     #[enqueue("StepCompleted", when = self.status == "started")]
     fn complete_step(&mut self) {
         self.status = "completed".into();
     }
 }
-
-aggregate!(OrderSaga, entity {
-    "OrderStarted"(order_id) => start,
-    "StepCompleted"() => complete_step(),
-});
+// Generates: OrderSagaEvent enum + impl Aggregate
 ```
 
 **Custom emitter field** — when your emitter field isn't named `emitter`:
@@ -714,7 +866,7 @@ fn upcast_init_v1_v2(payload: &[u8]) -> Vec<u8> {
 
 ### Registering Upcasters
 
-Add an `upcasters` block to the `aggregate!` macro:
+With `#[sourced]`, add upcasters directly in the attribute:
 
 ```rust
 #[derive(Default)]
@@ -725,18 +877,30 @@ struct Todo {
     completed: bool,
 }
 
+#[sourced(entity, upcasters(
+    ("Initialized", 1 => 2, upcast_init_v1_v2),
+))]
 impl Todo {
-    #[digest("Initialized", version = 2)]
+    #[event("Initialized", version = 2)]
     fn initialize(&mut self, id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
         self.task = task;
         self.priority = priority;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[event("Completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
+}
+```
+
+Or with the lower-level `#[digest]` + `aggregate!()`:
+
+```rust
+impl Todo {
+    #[digest("Initialized", version = 2)]
+    fn initialize(&mut self, id: String, task: String, priority: u8) { /* ... */ }
 }
 
 aggregate!(Todo, entity {
@@ -747,7 +911,7 @@ aggregate!(Todo, entity {
 ]);
 ```
 
-Old events stored as `(id, task)` at v1 get transparently upcasted to `(id, task, 0u8)` at v2 during hydration. New events are created at v2 via the `version = 2` parameter on `#[digest]`.
+Old events stored as `(id, task)` at v1 get transparently upcasted to `(id, task, 0u8)` at v2 during hydration. New events are created at v2 via the `version = 2` parameter on `#[event]` (or `#[digest]`).
 
 ### Chaining Upcasters
 
@@ -764,13 +928,17 @@ fn upcast_init_v2_v3(payload: &[u8]) -> Vec<u8> {
     bitcode::serialize(&(id, task, priority, String::new())).unwrap()  // add due_date
 }
 
-aggregate!(Todo, entity {
-    "Initialized"(id, task, priority, due_date) => initialize,
-    "Completed"() => complete(),
-} upcasters [
+#[sourced(entity, upcasters(
     ("Initialized", 1 => 2, upcast_init_v1_v2),
     ("Initialized", 2 => 3, upcast_init_v2_v3),
-]);
+))]
+impl Todo {
+    #[event("Initialized", version = 3)]
+    fn initialize(&mut self, id: String, task: String, priority: u8, due_date: String) { /* ... */ }
+
+    #[event("Completed", when = !self.completed)]
+    fn complete(&mut self) { self.completed = true; }
+}
 ```
 
 A v1 event automatically chains through v1->v2->v3. A v2 event only goes through v2->v3. A v3 event passes through unchanged.
@@ -828,7 +996,10 @@ cargo test
 
 ## Examples
 
-- `tests/todos/` - Basic entity workflow
+- `tests/sourced/` - `#[sourced]` macro with typed event enum, TryFrom, and aggregate hydration
+- `tests/sourced_upcasting/` - `#[sourced]` with upcasters (v1->v2->v3 chains)
+- `tests/sourced_enqueue/` - `#[sourced]` + `#[enqueue]` composability
+- `tests/todos/` - Basic entity workflow (using `#[digest]` + `aggregate!()`)
 - `tests/snapshots/` - Snapshot creation, loading, and partial replay
 - `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)

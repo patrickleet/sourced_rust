@@ -5,8 +5,98 @@ use quote::{format_ident, quote};
 use syn::{
     braced,
     parse::{Parse, ParseStream},
-    parse_macro_input, Expr, FnArg, Ident, ItemFn, LitStr, Pat, Token,
+    parse_macro_input, Expr, FnArg, Ident, ItemFn, ItemImpl, LitStr, Pat, Token,
 };
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+/// Extract parameter names from a method signature (excludes `self`).
+fn extract_param_names(sig: &syn::Signature) -> Vec<&Ident> {
+    sig.inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some(&pat_ident.ident);
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Extract parameter names and types from a method signature (excludes `self`).
+fn extract_params_with_types(sig: &syn::Signature) -> Vec<(Ident, syn::Type)> {
+    sig.inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Generate a digest call token stream.
+fn generate_digest_call(
+    entity_field: &Ident,
+    event_name: &LitStr,
+    param_names: &[&Ident],
+    version: Option<&syn::LitInt>,
+) -> proc_macro2::TokenStream {
+    match version {
+        Some(ver) => {
+            if param_names.is_empty() {
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &()); }
+            } else if param_names.len() == 1 {
+                let param = param_names[0];
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#param.clone(),)); }
+            } else {
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#(#param_names.clone()),*)); }
+            }
+        }
+        None => {
+            if param_names.is_empty() {
+                quote! { self.#entity_field.digest_empty(#event_name); }
+            } else if param_names.len() == 1 {
+                let param = param_names[0];
+                quote! { self.#entity_field.digest(#event_name, &(#param.clone(),)); }
+            } else {
+                quote! { self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*)); }
+            }
+        }
+    }
+}
+
+/// Wrap a method body with an optional guard condition and prepended statements.
+fn wrap_body_with_guard(
+    guard: Option<&Expr>,
+    prepend: proc_macro2::TokenStream,
+    original_stmts: &[syn::Stmt],
+) -> syn::Block {
+    if let Some(guard) = guard {
+        syn::parse_quote! {
+            {
+                if #guard {
+                    #prepend
+                    #(#original_stmts)*
+                }
+            }
+        }
+    } else {
+        syn::parse_quote! {
+            {
+                #prepend
+                #(#original_stmts)*
+            }
+        }
+    }
+}
 
 // ============================================================================
 // #[enqueue] attribute macro
@@ -205,82 +295,16 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_digest_args);
     let mut func = parse_macro_input!(item as ItemFn);
 
-    let entity_field = &args.entity_field;
-    let event_name = &args.event_name;
+    let param_names = extract_param_names(&func.sig);
+    let digest_call = generate_digest_call(
+        &args.entity_field,
+        &args.event_name,
+        &param_names,
+        args.version.as_ref(),
+    );
 
-    // Use function parameters - serialize as tuple
-    let param_names: Vec<_> = func
-        .sig
-        .inputs
-        .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some(&pat_ident.ident);
-                }
-            }
-            None
-        })
-        .collect();
-
-    let digest_call = match &args.version {
-        Some(ver) => {
-            // Versioned digest: use digest_v
-            if param_names.is_empty() {
-                quote! {
-                    self.#entity_field.digest_v(#event_name, #ver, &());
-                }
-            } else if param_names.len() == 1 {
-                let param = &param_names[0];
-                quote! {
-                    self.#entity_field.digest_v(#event_name, #ver, &(#param.clone(),));
-                }
-            } else {
-                quote! {
-                    self.#entity_field.digest_v(#event_name, #ver, &(#(#param_names.clone()),*));
-                }
-            }
-        }
-        None => {
-            // Default: use digest (version 1)
-            if param_names.is_empty() {
-                quote! {
-                    self.#entity_field.digest_empty(#event_name);
-                }
-            } else if param_names.len() == 1 {
-                let param = &param_names[0];
-                quote! {
-                    self.#entity_field.digest(#event_name, &(#param.clone(),));
-                }
-            } else {
-                quote! {
-                    self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*));
-                }
-            }
-        }
-    };
-
-    // Build the new function body
     let original_stmts = &func.block.stmts;
-    let new_body = if let Some(guard) = &args.guard {
-        // Wrap everything in the guard condition
-        syn::parse_quote! {
-            {
-                if #guard {
-                    #digest_call
-                    #(#original_stmts)*
-                }
-            }
-        }
-    } else {
-        // No guard - just prepend digest
-        syn::parse_quote! {
-            {
-                #digest_call
-                #(#original_stmts)*
-            }
-        }
-    };
+    let new_body = wrap_body_with_guard(args.guard.as_ref(), digest_call, original_stmts);
     func.block = Box::new(new_body);
 
     TokenStream::from(quote! { #func })
@@ -581,6 +605,391 @@ impl Parse for AggregateInput {
             upcasters,
         })
     }
+}
+
+// ============================================================================
+// #[sourced] attribute macro
+// ============================================================================
+
+struct SourcedArgs {
+    entity_field: Ident,
+    enum_name: Option<LitStr>,
+    upcasters: Vec<UpcasterDef>,
+}
+
+fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
+    let entity_field: Ident = input.parse()?;
+    let mut enum_name = None;
+    let mut upcasters = Vec::new();
+
+    while input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+        if input.peek(Ident) {
+            let kw: Ident = input.fork().parse()?;
+            if kw == "events" {
+                input.parse::<Ident>()?;
+                input.parse::<Token![=]>()?;
+                enum_name = Some(input.parse::<LitStr>()?);
+            } else if kw == "upcasters" {
+                input.parse::<Ident>()?;
+                let upcaster_content;
+                syn::parenthesized!(upcaster_content in input);
+                while !upcaster_content.is_empty() {
+                    let inner;
+                    syn::parenthesized!(inner in upcaster_content);
+                    let ev_name: LitStr = inner.parse()?;
+                    inner.parse::<Token![,]>()?;
+                    let from_ver: syn::LitInt = inner.parse()?;
+                    inner.parse::<Token![=>]>()?;
+                    let to_ver: syn::LitInt = inner.parse()?;
+                    inner.parse::<Token![,]>()?;
+                    let transform: syn::Path = inner.parse()?;
+                    upcasters.push(UpcasterDef {
+                        event_name: ev_name,
+                        from_version: from_ver,
+                        to_version: to_ver,
+                        transform_fn: transform,
+                    });
+                    if upcaster_content.peek(Token![,]) {
+                        upcaster_content.parse::<Token![,]>()?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(SourcedArgs {
+        entity_field,
+        enum_name,
+        upcasters,
+    })
+}
+
+struct EventAttr {
+    event_name: LitStr,
+    guard: Option<Expr>,
+    version: Option<syn::LitInt>,
+}
+
+fn parse_event_args(input: ParseStream) -> syn::Result<EventAttr> {
+    let event_name: LitStr = input.parse()?;
+    let mut guard = None;
+    let mut version = None;
+
+    while input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+        if input.peek(Ident) {
+            let ident: Ident = input.fork().parse()?;
+            if ident == "when" {
+                input.parse::<Ident>()?;
+                input.parse::<Token![=]>()?;
+                guard = Some(input.parse()?);
+            } else if ident == "version" {
+                input.parse::<Ident>()?;
+                input.parse::<Token![=]>()?;
+                version = Some(input.parse()?);
+            }
+        }
+    }
+
+    Ok(EventAttr {
+        event_name,
+        guard,
+        version,
+    })
+}
+
+fn find_and_remove_event_attr(
+    attrs: &mut Vec<syn::Attribute>,
+) -> Result<Option<EventAttr>, syn::Error> {
+    let idx = attrs.iter().position(|a| a.path().is_ident("event"));
+    match idx {
+        Some(idx) => {
+            let attr = attrs.remove(idx);
+            let event_attr = attr.parse_args_with(parse_event_args)?;
+            Ok(Some(event_attr))
+        }
+        None => Ok(None),
+    }
+}
+
+struct EventMethodInfo {
+    event_name: LitStr,
+    method_name: Ident,
+    params: Vec<(Ident, syn::Type)>,
+}
+
+/// Attribute macro that generates a typed event enum, `TryFrom<&EventRecord>`,
+/// and `impl Aggregate` from annotated methods in an impl block.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[sourced(entity)]
+/// impl Todo {
+///     #[event("Initialized")]
+///     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
+///         self.entity.set_id(&id);
+///         self.user_id = user_id;
+///         self.task = task;
+///     }
+///
+///     #[event("Completed", when = !self.completed)]
+///     pub fn complete(&mut self) {
+///         self.completed = true;
+///     }
+/// }
+/// // Generates: TodoEvent enum, TryFrom<&EventRecord>, impl Aggregate
+/// ```
+///
+/// Options:
+/// - `#[sourced(entity)]` - entity field name
+/// - `#[sourced(entity, events = "CustomName")]` - custom enum name
+/// - `#[sourced(entity, upcasters(("EventName", 1 => 2, upcast_fn)))]` - upcasters
+#[proc_macro_attribute]
+pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr with parse_sourced_args);
+    let mut impl_block = parse_macro_input!(item as ItemImpl);
+
+    // Extract struct name from self type
+    let struct_name = match &*impl_block.self_ty {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                segment.ident.clone()
+            } else {
+                return syn::Error::new_spanned(
+                    &impl_block.self_ty,
+                    "#[sourced] requires a named type",
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+        _ => {
+            return syn::Error::new_spanned(
+                &impl_block.self_ty,
+                "#[sourced] requires a named type",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Collect event info and modify methods
+    let mut event_methods: Vec<EventMethodInfo> = Vec::new();
+
+    for item in &mut impl_block.items {
+        if let syn::ImplItem::Fn(method) = item {
+            match find_and_remove_event_attr(&mut method.attrs) {
+                Ok(Some(event_attr)) => {
+                    let params = extract_params_with_types(&method.sig);
+                    let param_name_refs: Vec<&Ident> =
+                        params.iter().map(|(name, _)| name).collect();
+                    let digest_call = generate_digest_call(
+                        &args.entity_field,
+                        &event_attr.event_name,
+                        &param_name_refs,
+                        event_attr.version.as_ref(),
+                    );
+
+                    let original_stmts = &method.block.stmts;
+                    let new_body = wrap_body_with_guard(
+                        event_attr.guard.as_ref(),
+                        digest_call,
+                        original_stmts,
+                    );
+                    method.block = new_body;
+
+                    event_methods.push(EventMethodInfo {
+                        event_name: event_attr.event_name,
+                        method_name: method.sig.ident.clone(),
+                        params,
+                    });
+                }
+                Ok(None) => { /* not an event method, skip */ }
+                Err(err) => return err.to_compile_error().into(),
+            }
+        }
+    }
+
+    // Determine enum name
+    let enum_name = if let Some(ref custom) = args.enum_name {
+        format_ident!("{}", custom.value())
+    } else {
+        format_ident!("{}Event", struct_name)
+    };
+
+    // Generate event enum
+    let enum_variants = event_methods.iter().map(|e| {
+        let variant_name = format_ident!("{}", e.event_name.value());
+        if e.params.is_empty() {
+            quote! { #variant_name }
+        } else {
+            let fields = e.params.iter().map(|(name, ty)| quote! { #name: #ty });
+            quote! { #variant_name { #(#fields),* } }
+        }
+    });
+
+    let enum_def = quote! {
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum #enum_name {
+            #(#enum_variants),*
+        }
+    };
+
+    // Generate event_name() method on the enum
+    let event_name_arms = event_methods.iter().map(|e| {
+        let variant_name = format_ident!("{}", e.event_name.value());
+        let name_str = &e.event_name;
+        if e.params.is_empty() {
+            quote! { #enum_name::#variant_name => #name_str }
+        } else {
+            quote! { #enum_name::#variant_name { .. } => #name_str }
+        }
+    });
+
+    let event_name_impl = quote! {
+        impl #enum_name {
+            pub fn event_name(&self) -> &'static str {
+                match self {
+                    #(#event_name_arms),*
+                }
+            }
+        }
+    };
+
+    // Generate TryFrom<&EventRecord>
+    let try_from_arms = event_methods.iter().map(|e| {
+        let variant_name = format_ident!("{}", e.event_name.value());
+        let event_name_str = &e.event_name;
+        if e.params.is_empty() {
+            quote! {
+                #event_name_str => Ok(#enum_name::#variant_name),
+            }
+        } else if e.params.len() == 1 {
+            let (name, _) = &e.params[0];
+            quote! {
+                #event_name_str => {
+                    let (#name,) = event.decode().map_err(|e| e.to_string())?;
+                    Ok(#enum_name::#variant_name { #name })
+                }
+            }
+        } else {
+            let names: Vec<_> = e.params.iter().map(|(n, _)| n).collect();
+            quote! {
+                #event_name_str => {
+                    let (#(#names),*) = event.decode().map_err(|e| e.to_string())?;
+                    Ok(#enum_name::#variant_name { #(#names),* })
+                }
+            }
+        }
+    });
+
+    let try_from_impl = quote! {
+        impl TryFrom<&sourced_rust::EventRecord> for #enum_name {
+            type Error = String;
+            fn try_from(event: &sourced_rust::EventRecord) -> Result<Self, Self::Error> {
+                match event.event_name.as_str() {
+                    #(#try_from_arms)*
+                    _ => Err(format!("Unknown event: {}", event.event_name)),
+                }
+            }
+        }
+    };
+
+    // Generate impl Aggregate
+    let entity_field = &args.entity_field;
+    let replay_arms = event_methods.iter().map(|e| {
+        let event_name_str = &e.event_name;
+        let method_name = &e.method_name;
+        if e.params.is_empty() {
+            quote! {
+                #event_name_str => {
+                    self.#method_name();
+                }
+            }
+        } else if e.params.len() == 1 {
+            let (name, _) = &e.params[0];
+            quote! {
+                #event_name_str => {
+                    let (#name,) = event.decode().map_err(|e| e.to_string())?;
+                    self.#method_name(#name);
+                }
+            }
+        } else {
+            let names: Vec<_> = e.params.iter().map(|(n, _)| n).collect();
+            quote! {
+                #event_name_str => {
+                    let (#(#names),*) = event.decode().map_err(|e| e.to_string())?;
+                    self.#method_name(#(#names),*);
+                }
+            }
+        }
+    });
+
+    let upcasters_method = if args.upcasters.is_empty() {
+        quote! {}
+    } else {
+        let upcaster_entries = args.upcasters.iter().map(|u| {
+            let ev_name = &u.event_name;
+            let from_v = &u.from_version;
+            let to_v = &u.to_version;
+            let transform = &u.transform_fn;
+            quote! {
+                sourced_rust::EventUpcaster {
+                    event_type: #ev_name,
+                    from_version: #from_v,
+                    to_version: #to_v,
+                    transform: #transform,
+                }
+            }
+        });
+        quote! {
+            fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
+                static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
+                    #(#upcaster_entries),*
+                ];
+                UPCASTERS
+            }
+        }
+    };
+
+    let aggregate_impl = quote! {
+        impl sourced_rust::Aggregate for #struct_name {
+            type ReplayError = String;
+
+            fn entity(&self) -> &sourced_rust::Entity {
+                &self.#entity_field
+            }
+
+            fn entity_mut(&mut self) -> &mut sourced_rust::Entity {
+                &mut self.#entity_field
+            }
+
+            fn replay_event(
+                &mut self,
+                event: &sourced_rust::EventRecord,
+            ) -> Result<(), Self::ReplayError> {
+                match event.event_name.as_str() {
+                    #(#replay_arms)*
+                    _ => return Err(format!("Unknown event: {}", event.event_name)),
+                }
+                Ok(())
+            }
+
+            #upcasters_method
+        }
+    };
+
+    let expanded = quote! {
+        #impl_block
+        #enum_def
+        #event_name_impl
+        #try_from_impl
+        #aggregate_impl
+    };
+
+    TokenStream::from(expanded)
 }
 
 // ============================================================================

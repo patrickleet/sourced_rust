@@ -108,7 +108,7 @@ pub use snapshot::{
 pub use event_emitter_rs::EventEmitter;
 
 // Re-export proc macros
-pub use sourced_rust_macros::{aggregate, digest, ReadModel};
+pub use sourced_rust_macros::{aggregate, digest, sourced, ReadModel};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]
