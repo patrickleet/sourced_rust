@@ -103,7 +103,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             return ProcessOneResult::default();
         }
 
-        match self.publisher.publish(&message.event_type, &message.payload) {
+        match self.publisher.publish(&message.event_type, &message.payload, &message.metadata) {
             Ok(()) => {
                 message.complete();
                 ProcessOneResult {
@@ -185,5 +185,24 @@ mod tests {
         let mut worker = OutboxWorker::new(LogPublisher::default());
         let result = worker.process_message(&mut message);
         assert!(!result.did_work);
+    }
+
+    #[test]
+    fn process_message_passes_metadata_to_publisher() {
+        use std::sync::{Arc, Mutex};
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let publisher = LogPublisher::with_buffer(buffer.clone());
+        let mut worker = OutboxWorker::new(publisher);
+
+        let mut message = OutboxMessage::create("msg-1", "UserCreated", b"{}".to_vec());
+        message.set_correlation_id("req-abc");
+
+        let result = worker.process_message(&mut message);
+        assert!(result.completed);
+
+        let logs = buffer.lock().unwrap();
+        assert!(logs[0].contains("correlation_id"));
+        assert!(logs[0].contains("req-abc"));
     }
 }

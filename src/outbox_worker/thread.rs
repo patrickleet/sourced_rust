@@ -95,8 +95,11 @@ impl OutboxWorkerThread {
                 match repo.claim_outbox_messages(&worker_id, 100, lease) {
                     Ok(messages) => {
                         for msg in messages {
-                            let event =
+                            let mut event =
                                 Event::new(msg.id(), &msg.event_type, msg.payload.clone());
+                            for (k, v) in &msg.metadata {
+                                event = event.with_metadata(k, v);
+                            }
 
                             match publisher.publish(event) {
                                 Ok(()) => {
@@ -172,8 +175,11 @@ impl OutboxWorkerThread {
                 match repo.claim_outbox_messages(&worker_id, 100, lease) {
                     Ok(messages) => {
                         for msg in messages {
-                            let event =
+                            let mut event =
                                 Event::new(msg.id(), &msg.event_type, msg.payload.clone());
+                            for (k, v) in &msg.metadata {
+                                event = event.with_metadata(k, v);
+                            }
 
                             let result = if let Some(dest) = &msg.destination {
                                 publisher.send(dest, event)

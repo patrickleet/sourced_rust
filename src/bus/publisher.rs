@@ -74,6 +74,23 @@ impl Event {
         self
     }
 
+    /// Get a metadata value by key.
+    pub fn meta(&self, key: &str) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()))
+    }
+
+    /// Get the correlation ID, if set.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.meta("correlation_id")
+    }
+
+    /// Get the causation ID, if set.
+    pub fn causation_id(&self) -> Option<&str> {
+        self.meta("causation_id")
+    }
+
     /// Get the payload as a string (if valid UTF-8).
     pub fn payload_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.payload).ok()

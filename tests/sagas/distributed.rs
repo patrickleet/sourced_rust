@@ -863,3 +863,103 @@ fn distributed_saga_with_send_listen() {
         event_types
     );
 }
+
+/// Metadata flows end-to-end: Entity → EventRecord → OutboxMessage → bus::Event → subscriber.
+///
+/// A producer thread creates an order with correlation/causation metadata,
+/// publishes via OutboxWorkerThread, and a subscriber thread verifies the
+/// metadata arrives on the received bus::Event.
+#[test]
+fn metadata_propagates_across_bus_to_subscriber() {
+    let queue = InMemoryQueue::new();
+    let (result_tx, result_rx) = channel::<(Option<String>, Option<String>, Option<String>)>();
+
+    // =========================================================================
+    // SUBSCRIBER THREAD — receives the event and checks metadata
+    // =========================================================================
+    let subscriber_queue = queue.clone();
+    let subscriber_thread = thread::spawn(move || {
+        let bus = Bus::from_queue(subscriber_queue);
+        let events = bus.subscribe(&["OrderCreated"]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(event)) = events.recv(100) {
+                // Extract metadata from the received bus::Event
+                let correlation = event.correlation_id().map(|s| s.to_string());
+                let causation = event.causation_id().map(|s| s.to_string());
+                let user_id = event.meta("user_id").map(|s| s.to_string());
+                result_tx.send((correlation, causation, user_id)).unwrap();
+                return;
+            }
+        }
+        panic!("Subscriber timed out waiting for OrderCreated event");
+    });
+
+    // =========================================================================
+    // PRODUCER THREAD — creates entity with metadata, publishes via outbox
+    // =========================================================================
+    let producer_queue = queue.clone();
+    let producer_thread = thread::spawn(move || {
+        let repo = HashMapRepository::new();
+        let worker = OutboxWorkerThread::spawn(
+            repo.clone(),
+            producer_queue,
+            Duration::from_millis(10),
+        );
+        let order_repo = repo.aggregate::<Order>();
+
+        // Create an order with metadata on the entity
+        let mut order = Order::new();
+        order.entity.set_correlation_id("req-distributed-001");
+        order.entity.set_causation_id("cmd-create-order");
+        order.entity.set_meta("user_id", "u-99");
+        order.create(
+            "order-meta-001".to_string(),
+            "customer-meta-001".to_string(),
+            vec![OrderItem {
+                sku: "WIDGET-META".to_string(),
+                quantity: 1,
+                price_cents: 500,
+            }],
+        );
+
+        // Metadata propagates automatically from entity context
+        let mut outbox = OutboxMessage::encode_for_entity(
+            "order-meta-001:created",
+            "OrderCreated",
+            &OrderCreatedPayload {
+                order_id: "order-meta-001".to_string(),
+                customer_id: "customer-meta-001".to_string(),
+                items: vec![OrderItem {
+                    sku: "WIDGET-META".to_string(),
+                    quantity: 1,
+                    price_cents: 500,
+                }],
+                total_cents: 500,
+            },
+            &order.entity,
+        )
+        .unwrap();
+
+        order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
+
+        // Give the outbox worker time to publish
+        thread::sleep(Duration::from_millis(200));
+        worker.stop();
+    });
+
+    // =========================================================================
+    // VERIFY — subscriber received metadata
+    // =========================================================================
+    let (correlation, causation, user_id) = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Should receive metadata within 5 seconds");
+
+    assert_eq!(correlation.as_deref(), Some("req-distributed-001"));
+    assert_eq!(causation.as_deref(), Some("cmd-create-order"));
+    assert_eq!(user_id.as_deref(), Some("u-99"));
+
+    producer_thread.join().expect("Producer thread panicked");
+    subscriber_thread.join().expect("Subscriber thread panicked");
+}

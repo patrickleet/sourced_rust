@@ -75,13 +75,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Core Concepts
 
 - **Entity**: Holds the event history. You embed it in your domain structs.
-- **EventRecord**: An immutable event with name, payload, sequence, and timestamp.
+- **EventRecord**: An immutable event with name, payload, sequence, timestamp, and optional metadata.
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
 - **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration.
 - **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
-- **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing.
+- **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
@@ -147,6 +147,75 @@ aggregate!(Todo, entity {
 
 This generates:
 - `impl Aggregate for Todo` with `entity()`, `entity_mut()`, and `replay_event()`
+
+## Event Metadata
+
+Metadata lets you attach cross-cutting context — correlation IDs, causation IDs, user context, trace spans — to events without changing your domain model.
+
+### Setting Metadata on an Entity
+
+Set metadata on the entity before calling command methods. Every event produced by `#[digest]` automatically inherits it:
+
+```rust
+let mut todo = Todo::default();
+
+// Set context before commands
+todo.entity.set_correlation_id("req-abc-123");
+todo.entity.set_causation_id("cmd-create-todo");
+todo.entity.set_meta("user_id", "u-42");
+
+// Events produced by this call carry the metadata
+todo.initialize("todo-1".into(), "user-1".into(), "Ship it".into());
+
+// Verify
+assert_eq!(todo.entity.events()[0].correlation_id(), Some("req-abc-123"));
+```
+
+Entity metadata is **transient** — it's not serialized with the entity. It's a request-scoped context you set before each command invocation.
+
+### Propagating Metadata to Outbox Messages
+
+Use `encode_for_entity` to create outbox messages that automatically inherit the entity's metadata context:
+
+```rust
+let mut outbox = OutboxMessage::encode_for_entity(
+    format!("{}:created", order.entity.id()),
+    "OrderCreated",
+    &payload,
+    &order.entity,  // metadata propagates automatically
+)?;
+
+repo.outbox(&mut outbox).commit(&mut order)?;
+```
+
+The metadata flows through the full chain:
+
+```text
+Entity.set_correlation_id("req-123")
+  → #[digest] → EventRecord.metadata
+  → encode_for_entity → OutboxMessage.metadata
+  → OutboxWorkerThread → bus::Event.metadata
+  → subscriber receives event with event.correlation_id() == "req-123"
+```
+
+### Reading Metadata
+
+All event types expose the same accessor pattern:
+
+```rust
+// On EventRecord (event store)
+event_record.correlation_id()  // Option<&str>
+event_record.causation_id()    // Option<&str>
+event_record.meta("user_id")   // Option<&str>
+
+// On OutboxMessage
+message.correlation_id()
+message.meta("trace_id")
+
+// On bus::Event (received by subscribers)
+event.correlation_id()
+event.meta("user_id")
+```
 
 ## In-Process Event Choreography (requires `emitter` feature)
 
@@ -265,12 +334,15 @@ Each outbox message is its own aggregate, committed alongside your domain entity
 use sourced_rust::{OutboxCommitExt, OutboxMessage};
 
 let mut todo = Todo::default();
+todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into());
 
-let mut message = OutboxMessage::encode(
+// encode_for_entity automatically propagates metadata from the entity
+let mut message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
     "TodoInitialized",
     &todo.snapshot(),
+    &todo.entity,
 )?;
 
 // Commit both atomically
@@ -449,12 +521,14 @@ let order_repo = repo.queued().aggregate::<Order>();
 
 // Commit entity with outbox message
 let mut order = Order::new();
+order.entity.set_correlation_id("req-123");
 order.create("order-1".into(), "customer-1".into());
 
-let mut outbox = OutboxMessage::encode(
+let mut outbox = OutboxMessage::encode_for_entity(
     "order-1:created",
     "OrderCreated",
     &OrderCreatedPayload { order_id: "order-1".into() },
+    &order.entity,  // metadata propagates automatically
 )?;
 order_repo.outbox(&mut outbox).commit(&mut order)?;
 

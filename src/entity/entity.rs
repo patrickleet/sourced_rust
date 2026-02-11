@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 
@@ -16,6 +17,11 @@ pub struct Entity {
     #[serde(skip, default)]
     committed_version: u64,
     timestamp: SystemTime,
+    /// Metadata applied to every event produced by `digest`.
+    /// Transient — not serialized with the entity. Set before calling
+    /// command methods to attach correlation IDs, user context, etc.
+    #[serde(skip, default)]
+    metadata: HashMap<String, String>,
 }
 
 impl Default for Entity {
@@ -28,6 +34,7 @@ impl Default for Entity {
             snapshot_version: 0,
             committed_version: 0,
             timestamp: SystemTime::now(),
+            metadata: HashMap::new(),
         }
     }
 }
@@ -42,6 +49,7 @@ impl fmt::Debug for Entity {
             .field("snapshot_version", &self.snapshot_version)
             .field("committed_version", &self.committed_version)
             .field("timestamp", &self.timestamp)
+            .field("metadata", &self.metadata)
             .finish()
     }
 }
@@ -56,6 +64,7 @@ impl Clone for Entity {
             snapshot_version: self.snapshot_version,
             committed_version: self.committed_version,
             timestamp: self.timestamp,
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -126,8 +135,42 @@ impl Entity {
         self.committed_version = self.version;
     }
 
+    /// Set metadata that will be attached to every subsequent event.
+    ///
+    /// Call this before invoking command methods to propagate context
+    /// (correlation IDs, user info, trace spans) into the event stream.
+    pub fn set_metadata(&mut self, metadata: HashMap<String, String>) {
+        self.metadata = metadata;
+    }
+
+    /// Set a single metadata key-value pair.
+    pub fn set_meta(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.metadata.insert(key.into(), value.into());
+    }
+
+    /// Set the correlation ID for subsequent events.
+    pub fn set_correlation_id(&mut self, id: impl Into<String>) {
+        self.set_meta("correlation_id", id);
+    }
+
+    /// Set the causation ID for subsequent events.
+    pub fn set_causation_id(&mut self, id: impl Into<String>) {
+        self.set_meta("causation_id", id);
+    }
+
+    /// Get the current metadata context.
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+
+    /// Clear all metadata.
+    pub fn clear_metadata(&mut self) {
+        self.metadata.clear();
+    }
+
     /// Record an event with a serializable payload.
     /// The payload is serialized using bitcode for compact, fast storage.
+    /// Any metadata set on the entity is attached to the event.
     pub fn digest<T: serde::Serialize>(&mut self, name: impl Into<String>, payload: &T) {
         if self.replaying {
             return;
@@ -135,7 +178,10 @@ impl Entity {
 
         let bytes = bitcode::serialize(payload).expect("failed to serialize payload");
         let sequence = self.events.len() as u64 + 1;
-        let record = EventRecord::new(name, bytes, sequence);
+        let mut record = EventRecord::new(name, bytes, sequence);
+        if !self.metadata.is_empty() {
+            record.metadata = self.metadata.clone();
+        }
         self.events.push(record);
         self.version = self.events.len() as u64;
         self.timestamp = SystemTime::now();
@@ -337,6 +383,59 @@ mod tests {
         assert_eq!(entity.snapshot_version(), 0);
         assert_eq!(entity.version(), 2);
         assert_eq!(entity.events().len(), 2);
+    }
+
+    #[test]
+    fn digest_propagates_metadata_to_event_record() {
+        let mut entity = Entity::new();
+        entity.set_correlation_id("req-abc");
+        entity.set_causation_id("cmd-xyz");
+        entity.set_meta("user_id", "u-42");
+
+        entity.digest("e1", &"payload");
+
+        let record = &entity.events()[0];
+        assert_eq!(record.correlation_id(), Some("req-abc"));
+        assert_eq!(record.causation_id(), Some("cmd-xyz"));
+        assert_eq!(record.meta("user_id"), Some("u-42"));
+    }
+
+    #[test]
+    fn digest_without_metadata_leaves_event_record_empty() {
+        let mut entity = Entity::new();
+        entity.digest("e1", &"payload");
+
+        let record = &entity.events()[0];
+        assert!(record.metadata.is_empty());
+        assert_eq!(record.correlation_id(), None);
+    }
+
+    #[test]
+    fn metadata_is_transient_not_serialized() {
+        let mut entity = Entity::new();
+        entity.set_correlation_id("req-abc");
+        entity.digest("e1", &"payload");
+
+        let serialized = serde_json::to_string(&entity).unwrap();
+        let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
+
+        // Entity metadata is transient (serde skip), should be empty after round-trip
+        assert!(deserialized.metadata().is_empty());
+        // But the event record metadata was persisted
+        assert_eq!(deserialized.events()[0].correlation_id(), Some("req-abc"));
+    }
+
+    #[test]
+    fn clear_metadata_stops_propagation() {
+        let mut entity = Entity::new();
+        entity.set_correlation_id("req-abc");
+        entity.digest("e1", &"first");
+
+        entity.clear_metadata();
+        entity.digest("e2", &"second");
+
+        assert_eq!(entity.events()[0].correlation_id(), Some("req-abc"));
+        assert!(entity.events()[1].metadata.is_empty());
     }
 
     #[test]

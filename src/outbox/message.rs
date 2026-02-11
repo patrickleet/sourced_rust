@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,9 @@ pub struct OutboxMessage {
     /// When set, the outbox worker uses `Sender::send(destination, event)` instead
     /// of `Publisher::publish(event)`.
     pub destination: Option<String>,
+    /// Metadata propagated to the publisher (correlation IDs, trace context, etc.).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
 }
 
 impl Default for OutboxMessage {
@@ -46,9 +50,11 @@ impl Default for OutboxMessage {
             worker_id: None,
             leased_until: None,
             destination: None,
+            metadata: HashMap::new(),
         }
     }
 }
+
 
 impl OutboxMessage {
     pub const ID_PREFIX: &'static str = "outbox:";
@@ -64,7 +70,7 @@ impl OutboxMessage {
         payload: Vec<u8>,
     ) -> Self {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload, None);
+        message.initialize(id.into(), event_type.into(), payload, None, HashMap::new());
         message
     }
 
@@ -79,7 +85,7 @@ impl OutboxMessage {
         payload: Vec<u8>,
     ) -> Self {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload, Some(destination.into()));
+        message.initialize(id.into(), event_type.into(), payload, Some(destination.into()), HashMap::new());
         message
     }
 
@@ -105,6 +111,44 @@ impl OutboxMessage {
     ) -> Result<Self, bitcode::Error> {
         let bytes = bitcode::serialize(payload)?;
         Ok(Self::create_to(id, event_type, destination, bytes))
+    }
+
+    /// Create a message with metadata and raw bytes payload.
+    pub fn create_with_metadata(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: Vec<u8>,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        let mut message = Self::new();
+        message.initialize(id.into(), event_type.into(), payload, None, metadata);
+        message
+    }
+
+    /// Create a message with metadata and bitcode-serialized payload.
+    pub fn encode_with_metadata<T: Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: &T,
+        metadata: HashMap<String, String>,
+    ) -> Result<Self, bitcode::Error> {
+        let bytes = bitcode::serialize(payload)?;
+        Ok(Self::create_with_metadata(id, event_type, bytes, metadata))
+    }
+
+    /// Create a message that inherits metadata from an entity's context.
+    ///
+    /// This is the recommended way to create outbox messages — it automatically
+    /// propagates correlation IDs, trace context, and any other metadata set
+    /// on the entity, so nothing gets lost between the event store and the bus.
+    pub fn encode_for_entity<T: Serialize>(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: &T,
+        entity: &Entity,
+    ) -> Result<Self, bitcode::Error> {
+        let bytes = bitcode::serialize(payload)?;
+        Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))
     }
 
     /// Decode the payload from bitcode binary format.
@@ -139,12 +183,20 @@ impl OutboxMessage {
 
     // Commands
     #[digest("MessageCreated")]
-    pub fn initialize(&mut self, id: String, event_type: String, payload: Vec<u8>, destination: Option<String>) {
+    pub fn initialize(
+        &mut self,
+        id: String,
+        event_type: String,
+        payload: Vec<u8>,
+        destination: Option<String>,
+        metadata: HashMap<String, String>,
+    ) {
         let normalized_id = Self::normalize_id(id);
         self.entity.set_id(&normalized_id);
         self.event_type = event_type;
         self.payload = payload;
         self.destination = destination;
+        self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
     }
@@ -205,6 +257,36 @@ impl OutboxMessage {
         }
     }
 
+    /// Set a single metadata key-value pair.
+    pub fn set_meta(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.metadata.insert(key.into(), value.into());
+    }
+
+    /// Set the correlation ID.
+    pub fn set_correlation_id(&mut self, id: impl Into<String>) {
+        self.set_meta("correlation_id", id);
+    }
+
+    /// Set the causation ID.
+    pub fn set_causation_id(&mut self, id: impl Into<String>) {
+        self.set_meta("causation_id", id);
+    }
+
+    /// Get a metadata value by key.
+    pub fn meta(&self, key: &str) -> Option<&str> {
+        self.metadata.get(key).map(|s| s.as_str())
+    }
+
+    /// Get the correlation ID, if set.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.meta("correlation_id")
+    }
+
+    /// Get the causation ID, if set.
+    pub fn causation_id(&self) -> Option<&str> {
+        self.meta("causation_id")
+    }
+
     /// Get mutable reference to the underlying entity.
     pub fn entity_mut(&mut self) -> &mut Entity {
         &mut self.entity
@@ -217,7 +299,7 @@ impl OutboxMessage {
 }
 
 crate::aggregate!(OutboxMessage, entity {
-    "MessageCreated"(id, event_type, payload, destination) => initialize,
+    "MessageCreated"(id, event_type, payload, destination, metadata) => initialize,
     "MessageClaimed"(worker_id, until_secs) => claim,
     "MessagePublished"() => complete,
     "MessageReleased"(error) => release,
@@ -236,6 +318,7 @@ mod tests {
             "UserCreated".into(),
             br#"{"id":"123"}"#.to_vec(),
             None,
+            HashMap::new(),
         );
         assert_eq!(message.event_type, "UserCreated");
         assert!(message.is_pending());
@@ -244,7 +327,7 @@ mod tests {
     #[test]
     fn claim_and_complete() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None);
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None, HashMap::new());
         message.claim_for("worker-1", Duration::from_secs(60));
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
@@ -254,9 +337,56 @@ mod tests {
     }
 
     #[test]
+    fn create_with_metadata() {
+        let mut meta = HashMap::new();
+        meta.insert("correlation_id".to_string(), "req-abc".to_string());
+        meta.insert("trace_id".to_string(), "t-999".to_string());
+
+        let message = OutboxMessage::create_with_metadata(
+            "msg-1",
+            "UserCreated",
+            b"{}".to_vec(),
+            meta,
+        );
+        assert_eq!(message.correlation_id(), Some("req-abc"));
+        assert_eq!(message.meta("trace_id"), Some("t-999"));
+    }
+
+    #[test]
+    fn encode_with_metadata() {
+        let mut meta = HashMap::new();
+        meta.insert("correlation_id".to_string(), "req-456".to_string());
+
+        let payload = ("hello", 42i32);
+        let message = OutboxMessage::encode_with_metadata(
+            "msg-2",
+            "SomeEvent",
+            &payload,
+            meta,
+        )
+        .unwrap();
+
+        assert_eq!(message.correlation_id(), Some("req-456"));
+        let decoded: (String, i32) = message.decode().unwrap();
+        assert_eq!(decoded, ("hello".to_string(), 42));
+    }
+
+    #[test]
+    fn set_metadata_individually() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec());
+        message.set_correlation_id("req-abc");
+        message.set_causation_id("evt-prior");
+        message.set_meta("tenant", "acme");
+
+        assert_eq!(message.correlation_id(), Some("req-abc"));
+        assert_eq!(message.causation_id(), Some("evt-prior"));
+        assert_eq!(message.meta("tenant"), Some("acme"));
+    }
+
+    #[test]
     fn release_and_fail() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None);
+        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None, HashMap::new());
         message.claim_for("worker-1", Duration::from_secs(60));
 
         message.release("timeout".into());

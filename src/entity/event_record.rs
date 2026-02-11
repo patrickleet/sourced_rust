@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -23,6 +24,8 @@ pub struct EventRecord {
     pub payload: Vec<u8>,
     pub sequence: u64,
     pub timestamp: SystemTime,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
 }
 
 mod payload_serde {
@@ -52,6 +55,23 @@ impl EventRecord {
             payload,
             sequence,
             timestamp: SystemTime::now(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create an event record with metadata.
+    pub fn with_metadata(
+        event_name: impl Into<String>,
+        payload: Vec<u8>,
+        sequence: u64,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        EventRecord {
+            event_name: event_name.into(),
+            payload,
+            sequence,
+            timestamp: SystemTime::now(),
+            metadata,
         }
     }
 
@@ -65,6 +85,21 @@ impl EventRecord {
     /// Get the raw payload bytes.
     pub fn payload_bytes(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// Get a metadata value by key.
+    pub fn meta(&self, key: &str) -> Option<&str> {
+        self.metadata.get(key).map(|s| s.as_str())
+    }
+
+    /// Get the correlation ID, if set.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.meta("correlation_id")
+    }
+
+    /// Get the causation ID, if set.
+    pub fn causation_id(&self) -> Option<&str> {
+        self.meta("causation_id")
     }
 }
 
@@ -126,5 +161,40 @@ mod tests {
         let payload = vec![0xff, 0x00, 0xab];
         let event_record = EventRecord::new("test_event", payload.clone(), 1);
         assert_eq!(event_record.payload_bytes(), &payload[..]);
+    }
+
+    #[test]
+    fn with_metadata_constructor() {
+        let mut meta = HashMap::new();
+        meta.insert("correlation_id".to_string(), "req-123".to_string());
+        meta.insert("user_id".to_string(), "u-1".to_string());
+
+        let record = EventRecord::with_metadata("test_event", vec![], 1, meta);
+        assert_eq!(record.correlation_id(), Some("req-123"));
+        assert_eq!(record.meta("user_id"), Some("u-1"));
+        assert_eq!(record.causation_id(), None);
+    }
+
+    #[test]
+    fn metadata_skipped_when_empty_in_serialization() {
+        let record = EventRecord::new("test_event", vec![], 1);
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("metadata"));
+
+        let mut meta = HashMap::new();
+        meta.insert("key".to_string(), "val".to_string());
+        let record_with_meta = EventRecord::with_metadata("test_event", vec![], 1, meta);
+        let json = serde_json::to_string(&record_with_meta).unwrap();
+        assert!(json.contains("metadata"));
+        assert!(json.contains("key"));
+    }
+
+    #[test]
+    fn deserialize_without_metadata_field() {
+        // Simulates loading old events that were serialized before metadata existed
+        let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
+        let record: EventRecord = serde_json::from_str(json).unwrap();
+        assert!(record.metadata.is_empty());
+        assert_eq!(record.correlation_id(), None);
     }
 }

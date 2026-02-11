@@ -633,3 +633,60 @@ fn find_by_completed_status() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].snapshot().task, "Pending task");
 }
+
+/// Full metadata chain: Entity → EventRecord → OutboxMessage → OutboxWorker → publisher
+#[test]
+fn metadata_flows_from_entity_through_outbox_to_publisher() {
+    let repo = HashMapRepository::new();
+
+    // 1. Create a todo with metadata on the entity
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.entity.set_correlation_id("req-abc-123");
+    todo.entity.set_causation_id("cmd-create-todo");
+    todo.entity.set_meta("user_id", "u-42");
+    todo.initialize(id.clone(), "user1".to_string(), "Metadata test".to_string());
+
+    // 2. Verify metadata propagated to event records
+    let new_events = todo.entity.new_events();
+    assert_eq!(new_events[0].correlation_id(), Some("req-abc-123"));
+    assert_eq!(new_events[0].causation_id(), Some("cmd-create-todo"));
+    assert_eq!(new_events[0].meta("user_id"), Some("u-42"));
+
+    // 3. Create outbox message — metadata propagates automatically from entity
+    let snapshot = todo.snapshot();
+    let mut message = OutboxMessage::encode_for_entity(
+        format!("{}:init", id),
+        "TodoInitialized",
+        &snapshot,
+        &todo.entity,
+    )
+    .unwrap();
+    assert_eq!(message.correlation_id(), Some("req-abc-123"));
+    assert_eq!(message.causation_id(), Some("cmd-create-todo"));
+
+    // 4. Commit both using outbox commit builder
+    let repo = repo.aggregate::<Todo>();
+    repo.outbox(&mut message).commit(&mut todo).unwrap();
+
+    // 5. Process through outbox worker, verify metadata reaches publisher
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
+    let mut worker = OutboxWorker::new(publisher).with_worker_id("meta-worker");
+
+    let mut claimed = repo
+        .repo()
+        .claim_outbox_messages("meta-worker", 10, Duration::from_secs(30))
+        .unwrap();
+    let result = worker.process_batch(&mut claimed);
+    assert_eq!(result.completed, 1);
+
+    // 6. Verify the publisher received metadata
+    let lines = buffer.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("TodoInitialized"));
+    assert!(lines[0].contains("correlation_id"));
+    assert!(lines[0].contains("req-abc-123"));
+    assert!(lines[0].contains("cmd-create-todo"));
+    assert!(lines[0].contains("u-42"));
+}
