@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use sourced_rust::microsvc::{HandlerError, Service, Session};
-use sourced_rust::{CommitAggregate, GetAggregate, HashMapRepository};
+use sourced_rust::{AggregateBuilder, HashMapRepository};
 
 use crate::support::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
 
@@ -11,29 +11,30 @@ fn full_lifecycle() {
     let service = Service::new(HashMapRepository::new())
         .command("counter.create", |ctx| {
             let input = ctx.input::<CreateCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
             let mut counter = Counter::default();
             counter.create(input.id.clone());
-            ctx.repo().commit_aggregate(&mut counter)?;
+            counter_repo.commit(&mut counter)?;
             Ok(json!({ "id": input.id }))
         })
         .command("counter.increment", |ctx| {
             let input = ctx.input::<IncrementCounter>()?;
-            let mut counter: Counter = ctx
-                .repo()
-                .get_aggregate(&input.id)?
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter: Counter = counter_repo
+                .get(&input.id)?
                 .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
             counter.increment(input.amount);
-            ctx.repo().commit_aggregate(&mut counter)?;
+            counter_repo.commit(&mut counter)?;
             Ok(json!({ "value": counter.value }))
         })
         .command("counter.decrement", |ctx| {
             let input = ctx.input::<DecrementCounter>()?;
-            let mut counter: Counter = ctx
-                .repo()
-                .get_aggregate(&input.id)?
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter: Counter = counter_repo
+                .get(&input.id)?
                 .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
             counter.decrement(input.amount);
-            ctx.repo().commit_aggregate(&mut counter)?;
+            counter_repo.commit(&mut counter)?;
             Ok(json!({ "value": counter.value }))
         });
 
@@ -72,6 +73,7 @@ fn full_lifecycle() {
     assert_eq!(result, json!({ "value": 6 }));
 
     // Verify final state via repo
-    let counter: Counter = service.repo().get_aggregate("c1").unwrap().unwrap();
+    let counter_repo = service.repo().clone().aggregate::<Counter>();
+    let counter: Counter = counter_repo.get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 6);
 }

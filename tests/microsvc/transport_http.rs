@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sourced_rust::microsvc::{self, HandlerError, Service};
-use sourced_rust::{CommitAggregate, GetAggregate, HashMapRepository};
+use sourced_rust::{AggregateBuilder, HashMapRepository};
 
 use crate::support::{Counter, CreateCounter, IncrementCounter};
 
@@ -15,19 +15,20 @@ fn counter_service() -> Arc<Service<HashMapRepository>> {
         Service::new(HashMapRepository::new())
             .command("counter.create", |ctx| {
                 let input = ctx.input::<CreateCounter>()?;
+                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
                 let mut counter = Counter::default();
                 counter.create(input.id.clone());
-                ctx.repo().commit_aggregate(&mut counter)?;
+                counter_repo.commit(&mut counter)?;
                 Ok(json!({ "id": input.id }))
             })
             .command("counter.increment", |ctx| {
                 let input = ctx.input::<IncrementCounter>()?;
-                let mut counter: Counter = ctx
-                    .repo()
-                    .get_aggregate(&input.id)?
+                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+                let mut counter: Counter = counter_repo
+                    .get(&input.id)?
                     .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
                 counter.increment(input.amount);
-                ctx.repo().commit_aggregate(&mut counter)?;
+                counter_repo.commit(&mut counter)?;
                 Ok(json!({ "id": input.id, "value": counter.value }))
             })
             .command("whoami", |ctx| {

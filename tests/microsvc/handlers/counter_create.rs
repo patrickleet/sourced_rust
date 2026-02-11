@@ -8,7 +8,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{CommitAggregate, GetAggregate};
+use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
+
 
 use crate::support::Counter;
 
@@ -23,11 +24,13 @@ pub fn guard<R>(ctx: &Context<R>) -> bool {
     ctx.has_fields(&["id"])
 }
 
-pub fn handle<R: GetAggregate + CommitAggregate>(ctx: &Context<R>) -> Result<Value, HandlerError> {
+pub fn handle<R: Repository + Clone>(
+    ctx: &Context<R>,
+) -> Result<Value, HandlerError> {
     let input = ctx.input::<Input>()?;
+    let counter_repo = ctx.repo().clone().aggregate::<Counter>();
 
-    // Check if counter already exists
-    if ctx.repo().get_aggregate::<Counter>(&input.id)?.is_some() {
+    if counter_repo.get(&input.id)?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "counter {} already exists",
             input.id
@@ -36,7 +39,16 @@ pub fn handle<R: GetAggregate + CommitAggregate>(ctx: &Context<R>) -> Result<Val
 
     let mut counter = Counter::default();
     counter.create(input.id.clone());
-    ctx.repo().commit_aggregate(&mut counter)?;
+
+    let payload = serde_json::to_vec(&json!({ "id": input.id }))
+        .map_err(|e| HandlerError::Other(Box::new(e)))?;
+    let mut message = OutboxMessage::create(
+        format!("{}:created", input.id),
+        "CounterCreated",
+        payload,
+    );
+
+    counter_repo.outbox(&mut message).commit(&mut counter)?;
 
     Ok(json!({ "id": input.id }))
 }

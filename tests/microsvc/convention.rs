@@ -9,31 +9,34 @@
 
 use serde_json::json;
 use sourced_rust::microsvc::{Service, Session};
-use sourced_rust::{GetAggregate, HashMapRepository};
+use sourced_rust::{GetAggregate, HashMapRepository, OutboxRepositoryExt, Queueable};
 
-use crate::support::Counter;
 use crate::handlers;
+use crate::support::Counter;
+
+// ============================================================================
+// Handler convention — register, dispatch, verify
+// ============================================================================
 
 #[test]
-fn register_handlers_from_modules() {
+fn register_handlers_and_dispatch() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new()),
+        Service::new(HashMapRepository::new().queued()),
         handlers::counter_create,
         handlers::counter_increment,
     );
 
-    // Verify both commands are registered
     let mut cmds = service.commands();
     cmds.sort();
     assert_eq!(cmds, vec!["counter.create", "counter.increment"]);
 
-    // Create a counter
+    // Create
     let result = service
         .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));
 
-    // Increment it
+    // Increment
     let result = service
         .dispatch(
             "counter.increment",
@@ -43,19 +46,18 @@ fn register_handlers_from_modules() {
         .unwrap();
     assert_eq!(result, json!({ "id": "c1", "value": 10 }));
 
-    // Verify state
-    let counter: Counter = service.repo().get_aggregate("c1").unwrap().unwrap();
+    // Verify state via underlying repo
+    let counter: Counter = service.repo().inner().get_aggregate("c1").unwrap().unwrap();
     assert_eq!(counter.value, 10);
 }
 
 #[test]
-fn handler_module_guard_rejects() {
+fn guard_rejects_bad_input() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new()),
+        Service::new(HashMapRepository::new().queued()),
         handlers::counter_create,
     );
 
-    // Missing "id" field — guard should reject
     let result = service.dispatch("counter.create", json!({ "wrong": 1 }), Session::new());
     assert!(result.is_err());
 }
@@ -63,16 +65,95 @@ fn handler_module_guard_rejects() {
 #[test]
 fn handler_rejects_duplicate_create() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new()),
+        Service::new(HashMapRepository::new().queued()),
         handlers::counter_create,
     );
 
-    // First create succeeds
     service
         .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
         .unwrap();
 
-    // Second create fails
     let result = service.dispatch("counter.create", json!({ "id": "c1" }), Session::new());
     assert!(result.is_err());
+}
+
+// ============================================================================
+// Outbox — handlers commit aggregate + outbox message atomically
+// ============================================================================
+
+#[test]
+fn create_persists_outbox_message() {
+    let service = sourced_rust::register_handlers!(
+        Service::new(HashMapRepository::new().queued()),
+        handlers::counter_create,
+    );
+
+    let result = service
+        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .unwrap();
+    assert_eq!(result, json!({ "id": "c1" }));
+
+    let inner = service.repo().inner();
+
+    // Aggregate was persisted
+    let counter: Counter = inner.get_aggregate("c1").unwrap().unwrap();
+    assert_eq!(counter.value, 0);
+
+    // Outbox message was persisted
+    let pending = inner.outbox_messages_pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event_type, "CounterCreated");
+}
+
+#[test]
+fn duplicate_create_leaves_single_outbox_message() {
+    let service = sourced_rust::register_handlers!(
+        Service::new(HashMapRepository::new().queued()),
+        handlers::counter_create,
+    );
+
+    service
+        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .unwrap();
+
+    // Second create fails — no duplicate outbox message
+    let result = service.dispatch("counter.create", json!({ "id": "c1" }), Session::new());
+    assert!(result.is_err());
+
+    let pending = service.repo().inner().outbox_messages_pending().unwrap();
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn increment_persists_outbox_message() {
+    let service = sourced_rust::register_handlers!(
+        Service::new(HashMapRepository::new().queued()),
+        handlers::counter_create,
+        handlers::counter_increment,
+    );
+
+    service
+        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .unwrap();
+
+    service
+        .dispatch(
+            "counter.increment",
+            json!({ "id": "c1", "amount": 7 }),
+            Session::new(),
+        )
+        .unwrap();
+
+    let inner = service.repo().inner();
+
+    // Aggregate state is correct
+    let counter: Counter = inner.get_aggregate("c1").unwrap().unwrap();
+    assert_eq!(counter.value, 7);
+
+    // Both outbox messages were persisted
+    let pending = inner.outbox_messages_pending().unwrap();
+    assert_eq!(pending.len(), 2);
+    let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
+    event_types.sort();
+    assert_eq!(event_types, vec!["CounterCreated", "CounterIncremented"]);
 }

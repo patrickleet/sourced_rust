@@ -87,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
+- **microsvc::Service**: Convention-based command handler framework with pluggable transports (HTTP, bus, direct dispatch).
 
 ## Pluggable by Default
 
@@ -773,6 +774,208 @@ repo.outbox(outbox_saga)
 // Worker drains outbox and sends each message to its destination queue
 ```
 
+## Microservice Framework (`microsvc`)
+
+The `microsvc` module provides a convention-based command handler framework for building microservices. Register command handlers on a `Service<R>`, then expose them over HTTP, bus transports, or direct dispatch.
+
+### Defining a Service
+
+A `Service<R>` is generic over a repository type. Register commands with closures or handler modules:
+
+```rust
+use std::sync::Arc;
+use sourced_rust::{microsvc, HashMapRepository, AggregateBuilder, Queueable};
+use serde_json::json;
+
+let service = Arc::new(
+    microsvc::Service::new(HashMapRepository::new().queued())
+        .command("counter.create", |ctx| {
+            let input = ctx.input::<CreateCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter = Counter::default();
+            counter.create(input.id.clone());
+            counter_repo.commit(&mut counter)?;
+            Ok(json!({ "id": input.id }))
+        })
+        .command("counter.increment", |ctx| {
+            let input = ctx.input::<IncrementCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter: Counter = counter_repo
+                .get(&input.id)?
+                .ok_or_else(|| microsvc::HandlerError::NotFound(input.id.clone()))?;
+            counter.increment(input.amount);
+            counter_repo.commit(&mut counter)?;
+            Ok(json!({ "value": counter.value }))
+        })
+);
+
+// Direct dispatch
+let result = service.dispatch(
+    "counter.create",
+    json!({ "id": "c1" }),
+    microsvc::Session::new(),
+)?;
+```
+
+### Guards
+
+Add input validation with `command_guarded`. The guard runs before the handler — if it returns `false`, the command is rejected:
+
+```rust
+let service = microsvc::Service::new(HashMapRepository::new().queued())
+    .command_guarded(
+        "admin.reset",
+        |ctx| ctx.role() == Some("admin"),
+        |_ctx| Ok(json!({ "reset": true })),
+    );
+```
+
+### Handler Convention
+
+For larger services, organize handlers into separate files following a convention. Each handler module exports a `COMMAND` name, a `guard`, and a `handle` function:
+
+```rust
+// src/handlers/counter_create.rs
+pub const COMMAND: &str = "counter.create";
+
+pub fn guard<R>(ctx: &microsvc::Context<R>) -> bool {
+    ctx.has_fields(&["id"])
+}
+
+pub fn handle<R: Repository + Clone>(
+    ctx: &microsvc::Context<R>,
+) -> Result<Value, microsvc::HandlerError> {
+    let input = ctx.input::<Input>()?;
+    let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+    let mut counter = Counter::default();
+    counter.create(input.id.clone());
+    counter_repo.commit(&mut counter)?;
+    Ok(json!({ "id": input.id }))
+}
+```
+
+Register them with the `register_handlers!` macro:
+
+```rust
+let service = sourced_rust::register_handlers!(
+    microsvc::Service::new(HashMapRepository::new().queued()),
+    handlers::counter_create,
+    handlers::counter_increment,
+);
+```
+
+### HTTP Transport (requires `http` feature)
+
+The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session`:
+
+```rust
+use std::sync::Arc;
+use sourced_rust::{microsvc, HashMapRepository};
+
+let service = Arc::new(
+    microsvc::Service::new(HashMapRepository::new().queued())
+        .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
+);
+
+// Get an axum Router to compose with other routes
+let app = microsvc::router(service.clone());
+
+// Or serve directly
+microsvc::serve(service, "0.0.0.0:3000").await?;
+```
+
+Routes:
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/:command` | Dispatch a command. Body = JSON input, headers = session variables. |
+| `GET` | `/health` | Health check: `{ "ok": true, "commands": ["counter.create", ...] }` |
+
+```bash
+# Create a counter
+curl -X POST http://localhost:3000/counter.create \
+  -H 'Content-Type: application/json' \
+  -H 'x-hasura-user-id: user-42' \
+  -d '{"id": "c1"}'
+
+# Increment it
+curl -X POST http://localhost:3000/counter.increment \
+  -H 'Content-Type: application/json' \
+  -d '{"id": "c1", "amount": 5}'
+
+# Health check
+curl http://localhost:3000/health
+```
+
+### Bus Transports (requires `bus` feature)
+
+Connect a service to the bus for background command processing. Both transports run in a background thread and return a `TransportHandle` for shutdown and stats.
+
+**Listen (point-to-point)** — each message on the queue is consumed by one listener:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use sourced_rust::{microsvc, bus::{InMemoryQueue, Sender, Event}, HashMapRepository, Queueable};
+
+let queue = InMemoryQueue::new();
+let service = Arc::new(
+    microsvc::Service::new(HashMapRepository::new().queued())
+        .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
+);
+
+let handle = microsvc::listen(service.clone(), "counters", queue.clone(), Duration::from_millis(50));
+
+// Send commands to the queue
+queue.send("counters", Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#))?;
+
+// Bus event metadata becomes session variables
+let event = Event::with_string_payload("cmd-2", "counter.create", r#"{"id":"c2"}"#)
+    .with_metadata("x-hasura-user-id", "user-42");
+
+let stats = handle.stop();
+println!("handled: {}, failed: {}", stats.handled, stats.failed);
+```
+
+**Subscribe (pub/sub fan-out)** — every subscriber sees every event:
+
+```rust
+let subscriber = queue.new_subscriber();
+let handle = microsvc::subscribe(service.clone(), subscriber, Duration::from_millis(50));
+```
+
+### Combining Transports
+
+A single service can handle commands from multiple transports simultaneously — HTTP, bus, and direct dispatch all share the same handlers and repository:
+
+```rust
+let service = Arc::new(
+    microsvc::Service::new(HashMapRepository::new().queued())
+        .command("counter.create", |ctx| { /* ... */ Ok(json!({})) })
+);
+
+// Bus transport in background
+let bus_handle = microsvc::listen(service.clone(), "counters", queue, Duration::from_millis(50));
+
+// HTTP transport
+microsvc::serve(service.clone(), "0.0.0.0:3000").await?;
+```
+
+### Error Handling
+
+`HandlerError` maps to HTTP-style status codes:
+
+| Variant | Status Code |
+|---|---|
+| `UnknownCommand` | 404 |
+| `DecodeFailed` | 400 |
+| `GuardRejected` | 400 |
+| `Rejected` | 422 |
+| `NotFound` | 404 |
+| `Unauthorized` | 401 |
+| `Repository` | 500 |
+| `Other` | 500 |
+
 ## Read Models
 
 Read models are denormalized views derived from event-sourced aggregates. They give you fast, purpose-built query models shaped for your UI or API consumers.
@@ -1001,6 +1204,7 @@ src/
   emitter/    # In-process event emitter helpers
   hashmap/    # In-memory repository
   lock/       # Lock trait, LockManager trait, InMemoryLock
+  microsvc/   # Command handler framework: service, context, session, transports
   queued/     # Queue-based locking wrapper
   read_model/ # Read model store traits and InMemoryReadModelStore
   snapshot/   # Snapshot store traits, InMemorySnapshotStore, SnapshotAggregateRepository
@@ -1010,8 +1214,9 @@ src/
 
 ## Running Tests
 
-```
-cargo test
+```bash
+cargo test                 # all tests (default features)
+cargo test --features http # includes HTTP transport tests
 ```
 
 ## Examples
@@ -1024,6 +1229,7 @@ cargo test
 - `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
 - `tests/sagas/orchestration.rs` - Saga orchestration with compensation
+- `tests/microsvc/` - Microservice framework: dispatch, session, convention, bus transports, HTTP transport
 
 ## License
 
