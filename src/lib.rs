@@ -11,6 +11,7 @@ pub mod emitter;
 pub mod bus;
 #[cfg(feature = "bus")]
 pub mod service;
+pub mod microsvc;
 mod commit_builder;
 mod hashmap_repo;
 pub mod lock;
