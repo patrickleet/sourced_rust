@@ -1,6 +1,6 @@
 //! microsvc integration tests.
 
-mod support;
+mod models;
 mod handlers;
 mod basic;
 mod session;

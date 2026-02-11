@@ -9,7 +9,7 @@ use sourced_rust::bus::{Event, InMemoryQueue, Publisher, Subscribable};
 use sourced_rust::microsvc::{self, Service};
 use sourced_rust::{CommitAggregate, GetAggregate, HashMapRepository, Queueable};
 
-use crate::support::{Counter, CreateCounter};
+use crate::models::counter::{Counter, CreateCounter};
 
 #[test]
 fn dispatches_from_pubsub() {

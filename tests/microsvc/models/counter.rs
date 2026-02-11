@@ -10,6 +10,21 @@ pub struct Counter {
     pub value: i64,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct CounterSnapshot {
+    pub id: String,
+    pub value: i64,
+}
+
+impl Counter {
+    pub fn snapshot(&self) -> CounterSnapshot {
+        CounterSnapshot {
+            id: self.entity.id().to_string(),
+            value: self.value,
+        }
+    }
+}
+
 #[sourced(entity)]
 impl Counter {
     #[event("Created")]

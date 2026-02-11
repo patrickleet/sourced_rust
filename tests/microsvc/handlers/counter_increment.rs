@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
 
-use crate::support::Counter;
+use crate::models::counter::Counter;
 
 pub const COMMAND: &str = "counter.increment";
 
@@ -31,13 +31,12 @@ pub fn handle<R: Repository + Clone>(
 
     counter.increment(input.amount);
 
-    let payload = serde_json::to_vec(&json!({ "id": input.id, "amount": input.amount, "value": counter.value }))
-        .map_err(|e| HandlerError::Other(Box::new(e)))?;
-    let mut message = OutboxMessage::create(
+    let mut message = OutboxMessage::encode(
         format!("{}:incremented", input.id),
         "CounterIncremented",
-        payload,
-    );
+        &counter.snapshot(),
+    )
+    .map_err(|e| HandlerError::Other(Box::new(e)))?;
 
     counter_repo.outbox(&mut message).commit(&mut counter)?;
 

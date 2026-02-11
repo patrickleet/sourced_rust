@@ -10,8 +10,7 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
 
-
-use crate::support::Counter;
+use crate::models::counter::Counter;
 
 pub const COMMAND: &str = "counter.create";
 
@@ -40,13 +39,12 @@ pub fn handle<R: Repository + Clone>(
     let mut counter = Counter::default();
     counter.create(input.id.clone());
 
-    let payload = serde_json::to_vec(&json!({ "id": input.id }))
-        .map_err(|e| HandlerError::Other(Box::new(e)))?;
-    let mut message = OutboxMessage::create(
+    let mut message = OutboxMessage::encode(
         format!("{}:created", input.id),
         "CounterCreated",
-        payload,
-    );
+        &counter.snapshot(),
+    )
+    .map_err(|e| HandlerError::Other(Box::new(e)))?;
 
     counter_repo.outbox(&mut message).commit(&mut counter)?;
 

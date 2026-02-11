@@ -8,7 +8,7 @@ use serde_json::json;
 use sourced_rust::microsvc::{self, HandlerError, Service};
 use sourced_rust::{AggregateBuilder, HashMapRepository};
 
-use crate::support::{Counter, CreateCounter, IncrementCounter};
+use crate::models::counter::{Counter, CreateCounter, IncrementCounter};
 
 fn counter_service() -> Arc<Service<HashMapRepository>> {
     Arc::new(
