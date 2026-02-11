@@ -16,14 +16,6 @@ All competing frameworks are async-first. Current traits (`Repository`, `Commit`
 
 Approach: Add async versions of the core traits. Could be feature-gated or a parallel set of traits. `tokio` is already a dev dependency.
 
-#### Typed enum events (auto-generated from aggregate macro)
-Currently events are string-named with bitcode blobs. The `aggregate!` macro matches on strings. Competing frameworks (cqrs-es, disintegrate) use Rust enums giving compile-time exhaustiveness checking.
-
-Explore whether the `aggregate!` macro (or a new derive) can auto-generate a typed event enum from the aggregate's methods. This would:
-- Give compile-time safety when adding/removing events
-- Simplify the `aggregate!` macro syntax
-- Potentially simplify Entity configuration
-
 ### Later
 
 - **Postgres backend** — proves the trait design, makes the library production-usable. Use sqlx.
