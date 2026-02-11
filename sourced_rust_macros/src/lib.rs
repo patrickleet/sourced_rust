@@ -98,6 +98,28 @@ fn wrap_body_with_guard(
     }
 }
 
+/// Generate an enqueue call token stream (for use within `#[sourced]`).
+fn generate_enqueue_call(
+    entity_field: &Ident,
+    emitter_field: &Ident,
+    event_name: &LitStr,
+    param_names: &[&Ident],
+) -> proc_macro2::TokenStream {
+    let enqueue_expr = if param_names.is_empty() {
+        quote! { self.#emitter_field.enqueue(#event_name, ""); }
+    } else if param_names.len() == 1 {
+        let param = param_names[0];
+        quote! { self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),)); }
+    } else {
+        quote! { self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*)); }
+    };
+    quote! {
+        if !self.#entity_field.is_replaying() {
+            #enqueue_expr
+        }
+    }
+}
+
 // ============================================================================
 // #[enqueue] attribute macro
 // ============================================================================
@@ -614,12 +636,14 @@ impl Parse for AggregateInput {
 struct SourcedArgs {
     entity_field: Ident,
     enum_name: Option<LitStr>,
+    enqueue: Option<Ident>, // Some(emitter_field) if enqueue enabled
     upcasters: Vec<UpcasterDef>,
 }
 
 fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
     let entity_field: Ident = input.parse()?;
     let mut enum_name = None;
+    let mut enqueue = None;
     let mut upcasters = Vec::new();
 
     while input.peek(Token![,]) {
@@ -630,6 +654,16 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
                 input.parse::<Ident>()?;
                 input.parse::<Token![=]>()?;
                 enum_name = Some(input.parse::<LitStr>()?);
+            } else if kw == "enqueue" {
+                input.parse::<Ident>()?;
+                // Optional custom emitter field: enqueue(my_emitter)
+                if input.peek(syn::token::Paren) {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    enqueue = Some(inner.parse::<Ident>()?);
+                } else {
+                    enqueue = Some(format_ident!("emitter"));
+                }
             } else if kw == "upcasters" {
                 input.parse::<Ident>()?;
                 let upcaster_content;
@@ -661,6 +695,7 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
     Ok(SourcedArgs {
         entity_field,
         enum_name,
+        enqueue,
         upcasters,
     })
 }
@@ -785,17 +820,31 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let params = extract_params_with_types(&method.sig);
                     let param_name_refs: Vec<&Ident> =
                         params.iter().map(|(name, _)| name).collect();
+
+                    // Build prepend: optional enqueue + digest
+                    let enqueue_call = args.enqueue.as_ref().map(|emitter_field| {
+                        generate_enqueue_call(
+                            &args.entity_field,
+                            emitter_field,
+                            &event_attr.event_name,
+                            &param_name_refs,
+                        )
+                    });
                     let digest_call = generate_digest_call(
                         &args.entity_field,
                         &event_attr.event_name,
                         &param_name_refs,
                         event_attr.version.as_ref(),
                     );
+                    let prepend = quote! {
+                        #enqueue_call
+                        #digest_call
+                    };
 
                     let original_stmts = &method.block.stmts;
                     let new_body = wrap_body_with_guard(
                         event_attr.guard.as_ref(),
-                        digest_call,
+                        prepend,
                         original_stmts,
                     );
                     method.block = new_body;

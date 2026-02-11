@@ -222,12 +222,12 @@ impl MyAggregate {
 }
 ```
 
-### With `#[enqueue]` for Choreography
+### With `enqueue` for Choreography
 
-`#[sourced]` composes with `#[enqueue]` — `#[event]` records to the entity stream for replay, `#[enqueue]` queues for in-process emission:
+Add `enqueue` to `#[sourced]` to automatically queue events for in-process emission alongside digest. No need for separate `#[enqueue]` attributes — every `#[event]` method both records to the entity stream and enqueues for emission:
 
 ```rust
-use sourced_rust::{sourced, enqueue, Entity};
+use sourced_rust::{sourced, Entity};
 use sourced_rust::emitter::EntityEmitter;
 
 struct Order {
@@ -236,19 +236,30 @@ struct Order {
     status: String,
 }
 
-#[sourced(entity)]
+#[sourced(entity, enqueue)]
 impl Order {
     #[event("OrderCreated")]
-    #[enqueue("OrderCreated")]
     fn create(&mut self, order_id: String, customer: String) {
         self.entity.set_id(&order_id);
         self.status = "created".into();
     }
 
     #[event("OrderShipped", when = self.status == "created")]
-    #[enqueue("OrderShipped", when = self.status == "created")]
     fn ship(&mut self) {
         self.status = "shipped".into();
+    }
+}
+```
+
+**Custom emitter field** — when your emitter field isn't named `emitter`:
+
+```rust
+#[sourced(entity, enqueue(my_emitter))]
+impl Notifier {
+    #[event("NotificationSent")]
+    fn send(&mut self, id: String, message: String) {
+        self.entity.set_id(&id);
+        self.message = message;
     }
 }
 ```
@@ -397,12 +408,12 @@ event.meta("user_id")
 
 The `emitter` feature (enabled by default) adds in-process event-driven choreography — queue local events during commands and emit them after commit for reactive workflows within a process.
 
-### The `#[enqueue]` Macro
+### With `#[sourced(entity, enqueue)]`
 
-Works alongside `#[event]` (or `#[digest]`) — `#[event]` records the event to the entity's stream for replay, while `#[enqueue]` queues a local copy for in-process emission. You'll typically use both together:
+The cleanest approach: add `enqueue` to the `#[sourced]` attribute. Every `#[event]` method automatically both records to the entity stream (for replay) and enqueues for in-process emission:
 
 ```rust
-use sourced_rust::{sourced, enqueue, Entity};
+use sourced_rust::{sourced, Entity};
 use sourced_rust::emitter::EntityEmitter;
 
 #[derive(Default)]
@@ -414,10 +425,9 @@ struct OrderSaga {
     status: String,
 }
 
-#[sourced(entity)]
+#[sourced(entity, enqueue)]
 impl OrderSaga {
     #[event("OrderStarted")]
-    #[enqueue("OrderStarted")]
     fn start(&mut self, order_id: String) {
         self.entity.set_id(&order_id);
         self.order_id = order_id;
@@ -425,15 +435,25 @@ impl OrderSaga {
     }
 
     #[event("StepCompleted", when = self.status == "started")]
-    #[enqueue("StepCompleted", when = self.status == "started")]
     fn complete_step(&mut self) {
         self.status = "completed".into();
     }
 }
 // Generates: OrderSagaEvent enum + impl Aggregate
+// All #[event] methods also enqueue for emission
 ```
 
-**Custom emitter field** — when your emitter field isn't named `emitter`:
+### The `#[enqueue]` Macro (Standalone)
+
+For more granular control, or when using `#[digest]` instead of `#[sourced]`, you can use `#[enqueue]` directly on individual methods:
+
+```rust
+#[digest("OrderStarted")]
+#[enqueue("OrderStarted")]
+fn start(&mut self, order_id: String) { /* ... */ }
+```
+
+**Custom emitter field**:
 
 ```rust
 #[enqueue(my_emitter, "Created")]
@@ -998,7 +1018,7 @@ cargo test
 
 - `tests/sourced/` - `#[sourced]` macro with typed event enum, TryFrom, and aggregate hydration
 - `tests/sourced_upcasting/` - `#[sourced]` with upcasters (v1->v2->v3 chains)
-- `tests/sourced_enqueue/` - `#[sourced]` + `#[enqueue]` composability
+- `tests/sourced_enqueue/` - `#[sourced(entity, enqueue)]` integrated choreography
 - `tests/todos/` - Basic entity workflow (using `#[digest]` + `aggregate!()`)
 - `tests/snapshots/` - Snapshot creation, loading, and partial replay
 - `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration

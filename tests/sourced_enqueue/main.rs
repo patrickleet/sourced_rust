@@ -1,12 +1,12 @@
 mod aggregate;
 
-use aggregate::{Order, OrderEvent};
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use aggregate::{Notifier, NotifierEvent, Order, OrderEvent};
+use sourced_rust::{Aggregate, AggregateBuilder, HashMapRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 
 // =============================================================================
-// #[event] + #[enqueue] both fire
+// #[sourced(entity, enqueue)] — both fire from single #[event]
 // =============================================================================
 
 #[test]
@@ -14,9 +14,7 @@ fn digest_and_enqueue_both_fire() {
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into());
 
-    // digest records to entity
     assert_eq!(order.entity.version(), 1);
-    // enqueue queues for emission
     assert_eq!(order.emitter.queued_len(), 1);
 }
 
@@ -47,7 +45,6 @@ fn replay_does_not_re_enqueue() {
 
     repo.commit(&mut order).unwrap();
 
-    // Load from repo — replays digest events but should NOT re-enqueue
     let loaded = repo.get("order-1").unwrap().unwrap();
     assert_eq!(loaded.emitter.queued_len(), 0);
     assert_eq!(loaded.status, "confirmed");
@@ -102,4 +99,63 @@ fn typed_event_enum_exists() {
     assert_eq!(created.event_name(), "OrderCreated");
     assert_eq!(OrderEvent::OrderConfirmed.event_name(), "OrderConfirmed");
     assert_eq!(OrderEvent::OrderShipped.event_name(), "OrderShipped");
+}
+
+// =============================================================================
+// Custom emitter field: enqueue(my_emitter)
+// =============================================================================
+
+#[test]
+fn custom_emitter_field_enqueues() {
+    let mut notifier = Notifier::default();
+    notifier.send("n-1".into(), "Hello world".into());
+
+    assert_eq!(notifier.entity.version(), 1);
+    assert_eq!(notifier.my_emitter.queued_len(), 1);
+}
+
+#[test]
+fn custom_emitter_field_emits() {
+    let mut notifier = Notifier::default();
+
+    let (tx, rx) = mpsc::channel();
+    notifier
+        .my_emitter
+        .on("NotificationSent", move |_: String| {
+            tx.send(()).unwrap();
+        });
+
+    notifier.send("n-1".into(), "Hello".into());
+    notifier.my_emitter.emit_queued();
+
+    rx.recv_timeout(Duration::from_secs(1))
+        .expect("NotificationSent callback never fired");
+}
+
+#[test]
+fn custom_emitter_replay_does_not_enqueue() {
+    let repo = HashMapRepository::new().queued().aggregate::<Notifier>();
+
+    let mut notifier = Notifier::default();
+    notifier.send("n-1".into(), "Hello".into());
+    notifier.my_emitter.emit_queued();
+    repo.commit(&mut notifier).unwrap();
+
+    let loaded = repo.get("n-1").unwrap().unwrap();
+    assert_eq!(loaded.my_emitter.queued_len(), 0);
+    assert_eq!(loaded.message, "Hello");
+}
+
+#[test]
+fn custom_emitter_typed_enum() {
+    let event = NotifierEvent::NotificationSent {
+        id: "n-1".into(),
+        message: "Hello".into(),
+    };
+    assert_eq!(event.event_name(), "NotificationSent");
+}
+
+#[test]
+fn notifier_has_no_upcasters() {
+    assert!(Notifier::upcasters().is_empty());
 }
