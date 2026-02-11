@@ -24,23 +24,6 @@ Explore whether the `aggregate!` macro (or a new derive) can auto-generate a typ
 - Simplify the `aggregate!` macro syntax
 - Potentially simplify Entity configuration
 
-### Architecture Patterns
-
-#### Lightweight saga/process manager trait
-Current approach: sagas are just aggregates (which works). Explore whether a thin trait adds value:
-
-```rust
-// Strawman — just an idea to evaluate
-trait ProcessManager: Aggregate {
-    type TriggerEvent;
-    fn handle_event(&mut self, event: Self::TriggerEvent) -> Vec<Command>;
-    fn is_complete(&self) -> bool;
-    fn compensate(&mut self) -> Vec<Command>;  // rollback path
-}
-```
-
-The question: does formalizing this as a trait give enough value over "it's just an aggregate that reacts to events"? Look at the saga tests to see if a trait would reduce boilerplate.
-
 ### Later
 
 - **Postgres backend** — proves the trait design, makes the library production-usable. Use sqlx.
