@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Repository**: Persists and loads entities by event history.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
+- **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
 - **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration.
 - **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
 - **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing and metadata propagation.
@@ -125,6 +126,15 @@ fn complete(&mut self) {
 }
 ```
 
+**Versioned events** - create events at a specific version (see [Event Upcasting](#event-upcasting--versioning)):
+
+```rust
+#[digest("Initialized", version = 2)]
+fn initialize(&mut self, id: String, task: String, priority: u8) {
+    // creates the event at version 2
+}
+```
+
 **Custom entity field** - when your entity field isn't named `entity`:
 
 ```rust
@@ -145,8 +155,19 @@ aggregate!(Todo, entity {
 });
 ```
 
+With [upcasters](#event-upcasting--versioning) for event schema evolution:
+
+```rust
+aggregate!(Todo, entity {
+    "Initialized"(id, task, priority) => initialize,
+    "Completed"() => complete(),
+} upcasters [
+    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
+]);
+```
+
 This generates:
-- `impl Aggregate for Todo` with `entity()`, `entity_mut()`, and `replay_event()`
+- `impl Aggregate for Todo` with `entity()`, `entity_mut()`, `replay_event()`, and optionally `upcasters()`
 
 ## Event Metadata
 
@@ -675,6 +696,114 @@ let todo = repo.get("todo-1")?.unwrap();
 - **On load**: If a snapshot exists, the aggregate is restored from it and only events with `sequence > snapshot.version` are replayed. If no snapshot exists, full replay is used as a fallback.
 - **Storage**: Snapshots are stored separately from the event stream. `HashMapRepository` embeds an `InMemorySnapshotStore`; for production, implement the `SnapshotStore` trait for your backend.
 
+## Event Upcasting / Versioning
+
+Event schemas evolve over time. When you add a field to an event (e.g., `priority` to `Initialized`), old serialized events in storage can't deserialize into the new type — especially with bitcode's rigid binary format. **Upcasters** solve this: pure functions that transform old event payloads into the current format at read time, without modifying stored data.
+
+### Defining an Upcaster
+
+An upcaster is a plain function that converts a payload from one version to the next:
+
+```rust
+/// Upcasts Initialized v1 (id, task) → v2 (id, task, priority)
+fn upcast_init_v1_v2(payload: &[u8]) -> Vec<u8> {
+    let (id, task): (String, String) = bitcode::deserialize(payload).unwrap();
+    bitcode::serialize(&(id, task, 0u8)).unwrap()  // default priority = 0
+}
+```
+
+### Registering Upcasters
+
+Add an `upcasters` block to the `aggregate!` macro:
+
+```rust
+#[derive(Default)]
+struct Todo {
+    entity: Entity,
+    task: String,
+    priority: u8,
+    completed: bool,
+}
+
+impl Todo {
+    #[digest("Initialized", version = 2)]
+    fn initialize(&mut self, id: String, task: String, priority: u8) {
+        self.entity.set_id(&id);
+        self.task = task;
+        self.priority = priority;
+    }
+
+    #[digest("Completed", when = !self.completed)]
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+aggregate!(Todo, entity {
+    "Initialized"(id, task, priority) => initialize,
+    "Completed"() => complete(),
+} upcasters [
+    ("Initialized", 1 => 2, upcast_init_v1_v2),
+]);
+```
+
+Old events stored as `(id, task)` at v1 get transparently upcasted to `(id, task, 0u8)` at v2 during hydration. New events are created at v2 via the `version = 2` parameter on `#[digest]`.
+
+### Chaining Upcasters
+
+Upcasters chain automatically. Each transforms one version to the next (v1->v2->v3):
+
+```rust
+fn upcast_init_v1_v2(payload: &[u8]) -> Vec<u8> {
+    let (id, task): (String, String) = bitcode::deserialize(payload).unwrap();
+    bitcode::serialize(&(id, task, 0u8)).unwrap()
+}
+
+fn upcast_init_v2_v3(payload: &[u8]) -> Vec<u8> {
+    let (id, task, priority): (String, String, u8) = bitcode::deserialize(payload).unwrap();
+    bitcode::serialize(&(id, task, priority, String::new())).unwrap()  // add due_date
+}
+
+aggregate!(Todo, entity {
+    "Initialized"(id, task, priority, due_date) => initialize,
+    "Completed"() => complete(),
+} upcasters [
+    ("Initialized", 1 => 2, upcast_init_v1_v2),
+    ("Initialized", 2 => 3, upcast_init_v2_v3),
+]);
+```
+
+A v1 event automatically chains through v1->v2->v3. A v2 event only goes through v2->v3. A v3 event passes through unchanged.
+
+### How It Works
+
+- **On hydrate**: Before replaying events, the aggregate's registered upcasters are applied. Each event is checked against the upcaster list by event name and version, and transformed if a match is found.
+- **On snapshot hydrate**: Only post-snapshot events are upcasted — the snapshot already contains the current state.
+- **No stored data modified**: Upcasters are read-time transformations. The event store is never touched.
+- **Zero overhead when unused**: If an aggregate has no upcasters, `hydrate()` takes the fast path with no extra allocation.
+
+### The `EventUpcaster` Struct
+
+Under the hood, each upcaster is a plain struct with a function pointer — no traits, no boxing:
+
+```rust
+pub struct EventUpcaster {
+    pub event_type: &'static str,
+    pub from_version: u64,
+    pub to_version: u64,
+    pub transform: fn(payload: &[u8]) -> Vec<u8>,
+}
+```
+
+You can also use `upcast_events()` directly for custom hydration logic:
+
+```rust
+use sourced_rust::{upcast_events, EventUpcaster};
+
+let upcasters: &[EventUpcaster] = &[/* ... */];
+let upcasted = upcast_events(events, upcasters);
+```
+
 ## Project Structure
 
 ```
@@ -701,6 +830,7 @@ cargo test
 
 - `tests/todos/` - Basic entity workflow
 - `tests/snapshots/` - Snapshot creation, loading, and partial replay
+- `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
 - `tests/sagas/orchestration.rs` - Saga orchestration with compensation
 

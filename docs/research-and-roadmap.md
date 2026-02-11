@@ -16,15 +16,6 @@ All competing frameworks are async-first. Current traits (`Repository`, `Commit`
 
 Approach: Add async versions of the core traits. Could be feature-gated or a parallel set of traits. `tokio` is already a dev dependency.
 
-#### Event upcasting / versioning
-Only `cqrs-es` has this in the Rust ecosystem. The idea:
-- Add a `version` field to `EventRecord` (or event name becomes `"EventName.v1"`)
-- `EventUpcaster` trait: `can_upcast(event_type, version) -> bool` + `upcast(event) -> event`
-- Upcasters run automatically during replay/hydration
-- Allows old serialized events to be transformed to current schema without data migration
-
-Essential for long-lived systems where event schemas evolve over time.
-
 #### Typed enum events (auto-generated from aggregate macro)
 Currently events are string-named with bitcode blobs. The `aggregate!` macro matches on strings. Competing frameworks (cqrs-es, disintegrate) use Rust enums giving compile-time exhaustiveness checking.
 
