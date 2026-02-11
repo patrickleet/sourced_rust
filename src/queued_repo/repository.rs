@@ -29,14 +29,23 @@ impl ReadOpts {
 
 pub struct QueuedRepository<R, L: LockManager = InMemoryLockManager> {
     inner: R,
-    lock_manager: L,
+    lock_manager: Arc<L>,
+}
+
+impl<R: Clone, L: LockManager> Clone for QueuedRepository<R, L> {
+    fn clone(&self) -> Self {
+        QueuedRepository {
+            inner: self.inner.clone(),
+            lock_manager: Arc::clone(&self.lock_manager),
+        }
+    }
 }
 
 impl<R> QueuedRepository<R> {
     pub fn new(inner: R) -> Self {
         QueuedRepository {
             inner,
-            lock_manager: InMemoryLockManager::new(),
+            lock_manager: Arc::new(InMemoryLockManager::new()),
         }
     }
 }
@@ -46,7 +55,7 @@ impl<R, L: LockManager> QueuedRepository<R, L> {
     pub fn with_lock_manager(inner: R, lock_manager: L) -> Self {
         QueuedRepository {
             inner,
-            lock_manager,
+            lock_manager: Arc::new(lock_manager),
         }
     }
 
