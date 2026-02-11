@@ -21,7 +21,7 @@ pub mod queued_repo;
 pub mod snapshot;
 
 // Re-export entity types at crate root for convenience
-pub use entity::{Committable, Entity, Event, EventRecord, LocalEvent, PayloadError};
+pub use entity::{Committable, Entity, Event, EventRecord, EventUpcaster, LocalEvent, PayloadError, upcast_events};
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{

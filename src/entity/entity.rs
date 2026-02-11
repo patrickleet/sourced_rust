@@ -187,6 +187,23 @@ impl Entity {
         self.timestamp = SystemTime::now();
     }
 
+    /// Record a versioned event.
+    pub fn digest_v<T: serde::Serialize>(&mut self, name: impl Into<String>, version: u64, payload: &T) {
+        if self.replaying {
+            return;
+        }
+
+        let bytes = bitcode::serialize(payload).expect("failed to serialize payload");
+        let sequence = self.events.len() as u64 + 1;
+        let mut record = EventRecord::new_versioned(name, bytes, sequence, version);
+        if !self.metadata.is_empty() {
+            record.metadata = self.metadata.clone();
+        }
+        self.events.push(record);
+        self.version = self.events.len() as u64;
+        self.timestamp = SystemTime::now();
+    }
+
     /// Record an event with no payload.
     pub fn digest_empty(&mut self, name: impl Into<String>) {
         self.digest(name, &());

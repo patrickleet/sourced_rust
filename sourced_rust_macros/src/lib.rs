@@ -223,20 +223,40 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let digest_call = if param_names.is_empty() {
-        quote! {
-            self.#entity_field.digest_empty(#event_name);
+    let digest_call = match &args.version {
+        Some(ver) => {
+            // Versioned digest: use digest_v
+            if param_names.is_empty() {
+                quote! {
+                    self.#entity_field.digest_v(#event_name, #ver, &());
+                }
+            } else if param_names.len() == 1 {
+                let param = &param_names[0];
+                quote! {
+                    self.#entity_field.digest_v(#event_name, #ver, &(#param.clone(),));
+                }
+            } else {
+                quote! {
+                    self.#entity_field.digest_v(#event_name, #ver, &(#(#param_names.clone()),*));
+                }
+            }
         }
-    } else if param_names.len() == 1 {
-        // Single-element tuple needs trailing comma: (x,) not (x)
-        let param = &param_names[0];
-        quote! {
-            self.#entity_field.digest(#event_name, &(#param.clone(),));
-        }
-    } else {
-        // Multi-element tuple
-        quote! {
-            self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*));
+        None => {
+            // Default: use digest (version 1)
+            if param_names.is_empty() {
+                quote! {
+                    self.#entity_field.digest_empty(#event_name);
+                }
+            } else if param_names.len() == 1 {
+                let param = &param_names[0];
+                quote! {
+                    self.#entity_field.digest(#event_name, &(#param.clone(),));
+                }
+            } else {
+                quote! {
+                    self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*));
+                }
+            }
         }
     };
 
@@ -270,6 +290,7 @@ struct DigestArgs {
     entity_field: syn::Ident,
     event_name: LitStr,
     guard: Option<Expr>,
+    version: Option<syn::LitInt>,
 }
 
 fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> {
@@ -287,9 +308,10 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
     };
 
     let mut guard = None;
+    let mut version = None;
 
-    // Parse optional guard: `when = condition`
-    if input.peek(Token![,]) {
+    // Parse optional keyword arguments: `when = condition`, `version = N`
+    while input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
 
         if input.peek(syn::Ident) {
@@ -298,6 +320,10 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
                 input.parse::<syn::Ident>()?; // consume "when"
                 input.parse::<Token![=]>()?;
                 guard = Some(input.parse()?);
+            } else if ident == "version" {
+                input.parse::<syn::Ident>()?; // consume "version"
+                input.parse::<Token![=]>()?;
+                version = Some(input.parse()?);
             }
         }
     }
@@ -306,6 +332,7 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
         entity_field,
         event_name,
         guard,
+        version,
     })
 }
 
@@ -383,6 +410,34 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
         }
     });
 
+    // Generate upcasters() method if upcasters are defined
+    let upcasters_method = if input.upcasters.is_empty() {
+        quote! {}
+    } else {
+        let upcaster_entries = input.upcasters.iter().map(|u| {
+            let event_name = &u.event_name;
+            let from_version = &u.from_version;
+            let to_version = &u.to_version;
+            let transform_fn = &u.transform_fn;
+            quote! {
+                sourced_rust::EventUpcaster {
+                    event_type: #event_name,
+                    from_version: #from_version,
+                    to_version: #to_version,
+                    transform: #transform_fn,
+                }
+            }
+        });
+        quote! {
+            fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
+                static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
+                    #(#upcaster_entries),*
+                ];
+                UPCASTERS
+            }
+        }
+    };
+
     let expanded = quote! {
         impl sourced_rust::Aggregate for #agg_name {
             type ReplayError = String;
@@ -405,16 +460,26 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
                 }
                 Ok(())
             }
+
+            #upcasters_method
         }
     };
 
     TokenStream::from(expanded)
 }
 
+struct UpcasterDef {
+    event_name: LitStr,
+    from_version: syn::LitInt,
+    to_version: syn::LitInt,
+    transform_fn: syn::Path,
+}
+
 struct AggregateInput {
     agg_name: Ident,
     entity_field: Ident,
     events: Vec<EventDef>,
+    upcasters: Vec<UpcasterDef>,
 }
 
 struct EventDef {
@@ -471,10 +536,49 @@ impl Parse for AggregateInput {
             }
         }
 
+        // Parse optional `upcasters [...]` block
+        let mut upcasters = Vec::new();
+        if input.peek(syn::Ident) {
+            let kw: Ident = input.parse()?;
+            if kw != "upcasters" {
+                return Err(syn::Error::new(kw.span(), "expected `upcasters`"));
+            }
+
+            let upcaster_content;
+            syn::bracketed!(upcaster_content in input);
+
+            while !upcaster_content.is_empty() {
+                // Parse: ("EventName", from => to, transform_fn)
+                let inner;
+                syn::parenthesized!(inner in upcaster_content);
+
+                let event_name: LitStr = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                let from_version: syn::LitInt = inner.parse()?;
+                inner.parse::<Token![=>]>()?;
+                let to_version: syn::LitInt = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                let transform_fn: syn::Path = inner.parse()?;
+
+                upcasters.push(UpcasterDef {
+                    event_name,
+                    from_version,
+                    to_version,
+                    transform_fn,
+                });
+
+                // Optional trailing comma between upcaster entries
+                if upcaster_content.peek(Token![,]) {
+                    upcaster_content.parse::<Token![,]>()?;
+                }
+            }
+        }
+
         Ok(AggregateInput {
             agg_name,
             entity_field,
             events,
+            upcasters,
         })
     }
 }

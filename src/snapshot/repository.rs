@@ -1,5 +1,5 @@
 use crate::aggregate::{hydrate, AggregateRepository};
-use crate::entity::Entity;
+use crate::entity::{Entity, upcast_events};
 use crate::repository::{Commit, Find, Get, RepositoryError};
 use crate::queued_repo::{GetWithOpts, GetAllWithOpts, ReadOpts, UnlockableRepository};
 
@@ -23,13 +23,21 @@ pub fn hydrate_from_snapshot<A: Snapshottable>(
     agg.restore_from_snapshot(snap);
 
     // Replay only events AFTER the snapshot
-    let events: Vec<crate::entity::EventRecord> = agg
+    let post_snapshot: Vec<crate::entity::EventRecord> = agg
         .entity()
         .events()
         .iter()
         .filter(|e| e.sequence > snapshot.version)
         .cloned()
         .collect();
+
+    // Apply upcasters to post-snapshot events
+    let upcasters = A::upcasters();
+    let events = if upcasters.is_empty() {
+        post_snapshot
+    } else {
+        upcast_events(post_snapshot, upcasters)
+    };
 
     agg.entity_mut().set_replaying(true);
     for event in &events {

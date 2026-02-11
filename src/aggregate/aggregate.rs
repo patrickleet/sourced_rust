@@ -1,7 +1,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::entity::{Entity, EventRecord};
+use crate::entity::{Entity, EventRecord, EventUpcaster, upcast_events};
 use crate::repository::{Commit, Find, Get, Repository, RepositoryError};
 use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
@@ -15,6 +15,10 @@ pub trait Aggregate: Sized + Default {
     fn entity(&self) -> &Entity;
     fn entity_mut(&mut self) -> &mut Entity;
     fn replay_event(&mut self, event: &EventRecord) -> Result<(), Self::ReplayError>;
+
+    /// Override to register upcasters for this aggregate's events.
+    /// Upcasters are configuration, not state — this is a static method.
+    fn upcasters() -> &'static [EventUpcaster] { &[] }
 }
 
 #[macro_export]
@@ -53,7 +57,13 @@ pub fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
     let mut agg = A::new_empty();
     *agg.entity_mut() = entity;
 
-    let events = agg.entity().events().to_vec();
+    let upcasters = A::upcasters();
+    let events = if upcasters.is_empty() {
+        agg.entity().events().to_vec()
+    } else {
+        upcast_events(agg.entity().events().to_vec(), upcasters)
+    };
+
     agg.entity_mut().set_replaying(true);
     for event in &events {
         if let Err(err) = agg.replay_event(event) {

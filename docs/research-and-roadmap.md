@@ -8,17 +8,6 @@ Based on a review of the Rust ES ecosystem (cqrs-es, disintegrate, esrs, eventua
 
 ### Core Improvements
 
-#### Event metadata on EventRecord
-Add a metadata map to `EventRecord` for cross-cutting concerns:
-- `correlation_id` — traces a request across aggregates/services
-- `causation_id` — which event/command caused this event
-- Custom key-value pairs (user context, trace IDs, etc.)
-
-Most frameworks (cqrs-es, esrs, disintegrate) carry metadata on events. Essential for distributed tracing and debugging.
-
-#### ~~Optimistic concurrency as the default commit behavior~~ **DONE**
-`HashMapRepository::commit()` implements a two-phase optimistic concurrency check: phase 1 validates `committed_version` against stored event count for every entity (returning `ConcurrentWrite` on mismatch), phase 2 appends only if all validations pass. `QueuedRepository` remains pessimistic (per-entity locks). Tests: `concurrent_writes_detected`, `partial_conflict_rolls_back_entire_commit`.
-
 #### Async traits
 All competing frameworks are async-first. Current traits (`Repository`, `Commit`, `Get`, etc.) are synchronous. This blocks integration with:
 - Async databases (sqlx, sea-orm)
