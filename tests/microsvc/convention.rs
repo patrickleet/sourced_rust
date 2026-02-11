@@ -12,7 +12,7 @@ use sourced_rust::microsvc::{Service, Session};
 use sourced_rust::{GetAggregate, HashMapRepository, OutboxRepositoryExt, Queueable};
 
 use crate::handlers;
-use crate::support::Counter;
+use crate::models::counter::Counter;
 
 // ============================================================================
 // Handler convention — register, dispatch, verify

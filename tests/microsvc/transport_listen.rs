@@ -9,7 +9,7 @@ use sourced_rust::bus::{Event, InMemoryQueue, Sender};
 use sourced_rust::microsvc::{self, HandlerError, Service, Session};
 use sourced_rust::{CommitAggregate, GetAggregate, HashMapRepository, Queueable};
 
-use crate::support::{Counter, CreateCounter, IncrementCounter};
+use crate::models::counter::{Counter, CreateCounter, IncrementCounter};
 
 #[test]
 fn dispatches_from_queue() {

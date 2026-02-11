@@ -4,7 +4,7 @@ use serde_json::json;
 use sourced_rust::microsvc::{HandlerError, Service, Session};
 use sourced_rust::{AggregateBuilder, HashMapRepository};
 
-use crate::support::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
+use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
 
 #[test]
 fn full_lifecycle() {
