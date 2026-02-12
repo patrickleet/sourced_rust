@@ -1,7 +1,10 @@
 mod aggregates;
 
 use aggregates::*;
-use sourced_rust::{AggregateBuilder, HashMapRepository, Snapshottable, SnapshotStore};
+use sourced_rust::{
+    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, Snapshottable,
+    SnapshotStore,
+};
 
 // ============================================================================
 // Default case: id + all fields
@@ -204,4 +207,52 @@ fn custom_entity_field_restore() {
     assert_eq!(widget.my_entity.id(), "w2");
     assert_eq!(widget.name, "Gear");
     assert_eq!(widget.weight, 1.0);
+}
+
+// ============================================================================
+// OutboxMessage::domain_event
+// ============================================================================
+
+#[test]
+fn domain_event_derives_id_and_payload() {
+    let mut todo = Todo::new();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+
+    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    assert_eq!(outbox.id(), "outbox:t1:TodoInitialized");
+    assert_eq!(outbox.event_type, "TodoInitialized");
+
+    let decoded: TodoSnapshot = outbox.decode().unwrap();
+    assert_eq!(decoded.id, "t1");
+    assert_eq!(decoded.user_id, "alice");
+    assert_eq!(decoded.task, "Buy milk");
+}
+
+#[test]
+fn domain_event_propagates_metadata() {
+    let mut todo = Todo::new();
+    todo.entity.set_correlation_id("req-abc");
+    todo.entity.set_causation_id("cmd-create");
+    todo.entity.set_meta("user_id", "u-42");
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+
+    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    assert_eq!(outbox.correlation_id(), Some("req-abc"));
+    assert_eq!(outbox.causation_id(), Some("cmd-create"));
+    assert_eq!(outbox.meta("user_id"), Some("u-42"));
+}
+
+#[test]
+fn domain_event_commits_with_outbox() {
+    let repo = HashMapRepository::new().aggregate::<Todo>();
+
+    let mut todo = Todo::new();
+    todo.initialize("t1".into(), "alice".into(), "Ship it".into());
+
+    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    repo.outbox(&mut outbox).commit(&mut todo).unwrap();
+
+    let loaded = repo.get("t1").unwrap().unwrap();
+    assert_eq!(loaded.snapshot().task, "Ship it");
+    assert!(outbox.is_pending());
 }

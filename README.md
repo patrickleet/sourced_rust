@@ -23,9 +23,12 @@ Sourced Rust is inspired by the original [sourced](https://github.com/mateodelno
 ## Quick Start
 
 ```rust
-use sourced_rust::{sourced, AggregateBuilder, Entity, HashMapRepository, Queueable};
+use sourced_rust::{
+    sourced, AggregateBuilder, Entity, HashMapRepository,
+    OutboxCommitExt, OutboxMessage, Queueable, Snapshot,
+};
 
-#[derive(Default)]
+#[derive(Default, Snapshot)]
 struct Todo {
     entity: Entity,
     user_id: String,
@@ -48,26 +51,23 @@ impl Todo {
     }
 }
 
-// The #[sourced] macro automatically generates:
-// - TodoEvent enum with Initialized { id, user_id, task } and Completed variants
-// - TryFrom<&EventRecord> for TodoEvent
-// - impl Aggregate for Todo (entity accessors + replay logic)
+// #[sourced] generates: TodoEvent enum, TryFrom<&EventRecord>, impl Aggregate
+// #[derive(Snapshot)] generates: TodoSnapshot struct, fn snapshot(), impl Snapshottable
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo = Todo::default();
     todo.initialize("todo-1".into(), "user-1".into(), "Ship it".into());
-    repo.commit(&mut todo)?;
+
+    // Commit with an outbox message — snapshot payload, id, and metadata derived automatically
+    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+    repo.outbox(&mut outbox).commit(&mut todo)?;
 
     if let Some(mut todo) = repo.get("todo-1")? {
         todo.complete();
         repo.commit(&mut todo)?;
     }
-
-    // Use the generated typed event enum
-    let event = TodoEvent::try_from(&todo.entity.events()[0]).unwrap();
-    assert_eq!(event.event_name(), "Initialized");
 
     Ok(())
 }
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
 - **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
-- **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration.
+- **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration. Use `#[derive(Snapshot)]` to auto-generate the snapshot struct and trait impl.
 - **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
 - **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
@@ -531,16 +531,22 @@ let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into());
 
-// encode_for_entity automatically propagates metadata from the entity
-let mut message = OutboxMessage::encode_for_entity(
-    format!("{}:init", todo.entity.id()),
-    "TodoInitialized",
-    &todo.snapshot(),
-    &todo.entity,
-)?;
+// Derives id, snapshot payload, and metadata from the aggregate automatically
+let mut message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
 
 // Commit both atomically
 repo.outbox(&mut message).commit(&mut todo)?;
+```
+
+For custom payloads or IDs, use `encode_for_entity` instead:
+
+```rust
+let mut message = OutboxMessage::encode_for_entity(
+    format!("{}:init", todo.entity.id()),
+    "TodoInitialized",
+    &custom_payload,
+    &todo.entity,
+)?;
 ```
 
 ### Outbox Worker
@@ -1025,7 +1031,53 @@ As aggregates accumulate events, replaying from scratch gets expensive. Snapshot
 
 ### Making an Aggregate Snapshottable
 
-Implement the `Snapshottable` trait on your aggregate:
+Add `#[derive(Snapshot)]` to your aggregate struct. This generates a `TodoSnapshot` struct, a `fn snapshot()` method, and the full `impl Snapshottable` — no boilerplate needed:
+
+```rust
+use sourced_rust::{Entity, Snapshot};
+
+#[derive(Default, Snapshot)]
+struct Todo {
+    entity: Entity,
+    user_id: String,
+    task: String,
+    completed: bool,
+}
+```
+
+This generates:
+- `TodoSnapshot` struct with `id: String`, `user_id: String`, `task: String`, `completed: bool`
+- `impl Todo { fn snapshot(&self) -> TodoSnapshot }` — `id` comes from `entity.id()`
+- `impl Snapshottable for Todo` with `create_snapshot()` and `restore_from_snapshot()`
+
+Fields with `#[serde(skip)]` (like `emitter: EntityEmitter`) are automatically excluded from the snapshot.
+
+**Custom ID key** — when the entity ID maps to a domain field like `sku`:
+
+```rust
+#[derive(Default, Snapshot)]
+#[snapshot(id = "sku")]
+struct Inventory {
+    entity: Entity,
+    sku: String,
+    available: u32,
+}
+// InventorySnapshot has `sku: String` and `available: u32` (no extra `id` field)
+// restore_from_snapshot calls entity.set_id(&snapshot.sku)
+```
+
+**Custom entity field name** — when your entity field isn't named `entity`:
+
+```rust
+#[derive(Default, Snapshot)]
+#[snapshot(entity = "my_entity")]
+struct Widget {
+    my_entity: Entity,
+    name: String,
+}
+```
+
+**Manual implementation** — if you need full control, implement the `Snapshottable` trait directly instead of using the derive:
 
 ```rust
 use sourced_rust::Snapshottable;
@@ -1226,6 +1278,7 @@ cargo test --features http # includes HTTP transport tests
 - `tests/sourced_enqueue/` - `#[sourced(entity, enqueue)]` integrated choreography
 - `tests/todos/` - Basic entity workflow (using `#[digest]` + `aggregate!()`)
 - `tests/snapshots/` - Snapshot creation, loading, and partial replay
+- `tests/sourced_snapshot/` - `#[derive(Snapshot)]` with custom ID keys, `serde(skip)` exclusion, and custom entity fields
 - `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
 - `tests/sagas/orchestration.rs` - Saga orchestration with compensation

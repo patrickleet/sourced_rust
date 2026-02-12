@@ -138,9 +138,9 @@ impl OutboxMessage {
 
     /// Create a message that inherits metadata from an entity's context.
     ///
-    /// This is the recommended way to create outbox messages — it automatically
-    /// propagates correlation IDs, trace context, and any other metadata set
-    /// on the entity, so nothing gets lost between the event store and the bus.
+    /// This automatically propagates correlation IDs, trace context, and any
+    /// other metadata set on the entity, so nothing gets lost between the
+    /// event store and the bus.
     pub fn encode_for_entity<T: Serialize>(
         id: impl Into<String>,
         event_type: impl Into<String>,
@@ -148,6 +148,30 @@ impl OutboxMessage {
         entity: &Entity,
     ) -> Result<Self, bitcode::Error> {
         let bytes = bitcode::serialize(payload)?;
+        Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))
+    }
+
+    /// Create a message from a `Snapshottable` aggregate.
+    ///
+    /// This is the recommended way to create outbox messages — it derives
+    /// everything from the aggregate automatically:
+    /// - **id**: `"{entity_id}:{event_type}"`
+    /// - **payload**: the aggregate's snapshot (via `create_snapshot()`)
+    /// - **metadata**: propagated from the entity (correlation IDs, trace context, etc.)
+    ///
+    /// ```ignore
+    /// let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+    /// repo.outbox(&mut outbox).commit(&mut todo)?;
+    /// ```
+    pub fn domain_event<A: crate::Snapshottable>(
+        event_type: impl Into<String>,
+        aggregate: &A,
+    ) -> Result<Self, bitcode::Error> {
+        let event_type = event_type.into();
+        let entity = aggregate.entity();
+        let id = format!("{}:{}", entity.id(), event_type);
+        let snapshot = aggregate.create_snapshot();
+        let bytes = bitcode::serialize(&snapshot)?;
         Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))
     }
 
