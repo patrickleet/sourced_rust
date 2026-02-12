@@ -9,8 +9,6 @@ pub mod repository;
 pub mod emitter;
 #[cfg(feature = "bus")]
 pub mod bus;
-#[cfg(feature = "bus")]
-pub mod service;
 pub mod microsvc;
 mod commit_builder;
 mod hashmap_repo;
@@ -70,13 +68,6 @@ pub use bus::InMemoryQueue;
 #[cfg(feature = "bus")]
 pub use bus::Message;
 
-// Domain service: command handler registration and dispatch (requires bus feature)
-#[cfg(feature = "bus")]
-pub use service::{DomainService, DomainServiceThread, HandlerError, ServiceStats};
-
-// HTTP adapter types for domain service (requires http feature)
-#[cfg(feature = "http")]
-pub use service::{CommandRequest, CommandResponse};
 
 // LocalEmitterPublisher requires the emitter feature
 #[cfg(feature = "emitter")]
