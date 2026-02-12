@@ -10,3 +10,6 @@ mod transport_subscribe;
 
 #[cfg(feature = "http")]
 mod transport_http;
+
+#[cfg(feature = "grpc")]
+mod transport_grpc;

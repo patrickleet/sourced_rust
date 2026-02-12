@@ -17,6 +17,7 @@ default = ["emitter", "bus"]
 emitter = ["dep:event-emitter-rs"]
 bus = []
 http = ["bus", "dep:axum", "dep:tokio"]
+grpc = ["bus", "dep:tonic", "dep:prost", "dep:tokio"]
 
 [dependencies]
 axum = { version = "0.7", optional = true }
@@ -26,10 +27,18 @@ event-emitter-rs = { version = "0.1.4", optional = true }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 sourced_rust_macros = { path = "sourced_rust_macros" }
+tonic = { version = "0.12", optional = true }
+prost = { version = "0.13", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"], optional = true }
+
+[build-dependencies]
+tonic-build = "0.12"
 
 [dev-dependencies]
 axum = "0.7"
+prost = "0.13"
 reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.12"

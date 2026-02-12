@@ -70,6 +70,12 @@ mod http;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
 
+// gRPC transport (requires "grpc" feature)
+#[cfg(feature = "grpc")]
+pub mod grpc;
+#[cfg(feature = "grpc")]
+pub use grpc::{grpc_server, serve_grpc};
+
 /// Register handler modules with a service using the convention pattern.
 ///
 /// Each handler module must export:
