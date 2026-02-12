@@ -1,4 +1,5 @@
 mod read_model;
+mod snapshot;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -1067,4 +1068,35 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(ReadModel, attributes(readmodel))]
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
     read_model::derive_read_model(input)
+}
+
+// ============================================================================
+// #[derive(Snapshot)] derive macro
+// ============================================================================
+
+/// Derive macro that generates a snapshot struct, `fn snapshot()`, and
+/// `impl Snapshottable` for an aggregate.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[derive(Default, Snapshot)]
+/// struct Todo {
+///     pub entity: Entity,
+///     user_id: String,
+///     task: String,
+///     completed: bool,
+/// }
+/// ```
+///
+/// Generates `TodoSnapshot` with `id: String` + all non-entity fields,
+/// a `fn snapshot()` method, and `impl Snapshottable`.
+///
+/// Options:
+/// - `#[snapshot(id = "sku")]` — use a struct field as the ID key instead of synthesizing `id`
+/// - `#[snapshot(entity = "my_entity")]` — override the entity field name (default: `entity`)
+/// - Fields with `#[serde(skip)]` are automatically excluded
+#[proc_macro_derive(Snapshot, attributes(snapshot))]
+pub fn derive_snapshot(input: TokenStream) -> TokenStream {
+    snapshot::derive_snapshot(input)
 }
