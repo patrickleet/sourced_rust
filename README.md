@@ -112,6 +112,9 @@ fn main() {
 
     // Or serve over HTTP (requires `http` feature)
     // microsvc::serve(service, "0.0.0.0:3000").await?;
+
+    // Or serve over gRPC (requires `grpc` feature)
+    // microsvc::serve_grpc(service, "[::1]:50051").await?;
 }
 ```
 
@@ -129,7 +132,7 @@ fn main() {
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
-- **microsvc::Service**: Convention-based command handler framework with pluggable transports (HTTP, bus, direct dispatch).
+- **microsvc::Service**: Convention-based command handler framework with pluggable transports (HTTP, gRPC, bus, direct dispatch).
 
 ## Pluggable by Default
 
@@ -955,6 +958,50 @@ curl -X POST http://localhost:3000/counter.increment \
 curl http://localhost:3000/health
 ```
 
+### gRPC Transport (requires `grpc` feature)
+
+The `grpc` feature adds a tonic-based gRPC transport using standard protobuf wire format (no `.proto` file needed). Any gRPC client can connect:
+
+```rust
+use std::sync::Arc;
+use sourced_rust::{microsvc, HashMapRepository};
+
+let service = Arc::new(
+    microsvc::Service::new(HashMapRepository::new().queued())
+        .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
+);
+
+// Get a CommandServiceServer to compose with other tonic routes
+let grpc_svc = microsvc::grpc_server(service.clone());
+
+// Or serve directly
+microsvc::serve_grpc(service, "[::1]:50051").await?;
+```
+
+RPCs:
+
+| RPC | Input | Output | Description |
+|---|---|---|---|
+| `Dispatch` | `GrpcRequest` | `GrpcResponse` | Dispatch a command. `input` = JSON string, `session_variables` = metadata map. |
+| `Health` | `HealthRequest` | `HealthResponse` | Health check: `{ ok: true, commands: ["counter.create", ...] }` |
+
+Session handling mirrors HTTP — gRPC metadata headers are merged with payload `session_variables` (payload takes precedence). Errors are returned inside `GrpcResponse.status` (HTTP-style status codes) rather than `tonic::Status`, keeping client behavior identical across transports.
+
+```rust
+use sourced_rust::microsvc::grpc::{CommandServiceClient, GrpcRequest};
+
+let mut client = CommandServiceClient::connect("http://[::1]:50051").await?;
+
+let response = client.dispatch(GrpcRequest {
+    command: "counter.create".into(),
+    input: serde_json::json!({ "id": "c1" }).to_string(),
+    session_variables: Default::default(),
+}).await?.into_inner();
+
+assert_eq!(response.status, 200);
+let body: serde_json::Value = serde_json::from_str(&response.body)?;
+```
+
 ### Bus Transports (requires `bus` feature)
 
 Connect a service to the bus for background command processing. Both transports run in a background thread and return a `TransportHandle` for shutdown and stats.
@@ -994,7 +1041,7 @@ let handle = microsvc::subscribe(service.clone(), subscriber, Duration::from_mil
 
 ### Combining Transports
 
-A single service can handle commands from multiple transports simultaneously — HTTP, bus, and direct dispatch all share the same handlers and repository:
+A single service can handle commands from multiple transports simultaneously — HTTP, gRPC, bus, and direct dispatch all share the same handlers and repository:
 
 ```rust
 let service = Arc::new(
@@ -1005,7 +1052,10 @@ let service = Arc::new(
 // Bus transport in background
 let bus_handle = microsvc::listen(service.clone(), "counters", queue, Duration::from_millis(50));
 
-// HTTP transport
+// gRPC transport (requires "grpc" feature)
+tokio::spawn(microsvc::serve_grpc(service.clone(), "[::1]:50051"));
+
+// HTTP transport (requires "http" feature)
 microsvc::serve(service.clone(), "0.0.0.0:3000").await?;
 ```
 
@@ -1311,6 +1361,7 @@ src/
 ```bash
 cargo test                 # all tests (default features)
 cargo test --features http # includes HTTP transport tests
+cargo test --features grpc # includes gRPC transport tests
 ```
 
 ## Examples
@@ -1324,7 +1375,7 @@ cargo test --features http # includes HTTP transport tests
 - `tests/upcasting/` - Event versioning with v1->v2->v3 upcasters, chaining, and snapshot integration
 - `tests/sagas/distributed.rs` - Multi-service saga with outbox pattern (fan-out and point-to-point)
 - `tests/sagas/orchestration.rs` - Saga orchestration with compensation
-- `tests/microsvc/` - Microservice framework: dispatch, session, convention, bus transports, HTTP transport
+- `tests/microsvc/` - Microservice framework: dispatch, session, convention, bus transports, HTTP transport, gRPC transport
 
 ## License
 
