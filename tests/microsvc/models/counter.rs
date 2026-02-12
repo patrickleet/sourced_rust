@@ -1,28 +1,13 @@
 //! Test domain: a simple Counter aggregate for microsvc tests.
 
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
+use sourced_rust::{sourced, Entity, Snapshot};
 
 /// A simple counter aggregate for testing microsvc dispatch.
-#[derive(Default)]
+#[derive(Default, Snapshot)]
 pub struct Counter {
     pub entity: Entity,
     pub value: i64,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CounterSnapshot {
-    pub id: String,
-    pub value: i64,
-}
-
-impl Counter {
-    pub fn snapshot(&self) -> CounterSnapshot {
-        CounterSnapshot {
-            id: self.entity.id().to_string(),
-            value: self.value,
-        }
-    }
 }
 
 #[sourced(entity)]

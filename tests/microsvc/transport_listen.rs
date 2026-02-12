@@ -1,70 +1,59 @@
 //! Bus transport tests — listen (point-to-point queue consumption).
+//!
+//! Uses `Bus::from_queue` for all queue interactions, proving the Bus
+//! abstraction works end-to-end with `microsvc::listen`.
 
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use serde_json::json;
-use sourced_rust::bus::{Event, InMemoryQueue, Sender};
-use sourced_rust::microsvc::{self, HandlerError, Service, Session};
-use sourced_rust::{CommitAggregate, GetAggregate, HashMapRepository, Queueable};
+use sourced_rust::bus::{Bus, Event, InMemoryQueue};
+use sourced_rust::microsvc::{self, Service, Session};
+use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 
-use crate::models::counter::{Counter, CreateCounter, IncrementCounter};
+use crate::handlers;
+use crate::handlers::Repo;
+use crate::models::counter::Counter;
+
+fn counter_service() -> Arc<Service<Repo>> {
+    Arc::new(sourced_rust::register_handlers!(
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
+        handlers::counter_create,
+        handlers::counter_increment,
+        handlers::whoami,
+    ))
+}
 
 #[test]
 fn dispatches_from_queue() {
-    let queue = InMemoryQueue::new();
-    let service = Arc::new(
-        Service::new(HashMapRepository::new().queued())
-            .command("counter.create", |ctx| {
-                let input = ctx.input::<CreateCounter>()?;
-                let mut counter = Counter::default();
-                counter.create(input.id.clone());
-                ctx.repo().commit_aggregate(&mut counter)?;
-                Ok(json!({ "id": input.id }))
-            })
-            .command("counter.increment", |ctx| {
-                let input = ctx.input::<IncrementCounter>()?;
-                let mut counter: Counter = ctx
-                    .repo()
-                    .get_aggregate(&input.id)?
-                    .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-                counter.increment(input.amount);
-                ctx.repo().commit_aggregate(&mut counter)?;
-                Ok(json!({ "value": counter.value }))
-            }),
-    );
+    let bus = Bus::from_queue(InMemoryQueue::new());
+    let service = counter_service();
 
     let handle = microsvc::listen(
         service.clone(),
         "counters",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
 
-    queue
-        .send(
-            "counters",
-            Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-        )
-        .unwrap();
+    bus.send(
+        "counters",
+        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
-    queue
-        .send(
-            "counters",
-            Event::with_string_payload(
-                "cmd-2",
-                "counter.increment",
-                r#"{"id":"c1","amount":10}"#,
-            ),
-        )
-        .unwrap();
+    bus.send(
+        "counters",
+        Event::with_string_payload("cmd-2", "counter.increment", r#"{"id":"c1","amount":10}"#),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
-    let counter: Counter = service.repo().get_aggregate("c1").unwrap().unwrap();
+    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 10);
 
     let stats = handle.stop();
@@ -74,35 +63,25 @@ fn dispatches_from_queue() {
 
 #[test]
 fn tracks_failures() {
-    let queue = InMemoryQueue::new();
-    let service = Arc::new(
-        Service::new(HashMapRepository::new().queued()).command("counter.increment", |ctx| {
-            let input = ctx.input::<IncrementCounter>()?;
-            let _counter: Counter = ctx
-                .repo()
-                .get_aggregate(&input.id)?
-                .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-            Ok(json!({}))
-        }),
-    );
+    let bus = Bus::from_queue(InMemoryQueue::new());
+    let service = counter_service();
 
     let handle = microsvc::listen(
         service.clone(),
         "counters",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
 
-    queue
-        .send(
-            "counters",
-            Event::with_string_payload(
-                "cmd-1",
-                "counter.increment",
-                r#"{"id":"nonexistent","amount":1}"#,
-            ),
-        )
-        .unwrap();
+    bus.send(
+        "counters",
+        Event::with_string_payload(
+            "cmd-1",
+            "counter.increment",
+            r#"{"id":"nonexistent","amount":1}"#,
+        ),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
@@ -113,31 +92,22 @@ fn tracks_failures() {
 
 #[test]
 fn coexists_with_direct_dispatch() {
-    let queue = InMemoryQueue::new();
-    let service = Arc::new(
-        Service::new(HashMapRepository::new().queued()).command("counter.create", |ctx| {
-            let input = ctx.input::<CreateCounter>()?;
-            let mut counter = Counter::default();
-            counter.create(input.id.clone());
-            ctx.repo().commit_aggregate(&mut counter)?;
-            Ok(json!({ "id": input.id }))
-        }),
-    );
+    let bus = Bus::from_queue(InMemoryQueue::new());
+    let service = counter_service();
 
     let handle = microsvc::listen(
         service.clone(),
         "counters",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
 
     // Create c1 via bus
-    queue
-        .send(
-            "counters",
-            Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-        )
-        .unwrap();
+    bus.send(
+        "counters",
+        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
@@ -146,8 +116,8 @@ fn coexists_with_direct_dispatch() {
         .dispatch("counter.create", json!({ "id": "c2" }), Session::new())
         .unwrap();
 
-    let c1: Counter = service.repo().get_aggregate("c1").unwrap().unwrap();
-    let c2: Counter = service.repo().get_aggregate("c2").unwrap().unwrap();
+    let c1: Counter = service.repo().get("c1").unwrap().unwrap();
+    let c2: Counter = service.repo().get("c2").unwrap().unwrap();
     assert_eq!(c1.value, 0);
     assert_eq!(c2.value, 0);
 
@@ -157,24 +127,19 @@ fn coexists_with_direct_dispatch() {
 
 #[test]
 fn metadata_becomes_session() {
-    let queue = InMemoryQueue::new();
-    let service = Arc::new(
-        Service::new(HashMapRepository::new().queued()).command("whoami", |ctx| {
-            let user_id = ctx.user_id()?;
-            Ok(json!({ "user_id": user_id }))
-        }),
-    );
+    let bus = Bus::from_queue(InMemoryQueue::new());
+    let service = counter_service();
 
     let handle = microsvc::listen(
         service.clone(),
         "commands",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
 
     let event = Event::with_string_payload("cmd-1", "whoami", "{}")
         .with_metadata("x-hasura-user-id", "user-42");
-    queue.send("commands", event).unwrap();
+    bus.send("commands", event).unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
@@ -185,68 +150,49 @@ fn metadata_becomes_session() {
 
 #[test]
 fn multiple_services_on_different_queues() {
-    let queue = InMemoryQueue::new();
+    let bus = Bus::from_queue(InMemoryQueue::new());
     let store = HashMapRepository::new();
 
-    let service_a = Arc::new(
-        Service::new(store.clone().queued()).command("counter.create", |ctx| {
-            let input = ctx.input::<CreateCounter>()?;
-            let mut counter = Counter::default();
-            counter.create(input.id.clone());
-            ctx.repo().commit_aggregate(&mut counter)?;
-            Ok(json!({ "id": input.id }))
-        }),
-    );
+    let service_a = Arc::new(sourced_rust::register_handlers!(
+        Service::new(store.clone().queued().aggregate::<Counter>()),
+        handlers::counter_create,
+    ));
 
-    let service_b = Arc::new(
-        Service::new(store.queued()).command("counter.increment", |ctx| {
-            let input = ctx.input::<IncrementCounter>()?;
-            let mut counter: Counter = ctx
-                .repo()
-                .get_aggregate(&input.id)?
-                .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-            counter.increment(input.amount);
-            ctx.repo().commit_aggregate(&mut counter)?;
-            Ok(json!({ "value": counter.value }))
-        }),
-    );
+    let service_b = Arc::new(sourced_rust::register_handlers!(
+        Service::new(store.queued().aggregate::<Counter>()),
+        handlers::counter_increment,
+    ));
 
     let handle_a = microsvc::listen(
         service_a.clone(),
         "creates",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
     let handle_b = microsvc::listen(
         service_b.clone(),
         "increments",
-        queue.clone(),
+        bus.subscriber().clone(),
         Duration::from_millis(10),
     );
 
-    queue
-        .send(
-            "creates",
-            Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-        )
-        .unwrap();
+    bus.send(
+        "creates",
+        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
-    queue
-        .send(
-            "increments",
-            Event::with_string_payload(
-                "cmd-2",
-                "counter.increment",
-                r#"{"id":"c1","amount":42}"#,
-            ),
-        )
-        .unwrap();
+    bus.send(
+        "increments",
+        Event::with_string_payload("cmd-2", "counter.increment", r#"{"id":"c1","amount":42}"#),
+    )
+    .unwrap();
 
     thread::sleep(Duration::from_millis(200));
 
-    let counter: Counter = service_a.repo().get_aggregate("c1").unwrap().unwrap();
+    let counter: Counter = service_a.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 42);
 
     let stats_a = handle_a.stop();

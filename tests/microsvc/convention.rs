@@ -9,7 +9,7 @@
 
 use serde_json::json;
 use sourced_rust::microsvc::{Service, Session};
-use sourced_rust::{GetAggregate, HashMapRepository, OutboxRepositoryExt, Queueable};
+use sourced_rust::{AggregateBuilder, HashMapRepository, OutboxRepositoryExt, Queueable};
 
 use crate::handlers;
 use crate::models::counter::Counter;
@@ -21,7 +21,7 @@ use crate::models::counter::Counter;
 #[test]
 fn register_handlers_and_dispatch() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
         handlers::counter_increment,
     );
@@ -46,15 +46,15 @@ fn register_handlers_and_dispatch() {
         .unwrap();
     assert_eq!(result, json!({ "id": "c1", "value": 10 }));
 
-    // Verify state via underlying repo
-    let counter: Counter = service.repo().inner().get_aggregate("c1").unwrap().unwrap();
+    // Verify state via repo
+    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 10);
 }
 
 #[test]
 fn guard_rejects_bad_input() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
     );
 
@@ -65,7 +65,7 @@ fn guard_rejects_bad_input() {
 #[test]
 fn handler_rejects_duplicate_create() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
     );
 
@@ -84,7 +84,7 @@ fn handler_rejects_duplicate_create() {
 #[test]
 fn create_persists_outbox_message() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
     );
 
@@ -93,10 +93,10 @@ fn create_persists_outbox_message() {
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));
 
-    let inner = service.repo().inner();
+    let inner = service.repo().repo().inner();
 
     // Aggregate was persisted
-    let counter: Counter = inner.get_aggregate("c1").unwrap().unwrap();
+    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 0);
 
     // Outbox message was persisted
@@ -108,7 +108,7 @@ fn create_persists_outbox_message() {
 #[test]
 fn duplicate_create_leaves_single_outbox_message() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
     );
 
@@ -120,14 +120,14 @@ fn duplicate_create_leaves_single_outbox_message() {
     let result = service.dispatch("counter.create", json!({ "id": "c1" }), Session::new());
     assert!(result.is_err());
 
-    let pending = service.repo().inner().outbox_messages_pending().unwrap();
+    let pending = service.repo().repo().inner().outbox_messages_pending().unwrap();
     assert_eq!(pending.len(), 1);
 }
 
 #[test]
 fn increment_persists_outbox_message() {
     let service = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued()),
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
         handlers::counter_create,
         handlers::counter_increment,
     );
@@ -144,13 +144,12 @@ fn increment_persists_outbox_message() {
         )
         .unwrap();
 
-    let inner = service.repo().inner();
-
     // Aggregate state is correct
-    let counter: Counter = inner.get_aggregate("c1").unwrap().unwrap();
+    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 7);
 
     // Both outbox messages were persisted
+    let inner = service.repo().repo().inner();
     let pending = inner.outbox_messages_pending().unwrap();
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();

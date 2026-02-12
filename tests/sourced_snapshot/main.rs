@@ -219,7 +219,7 @@ fn domain_event_derives_id_and_payload() {
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    assert_eq!(outbox.id(), "outbox:t1:TodoInitialized");
+    assert_eq!(outbox.id(), "outbox:t1:TodoInitialized:1");
     assert_eq!(outbox.event_type, "TodoInitialized");
 
     let decoded: TodoSnapshot = outbox.decode().unwrap();

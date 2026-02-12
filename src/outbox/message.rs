@@ -155,7 +155,7 @@ impl OutboxMessage {
     ///
     /// This is the recommended way to create outbox messages — it derives
     /// everything from the aggregate automatically:
-    /// - **id**: `"{entity_id}:{event_type}"`
+    /// - **id**: `"{entity_id}:{event_type}:{version}"`
     /// - **payload**: the aggregate's snapshot (via `create_snapshot()`)
     /// - **metadata**: propagated from the entity (correlation IDs, trace context, etc.)
     ///
@@ -169,7 +169,7 @@ impl OutboxMessage {
     ) -> Result<Self, bitcode::Error> {
         let event_type = event_type.into();
         let entity = aggregate.entity();
-        let id = format!("{}:{}", entity.id(), event_type);
+        let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
         let snapshot = aggregate.create_snapshot();
         let bytes = bitcode::serialize(&snapshot)?;
         Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))

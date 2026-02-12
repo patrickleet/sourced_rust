@@ -22,11 +22,10 @@ Sourced Rust is inspired by the original [sourced](https://github.com/mateodelno
 
 ## Quick Start
 
+### Define the Aggregate
+
 ```rust
-use sourced_rust::{
-    sourced, AggregateBuilder, Entity, HashMapRepository,
-    OutboxCommitExt, OutboxMessage, Queueable, Snapshot,
-};
+use sourced_rust::{sourced, Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
 struct Todo {
@@ -53,23 +52,66 @@ impl Todo {
 
 // #[sourced] generates: TodoEvent enum, TryFrom<&EventRecord>, impl Aggregate
 // #[derive(Snapshot)] generates: TodoSnapshot struct, fn snapshot(), impl Snapshottable
+```
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+### Define Command Handlers
+
+Each handler is a module with `COMMAND`, `guard`, and `handle`:
+
+```rust
+// handlers/todo_create.rs
+use serde::Deserialize;
+use serde_json::{json, Value};
+use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
+
+pub const COMMAND: &str = "todo.create";
+
+#[derive(Deserialize)]
+struct Input { id: String, user_id: String, task: String }
+
+pub fn guard<R>(ctx: &Context<R>) -> bool {
+    ctx.has_fields(&["id", "user_id", "task"])
+}
+
+pub fn handle<R: Repository + Clone>(ctx: &Context<R>) -> Result<Value, HandlerError> {
+    let input = ctx.input::<Input>()?;
+    let repo = ctx.repo().clone().aggregate::<Todo>();
 
     let mut todo = Todo::default();
-    todo.initialize("todo-1".into(), "user-1".into(), "Ship it".into());
+    todo.initialize(input.id.clone(), input.user_id, input.task);
 
-    // Commit with an outbox message — snapshot payload, id, and metadata derived automatically
-    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+    // Outbox message derives id, snapshot payload, and metadata automatically
+    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)
+        .map_err(|e| HandlerError::Other(Box::new(e)))?;
     repo.outbox(&mut outbox).commit(&mut todo)?;
 
-    if let Some(mut todo) = repo.get("todo-1")? {
-        todo.complete();
-        repo.commit(&mut todo)?;
-    }
+    Ok(json!({ "id": input.id }))
+}
+```
 
-    Ok(())
+### Wire It Up
+
+```rust
+use std::sync::Arc;
+use sourced_rust::{microsvc, HashMapRepository, Queueable};
+
+fn main() {
+    let service = Arc::new(sourced_rust::register_handlers!(
+        microsvc::Service::new(HashMapRepository::new().queued()),
+        handlers::todo_create,
+        handlers::todo_complete,
+    ));
+
+    // Direct dispatch
+    let result = service.dispatch(
+        "todo.create",
+        serde_json::json!({ "id": "todo-1", "user_id": "alice", "task": "Ship it" }),
+        microsvc::Session::new(),
+    );
+
+    // Or serve over HTTP (requires `http` feature)
+    // microsvc::serve(service, "0.0.0.0:3000").await?;
 }
 ```
 

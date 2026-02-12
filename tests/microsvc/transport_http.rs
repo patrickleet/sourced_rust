@@ -5,41 +5,24 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sourced_rust::microsvc::{self, HandlerError, Service};
-use sourced_rust::{AggregateBuilder, HashMapRepository};
+use sourced_rust::microsvc::{self, Service};
+use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 
-use crate::models::counter::{Counter, CreateCounter, IncrementCounter};
+use crate::handlers;
+use crate::handlers::Repo;
+use crate::models::counter::Counter;
 
-fn counter_service() -> Arc<Service<HashMapRepository>> {
-    Arc::new(
-        Service::new(HashMapRepository::new())
-            .command("counter.create", |ctx| {
-                let input = ctx.input::<CreateCounter>()?;
-                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
-                let mut counter = Counter::default();
-                counter.create(input.id.clone());
-                counter_repo.commit(&mut counter)?;
-                Ok(json!({ "id": input.id }))
-            })
-            .command("counter.increment", |ctx| {
-                let input = ctx.input::<IncrementCounter>()?;
-                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
-                let mut counter: Counter = counter_repo
-                    .get(&input.id)?
-                    .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-                counter.increment(input.amount);
-                counter_repo.commit(&mut counter)?;
-                Ok(json!({ "id": input.id, "value": counter.value }))
-            })
-            .command("whoami", |ctx| {
-                let user_id = ctx.user_id()?;
-                Ok(json!({ "user_id": user_id }))
-            }),
-    )
+fn counter_service() -> Arc<Service<Repo>> {
+    Arc::new(sourced_rust::register_handlers!(
+        Service::new(HashMapRepository::new().queued().aggregate::<Counter>()),
+        handlers::counter_create,
+        handlers::counter_increment,
+        handlers::whoami,
+    ))
 }
 
 /// Bind to port 0 and return the actual address.
-async fn start_server(service: Arc<Service<HashMapRepository>>) -> String {
+async fn start_server(service: Arc<Service<Repo>>) -> String {
     let app = microsvc::router(service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
