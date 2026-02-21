@@ -40,7 +40,7 @@ fn event_version_serializes_when_not_v1() {
 
 #[test]
 fn old_events_without_event_version_deserialize_as_v1() {
-    let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
+    let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0},"metadata":{}}"#;
     let record: EventRecord = serde_json::from_str(json).unwrap();
     assert_eq!(record.event_version, 1);
 }

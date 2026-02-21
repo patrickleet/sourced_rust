@@ -2,6 +2,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use crate::entity::{Entity, EventRecord, EventUpcaster, upcast_events};
+use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{Commit, Find, Get, Repository, RepositoryError};
 use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
@@ -352,9 +353,6 @@ where
         Ok(self.find(predicate)?.len())
     }
 }
-
-// Re-export from queued module for backward compatibility
-pub use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 
 impl<R, A> AggregateRepository<R, A>
 where

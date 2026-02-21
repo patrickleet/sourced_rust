@@ -1,0 +1,18 @@
+name: On Version Tagged, Publish Crate
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    uses: unbounded-tech/workflows-rust/.github/workflows/publish.yaml@feat/cargo-publish
+    secrets:
+      crates_io_token: ${{ secrets.CRATES_IO_TOKEN }}
+    with:
+      manifest_path: Cargo.toml
+      cargo_publish_args: "--locked"

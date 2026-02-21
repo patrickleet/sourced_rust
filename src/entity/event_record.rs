@@ -29,7 +29,6 @@ pub struct EventRecord {
     pub event_version: u64,
     pub sequence: u64,
     pub timestamp: SystemTime,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
 }
 
@@ -195,10 +194,10 @@ mod tests {
     }
 
     #[test]
-    fn metadata_skipped_when_empty_in_serialization() {
+    fn metadata_is_always_present_in_serialization() {
         let record = EventRecord::new("test_event", vec![], 1);
         let json = serde_json::to_string(&record).unwrap();
-        assert!(!json.contains("metadata"));
+        assert!(json.contains("metadata"));
 
         let mut meta = HashMap::new();
         meta.insert("key".to_string(), "val".to_string());
@@ -209,11 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_without_metadata_field() {
-        // Simulates loading old events that were serialized before metadata existed
+    fn deserialize_without_metadata_field_fails() {
         let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
-        let record: EventRecord = serde_json::from_str(json).unwrap();
-        assert!(record.metadata.is_empty());
-        assert_eq!(record.correlation_id(), None);
+        let result: Result<EventRecord, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 }

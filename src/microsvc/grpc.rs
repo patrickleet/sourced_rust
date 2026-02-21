@@ -105,8 +105,16 @@ impl<R: Send + Sync + 'static> CommandService for GrpcHandler<R> {
         let metadata = request.metadata().clone();
         let req = request.into_inner();
 
-        // Parse JSON input
-        let input: serde_json::Value = serde_json::from_str(&req.input).unwrap_or_default();
+        // Parse JSON input (strict; invalid payloads return 400)
+        let input: serde_json::Value = match serde_json::from_str(&req.input) {
+            Ok(value) => value,
+            Err(e) => {
+                return Ok(Response::new(GrpcResponse {
+                    status: 400,
+                    body: json!({ "error": format!("invalid JSON input: {e}") }).to_string(),
+                }));
+            }
+        };
 
         // Build session: start with metadata headers, then overlay payload values
         let session = build_session(&metadata, req.session_variables);

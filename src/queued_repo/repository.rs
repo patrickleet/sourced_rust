@@ -302,7 +302,7 @@ impl<R: FindOne + GetOne, L: LockManager> FindOneWithOpts for QueuedRepository<R
 }
 
 // ============================================================================
-// Legacy traits (kept for compatibility)
+// Unlock capability
 // ============================================================================
 
 /// Trait for repositories that support unlocking entities.

@@ -32,7 +32,6 @@ pub use repository::{
 pub use aggregate::{
     hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, CountAggregate,
     ExistsAggregate, FindAggregate, FindOneAggregate, GetAggregate, GetAllAggregates, RepositoryExt,
-    UnlockableRepository,
 };
 
 pub use hashmap_repo::HashMapRepository;

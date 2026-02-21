@@ -1364,6 +1364,22 @@ cargo test --features http # includes HTTP transport tests
 cargo test --features grpc # includes gRPC transport tests
 ```
 
+## Coverage Reporting
+
+This project uses [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov), the most common coverage tool in the Rust ecosystem.
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+```
+
+```bash
+cargo llvm-cov --all-features --summary-only
+cargo llvm-cov --all-features --lcov --output-path lcov.info
+```
+
+CI also publishes `lcov.info` as a workflow artifact and attempts an optional Codecov upload.
+
 ## Examples
 
 - `tests/sourced/` - `#[sourced]` macro with typed event enum, TryFrom, and aggregate hydration

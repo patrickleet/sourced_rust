@@ -65,7 +65,8 @@ impl EntityEmitter {
         if self.entity.is_replaying() {
             return;
         }
-        let data = serde_json::to_string(payload).unwrap_or_default();
+        let data = serde_json::to_string(payload)
+            .expect("failed to serialize local event payload to JSON");
         self.events_to_emit.push(LocalEvent {
             event_type: event_type.into(),
             data,

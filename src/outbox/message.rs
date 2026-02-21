@@ -33,7 +33,6 @@ pub struct OutboxMessage {
     /// of `Publisher::publish(event)`.
     pub destination: Option<String>,
     /// Metadata propagated to the publisher (correlation IDs, trace context, etc.).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
 }
 

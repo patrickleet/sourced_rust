@@ -16,3 +16,7 @@ Cargo.lock
 
 # macOS-specific files
 .DS_Store
+
+# Coverage outputs
+lcov.info
+target/llvm-cov/

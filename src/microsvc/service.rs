@@ -136,7 +136,7 @@ impl<R: Send + Sync + 'static> Service<R> {
     /// - `event.metadata` → session variables
     #[cfg(feature = "bus")]
     pub fn dispatch_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
-        let input = event_to_json_input(event);
+        let input = event_to_json_input(event)?;
         let session = event_to_session(event);
         self.dispatch(&event.event_type, input, session)
     }
@@ -361,19 +361,15 @@ where
 // Helpers: convert bus Event to dispatch inputs
 // =============================================================================
 
-/// Parse a bus Event's payload as JSON. Falls back to wrapping raw bytes.
+/// Parse a bus Event's payload as JSON.
 #[cfg(feature = "bus")]
-fn event_to_json_input(event: &crate::bus::Event) -> Value {
-    // Try JSON first
-    if let Ok(value) = serde_json::from_slice::<Value>(&event.payload) {
-        return value;
-    }
-    // Fall back to string payload
-    if let Some(s) = event.payload_str() {
-        return Value::String(s.to_string());
-    }
-    // Last resort: null
-    Value::Null
+fn event_to_json_input(event: &crate::bus::Event) -> Result<Value, HandlerError> {
+    serde_json::from_slice::<Value>(&event.payload).map_err(|e| {
+        HandlerError::DecodeFailed(format!(
+            "invalid JSON payload for command '{}': {}",
+            event.event_type, e
+        ))
+    })
 }
 
 /// Extract session variables from a bus Event's metadata.
@@ -545,6 +541,22 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, json!({ "user_id": "user-99" }));
     }
+
+    #[test]
+    fn command_request_requires_session_variables_field() {
+        let json = r#"{"command":"ping","input":{}}"#;
+        let result: Result<CommandRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "bus")]
+    #[test]
+    fn dispatch_event_rejects_non_json_payload() {
+        let service = test_service().command("ping", |_ctx| Ok(json!({ "ok": true })));
+        let event = crate::bus::Event::with_string_payload("evt-1", "ping", "not-json");
+        let result = service.dispatch_event(&event);
+        assert!(matches!(result, Err(HandlerError::DecodeFailed(_))));
+    }
 }
 
 // =============================================================================
@@ -568,7 +580,6 @@ pub struct CommandRequest {
     /// JSON input payload.
     pub input: Value,
     /// Session variables (user ID, role, etc.).
-    #[serde(default)]
     pub session_variables: HashMap<String, String>,
 }
 
