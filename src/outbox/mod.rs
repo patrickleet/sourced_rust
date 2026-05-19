@@ -3,7 +3,7 @@
 //! This module provides the outbox message entity and commit helpers:
 //! - `OutboxMessage` - Event-sourced outbox message entity
 //! - `OutboxMessageStatus` - Message status (Pending, InFlight, Published, Failed)
-//! - `OutboxCommit` - Helper for atomic aggregate + outbox commit
+//! - `OutboxCommit` - Helper for aggregate + outbox commits
 //! - `OutboxCommitExt` - Extension trait for repositories
 //!
 //! ## Separation of Concerns
@@ -23,7 +23,7 @@
 //!
 //! let mut outbox = OutboxMessage::create("order-1:created", "OrderCreated", payload);
 //!
-//! // Commit atomically
+//! // Commit in one repository batch
 //! repo.outbox(&mut outbox).commit(&mut order)?;
 //! ```
 

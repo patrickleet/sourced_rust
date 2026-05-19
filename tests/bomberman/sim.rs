@@ -1,5 +1,5 @@
 use sourced_rust::read_model::ReadModelStore;
-use sourced_rust::{Commit, Get, ReadModelsExt, Versioned};
+use sourced_rust::{Commit, Get, ReadModelsExt, TransactionalCommit, Versioned};
 
 use crate::commands;
 use crate::domain::player::Player;
@@ -15,7 +15,7 @@ pub struct Game<'a, R> {
 
 impl<'a, R> Game<'a, R>
 where
-    R: Commit + ReadModelStore + Get + sourced_rust::Find,
+    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find,
 {
     pub fn new(repo: &'a R, game_id: &str, ascii: &str) -> Result<Self, GameError> {
         commands::create_game(repo, game_id, ascii)?;
@@ -41,7 +41,9 @@ where
         self.repo
             .read_models::<BoardView>()
             .get(&self.game_id)
-            .map_err(|e| GameError::Repository(sourced_rust::RepositoryError::Model(e.to_string())))?
+            .map_err(|e| {
+                GameError::Repository(sourced_rust::RepositoryError::Model(e.to_string()))
+            })?
             .ok_or(GameError::GameNotFound)
     }
 }
@@ -54,10 +56,16 @@ pub struct PlayerSim<'a, R> {
 
 impl<'a, R> PlayerSim<'a, R>
 where
-    R: Commit + ReadModelStore + Get + sourced_rust::Find,
+    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find,
 {
     pub fn join(&self, spawn_index: usize) -> Result<(), GameError> {
-        commands::join_game(self.game.repo, &self.id, &self.name, &self.game.game_id, spawn_index)
+        commands::join_game(
+            self.game.repo,
+            &self.id,
+            &self.name,
+            &self.game.game_id,
+            spawn_index,
+        )
     }
 
     pub fn move_dir(&self, dir: Direction) -> Result<(), GameError> {

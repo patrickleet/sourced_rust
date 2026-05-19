@@ -11,7 +11,7 @@ use super::store::{SnapshotRecord, SnapshotStore};
 /// Follows the same pattern as `InMemoryReadModelStore`.
 #[derive(Clone)]
 pub struct InMemorySnapshotStore {
-    storage: Arc<RwLock<HashMap<String, SnapshotRecord>>>,
+    pub(crate) storage: Arc<RwLock<HashMap<String, SnapshotRecord>>>,
 }
 
 impl Default for InMemorySnapshotStore {

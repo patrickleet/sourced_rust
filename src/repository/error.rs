@@ -12,6 +12,9 @@ pub enum RepositoryError {
         expected: u64,
         actual: u64,
     },
+    DuplicateStreamInBatch {
+        id: String,
+    },
     Replay(String),
     Model(String),
 }
@@ -32,6 +35,9 @@ impl fmt::Display for RepositoryError {
                 "concurrent write detected for entity {} (expected version {}, got {})",
                 id, expected, actual
             ),
+            RepositoryError::DuplicateStreamInBatch { id } => {
+                write!(f, "duplicate stream id in commit batch: {}", id)
+            }
             RepositoryError::Replay(message) => write!(f, "replay error: {}", message),
             RepositoryError::Model(message) => write!(f, "model error: {}", message),
         }

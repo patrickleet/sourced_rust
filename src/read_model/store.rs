@@ -40,6 +40,6 @@ pub trait ReadModelStore: Send + Sync {
     ) -> Result<Option<Versioned<M>>, ReadModelError>;
 
     /// Save pre-serialized read model bytes by key. Used internally by CommitBuilder
-    /// for type-erased atomic writes.
+    /// for type-erased transactional batch writes.
     fn upsert_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ReadModelError>;
 }
