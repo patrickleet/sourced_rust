@@ -20,3 +20,9 @@ Cargo.lock
 # Coverage outputs
 lcov.info
 target/llvm-cov/
+
+# GitKB
+.kb/.cache/
+.kb/store/
+.kb/workspace/
+.kb/workspaces/
