@@ -248,13 +248,26 @@ impl OutboxMessage {
 
     /// Claim with a Duration (convenience method that computes until_secs)
     pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) -> SourcedResult {
-        let now = SystemTime::now();
-        let until = now + lease;
+        let until_secs = Self::lease_deadline_secs(SystemTime::now(), lease)?;
+        self.claim(worker_id.into(), until_secs)
+    }
+
+    fn lease_deadline_secs(now: SystemTime, lease: Duration) -> SourcedResult<u64> {
+        let until = now.checked_add(lease).ok_or_else(|| EventRecordError {
+            message: "failed to compute outbox lease deadline: timestamp overflow".into(),
+        })?;
+
         let until_secs = until
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|err| EventRecordError {
+                message: format!(
+                    "failed to compute outbox lease deadline before UNIX epoch: {}",
+                    err
+                ),
+            })?
             .as_secs();
-        self.claim(worker_id.into(), until_secs)
+
+        Ok(until_secs)
     }
 
     #[digest("MessagePublished", when = self.is_in_flight())]
@@ -382,6 +395,31 @@ mod tests {
 
         message.complete().unwrap();
         assert!(message.is_published());
+    }
+
+    #[test]
+    fn claim_deadline_overflow_returns_error() {
+        let err = OutboxMessage::lease_deadline_secs(
+            SystemTime::UNIX_EPOCH,
+            Duration::from_secs(u64::MAX),
+        )
+        .unwrap_err();
+
+        assert!(err
+            .message
+            .contains("failed to compute outbox lease deadline"));
+    }
+
+    #[test]
+    fn claim_deadline_before_epoch_returns_error() {
+        let before_epoch = SystemTime::UNIX_EPOCH
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
+        let err = OutboxMessage::lease_deadline_secs(before_epoch, Duration::ZERO).unwrap_err();
+
+        assert!(err
+            .message
+            .contains("failed to compute outbox lease deadline before UNIX epoch"));
     }
 
     #[test]
