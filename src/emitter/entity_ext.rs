@@ -1,6 +1,7 @@
 use event_emitter_rs::EventEmitter;
 
-use crate::entity::{Entity, LocalEvent};
+use crate::entity::{Entity, EventRecordError, LocalEvent};
+use crate::SourcedResult;
 
 /// Extension wrapper that adds event emitter capabilities to an Entity.
 ///
@@ -61,16 +62,18 @@ impl EntityEmitter {
         &mut self,
         event_type: impl Into<String>,
         payload: &T,
-    ) {
+    ) -> SourcedResult {
         if self.entity.is_replaying() {
-            return;
+            return Ok(());
         }
-        let data = serde_json::to_string(payload)
-            .expect("failed to serialize local event payload to JSON");
+        let data = serde_json::to_string(payload).map_err(|err| EventRecordError {
+            message: format!("failed to serialize local event payload to JSON: {}", err),
+        })?;
         self.events_to_emit.push(LocalEvent {
             event_type: event_type.into(),
             data,
         });
+        Ok(())
     }
 
     /// Drain all queued events for external emission.
@@ -171,5 +174,44 @@ mod tests {
 
         let entity = emitter.into_entity();
         assert_eq!(entity.id(), "changed");
+    }
+
+    #[derive(Debug)]
+    struct FailingSerialize;
+
+    impl serde::Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("injected serialize failure"))
+        }
+    }
+
+    #[test]
+    fn enqueue_with_returns_serialization_error() {
+        let entity = Entity::with_id("test");
+        let mut emitter = entity.with_emitter();
+
+        let err = emitter
+            .enqueue_with("BadEvent", &FailingSerialize)
+            .unwrap_err();
+
+        assert!(err
+            .message
+            .contains("failed to serialize local event payload to JSON"));
+        assert!(err.message.contains("injected serialize failure"));
+        assert_eq!(emitter.queued_len(), 0);
+    }
+
+    #[test]
+    fn enqueue_with_does_not_serialize_during_replay() {
+        let mut entity = Entity::with_id("test");
+        entity.set_replaying(true);
+        let mut emitter = entity.with_emitter();
+
+        emitter.enqueue_with("BadEvent", &FailingSerialize).unwrap();
+
+        assert_eq!(emitter.queued_len(), 0);
     }
 }

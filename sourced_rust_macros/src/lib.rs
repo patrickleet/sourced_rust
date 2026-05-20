@@ -51,8 +51,9 @@ fn returns_result(sig: &syn::Signature) -> bool {
                 .path
                 .segments
                 .last()
-                .map(|segment| segment.ident == "Result" || segment.ident == "SourcedResult")
-                .unwrap_or(false),
+                .is_some_and(|segment| {
+                    segment.ident == "Result" || segment.ident == "SourcedResult"
+                }),
             _ => false,
         },
     }
@@ -89,8 +90,7 @@ fn block_returns_result(block: &syn::Block) -> bool {
                 .path
                 .segments
                 .last()
-                .map(|segment| segment.ident == "Ok" || segment.ident == "Err")
-                .unwrap_or(false),
+                .is_some_and(|segment| segment.ident == "Ok" || segment.ident == "Err"),
             _ => false,
         },
         _ => false,
@@ -192,9 +192,9 @@ fn generate_enqueue_call(
         quote! { self.#emitter_field.enqueue(#event_name, ""); }
     } else if param_names.len() == 1 {
         let param = param_names[0];
-        quote! { self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),)); }
+        quote! { self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),))?; }
     } else {
-        quote! { self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*)); }
+        quote! { self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*))?; }
     };
     quote! {
         if !self.#entity_field.is_replaying() {
@@ -245,10 +245,15 @@ fn generate_enqueue_call(
 /// The macro supports:
 /// - Default emitter field name: `emitter` (can be overridden by specifying field name first)
 /// - `when = condition`: guard that wraps the entire method body
+/// - Methods may omit the return type; the macro expands them to `sourced_rust::SourcedResult<()>`
 #[proc_macro_attribute]
 pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_enqueue_args);
     let mut func = parse_macro_input!(item as ItemFn);
+
+    if let Err(err) = ensure_sourced_result_signature(&mut func.sig, "enqueue") {
+        return err.to_compile_error().into();
+    }
 
     let emitter_field = &args.emitter_field;
     let event_name = &args.event_name;
@@ -281,42 +286,19 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         let param = &param_names[0];
         quote! {
             if !self.#entity_field.is_replaying() {
-                self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),));
+                self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),))?;
             };
         }
     } else {
         // Multi-element tuple
         quote! {
             if !self.#entity_field.is_replaying() {
-                self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*));
+                self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*))?;
             };
         }
     };
 
-    let new_body = if returns_result(&func.sig) {
-        wrap_result_body_with_guard(args.guard.as_ref(), enqueue_call, &func.block)
-    } else {
-        let original_stmts = &func.block.stmts;
-        if let Some(guard) = &args.guard {
-            // Wrap everything in the guard condition
-            syn::parse_quote! {
-                {
-                    if #guard {
-                        #enqueue_call
-                        #(#original_stmts)*
-                    }
-                }
-            }
-        } else {
-            // No guard - just prepend enqueue
-            syn::parse_quote! {
-                {
-                    #enqueue_call
-                    #(#original_stmts)*
-                }
-            }
-        }
-    };
+    let new_body = wrap_result_body_with_guard(args.guard.as_ref(), enqueue_call, &func.block);
     func.block = Box::new(new_body);
 
     TokenStream::from(quote! { #func })
