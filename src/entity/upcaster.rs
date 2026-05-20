@@ -17,8 +17,19 @@ pub struct EventUpcaster {
 /// Error returned when an upcaster chain cannot make safe forward progress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpcastError {
-    SameVersionTransition { event_type: String, version: u64 },
-    CycleDetected { event_type: String, version: u64 },
+    SameVersionTransition {
+        event_type: String,
+        version: u64,
+    },
+    BackwardTransition {
+        event_type: String,
+        from: u64,
+        to: u64,
+    },
+    CycleDetected {
+        event_type: String,
+        version: u64,
+    },
 }
 
 impl fmt::Display for UpcastError {
@@ -30,6 +41,14 @@ impl fmt::Display for UpcastError {
             } => write!(
                 f,
                 "upcaster for event {event_type} does not advance version {version}"
+            ),
+            UpcastError::BackwardTransition {
+                event_type,
+                from,
+                to,
+            } => write!(
+                f,
+                "upcaster for event {event_type} regresses version from {from} to {to}"
             ),
             UpcastError::CycleDetected {
                 event_type,
@@ -68,8 +87,21 @@ fn upcast_one(
             if u.event_type == event.event_name && u.from_version == event.event_version {
                 if u.to_version == event.event_version {
                     return Err(UpcastError::SameVersionTransition {
-                        event_type: event.event_name,
+                        event_type: event.event_name.clone(),
                         version: event.event_version,
+                    });
+                }
+                if seen_versions.contains(&u.to_version) {
+                    return Err(UpcastError::CycleDetected {
+                        event_type: event.event_name.clone(),
+                        version: u.to_version,
+                    });
+                }
+                if u.to_version < event.event_version {
+                    return Err(UpcastError::BackwardTransition {
+                        event_type: event.event_name.clone(),
+                        from: event.event_version,
+                        to: u.to_version,
                     });
                 }
 
@@ -213,6 +245,28 @@ mod tests {
             UpcastError::SameVersionTransition {
                 event_type: "A".to_string(),
                 version: 1
+            }
+        );
+    }
+
+    #[test]
+    fn upcast_events_rejects_backward_transition() {
+        let event = EventRecord::new_versioned("A", vec![10], 1, 3);
+        let upcasters = [EventUpcaster {
+            event_type: "A",
+            from_version: 3,
+            to_version: 2,
+            transform: |payload| payload.to_vec(),
+        }];
+
+        let err = upcast_events(vec![event], &upcasters).unwrap_err();
+
+        assert_eq!(
+            err,
+            UpcastError::BackwardTransition {
+                event_type: "A".to_string(),
+                from: 3,
+                to: 2
             }
         );
     }
