@@ -225,21 +225,22 @@ impl ReadModelStore for InMemoryReadModelStore {
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
         let prefix = format!("{}:", M::COLLECTION);
+        let mut matched = None;
 
         for (key, stored) in storage.iter() {
             if key.starts_with(&prefix) {
                 let data = serde_json::from_slice::<M>(&stored.bytes)
                     .map_err(|e| ReadModelError::Serde(e.to_string()))?;
-                if predicate(&data) {
-                    return Ok(Some(Versioned {
+                if matched.is_none() && predicate(&data) {
+                    matched = Some(Versioned {
                         data,
                         version: stored.version,
-                    }));
+                    });
                 }
             }
         }
 
-        Ok(None)
+        Ok(matched)
     }
 
     fn upsert_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ReadModelError> {
@@ -452,6 +453,26 @@ mod tests {
             .unwrap();
 
         let err = store.find_one_model::<TestModel>(&|_| true).unwrap_err();
+
+        assert!(matches!(err, ReadModelError::Serde(_)));
+    }
+
+    #[test]
+    fn find_one_model_validates_rows_after_first_match() {
+        let store = InMemoryReadModelStore::new();
+        store
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 20,
+            })
+            .unwrap();
+        store
+            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .unwrap();
+
+        let err = store
+            .find_one_model::<TestModel>(&|m| m.value > 15)
+            .unwrap_err();
 
         assert!(matches!(err, ReadModelError::Serde(_)));
     }
