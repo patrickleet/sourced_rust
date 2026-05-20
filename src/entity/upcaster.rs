@@ -45,16 +45,7 @@ impl fmt::Display for UpcastError {
 impl std::error::Error for UpcastError {}
 
 /// Apply upcasters to a list of events. Chains automatically (v1->v2->v3).
-///
-/// This compatibility helper panics when invalid upcaster configuration is
-/// detected. Hydration paths use [`try_upcast_events`] so repository reads can
-/// return the error instead.
-pub fn upcast_events(events: Vec<EventRecord>, upcasters: &[EventUpcaster]) -> Vec<EventRecord> {
-    try_upcast_events(events, upcasters).expect("invalid upcaster chain")
-}
-
-/// Fallible form of [`upcast_events`].
-pub fn try_upcast_events(
+pub fn upcast_events(
     events: Vec<EventRecord>,
     upcasters: &[EventUpcaster],
 ) -> Result<Vec<EventRecord>, UpcastError> {
@@ -109,7 +100,7 @@ mod tests {
     #[test]
     fn no_upcasters_leaves_events_unchanged() {
         let event = EventRecord::new("TestEvent", vec![1, 2, 3], 1);
-        let events = upcast_events(vec![event.clone()], &[]);
+        let events = upcast_events(vec![event.clone()], &[]).unwrap();
         assert_eq!(events[0].payload, vec![1, 2, 3]);
         assert_eq!(events[0].event_version, 1);
     }
@@ -127,7 +118,7 @@ mod tests {
                 new
             },
         }];
-        let events = upcast_events(vec![event], &upcasters);
+        let events = upcast_events(vec![event], &upcasters).unwrap();
         assert_eq!(events[0].payload, vec![1, 2, 99]);
         assert_eq!(events[0].event_version, 2);
     }
@@ -141,7 +132,7 @@ mod tests {
             to_version: 2,
             transform: |_| vec![99],
         }];
-        let events = upcast_events(vec![event], &upcasters);
+        let events = upcast_events(vec![event], &upcasters).unwrap();
         assert_eq!(events[0].payload, vec![1, 2]);
         assert_eq!(events[0].event_version, 1);
     }
@@ -171,7 +162,7 @@ mod tests {
                 },
             },
         ];
-        let events = upcast_events(vec![event], &upcasters);
+        let events = upcast_events(vec![event], &upcasters).unwrap();
         assert_eq!(events[0].payload, vec![1, 2, 3]);
         assert_eq!(events[0].event_version, 3);
     }
@@ -193,7 +184,7 @@ mod tests {
                 new
             },
         }];
-        let result = upcast_events(events, &upcasters);
+        let result = upcast_events(events, &upcasters).unwrap();
         // First A: upcasted from v1 to v2
         assert_eq!(result[0].payload, vec![10, 99]);
         assert_eq!(result[0].event_version, 2);
@@ -206,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn try_upcast_events_rejects_same_version_transition() {
+    fn upcast_events_rejects_same_version_transition() {
         let event = EventRecord::new("A", vec![10], 1);
         let upcasters = [EventUpcaster {
             event_type: "A",
@@ -215,7 +206,7 @@ mod tests {
             transform: |payload| payload.to_vec(),
         }];
 
-        let err = try_upcast_events(vec![event], &upcasters).unwrap_err();
+        let err = upcast_events(vec![event], &upcasters).unwrap_err();
 
         assert_eq!(
             err,
@@ -227,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn try_upcast_events_rejects_cycles() {
+    fn upcast_events_rejects_cycles() {
         let event = EventRecord::new("A", vec![10], 1);
         let upcasters = [
             EventUpcaster {
@@ -244,7 +235,7 @@ mod tests {
             },
         ];
 
-        let err = try_upcast_events(vec![event], &upcasters).unwrap_err();
+        let err = upcast_events(vec![event], &upcasters).unwrap_err();
 
         assert_eq!(
             err,

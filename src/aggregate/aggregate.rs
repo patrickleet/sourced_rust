@@ -1,7 +1,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::entity::{try_upcast_events, Entity, EventRecord, EventUpcaster};
+use crate::entity::{upcast_events, Entity, EventRecord, EventUpcaster};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
     Commit, CommitBatch, Find, Get, Repository, RepositoryError, TransactionalCommit,
@@ -66,7 +66,7 @@ pub fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
     let events = if upcasters.is_empty() {
         agg.entity().events().to_vec()
     } else {
-        try_upcast_events(agg.entity().events().to_vec(), upcasters)
+        upcast_events(agg.entity().events().to_vec(), upcasters)
             .map_err(|err| RepositoryError::Replay(err.to_string()))?
     };
 

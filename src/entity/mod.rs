@@ -13,4 +13,4 @@ pub use event_record::{
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
 pub use local_event::LocalEvent;
-pub use upcaster::{try_upcast_events, upcast_events, EventUpcaster, UpcastError};
+pub use upcaster::{upcast_events, EventUpcaster, UpcastError};

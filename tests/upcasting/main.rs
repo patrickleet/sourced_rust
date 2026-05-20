@@ -293,7 +293,7 @@ fn upcast_events_standalone() {
         transform: aggregate::upcast_initialized_v1_v2,
     }];
 
-    let result = upcast_events(vec![event], upcasters);
+    let result = upcast_events(vec![event], upcasters).unwrap();
     assert_eq!(result[0].event_version, 2);
 
     let (id, user, task, priority): (String, String, String, u8) =
