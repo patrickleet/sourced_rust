@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::repository::RepositoryError;
+use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
 #[derive(Debug)]
@@ -56,6 +56,12 @@ impl Error for HandlerError {
 impl From<RepositoryError> for HandlerError {
     fn from(err: RepositoryError) -> Self {
         HandlerError::Repository(err)
+    }
+}
+
+impl From<EventRecordError> for HandlerError {
+    fn from(err: EventRecordError) -> Self {
+        HandlerError::Other(Box::new(err))
     }
 }
 

@@ -27,7 +27,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
             sku,
             quantity,
         },
-    );
+    )?;
 
     ctx.repo().outbox(&mut msg).commit(&mut saga)?;
     Ok(json!({ "next": "ReserveInventory" }))

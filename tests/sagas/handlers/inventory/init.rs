@@ -10,7 +10,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<InitInventoryInput>()?;
 
     let mut inv = Inventory::new();
-    inv.initialize(input.sku.clone(), input.stock).unwrap();
+    inv.initialize(input.sku.clone(), input.stock)?;
 
     ctx.repo().commit(&mut inv)?;
     Ok(json!({ "sku": input.sku, "stock": input.stock }))

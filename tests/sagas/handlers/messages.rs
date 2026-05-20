@@ -4,6 +4,7 @@
 //! `microsvc::dispatch_event` can deserialize it on the receiving end.
 
 use serde::{Deserialize, Serialize};
+use sourced_rust::microsvc::HandlerError;
 use sourced_rust::OutboxMessage;
 
 use crate::order::OrderItem;
@@ -18,9 +19,10 @@ pub fn json_outbox_to<T: Serialize>(
     event_type: &str,
     destination: &str,
     payload: &T,
-) -> OutboxMessage {
-    let bytes = serde_json::to_vec(payload).expect("JSON serialization should not fail");
-    OutboxMessage::create_to(id, event_type, destination, bytes).unwrap()
+) -> Result<OutboxMessage, HandlerError> {
+    let bytes = serde_json::to_vec(payload).map_err(|e| HandlerError::Other(Box::new(e)))?;
+    let message = OutboxMessage::create_to(id, event_type, destination, bytes)?;
+    Ok(message)
 }
 
 // === Saga → Order Service ===
