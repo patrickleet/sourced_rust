@@ -28,10 +28,9 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         .get(&input.id)?
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
 
-    counter.increment(input.amount).unwrap();
+    counter.increment(input.amount)?;
 
-    let mut message = OutboxMessage::domain_event("CounterIncremented", &counter)
-        .map_err(|e| HandlerError::Other(Box::new(e)))?;
+    let mut message = OutboxMessage::domain_event("CounterIncremented", &counter)?;
 
     ctx.repo().outbox(&mut message).commit(&mut counter)?;
 

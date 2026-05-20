@@ -13,9 +13,9 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         .repo()
         .get(&input.order_id)?
         .ok_or_else(|| HandlerError::NotFound(input.order_id.clone()))?;
-    order.mark_inventory_reserved().unwrap();
-    order.mark_payment_processed().unwrap();
-    order.complete().unwrap();
+    order.mark_inventory_reserved()?;
+    order.mark_payment_processed()?;
+    order.complete()?;
 
     let mut msg = json_outbox_to(
         &format!("{}-order-completed", input.order_id),
@@ -25,7 +25,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
             saga_id: input.saga_id,
             order_id: input.order_id.clone(),
         },
-    );
+    )?;
 
     ctx.repo().outbox(&mut msg).commit(&mut order)?;
     Ok(json!({ "order_id": input.order_id }))
