@@ -36,6 +36,15 @@ impl SafeRecorder {
         self.applied = true;
         assert_eq!(payload, "ok");
     }
+
+    #[sourced_rust::digest("TailChecked")]
+    fn record_after_tail_check(&mut self) {
+        self.tail_check()?
+    }
+
+    fn tail_check(&self) -> sourced_rust::SourcedResult {
+        Ok(())
+    }
 }
 
 #[test]
@@ -74,6 +83,16 @@ fn digest_macro_records_successful_versioned_events() {
     assert_eq!(recorder.entity.events().len(), 1);
     assert_eq!(recorder.entity.events()[0].event_name, "Recorded");
     assert_eq!(recorder.entity.events()[0].event_version, 2);
+}
+
+#[test]
+fn digest_macro_accepts_inferred_tail_try_expression() {
+    let mut recorder = SafeRecorder::default();
+
+    recorder.record_after_tail_check().unwrap();
+
+    assert_eq!(recorder.entity.events().len(), 1);
+    assert_eq!(recorder.entity.events()[0].event_name, "TailChecked");
 }
 
 #[test]
@@ -152,6 +171,16 @@ fn guard_condition_works() {
     todo.complete().unwrap();
 
     assert_eq!(todo.entity.version(), 2); // only Initialized + Completed
+}
+
+#[test]
+fn sourced_event_macro_accepts_inferred_tail_try_expression() {
+    let mut todo = Todo::default();
+
+    todo.validate_tail().unwrap();
+
+    assert_eq!(todo.entity.events().len(), 1);
+    assert_eq!(todo.entity.events()[0].event_name, "TailValidated");
 }
 
 #[test]

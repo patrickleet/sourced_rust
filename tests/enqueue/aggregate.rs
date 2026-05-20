@@ -111,4 +111,13 @@ impl Ephemeral {
     pub fn clear(&mut self) {
         self.value = String::new();
     }
+
+    #[enqueue("ValueChecked")]
+    pub fn check_with_tail_expression(&mut self) {
+        self.tail_check()?
+    }
+
+    fn tail_check(&self) -> sourced_rust::SourcedResult {
+        Ok(())
+    }
 }
