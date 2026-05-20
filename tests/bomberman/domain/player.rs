@@ -16,13 +16,7 @@ pub struct Player {
 
 impl Player {
     #[digest("PlayerJoined")]
-    pub fn join(
-        &mut self,
-        id: String,
-        name: String,
-        x: i32,
-        y: i32,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn join(&mut self, id: String, name: String, x: i32, y: i32) {
         self.entity.set_id(&id);
         self.name = name;
         self.x = x;
@@ -34,33 +28,30 @@ impl Player {
     }
 
     #[digest("PlayerMoved", when = self.alive)]
-    pub fn move_to(&mut self, x: i32, y: i32) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn move_to(&mut self, x: i32, y: i32) {
         self.x = x;
         self.y = y;
     }
 
     #[digest("PlayerKilled", when = self.alive)]
-    pub fn kill(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn kill(&mut self) {
         self.alive = false;
     }
 
     #[digest("BombPlaced", when = self.alive && self.active_bombs < self.max_bombs)]
-    pub fn place_bomb(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn place_bomb(&mut self) {
         self.active_bombs += 1;
     }
 
     #[digest("BombReturned")]
-    pub fn return_bomb(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn return_bomb(&mut self) {
         if self.active_bombs > 0 {
             self.active_bombs -= 1;
         }
     }
 
     #[digest("PowerUpApplied")]
-    pub fn apply_power_up(
-        &mut self,
-        power_up: PowerUp,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn apply_power_up(&mut self, power_up: PowerUp) {
         match power_up {
             PowerUp::BombUp => self.max_bombs += 1,
             PowerUp::FireUp => self.blast_radius += 1,

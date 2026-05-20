@@ -11,19 +11,14 @@ pub struct Todo {
 #[sourced(entity)]
 impl Todo {
     #[event("Initialized")]
-    pub fn initialize(
-        &mut self,
-        id: String,
-        user_id: String,
-        task: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
     #[event("Completed", when = !self.completed)]
-    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn complete(&mut self) {
         self.completed = true;
     }
 

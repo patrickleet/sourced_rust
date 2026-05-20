@@ -4,8 +4,7 @@ use aggregate::{Todo, TodoEvent};
 use serde::ser::Error as _;
 use serde::Serialize;
 use sourced_rust::{
-    Aggregate, AggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
-    Queueable,
+    Aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, Queueable,
 };
 
 #[derive(Clone)]
@@ -28,12 +27,12 @@ struct SafeRecorder {
 
 impl SafeRecorder {
     #[sourced_rust::digest("Recorded")]
-    fn record(&mut self, _payload: FailingSerialize) -> Result<(), EventRecordError> {
+    fn record(&mut self, _payload: FailingSerialize) {
         self.applied = true;
     }
 
     #[sourced_rust::digest("Recorded", version = 2)]
-    fn record_ok(&mut self, payload: String) -> Result<(), EventRecordError> {
+    fn record_ok(&mut self, payload: String) {
         self.applied = true;
         assert_eq!(payload, "ok");
     }

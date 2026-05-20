@@ -27,11 +27,7 @@ impl Default for Order {
 impl Order {
     #[digest("OrderCreated")]
     #[enqueue("OrderCreated")]
-    pub fn create(
-        &mut self,
-        order_id: String,
-        customer: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn create(&mut self, order_id: String, customer: String) {
         self.entity.set_id(&order_id);
         self.order_id = order_id;
         self.customer = customer;
@@ -40,13 +36,13 @@ impl Order {
 
     #[digest("OrderConfirmed", when = self.status == "created")]
     #[enqueue("OrderConfirmed", when = self.status == "created")]
-    pub fn confirm(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn confirm(&mut self) {
         self.status = "confirmed".into();
     }
 
     #[digest("OrderShipped", when = self.status == "confirmed")]
     #[enqueue("OrderShipped", when = self.status == "confirmed")]
-    pub fn ship(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn ship(&mut self) {
         self.status = "shipped".into();
     }
 }
@@ -77,11 +73,7 @@ impl Default for Notifier {
 impl Notifier {
     #[digest("NotificationSent")]
     #[enqueue(my_emitter, "NotificationSent")]
-    pub fn send(
-        &mut self,
-        id: String,
-        message: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;
     }

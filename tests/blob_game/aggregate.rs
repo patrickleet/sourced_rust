@@ -200,7 +200,7 @@ impl BlobGame {
         minigame_id: String,
         timed: bool,
         started_at: Option<u64>,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    ) {
         self.entity.set_id(&id);
         self.address = address;
         self.minigame_id = minigame_id;
@@ -211,10 +211,7 @@ impl BlobGame {
     }
 
     #[digest("NextLevelStarted", when = self.current_level_completed && !self.player_dead)]
-    pub fn start_next_level(
-        &mut self,
-        map: Vec<Vec<TileState>>,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn start_next_level(&mut self, map: Vec<Vec<TileState>>) {
         self.current_level += 1;
         let level = Level {
             id: self.current_level,
@@ -226,7 +223,7 @@ impl BlobGame {
     }
 
     #[digest("MovedUp", when = self.can_move_up())]
-    pub fn up(&mut self, time: Option<u64>) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn up(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
                 column: pos.column,
@@ -237,7 +234,7 @@ impl BlobGame {
     }
 
     #[digest("MovedDown", when = self.can_move_down())]
-    pub fn down(&mut self, time: Option<u64>) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn down(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
                 column: pos.column,
@@ -248,7 +245,7 @@ impl BlobGame {
     }
 
     #[digest("MovedLeft", when = self.can_move_left())]
-    pub fn left(&mut self, time: Option<u64>) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn left(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
                 column: pos.column - 1,
@@ -259,7 +256,7 @@ impl BlobGame {
     }
 
     #[digest("MovedRight", when = self.can_move_right())]
-    pub fn right(&mut self, time: Option<u64>) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn right(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
                 column: pos.column + 1,

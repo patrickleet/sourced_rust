@@ -51,10 +51,30 @@ fn returns_result(sig: &syn::Signature) -> bool {
                 .path
                 .segments
                 .last()
-                .map(|segment| segment.ident == "Result")
+                .map(|segment| segment.ident == "Result" || segment.ident == "SourcedResult")
                 .unwrap_or(false),
             _ => false,
         },
+    }
+}
+
+fn ensure_sourced_result_signature(
+    sig: &mut syn::Signature,
+    attr_name: &str,
+) -> Result<(), syn::Error> {
+    match &sig.output {
+        ReturnType::Default => {
+            sig.output = syn::parse_quote!(-> sourced_rust::SourcedResult<()>);
+            Ok(())
+        }
+        ReturnType::Type(_, _) if returns_result(sig) => Ok(()),
+        ReturnType::Type(_, ty) => Err(syn::Error::new_spanned(
+            ty,
+            format!(
+                "#[{}] methods must return Result<(), E>, SourcedResult, or omit the return type",
+                attr_name
+            ),
+        )),
     }
 }
 
@@ -349,17 +369,18 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 
 /// Attribute macro that automatically inserts a digest call at the beginning of a method.
 ///
-/// The annotated method must return `Result<(), E>` where `E` can be constructed
-/// from `sourced_rust::EventRecordError`.
+/// If the annotated method omits a return type, it expands to
+/// `sourced_rust::SourcedResult<()>`. Methods may also explicitly return
+/// `Result<(), E>` where `E` can be constructed from
+/// `sourced_rust::EventRecordError`.
 ///
 /// # Usage
 ///
 /// Basic usage with function parameters (automatically captured):
 /// ```ignore
 /// #[digest("Initialized")]
-/// fn initialize(&mut self, id: String, user_id: String) -> Result<(), sourced_rust::EventRecordError> {
+/// fn initialize(&mut self, id: String, user_id: String) {
 ///     // digest call auto-inserted, params serialized as tuple
-///     Ok(())
 /// }
 /// ```
 ///
@@ -387,13 +408,8 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_digest_args);
     let mut func = parse_macro_input!(item as ItemFn);
 
-    if !returns_result(&func.sig) {
-        return syn::Error::new_spanned(
-            &func.sig.ident,
-            "#[digest] methods must return Result<(), E> where E can be constructed from sourced_rust::EventRecordError",
-        )
-        .to_compile_error()
-        .into();
+    if let Err(err) = ensure_sourced_result_signature(&mut func.sig, "digest") {
+        return err.to_compile_error().into();
     }
 
     let param_names = extract_param_names(&func.sig);
@@ -895,13 +911,8 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let syn::ImplItem::Fn(method) = item {
             match find_and_remove_event_attr(&mut method.attrs) {
                 Ok(Some(event_attr)) => {
-                    if !returns_result(&method.sig) {
-                        return syn::Error::new_spanned(
-                            &method.sig.ident,
-                            "#[event] methods must return Result<(), E> where E can be constructed from sourced_rust::EventRecordError",
-                        )
-                        .to_compile_error()
-                        .into();
+                    if let Err(err) = ensure_sourced_result_signature(&mut method.sig, "event") {
+                        return err.to_compile_error().into();
                     }
 
                     let params = extract_params_with_types(&method.sig);

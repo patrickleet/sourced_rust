@@ -4,6 +4,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::SourcedResult;
+
 use super::{BitcodePayloadCodec, EventRecord, EventRecordError, PayloadCodec};
 
 #[derive(Serialize, Deserialize)]
@@ -176,7 +178,7 @@ impl Entity {
         &mut self,
         name: impl Into<String>,
         payload: &T,
-    ) -> Result<(), EventRecordError> {
+    ) -> SourcedResult {
         if self.replaying {
             return Ok(());
         }
@@ -199,7 +201,7 @@ impl Entity {
         name: impl Into<String>,
         version: u64,
         payload: &T,
-    ) -> Result<(), EventRecordError> {
+    ) -> SourcedResult {
         if self.replaying {
             return Ok(());
         }
@@ -215,7 +217,7 @@ impl Entity {
     }
 
     /// Record an event with no payload.
-    pub fn digest_empty(&mut self, name: impl Into<String>) -> Result<(), EventRecordError> {
+    pub fn digest_empty(&mut self, name: impl Into<String>) -> SourcedResult {
         self.digest(name, &())
     }
 
@@ -254,7 +256,7 @@ impl Entity {
 
     /// Replace all events with a single snapshot event.
     /// Used by read models to store current state.
-    pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) -> Result<(), EventRecordError> {
+    pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) -> SourcedResult {
         let payload = BitcodePayloadCodec::encode(data).map_err(EventRecordError::encode)?;
         self.events.clear();
         let record = EventRecord::new("Snapshot", payload, 1);
