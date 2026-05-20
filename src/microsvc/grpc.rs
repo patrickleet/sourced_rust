@@ -142,10 +142,7 @@ impl<R: Send + Sync + 'static> CommandService for GrpcHandler<R> {
             .map(|s| s.to_string())
             .collect();
 
-        Ok(Response::new(HealthResponse {
-            ok: true,
-            commands,
-        }))
+        Ok(Response::new(HealthResponse { ok: true, commands }))
     }
 }
 

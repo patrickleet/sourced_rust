@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use crate::outbox::OutboxMessage;
 use super::publisher::OutboxPublisher;
+use crate::outbox::OutboxMessage;
 
 /// Result of a batch drain operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,10 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             return ProcessOneResult::default();
         }
 
-        match self.publisher.publish(&message.event_type, &message.payload, &message.metadata) {
+        match self
+            .publisher
+            .publish(&message.event_type, &message.payload, &message.metadata)
+        {
             Ok(()) => {
                 message.complete();
                 ProcessOneResult {

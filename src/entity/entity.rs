@@ -188,7 +188,12 @@ impl Entity {
     }
 
     /// Record a versioned event.
-    pub fn digest_v<T: serde::Serialize>(&mut self, name: impl Into<String>, version: u64, payload: &T) {
+    pub fn digest_v<T: serde::Serialize>(
+        &mut self,
+        name: impl Into<String>,
+        version: u64,
+        payload: &T,
+    ) {
         if self.replaying {
             return;
         }

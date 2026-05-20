@@ -1,9 +1,7 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoEvent};
-use sourced_rust::{
-    Aggregate, AggregateBuilder, EventRecord, HashMapRepository, Queueable,
-};
+use sourced_rust::{Aggregate, AggregateBuilder, EventRecord, HashMapRepository, Queueable};
 
 #[test]
 fn enum_variants_exist_and_compile() {

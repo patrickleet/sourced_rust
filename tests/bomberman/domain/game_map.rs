@@ -43,7 +43,11 @@ impl GameMap {
 
     #[digest("PowerUpCollected")]
     pub fn collect_power_up(&mut self, x: i32, y: i32) -> Option<PowerUp> {
-        if let Some(idx) = self.power_ups.iter().position(|((px, py), _)| *px == x && *py == y) {
+        if let Some(idx) = self
+            .power_ups
+            .iter()
+            .position(|((px, py), _)| *px == x && *py == y)
+        {
             let (_, power_up) = self.power_ups.remove(idx);
             Some(power_up)
         } else {
@@ -55,7 +59,10 @@ impl GameMap {
         if !self.is_in_bounds(x, y) {
             return false;
         }
-        matches!(self.tiles[y as usize][x as usize], Tile::Floor | Tile::Spawn)
+        matches!(
+            self.tiles[y as usize][x as usize],
+            Tile::Floor | Tile::Spawn
+        )
     }
 
     pub fn is_in_bounds(&self, x: i32, y: i32) -> bool {

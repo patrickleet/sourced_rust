@@ -1,9 +1,9 @@
 //! Session integration tests — exercises session variables through dispatch.
 
 use serde_json::json;
-use std::collections::HashMap;
 use sourced_rust::microsvc::{HandlerError, Service, Session};
 use sourced_rust::HashMapRepository;
+use std::collections::HashMap;
 
 #[test]
 fn handler_accesses_user_id() {

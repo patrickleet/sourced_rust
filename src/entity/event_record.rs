@@ -1,7 +1,7 @@
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 /// Error when deserializing event payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,15 +17,22 @@ impl fmt::Display for PayloadError {
 
 impl std::error::Error for PayloadError {}
 
-fn default_event_version() -> u64 { 1 }
-fn is_version_one(v: &u64) -> bool { *v == 1 }
+fn default_event_version() -> u64 {
+    1
+}
+fn is_version_one(v: &u64) -> bool {
+    *v == 1
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,
     #[serde(with = "payload_serde")]
     pub payload: Vec<u8>,
-    #[serde(default = "default_event_version", skip_serializing_if = "is_version_one")]
+    #[serde(
+        default = "default_event_version",
+        skip_serializing_if = "is_version_one"
+    )]
     pub event_version: u64,
     pub sequence: u64,
     pub timestamp: SystemTime,
@@ -65,7 +72,12 @@ impl EventRecord {
     }
 
     /// Create an event record at a specific version.
-    pub fn new_versioned(event_name: impl Into<String>, payload: Vec<u8>, sequence: u64, version: u64) -> Self {
+    pub fn new_versioned(
+        event_name: impl Into<String>,
+        payload: Vec<u8>,
+        sequence: u64,
+        version: u64,
+    ) -> Self {
         EventRecord {
             event_name: event_name.into(),
             payload,

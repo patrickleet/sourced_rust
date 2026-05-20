@@ -36,9 +36,9 @@ mod thread;
 mod worker;
 
 // Publishers
-pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 #[cfg(feature = "emitter")]
 pub use publisher::LocalEmitterPublisher;
+pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 
 // Repository helpers
 pub use repository_ext::OutboxRepositoryExt;

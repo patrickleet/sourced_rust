@@ -110,8 +110,7 @@ impl OutboxWorkerThread {
                                 }
                                 Err(_) => {
                                     // Release for retry
-                                    let _ =
-                                        repo.release_outbox_message(msg.id(), "publish failed");
+                                    let _ = repo.release_outbox_message(msg.id(), "publish failed");
                                     stats.messages_failed += 1;
                                 }
                             }
@@ -194,8 +193,7 @@ impl OutboxWorkerThread {
                                     }
                                 }
                                 Err(_) => {
-                                    let _ =
-                                        repo.release_outbox_message(msg.id(), "publish failed");
+                                    let _ = repo.release_outbox_message(msg.id(), "publish failed");
                                     stats.messages_failed += 1;
                                 }
                             }

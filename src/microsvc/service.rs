@@ -377,10 +377,8 @@ fn event_to_json_input(event: &crate::bus::Event) -> Result<Value, HandlerError>
 fn event_to_session(event: &crate::bus::Event) -> Session {
     match &event.metadata {
         Some(meta) => {
-            let vars: HashMap<String, String> = meta
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let vars: HashMap<String, String> =
+                meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             Session::from_map(vars)
         }
         None => Session::new(),
@@ -412,8 +410,8 @@ mod tests {
 
     #[test]
     fn handler_error_propagates() {
-        let service = test_service()
-            .command("fail", |_ctx| Err(HandlerError::Rejected("nope".into())));
+        let service =
+            test_service().command("fail", |_ctx| Err(HandlerError::Rejected("nope".into())));
         let result = service.dispatch("fail", json!({}), Session::new());
         assert!(matches!(result, Err(HandlerError::Rejected(ref s)) if s == "nope"));
     }
@@ -421,7 +419,9 @@ mod tests {
     #[test]
     fn decode_error_from_bad_payload() {
         #[derive(serde::Deserialize)]
-        struct Input { _name: String }
+        struct Input {
+            _name: String,
+        }
 
         let service = test_service().command("typed", |ctx| {
             let _input = ctx.input::<Input>()?;
@@ -451,7 +451,9 @@ mod tests {
                 Ok(json!({ "hello": name }))
             },
         );
-        let result = service.dispatch("greet", json!({ "name": "Pat" }), Session::new()).unwrap();
+        let result = service
+            .dispatch("greet", json!({ "name": "Pat" }), Session::new())
+            .unwrap();
         assert_eq!(result, json!({ "hello": "Pat" }));
     }
 
@@ -475,7 +477,9 @@ mod tests {
         );
 
         // No role
-        assert!(service.dispatch("admin", json!({}), Session::new()).is_err());
+        assert!(service
+            .dispatch("admin", json!({}), Session::new())
+            .is_err());
 
         // Admin role
         let mut session = Session::new();
@@ -500,7 +504,10 @@ mod tests {
     fn dispatch_request_error_codes() {
         let service = test_service()
             .command("reject", |_| Err(HandlerError::Rejected("no".into())))
-            .command("unauth", |ctx| { let _ = ctx.user_id()?; Ok(json!({})) });
+            .command("unauth", |ctx| {
+                let _ = ctx.user_id()?;
+                Ok(json!({}))
+            });
 
         let resp = service.dispatch_request(&CommandRequest {
             command: "unknown".to_string(),

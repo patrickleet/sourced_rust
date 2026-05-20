@@ -23,9 +23,7 @@ use sourced_rust::{
 };
 
 use super::handlers;
-use super::order::{
-    Inventory, Order, OrderFulfillmentSaga, OrderStatus, Payment, SagaStatus,
-};
+use super::order::{Inventory, Order, OrderFulfillmentSaga, OrderStatus, Payment, SagaStatus};
 
 // ============================================================================
 // Test 1: Orchestrated — test runner dispatches to each service in sequence

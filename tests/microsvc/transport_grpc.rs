@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sourced_rust::microsvc::grpc::{
-    CommandServiceClient, GrpcRequest, HealthRequest,
-};
+use sourced_rust::microsvc::grpc::{CommandServiceClient, GrpcRequest, HealthRequest};
 use sourced_rust::microsvc::Service;
 use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 use tokio::net::TcpListener;
@@ -52,11 +50,7 @@ async fn health_check() {
     let service = counter_service();
     let mut client = start_server(service).await;
 
-    let resp = client
-        .health(HealthRequest {})
-        .await
-        .unwrap()
-        .into_inner();
+    let resp = client.health(HealthRequest {}).await.unwrap().into_inner();
 
     assert!(resp.ok);
     assert!(resp.commands.iter().any(|c| c == "counter.create"));

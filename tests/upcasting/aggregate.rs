@@ -39,8 +39,7 @@ sourced_rust::aggregate!(TodoV1, entity {
 
 /// Upcasts Initialized v1 (id, user_id, task) → v2 (id, user_id, task, priority)
 pub fn upcast_initialized_v1_v2(payload: &[u8]) -> Vec<u8> {
-    let (id, user_id, task): (String, String, String) =
-        bitcode::deserialize(payload).unwrap();
+    let (id, user_id, task): (String, String, String) = bitcode::deserialize(payload).unwrap();
     bitcode::serialize(&(id, user_id, task, 0u8)).unwrap()
 }
 
@@ -99,7 +98,14 @@ pub struct TodoV3 {
 
 impl TodoV3 {
     #[digest("Initialized", version = 3)]
-    pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8, due_date: String) {
+    pub fn initialize(
+        &mut self,
+        id: String,
+        user_id: String,
+        task: String,
+        priority: u8,
+        due_date: String,
+    ) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;

@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, Snapshottable,
-    SnapshotStore,
+    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, SnapshotStore,
+    Snapshottable,
 };
 
 // ============================================================================

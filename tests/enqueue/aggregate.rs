@@ -1,5 +1,5 @@
-use sourced_rust::{digest, enqueue, Entity};
 use sourced_rust::emitter::EntityEmitter;
+use sourced_rust::{digest, enqueue, Entity};
 
 /// An aggregate using both #[digest] and #[enqueue] — the typical pattern.
 /// Events are recorded to the entity stream for replay AND queued for

@@ -47,7 +47,10 @@ impl Payment {
     }
 
     pub fn is_successful(&self) -> bool {
-        matches!(self.status, PaymentStatus::Authorized | PaymentStatus::Captured)
+        matches!(
+            self.status,
+            PaymentStatus::Authorized | PaymentStatus::Captured
+        )
     }
 
     pub fn failure_reason(&self) -> Option<&str> {

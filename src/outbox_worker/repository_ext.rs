@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use crate::aggregate::hydrate;
 use crate::entity::Entity;
-use crate::repository::RepositoryError;
 use crate::hashmap_repo::HashMapRepository;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
+use crate::repository::RepositoryError;
 
 /// Extension trait for repositories that expose outbox message operations.
 pub trait OutboxRepositoryExt: Send + Sync {

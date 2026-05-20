@@ -34,8 +34,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
-use super::session::Session;
 use super::service::Service;
+use super::session::Session;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router<R: Send + Sync + 'static>(service: Arc<Service<R>>) -> Router {

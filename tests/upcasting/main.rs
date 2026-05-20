@@ -2,8 +2,8 @@ mod aggregate;
 
 use aggregate::{TodoV1, TodoV2, TodoV3};
 use sourced_rust::{
-    hydrate, Aggregate, AggregateBuilder, Commit, Entity, EventRecord, EventUpcaster,
-    HashMapRepository, SnapshotStore, upcast_events,
+    hydrate, upcast_events, Aggregate, AggregateBuilder, Commit, Entity, EventRecord,
+    EventUpcaster, HashMapRepository, SnapshotStore,
 };
 
 // =============================================================================
@@ -135,8 +135,8 @@ fn hydrate_v3_from_v1_events_chains_upcasters() {
     assert_eq!(v3.entity.id(), "t1");
     assert_eq!(v3.user_id, "bob");
     assert_eq!(v3.task, "Walk dog");
-    assert_eq!(v3.priority, 0);     // from v1→v2 upcaster
-    assert_eq!(v3.due_date, "");    // from v2→v3 upcaster
+    assert_eq!(v3.priority, 0); // from v1→v2 upcaster
+    assert_eq!(v3.due_date, ""); // from v2→v3 upcaster
     assert!(!v3.completed);
 }
 
@@ -153,14 +153,20 @@ fn hydrate_v3_from_v2_events_applies_single_upcaster() {
     assert_eq!(v3.entity.id(), "t1");
     assert_eq!(v3.user_id, "carol");
     assert_eq!(v3.task, "Read book");
-    assert_eq!(v3.priority, 5);     // preserved from v2
-    assert_eq!(v3.due_date, "");    // from v2→v3 upcaster
+    assert_eq!(v3.priority, 5); // preserved from v2
+    assert_eq!(v3.due_date, ""); // from v2→v3 upcaster
 }
 
 #[test]
 fn hydrate_v3_from_native_v3_events_no_upcasting_needed() {
     let mut v3 = TodoV3::default();
-    v3.initialize("t1".into(), "dave".into(), "Cook dinner".into(), 2, "2025-12-31".into());
+    v3.initialize(
+        "t1".into(),
+        "dave".into(),
+        "Cook dinner".into(),
+        2,
+        "2025-12-31".into(),
+    );
 
     let mut entity = Entity::new();
     entity.load_from_history(v3.entity.events().to_vec());
@@ -225,7 +231,8 @@ fn repo_roundtrip_v1_to_v2() {
 
 #[test]
 fn upcast_events_standalone() {
-    let payload_v1 = bitcode::serialize(&("id1".to_string(), "user1".to_string(), "task1".to_string())).unwrap();
+    let payload_v1 =
+        bitcode::serialize(&("id1".to_string(), "user1".to_string(), "task1".to_string())).unwrap();
     let event = EventRecord::new("Initialized", payload_v1, 1);
 
     let upcasters: &[EventUpcaster] = &[EventUpcaster {
@@ -287,9 +294,7 @@ fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     base_repo.commit(&mut v1.entity).unwrap();
 
     // Load via a v2 snapshot-aware repo (no snapshot exists, so full replay with upcasting)
-    let repo = base_repo
-        .aggregate::<TodoV2>()
-        .with_snapshots(5);
+    let repo = base_repo.aggregate::<TodoV2>().with_snapshots(5);
 
     let loaded = repo.get("t1").unwrap().unwrap();
     assert_eq!(loaded.user_id, "hank");

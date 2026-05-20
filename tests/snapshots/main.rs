@@ -1,9 +1,7 @@
 mod aggregate;
 
 use aggregate::Todo;
-use sourced_rust::{
-    AggregateBuilder, HashMapRepository, Queueable, SnapshotStore,
-};
+use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable, SnapshotStore};
 
 #[test]
 fn snapshot_created_at_frequency_threshold() {

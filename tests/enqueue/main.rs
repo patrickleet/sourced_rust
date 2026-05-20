@@ -39,7 +39,9 @@ fn emit_queued_fires_registered_listeners() {
     order.create("order-1".into(), "alice".into());
     order.emitter.emit_queued();
 
-    let payload = rx.recv_timeout(Duration::from_secs(1)).expect("callback never fired");
+    let payload = rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback never fired");
     assert!(!payload.is_empty());
 }
 
@@ -274,6 +276,8 @@ fn enqueue_only_emits_correctly() {
     eph.set_value("hello".into());
     eph.emitter.emit_queued();
 
-    let payload = rx.recv_timeout(Duration::from_secs(1)).expect("ValueSet callback never fired");
+    let payload = rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("ValueSet callback never fired");
     assert!(!payload.is_empty());
 }

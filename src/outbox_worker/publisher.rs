@@ -127,8 +127,12 @@ mod tests {
         let mut publisher = LogPublisher::with_buffer(buffer.clone());
         let empty = HashMap::new();
 
-        publisher.publish("UserCreated", br#"{"id":"123"}"#, &empty).unwrap();
-        publisher.publish("UserUpdated", br#"{"id":"123","name":"Alice"}"#, &empty).unwrap();
+        publisher
+            .publish("UserCreated", br#"{"id":"123"}"#, &empty)
+            .unwrap();
+        publisher
+            .publish("UserUpdated", br#"{"id":"123","name":"Alice"}"#, &empty)
+            .unwrap();
 
         let logs = buffer.lock().unwrap();
         assert_eq!(logs.len(), 2);
