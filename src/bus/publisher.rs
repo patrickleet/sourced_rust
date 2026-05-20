@@ -177,6 +177,9 @@ mod tests {
 
         let meta = event.metadata.unwrap();
         assert_eq!(meta.len(), 2);
-        assert_eq!(meta[0], ("correlation-id".to_string(), "abc-123".to_string()));
+        assert_eq!(
+            meta[0],
+            ("correlation-id".to_string(), "abc-123".to_string())
+        );
     }
 }

@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::{AggregateRepository, HashMapRepository, OutboxCommitExt, QueuedRepository};
 
-use crate::order::Inventory;
 use super::messages::*;
+use crate::order::Inventory;
 
 pub type Repo = AggregateRepository<QueuedRepository<HashMapRepository>, Inventory>;
 

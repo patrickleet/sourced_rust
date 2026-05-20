@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::entity::{Committable, Entity};
+use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::repository::{
-    Commit, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
+    Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
+    TransactionalCommit,
 };
 use crate::snapshot::{SnapshotRecord, SnapshotStore};
 
@@ -209,6 +210,26 @@ impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
         let result = self.inner.commit(committable);
 
         // Unlock on success
+        if result.is_ok() {
+            for lock in locks {
+                lock.unlock()?;
+            }
+        }
+
+        result
+    }
+}
+
+impl<R: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedRepository<R, L> {
+    fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+        let ids: Vec<&str> = batch.entities.iter().map(|entity| entity.id()).collect();
+        let mut locks = Vec::with_capacity(ids.len());
+        for id in ids {
+            locks.push(self.ensure_lock(id)?);
+        }
+
+        let result = self.inner.commit_batch(batch);
+
         if result.is_ok() {
             for lock in locks {
                 lock.unlock()?;

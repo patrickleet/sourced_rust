@@ -72,7 +72,13 @@ fn hydrate_v3_from_v2_events() {
 #[test]
 fn hydrate_v3_native_no_upcasting() {
     let mut v3 = TodoV3::default();
-    v3.initialize("t1".into(), "dave".into(), "Cook".into(), 2, "2025-12-31".into());
+    v3.initialize(
+        "t1".into(),
+        "dave".into(),
+        "Cook".into(),
+        2,
+        "2025-12-31".into(),
+    );
 
     let mut entity = Entity::new();
     entity.load_from_history(v3.entity.events().to_vec());

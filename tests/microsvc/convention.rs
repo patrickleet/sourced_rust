@@ -120,7 +120,12 @@ fn duplicate_create_leaves_single_outbox_message() {
     let result = service.dispatch("counter.create", json!({ "id": "c1" }), Session::new());
     assert!(result.is_err());
 
-    let pending = service.repo().repo().inner().outbox_messages_pending().unwrap();
+    let pending = service
+        .repo()
+        .repo()
+        .inner()
+        .outbox_messages_pending()
+        .unwrap();
     assert_eq!(pending.len(), 1);
 }
 

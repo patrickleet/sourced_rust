@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::entity::{Committable, Entity, EventRecord};
-use crate::read_model::{InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, Versioned};
+use crate::read_model::{
+    InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, Versioned,
+};
 use crate::repository::{
-    Commit, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
+    Commit, CommitBatch, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
+    SnapshotWrite, TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
 
@@ -174,15 +177,39 @@ impl Count for HashMapRepository {
 impl Commit for HashMapRepository {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
         let entities = committable.entities_mut();
+        self.commit_batch(CommitBatch::new(entities))
+    }
+}
+
+impl TransactionalCommit for HashMapRepository {
+    fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+        reject_duplicate_streams(&batch.entities)?;
 
         let mut storage = self
             .event_store
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
+        let mut model_storage = self
+            .model_store
+            .storage
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("read model write"))?;
+        let mut snapshot_storage = self
+            .snapshot_store
+            .storage
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
 
-        // Phase 1: Validate (optimistic concurrency check)
-        for entity in &entities {
-            let stored_len = storage.get(entity.id()).map(|v| v.len() as u64).unwrap_or(0);
+        let mut staged_events = storage.clone();
+        let mut staged_models = model_storage.clone();
+        let mut staged_snapshots = snapshot_storage.clone();
+
+        // Phase 1: Validate all stream versions before staging any writes.
+        for entity in &batch.entities {
+            let stored_len = staged_events
+                .get(entity.id())
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
             if stored_len != entity.committed_version() {
                 return Err(RepositoryError::ConcurrentWrite {
                     id: entity.id().to_string(),
@@ -192,16 +219,59 @@ impl Commit for HashMapRepository {
             }
         }
 
-        // Phase 2: Append new events and mark committed
-        for entity in entities {
+        // Phase 2: Apply every write to staged maps only.
+        for entity in &batch.entities {
             let new_events = entity.new_events().to_vec();
-            let stored = storage.entry(entity.id().to_string()).or_insert_with(Vec::new);
+            let stored = staged_events
+                .entry(entity.id().to_string())
+                .or_insert_with(Vec::new);
             stored.extend(new_events);
+        }
+
+        for write in batch.read_models {
+            let new_version = staged_models
+                .get(&write.key)
+                .map(|s| s.version + 1)
+                .unwrap_or(1);
+            staged_models.insert(
+                write.key,
+                crate::read_model::in_memory::StoredModel {
+                    bytes: write.bytes,
+                    version: new_version,
+                },
+            );
+        }
+
+        for write in batch.snapshots {
+            match write {
+                SnapshotWrite::Save(record) => {
+                    staged_snapshots.insert(record.aggregate_id.clone(), record);
+                }
+            }
+        }
+
+        // Phase 3: Publish staged state only after all validation and staging succeeds.
+        *storage = staged_events;
+        *model_storage = staged_models;
+        *snapshot_storage = staged_snapshots;
+
+        for entity in batch.entities {
             entity.mark_committed();
         }
 
         Ok(())
     }
+}
+
+fn reject_duplicate_streams(entities: &[&mut Entity]) -> Result<(), RepositoryError> {
+    let mut seen = HashSet::with_capacity(entities.len());
+    for entity in entities {
+        let id = entity.id();
+        if !seen.insert(id.to_string()) {
+            return Err(RepositoryError::DuplicateStreamInBatch { id: id.to_string() });
+        }
+    }
+    Ok(())
 }
 
 impl ReadModelStore for HashMapRepository {
@@ -303,6 +373,31 @@ mod tests {
 
         let all_entities: Vec<Entity> = repo.get(&["id_1", "id_2"]).unwrap();
         assert_eq!(all_entities.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_stream_ids_rejected_before_write() {
+        let repo = HashMapRepository::new();
+
+        let mut entity1 = Entity::with_id("same-id");
+        entity1.digest("event1", &"arg1");
+
+        let mut entity2 = Entity::with_id("same-id");
+        entity2.digest("event2", &"arg2");
+
+        let err = repo.commit(&mut [&mut entity1, &mut entity2]).unwrap_err();
+        assert_eq!(
+            err,
+            RepositoryError::DuplicateStreamInBatch {
+                id: "same-id".into()
+            }
+        );
+
+        assert!(repo.get("same-id").unwrap().is_none());
+        assert_eq!(entity1.committed_version(), 0);
+        assert_eq!(entity2.committed_version(), 0);
+        assert_eq!(entity1.new_events().len(), 1);
+        assert_eq!(entity2.new_events().len(), 1);
     }
 
     #[test]

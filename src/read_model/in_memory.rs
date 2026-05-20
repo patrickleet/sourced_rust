@@ -6,9 +6,10 @@ use std::sync::{Arc, RwLock};
 use super::{ReadModel, ReadModelError, ReadModelStore, Versioned};
 
 /// Internal stored representation of a read model.
-struct StoredModel {
-    bytes: Vec<u8>,
-    version: u64,
+#[derive(Clone)]
+pub(crate) struct StoredModel {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) version: u64,
 }
 
 /// In-memory read model store backed by a HashMap.
@@ -16,7 +17,7 @@ struct StoredModel {
 /// Storage key is `"TABLE:id"`. Clone-friendly via Arc.
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
-    storage: Arc<RwLock<HashMap<String, StoredModel>>>,
+    pub(crate) storage: Arc<RwLock<HashMap<String, StoredModel>>>,
 }
 
 impl Default for InMemoryReadModelStore {
@@ -44,10 +45,7 @@ impl InMemoryReadModelStore {
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let new_version = storage
-            .get(key)
-            .map(|s| s.version + 1)
-            .unwrap_or(1);
+        let new_version = storage.get(key).map(|s| s.version + 1).unwrap_or(1);
 
         storage.insert(
             key.to_string(),
@@ -84,8 +82,7 @@ impl ReadModelStore for InMemoryReadModelStore {
 
     fn upsert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
         let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes =
-            serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
+        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
 
         let mut storage = self
             .storage
@@ -110,8 +107,7 @@ impl ReadModelStore for InMemoryReadModelStore {
 
     fn insert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
         let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes =
-            serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
+        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
 
         let mut storage = self
             .storage
@@ -127,13 +123,7 @@ impl ReadModelStore for InMemoryReadModelStore {
             });
         }
 
-        storage.insert(
-            key,
-            StoredModel {
-                bytes,
-                version: 1,
-            },
-        );
+        storage.insert(key, StoredModel { bytes, version: 1 });
 
         Ok(Versioned {
             data: model.clone(),
@@ -147,21 +137,21 @@ impl ReadModelStore for InMemoryReadModelStore {
         expected_version: u64,
     ) -> Result<Versioned<M>, ReadModelError> {
         let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes =
-            serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
+        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
 
         let mut storage = self
             .storage
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let actual_version = storage
-            .get(&key)
-            .map(|s| s.version)
-            .ok_or_else(|| ReadModelError::NotFound {
-                collection: M::COLLECTION.to_string(),
-                id: model.id().to_string(),
-            })?;
+        let actual_version =
+            storage
+                .get(&key)
+                .map(|s| s.version)
+                .ok_or_else(|| ReadModelError::NotFound {
+                    collection: M::COLLECTION.to_string(),
+                    id: model.id().to_string(),
+                })?;
 
         if actual_version != expected_version {
             return Err(ReadModelError::ConcurrencyConflict {
@@ -409,9 +399,7 @@ mod tests {
             })
             .unwrap();
 
-        let results = store
-            .find_models::<TestModel>(&|m| m.value > 8)
-            .unwrap();
+        let results = store.find_models::<TestModel>(&|m| m.value > 8).unwrap();
         assert_eq!(results.len(), 2);
     }
 

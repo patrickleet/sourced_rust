@@ -579,7 +579,7 @@ todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into());
 // Derives id, snapshot payload, and metadata from the aggregate automatically
 let mut message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
 
-// Commit both atomically
+// Commit both in one repository batch
 repo.outbox(&mut message).commit(&mut todo)?;
 ```
 
@@ -817,7 +817,7 @@ let outbox_inventory = OutboxMessage::encode_to(
     &payload,
 )?;
 
-// Commit aggregate + multiple outbox messages atomically
+// Commit aggregate + multiple outbox messages in one transactional batch
 repo.outbox(outbox_saga)
     .outbox(outbox_inventory)
     .commit(&mut order)?;
@@ -1107,13 +1107,13 @@ game.make_move(player_move);
 // Build the view from the updated aggregate
 let view = GameView::from(&game);
 
-// Commit aggregate + view atomically
+// Commit aggregate + view in one transactional batch
 repo.readmodel(&view).commit(&mut game)?;
 
 // Return `view` to the client — it reflects the committed state
 ```
 
-This is a deliberate CAP theorem tradeoff: you're choosing **consistency** over **partition tolerance**. The read model is always in sync with the aggregate because they're written in the same transaction, but this only works within a single process against a single store. For cross-service or cross-database views, use the eventually consistent outbox pattern instead.
+This is a deliberate CAP theorem tradeoff: you're choosing **consistency** over **partition tolerance**. The read model is in sync with the aggregate when the repository implements `TransactionalCommit` and can write both in the same transaction boundary. For cross-service or cross-database views, use the eventually consistent outbox pattern instead.
 
 See [`docs/read-models.md`](docs/read-models.md) for the full guide, including eventually consistent projections, `QueuedReadModelStore`, and a decision flowchart.
 

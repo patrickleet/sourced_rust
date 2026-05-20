@@ -1,6 +1,7 @@
 use sourced_rust::read_model::ReadModelStore;
 use sourced_rust::{
-    Aggregate, Commit, CommitBuilderExt, Find, Get, GetAggregate, OutboxMessage, hydrate,
+    hydrate, Aggregate, Commit, CommitBuilderExt, Find, Get, GetAggregate, OutboxMessage,
+    TransactionalCommit,
 };
 
 use crate::domain::bomb::Bomb;
@@ -35,7 +36,7 @@ where
 
 // ── Game commands ──
 
-pub fn create_game<R: Commit + ReadModelStore>(
+pub fn create_game<R: Commit + ReadModelStore + TransactionalCommit>(
     repo: &R,
     game_id: &str,
     ascii_map: &str,
@@ -43,13 +44,7 @@ pub fn create_game<R: Commit + ReadModelStore>(
     let (width, height, tiles, spawn_points) = GameMap::from_ascii(ascii_map);
 
     let mut map = GameMap::default();
-    map.create(
-        game_id.into(),
-        width,
-        height,
-        tiles.clone(),
-        spawn_points,
-    );
+    map.create(game_id.into(), width, height, tiles.clone(), spawn_points);
 
     let board = BoardView::new(game_id, width, height, tiles);
     repo.readmodel(&board).commit(&mut map)?;
@@ -57,7 +52,7 @@ pub fn create_game<R: Commit + ReadModelStore>(
     Ok(map)
 }
 
-pub fn tick<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
+pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
     repo: &R,
     game_id: &str,
 ) -> Result<TickSaga, GameError> {
@@ -95,8 +90,7 @@ pub fn tick<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     );
 
     // Count existing explosions for unique ID generation
-    let all_explosions: Vec<Explosion> =
-        find_by_prefix(repo, "explosion:", |_: &Explosion| true)?;
+    let all_explosions: Vec<Explosion> = find_by_prefix(repo, "explosion:", |_: &Explosion| true)?;
     let mut explosion_counter = all_explosions.len();
 
     // ── Phase A: Expand existing explosions ──
@@ -174,9 +168,10 @@ pub fn tick<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     // Return bombs to owners
     for bomb in &bombs {
         if bomb.exploded {
-            if let Some(player) = players.iter_mut().find(|p| {
-                p.entity.id() == format!("player:{}", bomb.owner_id)
-            }) {
+            if let Some(player) = players
+                .iter_mut()
+                .find(|p| p.entity.id() == format!("player:{}", bomb.owner_id))
+            {
                 player.return_bomb();
             }
         }
@@ -280,7 +275,7 @@ fn apply_damage(
 
 // ── Player commands ──
 
-pub fn join_game<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
+pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
     repo: &R,
     player_id: &str,
     name: &str,
@@ -294,12 +289,7 @@ pub fn join_game<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     let (sx, sy) = map.spawn_points[spawn_index];
 
     let mut player = Player::default();
-    player.join(
-        format!("player:{}", player_id),
-        name.into(),
-        sx,
-        sy,
-    );
+    player.join(format!("player:{}", player_id), name.into(), sx, sy);
 
     // Find all players for board view
     let mut all_players: Vec<Player> = find_by_prefix(repo, "player:", |_: &Player| true)?;
@@ -319,7 +309,7 @@ pub fn join_game<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     Ok(())
 }
 
-pub fn move_player<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
+pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
     repo: &R,
     player_id: &str,
     direction: Direction,
@@ -375,7 +365,7 @@ pub fn move_player<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     Ok(())
 }
 
-pub fn place_bomb<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
+pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
     repo: &R,
     player_id: &str,
     game_id: &str,
@@ -396,9 +386,8 @@ pub fn place_bomb<R: Commit + ReadModelStore + Get + sourced_rust::Find>(
     }
 
     // Count existing bombs for this player to generate unique ID
-    let existing_bombs: Vec<Bomb> = find_by_prefix(repo, "bomb:", |b: &Bomb| {
-        b.owner_id == player_id
-    })?;
+    let existing_bombs: Vec<Bomb> =
+        find_by_prefix(repo, "bomb:", |b: &Bomb| b.owner_id == player_id)?;
     let bomb_num = existing_bombs.len() + 1;
 
     player.place_bomb();

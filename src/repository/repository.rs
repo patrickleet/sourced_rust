@@ -1,6 +1,6 @@
-use crate::entity::Entity;
 use super::error::RepositoryError;
 use super::gettable::{GetMany, GetOne, Gettable};
+use crate::entity::Entity;
 
 /// Get one or more entities by ID(s).
 pub trait Get: GetOne + GetMany {
@@ -55,4 +55,3 @@ pub trait Repository: Get + Find + FindOne + Exists + Count + Commit {}
 
 // Blanket implementation: anything implementing all traits is a Repository
 impl<T> Repository for T where T: Get + Find + FindOne + Exists + Count + Commit {}
-

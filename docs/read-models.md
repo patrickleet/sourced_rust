@@ -118,8 +118,9 @@ Sometimes the response to a command must include the fully consistent,
 updated view. The canonical example: a single-player game where the
 backend processes a move and returns the complete updated game state.
 
-`sourced_rust` supports this with atomic commit builders that write the
-aggregate and one or more read models in a single transaction:
+`sourced_rust` supports this with commit builders backed by repositories that
+implement `TransactionalCommit`. Those repositories write the aggregate and one
+or more read models in a single transaction boundary:
 
 ```rust
 use sourced_rust::CommitBuilderExt;
@@ -130,7 +131,7 @@ game.make_move(player_move);
 // Build the view from the updated aggregate
 let mut view = GameView::from(&game);
 
-// Commit aggregate + view atomically
+// Commit aggregate + view in one transactional batch
 repo.readmodel(&view).commit(&mut game)?;
 
 // Return `view` to the client — it reflects the committed state
@@ -147,7 +148,8 @@ repo.readmodel(&game_view)
     .commit(&mut game)?;
 ```
 
-Order doesn't matter — the commit writes everything in one batch.
+Order doesn't matter — the commit writes everything in one transactional batch
+when the repository implements `TransactionalCommit`.
 
 ### Standalone read model writes
 
@@ -177,10 +179,10 @@ Request A (entity "game-42") ──→ [entity lock] ──→ commit(agg + view
 Request B (entity "game-42") ──→ [waits]       ──→ [entity lock] ──→ commit ──→ unlock
 ```
 
-Each request gets the aggregate, processes its command, and atomically
-commits the aggregate + view. The entity-level lock serializes them.
-The read model is always consistent with the aggregate because they're
-written together.
+Each request gets the aggregate, processes its command, and commits the
+aggregate + view through one transactional batch. The entity-level lock
+serializes them. The read model is consistent with the aggregate when the
+underlying repository can keep those writes in the same transaction boundary.
 
 ---
 
@@ -271,7 +273,7 @@ Do you need the updated view in the command response?
 │  └─ Use eventually consistent (outbox + denormalizer)
 │
 └─ Yes
-   └─ Use atomic commit: repo.readmodel(&view).commit(&mut agg)
+   └─ Use transactional commit: repo.readmodel(&view).commit(&mut agg)
       │
       └─ Is there concurrent write contention on the view
          from different aggregates?
@@ -310,8 +312,8 @@ Do you need the updated view in the command response?
 | `repo.outbox(msg)` | Start a builder with an outbox message |
 | `.readmodel(&view)` | Add another read model to the batch |
 | `.outbox(msg)` | Add another outbox message to the batch |
-| `.commit(&mut agg)` | Write everything + the aggregate |
-| `.commit_all()` | Write everything (no aggregate) |
+| `.commit(&mut agg)` | Write everything + the aggregate through `TransactionalCommit` |
+| `.commit_all()` | Write staged read models/outbox messages without a primary aggregate |
 
 ### QueuedReadModelStore extras
 

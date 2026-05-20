@@ -1,9 +1,11 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::entity::{Entity, EventRecord, EventUpcaster, upcast_events};
+use crate::entity::{upcast_events, Entity, EventRecord, EventUpcaster};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
-use crate::repository::{Commit, Find, Get, Repository, RepositoryError};
+use crate::repository::{
+    Commit, CommitBatch, Find, Get, Repository, RepositoryError, TransactionalCommit,
+};
 use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
 /// Trait for domain aggregates that can be event-sourced.
@@ -19,7 +21,9 @@ pub trait Aggregate: Sized + Default {
 
     /// Override to register upcasters for this aggregate's events.
     /// Upcasters are configuration, not state — this is a static method.
-    fn upcasters() -> &'static [EventUpcaster] { &[] }
+    fn upcasters() -> &'static [EventUpcaster] {
+        &[]
+    }
 }
 
 #[macro_export]
@@ -119,12 +123,15 @@ pub trait CommitAggregate: Commit {
     fn commit_all_aggregates<A: Aggregate>(
         &self,
         aggregates: &mut [&mut A],
-    ) -> Result<(), RepositoryError> {
-        let mut entities: Vec<&mut Entity> = aggregates
+    ) -> Result<(), RepositoryError>
+    where
+        Self: TransactionalCommit,
+    {
+        let entities: Vec<&mut Entity> = aggregates
             .iter_mut()
             .map(|agg| (*agg).entity_mut())
             .collect();
-        self.commit(&mut entities[..])
+        self.commit_batch(CommitBatch::new(entities))
     }
 }
 
@@ -152,7 +159,10 @@ impl<R: Find> FindAggregate for R {}
 
 /// Extension trait adding aggregate-aware find_one method.
 pub trait FindOneAggregate: Find {
-    fn find_one_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
+    fn find_one_aggregate<A: Aggregate, F>(
+        &self,
+        predicate: F,
+    ) -> Result<Option<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
@@ -291,13 +301,19 @@ where
     pub fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
         self.repo.commit(aggregate.entity_mut())
     }
+}
 
+impl<R, A> AggregateRepository<R, A>
+where
+    R: TransactionalCommit,
+    A: Aggregate,
+{
     pub fn commit_all(&self, aggregates: &mut [&mut A]) -> Result<(), RepositoryError> {
-        let mut entities: Vec<&mut Entity> = aggregates
+        let entities: Vec<&mut Entity> = aggregates
             .iter_mut()
             .map(|agg| (*agg).entity_mut())
             .collect();
-        self.repo.commit(&mut entities[..])
+        self.repo.commit_batch(CommitBatch::new(entities))
     }
 }
 

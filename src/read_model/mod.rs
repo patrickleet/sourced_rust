@@ -1,7 +1,7 @@
 //! Read Models - Storage-backed data for projections and read-optimized views.
 //!
 //! Read models provide a simple CRUD abstraction for storing typed data,
-//! updated atomically alongside event-sourced aggregates.
+//! updated alongside event-sourced aggregates through transactional commit batches.
 //!
 //! ## Example
 //!
@@ -21,7 +21,7 @@
 //! let loaded = store.read_models::<GameView>().get("game-1")?;
 //! ```
 
-mod in_memory;
+pub(crate) mod in_memory;
 mod queued;
 mod repository;
 mod store;

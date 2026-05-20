@@ -1,10 +1,10 @@
 //! microsvc integration tests.
 
-mod models;
-mod handlers;
 mod basic;
-mod session;
 mod convention;
+mod handlers;
+mod models;
+mod session;
 mod transport_listen;
 mod transport_subscribe;
 

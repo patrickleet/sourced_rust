@@ -1,5 +1,6 @@
 mod aggregate;
 
+use aggregate::{Todo, TodoSnapshot};
 use bitcode;
 use sourced_rust::{
     AggregateBuilder, Commit, EventEmitter, GetAggregate, HashMapRepository, LocalEmitterPublisher,
@@ -9,7 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use aggregate::{Todo, TodoSnapshot};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 

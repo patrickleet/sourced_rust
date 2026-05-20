@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::Entity;
 use crate::digest;
+use crate::entity::Entity;
 
 /// Status of an outbox message.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,7 +54,6 @@ impl Default for OutboxMessage {
     }
 }
 
-
 impl OutboxMessage {
     pub const ID_PREFIX: &'static str = "outbox:";
 
@@ -63,11 +62,7 @@ impl OutboxMessage {
     }
 
     /// Create a new outbox message with raw bytes payload.
-    pub fn create(
-        id: impl Into<String>,
-        event_type: impl Into<String>,
-        payload: Vec<u8>,
-    ) -> Self {
+    pub fn create(id: impl Into<String>, event_type: impl Into<String>, payload: Vec<u8>) -> Self {
         let mut message = Self::new();
         message.initialize(id.into(), event_type.into(), payload, None, HashMap::new());
         message
@@ -84,7 +79,13 @@ impl OutboxMessage {
         payload: Vec<u8>,
     ) -> Self {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload, Some(destination.into()), HashMap::new());
+        message.initialize(
+            id.into(),
+            event_type.into(),
+            payload,
+            Some(destination.into()),
+            HashMap::new(),
+        );
         message
     }
 
@@ -147,7 +148,12 @@ impl OutboxMessage {
         entity: &Entity,
     ) -> Result<Self, bitcode::Error> {
         let bytes = bitcode::serialize(payload)?;
-        Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))
+        Ok(Self::create_with_metadata(
+            id,
+            event_type,
+            bytes,
+            entity.metadata().clone(),
+        ))
     }
 
     /// Create a message from a `Snapshottable` aggregate.
@@ -171,7 +177,12 @@ impl OutboxMessage {
         let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
         let snapshot = aggregate.create_snapshot();
         let bytes = bitcode::serialize(&snapshot)?;
-        Ok(Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone()))
+        Ok(Self::create_with_metadata(
+            id,
+            event_type,
+            bytes,
+            entity.metadata().clone(),
+        ))
     }
 
     /// Decode the payload from bitcode binary format.
@@ -350,7 +361,13 @@ mod tests {
     #[test]
     fn claim_and_complete() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None, HashMap::new());
+        message.initialize(
+            "msg-1".into(),
+            "Event1".into(),
+            b"{}".to_vec(),
+            None,
+            HashMap::new(),
+        );
         message.claim_for("worker-1", Duration::from_secs(60));
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
@@ -365,12 +382,8 @@ mod tests {
         meta.insert("correlation_id".to_string(), "req-abc".to_string());
         meta.insert("trace_id".to_string(), "t-999".to_string());
 
-        let message = OutboxMessage::create_with_metadata(
-            "msg-1",
-            "UserCreated",
-            b"{}".to_vec(),
-            meta,
-        );
+        let message =
+            OutboxMessage::create_with_metadata("msg-1", "UserCreated", b"{}".to_vec(), meta);
         assert_eq!(message.correlation_id(), Some("req-abc"));
         assert_eq!(message.meta("trace_id"), Some("t-999"));
     }
@@ -381,13 +394,8 @@ mod tests {
         meta.insert("correlation_id".to_string(), "req-456".to_string());
 
         let payload = ("hello", 42i32);
-        let message = OutboxMessage::encode_with_metadata(
-            "msg-2",
-            "SomeEvent",
-            &payload,
-            meta,
-        )
-        .unwrap();
+        let message =
+            OutboxMessage::encode_with_metadata("msg-2", "SomeEvent", &payload, meta).unwrap();
 
         assert_eq!(message.correlation_id(), Some("req-456"));
         let decoded: (String, i32) = message.decode().unwrap();
@@ -409,7 +417,13 @@ mod tests {
     #[test]
     fn release_and_fail() {
         let mut message = OutboxMessage::new();
-        message.initialize("msg-1".into(), "Event1".into(), b"{}".to_vec(), None, HashMap::new());
+        message.initialize(
+            "msg-1".into(),
+            "Event1".into(),
+            b"{}".to_vec(),
+            None,
+            HashMap::new(),
+        );
         message.claim_for("worker-1", Duration::from_secs(60));
 
         message.release("timeout".into());

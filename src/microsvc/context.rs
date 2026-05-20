@@ -49,7 +49,8 @@ impl<'a, R> Context<'a, R> {
 
     /// Deserialize the input payload into a typed struct.
     pub fn input<T: DeserializeOwned>(&self) -> Result<T, HandlerError> {
-        serde_json::from_value(self.input.clone()).map_err(|e| HandlerError::DecodeFailed(e.to_string()))
+        serde_json::from_value(self.input.clone())
+            .map_err(|e| HandlerError::DecodeFailed(e.to_string()))
     }
 
     /// Get the raw JSON input.

@@ -488,7 +488,11 @@ mod tests {
             .publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}"))
             .unwrap();
         queue
-            .publish(Event::with_string_payload("evt-3", "InventoryReserved", "{}"))
+            .publish(Event::with_string_payload(
+                "evt-3",
+                "InventoryReserved",
+                "{}",
+            ))
             .unwrap();
         queue
             .publish(Event::with_string_payload("evt-4", "OrderCreated", "{}"))
@@ -566,16 +570,10 @@ mod tests {
         let queue = InMemoryQueue::new();
 
         queue
-            .send(
-                "tasks",
-                Event::with_string_payload("evt-1", "Task", "{}"),
-            )
+            .send("tasks", Event::with_string_payload("evt-1", "Task", "{}"))
             .unwrap();
         queue
-            .send(
-                "tasks",
-                Event::with_string_payload("evt-2", "Task", "{}"),
-            )
+            .send("tasks", Event::with_string_payload("evt-2", "Task", "{}"))
             .unwrap();
 
         // Two clones share the same queues (competing consumers)
@@ -597,10 +595,7 @@ mod tests {
         let queue = InMemoryQueue::new();
 
         queue
-            .send(
-                "orders",
-                Event::with_string_payload("evt-1", "Order", "{}"),
-            )
+            .send("orders", Event::with_string_payload("evt-1", "Order", "{}"))
             .unwrap();
         queue
             .send(
@@ -629,7 +624,11 @@ mod tests {
             .publish(Event::with_string_payload("evt-1", "OrderCreated", "{}"))
             .unwrap();
         queue
-            .publish(Event::with_string_payload("evt-2", "PaymentSucceeded", "{}"))
+            .publish(Event::with_string_payload(
+                "evt-2",
+                "PaymentSucceeded",
+                "{}",
+            ))
             .unwrap();
 
         // Two subscribers with different filters

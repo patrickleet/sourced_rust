@@ -1,4 +1,4 @@
-//! CommitBuilder - Chain read models, outbox, and aggregates for atomic commits.
+//! CommitBuilder - Chain read models, outbox, and aggregates into one transactional commit batch.
 //!
 //! ## Example
 //!
@@ -17,23 +17,15 @@
 
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
-use crate::read_model::{ReadModel, ReadModelStore};
 use crate::outbox::OutboxMessage;
-use crate::repository::{Commit, RepositoryError};
+use crate::read_model::ReadModel;
+use crate::repository::{CommitBatch, ReadModelWrite, RepositoryError, TransactionalCommit};
 
-/// A queued read model save (type-erased).
-struct QueuedModel {
-    /// Storage key: "COLLECTION:id"
-    key: String,
-    /// JSON-serialized bytes
-    bytes: Vec<u8>,
-}
-
-/// Builder for chaining multiple items into a single atomic commit.
+/// Builder for chaining multiple items into a single transactional commit batch.
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
-    models: Vec<QueuedModel>,
+    models: Vec<ReadModelWrite>,
 }
 
 impl<'a, R> CommitBuilder<'a, R> {
@@ -49,7 +41,7 @@ impl<'a, R> CommitBuilder<'a, R> {
     pub fn readmodel<M: ReadModel>(mut self, model: &M) -> Self {
         let key = format!("{}:{}", M::COLLECTION, model.id());
         let bytes = serde_json::to_vec(model).expect("read model serialization should not fail");
-        self.models.push(QueuedModel { key, bytes });
+        self.models.push(ReadModelWrite::new(key, bytes));
         self
     }
 
@@ -62,72 +54,55 @@ impl<'a, R> CommitBuilder<'a, R> {
     /// Commit all items plus the primary aggregate.
     pub fn commit<A: Aggregate>(mut self, aggregate: &mut A) -> Result<(), RepositoryError>
     where
-        R: Commit + ReadModelStore,
+        R: TransactionalCommit,
     {
-        // Commit entities (outbox messages + aggregate)
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         entity_refs.push(aggregate.entity_mut());
-        self.repo.commit(&mut entity_refs[..])?;
-
-        // Write queued read models
-        for queued in self.models {
-            self.repo
-                .upsert_raw(&queued.key, queued.bytes)?;
-        }
-
-        Ok(())
+        self.repo.commit_batch(CommitBatch {
+            entities: entity_refs,
+            read_models: self.models,
+            snapshots: Vec::new(),
+        })
     }
 
-    /// Commit multiple entities atomically (along with any queued read models and outbox).
+    /// Commit multiple entities in one batch (along with any queued read models and outbox).
     ///
     /// Use `entity_mut()` on each aggregate to get the entity references:
     /// ```ignore
     /// repo.readmodel(&view)
     ///     .commit_many(&mut [player.entity_mut(), monster.entity_mut()])?;
     /// ```
-    pub fn commit_many(
-        mut self,
-        entities: &mut [&mut Entity],
-    ) -> Result<(), RepositoryError>
+    pub fn commit_many(mut self, entities: &mut [&mut Entity]) -> Result<(), RepositoryError>
     where
-        R: Commit + ReadModelStore,
+        R: TransactionalCommit,
     {
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         for e in entities.iter_mut() {
-            entity_refs.push(e);
+            entity_refs.push(&mut **e);
         }
-        self.repo.commit(&mut entity_refs[..])?;
-
-        for queued in self.models {
-            self.repo.upsert_raw(&queued.key, queued.bytes)?;
-        }
-
-        Ok(())
+        self.repo.commit_batch(CommitBatch {
+            entities: entity_refs,
+            read_models: self.models,
+            snapshots: Vec::new(),
+        })
     }
 
     /// Commit without a primary aggregate.
     pub fn commit_all(mut self) -> Result<(), RepositoryError>
     where
-        R: Commit + ReadModelStore,
+        R: TransactionalCommit,
     {
-        // Commit entities if any
-        if !self.entities.is_empty() {
-            let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
-            self.repo.commit(&mut entity_refs[..])?;
-        }
-
-        // Write queued read models
-        for queued in self.models {
-            self.repo
-                .upsert_raw(&queued.key, queued.bytes)?;
-        }
-
-        Ok(())
+        let entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
+        self.repo.commit_batch(CommitBatch {
+            entities: entity_refs,
+            read_models: self.models,
+            snapshots: Vec::new(),
+        })
     }
 }
 
 /// Extension trait to start a commit builder chain from a read model or outbox.
-pub trait CommitBuilderExt: Commit + ReadModelStore + Sized {
+pub trait CommitBuilderExt: TransactionalCommit + Sized {
     /// Start a commit builder chain with a read model.
     fn readmodel<M: ReadModel>(&self, model: &M) -> CommitBuilder<'_, Self> {
         CommitBuilder::new(self).readmodel(model)
@@ -139,14 +114,15 @@ pub trait CommitBuilderExt: Commit + ReadModelStore + Sized {
     }
 }
 
-impl<R: Commit + ReadModelStore> CommitBuilderExt for R {}
+impl<R: TransactionalCommit> CommitBuilderExt for R {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, Entity, EventRecord, Get, HashMapRepository};
     use crate::read_model::ReadModelsExt;
+    use crate::{impl_aggregate, Entity, EventRecord, Get, HashMapRepository};
     use serde::{Deserialize, Serialize};
+    use std::cell::RefCell;
 
     #[derive(Default)]
     struct TestAggregate {
@@ -178,6 +154,37 @@ mod tests {
         const COLLECTION: &'static str = "test_view";
         fn id(&self) -> &str {
             &self.id
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingBatchRepo {
+        fail: bool,
+        entity_ids: RefCell<Vec<String>>,
+        read_model_keys: RefCell<Vec<String>>,
+    }
+
+    impl TransactionalCommit for RecordingBatchRepo {
+        fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+            *self.entity_ids.borrow_mut() = batch
+                .entities
+                .iter()
+                .map(|entity| entity.id().to_string())
+                .collect();
+            *self.read_model_keys.borrow_mut() = batch
+                .read_models
+                .iter()
+                .map(|write| write.key.clone())
+                .collect();
+
+            if self.fail {
+                return Err(RepositoryError::Model("injected batch failure".into()));
+            }
+
+            for entity in batch.entities {
+                entity.mark_committed();
+            }
+            Ok(())
         }
     }
 
@@ -296,8 +303,16 @@ mod tests {
             .commit_all()
             .unwrap();
 
-        let loaded1 = repo.read_models::<TestView>().get("standalone-1").unwrap().unwrap();
-        let loaded2 = repo.read_models::<TestView>().get("standalone-2").unwrap().unwrap();
+        let loaded1 = repo
+            .read_models::<TestView>()
+            .get("standalone-1")
+            .unwrap()
+            .unwrap();
+        let loaded2 = repo
+            .read_models::<TestView>()
+            .get("standalone-2")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded1.data.id, "standalone-1");
         assert_eq!(loaded2.data.id, "standalone-2");
     }
@@ -324,7 +339,11 @@ mod tests {
             .unwrap();
 
         // Verify read model stored
-        let loaded = repo.read_models::<TestView>().get("multi").unwrap().unwrap();
+        let loaded = repo
+            .read_models::<TestView>()
+            .get("multi")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.data.counter, 77);
 
         // Verify both aggregates stored
@@ -332,5 +351,51 @@ mod tests {
         assert!(e1.is_some());
         let e2 = repo.get("agg-2").unwrap();
         assert!(e2.is_some());
+    }
+
+    #[test]
+    fn commit_builder_failure_does_not_mark_aggregate_committed() {
+        let repo = RecordingBatchRepo {
+            fail: true,
+            ..Default::default()
+        };
+
+        let view = TestView {
+            id: "rollback".into(),
+            counter: 1,
+        };
+        let outbox = OutboxMessage::create("msg-rollback", "TestEvent", b"{}".to_vec());
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        let err = repo
+            .readmodel(&view)
+            .outbox(outbox)
+            .commit(&mut agg)
+            .unwrap_err();
+
+        assert_eq!(err, RepositoryError::Model("injected batch failure".into()));
+        assert_eq!(agg.entity().committed_version(), 0);
+        assert_eq!(agg.entity().new_events().len(), 1);
+        assert_eq!(
+            repo.read_model_keys.borrow().as_slice(),
+            &["test_view:rollback".to_string()]
+        );
+        assert!(repo.entity_ids.borrow().iter().any(|id| id == "agg-1"));
+        assert!(repo
+            .entity_ids
+            .borrow()
+            .iter()
+            .any(|id| id == "outbox:msg-rollback"));
+    }
+
+    #[test]
+    fn commit_builder_empty_batch_succeeds() {
+        let repo = RecordingBatchRepo::default();
+
+        CommitBuilder::new(&repo).commit_all().unwrap();
+
+        assert!(repo.entity_ids.borrow().is_empty());
+        assert!(repo.read_model_keys.borrow().is_empty());
     }
 }

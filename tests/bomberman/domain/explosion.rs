@@ -57,7 +57,10 @@ impl Explosion {
 
     pub fn all_active_cells(&self) -> Vec<(i32, i32)> {
         let end = (self.current_ring + 1).min(self.rings.len());
-        self.rings[..end].iter().flat_map(|r| r.iter().copied()).collect()
+        self.rings[..end]
+            .iter()
+            .flat_map(|r| r.iter().copied())
+            .collect()
     }
 }
 

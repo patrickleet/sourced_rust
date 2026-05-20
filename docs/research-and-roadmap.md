@@ -51,7 +51,7 @@ Approach: Add async versions of the core traits. Could be feature-gated or a par
 ### sourced_rust differentiators (things others don't have)
 - **Outbox pattern as first-class** with fan-out and point-to-point routing
 - **Service bus** with both pub/sub and send/listen patterns
-- **Read model atomic commits** with decision flowchart for choosing consistency strategy
+- **Read model transactional commits** with decision flowchart for choosing consistency strategy
 - **6 pluggable infrastructure traits** (storage, messaging, read model store, snapshot store, outbox publishing, locking)
 - **Guard conditions on events** (`when = !self.completed`)
 - **PORS approach** — domain objects are plain structs, not framework types

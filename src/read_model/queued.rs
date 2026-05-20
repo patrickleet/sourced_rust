@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::entity::Committable;
 use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::queued_repo::ReadOpts;
-use crate::repository::{Commit, RepositoryError};
+use crate::repository::{Commit, CommitBatch, RepositoryError, TransactionalCommit};
 
 use super::{ReadModel, ReadModelError, ReadModelStore, Versioned};
 
@@ -237,6 +237,25 @@ impl<S: Commit, L: LockManager> Commit for QueuedReadModelStore<S, L> {
     }
 }
 
+impl<S: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedReadModelStore<S, L> {
+    fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+        let read_model_keys: Vec<String> = batch
+            .read_models
+            .iter()
+            .map(|write| write.key.clone())
+            .collect();
+
+        let result = self.inner.commit_batch(batch);
+        if result.is_ok() {
+            for key in read_model_keys {
+                self.release(&key);
+            }
+        }
+
+        result
+    }
+}
+
 // ============================================================================
 // WithOpts methods for opting out of locking
 // ============================================================================
@@ -309,10 +328,13 @@ mod tests {
         let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
 
         // Seed data
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
 
         // get_model acquires lock
         let loaded = store.get_model::<TestModel>("1").unwrap().unwrap();
@@ -337,10 +359,13 @@ mod tests {
     fn get_locks_delete_unlocks() {
         let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
 
         // get locks
         let _loaded = store.get_model::<TestModel>("1").unwrap();
@@ -360,10 +385,13 @@ mod tests {
     fn manual_unlock() {
         let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
 
         // get locks
         let _loaded = store.get_model::<TestModel>("1").unwrap();
@@ -381,10 +409,13 @@ mod tests {
     fn get_with_no_lock_does_not_block() {
         let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
 
         // get with lock
         let _loaded = store.get_model::<TestModel>("1").unwrap();
@@ -404,10 +435,13 @@ mod tests {
     fn concurrent_access_serialized() {
         let store = Arc::new(QueuedReadModelStore::new(InMemoryReadModelStore::new()));
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 0,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 0,
+            })
+            .unwrap();
 
         let store2 = store.clone();
 
@@ -459,11 +493,17 @@ mod tests {
 
         let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
-        store.inner().upsert(&OtherModel { id: "1".into() }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
+        store
+            .inner()
+            .upsert(&OtherModel { id: "1".into() })
+            .unwrap();
 
         // Lock TestModel "1"
         let _t = store.get_model::<TestModel>("1").unwrap();
@@ -480,14 +520,20 @@ mod tests {
     fn find_one_locks_result() {
         let store = Arc::new(QueuedReadModelStore::new(InMemoryReadModelStore::new()));
 
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
-        store.inner().upsert(&TestModel {
-            id: "2".into(),
-            value: 20,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "2".into(),
+                value: 20,
+            })
+            .unwrap();
 
         // find_one locks the matched instance
         let found = store
@@ -519,10 +565,13 @@ mod tests {
         let key = "test_models:1";
 
         // Seed via inner
-        store.inner().upsert(&TestModel {
-            id: "1".into(),
-            value: 10,
-        }).unwrap();
+        store
+            .inner()
+            .upsert(&TestModel {
+                id: "1".into(),
+                value: 10,
+            })
+            .unwrap();
 
         // get_model locks
         let _loaded = store.get_model::<TestModel>("1").unwrap();

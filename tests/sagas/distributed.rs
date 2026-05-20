@@ -902,11 +902,8 @@ fn metadata_propagates_across_bus_to_subscriber() {
     let producer_queue = queue.clone();
     let producer_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
-        let worker = OutboxWorkerThread::spawn(
-            repo.clone(),
-            producer_queue,
-            Duration::from_millis(10),
-        );
+        let worker =
+            OutboxWorkerThread::spawn(repo.clone(), producer_queue, Duration::from_millis(10));
         let order_repo = repo.aggregate::<Order>();
 
         // Create an order with metadata on the entity
@@ -961,5 +958,7 @@ fn metadata_propagates_across_bus_to_subscriber() {
     assert_eq!(user_id.as_deref(), Some("u-99"));
 
     producer_thread.join().expect("Producer thread panicked");
-    subscriber_thread.join().expect("Subscriber thread panicked");
+    subscriber_thread
+        .join()
+        .expect("Subscriber thread panicked");
 }

@@ -46,12 +46,18 @@ impl<'a, S: ReadModelStore, M: ReadModel> ReadModelRepository<'a, S, M> {
     }
 
     /// Find read models matching a predicate.
-    pub fn find(&self, predicate: &dyn Fn(&M) -> bool) -> Result<Vec<Versioned<M>>, ReadModelError> {
+    pub fn find(
+        &self,
+        predicate: &dyn Fn(&M) -> bool,
+    ) -> Result<Vec<Versioned<M>>, ReadModelError> {
         self.store.find_models(predicate)
     }
 
     /// Find the first read model matching a predicate.
-    pub fn find_one(&self, predicate: &dyn Fn(&M) -> bool) -> Result<Option<Versioned<M>>, ReadModelError> {
+    pub fn find_one(
+        &self,
+        predicate: &dyn Fn(&M) -> bool,
+    ) -> Result<Option<Versioned<M>>, ReadModelError> {
         self.store.find_one_model(predicate)
     }
 }

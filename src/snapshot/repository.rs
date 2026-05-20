@@ -1,7 +1,9 @@
 use crate::aggregate::{hydrate, AggregateRepository};
-use crate::entity::{Entity, upcast_events};
-use crate::repository::{Commit, Find, Get, RepositoryError};
-use crate::queued_repo::{GetWithOpts, GetAllWithOpts, ReadOpts, UnlockableRepository};
+use crate::entity::{upcast_events, Entity};
+use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
+use crate::repository::{
+    CommitBatch, Find, Get, RepositoryError, SnapshotWrite, TransactionalCommit,
+};
 
 use super::snapshottable::Snapshottable;
 use super::store::{SnapshotRecord, SnapshotStore};
@@ -117,31 +119,58 @@ where
 
 impl<R, A> SnapshotAggregateRepository<R, A>
 where
-    R: Commit + SnapshotStore,
+    R: TransactionalCommit,
     A: Snapshottable,
 {
     /// Commit the aggregate and create a snapshot if the frequency threshold is met.
     pub fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
-        self.inner.repo().commit(aggregate.entity_mut())?;
-        self.maybe_snapshot(aggregate)?;
+        let snapshot = self.snapshot_record(aggregate)?;
+        let snapshot_version = snapshot.as_ref().map(|record| record.version);
+        let snapshots = snapshot.into_iter().map(SnapshotWrite::Save).collect();
+
+        self.inner.repo().commit_batch(CommitBatch {
+            entities: vec![aggregate.entity_mut()],
+            read_models: Vec::new(),
+            snapshots,
+        })?;
+
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
         Ok(())
     }
 
     /// Commit multiple aggregates and create snapshots where thresholds are met.
     pub fn commit_all(&self, aggregates: &mut [&mut A]) -> Result<(), RepositoryError> {
-        let mut entities: Vec<&mut Entity> = aggregates
+        let mut snapshot_versions = Vec::with_capacity(aggregates.len());
+        let mut snapshots = Vec::new();
+        for aggregate in aggregates.iter() {
+            let snapshot = self.snapshot_record(*aggregate)?;
+            snapshot_versions.push(snapshot.as_ref().map(|record| record.version));
+            if let Some(record) = snapshot {
+                snapshots.push(SnapshotWrite::Save(record));
+            }
+        }
+
+        let entities: Vec<&mut Entity> = aggregates
             .iter_mut()
             .map(|agg| (*agg).entity_mut())
             .collect();
-        self.inner.repo().commit(&mut entities[..])?;
+        self.inner.repo().commit_batch(CommitBatch {
+            entities,
+            read_models: Vec::new(),
+            snapshots,
+        })?;
 
-        for agg in aggregates.iter_mut() {
-            self.maybe_snapshot(*agg)?;
+        for (aggregate, snapshot_version) in aggregates.iter_mut().zip(snapshot_versions) {
+            if let Some(version) = snapshot_version {
+                aggregate.entity_mut().set_snapshot_version(version);
+            }
         }
         Ok(())
     }
 
-    fn maybe_snapshot(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
+    fn snapshot_record(&self, aggregate: &A) -> Result<Option<SnapshotRecord>, RepositoryError> {
         let version = aggregate.entity().version();
         let snap_version = aggregate.entity().snapshot_version();
 
@@ -150,15 +179,13 @@ where
             let data = bitcode::serialize(&snap)
                 .map_err(|e| RepositoryError::Replay(format!("snapshot serialize: {e}")))?;
 
-            self.inner.repo().save_snapshot(SnapshotRecord {
+            return Ok(Some(SnapshotRecord {
                 aggregate_id: aggregate.entity().id().to_string(),
                 version,
                 data,
-            })?;
-
-            aggregate.entity_mut().set_snapshot_version(version);
+            }));
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -291,7 +318,7 @@ where
 
 impl<R, A> SnapshotAggregateRepository<R, A>
 where
-    R: Commit + SnapshotStore,
+    R: TransactionalCommit,
     A: Snapshottable,
 {
     /// Start an outbox commit chain, same as AggregateRepository.
@@ -314,14 +341,101 @@ pub struct SnapshotOutboxCommit<'a, R, A> {
 
 impl<'a, R, A> SnapshotOutboxCommit<'a, R, A>
 where
-    R: Commit + SnapshotStore,
+    R: TransactionalCommit,
     A: Snapshottable,
 {
     pub fn commit(self, aggregate: &mut A) -> Result<(), RepositoryError> {
-        self.snap_repo.inner.repo().commit(
-            &mut [aggregate.entity_mut(), self.outbox.entity_mut()][..],
-        )?;
-        self.snap_repo.maybe_snapshot(aggregate)?;
+        let snapshot = self.snap_repo.snapshot_record(aggregate)?;
+        let snapshot_version = snapshot.as_ref().map(|record| record.version);
+        let snapshots = snapshot.into_iter().map(SnapshotWrite::Save).collect();
+
+        self.snap_repo.inner.repo().commit_batch(CommitBatch {
+            entities: vec![aggregate.entity_mut(), self.outbox.entity_mut()],
+            read_models: Vec::new(),
+            snapshots,
+        })?;
+
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{impl_aggregate, AggregateRepository, Entity, EventRecord};
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct TestAggregate {
+        entity: Entity,
+        value: u32,
+    }
+
+    impl TestAggregate {
+        fn touch(&mut self) {
+            if self.entity.id().is_empty() {
+                self.entity.set_id("snap-1");
+            }
+            self.value += 1;
+            self.entity.digest_empty("Touched");
+        }
+
+        fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl_aggregate!(TestAggregate, entity, replay);
+
+    impl Snapshottable for TestAggregate {
+        type Snapshot = u32;
+
+        fn create_snapshot(&self) -> Self::Snapshot {
+            self.value
+        }
+
+        fn restore_from_snapshot(&mut self, snapshot: Self::Snapshot) {
+            self.value = snapshot;
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingSnapshotRepo {
+        saw_snapshot: RefCell<bool>,
+    }
+
+    impl TransactionalCommit for FailingSnapshotRepo {
+        fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+            if !batch.snapshots.is_empty() {
+                *self.saw_snapshot.borrow_mut() = true;
+                return Err(RepositoryError::Model("snapshot write failed".into()));
+            }
+
+            for entity in batch.entities {
+                entity.mark_committed();
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn snapshot_batch_failure_leaves_aggregate_uncommitted() {
+        let repo = FailingSnapshotRepo::default();
+        let aggregate_repo = AggregateRepository::new(repo);
+        let snapshot_repo = SnapshotAggregateRepository::new(aggregate_repo, 1);
+
+        let mut aggregate = TestAggregate::default();
+        aggregate.touch();
+
+        let err = snapshot_repo.commit(&mut aggregate).unwrap_err();
+
+        assert_eq!(err, RepositoryError::Model("snapshot write failed".into()));
+        assert!(*snapshot_repo.repo().repo().saw_snapshot.borrow());
+        assert_eq!(aggregate.entity.committed_version(), 0);
+        assert_eq!(aggregate.entity.snapshot_version(), 0);
+        assert_eq!(aggregate.entity.new_events().len(), 1);
     }
 }

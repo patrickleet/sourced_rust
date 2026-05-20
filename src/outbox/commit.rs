@@ -1,9 +1,9 @@
 use crate::aggregate::{Aggregate, AggregateRepository};
-use crate::repository::{Repository, RepositoryError};
 use crate::outbox::OutboxMessage;
+use crate::repository::{CommitBatch, RepositoryError, TransactionalCommit};
 
 /// Helper returned by [`OutboxCommitExt::outbox`] to commit an aggregate and outbox
-/// message in the same repository commit.
+/// message in the same transactional commit batch.
 pub struct OutboxCommit<'a, R, A> {
     repo: &'a AggregateRepository<R, A>,
     event: &'a mut OutboxMessage,
@@ -11,20 +11,22 @@ pub struct OutboxCommit<'a, R, A> {
 
 impl<'a, R, A> OutboxCommit<'a, R, A>
 where
-    R: Repository,
+    R: TransactionalCommit,
     A: Aggregate,
 {
     /// Commit the aggregate and outbox message together.
     pub fn commit(self, aggregate: &mut A) -> Result<(), RepositoryError> {
-        let mut entities = [aggregate.entity_mut(), self.event.entity_mut()];
-        self.repo.repo().commit(&mut entities)
+        self.repo.repo().commit_batch(CommitBatch::new(vec![
+            aggregate.entity_mut(),
+            self.event.entity_mut(),
+        ]))
     }
 }
 
 /// Extension trait for aggregate repositories to commit outbox messages alongside aggregates.
 pub trait OutboxCommitExt<R, A>
 where
-    R: Repository,
+    R: TransactionalCommit,
     A: Aggregate,
 {
     /// Attach an outbox message to be committed with the aggregate.
@@ -33,7 +35,7 @@ where
 
 impl<R, A> OutboxCommitExt<R, A> for AggregateRepository<R, A>
 where
-    R: Repository,
+    R: TransactionalCommit,
     A: Aggregate,
 {
     fn outbox<'a>(&'a self, event: &'a mut OutboxMessage) -> OutboxCommit<'a, R, A> {
@@ -44,7 +46,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, AggregateBuilder, Entity, EventRecord, Get, HashMapRepository};
+    use crate::{
+        impl_aggregate, AggregateBuilder, CommitBatch, Entity, EventRecord, Get, HashMapRepository,
+        TransactionalCommit,
+    };
+    use std::cell::RefCell;
 
     #[derive(Default)]
     struct Dummy {
@@ -66,6 +72,23 @@ mod tests {
 
     impl_aggregate!(Dummy, entity, replay);
 
+    #[derive(Default)]
+    struct FailingOutboxRepo {
+        seen_ids: RefCell<Vec<String>>,
+    }
+
+    impl TransactionalCommit for FailingOutboxRepo {
+        fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
+            *self.seen_ids.borrow_mut() = batch
+                .entities
+                .iter()
+                .map(|entity| entity.id().to_string())
+                .collect();
+
+            Err(RepositoryError::Model("outbox write failed".into()))
+        }
+    }
+
     #[test]
     fn outbox_helper_commits_both_entities() {
         let repo = HashMapRepository::new().aggregate::<Dummy>();
@@ -82,5 +105,27 @@ mod tests {
 
         let stored_event = repo.repo().get(event.id()).unwrap();
         assert!(stored_event.is_some());
+    }
+
+    #[test]
+    fn outbox_helper_failure_leaves_entities_uncommitted() {
+        let repo = AggregateRepository::<_, Dummy>::new(FailingOutboxRepo::default());
+
+        let mut aggregate = Dummy::default();
+        aggregate.touch();
+
+        let mut event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec());
+
+        let err = repo.outbox(&mut event).commit(&mut aggregate).unwrap_err();
+
+        assert_eq!(err, RepositoryError::Model("outbox write failed".into()));
+        assert_eq!(aggregate.entity.committed_version(), 0);
+        assert_eq!(event.entity().committed_version(), 0);
+        assert_eq!(aggregate.entity.new_events().len(), 1);
+        assert_eq!(event.entity().new_events().len(), 1);
+        assert_eq!(
+            repo.repo().seen_ids.borrow().as_slice(),
+            &["dummy-1".to_string(), "outbox:msg-fail".to_string()]
+        );
     }
 }

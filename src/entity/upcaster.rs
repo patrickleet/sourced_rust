@@ -13,7 +13,8 @@ pub struct EventUpcaster {
 
 /// Apply upcasters to a list of events. Chains automatically (v1->v2->v3).
 pub fn upcast_events(events: Vec<EventRecord>, upcasters: &[EventUpcaster]) -> Vec<EventRecord> {
-    events.into_iter()
+    events
+        .into_iter()
         .map(|event| upcast_one(event, upcasters))
         .collect()
 }
@@ -29,7 +30,9 @@ fn upcast_one(mut event: EventRecord, upcasters: &[EventUpcaster]) -> EventRecor
                 break; // restart loop to handle chaining
             }
         }
-        if !applied { break; }
+        if !applied {
+            break;
+        }
     }
     event
 }

@@ -10,11 +10,11 @@
 //! - Outbox events ("PlayerKilled" on death)
 //! - Guard conditions (can't move when dead, can't bomb at max)
 
-mod domain;
-mod views;
 mod commands;
-mod sim;
+mod domain;
 mod error;
+mod sim;
+mod views;
 
 use domain::types::Direction;
 use sim::Game;
@@ -57,7 +57,12 @@ fn game_setup_and_movement() {
     let board = game.board().unwrap();
     assert_eq!(board.data.players.len(), 2);
 
-    let alice = board.data.players.iter().find(|p| p.name == "Alice").unwrap();
+    let alice = board
+        .data
+        .players
+        .iter()
+        .find(|p| p.name == "Alice")
+        .unwrap();
     assert_eq!(alice.x, 1);
     assert_eq!(alice.y, 2);
     assert!(alice.alive);
@@ -88,7 +93,7 @@ fn bomb_destroys_blocks() {
     p1.place_bomb().unwrap();
 
     // Escape: go west to (1,1) then south to (1,2)
-    p1.move_dir(Direction::West).unwrap();  // (1,1)
+    p1.move_dir(Direction::West).unwrap(); // (1,1)
     p1.move_dir(Direction::South).unwrap(); // (1,2) — safe from bomb at (2,1)
 
     // Verify bomb is on the board
@@ -142,7 +147,7 @@ fn player_killed_by_bomb() {
     let bob = game2.sim("p2", "Bob");
 
     alice.join(0).unwrap(); // (1,1)
-    bob.join(1).unwrap();   // (9,6)
+    bob.join(1).unwrap(); // (9,6)
 
     // Move Bob to (5,1) via north then west
     bob.move_dir(Direction::North).unwrap(); // (9,5)
@@ -150,10 +155,10 @@ fn player_killed_by_bomb() {
     bob.move_dir(Direction::North).unwrap(); // (9,3)
     bob.move_dir(Direction::North).unwrap(); // (9,2)
     bob.move_dir(Direction::North).unwrap(); // (9,1)
-    bob.move_dir(Direction::West).unwrap();  // (8,1)
-    bob.move_dir(Direction::West).unwrap();  // (7,1)
-    bob.move_dir(Direction::West).unwrap();  // (6,1)
-    bob.move_dir(Direction::West).unwrap();  // (5,1)
+    bob.move_dir(Direction::West).unwrap(); // (8,1)
+    bob.move_dir(Direction::West).unwrap(); // (7,1)
+    bob.move_dir(Direction::West).unwrap(); // (6,1)
+    bob.move_dir(Direction::West).unwrap(); // (5,1)
 
     // Alice moves east to (3,1)
     alice.move_dir(Direction::East).unwrap(); // (2,1)
@@ -183,11 +188,15 @@ fn player_killed_by_bomb() {
     assert!(alice.is_alive().unwrap());
 
     // Verify kill recorded on saga
-    assert!(tick_result.players_killed.contains(&"player:p2".to_string()));
+    assert!(tick_result
+        .players_killed
+        .contains(&"player:p2".to_string()));
 
     // Verify outbox message was created (PlayerKilled)
-    use sourced_rust::{OutboxRepositoryExt, OutboxMessageStatus};
-    let pending = repo2.outbox_messages_by_status(OutboxMessageStatus::Pending).unwrap();
+    use sourced_rust::{OutboxMessageStatus, OutboxRepositoryExt};
+    let pending = repo2
+        .outbox_messages_by_status(OutboxMessageStatus::Pending)
+        .unwrap();
     assert!(!pending.is_empty());
     assert_eq!(pending[0].event_type, "PlayerKilled");
 }
@@ -220,9 +229,9 @@ fn chain_reaction() {
     p2.join(1).unwrap(); // (9,7)
 
     // Alice moves to (3,1), places bomb, then retreats south far enough
-    p1.move_dir(Direction::East).unwrap();  // (2,1)
-    p1.move_dir(Direction::East).unwrap();  // (3,1)
-    p1.place_bomb().unwrap();               // bomb at (3,1), radius 2
+    p1.move_dir(Direction::East).unwrap(); // (2,1)
+    p1.move_dir(Direction::East).unwrap(); // (3,1)
+    p1.place_bomb().unwrap(); // bomb at (3,1), radius 2
 
     // Alice retreats south 3 cells (blast goes south only 2)
     p1.move_dir(Direction::South).unwrap(); // (3,2)
@@ -237,7 +246,7 @@ fn chain_reaction() {
     // Bob's bomb will have timer=3, Alice's bomb has timer=1
     // Alice's bomb detonates next tick, expanding blast reaches (5,1) at ring 2
     bob_move_to_position(&game, "p2", "Bob", 9, 7, 5, 1);
-    p2.place_bomb().unwrap();               // bomb at (5,1), radius 2
+    p2.place_bomb().unwrap(); // bomb at (5,1), radius 2
     p2.move_dir(Direction::South).unwrap(); // (5,2)
     p2.move_dir(Direction::South).unwrap(); // (5,3)
     p2.move_dir(Direction::South).unwrap(); // (5,4)
@@ -258,9 +267,12 @@ fn chain_reaction() {
 
     // Both bombs should have detonated — at least 2 detonations total across all ticks
     // The chain detonation should be recorded
-    assert!(!tick_result.chain_detonations.is_empty() || tick_result.detonations.len() >= 2,
+    assert!(
+        !tick_result.chain_detonations.is_empty() || tick_result.detonations.len() >= 2,
         "Expected chain reaction or multiple detonations, got {} detonations, {} chains",
-        tick_result.detonations.len(), tick_result.chain_detonations.len());
+        tick_result.detonations.len(),
+        tick_result.chain_detonations.len()
+    );
 
     // Both players should be alive (they retreated far enough)
     assert!(p1.is_alive().unwrap());
@@ -268,7 +280,13 @@ fn chain_reaction() {
 }
 
 /// Helper to move a player step by step to a target position via simple pathfinding.
-fn bob_move_to_position<R: sourced_rust::Commit + sourced_rust::read_model::ReadModelStore + sourced_rust::Get + sourced_rust::Find>(
+fn bob_move_to_position<
+    R: sourced_rust::Commit
+        + sourced_rust::read_model::ReadModelStore
+        + sourced_rust::TransactionalCommit
+        + sourced_rust::Get
+        + sourced_rust::Find,
+>(
     game: &Game<'_, R>,
     id: &str,
     _name: &str,
@@ -309,9 +327,9 @@ fn bob_move_to_position<R: sourced_rust::Commit + sourced_rust::read_model::Read
 
 #[test]
 fn concurrent_bomb_placement() {
+    use sourced_rust::ReadModelsExt;
     use std::sync::Arc;
     use std::thread;
-    use sourced_rust::ReadModelsExt;
 
     // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across threads
     let repo = Arc::new(HashMapRepository::new());
@@ -343,7 +361,11 @@ fn concurrent_bomb_placement() {
     t2.join().unwrap();
 
     // Verify both bombs placed
-    let _board = repo.read_models::<views::BoardView>().get("game-5").unwrap().unwrap();
+    let _board = repo
+        .read_models::<views::BoardView>()
+        .get("game-5")
+        .unwrap()
+        .unwrap();
     // Board may show 1 or 2 bombs depending on which thread's board view won the race,
     // but both bomb aggregates should exist in the repo.
     use sourced_rust::GetAggregate;
@@ -427,7 +449,10 @@ fn full_game_to_winner() {
     game.tick().unwrap(); // ring 1
     let r1 = game.tick().unwrap(); // ring 2 → Bob killed
 
-    assert!(!p2.is_alive().unwrap(), "Bob should be dead from Alice's bomb");
+    assert!(
+        !p2.is_alive().unwrap(),
+        "Bob should be dead from Alice's bomb"
+    );
     assert!(r1.players_killed.contains(&"player:p2".to_string()));
 
     // --- Round 2: Charlie traps Diana ---

@@ -1,5 +1,5 @@
-use crate::entity::Entity;
 use super::RepositoryError;
+use crate::entity::Entity;
 
 /// Trait for types that can be used as get arguments.
 pub trait Gettable {
