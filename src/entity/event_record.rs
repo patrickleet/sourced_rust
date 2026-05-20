@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 
-/// Error when deserializing event payload.
+/// Error when serializing or deserializing event payloads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadError {
     pub message: String,
@@ -36,6 +36,7 @@ pub struct EventRecord {
     pub event_version: u64,
     pub sequence: u64,
     pub timestamp: SystemTime,
+    #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
 
@@ -220,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_without_metadata_field_fails() {
+    fn deserialize_without_metadata_field_defaults_to_empty() {
         let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
-        let result: Result<EventRecord, _> = serde_json::from_str(json);
-        assert!(result.is_err());
+        let record: EventRecord = serde_json::from_str(json).unwrap();
+        assert!(record.metadata.is_empty());
     }
 }

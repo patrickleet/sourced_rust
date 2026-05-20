@@ -10,4 +10,4 @@ pub use entity::Entity;
 pub use event::Event;
 pub use event_record::{EventRecord, PayloadError};
 pub use local_event::LocalEvent;
-pub use upcaster::{upcast_events, EventUpcaster};
+pub use upcaster::{try_upcast_events, upcast_events, EventUpcaster, UpcastError};

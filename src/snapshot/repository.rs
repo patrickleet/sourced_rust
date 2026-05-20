@@ -1,5 +1,5 @@
 use crate::aggregate::{hydrate, AggregateRepository};
-use crate::entity::{upcast_events, Entity};
+use crate::entity::{try_upcast_events, Entity};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
     CommitBatch, Find, Get, RepositoryError, SnapshotWrite, TransactionalCommit,
@@ -38,7 +38,8 @@ pub fn hydrate_from_snapshot<A: Snapshottable>(
     let events = if upcasters.is_empty() {
         post_snapshot
     } else {
-        upcast_events(post_snapshot, upcasters)
+        try_upcast_events(post_snapshot, upcasters)
+            .map_err(|err| RepositoryError::Replay(err.to_string()))?
     };
 
     agg.entity_mut().set_replaying(true);

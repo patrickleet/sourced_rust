@@ -74,6 +74,37 @@ fn generate_digest_call(
     }
 }
 
+/// Generate a fallible digest call token stream.
+fn generate_try_digest_call(
+    entity_field: &Ident,
+    event_name: &LitStr,
+    param_names: &[&Ident],
+    version: Option<&syn::LitInt>,
+) -> proc_macro2::TokenStream {
+    match version {
+        Some(ver) => {
+            if param_names.is_empty() {
+                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &())?; }
+            } else if param_names.len() == 1 {
+                let param = param_names[0];
+                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &(#param.clone(),))?; }
+            } else {
+                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &(#(#param_names.clone()),*))?; }
+            }
+        }
+        None => {
+            if param_names.is_empty() {
+                quote! { self.#entity_field.try_digest(#event_name, &())?; }
+            } else if param_names.len() == 1 {
+                let param = param_names[0];
+                quote! { self.#entity_field.try_digest(#event_name, &(#param.clone(),))?; }
+            } else {
+                quote! { self.#entity_field.try_digest(#event_name, &(#(#param_names.clone()),*))?; }
+            }
+        }
+    }
+}
+
 /// Wrap a method body with an optional guard condition and prepended statements.
 fn wrap_body_with_guard(
     guard: Option<&Expr>,
@@ -320,6 +351,30 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let param_names = extract_param_names(&func.sig);
     let digest_call = generate_digest_call(
+        &args.entity_field,
+        &args.event_name,
+        &param_names,
+        args.version.as_ref(),
+    );
+
+    let original_stmts = &func.block.stmts;
+    let new_body = wrap_body_with_guard(args.guard.as_ref(), digest_call, original_stmts);
+    func.block = Box::new(new_body);
+
+    TokenStream::from(quote! { #func })
+}
+
+/// Attribute macro that inserts a fallible digest call at the beginning of a method.
+///
+/// The annotated method must return `Result<_, sourced_rust::PayloadError>` or
+/// another `Result` whose error type can be constructed from `PayloadError`.
+#[proc_macro_attribute]
+pub fn try_digest(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr with parse_digest_args);
+    let mut func = parse_macro_input!(item as ItemFn);
+
+    let param_names = extract_param_names(&func.sig);
+    let digest_call = generate_try_digest_call(
         &args.entity_field,
         &args.event_name,
         &param_names,

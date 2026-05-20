@@ -1,7 +1,44 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoEvent};
-use sourced_rust::{Aggregate, AggregateBuilder, EventRecord, HashMapRepository, Queueable};
+use serde::ser::Error as _;
+use serde::Serialize;
+use sourced_rust::{
+    Aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, PayloadError, Queueable,
+};
+
+#[derive(Clone)]
+struct FailingSerialize;
+
+impl Serialize for FailingSerialize {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Err(S::Error::custom("intentional serialization failure"))
+    }
+}
+
+#[derive(Default)]
+struct SafeRecorder {
+    entity: Entity,
+    applied: bool,
+}
+
+impl SafeRecorder {
+    #[sourced_rust::try_digest("Recorded")]
+    fn record(&mut self, _payload: FailingSerialize) -> Result<(), PayloadError> {
+        self.applied = true;
+        Ok(())
+    }
+
+    #[sourced_rust::try_digest("Recorded", version = 2)]
+    fn record_ok(&mut self, payload: String) -> Result<(), PayloadError> {
+        self.applied = true;
+        assert_eq!(payload, "ok");
+        Ok(())
+    }
+}
 
 #[test]
 fn enum_variants_exist_and_compile() {
@@ -16,6 +53,29 @@ fn enum_variants_exist_and_compile() {
     let _ = format!("{:?}", init);
     let _ = init.clone();
     let _ = format!("{:?}", completed);
+}
+
+#[test]
+fn try_digest_macro_returns_payload_errors_without_running_body() {
+    let mut recorder = SafeRecorder::default();
+
+    let err = recorder.record(FailingSerialize).unwrap_err();
+
+    assert!(err.message.contains("intentional serialization failure"));
+    assert!(!recorder.applied);
+    assert!(recorder.entity.events().is_empty());
+}
+
+#[test]
+fn try_digest_macro_records_successful_versioned_events() {
+    let mut recorder = SafeRecorder::default();
+
+    recorder.record_ok("ok".to_string()).unwrap();
+
+    assert!(recorder.applied);
+    assert_eq!(recorder.entity.events().len(), 1);
+    assert_eq!(recorder.entity.events()[0].event_name, "Recorded");
+    assert_eq!(recorder.entity.events()[0].event_version, 2);
 }
 
 #[test]
