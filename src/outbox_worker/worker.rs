@@ -18,6 +18,8 @@ pub struct DrainResult {
 pub struct ProcessOneResult {
     /// Whether any work was done (a message was processed).
     pub did_work: bool,
+    /// Whether this call claimed a pending message.
+    pub claimed: bool,
     /// Whether the message was successfully published.
     pub completed: bool,
     /// Whether the message was released for retry.
@@ -99,8 +101,10 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             return Ok(ProcessOneResult::default());
         }
 
+        let mut claimed = false;
         if message.is_pending() {
             message.claim_for(&self.worker_id, self.lease)?;
+            claimed = true;
         }
 
         if !message.is_in_flight() {
@@ -116,6 +120,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
                     message.complete()?;
                     ProcessOneResult {
                         did_work: true,
+                        claimed,
                         completed: true,
                         ..Default::default()
                     }
@@ -126,6 +131,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
                         message.fail(error_msg)?;
                         ProcessOneResult {
                             did_work: true,
+                            claimed,
                             failed: true,
                             ..Default::default()
                         }
@@ -133,6 +139,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
                         message.release(error_msg)?;
                         ProcessOneResult {
                             did_work: true,
+                            claimed,
                             released: true,
                             ..Default::default()
                         }
@@ -149,7 +156,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
 
         for message in messages.iter_mut().take(self.batch_size) {
             let processed = self.process_message(message)?;
-            if processed.did_work {
+            if processed.claimed {
                 result.claimed += 1;
             }
             if processed.completed {
@@ -214,5 +221,31 @@ mod tests {
         let logs = buffer.lock().unwrap();
         assert!(logs[0].contains("correlation_id"));
         assert!(logs[0].contains("req-abc"));
+    }
+
+    #[test]
+    fn process_batch_counts_pending_messages_claimed_by_this_call() {
+        let mut messages = vec![OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap()];
+        let mut worker = OutboxWorker::new(LogPublisher::default());
+
+        let result = worker.process_batch(&mut messages).unwrap();
+
+        assert_eq!(result.claimed, 1);
+        assert_eq!(result.completed, 1);
+    }
+
+    #[test]
+    fn process_batch_does_not_count_already_in_flight_messages_as_claimed() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message
+            .claim_for("other-worker", Duration::from_secs(1))
+            .unwrap();
+        let mut messages = vec![message];
+        let mut worker = OutboxWorker::new(LogPublisher::default());
+
+        let result = worker.process_batch(&mut messages).unwrap();
+
+        assert_eq!(result.claimed, 0);
+        assert_eq!(result.completed, 1);
     }
 }
