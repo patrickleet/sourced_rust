@@ -1,6 +1,6 @@
 use std::fmt;
 
-use sourced_rust::RepositoryError;
+use sourced_rust::{EventRecordError, RepositoryError};
 
 #[derive(Debug)]
 pub enum GameError {
@@ -30,5 +30,11 @@ impl fmt::Display for GameError {
 impl From<RepositoryError> for GameError {
     fn from(e: RepositoryError) -> Self {
         GameError::Repository(e)
+    }
+}
+
+impl From<EventRecordError> for GameError {
+    fn from(e: EventRecordError) -> Self {
+        GameError::Repository(e.into())
     }
 }

@@ -19,14 +19,19 @@ impl Todo {
     }
 
     #[digest("Initialized")]
-    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
+    pub fn initialize(
+        &mut self,
+        id: String,
+        user_id: String,
+        task: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
     #[digest("Completed", when = !self.completed)]
-    pub fn complete(&mut self) {
+    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.completed = true;
     }
 }
@@ -54,14 +59,19 @@ impl Inventory {
     }
 
     #[digest("Created")]
-    pub fn create(&mut self, id: String, sku: String, available: u32) {
+    pub fn create(
+        &mut self,
+        id: String,
+        sku: String,
+        available: u32,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.sku = sku;
         self.available = available;
     }
 
     #[digest("Restocked")]
-    pub fn restock(&mut self, qty: u32) {
+    pub fn restock(&mut self, qty: u32) -> Result<(), sourced_rust::EventRecordError> {
         self.available += qty;
     }
 }
@@ -90,7 +100,12 @@ impl Order {
     }
 
     #[digest("Placed")]
-    pub fn place(&mut self, id: String, customer: String, total: u64) {
+    pub fn place(
+        &mut self,
+        id: String,
+        customer: String,
+        total: u64,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.customer = customer;
         self.total = total;
@@ -119,12 +134,12 @@ impl Counter {
     }
 
     #[event("Initialized")]
-    pub fn initialize(&mut self, id: String) {
+    pub fn initialize(&mut self, id: String) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
     }
 
     #[event("Incremented")]
-    pub fn increment(&mut self, amount: i64) {
+    pub fn increment(&mut self, amount: i64) -> Result<(), sourced_rust::EventRecordError> {
         self.count += amount;
     }
 }
@@ -147,7 +162,12 @@ impl Widget {
     }
 
     #[digest(my_entity, "Created")]
-    pub fn create(&mut self, id: String, name: String, weight: f64) {
+    pub fn create(
+        &mut self,
+        id: String,
+        name: String,
+        weight: f64,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.my_entity.set_id(&id);
         self.name = name;
         self.weight = weight;
@@ -180,7 +200,11 @@ impl Notifier {
     }
 
     #[digest("Sent")]
-    pub fn send(&mut self, id: String, message: String) {
+    pub fn send(
+        &mut self,
+        id: String,
+        message: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.message = message;
     }

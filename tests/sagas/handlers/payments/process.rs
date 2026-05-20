@@ -11,13 +11,17 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
 
     let payment_id = format!("pay-{}", input.order_id);
     let mut payment = Payment::new();
-    payment.initiate(
-        payment_id.clone(),
-        input.order_id.clone(),
-        input.amount_cents,
-    );
-    payment.authorize("txn-distributed-001".to_string());
-    payment.capture();
+    payment
+        .initiate(
+            payment_id.clone(),
+            input.order_id.clone(),
+            input.amount_cents,
+        )
+        .unwrap();
+    payment
+        .authorize("txn-distributed-001".to_string())
+        .unwrap();
+    payment.capture().unwrap();
 
     let mut msg = json_outbox_to(
         &format!("{}-payment-succeeded", input.order_id),

@@ -381,7 +381,7 @@ mod tests {
                 self.entity.set_id("snap-1");
             }
             self.value += 1;
-            self.entity.digest_empty("Touched");
+            self.entity.digest_empty("Touched").unwrap();
         }
 
         fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {

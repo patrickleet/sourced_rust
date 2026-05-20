@@ -13,7 +13,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         .repo()
         .get(&input.saga_id)?
         .ok_or_else(|| HandlerError::NotFound(input.saga_id.clone()))?;
-    saga.complete();
+    saga.complete().unwrap();
 
     ctx.repo().commit(&mut saga)?;
     Ok(json!({ "saga_id": input.saga_id, "status": "completed" }))

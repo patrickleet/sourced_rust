@@ -75,14 +75,14 @@ fn event_version_serializes_when_not_v1() {
 
 #[test]
 fn old_events_without_event_version_deserialize_as_v1() {
-    let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0},"metadata":{}}"#;
+    let json = r#"{"event_name":"old_event","payload_codec":"bitcode","payload_codec_version":1,"payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0},"metadata":{}}"#;
     let record: EventRecord = serde_json::from_str(json).unwrap();
     assert_eq!(record.event_version, 1);
 }
 
 #[test]
 fn old_events_without_metadata_deserialize_with_empty_metadata() {
-    let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
+    let json = r#"{"event_name":"old_event","payload_codec":"bitcode","payload_codec_version":1,"payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
     let record: EventRecord = serde_json::from_str(json).unwrap();
     assert_eq!(record.event_version, 1);
     assert!(record.metadata.is_empty());
@@ -105,7 +105,8 @@ fn event_version_round_trips_through_serde() {
 #[test]
 fn digest_v_creates_events_at_specified_version() {
     let mut todo = TodoV2::default();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into(), 3);
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into(), 3)
+        .unwrap();
 
     let events = todo.entity.events();
     assert_eq!(events.len(), 1);
@@ -116,7 +117,8 @@ fn digest_v_creates_events_at_specified_version() {
 #[test]
 fn digest_without_version_creates_v1_events() {
     let mut todo = TodoV1::default();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
 
     let events = todo.entity.events();
     assert_eq!(events.len(), 1);
@@ -131,8 +133,9 @@ fn digest_without_version_creates_v1_events() {
 fn hydrate_v2_from_v1_events() {
     // Create events using the v1 aggregate
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    v1.complete();
+    v1.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    v1.complete().unwrap();
 
     // Simulate loading into the v2 aggregate by transferring the entity
     let mut entity = Entity::new();
@@ -169,7 +172,8 @@ fn v1_aggregate_has_no_upcasters() {
 fn hydrate_v3_from_v1_events_chains_upcasters() {
     // Create events using v1 aggregate
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "bob".into(), "Walk dog".into());
+    v1.initialize("t1".into(), "bob".into(), "Walk dog".into())
+        .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v1.entity.events().to_vec());
@@ -187,7 +191,8 @@ fn hydrate_v3_from_v1_events_chains_upcasters() {
 fn hydrate_v3_from_v2_events_applies_single_upcaster() {
     // Create events using v2 aggregate
     let mut v2 = TodoV2::default();
-    v2.initialize("t1".into(), "carol".into(), "Read book".into(), 5);
+    v2.initialize("t1".into(), "carol".into(), "Read book".into(), 5)
+        .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v2.entity.events().to_vec());
@@ -209,7 +214,8 @@ fn hydrate_v3_from_native_v3_events_no_upcasting_needed() {
         "Cook dinner".into(),
         2,
         "2025-12-31".into(),
-    );
+    )
+    .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v3.entity.events().to_vec());
@@ -237,8 +243,9 @@ fn v3_aggregate_has_two_upcasters() {
 fn mixed_events_v1_init_and_v1_complete() {
     // Completed events are always v1 — no upcaster needed
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "eve".into(), "Test".into());
-    v1.complete();
+    v1.initialize("t1".into(), "eve".into(), "Test".into())
+        .unwrap();
+    v1.complete().unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v1.entity.events().to_vec());
@@ -257,7 +264,8 @@ fn repo_roundtrip_v1_to_v2() {
     // Store using v1
     let v1_repo = HashMapRepository::new();
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "frank".into(), "Shop".into());
+    v1.initialize("t1".into(), "frank".into(), "Shop".into())
+        .unwrap();
     v1_repo.commit(&mut v1.entity).unwrap();
 
     // Load using v2 (same storage)
@@ -324,7 +332,8 @@ fn snapshot_plus_upcasting_post_snapshot_events() {
 
     // Create using native v2 with a specific priority
     let mut todo = TodoV2::default();
-    todo.initialize("t1".into(), "grace".into(), "Run".into(), 7);
+    todo.initialize("t1".into(), "grace".into(), "Run".into(), 7)
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Snapshot should now exist at version 1
@@ -332,7 +341,7 @@ fn snapshot_plus_upcasting_post_snapshot_events() {
 
     // Add another event; this triggers snapshot + partial replay path
     let mut todo = repo.get("t1").unwrap().unwrap();
-    todo.complete();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     let loaded = repo.get("t1").unwrap().unwrap();
@@ -347,8 +356,9 @@ fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
 
     // Create a v1 todo
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "hank".into(), "Sweep".into());
-    v1.complete();
+    v1.initialize("t1".into(), "hank".into(), "Sweep".into())
+        .unwrap();
+    v1.complete().unwrap();
     base_repo.commit(&mut v1.entity).unwrap();
 
     // Load via a v2 snapshot-aware repo (no snapshot exists, so full replay with upcasting)

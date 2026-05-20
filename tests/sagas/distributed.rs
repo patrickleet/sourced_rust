@@ -69,13 +69,15 @@ fn distributed_saga_with_threads() {
         }];
 
         let mut order_fulfillment_saga = OrderFulfillmentSaga::new();
-        order_fulfillment_saga.start(
-            saga_id.clone(),
-            order_id.clone(),
-            "customer-001".to_string(),
-            items.clone(),
-            5000,
-        );
+        order_fulfillment_saga
+            .start(
+                saga_id.clone(),
+                order_id.clone(),
+                "customer-001".to_string(),
+                items.clone(),
+                5000,
+            )
+            .unwrap();
 
         let mut outbox = OutboxMessage::encode(
             &format!("{}:started", saga_id),
@@ -123,7 +125,7 @@ fn distributed_saga_with_threads() {
                             println!("[Saga Orchestrator] Inventory reserved, advancing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.inventory_reserved();
+                            order_fulfillment_saga.inventory_reserved().unwrap();
                             order_fulfillment_saga_repo
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
@@ -135,7 +137,7 @@ fn distributed_saga_with_threads() {
                             println!("[Saga Orchestrator] Payment succeeded, advancing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.payment_succeeded();
+                            order_fulfillment_saga.payment_succeeded().unwrap();
                             order_fulfillment_saga_repo
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
@@ -147,7 +149,7 @@ fn distributed_saga_with_threads() {
                             println!("[Saga Orchestrator] Order completed, completing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.complete();
+                            order_fulfillment_saga.complete().unwrap();
 
                             let mut outbox = OutboxMessage::encode(
                                 &format!("{}:completed", saga_id),
@@ -214,11 +216,13 @@ fn distributed_saga_with_threads() {
                         println!("[Order Service] Received SagaStarted, creating order...");
 
                         let mut order = Order::new();
-                        order.create(
-                            data.order_id.clone(),
-                            data.customer_id.clone(),
-                            data.items.clone(),
-                        );
+                        order
+                            .create(
+                                data.order_id.clone(),
+                                data.customer_id.clone(),
+                                data.items.clone(),
+                            )
+                            .unwrap();
 
                         let mut outbox = OutboxMessage::encode(
                             &format!("{}:created", data.order_id),
@@ -246,9 +250,9 @@ fn distributed_saga_with_threads() {
                             );
 
                             let mut order = order_repo.get(&data.order_id).unwrap().unwrap();
-                            order.mark_inventory_reserved();
-                            order.mark_payment_processed();
-                            order.complete();
+                            order.mark_inventory_reserved().unwrap();
+                            order.mark_payment_processed().unwrap();
+                            order.complete().unwrap();
 
                             let mut outbox = OutboxMessage::encode(
                                 &format!("{}:completed", data.order_id),
@@ -289,7 +293,7 @@ fn distributed_saga_with_threads() {
 
         // Initialize inventory first
         let mut inv = Inventory::new();
-        inv.initialize("WIDGET-001".to_string(), 100);
+        inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         inventory_repo.commit(&mut inv).unwrap();
 
         println!(
@@ -309,7 +313,7 @@ fn distributed_saga_with_threads() {
                 let mut inv = inventory_repo.get(&item.sku).unwrap().unwrap();
 
                 if inv.can_reserve(item.quantity) {
-                    inv.reserve(data.order_id.clone(), item.quantity);
+                    inv.reserve(data.order_id.clone(), item.quantity).unwrap();
 
                     let mut outbox = OutboxMessage::encode(
                         &format!("{}:reserved", data.order_id),
@@ -362,9 +366,11 @@ fn distributed_saga_with_threads() {
 
                 let mut payment = Payment::new();
                 let payment_id = format!("pay-{}", data.order_id);
-                payment.initiate(payment_id.clone(), data.order_id.clone(), 5000);
-                payment.authorize("txn-123".to_string());
-                payment.capture();
+                payment
+                    .initiate(payment_id.clone(), data.order_id.clone(), 5000)
+                    .unwrap();
+                payment.authorize("txn-123".to_string()).unwrap();
+                payment.capture().unwrap();
 
                 let mut outbox = OutboxMessage::encode(
                     &format!("{}:paid", data.order_id),
@@ -474,13 +480,15 @@ fn distributed_saga_with_send_listen() {
         }];
 
         let mut order_fulfillment_saga = OrderFulfillmentSaga::new();
-        order_fulfillment_saga.start(
-            saga_id.clone(),
-            order_id.clone(),
-            "customer-001".to_string(),
-            items.clone(),
-            5000,
-        );
+        order_fulfillment_saga
+            .start(
+                saga_id.clone(),
+                order_id.clone(),
+                "customer-001".to_string(),
+                items.clone(),
+                5000,
+            )
+            .unwrap();
 
         // Send to the "orders" queue (point-to-point)
         let mut outbox = OutboxMessage::encode_to(
@@ -524,7 +532,7 @@ fn distributed_saga_with_send_listen() {
                             println!("[Saga/SendListen] Inventory reserved, advancing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.inventory_reserved();
+                            order_fulfillment_saga.inventory_reserved().unwrap();
                             order_fulfillment_saga_repo
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
@@ -536,7 +544,7 @@ fn distributed_saga_with_send_listen() {
                             println!("[Saga/SendListen] Payment succeeded, advancing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.payment_succeeded();
+                            order_fulfillment_saga.payment_succeeded().unwrap();
                             order_fulfillment_saga_repo
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
@@ -548,7 +556,7 @@ fn distributed_saga_with_send_listen() {
                             println!("[Saga/SendListen] Order completed, completing saga...");
                             let mut order_fulfillment_saga =
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
-                            order_fulfillment_saga.complete();
+                            order_fulfillment_saga.complete().unwrap();
 
                             // SagaCompleted has no specific destination, but we can
                             // still route it to a queue (or use publish for fan-out)
@@ -619,11 +627,13 @@ fn distributed_saga_with_send_listen() {
                         println!("[Order/SendListen] Received SagaStarted, creating order...");
 
                         let mut order = Order::new();
-                        order.create(
-                            data.order_id.clone(),
-                            data.customer_id.clone(),
-                            data.items.clone(),
-                        );
+                        order
+                            .create(
+                                data.order_id.clone(),
+                                data.customer_id.clone(),
+                                data.items.clone(),
+                            )
+                            .unwrap();
 
                         // Send OrderCreated to both "saga" and "inventory" queues
                         let payload = OrderCreatedPayload {
@@ -667,9 +677,9 @@ fn distributed_saga_with_send_listen() {
                             );
 
                             let mut order = order_repo.get(&data.order_id).unwrap().unwrap();
-                            order.mark_inventory_reserved();
-                            order.mark_payment_processed();
-                            order.complete();
+                            order.mark_inventory_reserved().unwrap();
+                            order.mark_payment_processed().unwrap();
+                            order.complete().unwrap();
 
                             let mut outbox = OutboxMessage::encode_to(
                                 &format!("{}:completed", data.order_id),
@@ -712,7 +722,7 @@ fn distributed_saga_with_send_listen() {
 
         // Initialize inventory
         let mut inv = Inventory::new();
-        inv.initialize("WIDGET-001".to_string(), 100);
+        inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         inventory_repo.commit(&mut inv).unwrap();
 
         println!(
@@ -730,7 +740,7 @@ fn distributed_saga_with_send_listen() {
                 let mut inv = inventory_repo.get(&item.sku).unwrap().unwrap();
 
                 if inv.can_reserve(item.quantity) {
-                    inv.reserve(data.order_id.clone(), item.quantity);
+                    inv.reserve(data.order_id.clone(), item.quantity).unwrap();
 
                     // Send InventoryReserved to both "saga" and "payments" queues
                     let payload = InventoryReservedPayload {
@@ -796,9 +806,11 @@ fn distributed_saga_with_send_listen() {
 
                 let mut payment = Payment::new();
                 let payment_id = format!("pay-{}", data.order_id);
-                payment.initiate(payment_id.clone(), data.order_id.clone(), 5000);
-                payment.authorize("txn-123".to_string());
-                payment.capture();
+                payment
+                    .initiate(payment_id.clone(), data.order_id.clone(), 5000)
+                    .unwrap();
+                payment.authorize("txn-123".to_string()).unwrap();
+                payment.capture().unwrap();
 
                 // Send PaymentSucceeded to both "saga" and "orders" queues
                 let payload = PaymentSucceededPayload {
@@ -911,15 +923,17 @@ fn metadata_propagates_across_bus_to_subscriber() {
         order.entity.set_correlation_id("req-distributed-001");
         order.entity.set_causation_id("cmd-create-order");
         order.entity.set_meta("user_id", "u-99");
-        order.create(
-            "order-meta-001".to_string(),
-            "customer-meta-001".to_string(),
-            vec![OrderItem {
-                sku: "WIDGET-META".to_string(),
-                quantity: 1,
-                price_cents: 500,
-            }],
-        );
+        order
+            .create(
+                "order-meta-001".to_string(),
+                "customer-meta-001".to_string(),
+                vec![OrderItem {
+                    sku: "WIDGET-META".to_string(),
+                    quantity: 1,
+                    price_cents: 500,
+                }],
+            )
+            .unwrap();
 
         // Metadata propagates automatically from entity context
         let mut outbox = OutboxMessage::encode_for_entity(

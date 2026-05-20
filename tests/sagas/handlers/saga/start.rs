@@ -16,7 +16,8 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         input.customer_id.clone(),
         input.items.clone(),
         input.total_cents,
-    );
+    )
+    .unwrap();
 
     let mut msg = json_outbox_to(
         &format!("{}-create-order", input.saga_id),

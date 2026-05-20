@@ -6,7 +6,7 @@ use quote::{format_ident, quote};
 use syn::{
     braced,
     parse::{Parse, ParseStream},
-    parse_macro_input, Expr, FnArg, Ident, ItemFn, ItemImpl, LitStr, Pat, Token,
+    parse_macro_input, Expr, FnArg, Ident, ItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type,
 };
 
 // ============================================================================
@@ -43,6 +43,40 @@ fn extract_params_with_types(sig: &syn::Signature) -> Vec<(Ident, syn::Type)> {
         .collect()
 }
 
+fn returns_result(sig: &syn::Signature) -> bool {
+    match &sig.output {
+        ReturnType::Default => false,
+        ReturnType::Type(_, ty) => match ty.as_ref() {
+            Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident == "Result")
+                .unwrap_or(false),
+            _ => false,
+        },
+    }
+}
+
+fn block_returns_result(block: &syn::Block) -> bool {
+    let Some(syn::Stmt::Expr(expr, None)) = block.stmts.last() else {
+        return false;
+    };
+
+    match expr {
+        Expr::Call(call) => match &*call.func {
+            Expr::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident == "Ok" || segment.ident == "Err")
+                .unwrap_or(false),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Generate a digest call token stream.
 fn generate_digest_call(
     entity_field: &Ident,
@@ -53,78 +87,75 @@ fn generate_digest_call(
     match version {
         Some(ver) => {
             if param_names.is_empty() {
-                quote! { self.#entity_field.digest_v(#event_name, #ver, &()); }
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &())?; }
             } else if param_names.len() == 1 {
                 let param = param_names[0];
-                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#param.clone(),)); }
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#param.clone(),))?; }
             } else {
-                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#(#param_names.clone()),*)); }
+                quote! { self.#entity_field.digest_v(#event_name, #ver, &(#(#param_names.clone()),*))?; }
             }
         }
         None => {
             if param_names.is_empty() {
-                quote! { self.#entity_field.digest_empty(#event_name); }
+                quote! { self.#entity_field.digest_empty(#event_name)?; }
             } else if param_names.len() == 1 {
                 let param = param_names[0];
-                quote! { self.#entity_field.digest(#event_name, &(#param.clone(),)); }
+                quote! { self.#entity_field.digest(#event_name, &(#param.clone(),))?; }
             } else {
-                quote! { self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*)); }
+                quote! { self.#entity_field.digest(#event_name, &(#(#param_names.clone()),*))?; }
             }
         }
     }
 }
 
-/// Generate a fallible digest call token stream.
-fn generate_try_digest_call(
-    entity_field: &Ident,
-    event_name: &LitStr,
-    param_names: &[&Ident],
-    version: Option<&syn::LitInt>,
-) -> proc_macro2::TokenStream {
-    match version {
-        Some(ver) => {
-            if param_names.is_empty() {
-                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &())?; }
-            } else if param_names.len() == 1 {
-                let param = param_names[0];
-                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &(#param.clone(),))?; }
-            } else {
-                quote! { self.#entity_field.try_digest_v(#event_name, #ver, &(#(#param_names.clone()),*))?; }
-            }
-        }
-        None => {
-            if param_names.is_empty() {
-                quote! { self.#entity_field.try_digest(#event_name, &())?; }
-            } else if param_names.len() == 1 {
-                let param = param_names[0];
-                quote! { self.#entity_field.try_digest(#event_name, &(#param.clone(),))?; }
-            } else {
-                quote! { self.#entity_field.try_digest(#event_name, &(#(#param_names.clone()),*))?; }
-            }
-        }
-    }
-}
-
-/// Wrap a method body with an optional guard condition and prepended statements.
-fn wrap_body_with_guard(
+/// Wrap a `Result<(), E>` command method with an optional guard and fallible prelude.
+fn wrap_result_body_with_guard(
     guard: Option<&Expr>,
     prepend: proc_macro2::TokenStream,
-    original_stmts: &[syn::Stmt],
+    original_block: &syn::Block,
 ) -> syn::Block {
-    if let Some(guard) = guard {
-        syn::parse_quote! {
-            {
-                if #guard {
-                    #prepend
-                    #(#original_stmts)*
+    let original_stmts = &original_block.stmts;
+    let original_returns_result = block_returns_result(original_block);
+
+    match (guard, original_returns_result) {
+        (Some(guard), true) => {
+            syn::parse_quote! {
+                {
+                    if #guard {
+                        #prepend
+                        (|| #original_block)()?;
+                    }
+                    Ok(())
                 }
             }
         }
-    } else {
-        syn::parse_quote! {
-            {
-                #prepend
-                #(#original_stmts)*
+        (Some(guard), false) => {
+            syn::parse_quote! {
+                {
+                    if #guard {
+                        #prepend
+                        #(#original_stmts)*
+                    }
+                    Ok(())
+                }
+            }
+        }
+        (None, true) => {
+            syn::parse_quote! {
+                {
+                    #prepend
+                    (|| #original_block)()?;
+                    Ok(())
+                }
+            }
+        }
+        (None, false) => {
+            syn::parse_quote! {
+                {
+                    #prepend
+                    #(#original_stmts)*
+                    Ok(())
+                }
             }
         }
     }
@@ -148,7 +179,7 @@ fn generate_enqueue_call(
     quote! {
         if !self.#entity_field.is_replaying() {
             #enqueue_expr
-        }
+        };
     }
 }
 
@@ -223,7 +254,7 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             if !self.#entity_field.is_replaying() {
                 self.#emitter_field.enqueue(#event_name, "");
-            }
+            };
         }
     } else if param_names.len() == 1 {
         // Single-element tuple needs trailing comma: (x,) not (x)
@@ -231,35 +262,38 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             if !self.#entity_field.is_replaying() {
                 self.#emitter_field.enqueue_with(#event_name, &(#param.clone(),));
-            }
+            };
         }
     } else {
         // Multi-element tuple
         quote! {
             if !self.#entity_field.is_replaying() {
                 self.#emitter_field.enqueue_with(#event_name, &(#(#param_names.clone()),*));
-            }
+            };
         }
     };
 
-    // Build the new function body
-    let original_stmts = &func.block.stmts;
-    let new_body = if let Some(guard) = &args.guard {
-        // Wrap everything in the guard condition
-        syn::parse_quote! {
-            {
-                if #guard {
+    let new_body = if returns_result(&func.sig) {
+        wrap_result_body_with_guard(args.guard.as_ref(), enqueue_call, &func.block)
+    } else {
+        let original_stmts = &func.block.stmts;
+        if let Some(guard) = &args.guard {
+            // Wrap everything in the guard condition
+            syn::parse_quote! {
+                {
+                    if #guard {
+                        #enqueue_call
+                        #(#original_stmts)*
+                    }
+                }
+            }
+        } else {
+            // No guard - just prepend enqueue
+            syn::parse_quote! {
+                {
                     #enqueue_call
                     #(#original_stmts)*
                 }
-            }
-        }
-    } else {
-        // No guard - just prepend enqueue
-        syn::parse_quote! {
-            {
-                #enqueue_call
-                #(#original_stmts)*
             }
         }
     };
@@ -315,20 +349,24 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 
 /// Attribute macro that automatically inserts a digest call at the beginning of a method.
 ///
+/// The annotated method must return `Result<(), E>` where `E` can be constructed
+/// from `sourced_rust::EventRecordError`.
+///
 /// # Usage
 ///
 /// Basic usage with function parameters (automatically captured):
 /// ```ignore
 /// #[digest("Initialized")]
-/// fn initialize(&mut self, id: String, user_id: String) {
+/// fn initialize(&mut self, id: String, user_id: String) -> Result<(), sourced_rust::EventRecordError> {
 ///     // digest call auto-inserted, params serialized as tuple
+///     Ok(())
 /// }
 /// ```
 ///
 /// With guard condition:
 /// ```ignore
 /// #[digest("Completed", when = !self.completed)]
-/// fn complete(&mut self) {
+/// fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
 ///     self.completed = true;
 /// }
 /// ```
@@ -336,7 +374,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// With custom entity field name:
 /// ```ignore
 /// #[digest(my_entity, "Created")]
-/// fn create(&mut self, name: String) {
+/// fn create(&mut self, name: String) -> Result<(), sourced_rust::EventRecordError> {
 ///     // uses self.my_entity instead of self.entity
 /// }
 /// ```
@@ -349,6 +387,15 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_digest_args);
     let mut func = parse_macro_input!(item as ItemFn);
 
+    if !returns_result(&func.sig) {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "#[digest] methods must return Result<(), E> where E can be constructed from sourced_rust::EventRecordError",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let param_names = extract_param_names(&func.sig);
     let digest_call = generate_digest_call(
         &args.entity_field,
@@ -357,32 +404,7 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
         args.version.as_ref(),
     );
 
-    let original_stmts = &func.block.stmts;
-    let new_body = wrap_body_with_guard(args.guard.as_ref(), digest_call, original_stmts);
-    func.block = Box::new(new_body);
-
-    TokenStream::from(quote! { #func })
-}
-
-/// Attribute macro that inserts a fallible digest call at the beginning of a method.
-///
-/// The annotated method must return `Result<_, sourced_rust::PayloadError>` or
-/// another `Result` whose error type can be constructed from `PayloadError`.
-#[proc_macro_attribute]
-pub fn try_digest(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with parse_digest_args);
-    let mut func = parse_macro_input!(item as ItemFn);
-
-    let param_names = extract_param_names(&func.sig);
-    let digest_call = generate_try_digest_call(
-        &args.entity_field,
-        &args.event_name,
-        &param_names,
-        args.version.as_ref(),
-    );
-
-    let original_stmts = &func.block.stmts;
-    let new_body = wrap_body_with_guard(args.guard.as_ref(), digest_call, original_stmts);
+    let new_body = wrap_result_body_with_guard(args.guard.as_ref(), digest_call, &func.block);
     func.block = Box::new(new_body);
 
     TokenStream::from(quote! { #func })
@@ -481,14 +503,14 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
             // No payload
             quote! {
                 #event_name => {
-                    self.#method_name();
+                    self.#method_name().map_err(|e| e.to_string())?;
                 }
             }
         } else if call_args.is_empty() {
             // Event has payload but method takes no args
             quote! {
                 #event_name => {
-                    self.#method_name();
+                    self.#method_name().map_err(|e| e.to_string())?;
                 }
             }
         } else if args.len() == 1 {
@@ -498,7 +520,7 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
             quote! {
                 #event_name => {
                     let (#arg,) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#call_arg);
+                    self.#method_name(#call_arg).map_err(|e| e.to_string())?;
                 }
             }
         } else {
@@ -506,7 +528,7 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
             quote! {
                 #event_name => {
                     let (#(#args),*) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#(#call_args),*);
+                    self.#method_name(#(#call_args),*).map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -873,6 +895,15 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let syn::ImplItem::Fn(method) = item {
             match find_and_remove_event_attr(&mut method.attrs) {
                 Ok(Some(event_attr)) => {
+                    if !returns_result(&method.sig) {
+                        return syn::Error::new_spanned(
+                            &method.sig.ident,
+                            "#[event] methods must return Result<(), E> where E can be constructed from sourced_rust::EventRecordError",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+
                     let params = extract_params_with_types(&method.sig);
                     let param_name_refs: Vec<&Ident> =
                         params.iter().map(|(name, _)| name).collect();
@@ -897,11 +928,10 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
                         #digest_call
                     };
 
-                    let original_stmts = &method.block.stmts;
-                    let new_body = wrap_body_with_guard(
+                    let new_body = wrap_result_body_with_guard(
                         event_attr.guard.as_ref(),
                         prepend,
-                        original_stmts,
+                        &method.block,
                     );
                     method.block = new_body;
 
@@ -1010,7 +1040,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         if e.params.is_empty() {
             quote! {
                 #event_name_str => {
-                    self.#method_name();
+                    self.#method_name().map_err(|e| e.to_string())?;
                 }
             }
         } else if e.params.len() == 1 {
@@ -1018,7 +1048,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 #event_name_str => {
                     let (#name,) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#name);
+                    self.#method_name(#name).map_err(|e| e.to_string())?;
                 }
             }
         } else {
@@ -1026,7 +1056,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 #event_name_str => {
                     let (#(#names),*) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#(#names),*);
+                    self.#method_name(#(#names),*).map_err(|e| e.to_string())?;
                 }
             }
         }

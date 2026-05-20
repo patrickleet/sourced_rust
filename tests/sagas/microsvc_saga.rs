@@ -269,7 +269,7 @@ fn saga_distributed() {
     {
         let tmp = inventory_repo.clone().aggregate::<Inventory>();
         let mut inv = Inventory::new();
-        inv.initialize("WIDGET-001".to_string(), 100);
+        inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         tmp.commit(&mut inv).unwrap();
     }
 

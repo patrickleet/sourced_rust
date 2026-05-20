@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::publisher::OutboxPublisher;
+use crate::entity::EventRecordError;
 use crate::outbox::OutboxMessage;
 
 /// Result of a batch drain operation.
@@ -90,58 +91,67 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     /// If the message is pending, it will be claimed by this worker before
     /// publishing. The caller is responsible for persisting the updated
     /// message entity after processing.
-    pub fn process_message(&mut self, message: &mut OutboxMessage) -> ProcessOneResult {
+    pub fn process_message(
+        &mut self,
+        message: &mut OutboxMessage,
+    ) -> Result<ProcessOneResult, EventRecordError> {
         if message.is_published() || message.is_failed() {
-            return ProcessOneResult::default();
+            return Ok(ProcessOneResult::default());
         }
 
         if message.is_pending() {
-            message.claim_for(&self.worker_id, self.lease);
+            message.claim_for(&self.worker_id, self.lease)?;
         }
 
         if !message.is_in_flight() {
-            return ProcessOneResult::default();
+            return Ok(ProcessOneResult::default());
         }
 
-        match self
-            .publisher
-            .publish(&message.event_type, &message.payload, &message.metadata)
-        {
-            Ok(()) => {
-                message.complete();
-                ProcessOneResult {
-                    did_work: true,
-                    completed: true,
-                    ..Default::default()
-                }
-            }
-            Err(err) => {
-                let error_msg = err.to_string();
-                if message.attempts >= self.max_attempts {
-                    message.fail(error_msg);
+        let result =
+            match self
+                .publisher
+                .publish(&message.event_type, &message.payload, &message.metadata)
+            {
+                Ok(()) => {
+                    message.complete()?;
                     ProcessOneResult {
                         did_work: true,
-                        failed: true,
-                        ..Default::default()
-                    }
-                } else {
-                    message.release(error_msg);
-                    ProcessOneResult {
-                        did_work: true,
-                        released: true,
+                        completed: true,
                         ..Default::default()
                     }
                 }
-            }
-        }
+                Err(err) => {
+                    let error_msg = err.to_string();
+                    if message.attempts >= self.max_attempts {
+                        message.fail(error_msg)?;
+                        ProcessOneResult {
+                            did_work: true,
+                            failed: true,
+                            ..Default::default()
+                        }
+                    } else {
+                        message.release(error_msg)?;
+                        ProcessOneResult {
+                            did_work: true,
+                            released: true,
+                            ..Default::default()
+                        }
+                    }
+                }
+            };
+
+        Ok(result)
     }
 
     /// Process a batch of outbox messages.
-    pub fn process_batch(&mut self, messages: &mut [OutboxMessage]) -> DrainResult {
+    pub fn process_batch(
+        &mut self,
+        messages: &mut [OutboxMessage],
+    ) -> Result<DrainResult, EventRecordError> {
         let mut result = DrainResult::default();
 
         for message in messages.iter_mut().take(self.batch_size) {
-            let processed = self.process_message(message);
+            let processed = self.process_message(message)?;
             if processed.did_work {
                 result.claimed += 1;
             }
@@ -156,7 +166,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             }
         }
 
-        result
+        Ok(result)
     }
 }
 
@@ -181,12 +191,12 @@ mod tests {
 
     #[test]
     fn process_message_noop_for_published() {
-        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec());
-        message.claim_for("worker", Duration::from_secs(1));
-        message.complete();
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message.claim_for("worker", Duration::from_secs(1)).unwrap();
+        message.complete().unwrap();
 
         let mut worker = OutboxWorker::new(LogPublisher::default());
-        let result = worker.process_message(&mut message);
+        let result = worker.process_message(&mut message).unwrap();
         assert!(!result.did_work);
     }
 
@@ -198,10 +208,10 @@ mod tests {
         let publisher = LogPublisher::with_buffer(buffer.clone());
         let mut worker = OutboxWorker::new(publisher);
 
-        let mut message = OutboxMessage::create("msg-1", "UserCreated", b"{}".to_vec());
+        let mut message = OutboxMessage::create("msg-1", "UserCreated", b"{}".to_vec()).unwrap();
         message.set_correlation_id("req-abc");
 
-        let result = worker.process_message(&mut message);
+        let result = worker.process_message(&mut message).unwrap();
         assert!(result.completed);
 
         let logs = buffer.lock().unwrap();

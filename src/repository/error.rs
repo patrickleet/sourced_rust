@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::lock::LockError;
 use crate::read_model::ReadModelError;
+use crate::EventRecordError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryError {
@@ -54,6 +55,12 @@ impl From<LockError> for RepositoryError {
 
 impl From<ReadModelError> for RepositoryError {
     fn from(err: ReadModelError) -> Self {
+        RepositoryError::Model(err.to_string())
+    }
+}
+
+impl From<EventRecordError> for RepositoryError {
+    fn from(err: EventRecordError) -> Self {
         RepositoryError::Model(err.to_string())
     }
 }

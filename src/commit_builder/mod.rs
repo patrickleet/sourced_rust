@@ -134,7 +134,7 @@ mod tests {
             if self.entity.id().is_empty() {
                 self.entity.set_id("agg-1");
             }
-            self.entity.digest_empty("Touched");
+            self.entity.digest_empty("Touched").unwrap();
         }
 
         fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
@@ -244,7 +244,7 @@ mod tests {
             counter: 42,
         };
 
-        let outbox = OutboxMessage::create("msg-1", "TestEvent", b"{}".to_vec());
+        let outbox = OutboxMessage::create("msg-1", "TestEvent", b"{}".to_vec()).unwrap();
 
         let mut agg = TestAggregate::default();
         agg.touch();
@@ -269,7 +269,7 @@ mod tests {
             counter: 99,
         };
 
-        let outbox = OutboxMessage::create("msg-2", "TestEvent", b"{}".to_vec());
+        let outbox = OutboxMessage::create("msg-2", "TestEvent", b"{}".to_vec()).unwrap();
 
         let mut agg = TestAggregate::default();
         agg.touch();
@@ -364,7 +364,7 @@ mod tests {
             id: "rollback".into(),
             counter: 1,
         };
-        let outbox = OutboxMessage::create("msg-rollback", "TestEvent", b"{}".to_vec());
+        let outbox = OutboxMessage::create("msg-rollback", "TestEvent", b"{}".to_vec()).unwrap();
         let mut agg = TestAggregate::default();
         agg.touch();
 

@@ -10,7 +10,8 @@ fn snapshot_created_at_frequency_threshold() {
         .with_snapshots(2);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Version 1 — below threshold of 2, no snapshot yet
@@ -18,7 +19,7 @@ fn snapshot_created_at_frequency_threshold() {
 
     // Load, add another event to reach version 2
     let mut todo = repo.get("t1").unwrap().unwrap();
-    todo.complete();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Version 2 >= 0 + 2 — snapshot should now exist
@@ -45,7 +46,8 @@ fn no_snapshot_before_threshold() {
         .with_snapshots(5);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Only 1 event, threshold is 5
@@ -59,8 +61,9 @@ fn load_from_snapshot_produces_correct_state() {
         .with_snapshots(2);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    todo.complete();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Snapshot at version 2
@@ -83,11 +86,12 @@ fn snapshot_plus_newer_events() {
 
     // Create and commit 2 events (triggers snapshot at version 2)
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     let mut todo = repo.get("t1").unwrap().unwrap();
-    todo.complete();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Snapshot exists at version 2, completed = true
@@ -110,8 +114,9 @@ fn no_snapshot_falls_back_to_full_replay() {
         .with_snapshots(2);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    todo.complete();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Snapshot exists
@@ -136,7 +141,8 @@ fn snapshot_version_advances_on_second_snapshot() {
         .with_snapshots(1); // snapshot every event
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     // First snapshot at version 1
@@ -145,7 +151,7 @@ fn snapshot_version_advances_on_second_snapshot() {
 
     // Add another event
     let mut todo = repo.get("t1").unwrap().unwrap();
-    todo.complete();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Second snapshot at version 2
@@ -166,11 +172,12 @@ fn with_queued_repo() {
         .with_snapshots(2);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     let mut todo = repo.get("t1").unwrap().unwrap();
-    todo.complete();
+    todo.complete().unwrap();
     repo.commit(&mut todo).unwrap();
 
     // Snapshot should exist through the queued + snapshot chain
@@ -192,13 +199,17 @@ fn find_with_snapshots() {
 
     // Create two todos, both past snapshot threshold
     let mut todo1 = Todo::new();
-    todo1.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    todo1.complete();
+    todo1
+        .initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    todo1.complete().unwrap();
     repo.commit(&mut todo1).unwrap();
 
     let mut todo2 = Todo::new();
-    todo2.initialize("t2".into(), "bob".into(), "Walk dog".into());
-    todo2.complete();
+    todo2
+        .initialize("t2".into(), "bob".into(), "Walk dog".into())
+        .unwrap();
+    todo2.complete().unwrap();
     repo.commit(&mut todo2).unwrap();
 
     // Find all completed
@@ -218,12 +229,16 @@ fn commit_all_with_snapshots() {
         .with_snapshots(2);
 
     let mut todo1 = Todo::new();
-    todo1.initialize("t1".into(), "alice".into(), "Task 1".into());
-    todo1.complete(); // version 2
+    todo1
+        .initialize("t1".into(), "alice".into(), "Task 1".into())
+        .unwrap();
+    todo1.complete().unwrap(); // version 2
 
     let mut todo2 = Todo::new();
-    todo2.initialize("t2".into(), "bob".into(), "Task 2".into());
-    todo2.complete(); // version 2
+    todo2
+        .initialize("t2".into(), "bob".into(), "Task 2".into())
+        .unwrap();
+    todo2.complete().unwrap(); // version 2
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 

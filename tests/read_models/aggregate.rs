@@ -16,7 +16,12 @@ impl Counter {
     }
 
     #[digest("CounterCreated")]
-    pub fn create(&mut self, id: String, name: String, user_id: String) {
+    pub fn create(
+        &mut self,
+        id: String,
+        name: String,
+        user_id: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.name = name;
         self.user_id = user_id;
@@ -24,12 +29,12 @@ impl Counter {
     }
 
     #[digest("CounterIncremented")]
-    pub fn increment(&mut self, amount: i32) {
+    pub fn increment(&mut self, amount: i32) -> Result<(), sourced_rust::EventRecordError> {
         self.value += amount;
     }
 
     #[digest("CounterDecremented")]
-    pub fn decrement(&mut self, amount: i32) {
+    pub fn decrement(&mut self, amount: i32) -> Result<(), sourced_rust::EventRecordError> {
         self.value -= amount;
     }
 

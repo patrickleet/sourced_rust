@@ -62,17 +62,17 @@ fn win_no_holes_level(game: &mut BlobGame) {
         if col % 2 == 0 {
             // Go down
             for _ in 0..(height - 1) {
-                game.down(None);
+                game.down(None).unwrap();
             }
         } else {
             // Go up
             for _ in 0..(height - 1) {
-                game.up(None);
+                game.up(None).unwrap();
             }
         }
         // Move right (except on last column)
         if col < width - 1 {
-            game.right(None);
+            game.right(None).unwrap();
         }
     }
 }
@@ -95,14 +95,15 @@ fn should_not_move_before_game_initialized() {
         "minigame-1".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
     // Can't move without a level started
     let events_before = game.entity.events().len();
-    game.up(None);
-    game.down(None);
-    game.left(None);
-    game.right(None);
+    game.up(None).unwrap();
+    game.down(None).unwrap();
+    game.left(None).unwrap();
+    game.right(None).unwrap();
     assert_eq!(game.entity.events().len(), events_before);
 }
 
@@ -113,7 +114,7 @@ fn should_not_start_level_before_initialized() {
     // Try to start level without initializing - guard should prevent it
     // (current_level_completed is true but we haven't set an id)
     let events_before = game.entity.events().len();
-    game.start_next_level(easy_test_level());
+    game.start_next_level(easy_test_level()).unwrap();
     // The guard allows it because current_level_completed is true by default
     // But let's check it works after proper init
     assert!(game.entity.events().len() > events_before);
@@ -129,50 +130,51 @@ fn should_work_with_normal_gameplay_simulation() {
         "test-minigame-id-gameplay".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(game.address(), "0x0000test0000");
     assert_eq!(game.minigame_id(), "test-minigame-id-gameplay");
     assert_eq!(game.score(), 0);
 
-    game.start_next_level(easy_test_level());
+    game.start_next_level(easy_test_level()).unwrap();
     assert_eq!(game.score(), 0);
     assert!(!game.is_current_level_completed());
 
     // Can't move up or left from (0,0)
     let events_before = game.entity.events().len();
-    game.up(None);
-    game.left(None);
+    game.up(None).unwrap();
+    game.left(None).unwrap();
     assert_eq!(game.entity.events().len(), events_before);
     assert_eq!(game.score(), 0);
 
     // Move down 9 times
     for i in 0..9 {
-        game.down(None);
+        game.down(None).unwrap();
         assert_eq!(game.score(), (i + 1) as u32);
     }
 
     // Can't move down anymore (at row 9)
     let events_before = game.entity.events().len();
-    game.down(None);
+    game.down(None).unwrap();
     assert_eq!(game.entity.events().len(), events_before);
 
     // Move right 9 times
     for _ in 0..9 {
-        game.right(None);
+        game.right(None).unwrap();
     }
 
     // Can't move right anymore (at column 9)
     let events_before = game.entity.events().len();
-    game.right(None);
+    game.right(None).unwrap();
     assert_eq!(game.entity.events().len(), events_before);
 
     // Move up and left
-    game.up(None);
-    game.left(None);
+    game.up(None).unwrap();
+    game.left(None).unwrap();
 
     // Move down - this revisits a tile (suicide)
-    game.down(None);
+    game.down(None).unwrap();
     assert!(game.is_player_dead());
     assert_eq!(game.score(), 20);
 }
@@ -187,13 +189,14 @@ fn should_die_when_moving_into_self() {
         "test-minigame-id-suicide".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
-    game.start_next_level(easy_test_level());
+    game.start_next_level(easy_test_level()).unwrap();
 
     assert!(!game.is_player_dead());
-    game.down(None);
-    game.up(None); // Revisit starting tile
+    game.down(None).unwrap();
+    game.up(None).unwrap(); // Revisit starting tile
     assert!(game.is_player_dead());
     assert!(!game.is_current_level_completed());
 }
@@ -208,9 +211,10 @@ fn should_win_when_all_blocks_visited_except_holes() {
         "test-minigame-id-win".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert!(!game.is_current_level_completed());
 
     win_no_holes_level(&mut game);
@@ -229,11 +233,12 @@ fn should_die_when_falling_in_hole() {
         "test-minigame-id-hole".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
-    game.start_next_level(die_mother_clucka());
+    game.start_next_level(die_mother_clucka()).unwrap();
 
-    game.right(None); // Fall into hole
+    game.right(None).unwrap(); // Fall into hole
     assert!(game.is_player_dead());
     assert!(!game.is_current_level_completed());
     assert_eq!(game.score(), 0);
@@ -249,22 +254,23 @@ fn should_be_able_to_add_new_levels_each_time_you_win() {
         "test-minigame-id-multi".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
     // Level 1
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert!(!game.is_current_level_completed());
     win_no_holes_level(&mut game);
     assert!(game.is_current_level_completed());
 
     // Level 2
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert!(!game.is_current_level_completed());
     win_no_holes_level(&mut game);
     assert!(game.is_current_level_completed());
 
     // Level 3
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert!(!game.is_current_level_completed());
     win_no_holes_level(&mut game);
     assert!(game.is_current_level_completed());
@@ -272,9 +278,9 @@ fn should_be_able_to_add_new_levels_each_time_you_win() {
     assert_eq!(game.score(), 99 * 3);
 
     // Level 4 - die immediately
-    game.start_next_level(die_mother_clucka());
+    game.start_next_level(die_mother_clucka()).unwrap();
     assert!(!game.is_current_level_completed());
-    game.right(None);
+    game.right(None).unwrap();
     assert!(!game.is_current_level_completed());
     assert!(game.is_player_dead());
     assert_eq!(game.score(), 99 * 3); // Score unchanged
@@ -290,14 +296,15 @@ fn should_not_start_next_level_in_middle_of_current_level() {
         "test-minigame-id-mid".into(),
         false,
         None,
-    );
+    )
+    .unwrap();
 
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert!(!game.is_current_level_completed());
 
     // Try to start another level - should be blocked by guard
     let events_before = game.entity.events().len();
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
     assert_eq!(game.entity.events().len(), events_before);
     assert!(!game.is_current_level_completed());
 }
@@ -314,21 +321,22 @@ fn should_work_with_timer_mode() {
         "test-minigame-id-timed".into(),
         true,
         Some(start_time),
-    );
+    )
+    .unwrap();
 
-    game.start_next_level(no_holes_level());
+    game.start_next_level(no_holes_level()).unwrap();
 
     // Move within time limit
-    game.right(Some(start_time + 1000));
-    game.right(Some(start_time + 2000));
-    game.right(Some(start_time + 3000));
-    game.right(Some(start_time + 4000));
+    game.right(Some(start_time + 1000)).unwrap();
+    game.right(Some(start_time + 2000)).unwrap();
+    game.right(Some(start_time + 3000)).unwrap();
+    game.right(Some(start_time + 4000)).unwrap();
     assert_eq!(game.score(), 4);
     assert!(!game.is_player_dead());
 
     // Move after 5+ minutes - should die
     let six_minutes_ms = 6 * 60 * 1000;
-    game.right(Some(start_time + six_minutes_ms));
+    game.right(Some(start_time + six_minutes_ms)).unwrap();
     assert!(game.is_player_dead());
     assert!(!game.is_current_level_completed());
     assert_eq!(game.score(), 4); // Score unchanged from timeout death
@@ -346,13 +354,14 @@ fn replay_restores_game_state() {
         "mg-1".into(),
         false,
         None,
-    );
-    game.start_next_level(no_holes_level());
+    )
+    .unwrap();
+    game.start_next_level(no_holes_level()).unwrap();
 
     // Make some moves
-    game.down(None);
-    game.down(None);
-    game.right(None);
+    game.down(None).unwrap();
+    game.down(None).unwrap();
+    game.right(None).unwrap();
 
     // Commit to repository
     repo.commit(&mut game).unwrap();
@@ -365,7 +374,7 @@ fn replay_restores_game_state() {
 
     // Verify we can continue playing
     let mut restored = restored;
-    restored.down(None);
+    restored.down(None).unwrap();
     assert_eq!(restored.score(), 4);
 }
 
@@ -378,10 +387,11 @@ fn snapshot_captures_full_state() {
         "mg-1".into(),
         false,
         None,
-    );
-    game.start_next_level(no_holes_level());
-    game.right(None);
-    game.down(None);
+    )
+    .unwrap();
+    game.start_next_level(no_holes_level()).unwrap();
+    game.right(None).unwrap();
+    game.down(None).unwrap();
 
     let snapshot = game.snapshot();
     assert_eq!(snapshot.id, "game-snap");

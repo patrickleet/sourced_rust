@@ -30,8 +30,9 @@ fn v3_has_two_upcasters() {
 #[test]
 fn hydrate_v2_from_v1_events() {
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    v1.complete();
+    v1.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    v1.complete().unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v1.entity.events().to_vec());
@@ -46,7 +47,8 @@ fn hydrate_v2_from_v1_events() {
 #[test]
 fn hydrate_v3_from_v1_events_chains_upcasters() {
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "bob".into(), "Walk dog".into());
+    v1.initialize("t1".into(), "bob".into(), "Walk dog".into())
+        .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v1.entity.events().to_vec());
@@ -59,7 +61,8 @@ fn hydrate_v3_from_v1_events_chains_upcasters() {
 #[test]
 fn hydrate_v3_from_v2_events() {
     let mut v2 = TodoV2::default();
-    v2.initialize("t1".into(), "carol".into(), "Read".into(), 5);
+    v2.initialize("t1".into(), "carol".into(), "Read".into(), 5)
+        .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v2.entity.events().to_vec());
@@ -78,7 +81,8 @@ fn hydrate_v3_native_no_upcasting() {
         "Cook".into(),
         2,
         "2025-12-31".into(),
-    );
+    )
+    .unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v3.entity.events().to_vec());
@@ -92,7 +96,8 @@ fn hydrate_v3_native_no_upcasting() {
 fn repo_roundtrip_v1_to_v2() {
     let repo = HashMapRepository::new();
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "frank".into(), "Shop".into());
+    v1.initialize("t1".into(), "frank".into(), "Shop".into())
+        .unwrap();
     repo.commit(&mut v1.entity).unwrap();
 
     let v2_repo = repo.aggregate::<TodoV2>();
@@ -145,8 +150,9 @@ fn v2_try_from_event_record() {
 #[test]
 fn mixed_v1_events_upcasted_to_v2() {
     let mut v1 = TodoV1::default();
-    v1.initialize("t1".into(), "eve".into(), "Test".into());
-    v1.complete();
+    v1.initialize("t1".into(), "eve".into(), "Test".into())
+        .unwrap();
+    v1.complete().unwrap();
 
     let mut entity = Entity::new();
     entity.load_from_history(v1.entity.events().to_vec());

@@ -62,7 +62,7 @@ mod tests {
             if self.entity.id().is_empty() {
                 self.entity.set_id("dummy-1");
             }
-            self.entity.digest_empty("Touched");
+            self.entity.digest_empty("Touched").unwrap();
         }
 
         fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
@@ -96,7 +96,7 @@ mod tests {
         let mut aggregate = Dummy::default();
         aggregate.touch();
 
-        let mut event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec());
+        let mut event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
 
         repo.outbox(&mut event).commit(&mut aggregate).unwrap();
 
@@ -114,7 +114,7 @@ mod tests {
         let mut aggregate = Dummy::default();
         aggregate.touch();
 
-        let mut event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec());
+        let mut event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec()).unwrap();
 
         let err = repo.outbox(&mut event).commit(&mut aggregate).unwrap_err();
 

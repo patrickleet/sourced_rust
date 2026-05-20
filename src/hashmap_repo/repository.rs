@@ -349,7 +349,7 @@ mod tests {
         let id = "test_id";
         let mut entity = Entity::with_id(id);
 
-        entity.digest("test_event", &("arg1", "arg2"));
+        entity.digest("test_event", &("arg1", "arg2")).unwrap();
 
         repo.commit(&mut entity).unwrap();
 
@@ -363,10 +363,10 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("id_1");
-        entity1.digest("event1", &"arg1");
+        entity1.digest("event1", &"arg1").unwrap();
 
         let mut entity2 = Entity::with_id("id_2");
-        entity2.digest("event2", &"arg2");
+        entity2.digest("event2", &"arg2").unwrap();
 
         // Commit multiple entities using array syntax
         repo.commit(&mut [&mut entity1, &mut entity2]).unwrap();
@@ -380,10 +380,10 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("same-id");
-        entity1.digest("event1", &"arg1");
+        entity1.digest("event1", &"arg1").unwrap();
 
         let mut entity2 = Entity::with_id("same-id");
-        entity2.digest("event2", &"arg2");
+        entity2.digest("event2", &"arg2").unwrap();
 
         let err = repo.commit(&mut [&mut entity1, &mut entity2]).unwrap_err();
         assert_eq!(
@@ -405,13 +405,13 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut todo1 = Entity::with_id("todo-1");
-        todo1.digest("Created", &"todo-1");
+        todo1.digest("Created", &"todo-1").unwrap();
 
         let mut todo2 = Entity::with_id("todo-2");
-        todo2.digest("Created", &"todo-2");
+        todo2.digest("Created", &"todo-2").unwrap();
 
         let mut user1 = Entity::with_id("user-1");
-        user1.digest("Created", &"user-1");
+        user1.digest("Created", &"user-1").unwrap();
 
         repo.commit(&mut [&mut todo1, &mut todo2, &mut user1])
             .unwrap();
@@ -431,10 +431,10 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("item-1");
-        entity1.digest("Created", &"item-1");
+        entity1.digest("Created", &"item-1").unwrap();
 
         let mut entity2 = Entity::with_id("item-2");
-        entity2.digest("Created", &"item-2");
+        entity2.digest("Created", &"item-2").unwrap();
 
         repo.commit(&mut [&mut entity1, &mut entity2]).unwrap();
 
@@ -462,7 +462,7 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut entity = Entity::with_id("todo-1");
-        entity.digest("Created", &"todo-1");
+        entity.digest("Created", &"todo-1").unwrap();
         repo.commit(&mut entity).unwrap();
 
         assert!(repo.exists(|e| e.id() == "todo-1").unwrap());
@@ -474,13 +474,13 @@ mod tests {
         let repo = HashMapRepository::new();
 
         let mut todo1 = Entity::with_id("todo-1");
-        todo1.digest("Created", &"todo-1");
+        todo1.digest("Created", &"todo-1").unwrap();
 
         let mut todo2 = Entity::with_id("todo-2");
-        todo2.digest("Created", &"todo-2");
+        todo2.digest("Created", &"todo-2").unwrap();
 
         let mut user1 = Entity::with_id("user-1");
-        user1.digest("Created", &"user-1");
+        user1.digest("Created", &"user-1").unwrap();
 
         repo.commit(&mut [&mut todo1, &mut todo2, &mut user1])
             .unwrap();
