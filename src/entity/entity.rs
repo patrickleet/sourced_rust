@@ -262,6 +262,7 @@ impl Entity {
         let record = EventRecord::new("Snapshot", payload, 1);
         self.events.push(record);
         self.version = 1;
+        self.committed_version = self.events.len() as u64;
         self.timestamp = SystemTime::now();
         Ok(())
     }
@@ -456,6 +457,24 @@ mod tests {
         assert_eq!(entity.snapshot_version(), 0);
         assert_eq!(entity.version(), 2);
         assert_eq!(entity.events().len(), 2);
+    }
+
+    #[test]
+    fn set_snapshot_resets_committed_version_to_snapshot_event_len() {
+        let mut source = Entity::new();
+        source.digest("e1", &"a").unwrap();
+        source.digest("e2", &"b").unwrap();
+
+        let mut entity = Entity::new();
+        entity.load_from_history(source.events().to_vec());
+        assert_eq!(entity.committed_version(), 2);
+
+        entity.set_snapshot(&"snapshot").unwrap();
+
+        assert_eq!(entity.events().len(), 1);
+        assert_eq!(entity.version(), 1);
+        assert_eq!(entity.committed_version(), 1);
+        assert!(entity.new_events().is_empty());
     }
 
     #[test]
