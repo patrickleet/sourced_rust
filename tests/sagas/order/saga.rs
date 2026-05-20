@@ -108,7 +108,7 @@ impl OrderFulfillmentSaga {
         customer_id: String,
         items: Vec<OrderItem>,
         total_cents: u32,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    ) {
         self.entity.set_id(&saga_id);
         self.order_id = order_id;
         self.customer_id = customer_id;
@@ -118,46 +118,42 @@ impl OrderFulfillmentSaga {
     }
 
     #[digest("InventoryReservationSucceeded", when = self.status == SagaStatus::Started)]
-    pub fn inventory_reserved(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn inventory_reserved(&mut self) {
         self.status = SagaStatus::InventoryReserved;
         self.compensation.inventory_reserved = true;
     }
 
     #[digest("PaymentSucceeded", when = self.status == SagaStatus::InventoryReserved)]
-    pub fn payment_succeeded(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn payment_succeeded(&mut self) {
         self.status = SagaStatus::PaymentProcessed;
         self.compensation.payment_processed = true;
     }
 
     #[digest("SagaCompleted", when = self.status == SagaStatus::PaymentProcessed)]
-    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn complete(&mut self) {
         self.status = SagaStatus::Completed;
     }
 
     // === Failure and Compensation ===
 
     #[digest("StepFailed", when = !self.is_complete())]
-    pub fn step_failed(
-        &mut self,
-        step: String,
-        reason: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn step_failed(&mut self, step: String, reason: String) {
         self.status = SagaStatus::Compensating;
         self.failure_reason = Some(format!("{}: {}", step, reason));
     }
 
     #[digest("InventoryCompensated", when = self.needs_inventory_compensation())]
-    pub fn inventory_compensated(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn inventory_compensated(&mut self) {
         self.compensation.inventory_reserved = false;
     }
 
     #[digest("PaymentCompensated", when = self.needs_payment_compensation())]
-    pub fn payment_compensated(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn payment_compensated(&mut self) {
         self.compensation.payment_processed = false;
     }
 
     #[digest("SagaFailed", when = self.status == SagaStatus::Compensating && !self.compensation.inventory_reserved && !self.compensation.payment_processed)]
-    pub fn mark_failed(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn mark_failed(&mut self) {
         self.status = SagaStatus::Failed;
     }
 

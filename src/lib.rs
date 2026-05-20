@@ -26,6 +26,8 @@ pub use entity::{
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
 
+pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
+
 // Re-export repository traits at crate root for convenience
 pub use repository::{
     Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, Gettable,

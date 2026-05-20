@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use super::publisher::OutboxPublisher;
-use crate::entity::EventRecordError;
 use crate::outbox::OutboxMessage;
+use crate::SourcedResult;
 
 /// Result of a batch drain operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     pub fn process_message(
         &mut self,
         message: &mut OutboxMessage,
-    ) -> Result<ProcessOneResult, EventRecordError> {
+    ) -> SourcedResult<ProcessOneResult> {
         if message.is_published() || message.is_failed() {
             return Ok(ProcessOneResult::default());
         }
@@ -144,10 +144,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     }
 
     /// Process a batch of outbox messages.
-    pub fn process_batch(
-        &mut self,
-        messages: &mut [OutboxMessage],
-    ) -> Result<DrainResult, EventRecordError> {
+    pub fn process_batch(&mut self, messages: &mut [OutboxMessage]) -> SourcedResult<DrainResult> {
         let mut result = DrainResult::default();
 
         for message in messages.iter_mut().take(self.batch_size) {

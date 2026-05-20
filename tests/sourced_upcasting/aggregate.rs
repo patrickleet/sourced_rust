@@ -15,19 +15,14 @@ pub struct TodoV1 {
 #[sourced(entity)]
 impl TodoV1 {
     #[event("Initialized")]
-    pub fn initialize(
-        &mut self,
-        id: String,
-        user_id: String,
-        task: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
     #[event("Completed", when = !self.completed)]
-    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn complete(&mut self) {
         self.completed = true;
     }
 }
@@ -55,13 +50,7 @@ pub struct TodoV2 {
 ))]
 impl TodoV2 {
     #[event("Initialized", version = 2)]
-    pub fn initialize(
-        &mut self,
-        id: String,
-        user_id: String,
-        task: String,
-        priority: u8,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
@@ -69,7 +58,7 @@ impl TodoV2 {
     }
 
     #[event("Completed", when = !self.completed)]
-    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn complete(&mut self) {
         self.completed = true;
     }
 }
@@ -107,7 +96,7 @@ impl TodoV3 {
         task: String,
         priority: u8,
         due_date: String,
-    ) -> Result<(), sourced_rust::EventRecordError> {
+    ) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
@@ -116,7 +105,7 @@ impl TodoV3 {
     }
 
     #[event("Completed", when = !self.completed)]
-    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+    pub fn complete(&mut self) {
         self.completed = true;
     }
 }

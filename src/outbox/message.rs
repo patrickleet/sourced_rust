@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::digest;
 use crate::entity::{BitcodePayloadCodec, Entity, EventRecordError, PayloadCodec};
+use crate::SourcedResult;
 
 /// Status of an outbox message.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +67,7 @@ impl OutboxMessage {
         id: impl Into<String>,
         event_type: impl Into<String>,
         payload: Vec<u8>,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let mut message = Self::new();
         message.initialize(id.into(), event_type.into(), payload, None, HashMap::new())?;
         Ok(message)
@@ -81,7 +82,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         destination: impl Into<String>,
         payload: Vec<u8>,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let mut message = Self::new();
         message.initialize(
             id.into(),
@@ -98,7 +99,7 @@ impl OutboxMessage {
         id: impl Into<String>,
         event_type: impl Into<String>,
         payload: &T,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         Self::create(id, event_type, bytes)
     }
@@ -112,7 +113,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         destination: impl Into<String>,
         payload: &T,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         Self::create_to(id, event_type, destination, bytes)
     }
@@ -123,7 +124,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: Vec<u8>,
         metadata: HashMap<String, String>,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let mut message = Self::new();
         message.initialize(id.into(), event_type.into(), payload, None, metadata)?;
         Ok(message)
@@ -135,7 +136,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: &T,
         metadata: HashMap<String, String>,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         Self::create_with_metadata(id, event_type, bytes, metadata)
     }
@@ -150,7 +151,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: &T,
         entity: &Entity,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
     }
@@ -170,7 +171,7 @@ impl OutboxMessage {
     pub fn domain_event<A: crate::Snapshottable>(
         event_type: impl Into<String>,
         aggregate: &A,
-    ) -> Result<Self, EventRecordError> {
+    ) -> SourcedResult<Self> {
         let event_type = event_type.into();
         let entity = aggregate.entity();
         let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
@@ -180,7 +181,7 @@ impl OutboxMessage {
     }
 
     /// Decode the payload from the default binary codec.
-    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, EventRecordError> {
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> SourcedResult<T> {
         BitcodePayloadCodec::decode(&self.payload).map_err(|e| {
             EventRecordError::decode(
                 &self.event_type,
@@ -225,7 +226,7 @@ impl OutboxMessage {
         payload: Vec<u8>,
         destination: Option<String>,
         metadata: HashMap<String, String>,
-    ) -> Result<(), EventRecordError> {
+    ) {
         let normalized_id = Self::normalize_id(id);
         self.entity.set_id(&normalized_id);
         self.event_type = event_type;
@@ -234,25 +235,19 @@ impl OutboxMessage {
         self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
-        Ok(())
     }
 
     #[digest("MessageClaimed", when = self.is_pending())]
-    pub fn claim(&mut self, worker_id: String, until_secs: u64) -> Result<(), EventRecordError> {
+    pub fn claim(&mut self, worker_id: String, until_secs: u64) {
         let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
         self.status = OutboxMessageStatus::InFlight;
         self.attempts += 1;
         self.worker_id = Some(worker_id);
         self.leased_until = Some(until_time);
-        Ok(())
     }
 
     /// Claim with a Duration (convenience method that computes until_secs)
-    pub fn claim_for(
-        &mut self,
-        worker_id: impl Into<String>,
-        lease: Duration,
-    ) -> Result<(), EventRecordError> {
+    pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) -> SourcedResult {
         let now = SystemTime::now();
         let until = now + lease;
         let until_secs = until
@@ -263,29 +258,26 @@ impl OutboxMessage {
     }
 
     #[digest("MessagePublished", when = self.is_in_flight())]
-    pub fn complete(&mut self) -> Result<(), EventRecordError> {
+    pub fn complete(&mut self) {
         self.status = OutboxMessageStatus::Published;
         self.worker_id = None;
         self.leased_until = None;
-        Ok(())
     }
 
     #[digest("MessageReleased", when = self.is_in_flight())]
-    pub fn release(&mut self, error: String) -> Result<(), EventRecordError> {
+    pub fn release(&mut self, error: String) {
         self.status = OutboxMessageStatus::Pending;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
-        Ok(())
     }
 
     #[digest("MessageFailed", when = self.can_fail())]
-    pub fn fail(&mut self, error: String) -> Result<(), EventRecordError> {
+    pub fn fail(&mut self, error: String) {
         self.status = OutboxMessageStatus::Failed;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
-        Ok(())
     }
 
     fn can_fail(&self) -> bool {
