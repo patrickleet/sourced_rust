@@ -1,7 +1,7 @@
 use sourced_rust::read_model::ReadModelStore;
 use sourced_rust::{
     hydrate, Aggregate, Commit, CommitBuilderExt, Find, Get, GetAggregate, OutboxMessage,
-    TransactionalCommit,
+    RepositoryError, TransactionalCommit,
 };
 
 use crate::domain::bomb::Bomb;
@@ -207,7 +207,11 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
                 "killed_by_bomb": det.map(|d| d.bomb_id.as_str()).unwrap_or("unknown"),
                 "bomb_owner": det.map(|d| d.owner.as_str()).unwrap_or("unknown"),
             }))
-            .unwrap(),
+            .map_err(|err| {
+                GameError::Repository(RepositoryError::Model(format!(
+                    "outbox payload serialize: {err}"
+                )))
+            })?,
         )?;
         builder = builder.outbox(outbox);
     }
