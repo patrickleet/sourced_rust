@@ -90,11 +90,19 @@ fn default_event_version() -> u64 {
 fn is_version_one(v: &u64) -> bool {
     *v == 1
 }
+fn default_payload_codec() -> String {
+    BITCODE_PAYLOAD_CODEC.to_string()
+}
+fn default_payload_codec_version() -> u16 {
+    BITCODE_PAYLOAD_CODEC_VERSION
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,
+    #[serde(default = "default_payload_codec")]
     pub payload_codec: String,
+    #[serde(default = "default_payload_codec_version")]
     pub payload_codec_version: u16,
     #[serde(with = "payload_serde")]
     pub payload: Vec<u8>,
@@ -323,5 +331,14 @@ mod tests {
         let json = r#"{"event_name":"old_event","payload_codec":"bitcode","payload_codec_version":1,"payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
         let record: EventRecord = serde_json::from_str(json).unwrap();
         assert!(record.metadata.is_empty());
+    }
+
+    #[test]
+    fn deserialize_without_payload_codec_fields_defaults_to_bitcode() {
+        let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0},"metadata":{}}"#;
+        let record: EventRecord = serde_json::from_str(json).unwrap();
+
+        assert_eq!(record.payload_codec, BITCODE_PAYLOAD_CODEC);
+        assert_eq!(record.payload_codec_version, BITCODE_PAYLOAD_CODEC_VERSION);
     }
 }
