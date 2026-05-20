@@ -18,7 +18,7 @@ Approach: Add async versions of the core traits. Could be feature-gated or a par
 
 ### Later
 
-- **Postgres backend** — proves the trait design, makes the library production-usable. Use sqlx.
+- **Postgres backend** — proves the trait design, makes the library production-usable. Use sqlx. The event-record storage contract is outlined in [Postgres Event Store Contract](postgres-event-store.md).
 - **API docs** — `cargo doc` with doc comments on all public traits/types.
 - **Publish to crates.io** — after the above items stabilize.
 - **Domain service** — TBD whether to keep. Not documenting further until decided.

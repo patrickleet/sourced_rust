@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::fmt;
+
 use super::EventRecord;
 
 /// A stateless, pure transformation that converts an event payload from one version to another.
@@ -11,21 +14,83 @@ pub struct EventUpcaster {
     pub transform: fn(payload: &[u8]) -> Vec<u8>,
 }
 
+/// Error returned when an upcaster chain cannot make safe forward progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpcastError {
+    SameVersionTransition { event_type: String, version: u64 },
+    CycleDetected { event_type: String, version: u64 },
+}
+
+impl fmt::Display for UpcastError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UpcastError::SameVersionTransition {
+                event_type,
+                version,
+            } => write!(
+                f,
+                "upcaster for event {event_type} does not advance version {version}"
+            ),
+            UpcastError::CycleDetected {
+                event_type,
+                version,
+            } => write!(
+                f,
+                "upcaster chain for event {event_type} cycles back to version {version}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UpcastError {}
+
 /// Apply upcasters to a list of events. Chains automatically (v1->v2->v3).
+///
+/// This compatibility helper panics when invalid upcaster configuration is
+/// detected. Hydration paths use [`try_upcast_events`] so repository reads can
+/// return the error instead.
 pub fn upcast_events(events: Vec<EventRecord>, upcasters: &[EventUpcaster]) -> Vec<EventRecord> {
+    try_upcast_events(events, upcasters).expect("invalid upcaster chain")
+}
+
+/// Fallible form of [`upcast_events`].
+pub fn try_upcast_events(
+    events: Vec<EventRecord>,
+    upcasters: &[EventUpcaster],
+) -> Result<Vec<EventRecord>, UpcastError> {
     events
         .into_iter()
         .map(|event| upcast_one(event, upcasters))
         .collect()
 }
 
-fn upcast_one(mut event: EventRecord, upcasters: &[EventUpcaster]) -> EventRecord {
+fn upcast_one(
+    mut event: EventRecord,
+    upcasters: &[EventUpcaster],
+) -> Result<EventRecord, UpcastError> {
+    let mut seen_versions = HashSet::new();
+    seen_versions.insert(event.event_version);
+
     loop {
         let mut applied = false;
         for u in upcasters {
             if u.event_type == event.event_name && u.from_version == event.event_version {
+                if u.to_version == event.event_version {
+                    return Err(UpcastError::SameVersionTransition {
+                        event_type: event.event_name,
+                        version: event.event_version,
+                    });
+                }
+
+                let next_version = u.to_version;
                 event.payload = (u.transform)(&event.payload);
-                event.event_version = u.to_version;
+                event.event_version = next_version;
+                if !seen_versions.insert(next_version) {
+                    return Err(UpcastError::CycleDetected {
+                        event_type: event.event_name,
+                        version: next_version,
+                    });
+                }
                 applied = true;
                 break; // restart loop to handle chaining
             }
@@ -34,7 +99,7 @@ fn upcast_one(mut event: EventRecord, upcasters: &[EventUpcaster]) -> EventRecor
             break;
         }
     }
-    event
+    Ok(event)
 }
 
 #[cfg(test)]
@@ -138,5 +203,55 @@ mod tests {
         // Second A already at v2: untouched
         assert_eq!(result[2].payload, vec![10, 99]);
         assert_eq!(result[2].event_version, 2);
+    }
+
+    #[test]
+    fn try_upcast_events_rejects_same_version_transition() {
+        let event = EventRecord::new("A", vec![10], 1);
+        let upcasters = [EventUpcaster {
+            event_type: "A",
+            from_version: 1,
+            to_version: 1,
+            transform: |payload| payload.to_vec(),
+        }];
+
+        let err = try_upcast_events(vec![event], &upcasters).unwrap_err();
+
+        assert_eq!(
+            err,
+            UpcastError::SameVersionTransition {
+                event_type: "A".to_string(),
+                version: 1
+            }
+        );
+    }
+
+    #[test]
+    fn try_upcast_events_rejects_cycles() {
+        let event = EventRecord::new("A", vec![10], 1);
+        let upcasters = [
+            EventUpcaster {
+                event_type: "A",
+                from_version: 1,
+                to_version: 2,
+                transform: |payload| payload.to_vec(),
+            },
+            EventUpcaster {
+                event_type: "A",
+                from_version: 2,
+                to_version: 1,
+                transform: |payload| payload.to_vec(),
+            },
+        ];
+
+        let err = try_upcast_events(vec![event], &upcasters).unwrap_err();
+
+        assert_eq!(
+            err,
+            UpcastError::CycleDetected {
+                event_type: "A".to_string(),
+                version: 1
+            }
+        );
     }
 }

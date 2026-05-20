@@ -201,13 +201,13 @@ impl ReadModelStore for InMemoryReadModelStore {
 
         for (key, stored) in storage.iter() {
             if key.starts_with(&prefix) {
-                if let Ok(data) = serde_json::from_slice::<M>(&stored.bytes) {
-                    if predicate(&data) {
-                        results.push(Versioned {
-                            data,
-                            version: stored.version,
-                        });
-                    }
+                let data = serde_json::from_slice::<M>(&stored.bytes)
+                    .map_err(|e| ReadModelError::Serde(e.to_string()))?;
+                if predicate(&data) {
+                    results.push(Versioned {
+                        data,
+                        version: stored.version,
+                    });
                 }
             }
         }
@@ -228,13 +228,13 @@ impl ReadModelStore for InMemoryReadModelStore {
 
         for (key, stored) in storage.iter() {
             if key.starts_with(&prefix) {
-                if let Ok(data) = serde_json::from_slice::<M>(&stored.bytes) {
-                    if predicate(&data) {
-                        return Ok(Some(Versioned {
-                            data,
-                            version: stored.version,
-                        }));
-                    }
+                let data = serde_json::from_slice::<M>(&stored.bytes)
+                    .map_err(|e| ReadModelError::Serde(e.to_string()))?;
+                if predicate(&data) {
+                    return Ok(Some(Versioned {
+                        data,
+                        version: stored.version,
+                    }));
                 }
             }
         }
@@ -430,6 +430,30 @@ mod tests {
             .find_one_model::<TestModel>(&|m| m.value > 100)
             .unwrap();
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn find_models_returns_error_for_corrupted_rows() {
+        let store = InMemoryReadModelStore::new();
+        store
+            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .unwrap();
+
+        let err = store.find_models::<TestModel>(&|_| true).unwrap_err();
+
+        assert!(matches!(err, ReadModelError::Serde(_)));
+    }
+
+    #[test]
+    fn find_one_model_returns_error_for_corrupted_rows() {
+        let store = InMemoryReadModelStore::new();
+        store
+            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .unwrap();
+
+        let err = store.find_one_model::<TestModel>(&|_| true).unwrap_err();
+
+        assert!(matches!(err, ReadModelError::Serde(_)));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::EventRecord;
+use super::{EventRecord, PayloadError};
 
 #[derive(Serialize, Deserialize)]
 pub struct Entity {
@@ -172,19 +172,34 @@ impl Entity {
     /// The payload is serialized using bitcode for compact, fast storage.
     /// Any metadata set on the entity is attached to the event.
     pub fn digest<T: serde::Serialize>(&mut self, name: impl Into<String>, payload: &T) {
+        self.try_digest(name, payload)
+            .expect("failed to serialize payload");
+    }
+
+    /// Fallible form of [`Entity::digest`].
+    ///
+    /// This is the production-safe path for command handlers that need to
+    /// return serialization failures instead of panicking. If serialization
+    /// fails, the entity is left unchanged.
+    pub fn try_digest<T: serde::Serialize>(
+        &mut self,
+        name: impl Into<String>,
+        payload: &T,
+    ) -> Result<(), PayloadError> {
         if self.replaying {
-            return;
+            return Ok(());
         }
 
-        let bytes = bitcode::serialize(payload).expect("failed to serialize payload");
+        let bytes = bitcode::serialize(payload).map_err(|e| PayloadError {
+            message: e.to_string(),
+        })?;
         let sequence = self.events.len() as u64 + 1;
         let mut record = EventRecord::new(name, bytes, sequence);
         if !self.metadata.is_empty() {
             record.metadata = self.metadata.clone();
         }
-        self.events.push(record);
-        self.version = self.events.len() as u64;
-        self.timestamp = SystemTime::now();
+        self.push_new_event(record);
+        Ok(())
     }
 
     /// Record a versioned event.
@@ -194,24 +209,44 @@ impl Entity {
         version: u64,
         payload: &T,
     ) {
+        self.try_digest_v(name, version, payload)
+            .expect("failed to serialize payload");
+    }
+
+    /// Fallible form of [`Entity::digest_v`].
+    ///
+    /// If serialization fails, the entity is left unchanged.
+    pub fn try_digest_v<T: serde::Serialize>(
+        &mut self,
+        name: impl Into<String>,
+        version: u64,
+        payload: &T,
+    ) -> Result<(), PayloadError> {
         if self.replaying {
-            return;
+            return Ok(());
         }
 
-        let bytes = bitcode::serialize(payload).expect("failed to serialize payload");
+        let bytes = bitcode::serialize(payload).map_err(|e| PayloadError {
+            message: e.to_string(),
+        })?;
         let sequence = self.events.len() as u64 + 1;
         let mut record = EventRecord::new_versioned(name, bytes, sequence, version);
         if !self.metadata.is_empty() {
             record.metadata = self.metadata.clone();
         }
-        self.events.push(record);
-        self.version = self.events.len() as u64;
-        self.timestamp = SystemTime::now();
+        self.push_new_event(record);
+        Ok(())
     }
 
     /// Record an event with no payload.
     pub fn digest_empty(&mut self, name: impl Into<String>) {
         self.digest(name, &());
+    }
+
+    fn push_new_event(&mut self, record: EventRecord) {
+        self.events.push(record);
+        self.version = self.events.len() as u64;
+        self.timestamp = SystemTime::now();
     }
 
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
@@ -244,19 +279,43 @@ impl Entity {
     /// Replace all events with a single snapshot event.
     /// Used by read models to store current state.
     pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) {
-        let payload = bitcode::serialize(data).expect("failed to serialize snapshot");
+        self.try_set_snapshot(data)
+            .expect("failed to serialize snapshot");
+    }
+
+    /// Fallible form of [`Entity::set_snapshot`].
+    ///
+    /// If serialization fails, the entity is left unchanged.
+    pub fn try_set_snapshot<T: serde::Serialize>(&mut self, data: &T) -> Result<(), PayloadError> {
+        let payload = bitcode::serialize(data).map_err(|e| PayloadError {
+            message: e.to_string(),
+        })?;
         self.events.clear();
         let record = EventRecord::new("Snapshot", payload, 1);
         self.events.push(record);
         self.version = 1;
         self.timestamp = SystemTime::now();
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::ser::Error as _;
     use serde_json;
+
+    #[derive(Clone)]
+    struct FailingSerialize;
+
+    impl Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(S::Error::custom("intentional serialization failure"))
+        }
+    }
 
     #[test]
     fn new() {
@@ -280,6 +339,32 @@ mod tests {
         let decoded: (String, String) = entity.events()[0].decode().unwrap();
         assert_eq!(decoded, ("arg1".to_string(), "arg2".to_string()));
         assert_eq!(entity.events()[0].sequence, 1);
+    }
+
+    #[test]
+    fn try_digest_returns_serialization_errors_without_mutating_entity() {
+        let mut entity = Entity::new();
+
+        let err = entity
+            .try_digest("bad_event", &FailingSerialize)
+            .unwrap_err();
+
+        assert!(err.message.contains("intentional serialization failure"));
+        assert_eq!(entity.version(), 0);
+        assert!(entity.events().is_empty());
+    }
+
+    #[test]
+    fn try_digest_v_returns_serialization_errors_without_mutating_entity() {
+        let mut entity = Entity::new();
+
+        let err = entity
+            .try_digest_v("bad_event", 2, &FailingSerialize)
+            .unwrap_err();
+
+        assert!(err.message.contains("intentional serialization failure"));
+        assert_eq!(entity.version(), 0);
+        assert!(entity.events().is_empty());
     }
 
     #[test]

@@ -3,8 +3,43 @@ mod aggregate;
 use aggregate::{TodoV1, TodoV2, TodoV3};
 use sourced_rust::{
     hydrate, upcast_events, Aggregate, AggregateBuilder, Commit, Entity, EventRecord,
-    EventUpcaster, HashMapRepository, SnapshotStore,
+    EventUpcaster, HashMapRepository, RepositoryError, SnapshotStore,
 };
+
+fn identity_payload(payload: &[u8]) -> Vec<u8> {
+    payload.to_vec()
+}
+
+#[derive(Debug, Default)]
+struct SameVersionUpcasterAggregate {
+    entity: Entity,
+}
+
+impl Aggregate for SameVersionUpcasterAggregate {
+    type ReplayError = String;
+
+    fn entity(&self) -> &Entity {
+        &self.entity
+    }
+
+    fn entity_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+
+    fn replay_event(&mut self, _event: &EventRecord) -> Result<(), Self::ReplayError> {
+        Ok(())
+    }
+
+    fn upcasters() -> &'static [EventUpcaster] {
+        static UPCASTERS: &[EventUpcaster] = &[EventUpcaster {
+            event_type: "Loop",
+            from_version: 1,
+            to_version: 1,
+            transform: identity_payload,
+        }];
+        UPCASTERS
+    }
+}
 
 // =============================================================================
 // EventRecord version field
@@ -43,6 +78,14 @@ fn old_events_without_event_version_deserialize_as_v1() {
     let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0},"metadata":{}}"#;
     let record: EventRecord = serde_json::from_str(json).unwrap();
     assert_eq!(record.event_version, 1);
+}
+
+#[test]
+fn old_events_without_metadata_deserialize_with_empty_metadata() {
+    let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
+    let record: EventRecord = serde_json::from_str(json).unwrap();
+    assert_eq!(record.event_version, 1);
+    assert!(record.metadata.is_empty());
 }
 
 #[test]
@@ -251,6 +294,21 @@ fn upcast_events_standalone() {
     assert_eq!(user, "user1");
     assert_eq!(task, "task1");
     assert_eq!(priority, 0);
+}
+
+#[test]
+fn hydrate_rejects_invalid_same_version_upcaster() {
+    let mut entity = Entity::new();
+    entity.load_from_history(vec![EventRecord::new("Loop", vec![], 1)]);
+
+    let err = hydrate::<SameVersionUpcasterAggregate>(entity).unwrap_err();
+
+    match err {
+        RepositoryError::Replay(message) => {
+            assert!(message.contains("does not advance version 1"));
+        }
+        other => panic!("expected replay error, got {other:?}"),
+    }
 }
 
 // =============================================================================
