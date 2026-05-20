@@ -42,13 +42,13 @@ impl GameMap {
     }
 
     pub fn collect_power_up(&mut self, x: i32, y: i32) -> SourcedResult<Option<PowerUp>> {
-        self.entity.digest("PowerUpCollected", &(x, y))?;
         if let Some(idx) = self
             .power_ups
             .iter()
             .position(|((px, py), _)| *px == x && *py == y)
         {
             let (_, power_up) = self.power_ups.remove(idx);
+            self.entity.digest("PowerUpCollected", &(x, y))?;
             Ok(Some(power_up))
         } else {
             Ok(None)
@@ -130,3 +130,30 @@ sourced_rust::aggregate!(GameMap, entity {
     "BlockDestroyed"(x, y) => destroy_block,
     "PowerUpCollected"(x, y) => collect_power_up,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_power_up_without_match_does_not_record_event() {
+        let mut map = GameMap::default();
+
+        let collected = map.collect_power_up(1, 1).unwrap();
+
+        assert_eq!(collected, None);
+        assert!(map.entity.events().is_empty());
+    }
+
+    #[test]
+    fn collect_power_up_with_match_records_event() {
+        let mut map = GameMap::default();
+        map.power_ups.push(((1, 1), PowerUp::BombUp));
+
+        let collected = map.collect_power_up(1, 1).unwrap();
+
+        assert_eq!(collected, Some(PowerUp::BombUp));
+        assert_eq!(map.entity.events().len(), 1);
+        assert_eq!(map.entity.events()[0].event_name, "PowerUpCollected");
+    }
+}
