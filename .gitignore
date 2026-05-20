@@ -26,3 +26,5 @@ target/llvm-cov/
 .kb/store/
 .kb/workspace/
 .kb/workspaces/
+
+.tmp/
