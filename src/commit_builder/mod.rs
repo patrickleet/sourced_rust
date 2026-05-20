@@ -26,6 +26,7 @@ pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
     models: Vec<ReadModelWrite>,
+    error: Option<RepositoryError>,
 }
 
 impl<'a, R> CommitBuilder<'a, R> {
@@ -34,14 +35,29 @@ impl<'a, R> CommitBuilder<'a, R> {
             repo,
             entities: vec![],
             models: vec![],
+            error: None,
         }
     }
 
     /// Add a read model to the commit.
+    ///
+    /// Serialization errors are returned by the final `commit*` call so the
+    /// fluent builder API stays chainable without panicking.
     pub fn readmodel<M: ReadModel>(mut self, model: &M) -> Self {
+        if self.error.is_some() {
+            return self;
+        }
+
         let key = format!("{}:{}", M::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(model).expect("read model serialization should not fail");
-        self.models.push(ReadModelWrite::new(key, bytes));
+        match serde_json::to_vec(model) {
+            Ok(bytes) => self.models.push(ReadModelWrite::new(key, bytes)),
+            Err(err) => {
+                self.error = Some(RepositoryError::Model(format!(
+                    "failed to serialize read model {}: {}",
+                    key, err
+                )));
+            }
+        }
         self
     }
 
@@ -56,6 +72,8 @@ impl<'a, R> CommitBuilder<'a, R> {
     where
         R: TransactionalCommit,
     {
+        self.check_staged()?;
+
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         entity_refs.push(aggregate.entity_mut());
         self.repo.commit_batch(CommitBatch {
@@ -76,6 +94,8 @@ impl<'a, R> CommitBuilder<'a, R> {
     where
         R: TransactionalCommit,
     {
+        self.check_staged()?;
+
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         for e in entities.iter_mut() {
             entity_refs.push(&mut **e);
@@ -92,12 +112,21 @@ impl<'a, R> CommitBuilder<'a, R> {
     where
         R: TransactionalCommit,
     {
+        self.check_staged()?;
+
         let entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
             read_models: self.models,
             snapshots: Vec::new(),
         })
+    }
+
+    fn check_staged(&mut self) -> Result<(), RepositoryError> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
@@ -152,6 +181,27 @@ mod tests {
 
     impl ReadModel for TestView {
         const COLLECTION: &'static str = "test_view";
+        fn id(&self) -> &str {
+            &self.id
+        }
+    }
+
+    #[derive(Deserialize, Clone)]
+    struct FailingView {
+        id: String,
+    }
+
+    impl Serialize for FailingView {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("injected serialize failure"))
+        }
+    }
+
+    impl ReadModel for FailingView {
+        const COLLECTION: &'static str = "failing_view";
         fn id(&self) -> &str {
             &self.id
         }
@@ -387,6 +437,26 @@ mod tests {
             .borrow()
             .iter()
             .any(|id| id == "outbox:msg-rollback"));
+    }
+
+    #[test]
+    fn readmodel_serialization_failure_returns_error_without_committing() {
+        let repo = RecordingBatchRepo::default();
+        let view = FailingView { id: "bad".into() };
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        let err = repo.readmodel(&view).commit(&mut agg).unwrap_err();
+
+        assert!(matches!(
+            err,
+            RepositoryError::Model(ref message)
+                if message.contains("failed to serialize read model failing_view:bad")
+                    && message.contains("injected serialize failure")
+        ));
+        assert_eq!(agg.entity().committed_version(), 0);
+        assert!(repo.entity_ids.borrow().is_empty());
+        assert!(repo.read_model_keys.borrow().is_empty());
     }
 
     #[test]
