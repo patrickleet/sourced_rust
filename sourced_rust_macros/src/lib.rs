@@ -62,13 +62,13 @@ fn returns_result(sig: &syn::Signature) -> bool {
 fn ensure_sourced_result_signature(
     sig: &mut syn::Signature,
     attr_name: &str,
-) -> Result<(), syn::Error> {
+) -> Result<bool, syn::Error> {
     match &sig.output {
         ReturnType::Default => {
             sig.output = syn::parse_quote!(-> sourced_rust::SourcedResult<()>);
-            Ok(())
+            Ok(true)
         }
-        ReturnType::Type(_, _) if returns_result(sig) => Ok(()),
+        ReturnType::Type(_, _) if returns_result(sig) => Ok(false),
         ReturnType::Type(_, ty) => Err(syn::Error::new_spanned(
             ty,
             format!(
@@ -76,24 +76,6 @@ fn ensure_sourced_result_signature(
                 attr_name
             ),
         )),
-    }
-}
-
-fn block_returns_result(block: &syn::Block) -> bool {
-    let Some(syn::Stmt::Expr(expr, None)) = block.stmts.last() else {
-        return false;
-    };
-
-    match expr {
-        Expr::Call(call) => match &*call.func {
-            Expr::Path(path) => path
-                .path
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "Ok" || segment.ident == "Err"),
-            _ => false,
-        },
-        _ => false,
     }
 }
 
@@ -133,17 +115,15 @@ fn wrap_result_body_with_guard(
     guard: Option<&Expr>,
     prepend: proc_macro2::TokenStream,
     original_block: &syn::Block,
+    signature_synthesized: bool,
 ) -> syn::Block {
-    let original_stmts = &original_block.stmts;
-    let original_returns_result = block_returns_result(original_block);
-
-    match (guard, original_returns_result) {
+    match (guard, signature_synthesized) {
         (Some(guard), true) => {
             syn::parse_quote! {
                 {
                     if #guard {
                         #prepend
-                        (|| #original_block)()?;
+                        #original_block;
                     }
                     Ok(())
                 }
@@ -154,7 +134,7 @@ fn wrap_result_body_with_guard(
                 {
                     if #guard {
                         #prepend
-                        #(#original_stmts)*
+                        (|| #original_block)()?;
                     }
                     Ok(())
                 }
@@ -164,7 +144,7 @@ fn wrap_result_body_with_guard(
             syn::parse_quote! {
                 {
                     #prepend
-                    (|| #original_block)()?;
+                    #original_block;
                     Ok(())
                 }
             }
@@ -173,7 +153,7 @@ fn wrap_result_body_with_guard(
             syn::parse_quote! {
                 {
                     #prepend
-                    #(#original_stmts)*
+                    (|| #original_block)()?;
                     Ok(())
                 }
             }
@@ -251,9 +231,10 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_enqueue_args);
     let mut func = parse_macro_input!(item as ItemFn);
 
-    if let Err(err) = ensure_sourced_result_signature(&mut func.sig, "enqueue") {
-        return err.to_compile_error().into();
-    }
+    let signature_synthesized = match ensure_sourced_result_signature(&mut func.sig, "enqueue") {
+        Ok(signature_synthesized) => signature_synthesized,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     let emitter_field = &args.emitter_field;
     let event_name = &args.event_name;
@@ -298,7 +279,12 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let new_body = wrap_result_body_with_guard(args.guard.as_ref(), enqueue_call, &func.block);
+    let new_body = wrap_result_body_with_guard(
+        args.guard.as_ref(),
+        enqueue_call,
+        &func.block,
+        signature_synthesized,
+    );
     func.block = Box::new(new_body);
 
     TokenStream::from(quote! { #func })
@@ -354,7 +340,8 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// If the annotated method omits a return type, it expands to
 /// `sourced_rust::SourcedResult<()>`. Methods may also explicitly return
 /// `Result<(), E>` where `E` can be constructed from
-/// `sourced_rust::EventRecordError`.
+/// `sourced_rust::EventRecordError`; explicit `Result` methods should return
+/// `Ok(())` from the original body.
 ///
 /// # Usage
 ///
@@ -371,6 +358,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// #[digest("Completed", when = !self.completed)]
 /// fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
 ///     self.completed = true;
+///     Ok(())
 /// }
 /// ```
 ///
@@ -379,6 +367,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// #[digest(my_entity, "Created")]
 /// fn create(&mut self, name: String) -> Result<(), sourced_rust::EventRecordError> {
 ///     // uses self.my_entity instead of self.entity
+///     Ok(())
 /// }
 /// ```
 ///
@@ -390,9 +379,10 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_digest_args);
     let mut func = parse_macro_input!(item as ItemFn);
 
-    if let Err(err) = ensure_sourced_result_signature(&mut func.sig, "digest") {
-        return err.to_compile_error().into();
-    }
+    let signature_synthesized = match ensure_sourced_result_signature(&mut func.sig, "digest") {
+        Ok(signature_synthesized) => signature_synthesized,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     let param_names = extract_param_names(&func.sig);
     let digest_call = generate_digest_call(
@@ -402,7 +392,12 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
         args.version.as_ref(),
     );
 
-    let new_body = wrap_result_body_with_guard(args.guard.as_ref(), digest_call, &func.block);
+    let new_body = wrap_result_body_with_guard(
+        args.guard.as_ref(),
+        digest_call,
+        &func.block,
+        signature_synthesized,
+    );
     func.block = Box::new(new_body);
 
     TokenStream::from(quote! { #func })
@@ -893,9 +888,11 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let syn::ImplItem::Fn(method) = item {
             match find_and_remove_event_attr(&mut method.attrs) {
                 Ok(Some(event_attr)) => {
-                    if let Err(err) = ensure_sourced_result_signature(&mut method.sig, "event") {
-                        return err.to_compile_error().into();
-                    }
+                    let signature_synthesized =
+                        match ensure_sourced_result_signature(&mut method.sig, "event") {
+                            Ok(signature_synthesized) => signature_synthesized,
+                            Err(err) => return err.to_compile_error().into(),
+                        };
 
                     let params = extract_params_with_types(&method.sig);
                     let param_name_refs: Vec<&Ident> =
@@ -925,6 +922,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
                         event_attr.guard.as_ref(),
                         prepend,
                         &method.block,
+                        signature_synthesized,
                     );
                     method.block = new_body;
 

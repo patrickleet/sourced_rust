@@ -123,6 +123,15 @@ fn enqueue_guard_on_empty_value() {
     assert_eq!(eph.emitter.queued_len(), 2); // ValueSet + ValueCleared
 }
 
+#[test]
+fn enqueue_macro_accepts_inferred_tail_try_expression() {
+    let mut eph = Ephemeral::default();
+
+    eph.check_with_tail_expression().unwrap();
+
+    assert_eq!(eph.emitter.queued_len(), 1);
+}
+
 // =============================================================================
 // #[enqueue] with custom emitter field
 // =============================================================================
