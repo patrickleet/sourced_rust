@@ -24,7 +24,6 @@ Recommended table shape:
 Required constraints and indexes:
 
 - `PRIMARY KEY (aggregate_type, aggregate_id, sequence)`.
-- Index `(aggregate_type, aggregate_id, sequence)` for stream hydration.
 - Optional index `(event_name, event_version)` for migrations or diagnostics.
 
 ## Timestamp Representation
