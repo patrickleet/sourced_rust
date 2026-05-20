@@ -114,12 +114,12 @@ fn enqueue_guard_on_empty_value() {
     let mut eph = Ephemeral::default();
 
     // value is empty, guard blocks clear
-    eph.clear();
+    eph.clear().unwrap();
     assert_eq!(eph.emitter.queued_len(), 0);
 
     // set a value, now clear should work
-    eph.set_value("hello".into());
-    eph.clear();
+    eph.set_value("hello".into()).unwrap();
+    eph.clear().unwrap();
     assert_eq!(eph.emitter.queued_len(), 2); // ValueSet + ValueCleared
 }
 
@@ -255,7 +255,7 @@ fn replay_does_not_enqueue_events() {
 #[test]
 fn enqueue_only_without_digest() {
     let mut eph = Ephemeral::default();
-    eph.set_value("test".into());
+    eph.set_value("test".into()).unwrap();
 
     // Queued for emission
     assert_eq!(eph.emitter.queued_len(), 1);
@@ -273,7 +273,7 @@ fn enqueue_only_emits_correctly() {
         tx.send(payload).unwrap();
     });
 
-    eph.set_value("hello".into());
+    eph.set_value("hello".into()).unwrap();
     eph.emitter.emit_queued();
 
     let payload = rx
