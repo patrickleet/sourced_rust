@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::{EventRecord, PayloadError};
+use super::{BitcodePayloadCodec, EventRecord, EventRecordError, PayloadCodec};
 
 #[derive(Serialize, Deserialize)]
 pub struct Entity {
@@ -169,30 +169,19 @@ impl Entity {
     }
 
     /// Record an event with a serializable payload.
-    /// The payload is serialized using bitcode for compact, fast storage.
-    /// Any metadata set on the entity is attached to the event.
-    pub fn digest<T: serde::Serialize>(&mut self, name: impl Into<String>, payload: &T) {
-        self.try_digest(name, payload)
-            .expect("failed to serialize payload");
-    }
-
-    /// Fallible form of [`Entity::digest`].
     ///
-    /// This is the production-safe path for command handlers that need to
-    /// return serialization failures instead of panicking. If serialization
-    /// fails, the entity is left unchanged.
-    pub fn try_digest<T: serde::Serialize>(
+    /// If serialization fails, the entity is left unchanged.
+    /// Any metadata set on the entity is attached to the event.
+    pub fn digest<T: serde::Serialize>(
         &mut self,
         name: impl Into<String>,
         payload: &T,
-    ) -> Result<(), PayloadError> {
+    ) -> Result<(), EventRecordError> {
         if self.replaying {
             return Ok(());
         }
 
-        let bytes = bitcode::serialize(payload).map_err(|e| PayloadError {
-            message: e.to_string(),
-        })?;
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         let sequence = self.events.len() as u64 + 1;
         let mut record = EventRecord::new(name, bytes, sequence);
         if !self.metadata.is_empty() {
@@ -203,32 +192,19 @@ impl Entity {
     }
 
     /// Record a versioned event.
+    ///
+    /// If serialization fails, the entity is left unchanged.
     pub fn digest_v<T: serde::Serialize>(
         &mut self,
         name: impl Into<String>,
         version: u64,
         payload: &T,
-    ) {
-        self.try_digest_v(name, version, payload)
-            .expect("failed to serialize payload");
-    }
-
-    /// Fallible form of [`Entity::digest_v`].
-    ///
-    /// If serialization fails, the entity is left unchanged.
-    pub fn try_digest_v<T: serde::Serialize>(
-        &mut self,
-        name: impl Into<String>,
-        version: u64,
-        payload: &T,
-    ) -> Result<(), PayloadError> {
+    ) -> Result<(), EventRecordError> {
         if self.replaying {
             return Ok(());
         }
 
-        let bytes = bitcode::serialize(payload).map_err(|e| PayloadError {
-            message: e.to_string(),
-        })?;
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
         let sequence = self.events.len() as u64 + 1;
         let mut record = EventRecord::new_versioned(name, bytes, sequence, version);
         if !self.metadata.is_empty() {
@@ -239,8 +215,8 @@ impl Entity {
     }
 
     /// Record an event with no payload.
-    pub fn digest_empty(&mut self, name: impl Into<String>) {
-        self.digest(name, &());
+    pub fn digest_empty(&mut self, name: impl Into<String>) -> Result<(), EventRecordError> {
+        self.digest(name, &())
     }
 
     fn push_new_event(&mut self, record: EventRecord) {
@@ -278,18 +254,8 @@ impl Entity {
 
     /// Replace all events with a single snapshot event.
     /// Used by read models to store current state.
-    pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) {
-        self.try_set_snapshot(data)
-            .expect("failed to serialize snapshot");
-    }
-
-    /// Fallible form of [`Entity::set_snapshot`].
-    ///
-    /// If serialization fails, the entity is left unchanged.
-    pub fn try_set_snapshot<T: serde::Serialize>(&mut self, data: &T) -> Result<(), PayloadError> {
-        let payload = bitcode::serialize(data).map_err(|e| PayloadError {
-            message: e.to_string(),
-        })?;
+    pub fn set_snapshot<T: serde::Serialize>(&mut self, data: &T) -> Result<(), EventRecordError> {
+        let payload = BitcodePayloadCodec::encode(data).map_err(EventRecordError::encode)?;
         self.events.clear();
         let record = EventRecord::new("Snapshot", payload, 1);
         self.events.push(record);
@@ -331,7 +297,7 @@ mod tests {
     #[test]
     fn digest() {
         let mut entity = Entity::new();
-        entity.digest("test_event", &("arg1", "arg2"));
+        entity.digest("test_event", &("arg1", "arg2")).unwrap();
 
         assert_eq!(entity.version(), 1);
         assert_eq!(entity.events().len(), 1);
@@ -342,12 +308,10 @@ mod tests {
     }
 
     #[test]
-    fn try_digest_returns_serialization_errors_without_mutating_entity() {
+    fn digest_returns_serialization_errors_without_mutating_entity() {
         let mut entity = Entity::new();
 
-        let err = entity
-            .try_digest("bad_event", &FailingSerialize)
-            .unwrap_err();
+        let err = entity.digest("bad_event", &FailingSerialize).unwrap_err();
 
         assert!(err.message.contains("intentional serialization failure"));
         assert_eq!(entity.version(), 0);
@@ -355,11 +319,11 @@ mod tests {
     }
 
     #[test]
-    fn try_digest_v_returns_serialization_errors_without_mutating_entity() {
+    fn digest_v_returns_serialization_errors_without_mutating_entity() {
         let mut entity = Entity::new();
 
         let err = entity
-            .try_digest_v("bad_event", 2, &FailingSerialize)
+            .digest_v("bad_event", 2, &FailingSerialize)
             .unwrap_err();
 
         assert!(err.message.contains("intentional serialization failure"));
@@ -370,8 +334,8 @@ mod tests {
     #[test]
     fn rehydrate() {
         let mut entity = Entity::new();
-        entity.digest("test_event1", &"arg1");
-        entity.digest("test_event2", &"arg2");
+        entity.digest("test_event1", &"arg1").unwrap();
+        entity.digest("test_event2", &"arg2").unwrap();
 
         let mut replayed = Vec::new();
         let result = entity.rehydrate(|event| {
@@ -412,7 +376,7 @@ mod tests {
     #[test]
     fn serialize_deserialize() {
         let mut entity = Entity::new();
-        entity.digest("test_event1", &"arg1");
+        entity.digest("test_event1", &"arg1").unwrap();
 
         let serialized: String = serde_json::to_string(&entity).unwrap();
         let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
@@ -431,7 +395,7 @@ mod tests {
         let mut entity = Entity::new();
         entity.replaying = true;
 
-        entity.digest("test_event", &"arg1");
+        entity.digest("test_event", &"arg1").unwrap();
         assert!(entity.events().is_empty());
     }
 
@@ -441,8 +405,8 @@ mod tests {
         assert_eq!(entity.committed_version(), 0);
 
         let mut source = Entity::new();
-        source.digest("e1", &"a");
-        source.digest("e2", &"b");
+        source.digest("e1", &"a").unwrap();
+        source.digest("e2", &"b").unwrap();
 
         entity.load_from_history(source.events().to_vec());
         assert_eq!(entity.version(), 2);
@@ -455,8 +419,8 @@ mod tests {
         let mut entity = Entity::new();
         assert!(entity.new_events().is_empty());
 
-        entity.digest("e1", &"a");
-        entity.digest("e2", &"b");
+        entity.digest("e1", &"a").unwrap();
+        entity.digest("e2", &"b").unwrap();
         assert_eq!(entity.new_events().len(), 2);
         assert_eq!(entity.new_events()[0].event_name, "e1");
         assert_eq!(entity.new_events()[1].event_name, "e2");
@@ -465,14 +429,14 @@ mod tests {
     #[test]
     fn new_events_after_load_and_digest() {
         let mut source = Entity::new();
-        source.digest("e1", &"a");
-        source.digest("e2", &"b");
+        source.digest("e1", &"a").unwrap();
+        source.digest("e2", &"b").unwrap();
 
         let mut entity = Entity::new();
         entity.load_from_history(source.events().to_vec());
         assert!(entity.new_events().is_empty());
 
-        entity.digest("e3", &"c");
+        entity.digest("e3", &"c").unwrap();
         assert_eq!(entity.new_events().len(), 1);
         assert_eq!(entity.new_events()[0].event_name, "e3");
     }
@@ -480,8 +444,8 @@ mod tests {
     #[test]
     fn mark_committed_resets_new_events() {
         let mut entity = Entity::new();
-        entity.digest("e1", &"a");
-        entity.digest("e2", &"b");
+        entity.digest("e1", &"a").unwrap();
+        entity.digest("e2", &"b").unwrap();
         assert_eq!(entity.new_events().len(), 2);
 
         entity.mark_committed();
@@ -499,7 +463,7 @@ mod tests {
         entity.set_causation_id("cmd-xyz");
         entity.set_meta("user_id", "u-42");
 
-        entity.digest("e1", &"payload");
+        entity.digest("e1", &"payload").unwrap();
 
         let record = &entity.events()[0];
         assert_eq!(record.correlation_id(), Some("req-abc"));
@@ -510,7 +474,7 @@ mod tests {
     #[test]
     fn digest_without_metadata_leaves_event_record_empty() {
         let mut entity = Entity::new();
-        entity.digest("e1", &"payload");
+        entity.digest("e1", &"payload").unwrap();
 
         let record = &entity.events()[0];
         assert!(record.metadata.is_empty());
@@ -521,7 +485,7 @@ mod tests {
     fn metadata_is_transient_not_serialized() {
         let mut entity = Entity::new();
         entity.set_correlation_id("req-abc");
-        entity.digest("e1", &"payload");
+        entity.digest("e1", &"payload").unwrap();
 
         let serialized = serde_json::to_string(&entity).unwrap();
         let deserialized: Entity = serde_json::from_str(&serialized).unwrap();
@@ -536,10 +500,10 @@ mod tests {
     fn clear_metadata_stops_propagation() {
         let mut entity = Entity::new();
         entity.set_correlation_id("req-abc");
-        entity.digest("e1", &"first");
+        entity.digest("e1", &"first").unwrap();
 
         entity.clear_metadata();
-        entity.digest("e2", &"second");
+        entity.digest("e2", &"second").unwrap();
 
         assert_eq!(entity.events()[0].correlation_id(), Some("req-abc"));
         assert!(entity.events()[1].metadata.is_empty());
@@ -551,8 +515,8 @@ mod tests {
         assert_eq!(entity.snapshot_version(), 0);
 
         // digest doesn't touch snapshot_version
-        entity.digest("e1", &"a");
-        entity.digest("e2", &"b");
+        entity.digest("e1", &"a").unwrap();
+        entity.digest("e2", &"b").unwrap();
         assert_eq!(entity.snapshot_version(), 0);
 
         // mark_committed doesn't touch snapshot_version

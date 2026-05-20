@@ -35,7 +35,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     }
 
     let mut counter = Counter::default();
-    counter.create(input.id.clone());
+    counter.create(input.id.clone()).unwrap();
 
     let mut message = OutboxMessage::domain_event("CounterCreated", &counter)
         .map_err(|e| HandlerError::Other(Box::new(e)))?;

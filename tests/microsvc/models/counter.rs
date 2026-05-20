@@ -13,18 +13,18 @@ pub struct Counter {
 #[sourced(entity)]
 impl Counter {
     #[event("Created")]
-    pub fn create(&mut self, id: String) {
+    pub fn create(&mut self, id: String) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.value = 0;
     }
 
     #[event("Incremented")]
-    pub fn increment(&mut self, amount: i64) {
+    pub fn increment(&mut self, amount: i64) -> Result<(), sourced_rust::EventRecordError> {
         self.value += amount;
     }
 
     #[event("Decremented", when = self.value >= amount)]
-    pub fn decrement(&mut self, amount: i64) {
+    pub fn decrement(&mut self, amount: i64) -> Result<(), sourced_rust::EventRecordError> {
         self.value -= amount;
     }
 }

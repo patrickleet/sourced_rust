@@ -1,21 +1,88 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 
-/// Error when serializing or deserializing event payloads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PayloadError {
-    pub message: String,
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+pub const BITCODE_PAYLOAD_CODEC: &str = "bitcode";
+pub const BITCODE_PAYLOAD_CODEC_VERSION: u16 = 1;
+
+/// Codec used to serialize and deserialize event payload bytes.
+pub trait PayloadCodec {
+    const NAME: &'static str;
+    const VERSION: u16;
+
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Self::Error>;
+    fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error>;
 }
 
-impl fmt::Display for PayloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "payload error: {}", self.message)
+/// Default payload codec.
+pub struct BitcodePayloadCodec;
+
+impl PayloadCodec for BitcodePayloadCodec {
+    const NAME: &'static str = BITCODE_PAYLOAD_CODEC;
+    const VERSION: u16 = BITCODE_PAYLOAD_CODEC_VERSION;
+
+    type Error = bitcode::Error;
+
+    fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Self::Error> {
+        bitcode::serialize(value)
+    }
+
+    fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error> {
+        bitcode::deserialize(bytes)
     }
 }
 
-impl std::error::Error for PayloadError {}
+/// Error when serializing or deserializing event records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventRecordError {
+    pub message: String,
+}
+
+impl EventRecordError {
+    pub fn encode(source: impl fmt::Display) -> Self {
+        Self {
+            message: format!(
+                "failed to encode payload with codec `{}` version {}: {}",
+                BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION, source
+            ),
+        }
+    }
+
+    pub fn decode(
+        payload_type: impl fmt::Display,
+        codec: impl fmt::Display,
+        codec_version: u16,
+        source: impl fmt::Display,
+    ) -> Self {
+        Self {
+            message: format!(
+                "failed to decode payload `{}` with codec `{}` version {}: {}",
+                payload_type, codec, codec_version, source
+            ),
+        }
+    }
+
+    pub fn unsupported_codec(codec: impl fmt::Display, codec_version: u16) -> Self {
+        Self {
+            message: format!(
+                "unsupported payload codec `{}` version {}",
+                codec, codec_version
+            ),
+        }
+    }
+}
+
+impl fmt::Display for EventRecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "event record error: {}", self.message)
+    }
+}
+
+impl std::error::Error for EventRecordError {}
 
 fn default_event_version() -> u64 {
     1
@@ -27,6 +94,8 @@ fn is_version_one(v: &u64) -> bool {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,
+    pub payload_codec: String,
+    pub payload_codec_version: u16,
     #[serde(with = "payload_serde")]
     pub payload: Vec<u8>,
     #[serde(
@@ -64,6 +133,8 @@ impl EventRecord {
     pub fn new(event_name: impl Into<String>, payload: Vec<u8>, sequence: u64) -> Self {
         EventRecord {
             event_name: event_name.into(),
+            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: 1,
             sequence,
@@ -81,6 +152,8 @@ impl EventRecord {
     ) -> Self {
         EventRecord {
             event_name: event_name.into(),
+            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: version,
             sequence,
@@ -98,6 +171,8 @@ impl EventRecord {
     ) -> Self {
         EventRecord {
             event_name: event_name.into(),
+            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: 1,
             sequence,
@@ -107,9 +182,23 @@ impl EventRecord {
     }
 
     /// Deserialize the payload into the specified type.
-    pub fn decode<T: DeserializeOwned>(&self) -> Result<T, PayloadError> {
-        bitcode::deserialize(&self.payload).map_err(|e| PayloadError {
-            message: e.to_string(),
+    pub fn decode<T: DeserializeOwned>(&self) -> Result<T, EventRecordError> {
+        if self.payload_codec != BITCODE_PAYLOAD_CODEC
+            || self.payload_codec_version != BITCODE_PAYLOAD_CODEC_VERSION
+        {
+            return Err(EventRecordError::unsupported_codec(
+                &self.payload_codec,
+                self.payload_codec_version,
+            ));
+        }
+
+        BitcodePayloadCodec::decode(&self.payload).map_err(|e| {
+            EventRecordError::decode(
+                &self.event_name,
+                &self.payload_codec,
+                self.payload_codec_version,
+                e,
+            )
         })
     }
 
@@ -188,6 +277,15 @@ mod tests {
     }
 
     #[test]
+    fn decode_unknown_codec_returns_error() {
+        let mut event_record = EventRecord::new("test_event", vec![], 1);
+        event_record.payload_codec = "json".to_string();
+
+        let err = event_record.decode::<()>().unwrap_err();
+        assert!(err.message.contains("unsupported payload codec `json`"));
+    }
+
+    #[test]
     fn payload_bytes() {
         let payload = vec![0xff, 0x00, 0xab];
         let event_record = EventRecord::new("test_event", payload.clone(), 1);
@@ -222,7 +320,7 @@ mod tests {
 
     #[test]
     fn deserialize_without_metadata_field_defaults_to_empty() {
-        let json = r#"{"event_name":"old_event","payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
+        let json = r#"{"event_name":"old_event","payload_codec":"bitcode","payload_codec_version":1,"payload":"","sequence":1,"timestamp":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#;
         let record: EventRecord = serde_json::from_str(json).unwrap();
         assert!(record.metadata.is_empty());
     }

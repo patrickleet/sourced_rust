@@ -17,7 +17,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     if !inv.can_reserve(input.quantity) {
         return Err(HandlerError::Rejected("insufficient stock".into()));
     }
-    inv.reserve(input.order_id.clone(), input.quantity);
+    inv.reserve(input.order_id.clone(), input.quantity).unwrap();
 
     let mut msg = json_outbox_to(
         &format!("{}-inventory-reserved", input.order_id),

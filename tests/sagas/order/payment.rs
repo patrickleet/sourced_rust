@@ -58,7 +58,12 @@ impl Payment {
     }
 
     #[digest("PaymentInitiated")]
-    pub fn initiate(&mut self, id: String, order_id: String, amount_cents: u32) {
+    pub fn initiate(
+        &mut self,
+        id: String,
+        order_id: String,
+        amount_cents: u32,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.order_id = order_id;
         self.amount_cents = amount_cents;
@@ -66,24 +71,27 @@ impl Payment {
     }
 
     #[digest("PaymentAuthorized", when = self.status == PaymentStatus::Pending)]
-    pub fn authorize(&mut self, transaction_id: String) {
+    pub fn authorize(
+        &mut self,
+        transaction_id: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.status = PaymentStatus::Authorized;
         self.transaction_id = Some(transaction_id);
     }
 
     #[digest("PaymentCaptured", when = self.status == PaymentStatus::Authorized)]
-    pub fn capture(&mut self) {
+    pub fn capture(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.status = PaymentStatus::Captured;
     }
 
     #[digest("PaymentFailed", when = self.status == PaymentStatus::Pending || self.status == PaymentStatus::Authorized)]
-    pub fn fail(&mut self, reason: String) {
+    pub fn fail(&mut self, reason: String) -> Result<(), sourced_rust::EventRecordError> {
         self.status = PaymentStatus::Failed;
         self.failure_reason = Some(reason);
     }
 
     #[digest("PaymentRefunded", when = self.status == PaymentStatus::Captured)]
-    pub fn refund(&mut self) {
+    pub fn refund(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.status = PaymentStatus::Refunded;
     }
 

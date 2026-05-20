@@ -21,8 +21,9 @@ pub mod snapshot;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
-    try_upcast_events, upcast_events, Committable, Entity, Event, EventRecord, EventUpcaster,
-    LocalEvent, PayloadError, UpcastError,
+    try_upcast_events, upcast_events, BitcodePayloadCodec, Committable, Entity, Event, EventRecord,
+    EventRecordError, EventUpcaster, LocalEvent, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
+    BITCODE_PAYLOAD_CODEC_VERSION,
 };
 
 // Re-export repository traits at crate root for convenience
@@ -108,7 +109,7 @@ pub use snapshot::{
 pub use event_emitter_rs::EventEmitter;
 
 // Re-export proc macros
-pub use sourced_rust_macros::{aggregate, digest, sourced, try_digest, ReadModel, Snapshot};
+pub use sourced_rust_macros::{aggregate, digest, sourced, ReadModel, Snapshot};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]

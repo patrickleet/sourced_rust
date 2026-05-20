@@ -8,6 +8,9 @@ mod upcaster;
 pub use committable::Committable;
 pub use entity::Entity;
 pub use event::Event;
-pub use event_record::{EventRecord, PayloadError};
+pub use event_record::{
+    BitcodePayloadCodec, EventRecord, EventRecordError, PayloadCodec, BITCODE_PAYLOAD_CODEC,
+    BITCODE_PAYLOAD_CODEC_VERSION,
+};
 pub use local_event::LocalEvent;
 pub use upcaster::{try_upcast_events, upcast_events, EventUpcaster, UpcastError};

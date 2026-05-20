@@ -29,7 +29,8 @@ fn todos() {
         id1.clone(),
         "user1".to_string(),
         "Buy groceries".to_string(),
-    );
+    )
+    .unwrap();
 
     // Add an outbox event for the initialization
     let mut init_message =
@@ -48,7 +49,7 @@ fn todos() {
 
     // Retrieve the Todo from the repository and complete it, then commit again
     if let Some(mut retrieved_todo) = repo.get(&id1).unwrap() {
-        retrieved_todo.complete();
+        retrieved_todo.complete().unwrap();
 
         // Add an outbox event for the completion
         let mut complete_message = OutboxMessage::encode(
@@ -88,15 +89,19 @@ fn todos() {
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "user1".to_string(), "Buy Sauna".to_string());
+    todo2
+        .initialize(id2.clone(), "user1".to_string(), "Buy Sauna".to_string())
+        .unwrap();
 
     let mut todo3 = Todo::new();
     let id3 = next_id();
-    todo3.initialize(
-        id3.clone(),
-        "user2".to_string(),
-        "Chew bubblegum".to_string(),
-    );
+    todo3
+        .initialize(
+            id3.clone(),
+            "user2".to_string(),
+            "Chew bubblegum".to_string(),
+        )
+        .unwrap();
 
     // Commit multiple Todos to the repository
     let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
@@ -115,7 +120,8 @@ fn get_commit_roundtrip() {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
     let mut todo = Todo::new();
     let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string());
+    todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string())
+        .unwrap();
 
     repo.commit(&mut todo).unwrap();
 
@@ -132,11 +138,15 @@ fn get_all_commit_all_roundtrip() {
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(id1.clone(), "user1".to_string(), "First".to_string());
+    todo1
+        .initialize(id1.clone(), "user1".to_string(), "First".to_string())
+        .unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "user2".to_string(), "Second".to_string());
+    todo2
+        .initialize(id2.clone(), "user2".to_string(), "Second".to_string())
+        .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
@@ -151,8 +161,8 @@ fn get_all_commit_all_roundtrip() {
     let mut todo1v2 = iter.next().unwrap();
     let mut todo2v2 = iter.next().unwrap();
 
-    todo1v2.complete();
-    todo2v2.complete();
+    todo1v2.complete().unwrap();
+    todo2v2.complete().unwrap();
 
     repo.commit_all(&mut [&mut todo1v2, &mut todo2v2]).unwrap();
 
@@ -170,7 +180,8 @@ fn outbox_records_persisted() {
     let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string());
+    todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string())
+        .unwrap();
     let snapshot = todo.snapshot();
     let mut message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
@@ -199,7 +210,8 @@ fn outbox_worker_log_publisher() {
         id.clone(),
         "user1".to_string(),
         "Outbox log publisher".to_string(),
-    );
+    )
+    .unwrap();
     let snapshot = todo.snapshot();
     let mut message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
@@ -219,7 +231,7 @@ fn outbox_worker_log_publisher() {
     let mut claimed = repo
         .claim_outbox_messages("logger-1", 10, Duration::from_secs(30))
         .unwrap();
-    let result = worker.process_batch(&mut claimed);
+    let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
     for message in &mut claimed {
         repo.commit(&mut message.entity).unwrap();
@@ -246,7 +258,8 @@ fn outbox_worker_local_emitter_publisher() {
         id.clone(),
         "user1".to_string(),
         "Outbox local emitter".to_string(),
-    );
+    )
+    .unwrap();
     let snapshot = todo.snapshot();
     let mut message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
@@ -269,7 +282,7 @@ fn outbox_worker_local_emitter_publisher() {
     let mut claimed = repo
         .claim_outbox_messages("emitter-1", 10, Duration::from_secs(30))
         .unwrap();
-    let result = worker.process_batch(&mut claimed);
+    let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
     for message in &mut claimed {
         repo.commit(&mut message.entity).unwrap();
@@ -285,7 +298,8 @@ fn abort_releases_lock_after_get() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string());
+    todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     let locked = repo.get(&id).unwrap().unwrap();
@@ -312,20 +326,24 @@ fn abort_releases_lock_after_get_all() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(
-        id1.clone(),
-        "user1".to_string(),
-        "Abort get_all 1".to_string(),
-    );
+    todo1
+        .initialize(
+            id1.clone(),
+            "user1".to_string(),
+            "Abort get_all 1".to_string(),
+        )
+        .unwrap();
     repo.commit(&mut todo1).unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(
-        id2.clone(),
-        "user2".to_string(),
-        "Abort get_all 2".to_string(),
-    );
+    todo2
+        .initialize(
+            id2.clone(),
+            "user2".to_string(),
+            "Abort get_all 2".to_string(),
+        )
+        .unwrap();
     repo.commit(&mut todo2).unwrap();
 
     let locked = repo.get_all(&[&id1, &id2]).unwrap();
@@ -355,16 +373,19 @@ fn queued_repo_blocks_get_until_commit() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string());
+    todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     let mut other_todo = Todo::new();
     let other_id = next_id();
-    other_todo.initialize(
-        other_id.clone(),
-        "user2".to_string(),
-        "Independent queue".to_string(),
-    );
+    other_todo
+        .initialize(
+            other_id.clone(),
+            "user2".to_string(),
+            "Independent queue".to_string(),
+        )
+        .unwrap();
     repo.commit(&mut other_todo).unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
@@ -443,7 +464,8 @@ fn outbox_worker_process_next_with_commit() {
         id.clone(),
         "user1".to_string(),
         "Process next test".to_string(),
-    );
+    )
+    .unwrap();
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
@@ -482,7 +504,7 @@ fn outbox_worker_process_next_with_commit() {
         if claimed.is_empty() {
             break;
         }
-        let result = worker.process_batch(&mut claimed);
+        let result = worker.process_batch(&mut claimed).unwrap();
         processed += result.completed + result.released + result.failed;
         for message in &mut claimed {
             repo.commit(&mut message.entity).unwrap();
@@ -507,19 +529,25 @@ fn find_returns_matching_aggregates() {
     // Create todos for different users
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(
-        id1.clone(),
-        "alice".to_string(),
-        "Buy groceries".to_string(),
-    );
+    todo1
+        .initialize(
+            id1.clone(),
+            "alice".to_string(),
+            "Buy groceries".to_string(),
+        )
+        .unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "alice".to_string(), "Walk the dog".to_string());
+    todo2
+        .initialize(id2.clone(), "alice".to_string(), "Walk the dog".to_string())
+        .unwrap();
 
     let mut todo3 = Todo::new();
     let id3 = next_id();
-    todo3.initialize(id3.clone(), "bob".to_string(), "Write code".to_string());
+    todo3
+        .initialize(id3.clone(), "bob".to_string(), "Write code".to_string())
+        .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
         .unwrap();
@@ -544,11 +572,15 @@ fn find_one_returns_first_matching_aggregate() {
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(id1.clone(), "alice".to_string(), "First task".to_string());
+    todo1
+        .initialize(id1.clone(), "alice".to_string(), "First task".to_string())
+        .unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "alice".to_string(), "Second task".to_string());
+    todo2
+        .initialize(id2.clone(), "alice".to_string(), "Second task".to_string())
+        .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
@@ -569,7 +601,8 @@ fn exists_returns_true_when_aggregate_matches() {
 
     let mut todo = Todo::new();
     let id = next_id();
-    todo.initialize(id.clone(), "alice".to_string(), "Test task".to_string());
+    todo.initialize(id.clone(), "alice".to_string(), "Test task".to_string())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     assert!(repo.exists(|t| t.snapshot().user_id == "alice").unwrap());
@@ -582,15 +615,21 @@ fn count_returns_matching_aggregate_count() {
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(id1.clone(), "alice".to_string(), "Task 1".to_string());
+    todo1
+        .initialize(id1.clone(), "alice".to_string(), "Task 1".to_string())
+        .unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "alice".to_string(), "Task 2".to_string());
+    todo2
+        .initialize(id2.clone(), "alice".to_string(), "Task 2".to_string())
+        .unwrap();
 
     let mut todo3 = Todo::new();
     let id3 = next_id();
-    todo3.initialize(id3.clone(), "bob".to_string(), "Task 3".to_string());
+    todo3
+        .initialize(id3.clone(), "bob".to_string(), "Task 3".to_string())
+        .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
         .unwrap();
@@ -610,16 +649,20 @@ fn find_by_completed_status() {
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
-    todo1.initialize(
-        id1.clone(),
-        "alice".to_string(),
-        "Completed task".to_string(),
-    );
-    todo1.complete();
+    todo1
+        .initialize(
+            id1.clone(),
+            "alice".to_string(),
+            "Completed task".to_string(),
+        )
+        .unwrap();
+    todo1.complete().unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
-    todo2.initialize(id2.clone(), "alice".to_string(), "Pending task".to_string());
+    todo2
+        .initialize(id2.clone(), "alice".to_string(), "Pending task".to_string())
+        .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
@@ -645,7 +688,8 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
     todo.entity.set_correlation_id("req-abc-123");
     todo.entity.set_causation_id("cmd-create-todo");
     todo.entity.set_meta("user_id", "u-42");
-    todo.initialize(id.clone(), "user1".to_string(), "Metadata test".to_string());
+    todo.initialize(id.clone(), "user1".to_string(), "Metadata test".to_string())
+        .unwrap();
 
     // 2. Verify metadata propagated to event records
     let new_events = todo.entity.new_events();
@@ -678,7 +722,7 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
         .repo()
         .claim_outbox_messages("meta-worker", 10, Duration::from_secs(30))
         .unwrap();
-    let result = worker.process_batch(&mut claimed);
+    let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
 
     // 6. Verify the publisher received metadata

@@ -24,14 +24,22 @@ pub struct TickSaga {
 
 impl TickSaga {
     #[digest("TickStarted")]
-    pub fn start(&mut self, saga_id: String, game_id: String, bombs_ticked: usize) {
+    pub fn start(
+        &mut self,
+        saga_id: String,
+        game_id: String,
+        bombs_ticked: usize,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&saga_id);
         self.game_id = game_id;
         self.bombs_ticked = bombs_ticked;
     }
 
     #[digest("DetonationRecorded")]
-    pub fn record_detonation(&mut self, detonation: Detonation) {
+    pub fn record_detonation(
+        &mut self,
+        detonation: Detonation,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.detonations.push(detonation);
     }
 
@@ -41,19 +49,26 @@ impl TickSaga {
         blocks_destroyed: Vec<(i32, i32)>,
         players_killed: Vec<String>,
         chain_detonations: Vec<String>,
-    ) {
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.blocks_destroyed.extend(blocks_destroyed);
         self.players_killed.extend(players_killed);
         self.chain_detonations.extend(chain_detonations);
     }
 
     #[digest("DissipationRecorded")]
-    pub fn record_dissipation(&mut self, explosion_id: String) {
+    pub fn record_dissipation(
+        &mut self,
+        explosion_id: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.explosions_dissipated.push(explosion_id);
     }
 
     #[digest("TickCompleted")]
-    pub fn complete(&mut self, game_over: bool, winner: Option<String>) {
+    pub fn complete(
+        &mut self,
+        game_over: bool,
+        winner: Option<String>,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.game_over = game_over;
         self.winner = winner;
     }

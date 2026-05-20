@@ -15,14 +15,19 @@ impl Todo {
     }
 
     #[digest("Initialized")]
-    pub fn initialize(&mut self, id: String, user_id: String, task: String) {
+    pub fn initialize(
+        &mut self,
+        id: String,
+        user_id: String,
+        task: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
     #[digest("Completed", when = !self.completed)]
-    pub fn complete(&mut self) {
+    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.completed = true;
     }
 

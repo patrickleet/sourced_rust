@@ -5,9 +5,9 @@ use sourced_rust::{Commit, Entity, GetOne, HashMapRepository};
 #[test]
 fn digest_adds_events_with_correct_sequences() {
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"data1");
-    entity.digest("Updated", &"data2");
-    entity.digest("Updated", &"data3");
+    entity.digest("Created", &"data1").unwrap();
+    entity.digest("Updated", &"data2").unwrap();
+    entity.digest("Updated", &"data3").unwrap();
 
     assert_eq!(entity.events().len(), 3);
     assert_eq!(entity.events()[0].sequence, 1);
@@ -21,19 +21,19 @@ fn multiple_load_modify_commit_cycles_accumulate_all_events() {
 
     // Cycle 1: create and commit
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
+    entity.digest("Created", &"v1").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Cycle 2: load, modify, commit
     let mut entity = repo.get_one("e1").unwrap().unwrap();
     assert_eq!(entity.events().len(), 1);
-    entity.digest("Updated", &"v2");
+    entity.digest("Updated", &"v2").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Cycle 3: load, modify, commit
     let mut entity = repo.get_one("e1").unwrap().unwrap();
     assert_eq!(entity.events().len(), 2);
-    entity.digest("Updated", &"v3");
+    entity.digest("Updated", &"v3").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Verify all events accumulated
@@ -52,12 +52,12 @@ fn commit_appends_only_new_events() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
+    entity.digest("Created", &"v1").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Reload and add one more event
     let mut entity = repo.get_one("e1").unwrap().unwrap();
-    entity.digest("Updated", &"v2");
+    entity.digest("Updated", &"v2").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Verify via get_one: exactly 2 events
@@ -73,7 +73,7 @@ fn empty_commit_is_idempotent() {
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
+    entity.digest("Created", &"v1").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Load and commit without changes
@@ -96,7 +96,7 @@ fn events_grow_monotonically() {
         } else {
             repo.get_one("e1").unwrap().unwrap()
         };
-        entity.digest("Event", &format!("v{}", i));
+        entity.digest("Event", &format!("v{}", i)).unwrap();
         repo.commit(&mut entity).unwrap();
 
         let loaded = repo.get_one("e1").unwrap().unwrap();
@@ -112,7 +112,7 @@ fn concurrent_writes_detected() {
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
+    entity.digest("Created", &"v1").unwrap();
     repo.commit(&mut entity).unwrap();
 
     // Two readers load the same version
@@ -123,8 +123,8 @@ fn concurrent_writes_detected() {
     assert_eq!(reader2.committed_version(), 1);
 
     // Both modify
-    reader1.digest("UpdatedByR1", &"r1");
-    reader2.digest("UpdatedByR2", &"r2");
+    reader1.digest("UpdatedByR1", &"r1").unwrap();
+    reader2.digest("UpdatedByR2", &"r2").unwrap();
 
     // First commit succeeds
     repo.commit(&mut reader1).unwrap();
@@ -151,9 +151,9 @@ fn partial_conflict_rolls_back_entire_commit() {
 
     // Create two entities
     let mut e1 = Entity::with_id("e1");
-    e1.digest("Created", &"v1");
+    e1.digest("Created", &"v1").unwrap();
     let mut e2 = Entity::with_id("e2");
-    e2.digest("Created", &"v1");
+    e2.digest("Created", &"v1").unwrap();
     repo.commit(&mut [&mut e1, &mut e2]).unwrap();
 
     // Load both entities at version 1
@@ -162,13 +162,13 @@ fn partial_conflict_rolls_back_entire_commit() {
 
     // Concurrently modify e2 from another "session"
     let mut e2_b = repo.get_one("e2").unwrap().unwrap();
-    e2_b.digest("Conflict", &"b");
+    e2_b.digest("Conflict", &"b").unwrap();
     repo.commit(&mut e2_b).unwrap();
 
     // Try to commit both e1_a and e2_a together
     // e1 would be fine, but e2 has a version conflict
-    e1_a.digest("Update", &"a");
-    e2_a.digest("Update", &"a");
+    e1_a.digest("Update", &"a").unwrap();
+    e2_a.digest("Update", &"a").unwrap();
     let err = repo.commit(&mut [&mut e1_a, &mut e2_a]).unwrap_err();
     match err {
         sourced_rust::RepositoryError::ConcurrentWrite { id, .. } => {
@@ -199,8 +199,8 @@ fn load_from_history_sets_committed_version() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
-    entity.digest("Updated", &"v2");
+    entity.digest("Created", &"v1").unwrap();
+    entity.digest("Updated", &"v2").unwrap();
     repo.commit(&mut entity).unwrap();
 
     let loaded = repo.get_one("e1").unwrap().unwrap();
@@ -215,7 +215,7 @@ fn commit_updates_committed_version() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
-    entity.digest("Created", &"v1");
+    entity.digest("Created", &"v1").unwrap();
     assert_eq!(entity.committed_version(), 0);
 
     repo.commit(&mut entity).unwrap();
@@ -224,7 +224,7 @@ fn commit_updates_committed_version() {
     assert!(entity.new_events().is_empty());
 
     // Add more events and commit again
-    entity.digest("Updated", &"v2");
+    entity.digest("Updated", &"v2").unwrap();
     assert_eq!(entity.new_events().len(), 1);
 
     repo.commit(&mut entity).unwrap();
@@ -238,14 +238,14 @@ fn new_events_returns_only_uncommitted() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
-    entity.digest("e1", &"a");
-    entity.digest("e2", &"b");
+    entity.digest("e1", &"a").unwrap();
+    entity.digest("e2", &"b").unwrap();
     assert_eq!(entity.new_events().len(), 2);
 
     repo.commit(&mut entity).unwrap();
     assert!(entity.new_events().is_empty());
 
-    entity.digest("e3", &"c");
+    entity.digest("e3", &"c").unwrap();
     assert_eq!(entity.new_events().len(), 1);
     assert_eq!(entity.new_events()[0].event_name, "e3");
 }

@@ -20,7 +20,7 @@ pub fn json_outbox_to<T: Serialize>(
     payload: &T,
 ) -> OutboxMessage {
     let bytes = serde_json::to_vec(payload).expect("JSON serialization should not fail");
-    OutboxMessage::create_to(id, event_type, destination, bytes)
+    OutboxMessage::create_to(id, event_type, destination, bytes).unwrap()
 }
 
 // === Saga → Order Service ===

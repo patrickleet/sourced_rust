@@ -12,7 +12,7 @@ use std::time::Duration;
 #[test]
 fn digest_and_enqueue_both_fire() {
     let mut order = Order::default();
-    order.create("order-1".into(), "alice".into());
+    order.create("order-1".into(), "alice".into()).unwrap();
 
     assert_eq!(order.entity.version(), 1);
     assert_eq!(order.emitter.queued_len(), 1);
@@ -21,9 +21,9 @@ fn digest_and_enqueue_both_fire() {
 #[test]
 fn full_lifecycle_digest_and_enqueue() {
     let mut order = Order::default();
-    order.create("order-1".into(), "alice".into());
-    order.confirm();
-    order.ship();
+    order.create("order-1".into(), "alice".into()).unwrap();
+    order.confirm().unwrap();
+    order.ship().unwrap();
 
     assert_eq!(order.entity.version(), 3);
     assert_eq!(order.emitter.queued_len(), 3);
@@ -39,8 +39,8 @@ fn replay_does_not_re_enqueue() {
     let repo = HashMapRepository::new().queued().aggregate::<Order>();
 
     let mut order = Order::default();
-    order.create("order-1".into(), "alice".into());
-    order.confirm();
+    order.create("order-1".into(), "alice".into()).unwrap();
+    order.confirm().unwrap();
     order.emitter.emit_queued();
 
     repo.commit(&mut order).unwrap();
@@ -64,7 +64,7 @@ fn emit_fires_listeners() {
         tx.send(()).unwrap();
     });
 
-    order.create("order-1".into(), "alice".into());
+    order.create("order-1".into(), "alice".into()).unwrap();
     order.emitter.emit_queued();
 
     rx.recv_timeout(Duration::from_secs(1))
@@ -78,9 +78,9 @@ fn emit_fires_listeners() {
 #[test]
 fn guards_stay_in_sync_between_digest_and_enqueue() {
     let mut order = Order::default();
-    order.create("order-1".into(), "alice".into());
-    order.confirm();
-    order.confirm(); // second confirm blocked by guard
+    order.create("order-1".into(), "alice".into()).unwrap();
+    order.confirm().unwrap();
+    order.confirm().unwrap(); // second confirm blocked by guard
 
     assert_eq!(order.entity.version(), 2);
     assert_eq!(order.emitter.queued_len(), 2);
@@ -108,7 +108,7 @@ fn typed_event_enum_exists() {
 #[test]
 fn custom_emitter_field_enqueues() {
     let mut notifier = Notifier::default();
-    notifier.send("n-1".into(), "Hello world".into());
+    notifier.send("n-1".into(), "Hello world".into()).unwrap();
 
     assert_eq!(notifier.entity.version(), 1);
     assert_eq!(notifier.my_emitter.queued_len(), 1);
@@ -125,7 +125,7 @@ fn custom_emitter_field_emits() {
             tx.send(()).unwrap();
         });
 
-    notifier.send("n-1".into(), "Hello".into());
+    notifier.send("n-1".into(), "Hello".into()).unwrap();
     notifier.my_emitter.emit_queued();
 
     rx.recv_timeout(Duration::from_secs(1))
@@ -137,7 +137,7 @@ fn custom_emitter_replay_does_not_enqueue() {
     let repo = HashMapRepository::new().queued().aggregate::<Notifier>();
 
     let mut notifier = Notifier::default();
-    notifier.send("n-1".into(), "Hello".into());
+    notifier.send("n-1".into(), "Hello".into()).unwrap();
     notifier.my_emitter.emit_queued();
     repo.commit(&mut notifier).unwrap();
 

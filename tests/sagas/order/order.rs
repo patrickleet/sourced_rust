@@ -64,7 +64,12 @@ impl Order {
     }
 
     #[digest("OrderCreated")]
-    pub fn create(&mut self, id: String, customer_id: String, items: Vec<OrderItem>) {
+    pub fn create(
+        &mut self,
+        id: String,
+        customer_id: String,
+        items: Vec<OrderItem>,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.customer_id = customer_id;
         self.total_cents = items.iter().map(|i| i.price_cents * i.quantity).sum();
@@ -73,22 +78,22 @@ impl Order {
     }
 
     #[digest("InventoryReserved", when = self.status == OrderStatus::Pending)]
-    pub fn mark_inventory_reserved(&mut self) {
+    pub fn mark_inventory_reserved(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.status = OrderStatus::InventoryReserved;
     }
 
     #[digest("PaymentProcessed", when = self.status == OrderStatus::InventoryReserved)]
-    pub fn mark_payment_processed(&mut self) {
+    pub fn mark_payment_processed(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.status = OrderStatus::PaymentProcessed;
     }
 
     #[digest("OrderCompleted", when = self.status == OrderStatus::PaymentProcessed)]
-    pub fn complete(&mut self) {
+    pub fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.status = OrderStatus::Completed;
     }
 
     #[digest("OrderCancelled", when = self.status != OrderStatus::Completed && self.status != OrderStatus::Cancelled)]
-    pub fn cancel(&mut self, reason: String) {
+    pub fn cancel(&mut self, reason: String) -> Result<(), sourced_rust::EventRecordError> {
         self.status = OrderStatus::Cancelled;
         self.failure_reason = Some(reason);
     }

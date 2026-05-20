@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::digest;
-use crate::entity::Entity;
+use crate::entity::{BitcodePayloadCodec, Entity, EventRecordError, PayloadCodec};
 
 /// Status of an outbox message.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,10 +62,14 @@ impl OutboxMessage {
     }
 
     /// Create a new outbox message with raw bytes payload.
-    pub fn create(id: impl Into<String>, event_type: impl Into<String>, payload: Vec<u8>) -> Self {
+    pub fn create(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Self, EventRecordError> {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload, None, HashMap::new());
-        message
+        message.initialize(id.into(), event_type.into(), payload, None, HashMap::new())?;
+        Ok(message)
     }
 
     /// Create a new outbox message with raw bytes payload and a destination queue.
@@ -77,7 +81,7 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         destination: impl Into<String>,
         payload: Vec<u8>,
-    ) -> Self {
+    ) -> Result<Self, EventRecordError> {
         let mut message = Self::new();
         message.initialize(
             id.into(),
@@ -85,8 +89,8 @@ impl OutboxMessage {
             payload,
             Some(destination.into()),
             HashMap::new(),
-        );
-        message
+        )?;
+        Ok(message)
     }
 
     /// Create a new outbox message with bitcode (fast binary) serialization.
@@ -94,9 +98,9 @@ impl OutboxMessage {
         id: impl Into<String>,
         event_type: impl Into<String>,
         payload: &T,
-    ) -> Result<Self, bitcode::Error> {
-        let bytes = bitcode::serialize(payload)?;
-        Ok(Self::create(id, event_type, bytes))
+    ) -> Result<Self, EventRecordError> {
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
+        Self::create(id, event_type, bytes)
     }
 
     /// Create a new outbox message with bitcode serialization and a destination queue.
@@ -108,9 +112,9 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         destination: impl Into<String>,
         payload: &T,
-    ) -> Result<Self, bitcode::Error> {
-        let bytes = bitcode::serialize(payload)?;
-        Ok(Self::create_to(id, event_type, destination, bytes))
+    ) -> Result<Self, EventRecordError> {
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
+        Self::create_to(id, event_type, destination, bytes)
     }
 
     /// Create a message with metadata and raw bytes payload.
@@ -119,10 +123,10 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: Vec<u8>,
         metadata: HashMap<String, String>,
-    ) -> Self {
+    ) -> Result<Self, EventRecordError> {
         let mut message = Self::new();
-        message.initialize(id.into(), event_type.into(), payload, None, metadata);
-        message
+        message.initialize(id.into(), event_type.into(), payload, None, metadata)?;
+        Ok(message)
     }
 
     /// Create a message with metadata and bitcode-serialized payload.
@@ -131,9 +135,9 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: &T,
         metadata: HashMap<String, String>,
-    ) -> Result<Self, bitcode::Error> {
-        let bytes = bitcode::serialize(payload)?;
-        Ok(Self::create_with_metadata(id, event_type, bytes, metadata))
+    ) -> Result<Self, EventRecordError> {
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
+        Self::create_with_metadata(id, event_type, bytes, metadata)
     }
 
     /// Create a message that inherits metadata from an entity's context.
@@ -146,14 +150,9 @@ impl OutboxMessage {
         event_type: impl Into<String>,
         payload: &T,
         entity: &Entity,
-    ) -> Result<Self, bitcode::Error> {
-        let bytes = bitcode::serialize(payload)?;
-        Ok(Self::create_with_metadata(
-            id,
-            event_type,
-            bytes,
-            entity.metadata().clone(),
-        ))
+    ) -> Result<Self, EventRecordError> {
+        let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
+        Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
     }
 
     /// Create a message from a `Snapshottable` aggregate.
@@ -171,23 +170,25 @@ impl OutboxMessage {
     pub fn domain_event<A: crate::Snapshottable>(
         event_type: impl Into<String>,
         aggregate: &A,
-    ) -> Result<Self, bitcode::Error> {
+    ) -> Result<Self, EventRecordError> {
         let event_type = event_type.into();
         let entity = aggregate.entity();
         let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
         let snapshot = aggregate.create_snapshot();
-        let bytes = bitcode::serialize(&snapshot)?;
-        Ok(Self::create_with_metadata(
-            id,
-            event_type,
-            bytes,
-            entity.metadata().clone(),
-        ))
+        let bytes = BitcodePayloadCodec::encode(&snapshot).map_err(EventRecordError::encode)?;
+        Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
     }
 
-    /// Decode the payload from bitcode binary format.
-    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, bitcode::Error> {
-        bitcode::deserialize(&self.payload)
+    /// Decode the payload from the default binary codec.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, EventRecordError> {
+        BitcodePayloadCodec::decode(&self.payload).map_err(|e| {
+            EventRecordError::decode(
+                &self.event_type,
+                BitcodePayloadCodec::NAME,
+                BitcodePayloadCodec::VERSION,
+                e,
+            )
+        })
     }
 
     // Getters
@@ -224,7 +225,7 @@ impl OutboxMessage {
         payload: Vec<u8>,
         destination: Option<String>,
         metadata: HashMap<String, String>,
-    ) {
+    ) -> Result<(), EventRecordError> {
         let normalized_id = Self::normalize_id(id);
         self.entity.set_id(&normalized_id);
         self.event_type = event_type;
@@ -233,49 +234,58 @@ impl OutboxMessage {
         self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
+        Ok(())
     }
 
     #[digest("MessageClaimed", when = self.is_pending())]
-    pub fn claim(&mut self, worker_id: String, until_secs: u64) {
+    pub fn claim(&mut self, worker_id: String, until_secs: u64) -> Result<(), EventRecordError> {
         let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
         self.status = OutboxMessageStatus::InFlight;
         self.attempts += 1;
         self.worker_id = Some(worker_id);
         self.leased_until = Some(until_time);
+        Ok(())
     }
 
     /// Claim with a Duration (convenience method that computes until_secs)
-    pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) {
+    pub fn claim_for(
+        &mut self,
+        worker_id: impl Into<String>,
+        lease: Duration,
+    ) -> Result<(), EventRecordError> {
         let now = SystemTime::now();
         let until = now + lease;
         let until_secs = until
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.claim(worker_id.into(), until_secs);
+        self.claim(worker_id.into(), until_secs)
     }
 
     #[digest("MessagePublished", when = self.is_in_flight())]
-    pub fn complete(&mut self) {
+    pub fn complete(&mut self) -> Result<(), EventRecordError> {
         self.status = OutboxMessageStatus::Published;
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
     #[digest("MessageReleased", when = self.is_in_flight())]
-    pub fn release(&mut self, error: String) {
+    pub fn release(&mut self, error: String) -> Result<(), EventRecordError> {
         self.status = OutboxMessageStatus::Pending;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
     #[digest("MessageFailed", when = self.can_fail())]
-    pub fn fail(&mut self, error: String) {
+    pub fn fail(&mut self, error: String) -> Result<(), EventRecordError> {
         self.status = OutboxMessageStatus::Failed;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
     fn can_fail(&self) -> bool {
@@ -347,13 +357,15 @@ mod tests {
     #[test]
     fn new_message_is_pending() {
         let mut message = OutboxMessage::new();
-        message.initialize(
-            "msg-1".into(),
-            "UserCreated".into(),
-            br#"{"id":"123"}"#.to_vec(),
-            None,
-            HashMap::new(),
-        );
+        message
+            .initialize(
+                "msg-1".into(),
+                "UserCreated".into(),
+                br#"{"id":"123"}"#.to_vec(),
+                None,
+                HashMap::new(),
+            )
+            .unwrap();
         assert_eq!(message.event_type, "UserCreated");
         assert!(message.is_pending());
     }
@@ -361,18 +373,22 @@ mod tests {
     #[test]
     fn claim_and_complete() {
         let mut message = OutboxMessage::new();
-        message.initialize(
-            "msg-1".into(),
-            "Event1".into(),
-            b"{}".to_vec(),
-            None,
-            HashMap::new(),
-        );
-        message.claim_for("worker-1", Duration::from_secs(60));
+        message
+            .initialize(
+                "msg-1".into(),
+                "Event1".into(),
+                b"{}".to_vec(),
+                None,
+                HashMap::new(),
+            )
+            .unwrap();
+        message
+            .claim_for("worker-1", Duration::from_secs(60))
+            .unwrap();
         assert!(message.is_in_flight());
         assert_eq!(message.attempts, 1);
 
-        message.complete();
+        message.complete().unwrap();
         assert!(message.is_published());
     }
 
@@ -383,7 +399,8 @@ mod tests {
         meta.insert("trace_id".to_string(), "t-999".to_string());
 
         let message =
-            OutboxMessage::create_with_metadata("msg-1", "UserCreated", b"{}".to_vec(), meta);
+            OutboxMessage::create_with_metadata("msg-1", "UserCreated", b"{}".to_vec(), meta)
+                .unwrap();
         assert_eq!(message.correlation_id(), Some("req-abc"));
         assert_eq!(message.meta("trace_id"), Some("t-999"));
     }
@@ -404,7 +421,7 @@ mod tests {
 
     #[test]
     fn set_metadata_individually() {
-        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec());
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
         message.set_correlation_id("req-abc");
         message.set_causation_id("evt-prior");
         message.set_meta("tenant", "acme");
@@ -417,21 +434,27 @@ mod tests {
     #[test]
     fn release_and_fail() {
         let mut message = OutboxMessage::new();
-        message.initialize(
-            "msg-1".into(),
-            "Event1".into(),
-            b"{}".to_vec(),
-            None,
-            HashMap::new(),
-        );
-        message.claim_for("worker-1", Duration::from_secs(60));
+        message
+            .initialize(
+                "msg-1".into(),
+                "Event1".into(),
+                b"{}".to_vec(),
+                None,
+                HashMap::new(),
+            )
+            .unwrap();
+        message
+            .claim_for("worker-1", Duration::from_secs(60))
+            .unwrap();
 
-        message.release("timeout".into());
+        message.release("timeout".into()).unwrap();
         assert!(message.is_pending());
         assert_eq!(message.last_error.as_deref(), Some("timeout"));
 
-        message.claim_for("worker-1", Duration::from_secs(60));
-        message.fail("max retries".into());
+        message
+            .claim_for("worker-1", Duration::from_secs(60))
+            .unwrap();
+        message.fail("max retries".into()).unwrap();
         assert!(message.is_failed());
     }
 }

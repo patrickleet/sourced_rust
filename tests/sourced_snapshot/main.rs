@@ -13,8 +13,9 @@ use sourced_rust::{
 #[test]
 fn default_snapshot_has_id_and_all_fields() {
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    todo.complete();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    todo.complete().unwrap();
 
     let snap = todo.snapshot();
     assert_eq!(snap.id, "t1");
@@ -30,7 +31,8 @@ fn default_snapshot_roundtrip_via_snapshottable() {
         .with_snapshots(1);
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
     repo.commit(&mut todo).unwrap();
 
     let loaded = repo.get("t1").unwrap().unwrap();
@@ -64,7 +66,7 @@ fn default_restore_from_snapshot() {
 #[test]
 fn custom_id_snapshot_uses_field_as_key() {
     let mut inv = Inventory::new();
-    inv.create("inv-1".into(), "WIDGET-42".into(), 100);
+    inv.create("inv-1".into(), "WIDGET-42".into(), 100).unwrap();
 
     let snap = inv.snapshot();
     // The snapshot should have `sku` as the id field, not a separate `id`
@@ -92,7 +94,7 @@ fn custom_id_roundtrip_via_repo() {
         .with_snapshots(1);
 
     let mut inv = Inventory::new();
-    inv.create("inv-1".into(), "SKU-A".into(), 10);
+    inv.create("inv-1".into(), "SKU-A".into(), 10).unwrap();
     repo.commit(&mut inv).unwrap();
 
     let loaded = repo.get("inv-1").unwrap().unwrap();
@@ -108,7 +110,7 @@ fn custom_id_roundtrip_via_repo() {
 #[test]
 fn serde_skip_fields_excluded_from_snapshot() {
     let mut order = Order::new();
-    order.place("o1".into(), "alice".into(), 999);
+    order.place("o1".into(), "alice".into(), 999).unwrap();
 
     let snap = order.snapshot();
     assert_eq!(snap.id, "o1");
@@ -120,7 +122,7 @@ fn serde_skip_fields_excluded_from_snapshot() {
 #[test]
 fn serde_skip_default_excluded_from_snapshot() {
     let mut notifier = Notifier::new();
-    notifier.send("n1".into(), "hello".into());
+    notifier.send("n1".into(), "hello".into()).unwrap();
 
     let snap = notifier.snapshot();
     assert_eq!(snap.id, "n1");
@@ -135,7 +137,7 @@ fn serde_skip_restore_roundtrip() {
         .with_snapshots(1);
 
     let mut order = Order::new();
-    order.place("o1".into(), "alice".into(), 500);
+    order.place("o1".into(), "alice".into(), 500).unwrap();
     repo.commit(&mut order).unwrap();
 
     let loaded = repo.get("o1").unwrap().unwrap();
@@ -152,9 +154,9 @@ fn serde_skip_restore_roundtrip() {
 #[test]
 fn sourced_attr_with_snapshot_derive() {
     let mut counter = Counter::new();
-    counter.initialize("c1".into());
-    counter.increment(5);
-    counter.increment(3);
+    counter.initialize("c1".into()).unwrap();
+    counter.increment(5).unwrap();
+    counter.increment(3).unwrap();
 
     let snap = counter.snapshot();
     assert_eq!(snap.id, "c1");
@@ -168,8 +170,8 @@ fn sourced_attr_snapshot_roundtrip_via_repo() {
         .with_snapshots(2);
 
     let mut counter = Counter::new();
-    counter.initialize("c1".into());
-    counter.increment(10);
+    counter.initialize("c1".into()).unwrap();
+    counter.increment(10).unwrap();
     repo.commit(&mut counter).unwrap();
 
     // At version 2, should have a snapshot
@@ -187,7 +189,7 @@ fn sourced_attr_snapshot_roundtrip_via_repo() {
 #[test]
 fn custom_entity_field_snapshot() {
     let mut widget = Widget::new();
-    widget.create("w1".into(), "Sprocket".into(), 2.5);
+    widget.create("w1".into(), "Sprocket".into(), 2.5).unwrap();
 
     let snap = widget.snapshot();
     assert_eq!(snap.id, "w1");
@@ -216,7 +218,8 @@ fn custom_entity_field_restore() {
 #[test]
 fn domain_event_derives_id_and_payload() {
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
     assert_eq!(outbox.id(), "outbox:t1:TodoInitialized:1");
@@ -234,7 +237,8 @@ fn domain_event_propagates_metadata() {
     todo.entity.set_correlation_id("req-abc");
     todo.entity.set_causation_id("cmd-create");
     todo.entity.set_meta("user_id", "u-42");
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
     assert_eq!(outbox.correlation_id(), Some("req-abc"));
@@ -247,7 +251,8 @@ fn domain_event_commits_with_outbox() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo = Todo::new();
-    todo.initialize("t1".into(), "alice".into(), "Ship it".into());
+    todo.initialize("t1".into(), "alice".into(), "Ship it".into())
+        .unwrap();
 
     let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
     repo.outbox(&mut outbox).commit(&mut todo).unwrap();

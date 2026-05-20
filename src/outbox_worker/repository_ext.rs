@@ -87,7 +87,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             let mut message = hydrate::<OutboxMessage>(entity)?;
 
             if message.is_pending() {
-                message.claim_for(worker_id, lease);
+                message.claim_for(worker_id, lease)?;
                 *events = message.entity.events().to_vec();
                 message.entity.mark_committed();
                 claimed.push(message);
@@ -119,7 +119,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             let mut message = hydrate::<OutboxMessage>(entity)?;
 
             if message.is_in_flight() {
-                message.complete();
+                message.complete()?;
                 *events = message.entity.events().to_vec();
                 message.entity.mark_committed();
             }
@@ -146,7 +146,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             let mut message = hydrate::<OutboxMessage>(entity)?;
 
             if message.is_in_flight() {
-                message.release(error.to_string());
+                message.release(error.to_string())?;
                 *events = message.entity.events().to_vec();
                 message.entity.mark_committed();
             }
@@ -172,7 +172,7 @@ impl OutboxRepositoryExt for HashMapRepository {
             entity.load_from_history(events.clone());
             let mut message = hydrate::<OutboxMessage>(entity)?;
 
-            message.fail(error.to_string());
+            message.fail(error.to_string())?;
             *events = message.entity.events().to_vec();
             message.entity.mark_committed();
         }

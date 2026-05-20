@@ -44,7 +44,7 @@ pub fn create_game<R: Commit + ReadModelStore + TransactionalCommit>(
     let (width, height, tiles, spawn_points) = GameMap::from_ascii(ascii_map);
 
     let mut map = GameMap::default();
-    map.create(game_id.into(), width, height, tiles.clone(), spawn_points);
+    map.create(game_id.into(), width, height, tiles.clone(), spawn_points)?;
 
     let board = BoardView::new(game_id, width, height, tiles);
     repo.readmodel(&board).commit(&mut map)?;
@@ -73,7 +73,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
     // Tick all bombs
     let bombs_ticked = bombs.len();
     for bomb in &mut bombs {
-        bomb.tick();
+        bomb.tick()?;
     }
 
     // Count existing tick sagas to determine saga number
@@ -87,7 +87,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
         format!("tick:{}:{}", game_id, tick_num),
         game_id.to_string(),
         bombs_ticked,
-    );
+    )?;
 
     // Count existing explosions for unique ID generation
     let all_explosions: Vec<Explosion> = find_by_prefix(repo, "explosion:", |_: &Explosion| true)?;
@@ -97,18 +97,18 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
     for explosion in &mut explosions {
         if explosion.is_fully_expanded() {
             // Fully expanded last tick → dissipate
-            saga.record_dissipation(explosion.entity.id().to_string());
-            explosion.dissipate();
+            saga.record_dissipation(explosion.entity.id().to_string())?;
+            explosion.dissipate()?;
         } else {
             // Expand to next ring
-            explosion.expand();
+            explosion.expand()?;
 
             let new_cells = explosion.newly_reached_cells().to_vec();
             let (blocks, killed, chains) =
-                apply_damage(&new_cells, &mut map, &mut players, &mut bombs, None);
+                apply_damage(&new_cells, &mut map, &mut players, &mut bombs, None)?;
 
             if !blocks.is_empty() || !killed.is_empty() || !chains.is_empty() {
-                saga.record_damage(blocks, killed, chains);
+                saga.record_damage(blocks, killed, chains)?;
             }
         }
     }
@@ -123,7 +123,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
             .collect();
 
         for idx in ready {
-            bombs[idx].explode();
+            bombs[idx].explode()?;
             any_exploded = true;
 
             let rings = calculate_blast_rings(&bombs[idx], &map);
@@ -142,21 +142,21 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
                 (bombs[idx].x, bombs[idx].y),
                 bombs[idx].blast_radius,
                 rings,
-            );
+            )?;
 
             // Apply center-cell damage (ring 0)
             let center_cells = explosion.newly_reached_cells().to_vec();
             let (blocks, killed, chains) =
-                apply_damage(&center_cells, &mut map, &mut players, &mut bombs, Some(idx));
+                apply_damage(&center_cells, &mut map, &mut players, &mut bombs, Some(idx))?;
 
             saga.record_detonation(Detonation {
                 bomb_id,
                 owner: bomb_owner,
                 explosion_id,
-            });
+            })?;
 
             if !blocks.is_empty() || !killed.is_empty() || !chains.is_empty() {
-                saga.record_damage(blocks, killed, chains);
+                saga.record_damage(blocks, killed, chains)?;
             }
 
             explosions.push(explosion);
@@ -172,7 +172,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
                 .iter_mut()
                 .find(|p| p.entity.id() == format!("player:{}", bomb.owner_id))
             {
-                player.return_bomb();
+                player.return_bomb()?;
             }
         }
     }
@@ -186,7 +186,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
         None
     };
 
-    saga.complete(game_over, winner);
+    saga.complete(game_over, winner)?;
 
     // Build board view
     let player_refs: Vec<&Player> = players.iter().collect();
@@ -208,7 +208,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
                 "bomb_owner": det.map(|d| d.owner.as_str()).unwrap_or("unknown"),
             }))
             .unwrap(),
-        );
+        )?;
         builder = builder.outbox(outbox);
     }
 
@@ -238,7 +238,7 @@ fn apply_damage(
     players: &mut [Player],
     bombs: &mut [Bomb],
     skip_bomb_idx: Option<usize>,
-) -> (Vec<(i32, i32)>, Vec<String>, Vec<String>) {
+) -> Result<(Vec<(i32, i32)>, Vec<String>, Vec<String>), GameError> {
     let mut blocks_destroyed = Vec::new();
     let mut players_killed = Vec::new();
     let mut chain_detonations = Vec::new();
@@ -246,14 +246,14 @@ fn apply_damage(
     for &(cx, cy) in cells {
         // Destroy blocks
         if map.is_in_bounds(cx, cy) && *map.tile_at(cx, cy) == Tile::Block {
-            map.destroy_block(cx, cy);
+            map.destroy_block(cx, cy)?;
             blocks_destroyed.push((cx, cy));
         }
 
         // Kill players
         for player in players.iter_mut() {
             if player.alive && player.x == cx && player.y == cy {
-                player.kill();
+                player.kill()?;
                 players_killed.push(player.entity.id().to_string());
             }
         }
@@ -270,7 +270,7 @@ fn apply_damage(
         }
     }
 
-    (blocks_destroyed, players_killed, chain_detonations)
+    Ok((blocks_destroyed, players_killed, chain_detonations))
 }
 
 // ── Player commands ──
@@ -289,7 +289,7 @@ pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + source
     let (sx, sy) = map.spawn_points[spawn_index];
 
     let mut player = Player::default();
-    player.join(format!("player:{}", player_id), name.into(), sx, sy);
+    player.join(format!("player:{}", player_id), name.into(), sx, sy)?;
 
     // Find all players for board view
     let mut all_players: Vec<Player> = find_by_prefix(repo, "player:", |_: &Player| true)?;
@@ -336,12 +336,12 @@ pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sour
         return Err(GameError::NotPassable(nx, ny));
     }
 
-    player.move_to(nx, ny);
+    player.move_to(nx, ny)?;
 
     // Check for power-up collection
-    let power_up = map.collect_power_up(nx, ny);
+    let power_up = map.collect_power_up(nx, ny)?;
     if let Some(pu) = power_up {
-        player.apply_power_up(pu);
+        player.apply_power_up(pu)?;
     }
 
     // Build board view
@@ -390,7 +390,7 @@ pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourc
         find_by_prefix(repo, "bomb:", |b: &Bomb| b.owner_id == player_id)?;
     let bomb_num = existing_bombs.len() + 1;
 
-    player.place_bomb();
+    player.place_bomb()?;
 
     let mut bomb = Bomb::default();
     bomb.create(
@@ -399,7 +399,7 @@ pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourc
         player.x,
         player.y,
         player.blast_radius,
-    );
+    )?;
 
     // Build board view
     let all_players: Vec<Player> = find_by_prefix(repo, "player:", |p: &Player| {

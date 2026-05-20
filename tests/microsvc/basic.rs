@@ -13,7 +13,7 @@ fn full_lifecycle() {
             let input = ctx.input::<CreateCounter>()?;
             let counter_repo = ctx.repo().clone().aggregate::<Counter>();
             let mut counter = Counter::default();
-            counter.create(input.id.clone());
+            counter.create(input.id.clone()).unwrap();
             counter_repo.commit(&mut counter)?;
             Ok(json!({ "id": input.id }))
         })
@@ -23,7 +23,7 @@ fn full_lifecycle() {
             let mut counter: Counter = counter_repo
                 .get(&input.id)?
                 .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-            counter.increment(input.amount);
+            counter.increment(input.amount).unwrap();
             counter_repo.commit(&mut counter)?;
             Ok(json!({ "value": counter.value }))
         })
@@ -33,7 +33,7 @@ fn full_lifecycle() {
             let mut counter: Counter = counter_repo
                 .get(&input.id)?
                 .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-            counter.decrement(input.amount);
+            counter.decrement(input.amount).unwrap();
             counter_repo.commit(&mut counter)?;
             Ok(json!({ "value": counter.value }))
         });

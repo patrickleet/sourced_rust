@@ -4,7 +4,8 @@ use aggregate::{Todo, TodoEvent};
 use serde::ser::Error as _;
 use serde::Serialize;
 use sourced_rust::{
-    Aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, PayloadError, Queueable,
+    Aggregate, AggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
+    Queueable,
 };
 
 #[derive(Clone)]
@@ -26,17 +27,15 @@ struct SafeRecorder {
 }
 
 impl SafeRecorder {
-    #[sourced_rust::try_digest("Recorded")]
-    fn record(&mut self, _payload: FailingSerialize) -> Result<(), PayloadError> {
+    #[sourced_rust::digest("Recorded")]
+    fn record(&mut self, _payload: FailingSerialize) -> Result<(), EventRecordError> {
         self.applied = true;
-        Ok(())
     }
 
-    #[sourced_rust::try_digest("Recorded", version = 2)]
-    fn record_ok(&mut self, payload: String) -> Result<(), PayloadError> {
+    #[sourced_rust::digest("Recorded", version = 2)]
+    fn record_ok(&mut self, payload: String) -> Result<(), EventRecordError> {
         self.applied = true;
         assert_eq!(payload, "ok");
-        Ok(())
     }
 }
 
@@ -56,7 +55,7 @@ fn enum_variants_exist_and_compile() {
 }
 
 #[test]
-fn try_digest_macro_returns_payload_errors_without_running_body() {
+fn digest_macro_returns_payload_errors_without_running_body() {
     let mut recorder = SafeRecorder::default();
 
     let err = recorder.record(FailingSerialize).unwrap_err();
@@ -67,7 +66,7 @@ fn try_digest_macro_returns_payload_errors_without_running_body() {
 }
 
 #[test]
-fn try_digest_macro_records_successful_versioned_events() {
+fn digest_macro_records_successful_versioned_events() {
     let mut recorder = SafeRecorder::default();
 
     recorder.record_ok("ok".to_string()).unwrap();
@@ -131,8 +130,9 @@ fn aggregate_hydration_roundtrip() {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo = Todo::default();
-    todo.initialize("t1".into(), "alice".into(), "Buy milk".into());
-    todo.complete();
+    todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
+        .unwrap();
+    todo.complete().unwrap();
 
     repo.commit(&mut todo).unwrap();
 
@@ -146,10 +146,11 @@ fn aggregate_hydration_roundtrip() {
 #[test]
 fn guard_condition_works() {
     let mut todo = Todo::default();
-    todo.initialize("t1".into(), "alice".into(), "Test".into());
-    todo.complete();
+    todo.initialize("t1".into(), "alice".into(), "Test".into())
+        .unwrap();
+    todo.complete().unwrap();
     // Second complete should be no-op (guard: !self.completed)
-    todo.complete();
+    todo.complete().unwrap();
 
     assert_eq!(todo.entity.version(), 2); // only Initialized + Completed
 }
@@ -157,7 +158,8 @@ fn guard_condition_works() {
 #[test]
 fn non_event_methods_pass_through() {
     let mut todo = Todo::default();
-    todo.initialize("t1".into(), "alice".into(), "Test".into());
+    todo.initialize("t1".into(), "alice".into(), "Test".into())
+        .unwrap();
     let snap = todo.snapshot();
     assert_eq!(snap.id, "t1");
     assert_eq!(snap.user_id, "alice");

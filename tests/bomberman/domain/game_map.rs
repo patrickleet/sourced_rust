@@ -21,7 +21,7 @@ impl GameMap {
         height: usize,
         tiles: Vec<Vec<Tile>>,
         spawn_points: Vec<(i32, i32)>,
-    ) {
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.width = width;
         self.height = height;
@@ -31,7 +31,7 @@ impl GameMap {
     }
 
     #[digest("BlockDestroyed", when = self.tile_at(x, y) == &Tile::Block)]
-    pub fn destroy_block(&mut self, x: i32, y: i32) {
+    pub fn destroy_block(&mut self, x: i32, y: i32) -> Result<(), sourced_rust::EventRecordError> {
         self.tiles[y as usize][x as usize] = Tile::Floor;
         // 50% chance to reveal a power-up based on position parity
         if (x + y) % 2 == 0 {
@@ -41,17 +41,21 @@ impl GameMap {
         }
     }
 
-    #[digest("PowerUpCollected")]
-    pub fn collect_power_up(&mut self, x: i32, y: i32) -> Option<PowerUp> {
+    pub fn collect_power_up(
+        &mut self,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<PowerUp>, sourced_rust::EventRecordError> {
+        self.entity.digest("PowerUpCollected", &(x, y))?;
         if let Some(idx) = self
             .power_ups
             .iter()
             .position(|((px, py), _)| *px == x && *py == y)
         {
             let (_, power_up) = self.power_ups.remove(idx);
-            Some(power_up)
+            Ok(Some(power_up))
         } else {
-            None
+            Ok(None)
         }
     }
 

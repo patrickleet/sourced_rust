@@ -21,8 +21,10 @@ fn readmodel_commits_with_aggregate() {
 
     // Create and modify aggregate
     let mut counter = Counter::new();
-    counter.create("counter-1".into(), "Page Views".into(), "user-1".into());
-    counter.increment(5);
+    counter
+        .create("counter-1".into(), "Page Views".into(), "user-1".into())
+        .unwrap();
+    counter.increment(5).unwrap();
 
     // Create read model from aggregate state
     let mut view = CounterView::new("counter-1", "Page Views", "user-1");
@@ -59,8 +61,10 @@ fn multiple_readmodels_commit_together() {
 
     // Create aggregate
     let mut counter = Counter::new();
-    counter.create("counter-2".into(), "Clicks".into(), "user-abc".into());
-    counter.increment(10);
+    counter
+        .create("counter-2".into(), "Clicks".into(), "user-abc".into())
+        .unwrap();
+    counter.increment(10).unwrap();
 
     // Create counter view read model
     let mut counter_view = CounterView::new("counter-2", "Clicks", "user-abc");
@@ -104,7 +108,9 @@ fn readmodel_update_with_outbox() {
 
     // Initial creation
     let mut counter = Counter::new();
-    counter.create("counter-3".into(), "Downloads".into(), "user-xyz".into());
+    counter
+        .create("counter-3".into(), "Downloads".into(), "user-xyz".into())
+        .unwrap();
 
     let view = CounterView::new("counter-3", "Downloads", "user-xyz");
 
@@ -116,7 +122,7 @@ fn readmodel_update_with_outbox() {
         .unwrap();
 
     // Now increment and update
-    counter.increment(3);
+    counter.increment(3).unwrap();
 
     let mut loaded_view = repo
         .read_models::<CounterView>()
@@ -149,7 +155,9 @@ fn readmodel_load_and_update() {
 
     // Initial commit
     let mut counter = Counter::new();
-    counter.create("counter-4".into(), "Likes".into(), "user-456".into());
+    counter
+        .create("counter-4".into(), "Likes".into(), "user-456".into())
+        .unwrap();
 
     let view = CounterView::new("counter-4", "Likes", "user-456");
 
@@ -170,7 +178,7 @@ fn readmodel_load_and_update() {
     assert_eq!(loaded.version, 1);
 
     // Modify aggregate and update read model
-    counter.increment(7);
+    counter.increment(7).unwrap();
     let mut updated_view = loaded.data;
     updated_view.set_value(counter.value());
 
@@ -236,8 +244,10 @@ fn outbox_then_readmodel_order() {
     let repo = HashMapRepository::new();
 
     let mut counter = Counter::new();
-    counter.create("counter-5".into(), "Shares".into(), "user-999".into());
-    counter.increment(42);
+    counter
+        .create("counter-5".into(), "Shares".into(), "user-999".into())
+        .unwrap();
+    counter.increment(42).unwrap();
 
     let mut view = CounterView::new("counter-5", "Shares", "user-999");
     view.set_value(counter.value());
@@ -310,8 +320,10 @@ fn queued_readmodel_get_locks_commit_unlocks() {
 
     // Create aggregate and seed read model
     let mut counter = Counter::new();
-    counter.create("q-1".into(), "Queued".into(), "user-q".into());
-    counter.increment(5);
+    counter
+        .create("q-1".into(), "Queued".into(), "user-q".into())
+        .unwrap();
+    counter.increment(5).unwrap();
 
     let mut view = CounterView::new("q-1", "Queued", "user-q");
     view.set_value(counter.value());
@@ -327,7 +339,7 @@ fn queued_readmodel_get_locks_commit_unlocks() {
     assert_eq!(loaded.data.value, 5);
 
     // Modify and commit — releases the lock
-    counter.increment(3);
+    counter.increment(3).unwrap();
     let mut updated = loaded.data;
     updated.set_value(counter.value());
 
@@ -504,8 +516,10 @@ fn queued_readmodel_full_lifecycle_with_aggregate_and_outbox() {
 
     // ── Step 1: Create new aggregate, read model, and outbox ──
     let mut counter = Counter::new();
-    counter.create("life-1".into(), "Lifecycle".into(), "user-life".into());
-    counter.increment(10);
+    counter
+        .create("life-1".into(), "Lifecycle".into(), "user-life".into())
+        .unwrap();
+    counter.increment(10).unwrap();
 
     let mut view = CounterView::new("life-1", "Lifecycle", "user-life");
     view.set_value(counter.value());
@@ -578,7 +592,7 @@ fn queued_readmodel_full_lifecycle_with_aggregate_and_outbox() {
     );
 
     // ── Step 5: Update the aggregate and read models ──
-    counter.increment(5);
+    counter.increment(5).unwrap();
 
     let mut updated_view = loaded_view.data;
     updated_view.set_value(counter.value());

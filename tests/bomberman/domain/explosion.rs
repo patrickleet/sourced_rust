@@ -22,7 +22,7 @@ impl Explosion {
         center: (i32, i32),
         blast_radius: u8,
         rings: Vec<Vec<(i32, i32)>>,
-    ) {
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.bomb_id = bomb_id;
         self.owner = owner;
@@ -34,12 +34,12 @@ impl Explosion {
     }
 
     #[digest("ExplosionExpanded", when = self.active && !self.is_fully_expanded())]
-    pub fn expand(&mut self) {
+    pub fn expand(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.current_ring += 1;
     }
 
     #[digest("ExplosionDissipated", when = self.active)]
-    pub fn dissipate(&mut self) {
+    pub fn dissipate(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.active = false;
     }
 

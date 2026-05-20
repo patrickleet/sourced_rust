@@ -47,21 +47,32 @@ impl Inventory {
     }
 
     #[digest("InventoryInitialized")]
-    pub fn initialize(&mut self, sku: String, initial_stock: u32) {
+    pub fn initialize(
+        &mut self,
+        sku: String,
+        initial_stock: u32,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&sku);
         self.sku = sku;
         self.available = initial_stock;
     }
 
     #[digest("StockReserved", when = self.can_reserve(quantity))]
-    pub fn reserve(&mut self, order_id: String, quantity: u32) {
+    pub fn reserve(
+        &mut self,
+        order_id: String,
+        quantity: u32,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.available -= quantity;
         self.reserved += quantity;
         self.reservations.insert(order_id, quantity);
     }
 
     #[digest("ReservationReleased", when = self.reservations.contains_key(&order_id))]
-    pub fn release_reservation(&mut self, order_id: String) {
+    pub fn release_reservation(
+        &mut self,
+        order_id: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.available += quantity;
             self.reserved -= quantity;
@@ -69,7 +80,10 @@ impl Inventory {
     }
 
     #[digest("ReservationCommitted", when = self.reservations.contains_key(&order_id))]
-    pub fn commit_reservation(&mut self, order_id: String) {
+    pub fn commit_reservation(
+        &mut self,
+        order_id: String,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.reserved -= quantity;
             // Stock is now sold, no longer available or reserved

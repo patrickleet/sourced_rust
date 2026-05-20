@@ -13,7 +13,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         .repo()
         .get(&input.saga_id)?
         .ok_or_else(|| HandlerError::NotFound(input.saga_id.clone()))?;
-    saga.payment_succeeded();
+    saga.payment_succeeded().unwrap();
 
     let mut msg = json_outbox_to(
         &format!("{}-complete-order", input.saga_id),

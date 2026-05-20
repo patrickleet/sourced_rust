@@ -28,7 +28,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         .get(&input.id)?
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
 
-    counter.increment(input.amount);
+    counter.increment(input.amount).unwrap();
 
     let mut message = OutboxMessage::domain_event("CounterIncremented", &counter)
         .map_err(|e| HandlerError::Other(Box::new(e)))?;

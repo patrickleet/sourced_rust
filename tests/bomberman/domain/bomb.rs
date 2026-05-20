@@ -13,7 +13,14 @@ pub struct Bomb {
 
 impl Bomb {
     #[digest("BombCreated")]
-    pub fn create(&mut self, id: String, owner_id: String, x: i32, y: i32, blast_radius: u8) {
+    pub fn create(
+        &mut self,
+        id: String,
+        owner_id: String,
+        x: i32,
+        y: i32,
+        blast_radius: u8,
+    ) -> Result<(), sourced_rust::EventRecordError> {
         self.entity.set_id(&id);
         self.owner_id = owner_id;
         self.x = x;
@@ -24,12 +31,12 @@ impl Bomb {
     }
 
     #[digest("BombTicked", when = !self.exploded && self.ticks_remaining > 0)]
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.ticks_remaining -= 1;
     }
 
     #[digest("BombExploded", when = !self.exploded)]
-    pub fn explode(&mut self) {
+    pub fn explode(&mut self) -> Result<(), sourced_rust::EventRecordError> {
         self.exploded = true;
     }
 

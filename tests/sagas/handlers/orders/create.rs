@@ -10,7 +10,9 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<CreateOrderMsg>()?;
 
     let mut order = Order::new();
-    order.create(input.order_id.clone(), input.customer_id, input.items);
+    order
+        .create(input.order_id.clone(), input.customer_id, input.items)
+        .unwrap();
 
     let mut msg = json_outbox_to(
         &format!("{}-order-created", input.order_id),
