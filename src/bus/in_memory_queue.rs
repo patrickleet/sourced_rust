@@ -7,7 +7,7 @@
 //! - Development and prototyping
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use super::{Event, Listener, PublishError, Publisher, Sender, Subscribable, Subscriber};
@@ -19,6 +19,52 @@ struct PointToPointQueue {
     messages: Vec<Event>,
     /// Shared position - all listeners compete for messages
     position: usize,
+}
+
+fn lock_poisoned(lock_name: &str) -> PublishError {
+    PublishError::ConnectionFailed(format!("in-memory queue {lock_name} lock poisoned"))
+}
+
+fn lock_mutex<'a, T>(
+    mutex: &'a Mutex<T>,
+    lock_name: &str,
+) -> Result<MutexGuard<'a, T>, PublishError> {
+    mutex.lock().map_err(|_| lock_poisoned(lock_name))
+}
+
+fn read_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    lock_name: &str,
+) -> Result<RwLockReadGuard<'a, T>, PublishError> {
+    lock.read().map_err(|_| lock_poisoned(lock_name))
+}
+
+fn write_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    lock_name: &str,
+) -> Result<RwLockWriteGuard<'a, T>, PublishError> {
+    lock.write().map_err(|_| lock_poisoned(lock_name))
+}
+
+fn recover_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn recover_read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn recover_write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 /// In-memory queue for testing and single-process scenarios.
@@ -110,14 +156,12 @@ impl InMemoryQueue {
 
     /// Get all events in the log.
     pub fn events(&self) -> Vec<Event> {
-        self.log.read().unwrap().clone()
+        recover_read(&self.log).clone()
     }
 
     /// Get all event types in order.
     pub fn event_types(&self) -> Vec<String> {
-        self.log
-            .read()
-            .unwrap()
+        recover_read(&self.log)
             .iter()
             .map(|e| e.event_type.clone())
             .collect()
@@ -125,19 +169,17 @@ impl InMemoryQueue {
 
     /// Get the total number of events in the log.
     pub fn len(&self) -> usize {
-        self.log.read().unwrap().len()
+        recover_read(&self.log).len()
     }
 
     /// Check if the log is empty.
     pub fn is_empty(&self) -> bool {
-        self.log.read().unwrap().is_empty()
+        recover_read(&self.log).is_empty()
     }
 
     /// Find an event by type.
     pub fn find_by_type(&self, event_type: &str) -> Option<Event> {
-        self.log
-            .read()
-            .unwrap()
+        recover_read(&self.log)
             .iter()
             .find(|e| e.event_type == event_type)
             .cloned()
@@ -145,9 +187,7 @@ impl InMemoryQueue {
 
     /// Find all events matching a type.
     pub fn find_all_by_type(&self, event_type: &str) -> Vec<Event> {
-        self.log
-            .read()
-            .unwrap()
+        recover_read(&self.log)
             .iter()
             .filter(|e| e.event_type == event_type)
             .cloned()
@@ -156,24 +196,24 @@ impl InMemoryQueue {
 
     /// Reset the subscriber position to the beginning.
     pub fn reset_position(&self) {
-        *self.position.lock().unwrap() = 0;
+        *recover_mutex(&self.position) = 0;
     }
 
     /// Get the current subscriber position.
     pub fn current_position(&self) -> usize {
-        *self.position.lock().unwrap()
+        *recover_mutex(&self.position)
     }
 
     /// Get acknowledged event IDs.
     pub fn acknowledged(&self) -> Vec<String> {
-        self.acked.lock().unwrap().clone()
+        recover_mutex(&self.acked).clone()
     }
 
     /// Clear all events from the log (useful for test cleanup).
     pub fn clear(&self) {
-        self.log.write().unwrap().clear();
-        *self.position.lock().unwrap() = 0;
-        self.acked.lock().unwrap().clear();
+        recover_write(&self.log).clear();
+        *recover_mutex(&self.position) = 0;
+        recover_mutex(&self.acked).clear();
     }
 
     /// Subscribe to specific event types, returning a filtered receiver.
@@ -277,12 +317,12 @@ impl<S: Subscriber> EventReceiver<S> {
 
 impl Publisher for InMemoryQueue {
     fn publish(&self, event: Event) -> Result<(), PublishError> {
-        self.log.write().unwrap().push(event);
+        write_lock(&self.log, "event log")?.push(event);
         Ok(())
     }
 
     fn publish_batch(&self, events: Vec<Event>) -> Result<(), PublishError> {
-        let mut log = self.log.write().unwrap();
+        let mut log = write_lock(&self.log, "event log")?;
         log.extend(events);
         Ok(())
     }
@@ -294,8 +334,8 @@ impl Subscriber for InMemoryQueue {
 
         loop {
             {
-                let log = self.log.read().unwrap();
-                let mut pos = self.position.lock().unwrap();
+                let log = read_lock(&self.log, "event log")?;
+                let mut pos = lock_mutex(&self.position, "subscriber position")?;
 
                 if *pos < log.len() {
                     let event = log[*pos].clone();
@@ -314,7 +354,7 @@ impl Subscriber for InMemoryQueue {
     }
 
     fn ack(&self, event_id: &str) -> Result<(), PublishError> {
-        self.acked.lock().unwrap().push(event_id.to_string());
+        lock_mutex(&self.acked, "acknowledgement list")?.push(event_id.to_string());
         Ok(())
     }
 
@@ -337,7 +377,7 @@ impl Subscribable for InMemoryQueue {
 
 impl Sender for InMemoryQueue {
     fn send(&self, queue: &str, event: Event) -> Result<(), PublishError> {
-        let mut queues = self.queues.write().unwrap();
+        let mut queues = write_lock(&self.queues, "point-to-point queues")?;
         queues
             .entry(queue.to_string())
             .or_default()
@@ -353,7 +393,7 @@ impl Listener for InMemoryQueue {
 
         loop {
             {
-                let mut queues = self.queues.write().unwrap();
+                let mut queues = write_lock(&self.queues, "point-to-point queues")?;
                 if let Some(q) = queues.get_mut(queue) {
                     if q.position < q.messages.len() {
                         let event = q.messages[q.position].clone();
@@ -375,6 +415,27 @@ impl Listener for InMemoryQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn poison_lock<F>(poison: F)
+    where
+        F: FnOnce(),
+    {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(poison)).is_err());
+    }
+
+    fn assert_lock_poisoned<T: std::fmt::Debug>(result: Result<T, PublishError>, lock_name: &str) {
+        let err = result.expect_err("poisoned lock should return an error");
+        match err {
+            PublishError::ConnectionFailed(msg) => {
+                assert!(msg.contains(lock_name), "unexpected lock error: {msg}");
+                assert!(
+                    msg.contains("lock poisoned"),
+                    "unexpected lock error: {msg}"
+                );
+            }
+            other => panic!("unexpected error for poisoned lock: {other:?}"),
+        }
+    }
 
     #[test]
     fn publish_and_poll() {
@@ -439,6 +500,59 @@ mod tests {
 
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.event_types(), vec!["Event1", "Event2", "Event3"]);
+    }
+
+    #[test]
+    fn publish_returns_error_when_log_lock_is_poisoned() {
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.log.write().expect("lock event log");
+            panic!("poison event log");
+        });
+
+        assert_lock_poisoned(
+            queue.publish(Event::with_string_payload("evt-1", "Event1", "{}")),
+            "event log",
+        );
+    }
+
+    #[test]
+    fn poll_returns_error_when_position_lock_is_poisoned() {
+        let queue = InMemoryQueue::new();
+        queue
+            .publish(Event::with_string_payload("evt-1", "Event1", "{}"))
+            .unwrap();
+        poison_lock(|| {
+            let _guard = queue.position.lock().expect("lock subscriber position");
+            panic!("poison subscriber position");
+        });
+
+        assert_lock_poisoned(queue.poll(0), "subscriber position");
+    }
+
+    #[test]
+    fn ack_returns_error_when_ack_lock_is_poisoned() {
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.acked.lock().expect("lock acknowledgement list");
+            panic!("poison acknowledgement list");
+        });
+
+        assert_lock_poisoned(queue.ack("evt-1"), "acknowledgement list");
+    }
+
+    #[test]
+    fn send_returns_error_when_queue_lock_is_poisoned() {
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.queues.write().expect("lock point-to-point queues");
+            panic!("poison point-to-point queues");
+        });
+
+        assert_lock_poisoned(
+            queue.send("tasks", Event::with_string_payload("evt-1", "Task", "{}")),
+            "point-to-point queues",
+        );
     }
 
     #[test]
