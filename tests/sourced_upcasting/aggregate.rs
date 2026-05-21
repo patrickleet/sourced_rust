@@ -1,5 +1,9 @@
 use sourced_rust::{sourced, Entity};
 
+pub type InitializedV1 = (String, String, String);
+pub type InitializedV2 = (String, String, String, u8);
+pub type InitializedV3 = (String, String, String, u8, String);
+
 // =============================================================================
 // V1 aggregate: original schema
 // =============================================================================
@@ -31,9 +35,8 @@ impl TodoV1 {
 // V2 aggregate: added priority field + upcaster
 // =============================================================================
 
-pub fn upcast_initialized_v1_v2(payload: &[u8]) -> Vec<u8> {
-    let (id, user_id, task): (String, String, String) = bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, user_id, task, 0u8)).unwrap()
+pub fn upcast_initialized_v1_v2((id, user_id, task): InitializedV1) -> InitializedV2 {
+    (id, user_id, task, 0)
 }
 
 #[derive(Default)]
@@ -46,9 +49,13 @@ pub struct TodoV2 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
+    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, Self::upcast_initialized_v1_v2),
 ))]
 impl TodoV2 {
+    pub fn upcast_initialized_v1_v2(payload: InitializedV1) -> InitializedV2 {
+        upcast_initialized_v1_v2(payload)
+    }
+
     #[event("Initialized", version = 2)]
     pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
@@ -67,10 +74,8 @@ impl TodoV2 {
 // V3 aggregate: added due_date field + chained upcasters
 // =============================================================================
 
-pub fn upcast_initialized_v2_v3(payload: &[u8]) -> Vec<u8> {
-    let (id, user_id, task, priority): (String, String, String, u8) =
-        bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, user_id, task, priority, String::new())).unwrap()
+pub fn upcast_initialized_v2_v3((id, user_id, task, priority): InitializedV2) -> InitializedV3 {
+    (id, user_id, task, priority, String::new())
 }
 
 #[derive(Default)]
@@ -84,8 +89,8 @@ pub struct TodoV3 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
-    ("Initialized", 2 => 3, upcast_initialized_v2_v3),
+    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("Initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
 ))]
 impl TodoV3 {
     #[event("Initialized", version = 3)]

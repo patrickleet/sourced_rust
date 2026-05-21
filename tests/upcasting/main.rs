@@ -2,12 +2,13 @@ mod aggregate;
 
 use aggregate::{TodoV1, TodoV2, TodoV3};
 use sourced_rust::{
-    hydrate, upcast_events, Aggregate, AggregateBuilder, Commit, Entity, EventRecord,
-    EventUpcaster, HashMapRepository, RepositoryError, SnapshotStore,
+    hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AggregateBuilder, Commit, Entity,
+    EventRecord, EventUpcaster, HashMapRepository, RepositoryError, SnapshotRecord, SnapshotStore,
+    UpcastError,
 };
 
-fn identity_payload(payload: &[u8]) -> Vec<u8> {
-    payload.to_vec()
+fn identity_payload(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
+    Ok(event.payload.clone())
 }
 
 #[derive(Debug, Default)]
@@ -286,14 +287,7 @@ fn upcast_events_standalone() {
         bitcode::serialize(&("id1".to_string(), "user1".to_string(), "task1".to_string())).unwrap();
     let event = EventRecord::new("Initialized", payload_v1, 1);
 
-    let upcasters: &[EventUpcaster] = &[EventUpcaster {
-        event_type: "Initialized",
-        from_version: 1,
-        to_version: 2,
-        transform: aggregate::upcast_initialized_v1_v2,
-    }];
-
-    let result = upcast_events(vec![event], upcasters).unwrap();
+    let result = upcast_events(vec![event], TodoV2::upcasters()).unwrap();
     assert_eq!(result[0].event_version, 2);
 
     let (id, user, task, priority): (String, String, String, u8) =
@@ -316,6 +310,20 @@ fn hydrate_rejects_invalid_same_version_upcaster() {
             assert!(message.contains("does not advance version 1"));
         }
         other => panic!("expected replay error, got {other:?}"),
+    }
+}
+
+#[test]
+fn hydrate_returns_replay_error_when_typed_upcaster_decode_fails() {
+    let mut entity = Entity::new();
+    entity.load_from_history(vec![EventRecord::new("Initialized", vec![0xff], 1)]);
+
+    match hydrate::<TodoV2>(entity) {
+        Err(RepositoryError::Replay(message)) => {
+            assert!(message.contains("failed to upcast event Initialized"));
+        }
+        Err(other) => panic!("expected replay error, got {other:?}"),
+        Ok(_) => panic!("expected replay error"),
     }
 }
 
@@ -369,4 +377,33 @@ fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     assert_eq!(loaded.task, "Sweep");
     assert_eq!(loaded.priority, 0); // upcasted default
     assert!(loaded.completed);
+}
+
+#[test]
+fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode_fails() {
+    let snapshot = SnapshotRecord {
+        aggregate_id: "t1".to_string(),
+        version: 1,
+        data: bitcode::serialize(&aggregate::TodoV2Snapshot {
+            id: "t1".to_string(),
+            user_id: "iris".to_string(),
+            task: "Plan".to_string(),
+            priority: 1,
+            completed: false,
+        })
+        .unwrap(),
+    };
+    let mut invalid_event = EventRecord::new("Initialized", vec![0xff], 2);
+    invalid_event.sequence = 2;
+
+    let mut entity = Entity::new();
+    entity.load_from_history(vec![invalid_event]);
+
+    match hydrate_from_snapshot::<TodoV2>(entity, snapshot) {
+        Err(RepositoryError::Replay(message)) => {
+            assert!(message.contains("failed to upcast event Initialized"));
+        }
+        Err(other) => panic!("expected replay error, got {other:?}"),
+        Ok(_) => panic!("expected replay error"),
+    }
 }
