@@ -139,6 +139,23 @@ mod tests {
     }
 
     #[test]
+    fn expand_read_model_accepts_explicit_id_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                id: String,
+                #[readmodel(id)]
+                counter_id: String,
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("& self . counter_id"));
+        assert!(!expanded.contains("& self . id"));
+    }
+
+    #[test]
     fn expand_read_model_rejects_missing_id_field() {
         let input: DeriveInput = syn::parse_quote! {
             struct CounterView {
