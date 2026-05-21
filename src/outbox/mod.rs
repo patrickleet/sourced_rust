@@ -17,6 +17,11 @@
 //! 1. **Commit phase** (this module) - Atomically commit aggregate event records + outbox message
 //! 2. **Worker phase** (see `outbox_worker` module) - Drain outbox and publish messages to external systems
 //!
+//! Outbox messages are explicit publication records. Aggregate event records are
+//! replayable write-side history; they do not automatically become domain or
+//! integration events until application code creates an `OutboxMessage` for that
+//! publication.
+//!
 //! ## Example
 //!
 //! ```ignore

@@ -25,7 +25,7 @@
 //! let mut worker = OutboxWorker::new(LogPublisher::default());
 //! for msg in messages {
 //!     worker.process_message(&mut msg);
-//!     repo.complete_outbox_message(msg.id())?;
+//!     repo.complete_outbox_message_for_worker(msg.id(), "worker-1")?;
 //! }
 //! ```
 
@@ -41,7 +41,7 @@ pub use publisher::LocalEmitterPublisher;
 pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 
 // Repository helpers
-pub use repository_ext::OutboxRepositoryExt;
+pub use repository_ext::{OutboxPublishFailureAction, OutboxRepositoryExt};
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
