@@ -284,8 +284,7 @@ fn bob_move_to_position<
     R: sourced_rust::Commit
         + sourced_rust::read_model::ReadModelStore
         + sourced_rust::TransactionalCommit
-        + sourced_rust::Get
-        + sourced_rust::Find,
+        + sourced_rust::Get,
 >(
     game: &Game<'_, R>,
     id: &str,
