@@ -192,7 +192,7 @@ fn with_queued_repo() {
 }
 
 #[test]
-fn find_with_snapshots() {
+fn get_all_with_snapshots() {
     let repo = HashMapRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
@@ -212,14 +212,13 @@ fn find_with_snapshots() {
     todo2.complete().unwrap();
     repo.commit(&mut todo2).unwrap();
 
-    // Find all completed
-    let completed = repo.find(|t| t.snapshot().completed).unwrap();
-    assert_eq!(completed.len(), 2);
+    let todos = repo.get_all(&["t1", "t2"]).unwrap();
+    assert_eq!(todos.len(), 2);
+    assert!(todos.iter().all(|todo| todo.snapshot().completed));
 
-    // Find alice's todos
-    let alice = repo.find(|t| t.snapshot().user_id == "alice").unwrap();
-    assert_eq!(alice.len(), 1);
-    assert_eq!(alice[0].snapshot().task, "Buy milk");
+    let alice = repo.get("t1").unwrap().unwrap();
+    assert_eq!(alice.snapshot().user_id, "alice");
+    assert_eq!(alice.snapshot().task, "Buy milk");
 }
 
 #[test]
