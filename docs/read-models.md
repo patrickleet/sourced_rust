@@ -1,6 +1,7 @@
 # Read Models
 
-Read models are denormalized views derived from event-sourced aggregates.
+Read models are denormalized query views derived from aggregate state,
+aggregate event records, or published domain/integration messages.
 They give you fast, purpose-built query models shaped for your UI or API
 consumers — without polluting your domain aggregates with read concerns.
 
@@ -54,9 +55,10 @@ repo.read_models::<GameView>().upsert(&updated_view)?;
 
 ## 1. Eventually Consistent (The Default Path)
 
-This is the bread-and-butter pattern for CQRS: events are published through
-an outbox, and a separate denormalizer/projector process consumes them to
-update read models.
+This is the bread-and-butter pattern for CQRS: aggregates record replayable
+event records for their own state, domain or integration messages are published
+through an outbox, and a separate denormalizer/projector process consumes those
+messages to update read models.
 
 ```
 Command → Aggregate → Outbox → [worker] → Denormalizer → Read Model
@@ -64,11 +66,11 @@ Command → Aggregate → Outbox → [worker] → Denormalizer → Read Model
 
 ### How it works
 
-1. Commands produce events recorded on the aggregate via `#[digest]`.
-2. An `OutboxMessage` is committed alongside the aggregate.
+1. Commands produce aggregate event records via `#[digest]` or `#[sourced]`.
+2. An `OutboxMessage` carrying the domain/integration message is committed alongside the aggregate.
 3. An `OutboxWorker` polls for pending messages and publishes them
    through an `OutboxPublisher`.
-4. A subscriber (denormalizer) receives the event and updates the
+4. A subscriber (denormalizer) receives the published message and updates the
    appropriate read model(s).
 
 ```rust
@@ -106,6 +108,10 @@ let result = worker.process_batch(&mut messages);
 - Any view where "a few milliseconds stale" is perfectly fine
 - Cross-service views (the outbox guarantees at-least-once delivery)
 - Most read models in most systems
+
+When projections run asynchronously, read models are eventually consistent:
+there can be a short gap between a committed aggregate event record and the
+query view reflecting the corresponding published message.
 
 This is the **default recommendation**. Start here unless you have a
 specific reason not to.
