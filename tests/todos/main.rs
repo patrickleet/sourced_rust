@@ -590,7 +590,7 @@ fn outbox_worker_process_next_with_commit() {
 }
 
 #[test]
-fn find_returns_matching_aggregates() {
+fn scan_returns_matching_aggregates() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     // Create todos for different users
@@ -619,22 +619,22 @@ fn find_returns_matching_aggregates() {
     repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
         .unwrap();
 
-    // Find all todos for alice
-    let alice_todos = repo.find(|t| t.snapshot().user_id == "alice").unwrap();
+    // Scan all todo streams for alice.
+    let alice_todos = repo.scan(|t| t.snapshot().user_id == "alice").unwrap();
     assert_eq!(alice_todos.len(), 2);
 
-    // Find all todos for bob
-    let bob_todos = repo.find(|t| t.snapshot().user_id == "bob").unwrap();
+    // Scan all todo streams for bob.
+    let bob_todos = repo.scan(|t| t.snapshot().user_id == "bob").unwrap();
     assert_eq!(bob_todos.len(), 1);
     assert_eq!(bob_todos[0].snapshot().task, "Write code");
 
-    // Find with no matches
-    let charlie_todos = repo.find(|t| t.snapshot().user_id == "charlie").unwrap();
+    // Scan with no matches.
+    let charlie_todos = repo.scan(|t| t.snapshot().user_id == "charlie").unwrap();
     assert!(charlie_todos.is_empty());
 }
 
 #[test]
-fn find_one_returns_first_matching_aggregate() {
+fn scan_one_returns_first_matching_aggregate() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
@@ -651,19 +651,19 @@ fn find_one_returns_first_matching_aggregate() {
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
-    // Find one for alice
-    let found = repo.find_one(|t| t.snapshot().user_id == "alice").unwrap();
+    // Scan until the first alice todo.
+    let found = repo.scan_one(|t| t.snapshot().user_id == "alice").unwrap();
     assert!(found.is_some());
     let todo = found.unwrap();
     assert_eq!(todo.snapshot().user_id, "alice");
 
-    // Find one with no match
-    let not_found = repo.find_one(|t| t.snapshot().user_id == "nobody").unwrap();
+    // Scan one with no match.
+    let not_found = repo.scan_one(|t| t.snapshot().user_id == "nobody").unwrap();
     assert!(not_found.is_none());
 }
 
 #[test]
-fn exists_returns_true_when_aggregate_matches() {
+fn scan_exists_returns_true_when_aggregate_matches() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo = Todo::new();
@@ -672,12 +672,14 @@ fn exists_returns_true_when_aggregate_matches() {
         .unwrap();
     repo.commit(&mut todo).unwrap();
 
-    assert!(repo.exists(|t| t.snapshot().user_id == "alice").unwrap());
-    assert!(!repo.exists(|t| t.snapshot().user_id == "bob").unwrap());
+    assert!(repo
+        .scan_exists(|t| t.snapshot().user_id == "alice")
+        .unwrap());
+    assert!(!repo.scan_exists(|t| t.snapshot().user_id == "bob").unwrap());
 }
 
 #[test]
-fn count_returns_matching_aggregate_count() {
+fn scan_count_returns_matching_aggregate_count() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
@@ -701,17 +703,25 @@ fn count_returns_matching_aggregate_count() {
     repo.commit_all(&mut [&mut todo1, &mut todo2, &mut todo3])
         .unwrap();
 
-    assert_eq!(repo.count(|t| t.snapshot().user_id == "alice").unwrap(), 2);
-    assert_eq!(repo.count(|t| t.snapshot().user_id == "bob").unwrap(), 1);
-    assert_eq!(repo.count(|_| true).unwrap(), 3);
     assert_eq!(
-        repo.count(|t| t.snapshot().user_id == "charlie").unwrap(),
+        repo.scan_count(|t| t.snapshot().user_id == "alice")
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.scan_count(|t| t.snapshot().user_id == "bob").unwrap(),
+        1
+    );
+    assert_eq!(repo.scan_count(|_| true).unwrap(), 3);
+    assert_eq!(
+        repo.scan_count(|t| t.snapshot().user_id == "charlie")
+            .unwrap(),
         0
     );
 }
 
 #[test]
-fn find_by_completed_status() {
+fn scan_by_completed_status() {
     let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
@@ -733,13 +743,13 @@ fn find_by_completed_status() {
 
     repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
 
-    // Find completed todos
-    let completed = repo.find(|t| t.snapshot().completed).unwrap();
+    // Scan completed todos.
+    let completed = repo.scan(|t| t.snapshot().completed).unwrap();
     assert_eq!(completed.len(), 1);
     assert_eq!(completed[0].snapshot().task, "Completed task");
 
-    // Find pending todos
-    let pending = repo.find(|t| !t.snapshot().completed).unwrap();
+    // Scan pending todos.
+    let pending = repo.scan(|t| !t.snapshot().completed).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].snapshot().task, "Pending task");
 }

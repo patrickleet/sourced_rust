@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::entity::{Committable, Entity};
 use crate::lock::{InMemoryLockManager, Lock, LockError, LockManager};
 use crate::repository::{
-    Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
-    TransactionalCommit,
+    Commit, CommitBatch, Find, FindOne, Get, GetMany, GetOne, RepositoryError, Scan, ScanCount,
+    ScanExists, ScanOne, TransactionalCommit,
 };
 use crate::snapshot::{SnapshotRecord, SnapshotStore};
 
@@ -139,13 +139,13 @@ impl<R: GetMany + GetOne, L: LockManager> GetMany for QueuedRepository<R, L> {
     }
 }
 
-impl<R: Find + GetOne, L: LockManager> Find for QueuedRepository<R, L> {
-    fn find<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
+impl<R: Scan + GetOne, L: LockManager> Scan for QueuedRepository<R, L> {
+    fn scan<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
         // First, find matching entities without locks
-        let entities = self.inner.find(&predicate)?;
+        let entities = self.inner.scan(&predicate)?;
 
         // Lock all matching entity IDs
         let ids: Vec<&str> = entities.iter().map(|e| e.id()).collect();
@@ -164,13 +164,13 @@ impl<R: Find + GetOne, L: LockManager> Find for QueuedRepository<R, L> {
     }
 }
 
-impl<R: FindOne + GetOne, L: LockManager> FindOne for QueuedRepository<R, L> {
-    fn find_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
+impl<R: ScanOne + GetOne, L: LockManager> ScanOne for QueuedRepository<R, L> {
+    fn scan_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
         // First, find a matching entity without lock
-        let entity = self.inner.find_one(&predicate)?;
+        let entity = self.inner.scan_one(&predicate)?;
 
         if let Some(entity) = entity {
             // Lock the entity
@@ -190,23 +190,23 @@ impl<R: FindOne + GetOne, L: LockManager> FindOne for QueuedRepository<R, L> {
     }
 }
 
-impl<R: Exists, L: LockManager> Exists for QueuedRepository<R, L> {
+impl<R: ScanExists, L: LockManager> ScanExists for QueuedRepository<R, L> {
     /// Check if any entity matches (non-locking - just a read check).
-    fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
+    fn scan_exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
-        self.inner.exists(predicate)
+        self.inner.scan_exists(predicate)
     }
 }
 
-impl<R: Count, L: LockManager> Count for QueuedRepository<R, L> {
+impl<R: ScanCount, L: LockManager> ScanCount for QueuedRepository<R, L> {
     /// Count matching entities (non-locking - just a read check).
-    fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
+    fn scan_count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
-        self.inner.count(predicate)
+        self.inner.scan_count(predicate)
     }
 }
 
@@ -272,16 +272,16 @@ pub trait GetAllWithOpts: Get {
     fn get_all_with(&self, ids: &[&str], opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>;
 }
 
-/// Find entities with options.
-pub trait FindWithOpts: Find {
-    fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
+/// Scan entities with options.
+pub trait ScanWithOpts: Scan {
+    fn scan_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool;
 }
 
-/// Find one entity with options.
-pub trait FindOneWithOpts: FindOne {
-    fn find_one_with<F>(
+/// Scan one entity with options.
+pub trait ScanOneWithOpts: ScanOne {
+    fn scan_one_with<F>(
         &self,
         predicate: F,
         opts: ReadOpts,
@@ -289,6 +289,34 @@ pub trait FindOneWithOpts: FindOne {
     where
         F: Fn(&Entity) -> bool;
 }
+
+/// Compatibility trait for the historical `find_with` name.
+pub trait FindWithOpts: Find + ScanWithOpts {
+    fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool,
+    {
+        self.scan_with(predicate, opts)
+    }
+}
+
+impl<T: Find + ScanWithOpts> FindWithOpts for T {}
+
+/// Compatibility trait for the historical `find_one_with` name.
+pub trait FindOneWithOpts: FindOne + ScanOneWithOpts {
+    fn find_one_with<F>(
+        &self,
+        predicate: F,
+        opts: ReadOpts,
+    ) -> Result<Option<Entity>, RepositoryError>
+    where
+        F: Fn(&Entity) -> bool,
+    {
+        self.scan_one_with(predicate, opts)
+    }
+}
+
+impl<T: FindOne + ScanOneWithOpts> FindOneWithOpts for T {}
 
 impl<R: GetOne + GetMany, L: LockManager> GetWithOpts for QueuedRepository<R, L> {
     fn get_with(&self, id: &str, opts: ReadOpts) -> Result<Option<Entity>, RepositoryError> {
@@ -310,21 +338,21 @@ impl<R: GetMany + GetOne, L: LockManager> GetAllWithOpts for QueuedRepository<R,
     }
 }
 
-impl<R: Find + GetOne, L: LockManager> FindWithOpts for QueuedRepository<R, L> {
-    fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
+impl<R: Scan + GetOne, L: LockManager> ScanWithOpts for QueuedRepository<R, L> {
+    fn scan_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
         if opts.lock {
-            self.find(predicate)
+            self.scan(predicate)
         } else {
-            self.inner.find(predicate)
+            self.inner.scan(predicate)
         }
     }
 }
 
-impl<R: FindOne + GetOne, L: LockManager> FindOneWithOpts for QueuedRepository<R, L> {
-    fn find_one_with<F>(
+impl<R: ScanOne + GetOne, L: LockManager> ScanOneWithOpts for QueuedRepository<R, L> {
+    fn scan_one_with<F>(
         &self,
         predicate: F,
         opts: ReadOpts,
@@ -333,9 +361,9 @@ impl<R: FindOne + GetOne, L: LockManager> FindOneWithOpts for QueuedRepository<R
         F: Fn(&Entity) -> bool,
     {
         if opts.lock {
-            self.find_one(predicate)
+            self.scan_one(predicate)
         } else {
-            self.inner.find_one(predicate)
+            self.inner.scan_one(predicate)
         }
     }
 }

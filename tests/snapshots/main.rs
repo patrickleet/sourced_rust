@@ -192,7 +192,7 @@ fn with_queued_repo() {
 }
 
 #[test]
-fn find_with_snapshots() {
+fn scan_with_snapshots() {
     let repo = HashMapRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
@@ -212,12 +212,12 @@ fn find_with_snapshots() {
     todo2.complete().unwrap();
     repo.commit(&mut todo2).unwrap();
 
-    // Find all completed
-    let completed = repo.find(|t| t.snapshot().completed).unwrap();
+    // Scan all completed aggregate streams with snapshot-aware hydration.
+    let completed = repo.scan(|t| t.snapshot().completed).unwrap();
     assert_eq!(completed.len(), 2);
 
-    // Find alice's todos
-    let alice = repo.find(|t| t.snapshot().user_id == "alice").unwrap();
+    // Scan alice's todo streams.
+    let alice = repo.scan(|t| t.snapshot().user_id == "alice").unwrap();
     assert_eq!(alice.len(), 1);
     assert_eq!(alice[0].snapshot().task, "Buy milk");
 }

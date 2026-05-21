@@ -7,7 +7,7 @@ use crate::read_model::{
     InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, Versioned,
 };
 use crate::repository::{
-    Commit, CommitBatch, Count, Exists, Find, FindOne, GetMany, GetOne, RepositoryError,
+    Commit, CommitBatch, GetMany, GetOne, RepositoryError, Scan, ScanCount, ScanExists, ScanOne,
     SnapshotWrite, TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
@@ -85,8 +85,8 @@ impl GetMany for HashMapRepository {
     }
 }
 
-impl Find for HashMapRepository {
-    fn find<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
+impl Scan for HashMapRepository {
+    fn scan<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
@@ -108,8 +108,8 @@ impl Find for HashMapRepository {
     }
 }
 
-impl FindOne for HashMapRepository {
-    fn find_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
+impl ScanOne for HashMapRepository {
+    fn scan_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
@@ -130,8 +130,8 @@ impl FindOne for HashMapRepository {
     }
 }
 
-impl Exists for HashMapRepository {
-    fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
+impl ScanExists for HashMapRepository {
+    fn scan_exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
@@ -152,8 +152,8 @@ impl Exists for HashMapRepository {
     }
 }
 
-impl Count for HashMapRepository {
-    fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
+impl ScanCount for HashMapRepository {
+    fn scan_count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn find_returns_matching_entities() {
+    fn scan_returns_matching_entities() {
         let repo = HashMapRepository::new();
 
         let mut todo1 = Entity::with_id("todo-1");
@@ -452,18 +452,18 @@ mod tests {
         repo.commit(&mut [&mut todo1, &mut todo2, &mut user1])
             .unwrap();
 
-        let todos = repo.find(|e| e.id().starts_with("todo-")).unwrap();
+        let todos = repo.scan(|e| e.id().starts_with("todo-")).unwrap();
         assert_eq!(todos.len(), 2);
 
-        let users = repo.find(|e| e.id().starts_with("user-")).unwrap();
+        let users = repo.scan(|e| e.id().starts_with("user-")).unwrap();
         assert_eq!(users.len(), 1);
 
-        let none = repo.find(|e| e.id().starts_with("order-")).unwrap();
+        let none = repo.scan(|e| e.id().starts_with("order-")).unwrap();
         assert!(none.is_empty());
     }
 
     #[test]
-    fn find_one_returns_first_match() {
+    fn scan_one_returns_first_match() {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("item-1");
@@ -474,22 +474,22 @@ mod tests {
 
         repo.commit(&mut [&mut entity1, &mut entity2]).unwrap();
 
-        let found = repo.find_one(|e| e.id().starts_with("item-")).unwrap();
+        let found = repo.scan_one(|e| e.id().starts_with("item-")).unwrap();
         assert!(found.is_some());
         assert!(found.unwrap().id().starts_with("item-"));
 
-        let not_found = repo.find_one(|e| e.id().starts_with("missing-")).unwrap();
+        let not_found = repo.scan_one(|e| e.id().starts_with("missing-")).unwrap();
         assert!(not_found.is_none());
     }
 
     #[test]
-    fn find_on_empty_repo() {
+    fn scan_on_empty_repo() {
         let repo = HashMapRepository::new();
 
-        let results = repo.find(|_| true).unwrap();
+        let results = repo.scan(|_| true).unwrap();
         assert!(results.is_empty());
 
-        let result = repo.find_one(|_| true).unwrap();
+        let result = repo.scan_one(|_| true).unwrap();
         assert!(result.is_none());
     }
 
@@ -501,12 +501,12 @@ mod tests {
         entity.digest("Created", &"todo-1").unwrap();
         repo.commit(&mut entity).unwrap();
 
-        assert!(repo.exists(|e| e.id() == "todo-1").unwrap());
-        assert!(!repo.exists(|e| e.id() == "todo-2").unwrap());
+        assert!(repo.scan_exists(|e| e.id() == "todo-1").unwrap());
+        assert!(!repo.scan_exists(|e| e.id() == "todo-2").unwrap());
     }
 
     #[test]
-    fn count_returns_matching_count() {
+    fn scan_count_returns_matching_count() {
         let repo = HashMapRepository::new();
 
         let mut todo1 = Entity::with_id("todo-1");
@@ -521,17 +521,20 @@ mod tests {
         repo.commit(&mut [&mut todo1, &mut todo2, &mut user1])
             .unwrap();
 
-        assert_eq!(repo.count(|e| e.id().starts_with("todo-")).unwrap(), 2);
-        assert_eq!(repo.count(|e| e.id().starts_with("user-")).unwrap(), 1);
-        assert_eq!(repo.count(|_| true).unwrap(), 3);
-        assert_eq!(repo.count(|e| e.id().starts_with("order-")).unwrap(), 0);
+        assert_eq!(repo.scan_count(|e| e.id().starts_with("todo-")).unwrap(), 2);
+        assert_eq!(repo.scan_count(|e| e.id().starts_with("user-")).unwrap(), 1);
+        assert_eq!(repo.scan_count(|_| true).unwrap(), 3);
+        assert_eq!(
+            repo.scan_count(|e| e.id().starts_with("order-")).unwrap(),
+            0
+        );
     }
 
     #[test]
     fn exists_and_count_on_empty_repo() {
         let repo = HashMapRepository::new();
 
-        assert!(!repo.exists(|_| true).unwrap());
-        assert_eq!(repo.count(|_| true).unwrap(), 0);
+        assert!(!repo.scan_exists(|_| true).unwrap());
+        assert_eq!(repo.scan_count(|_| true).unwrap(), 0);
     }
 }

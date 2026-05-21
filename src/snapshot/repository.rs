@@ -2,7 +2,7 @@ use crate::aggregate::{hydrate, AggregateRepository};
 use crate::entity::{upcast_events, Entity};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
-    CommitBatch, Find, Get, RepositoryError, SnapshotWrite, TransactionalCommit,
+    CommitBatch, Get, RepositoryError, Scan, SnapshotWrite, TransactionalCommit,
 };
 
 use super::snapshottable::Snapshottable;
@@ -191,19 +191,19 @@ where
 }
 
 // ============================================================================
-// find / find_one / exists / count — delegate with snapshot-aware hydration
+// scan / scan_one / scan_exists / scan_count - snapshot-aware hydration
 // ============================================================================
 
 impl<R, A> SnapshotAggregateRepository<R, A>
 where
-    R: Find + SnapshotStore,
+    R: Scan + SnapshotStore,
     A: Snapshottable,
 {
-    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+    pub fn scan<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.inner.repo().find(|_| true)?;
+        let entities = self.inner.repo().scan(|_| true)?;
         let mut results = Vec::new();
         for entity in entities {
             let snapshot = self.inner.repo().get_snapshot(entity.id())?;
@@ -220,11 +220,11 @@ where
         Ok(results)
     }
 
-    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
+    pub fn scan_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.inner.repo().find(|_| true)?;
+        let entities = self.inner.repo().scan(|_| true)?;
         for entity in entities {
             let snapshot = self.inner.repo().get_snapshot(entity.id())?;
             let agg = match snapshot {
@@ -240,18 +240,46 @@ where
         Ok(None)
     }
 
+    pub fn scan_exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        Ok(self.scan_one(predicate)?.is_some())
+    }
+
+    pub fn scan_count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        Ok(self.scan(predicate)?.len())
+    }
+
+    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan(predicate)
+    }
+
+    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_one(predicate)
+    }
+
     pub fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.find_one(predicate)?.is_some())
+        self.scan_exists(predicate)
     }
 
     pub fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.find(predicate)?.len())
+        self.scan_count(predicate)
     }
 }
 

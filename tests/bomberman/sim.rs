@@ -15,7 +15,7 @@ pub struct Game<'a, R> {
 
 impl<'a, R> Game<'a, R>
 where
-    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find,
+    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan,
 {
     pub fn new(repo: &'a R, game_id: &str, ascii: &str) -> Result<Self, GameError> {
         commands::create_game(repo, game_id, ascii)?;
@@ -56,7 +56,7 @@ pub struct PlayerSim<'a, R> {
 
 impl<'a, R> PlayerSim<'a, R>
 where
-    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find,
+    R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan,
 {
     pub fn join(&self, spawn_index: usize) -> Result<(), GameError> {
         commands::join_game(

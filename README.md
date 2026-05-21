@@ -151,7 +151,7 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 
 | Concern | Trait | In-memory default | Swap in for production |
 |---|---|---|---|
-| Storage | `Repository` (`Get + Find + Commit + ...`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
+| Storage | `Repository` (`Get + Scan + Commit + ...`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
 | Messaging | `Publisher` + `Subscriber` | `InMemoryQueue` | Kafka, Redis Streams, SQS, etc. |
 | Read model store | `ReadModelStore` | `InMemoryReadModelStore` | Postgres, MongoDB, etc. |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, S3, etc. |
@@ -159,6 +159,10 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 | Locking | `Lock` + `LockManager` | `InMemoryLockManager` | Redis, Postgres advisory, etc. |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-threaded tests and multi-threaded servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — no other code changes needed.
+
+Aggregate predicate scans use the explicit `Scan` traits. For production
+queries, prefer read models or repository-specific indexed APIs; see
+[`docs/repository-query-semantics.md`](docs/repository-query-semantics.md).
 
 ## The `#[sourced]` Macro
 

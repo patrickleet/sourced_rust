@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::entity::{upcast_events, Entity, EventRecord, EventUpcaster};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
-    Commit, CommitBatch, Find, Get, Repository, RepositoryError, TransactionalCommit,
+    Commit, CommitBatch, Get, Repository, RepositoryError, Scan, TransactionalCommit,
 };
 use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
@@ -138,13 +138,13 @@ pub trait CommitAggregate: Commit {
 
 impl<R: Commit> CommitAggregate for R {}
 
-/// Extension trait adding aggregate-aware find method.
-pub trait FindAggregate: Find {
-    fn find_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+/// Extension trait adding aggregate-aware scan methods.
+pub trait ScanAggregate: Scan {
+    fn scan_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.find(|_| true)?;
+        let entities = self.scan(|_| true)?;
         let mut results = Vec::new();
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
@@ -156,18 +156,18 @@ pub trait FindAggregate: Find {
     }
 }
 
-impl<R: Find> FindAggregate for R {}
+impl<R: Scan> ScanAggregate for R {}
 
-/// Extension trait adding aggregate-aware find_one method.
-pub trait FindOneAggregate: Find {
-    fn find_one_aggregate<A: Aggregate, F>(
+/// Extension trait adding aggregate-aware scan_one methods.
+pub trait ScanOneAggregate: Scan {
+    fn scan_one_aggregate<A: Aggregate, F>(
         &self,
         predicate: F,
     ) -> Result<Option<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.find(|_| true)?;
+        let entities = self.scan(|_| true)?;
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
             if predicate(&agg) {
@@ -178,15 +178,15 @@ pub trait FindOneAggregate: Find {
     }
 }
 
-impl<R: Find> FindOneAggregate for R {}
+impl<R: Scan> ScanOneAggregate for R {}
 
-/// Extension trait adding aggregate-aware exists method.
-pub trait ExistsAggregate: Find {
-    fn exists_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<bool, RepositoryError>
+/// Extension trait adding aggregate-aware scan_exists method.
+pub trait ScanExistsAggregate: Scan {
+    fn scan_exists_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.find(|_| true)?;
+        let entities = self.scan(|_| true)?;
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
             if predicate(&agg) {
@@ -197,15 +197,15 @@ pub trait ExistsAggregate: Find {
     }
 }
 
-impl<R: Find> ExistsAggregate for R {}
+impl<R: Scan> ScanExistsAggregate for R {}
 
-/// Extension trait adding aggregate-aware count method.
-pub trait CountAggregate: Find {
-    fn count_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<usize, RepositoryError>
+/// Extension trait adding aggregate-aware scan_count method.
+pub trait ScanCountAggregate: Scan {
+    fn scan_count_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.find(|_| true)?;
+        let entities = self.scan(|_| true)?;
         let mut count = 0;
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
@@ -217,13 +217,68 @@ pub trait CountAggregate: Find {
     }
 }
 
-impl<R: Find> CountAggregate for R {}
+impl<R: Scan> ScanCountAggregate for R {}
+
+/// Compatibility trait for the historical aggregate `find` name.
+pub trait FindAggregate: ScanAggregate {
+    fn find_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_aggregate(predicate)
+    }
+}
+
+impl<R: ScanAggregate> FindAggregate for R {}
+
+/// Compatibility trait for the historical aggregate `find_one` name.
+pub trait FindOneAggregate: ScanOneAggregate {
+    fn find_one_aggregate<A: Aggregate, F>(
+        &self,
+        predicate: F,
+    ) -> Result<Option<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_one_aggregate(predicate)
+    }
+}
+
+impl<R: ScanOneAggregate> FindOneAggregate for R {}
+
+/// Compatibility trait for the historical aggregate `exists` name.
+pub trait ExistsAggregate: ScanExistsAggregate {
+    fn exists_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<bool, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_exists_aggregate(predicate)
+    }
+}
+
+impl<R: ScanExistsAggregate> ExistsAggregate for R {}
+
+/// Compatibility trait for the historical aggregate `count` name.
+pub trait CountAggregate: ScanCountAggregate {
+    fn count_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<usize, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_count_aggregate(predicate)
+    }
+}
+
+impl<R: ScanCountAggregate> CountAggregate for R {}
 
 /// Combined extension trait for full repository aggregate support.
 pub trait RepositoryExt:
     GetAggregate
     + GetAllAggregates
     + CommitAggregate
+    + ScanAggregate
+    + ScanOneAggregate
+    + ScanExistsAggregate
+    + ScanCountAggregate
     + FindAggregate
     + FindOneAggregate
     + ExistsAggregate
@@ -320,15 +375,15 @@ where
 
 impl<R, A> AggregateRepository<R, A>
 where
-    R: Find,
+    R: Scan,
     A: Aggregate,
 {
-    /// Find all aggregates matching a predicate.
-    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+    /// Scan all aggregate streams and return aggregates matching a predicate.
+    pub fn scan<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.repo.find(|_| true)?;
+        let entities = self.repo.scan(|_| true)?;
         let mut results = Vec::new();
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
@@ -339,12 +394,12 @@ where
         Ok(results)
     }
 
-    /// Find the first aggregate matching a predicate.
-    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
+    /// Scan aggregate streams and return the first aggregate matching a predicate.
+    pub fn scan_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        let entities = self.repo.find(|_| true)?;
+        let entities = self.repo.scan(|_| true)?;
         for entity in entities {
             let agg = hydrate::<A>(entity)?;
             if predicate(&agg) {
@@ -354,20 +409,52 @@ where
         Ok(None)
     }
 
-    /// Check if any aggregate matches a predicate.
+    /// Scan aggregate streams and check whether any aggregate matches a predicate.
+    pub fn scan_exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        Ok(self.scan_one(predicate)?.is_some())
+    }
+
+    /// Scan aggregate streams and count aggregates matching a predicate.
+    pub fn scan_count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        Ok(self.scan(predicate)?.len())
+    }
+
+    /// Compatibility alias for [`Self::scan`].
+    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan(predicate)
+    }
+
+    /// Compatibility alias for [`Self::scan_one`].
+    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
+    where
+        F: Fn(&A) -> bool,
+    {
+        self.scan_one(predicate)
+    }
+
+    /// Compatibility alias for [`Self::scan_exists`].
     pub fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.find_one(predicate)?.is_some())
+        self.scan_exists(predicate)
     }
 
-    /// Count aggregates matching a predicate.
+    /// Compatibility alias for [`Self::scan_count`].
     pub fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.find(predicate)?.len())
+        self.scan_count(predicate)
     }
 }
 

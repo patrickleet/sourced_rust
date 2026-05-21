@@ -31,14 +31,15 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 // Re-export repository traits at crate root for convenience
 pub use repository::{
     Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, Gettable,
-    ReadModelWrite, Repository, RepositoryError, SnapshotWrite, TransactionalCommit,
+    ReadModelWrite, Repository, RepositoryError, Scan, ScanCount, ScanExists, ScanOne,
+    SnapshotWrite, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
 pub use aggregate::{
     hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, CountAggregate,
     ExistsAggregate, FindAggregate, FindOneAggregate, GetAggregate, GetAllAggregates,
-    RepositoryExt,
+    RepositoryExt, ScanAggregate, ScanCountAggregate, ScanExistsAggregate, ScanOneAggregate,
 };
 
 pub use hashmap_repo::HashMapRepository;
@@ -89,6 +90,8 @@ pub use queued_repo::{
     Queueable,
     QueuedRepository,
     ReadOpts,
+    ScanOneWithOpts,
+    ScanWithOpts,
 };
 
 // Read models: projections and read-optimized views

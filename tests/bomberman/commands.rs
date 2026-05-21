@@ -1,7 +1,7 @@
 use sourced_rust::read_model::ReadModelStore;
 use sourced_rust::{
-    hydrate, Aggregate, Commit, CommitBuilderExt, Find, Get, GetAggregate, OutboxMessage,
-    RepositoryError, TransactionalCommit,
+    hydrate, Aggregate, Commit, CommitBuilderExt, Get, GetAggregate, OutboxMessage,
+    RepositoryError, Scan, TransactionalCommit,
 };
 
 use crate::domain::bomb::Bomb;
@@ -13,8 +13,8 @@ use crate::domain::types::{Direction, Tile};
 use crate::error::GameError;
 use crate::views::{build_board, BoardView};
 
-/// Find aggregates whose entity ID starts with a given prefix, then hydrate and filter.
-fn find_by_prefix<R: Find, A: Aggregate, F>(
+/// Scan aggregates whose entity ID starts with a given prefix, then hydrate and filter.
+fn scan_by_prefix<R: Scan, A: Aggregate, F>(
     repo: &R,
     prefix: &str,
     predicate: F,
@@ -23,7 +23,7 @@ where
     F: Fn(&A) -> bool,
 {
     let prefix_owned = prefix.to_string();
-    let entities = repo.find(|e| e.id().starts_with(&prefix_owned))?;
+    let entities = repo.scan(|e| e.id().starts_with(&prefix_owned))?;
     let mut results = Vec::new();
     for entity in entities {
         let agg: A = hydrate(entity)?;
@@ -52,7 +52,7 @@ pub fn create_game<R: Commit + ReadModelStore + TransactionalCommit>(
     Ok(map)
 }
 
-pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
+pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan>(
     repo: &R,
     game_id: &str,
 ) -> Result<TickSaga, GameError> {
@@ -60,15 +60,15 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
         .get_aggregate(game_id)?
         .ok_or(GameError::GameNotFound)?;
 
-    // Find all active bombs
-    let mut bombs: Vec<Bomb> = find_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
+    // Scan all active bombs.
+    let mut bombs: Vec<Bomb> = scan_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
 
-    // Find all players
-    let mut players: Vec<Player> = find_by_prefix(repo, "player:", |_: &Player| true)?;
+    // Scan all players.
+    let mut players: Vec<Player> = scan_by_prefix(repo, "player:", |_: &Player| true)?;
 
-    // Find all active explosions
+    // Scan all active explosions.
     let mut explosions: Vec<Explosion> =
-        find_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
+        scan_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
 
     // Tick all bombs
     let bombs_ticked = bombs.len();
@@ -78,7 +78,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
 
     // Count existing tick sagas to determine saga number
     let existing_ticks: Vec<TickSaga> =
-        find_by_prefix(repo, &format!("tick:{}", game_id), |_: &TickSaga| true)?;
+        scan_by_prefix(repo, &format!("tick:{}", game_id), |_: &TickSaga| true)?;
     let tick_num = existing_ticks.len() + 1;
 
     // Create tick saga
@@ -90,7 +90,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rus
     )?;
 
     // Count existing explosions for unique ID generation
-    let all_explosions: Vec<Explosion> = find_by_prefix(repo, "explosion:", |_: &Explosion| true)?;
+    let all_explosions: Vec<Explosion> = scan_by_prefix(repo, "explosion:", |_: &Explosion| true)?;
     let mut explosion_counter = all_explosions.len();
 
     // ── Phase A: Expand existing explosions ──
@@ -279,7 +279,7 @@ fn apply_damage(
 
 // ── Player commands ──
 
-pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
+pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan>(
     repo: &R,
     player_id: &str,
     name: &str,
@@ -295,13 +295,13 @@ pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + source
     let mut player = Player::default();
     player.join(format!("player:{}", player_id), name.into(), sx, sy)?;
 
-    // Find all players for board view
-    let mut all_players: Vec<Player> = find_by_prefix(repo, "player:", |_: &Player| true)?;
+    // Scan all players for board view.
+    let mut all_players: Vec<Player> = scan_by_prefix(repo, "player:", |_: &Player| true)?;
     all_players.push(player.clone());
 
-    let all_bombs: Vec<Bomb> = find_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
+    let all_bombs: Vec<Bomb> = scan_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
     let all_explosions: Vec<Explosion> =
-        find_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
+        scan_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
 
     let player_refs: Vec<&Player> = all_players.iter().collect();
     let bomb_refs: Vec<&Bomb> = all_bombs.iter().collect();
@@ -313,7 +313,7 @@ pub fn join_game<R: Commit + ReadModelStore + TransactionalCommit + Get + source
     Ok(())
 }
 
-pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
+pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan>(
     repo: &R,
     player_id: &str,
     direction: Direction,
@@ -349,15 +349,15 @@ pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sour
     }
 
     // Build board view
-    let all_players: Vec<Player> = find_by_prefix(repo, "player:", |p: &Player| {
+    let all_players: Vec<Player> = scan_by_prefix(repo, "player:", |p: &Player| {
         p.entity.id() != player.entity.id()
     })?;
     let mut player_refs: Vec<&Player> = all_players.iter().collect();
     player_refs.push(&player);
 
-    let all_bombs: Vec<Bomb> = find_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
+    let all_bombs: Vec<Bomb> = scan_by_prefix(repo, "bomb:", |b: &Bomb| !b.exploded)?;
     let all_explosions: Vec<Explosion> =
-        find_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
+        scan_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
     let bomb_refs: Vec<&Bomb> = all_bombs.iter().collect();
     let explosion_refs: Vec<&Explosion> = all_explosions.iter().collect();
     let board = build_board(game_id, &map, &player_refs, &bomb_refs, &explosion_refs, 0);
@@ -369,7 +369,7 @@ pub fn move_player<R: Commit + ReadModelStore + TransactionalCommit + Get + sour
     Ok(())
 }
 
-pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Find>(
+pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourced_rust::Scan>(
     repo: &R,
     player_id: &str,
     game_id: &str,
@@ -391,7 +391,7 @@ pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourc
 
     // Count existing bombs for this player to generate unique ID
     let existing_bombs: Vec<Bomb> =
-        find_by_prefix(repo, "bomb:", |b: &Bomb| b.owner_id == player_id)?;
+        scan_by_prefix(repo, "bomb:", |b: &Bomb| b.owner_id == player_id)?;
     let bomb_num = existing_bombs.len() + 1;
 
     player.place_bomb()?;
@@ -406,18 +406,18 @@ pub fn place_bomb<R: Commit + ReadModelStore + TransactionalCommit + Get + sourc
     )?;
 
     // Build board view
-    let all_players: Vec<Player> = find_by_prefix(repo, "player:", |p: &Player| {
+    let all_players: Vec<Player> = scan_by_prefix(repo, "player:", |p: &Player| {
         p.entity.id() != player.entity.id()
     })?;
     let mut player_refs: Vec<&Player> = all_players.iter().collect();
     player_refs.push(&player);
 
-    let mut all_bombs: Vec<Bomb> = find_by_prefix(repo, "bomb:", |b: &Bomb| {
+    let mut all_bombs: Vec<Bomb> = scan_by_prefix(repo, "bomb:", |b: &Bomb| {
         !b.exploded && b.entity.id() != bomb.entity.id()
     })?;
     all_bombs.push(bomb.clone());
     let all_explosions: Vec<Explosion> =
-        find_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
+        scan_by_prefix(repo, "explosion:", |e: &Explosion| e.active)?;
     let bomb_refs: Vec<&Bomb> = all_bombs.iter().collect();
     let explosion_refs: Vec<&Explosion> = all_explosions.iter().collect();
     let board = build_board(game_id, &map, &player_refs, &bomb_refs, &explosion_refs, 0);

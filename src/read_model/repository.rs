@@ -45,7 +45,7 @@ impl<'a, S: ReadModelStore, M: ReadModel> ReadModelRepository<'a, S, M> {
         self.store.delete::<M>(id)
     }
 
-    /// Find read models matching a predicate.
+    /// Scan read models matching a predicate.
     pub fn find(
         &self,
         predicate: &dyn Fn(&M) -> bool,
@@ -53,7 +53,7 @@ impl<'a, S: ReadModelStore, M: ReadModel> ReadModelRepository<'a, S, M> {
         self.store.find_models(predicate)
     }
 
-    /// Find the first read model matching a predicate.
+    /// Scan read models and return the first model matching a predicate.
     pub fn find_one(
         &self,
         predicate: &dyn Fn(&M) -> bool,

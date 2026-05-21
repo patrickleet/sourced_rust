@@ -4,6 +4,10 @@ Read models are denormalized query views derived from aggregate state,
 aggregate event records, or published domain/integration messages.
 They give you fast, purpose-built query models shaped for your UI or API
 consumers — without polluting your domain aggregates with read concerns.
+They are also the recommended surface for production queries that filter,
+sort, paginate, subscribe, or combine data across aggregates.
+See [repository query semantics](repository-query-semantics.md) for how this
+differs from aggregate predicate scans.
 
 `sourced_rust` supports three strategies for keeping read models up to date,
 each suited to different consistency requirements:
@@ -307,8 +311,8 @@ Do you need the updated view in the command response?
 | `insert(model)` | Insert; fails if exists |
 | `update(model, version)` | Optimistic concurrency update |
 | `delete(id)` | Delete by ID |
-| `find(predicate)` | Find all matching |
-| `find_one(predicate)` | Find first matching |
+| `find(predicate)` | Predicate scan over read models in this store |
+| `find_one(predicate)` | First match from a predicate scan |
 
 ### CommitBuilder (via `CommitBuilderExt`)
 
@@ -326,6 +330,6 @@ Do you need the updated view in the command response?
 | Method | Description |
 |---|---|
 | `get_model_with(id, ReadOpts::no_lock())` | Peek without locking |
-| `find_models_with(pred, ReadOpts::no_lock())` | Find without locking |
+| `find_models_with(pred, ReadOpts::no_lock())` | Scan without locking |
 | `lock::<M>(id)` | Manually acquire lock |
 | `unlock::<M>(id)` / `abort::<M>(id)` | Manually release lock |
