@@ -139,7 +139,7 @@ fn main() {
 
 Event sourcing is the model-level persistence strategy: aggregates record replayable `EventRecord`s when command methods such as `#[digest]` or `#[sourced]` methods succeed. Those records are the write-side history used to hydrate the aggregate.
 
-CQRS is the architectural split between write-side aggregates and query-side read models. A repository can scan aggregate event streams for tests, examples, or administrative tools, but production business queries should usually read from `ReadModel` projections shaped for that query.
+CQRS is the architectural split between write-side aggregates and query-side read models. Repositories load aggregate event streams by ID for command handling; production business queries should read from `ReadModel` projections shaped for that query.
 
 Published messages are a separate boundary. An aggregate event record is not automatically a domain event. When other services, projections, or transports need a fact or command, create an `OutboxMessage` and commit it with the aggregate. The outbox payload can represent a domain event, integration event, command, or any other transport message.
 
@@ -151,7 +151,7 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 
 | Concern | Trait | In-memory default | Swap in for production |
 |---|---|---|---|
-| Storage | `Repository` (`Get + Find + Commit + ...`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
+| Storage | `Repository` (`Get + Commit`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
 | Messaging | `Publisher` + `Subscriber` | `InMemoryQueue` | Kafka, Redis Streams, SQS, etc. |
 | Read model store | `ReadModelStore` | `InMemoryReadModelStore` | Postgres, MongoDB, etc. |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, S3, etc. |

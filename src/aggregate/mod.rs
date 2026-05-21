@@ -1,7 +1,6 @@
 mod aggregate;
 
 pub use aggregate::{
-    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, CountAggregate,
-    ExistsAggregate, FindAggregate, FindOneAggregate, GetAggregate, GetAllAggregates,
-    RepositoryExt,
+    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, GetAggregate,
+    GetAllAggregates, RepositoryExt,
 };

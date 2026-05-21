@@ -4,8 +4,8 @@ use super::{ReadModel, ReadModelError, Versioned};
 
 /// Abstract CRUD storage for read models.
 ///
-/// Methods that would collide with Repository traits (`Get`, `Find`, `FindOne`)
-/// use a `_model` suffix. Non-colliding methods use clean names.
+/// Methods that would collide with repository-level APIs use a `_model` suffix.
+/// Non-colliding methods use clean names.
 /// The `ReadModelRepository` wrapper provides clean short names for all methods.
 pub trait ReadModelStore: Send + Sync {
     /// Get a read model by ID. Returns None if not found.

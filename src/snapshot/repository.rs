@@ -1,9 +1,7 @@
 use crate::aggregate::{hydrate, AggregateRepository};
 use crate::entity::{upcast_events, Entity};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
-use crate::repository::{
-    CommitBatch, Find, Get, RepositoryError, SnapshotWrite, TransactionalCommit,
-};
+use crate::repository::{CommitBatch, Get, RepositoryError, SnapshotWrite, TransactionalCommit};
 
 use super::snapshottable::Snapshottable;
 use super::store::{SnapshotRecord, SnapshotStore};
@@ -187,71 +185,6 @@ where
             }));
         }
         Ok(None)
-    }
-}
-
-// ============================================================================
-// find / find_one / exists / count — delegate with snapshot-aware hydration
-// ============================================================================
-
-impl<R, A> SnapshotAggregateRepository<R, A>
-where
-    R: Find + SnapshotStore,
-    A: Snapshottable,
-{
-    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.inner.repo().find(|_| true)?;
-        let mut results = Vec::new();
-        for entity in entities {
-            let snapshot = self.inner.repo().get_snapshot(entity.id())?;
-            let agg = match snapshot {
-                Some(snap) if snap.version <= entity.version() => {
-                    hydrate_from_snapshot::<A>(entity, snap)?
-                }
-                _ => hydrate::<A>(entity)?,
-            };
-            if predicate(&agg) {
-                results.push(agg);
-            }
-        }
-        Ok(results)
-    }
-
-    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.inner.repo().find(|_| true)?;
-        for entity in entities {
-            let snapshot = self.inner.repo().get_snapshot(entity.id())?;
-            let agg = match snapshot {
-                Some(snap) if snap.version <= entity.version() => {
-                    hydrate_from_snapshot::<A>(entity, snap)?
-                }
-                _ => hydrate::<A>(entity)?,
-            };
-            if predicate(&agg) {
-                return Ok(Some(agg));
-            }
-        }
-        Ok(None)
-    }
-
-    pub fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        Ok(self.find_one(predicate)?.is_some())
-    }
-
-    pub fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        Ok(self.find(predicate)?.len())
     }
 }
 
