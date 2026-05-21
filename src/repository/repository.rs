@@ -21,8 +21,8 @@ pub trait Commit {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError>;
 }
 
-/// Full repository trait combining all capabilities.
+/// Repository trait for types that implement both read-by-ID and commit APIs.
 pub trait Repository: Get + Commit {}
 
-// Blanket implementation: anything implementing all traits is a Repository
+// Blanket implementation: anything implementing Get and Commit is a Repository.
 impl<T> Repository for T where T: Get + Commit {}
