@@ -211,6 +211,11 @@ impl InMemoryQueue {
 
     /// Clear all events from the log (useful for test cleanup).
     pub fn clear(&self) {
+        self.log.clear_poison();
+        self.position.clear_poison();
+        self.acked.clear_poison();
+        self.queues.clear_poison();
+
         recover_write(&self.log).clear();
         *recover_mutex(&self.position) = 0;
         recover_mutex(&self.acked).clear();
@@ -556,6 +561,30 @@ mod tests {
     }
 
     #[test]
+    fn accessors_recover_from_poisoned_locks() {
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.log.write().expect("lock event log");
+            panic!("poison event log");
+        });
+        assert!(queue.events().is_empty());
+
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.position.lock().expect("lock subscriber position");
+            panic!("poison subscriber position");
+        });
+        assert_eq!(queue.current_position(), 0);
+
+        let queue = InMemoryQueue::new();
+        poison_lock(|| {
+            let _guard = queue.acked.lock().expect("lock acknowledgement list");
+            panic!("poison acknowledgement list");
+        });
+        assert!(queue.acknowledged().is_empty());
+    }
+
+    #[test]
     fn find_by_type() {
         let queue = InMemoryQueue::new();
 
@@ -608,6 +637,44 @@ mod tests {
         assert_eq!(queue.len(), 0);
         assert_eq!(queue.current_position(), 0);
         assert!(queue.acknowledged().is_empty());
+    }
+
+    #[test]
+    fn clear_resets_lock_poisoning_for_normal_operations() {
+        let queue = InMemoryQueue::new();
+        queue
+            .publish(Event::with_string_payload("evt-1", "Event1", "{}"))
+            .unwrap();
+        queue.poll(10).unwrap();
+        queue.ack("evt-1").unwrap();
+
+        poison_lock(|| {
+            let _guard = queue.log.write().expect("lock event log");
+            panic!("poison event log");
+        });
+        poison_lock(|| {
+            let _guard = queue.position.lock().expect("lock subscriber position");
+            panic!("poison subscriber position");
+        });
+        poison_lock(|| {
+            let _guard = queue.acked.lock().expect("lock acknowledgement list");
+            panic!("poison acknowledgement list");
+        });
+        poison_lock(|| {
+            let _guard = queue.queues.write().expect("lock point-to-point queues");
+            panic!("poison point-to-point queues");
+        });
+
+        queue.clear();
+
+        queue
+            .publish(Event::with_string_payload("evt-2", "Event2", "{}"))
+            .unwrap();
+        assert_eq!(queue.poll(10).unwrap().unwrap().id, "evt-2");
+        queue.ack("evt-2").unwrap();
+        queue
+            .send("tasks", Event::with_string_payload("task-1", "Task", "{}"))
+            .unwrap();
     }
 
     #[test]
