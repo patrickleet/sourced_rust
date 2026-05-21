@@ -32,34 +32,52 @@ struct PointToPointQueue {
 /// ## Example
 ///
 /// ```
-/// use sourced_rust::bus::{InMemoryQueue, Publisher, Subscriber, Event};
+/// use sourced_rust::bus::{Event, InMemoryQueue, PublishError, Publisher, Subscriber};
 ///
-/// let queue = InMemoryQueue::new();
+/// fn main() -> Result<(), PublishError> {
+///     let queue = InMemoryQueue::new();
 ///
-/// // Publish an event
-/// queue.publish(Event::with_string_payload("evt-1", "OrderCreated", r#"{"id":"123"}"#)).unwrap();
+///     queue.publish(Event::with_string_payload("evt-1", "OrderCreated", r#"{"id":"123"}"#))?;
 ///
-/// // Poll for events
-/// let event = queue.poll(100).unwrap();
-/// assert!(event.is_some());
-/// assert_eq!(event.unwrap().event_type, "OrderCreated");
+///     let event = queue.poll(100)?.ok_or(PublishError::Timeout)?;
+///     assert_eq!(event.event_type, "OrderCreated");
+///     Ok(())
+/// }
 /// ```
 ///
 /// ## Multiple Subscribers
 ///
 /// ```
-/// use sourced_rust::bus::{InMemoryQueue, Publisher, Subscriber, Subscribable, Event};
+/// use sourced_rust::bus::{
+///     Event, InMemoryQueue, PublishError, Publisher, Subscribable, Subscriber,
+/// };
 ///
-/// let queue = InMemoryQueue::new();
-/// queue.publish(Event::with_string_payload("evt-1", "Event1", "{}")).unwrap();
+/// fn main() -> Result<(), PublishError> {
+///     let queue = InMemoryQueue::new();
+///     queue.publish(Event::with_string_payload("evt-1", "Event1", "{}"))?;
 ///
-/// // Create independent subscribers
-/// let sub1 = queue.new_subscriber();
-/// let sub2 = queue.new_subscriber();
+///     let sub1 = queue.new_subscriber();
+///     let sub2 = queue.new_subscriber();
 ///
-/// // Each subscriber has its own position
-/// assert_eq!(sub1.poll(10).unwrap().unwrap().event_type, "Event1");
-/// assert_eq!(sub2.poll(10).unwrap().unwrap().event_type, "Event1");
+///     assert_eq!(sub1.poll(10)?.ok_or(PublishError::Timeout)?.event_type, "Event1");
+///     assert_eq!(sub2.poll(10)?.ok_or(PublishError::Timeout)?.event_type, "Event1");
+///     Ok(())
+/// }
+/// ```
+///
+/// ## Point-to-Point Queues
+///
+/// ```
+/// use sourced_rust::bus::{Event, InMemoryQueue, Listener, PublishError, Sender};
+///
+/// fn main() -> Result<(), PublishError> {
+///     let queue = InMemoryQueue::new();
+///     queue.send("orders", Event::with_string_payload("evt-1", "ProcessOrder", "{}"))?;
+///
+///     let event = queue.listen("orders", 100)?.ok_or(PublishError::Timeout)?;
+///     assert_eq!(event.event_type, "ProcessOrder");
+///     Ok(())
+/// }
 /// ```
 #[derive(Clone)]
 pub struct InMemoryQueue {
@@ -167,24 +185,25 @@ impl InMemoryQueue {
     /// ## Example
     ///
     /// ```
-    /// use sourced_rust::bus::{InMemoryQueue, Publisher, Event};
+    /// use sourced_rust::bus::{Event, InMemoryQueue, PublishError, Publisher};
     ///
-    /// let queue = InMemoryQueue::new();
-    /// queue.publish(Event::with_string_payload("evt-1", "OrderCreated", "{}")).unwrap();
-    /// queue.publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}")).unwrap();
-    /// queue.publish(Event::with_string_payload("evt-3", "OrderCreated", "{}")).unwrap();
+    /// fn main() -> Result<(), PublishError> {
+    ///     let queue = InMemoryQueue::new();
+    ///     queue.publish(Event::with_string_payload("evt-1", "OrderCreated", "{}"))?;
+    ///     queue.publish(Event::with_string_payload("evt-2", "PaymentFailed", "{}"))?;
+    ///     queue.publish(Event::with_string_payload("evt-3", "OrderCreated", "{}"))?;
     ///
-    /// // Subscribe only to OrderCreated events
-    /// let receiver = queue.subscribe(&["OrderCreated"]);
+    ///     let receiver = queue.subscribe(&["OrderCreated"]);
     ///
-    /// // Only receives OrderCreated events
-    /// let event1 = receiver.recv(100).unwrap().unwrap();
-    /// assert_eq!(event1.event_type, "OrderCreated");
-    /// assert_eq!(event1.id, "evt-1");
+    ///     let event1 = receiver.recv(100)?.ok_or(PublishError::Timeout)?;
+    ///     assert_eq!(event1.event_type, "OrderCreated");
+    ///     assert_eq!(event1.id, "evt-1");
     ///
-    /// let event2 = receiver.recv(100).unwrap().unwrap();
-    /// assert_eq!(event2.event_type, "OrderCreated");
-    /// assert_eq!(event2.id, "evt-3");
+    ///     let event2 = receiver.recv(100)?.ok_or(PublishError::Timeout)?;
+    ///     assert_eq!(event2.event_type, "OrderCreated");
+    ///     assert_eq!(event2.id, "evt-3");
+    ///     Ok(())
+    /// }
     /// ```
     pub fn subscribe(&self, event_types: &[&str]) -> EventReceiver<Self> {
         EventReceiver::new(self.new_subscriber(), event_types)
