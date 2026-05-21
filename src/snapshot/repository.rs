@@ -251,7 +251,21 @@ where
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.scan(predicate)?.len())
+        let entities = self.inner.repo().scan(|_| true)?;
+        let mut count = 0;
+        for entity in entities {
+            let snapshot = self.inner.repo().get_snapshot(entity.id())?;
+            let agg = match snapshot {
+                Some(snap) if snap.version <= entity.version() => {
+                    hydrate_from_snapshot::<A>(entity, snap)?
+                }
+                _ => hydrate::<A>(entity)?,
+            };
+            if predicate(&agg) {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>

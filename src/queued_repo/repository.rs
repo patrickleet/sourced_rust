@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::entity::{Committable, Entity};
@@ -104,7 +105,10 @@ impl<R, L: LockManager> QueuedRepository<R, L> {
         Ok(self.lock_manager.get_lock(id)?)
     }
 
-    fn lock_ids_in_order(&self, ids: &[&str]) -> Result<Vec<Arc<L::Lock>>, RepositoryError> {
+    fn lock_ids_in_order(
+        &self,
+        ids: &[&str],
+    ) -> Result<Vec<(String, Arc<L::Lock>)>, RepositoryError> {
         let mut unique: Vec<&str> = ids.iter().copied().collect();
         unique.sort_unstable();
         unique.dedup();
@@ -113,7 +117,7 @@ impl<R, L: LockManager> QueuedRepository<R, L> {
         for id in unique {
             let lock = self.ensure_lock(id)?;
             lock.lock()?;
-            locks.push(lock);
+            locks.push((id.to_string(), lock));
         }
 
         Ok(locks)
@@ -148,15 +152,24 @@ impl<R: Scan + GetOne, L: LockManager> Scan for QueuedRepository<R, L> {
         let entities = self.inner.scan(&predicate)?;
 
         // Lock all matching entity IDs
-        let ids: Vec<&str> = entities.iter().map(|e| e.id()).collect();
-        let _locks = self.lock_ids_in_order(&ids)?;
+        let ids: Vec<String> = entities.iter().map(|e| e.id().to_string()).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let locks: HashMap<String, Arc<L::Lock>> =
+            self.lock_ids_in_order(&id_refs)?.into_iter().collect();
 
         // Re-fetch with locks held to ensure consistency
         let mut results = Vec::with_capacity(entities.len());
         for id in ids {
-            if let Some(entity) = self.inner.get_one(id)? {
+            let mut keep_lock = false;
+            if let Some(entity) = self.inner.get_one(&id)? {
                 if predicate(&entity) {
                     results.push(entity);
+                    keep_lock = true;
+                }
+            }
+            if !keep_lock {
+                if let Some(lock) = locks.get(&id) {
+                    lock.unlock()?;
                 }
             }
         }
@@ -164,21 +177,21 @@ impl<R: Scan + GetOne, L: LockManager> Scan for QueuedRepository<R, L> {
     }
 }
 
-impl<R: ScanOne + GetOne, L: LockManager> ScanOne for QueuedRepository<R, L> {
+impl<R: Scan + GetOne, L: LockManager> ScanOne for QueuedRepository<R, L> {
     fn scan_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
     where
         F: Fn(&Entity) -> bool,
     {
-        // First, find a matching entity without lock
-        let entity = self.inner.scan_one(&predicate)?;
-
-        if let Some(entity) = entity {
-            // Lock the entity
-            let lock = self.ensure_lock(entity.id())?;
+        // First, find candidate entities without locks. Each candidate is then
+        // locked and re-fetched; stale candidates are unlocked and skipped.
+        let entities = self.inner.scan(&predicate)?;
+        for entity in entities {
+            let id = entity.id().to_string();
+            let lock = self.ensure_lock(&id)?;
             lock.lock()?;
 
             // Re-fetch with lock held to ensure consistency
-            if let Some(entity) = self.inner.get_one(entity.id())? {
+            if let Some(entity) = self.inner.get_one(&id)? {
                 if predicate(&entity) {
                     return Ok(Some(entity));
                 }
@@ -351,7 +364,7 @@ impl<R: Scan + GetOne, L: LockManager> ScanWithOpts for QueuedRepository<R, L> {
     }
 }
 
-impl<R: ScanOne + GetOne, L: LockManager> ScanOneWithOpts for QueuedRepository<R, L> {
+impl<R: Scan + ScanOne + GetOne, L: LockManager> ScanOneWithOpts for QueuedRepository<R, L> {
     fn scan_one_with<F>(
         &self,
         predicate: F,
@@ -413,3 +426,98 @@ pub trait Queueable: Sized {
 }
 
 impl<T> Queueable for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct RefetchingRepo {
+        scanned: Vec<Entity>,
+        refetched: HashMap<String, Entity>,
+    }
+
+    impl RefetchingRepo {
+        fn new(scanned: Vec<Entity>, refetched: Vec<Entity>) -> Self {
+            Self {
+                scanned,
+                refetched: refetched
+                    .into_iter()
+                    .map(|entity| (entity.id().to_string(), entity))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Scan for RefetchingRepo {
+        fn scan<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
+        where
+            F: Fn(&Entity) -> bool,
+        {
+            Ok(self
+                .scanned
+                .iter()
+                .filter(|entity| predicate(entity))
+                .cloned()
+                .collect())
+        }
+    }
+
+    impl GetOne for RefetchingRepo {
+        fn get_one(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
+            Ok(self.refetched.get(id).cloned())
+        }
+    }
+
+    fn entity_with_event(id: &str, event_type: &str) -> Entity {
+        let mut entity = Entity::with_id(id);
+        entity.digest_empty(event_type).unwrap();
+        entity
+    }
+
+    fn has_event(entity: &Entity, event_type: &str) -> bool {
+        entity
+            .events()
+            .iter()
+            .any(|event| event.event_name == event_type)
+    }
+
+    #[test]
+    fn scan_unlocks_refetched_entities_that_no_longer_match() {
+        let repo = QueuedRepository::new(RefetchingRepo::new(
+            vec![entity_with_event("stale", "Wanted")],
+            vec![entity_with_event("stale", "Other")],
+        ));
+
+        let found = repo.scan(|entity| has_event(entity, "Wanted")).unwrap();
+
+        assert!(found.is_empty());
+        repo.lock("stale").unwrap();
+        repo.unlock("stale").unwrap();
+    }
+
+    #[test]
+    fn scan_one_continues_after_refetched_entity_no_longer_matches() {
+        let repo = QueuedRepository::new(RefetchingRepo::new(
+            vec![
+                entity_with_event("stale", "Wanted"),
+                entity_with_event("fresh", "Wanted"),
+            ],
+            vec![
+                entity_with_event("stale", "Other"),
+                entity_with_event("fresh", "Wanted"),
+            ],
+        ));
+
+        let found = repo
+            .scan_one(|entity| has_event(entity, "Wanted"))
+            .unwrap()
+            .expect("later candidate should be returned");
+
+        assert_eq!(found.id(), "fresh");
+        repo.lock("stale").unwrap();
+        repo.unlock("stale").unwrap();
+        assert!(repo.lock("fresh").is_err());
+        repo.unlock("fresh").unwrap();
+    }
+}

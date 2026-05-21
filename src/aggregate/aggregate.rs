@@ -422,7 +422,15 @@ where
     where
         F: Fn(&A) -> bool,
     {
-        Ok(self.scan(predicate)?.len())
+        let entities = self.repo.scan(|_| true)?;
+        let mut count = 0;
+        for entity in entities {
+            let agg = hydrate::<A>(entity)?;
+            if predicate(&agg) {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Compatibility alias for [`Self::scan`].
