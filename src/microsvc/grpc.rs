@@ -27,6 +27,9 @@
 //! ```
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+use std::net::{AddrParseError, SocketAddr};
 use std::sync::Arc;
 
 use serde_json::json;
@@ -79,6 +82,46 @@ include!(concat!(
 
 pub use command_service_client::CommandServiceClient;
 pub use command_service_server::{CommandService, CommandServiceServer};
+
+/// Error returned when serving the gRPC transport fails.
+#[derive(Debug)]
+pub enum GrpcServeError {
+    /// The supplied bind address could not be parsed as a socket address.
+    InvalidAddress {
+        /// Original bind address string supplied by the caller.
+        addr: String,
+        /// Address parser error.
+        source: AddrParseError,
+    },
+    /// The tonic transport server failed while serving.
+    Transport(tonic::transport::Error),
+}
+
+impl fmt::Display for GrpcServeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GrpcServeError::InvalidAddress { addr, source } => {
+                write!(f, "invalid gRPC bind address `{addr}`: {source}")
+            }
+            GrpcServeError::Transport(source) => write!(f, "gRPC transport error: {source}"),
+        }
+    }
+}
+
+impl Error for GrpcServeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            GrpcServeError::InvalidAddress { source, .. } => Some(source),
+            GrpcServeError::Transport(source) => Some(source),
+        }
+    }
+}
+
+impl From<tonic::transport::Error> for GrpcServeError {
+    fn from(source: tonic::transport::Error) -> Self {
+        GrpcServeError::Transport(source)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Handler implementation
@@ -189,13 +232,23 @@ pub fn grpc_server<R: Send + Sync + 'static>(
 }
 
 /// Bind and serve the gRPC transport at the given address (e.g. `"[::1]:50051"`).
+///
+/// Returns [`GrpcServeError::InvalidAddress`] when `addr` is not a valid socket
+/// address, and [`GrpcServeError::Transport`] for errors returned by tonic while
+/// serving.
 pub async fn serve_grpc<R: Send + Sync + 'static>(
     service: Arc<Service<R>>,
     addr: &str,
-) -> Result<(), tonic::transport::Error> {
-    let addr = addr.parse().expect("invalid gRPC address");
+) -> Result<(), GrpcServeError> {
+    let addr: SocketAddr = addr
+        .parse()
+        .map_err(|source| GrpcServeError::InvalidAddress {
+            addr: addr.to_string(),
+            source,
+        })?;
     tonic::transport::Server::builder()
         .add_service(grpc_server(service))
         .serve(addr)
-        .await
+        .await?;
+    Ok(())
 }

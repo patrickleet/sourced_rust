@@ -74,7 +74,7 @@ pub use http::{router, serve};
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc")]
-pub use grpc::{grpc_server, serve_grpc};
+pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 
 /// Register handler modules with a service using the convention pattern.
 ///

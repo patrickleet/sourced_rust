@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sourced_rust::microsvc::grpc::{CommandServiceClient, GrpcRequest, HealthRequest};
+use sourced_rust::microsvc::grpc::{
+    CommandServiceClient, GrpcRequest, GrpcServeError, HealthRequest,
+};
 use sourced_rust::microsvc::Service;
 use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 use tokio::net::TcpListener;
@@ -55,6 +57,20 @@ async fn health_check() {
     assert!(resp.ok);
     assert!(resp.commands.iter().any(|c| c == "counter.create"));
     assert!(resp.commands.iter().any(|c| c == "counter.increment"));
+}
+
+#[tokio::test]
+async fn serve_grpc_returns_error_for_invalid_address() {
+    let err = sourced_rust::microsvc::serve_grpc(counter_service(), "not an address")
+        .await
+        .expect_err("invalid gRPC bind address should return an error");
+
+    match err {
+        GrpcServeError::InvalidAddress { addr, .. } => {
+            assert_eq!(addr, "not an address");
+        }
+        other => panic!("unexpected gRPC serve error: {other:?}"),
+    }
 }
 
 #[tokio::test]
