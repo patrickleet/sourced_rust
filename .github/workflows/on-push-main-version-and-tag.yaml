@@ -23,7 +23,8 @@ jobs:
     name: Version and Tag
     needs: quality
     uses: unbounded-tech/workflow-vnext-tag/.github/workflows/workflow.yaml@v1.20.2
-    secrets: inherit
+    secrets:
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
     with:
       useDeployKey: true
       rust: true
