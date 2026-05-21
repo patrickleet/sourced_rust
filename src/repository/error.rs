@@ -16,6 +16,14 @@ pub enum RepositoryError {
     DuplicateStreamInBatch {
         id: String,
     },
+    NotFound {
+        id: String,
+    },
+    InvalidState {
+        id: String,
+        expected: &'static str,
+        actual: String,
+    },
     Replay(String),
     Model(String),
 }
@@ -39,6 +47,16 @@ impl fmt::Display for RepositoryError {
             RepositoryError::DuplicateStreamInBatch { id } => {
                 write!(f, "duplicate stream id in commit batch: {}", id)
             }
+            RepositoryError::NotFound { id } => write!(f, "entity not found: {}", id),
+            RepositoryError::InvalidState {
+                id,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "invalid state for entity {} (expected {}, got {})",
+                id, expected, actual
+            ),
             RepositoryError::Replay(message) => write!(f, "replay error: {}", message),
             RepositoryError::Model(message) => write!(f, "model error: {}", message),
         }

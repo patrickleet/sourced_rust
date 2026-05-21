@@ -11,6 +11,8 @@ use std::{error::Error, fmt};
 use crate::bus::{Event, Publisher, Sender as BusSender};
 use crate::OutboxRepositoryExt;
 
+const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
 /// Statistics from the outbox worker.
 #[derive(Debug, Default, Clone)]
 pub struct WorkerStats {
@@ -30,6 +32,43 @@ impl fmt::Display for OutboxWorkerJoinError {
 }
 
 impl Error for OutboxWorkerJoinError {}
+
+fn record_publish_success<R: OutboxRepositoryExt>(
+    repo: &R,
+    message_id: &str,
+    worker_id: &str,
+    stats: &mut WorkerStats,
+) {
+    match repo.complete_outbox_message_for_worker(message_id, worker_id) {
+        Ok(()) => {
+            stats.messages_published += 1;
+        }
+        Err(err) => {
+            eprintln!("outbox worker `{worker_id}` could not complete `{message_id}`: {err}");
+            stats.messages_failed += 1;
+        }
+    }
+}
+
+fn record_publish_failure<R: OutboxRepositoryExt>(
+    repo: &R,
+    message_id: &str,
+    worker_id: &str,
+    error: &str,
+    stats: &mut WorkerStats,
+) {
+    match repo.record_outbox_publish_failure(message_id, worker_id, error, DEFAULT_MAX_ATTEMPTS) {
+        Ok(_) => {
+            stats.messages_failed += 1;
+        }
+        Err(err) => {
+            eprintln!(
+                "outbox worker `{worker_id}` could not record publish failure for `{message_id}`: {err}"
+            );
+            stats.messages_failed += 1;
+        }
+    }
+}
 
 /// A background thread that drains outbox messages and publishes to a bus.
 ///
@@ -116,21 +155,23 @@ impl OutboxWorkerThread {
 
                             match publisher.publish(event) {
                                 Ok(()) => {
-                                    // Mark as complete
-                                    if repo.complete_outbox_message(msg.id()).is_ok() {
-                                        stats.messages_published += 1;
-                                    }
+                                    record_publish_success(&repo, msg.id(), &worker_id, &mut stats);
                                 }
-                                Err(_) => {
-                                    // Release for retry
-                                    let _ = repo.release_outbox_message(msg.id(), "publish failed");
-                                    stats.messages_failed += 1;
+                                Err(err) => {
+                                    let error = err.to_string();
+                                    record_publish_failure(
+                                        &repo,
+                                        msg.id(),
+                                        &worker_id,
+                                        &error,
+                                        &mut stats,
+                                    );
                                 }
                             }
                         }
                     }
-                    Err(_) => {
-                        // Repository error, continue polling
+                    Err(err) => {
+                        eprintln!("outbox worker `{worker_id}` could not claim messages: {err}");
                     }
                 }
 
@@ -201,18 +242,24 @@ impl OutboxWorkerThread {
 
                             match result {
                                 Ok(()) => {
-                                    if repo.complete_outbox_message(msg.id()).is_ok() {
-                                        stats.messages_published += 1;
-                                    }
+                                    record_publish_success(&repo, msg.id(), &worker_id, &mut stats);
                                 }
-                                Err(_) => {
-                                    let _ = repo.release_outbox_message(msg.id(), "publish failed");
-                                    stats.messages_failed += 1;
+                                Err(err) => {
+                                    let error = err.to_string();
+                                    record_publish_failure(
+                                        &repo,
+                                        msg.id(),
+                                        &worker_id,
+                                        &error,
+                                        &mut stats,
+                                    );
                                 }
                             }
                         }
                     }
-                    Err(_) => {}
+                    Err(err) => {
+                        eprintln!("outbox worker `{worker_id}` could not claim messages: {err}");
+                    }
                 }
 
                 thread::sleep(poll_interval);
@@ -257,6 +304,18 @@ impl Drop for OutboxWorkerThread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aggregate::GetAggregate;
+    use crate::bus::PublishError;
+    use crate::repository::Commit;
+    use crate::{HashMapRepository, OutboxMessage};
+
+    struct FailingPublisher;
+
+    impl Publisher for FailingPublisher {
+        fn publish(&self, _event: Event) -> Result<(), PublishError> {
+            Err(PublishError::Rejected("forced failure".into()))
+        }
+    }
 
     #[test]
     fn stop_returns_stats_when_worker_exits_cleanly() {
@@ -297,5 +356,39 @@ mod tests {
             .expect_err("worker thread panic should be returned");
 
         assert_eq!(err, OutboxWorkerJoinError);
+    }
+
+    #[test]
+    fn worker_thread_fails_message_after_retry_ceiling() {
+        let repo = HashMapRepository::new();
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        let id = message.id().to_string();
+        repo.commit(&mut message.entity).unwrap();
+
+        let worker = OutboxWorkerThread::spawn_with_id(
+            repo.clone(),
+            FailingPublisher,
+            Duration::from_millis(1),
+            "worker-1",
+        );
+
+        for _ in 0..100 {
+            let stored = repo.get_aggregate::<OutboxMessage>(&id).unwrap().unwrap();
+            if stored.is_failed() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let stats = worker.stop().unwrap();
+        let stored = repo.get_aggregate::<OutboxMessage>(&id).unwrap().unwrap();
+
+        assert!(stored.is_failed());
+        assert_eq!(stored.attempts, DEFAULT_MAX_ATTEMPTS);
+        assert_eq!(
+            stored.last_error.as_deref(),
+            Some("Event rejected: forced failure")
+        );
+        assert!(stats.messages_failed >= DEFAULT_MAX_ATTEMPTS as usize);
     }
 }

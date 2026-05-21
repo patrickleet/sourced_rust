@@ -56,6 +56,7 @@ pub use outbox_worker::{
     // Publishers
     LogPublisher,
     LogPublisherError,
+    OutboxPublishFailureAction,
     OutboxPublisher,
     // Repository extension for claiming/completing messages
     OutboxRepositoryExt,

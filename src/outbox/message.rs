@@ -226,6 +226,22 @@ impl OutboxMessage {
         self.status == OutboxMessageStatus::Failed
     }
 
+    pub fn has_expired_lease_at(&self, now: SystemTime) -> bool {
+        self.is_in_flight() && self.leased_until.map(|until| until <= now).unwrap_or(true)
+    }
+
+    pub fn is_claimable_at(&self, now: SystemTime) -> bool {
+        self.is_pending() || self.has_expired_lease_at(now)
+    }
+
+    pub fn is_claimed_by(&self, worker_id: &str) -> bool {
+        self.worker_id.as_deref() == Some(worker_id)
+    }
+
+    fn is_claimable(&self) -> bool {
+        self.is_claimable_at(SystemTime::now())
+    }
+
     // Commands
     #[digest("MessageCreated")]
     pub fn initialize(
@@ -246,7 +262,7 @@ impl OutboxMessage {
         self.created_at = SystemTime::now();
     }
 
-    #[digest("MessageClaimed", when = self.is_pending())]
+    #[digest("MessageClaimed", when = self.is_claimable())]
     pub fn claim(&mut self, worker_id: String, until_secs: u64) {
         let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
         self.status = OutboxMessageStatus::InFlight;
@@ -257,7 +273,18 @@ impl OutboxMessage {
 
     /// Claim with a Duration (convenience method that computes until_secs)
     pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) -> SourcedResult {
-        let until_secs = Self::lease_deadline_secs(SystemTime::now(), lease)?;
+        self.claim_at(worker_id, lease, SystemTime::now())
+    }
+
+    /// Claim with an explicit clock value. This is useful for deterministic
+    /// tests and repository implementations that capture time once per batch.
+    pub fn claim_at(
+        &mut self,
+        worker_id: impl Into<String>,
+        lease: Duration,
+        now: SystemTime,
+    ) -> SourcedResult {
+        let until_secs = Self::lease_deadline_secs(now, lease)?;
         self.claim(worker_id.into(), until_secs)
     }
 
@@ -404,6 +431,24 @@ mod tests {
 
         message.complete().unwrap();
         assert!(message.is_published());
+    }
+
+    #[test]
+    fn expired_in_flight_message_can_be_claimed_again() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message
+            .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        assert!(message.has_expired_lease_at(SystemTime::now()));
+        assert!(message.is_claimable_at(SystemTime::now()));
+
+        message
+            .claim_for("worker-2", Duration::from_secs(60))
+            .unwrap();
+
+        assert_eq!(message.worker_id.as_deref(), Some("worker-2"));
+        assert_eq!(message.attempts, 2);
     }
 
     #[test]

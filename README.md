@@ -580,6 +580,11 @@ let repo = HashMapRepository::new()
 
 Each outbox message is its own aggregate, committed alongside your domain entity:
 
+Outbox messages are explicit publication records. Aggregate event records are
+write-side replay history; they become domain events, integration events,
+commands, or transport messages only when application code creates an
+`OutboxMessage` for that purpose.
+
 ```rust
 use sourced_rust::{OutboxCommitExt, OutboxMessage};
 
@@ -614,15 +619,29 @@ use sourced_rust::{LogPublisher, OutboxRepositoryExt, OutboxWorker};
 use std::time::Duration;
 
 let repo = HashMapRepository::new();
-let mut worker = OutboxWorker::new(LogPublisher::new());
+let worker_id = "worker-1";
+let mut worker = OutboxWorker::new(LogPublisher::new())
+    .with_worker_id(worker_id)
+    .with_max_attempts(3);
 
-let mut claimed = repo.claim_outbox_messages("worker-1", 100, Duration::from_secs(30))?;
-let _ = worker.process_batch(&mut claimed);
+let claimed = repo.claim_outbox_messages(worker_id, 100, Duration::from_secs(30))?;
 
-for message in &mut claimed {
-    repo.commit(&mut message.entity)?;
+for mut message in claimed {
+    let result = worker.process_message(&mut message)?;
+    if result.completed {
+        repo.complete_outbox_message_for_worker(message.id(), worker_id)?;
+    } else if result.released || result.failed {
+        let error = message.last_error.as_deref().unwrap_or("publish failed");
+        repo.record_outbox_publish_failure(message.id(), worker_id, error, 3)?;
+    }
 }
 ```
+
+Claims use leases. Pending messages and expired in-flight messages can be
+claimed by workers, while unexpired in-flight messages are skipped so competing
+workers do not publish the same message concurrently. Repository-backed workers
+should record publish failures with a retry ceiling; exhausted messages move to
+`Failed` instead of being released forever.
 
 ## Service Bus
 
