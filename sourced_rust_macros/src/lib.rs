@@ -339,6 +339,11 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// `sourced_rust::EventRecordError`; explicit `Result` methods should return
 /// `Ok(())` from the original body.
 ///
+/// The generated digest call runs before the original method body. This means
+/// serialization errors are returned before the method mutates state. If the
+/// method can reject a command for domain validation reasons, prefer calling
+/// `self.entity.digest(...)?` explicitly after validation and before mutation.
+///
 /// # Usage
 ///
 /// Basic usage with function parameters (automatically captured):
@@ -354,6 +359,21 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// #[digest("Completed", when = !self.completed)]
 /// fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
 ///     self.completed = true;
+///     Ok(())
+/// }
+/// ```
+/// The guard wraps both the digest call and the method body, so a false guard
+/// records no event and skips the body.
+///
+/// With validation inside the command body, use explicit digesting:
+/// ```ignore
+/// fn rename(&mut self, title: String) -> Result<(), TodoError> {
+///     if title.trim().is_empty() {
+///         return Err(TodoError::EmptyTitle);
+///     }
+///
+///     self.entity.digest("Renamed", &(title.clone(),))?;
+///     self.title = title;
 ///     Ok(())
 /// }
 /// ```
@@ -823,6 +843,12 @@ struct EventMethodInfo {
 
 /// Attribute macro that generates a typed event enum, `TryFrom<&EventRecord>`,
 /// and `impl Aggregate` from annotated methods in an impl block.
+///
+/// Each `#[event(...)]` method is rewritten with the same recording order as
+/// `#[digest]`: event recording runs before the original method body, and a
+/// `when = ...` guard wraps both event recording and the body. Use explicit
+/// `self.entity.digest(...)?` calls for commands that need to validate before
+/// deciding whether to record an event.
 ///
 /// # Usage
 ///
