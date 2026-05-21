@@ -40,6 +40,8 @@ pub struct BoardView {
     pub bombs: Vec<BombState>,
     pub explosions: Vec<ExplosionState>,
     pub turn: u32,
+    #[serde(default)]
+    pub explosions_created: u64,
 }
 
 impl BoardView {
@@ -53,6 +55,7 @@ impl BoardView {
             bombs: vec![],
             explosions: vec![],
             turn: 0,
+            explosions_created: 0,
         }
     }
 }
@@ -64,9 +67,11 @@ pub fn build_board(
     bombs: &[&crate::domain::bomb::Bomb],
     explosions: &[&crate::domain::explosion::Explosion],
     turn: u32,
+    explosions_created: u64,
 ) -> BoardView {
     let mut board = BoardView::new(game_id, map.width, map.height, map.tiles.clone());
     board.turn = turn;
+    board.explosions_created = explosions_created;
 
     for p in players {
         board.players.push(PlayerState {

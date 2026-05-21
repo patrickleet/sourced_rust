@@ -11,6 +11,7 @@ pub struct Player {
     pub alive: bool,
     pub max_bombs: u8,
     pub active_bombs: u8,
+    pub bombs_placed: u64,
     pub blast_radius: u8,
 }
 
@@ -24,6 +25,7 @@ impl Player {
         self.alive = true;
         self.max_bombs = 1;
         self.active_bombs = 0;
+        self.bombs_placed = 0;
         self.blast_radius = 2;
     }
 
@@ -41,6 +43,7 @@ impl Player {
     #[digest("BombPlaced", when = self.alive && self.active_bombs < self.max_bombs)]
     pub fn place_bomb(&mut self) {
         self.active_bombs += 1;
+        self.bombs_placed += 1;
     }
 
     #[digest("BombReturned")]
