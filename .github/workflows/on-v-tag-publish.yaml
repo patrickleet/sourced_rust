@@ -25,3 +25,12 @@ jobs:
     with:
       manifest_path: Cargo.toml
       cargo_publish_args: "--locked"
+
+  release:
+    needs: publish
+    permissions:
+      contents: write
+    uses: unbounded-tech/workflow-simple-release/.github/workflows/workflow.yaml@main
+    with:
+      tag: ${{ github.ref_name }}
+      name: ${{ github.ref_name }}
