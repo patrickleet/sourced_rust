@@ -219,6 +219,7 @@ impl InMemoryQueue {
         recover_write(&self.log).clear();
         *recover_mutex(&self.position) = 0;
         recover_mutex(&self.acked).clear();
+        recover_write(&self.queues).clear();
     }
 
     /// Subscribe to specific event types, returning a filtered receiver.
@@ -627,16 +628,24 @@ mod tests {
             .unwrap();
         queue.poll(10).unwrap();
         queue.ack("evt-1").unwrap();
+        queue
+            .send("tasks", Event::with_string_payload("task-1", "Task", "{}"))
+            .unwrap();
 
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.current_position(), 1);
         assert_eq!(queue.acknowledged().len(), 1);
+        assert!(queue.listen("tasks", 0).unwrap().is_some());
+        queue
+            .send("tasks", Event::with_string_payload("task-2", "Task", "{}"))
+            .unwrap();
 
         queue.clear();
 
         assert_eq!(queue.len(), 0);
         assert_eq!(queue.current_position(), 0);
         assert!(queue.acknowledged().is_empty());
+        assert!(queue.listen("tasks", 0).unwrap().is_none());
     }
 
     #[test]
