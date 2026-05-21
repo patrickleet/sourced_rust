@@ -70,6 +70,7 @@ fn extract_id_field(input: &DeriveInput) -> syn::Result<syn::Ident> {
         ));
     };
 
+    let mut explicit_id: Option<syn::Ident> = None;
     for field in &fields.named {
         for attr in &field.attrs {
             if attr.path().is_ident("readmodel") {
@@ -81,12 +82,25 @@ fn extract_id_field(input: &DeriveInput) -> syn::Result<syn::Ident> {
                     Ok(())
                 })?;
                 if is_id {
-                    return field.ident.clone().ok_or_else(|| {
+                    let ident = field.ident.clone().ok_or_else(|| {
                         syn::Error::new_spanned(field, "ReadModel id field must be named")
-                    });
+                    })?;
+                    if let Some(previous) = &explicit_id {
+                        return Err(syn::Error::new_spanned(
+                            field,
+                            format!(
+                                "Multiple #[readmodel(id)] fields found: `{}` and `{}`",
+                                previous, ident
+                            ),
+                        ));
+                    }
+                    explicit_id = Some(ident);
                 }
             }
         }
+    }
+    if let Some(ident) = explicit_id {
+        return Ok(ident);
     }
 
     // Default: look for a field named "id"
@@ -167,6 +181,27 @@ mod tests {
 
         assert!(
             err.to_string().contains("field named `id`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_multiple_explicit_id_attributes() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                #[readmodel(id)]
+                counter_id: String,
+                #[readmodel(id)]
+                tenant_id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("multiple ids should return an error");
+
+        assert!(
+            err.to_string()
+                .contains("Multiple #[readmodel(id)] fields found"),
             "unexpected error: {err}"
         );
     }
