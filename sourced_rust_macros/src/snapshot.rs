@@ -4,25 +4,44 @@ use syn::{Data, DeriveInput, Fields, LitStr};
 
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
+    match expand_snapshot(input) {
+        Ok(expanded) => TokenStream::from(expanded),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let snapshot_name = format_ident!("{}Snapshot", name);
 
     // Parse struct-level #[snapshot(...)] attributes
-    let (entity_field_name, custom_id) = parse_struct_attrs(&input);
-    let entity_field = format_ident!("{}", entity_field_name);
+    let (entity_field, custom_id) = parse_struct_attrs(&input)?;
 
     // Collect eligible fields (exclude entity field and #[serde(skip)] fields)
     let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Named(fields) => &fields.named,
-            _ => panic!("Snapshot derive only supports structs with named fields"),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &data_struct.fields,
+                    "Snapshot derive requires named fields",
+                ));
+            }
         },
-        _ => panic!("Snapshot derive only supports structs"),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input,
+                "Snapshot derive can only be used on structs with named fields",
+            ));
+        }
     };
 
     let mut snapshot_fields = Vec::new();
     for field in fields {
-        let ident = field.ident.as_ref().unwrap();
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new_spanned(field, "Snapshot field must be named"))?;
 
         // Skip the entity field
         if *ident == entity_field {
@@ -39,9 +58,7 @@ pub fn derive_snapshot(input: TokenStream) -> TokenStream {
 
     // Determine if custom_id matches an existing field
     let has_custom_id = custom_id.is_some();
-    let id_field_name = custom_id
-        .map(|s| format_ident!("{}", s))
-        .unwrap_or_else(|| format_ident!("id"));
+    let id_field_name = custom_id.unwrap_or_else(|| format_ident!("id"));
 
     // Check if id_field_name already exists in snapshot_fields
     let id_already_in_fields = snapshot_fields.iter().any(|(n, _)| *n == id_field_name);
@@ -88,7 +105,7 @@ pub fn derive_snapshot(input: TokenStream) -> TokenStream {
         .map(|(n, _)| quote! { self.#n = snapshot.#n; })
         .collect();
 
-    let expanded = quote! {
+    Ok(quote! {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
         pub struct #snapshot_name {
             #(#struct_field_defs),*
@@ -115,33 +132,40 @@ pub fn derive_snapshot(input: TokenStream) -> TokenStream {
                 self.#entity_field.set_id(&__id_value);
             }
         }
-    };
-
-    TokenStream::from(expanded)
+    })
 }
 
-fn parse_struct_attrs(input: &DeriveInput) -> (String, Option<String>) {
-    let mut entity_field = "entity".to_string();
-    let mut custom_id: Option<String> = None;
+fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<(syn::Ident, Option<syn::Ident>)> {
+    let mut entity_field = format_ident!("entity");
+    let mut custom_id: Option<syn::Ident> = None;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("snapshot") {
             continue;
         }
 
-        let _ = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("entity") {
                 let value: LitStr = meta.value()?.parse()?;
-                entity_field = value.value();
+                entity_field = parse_snapshot_ident(&value, "entity")?;
             } else if meta.path.is_ident("id") {
                 let value: LitStr = meta.value()?.parse()?;
-                custom_id = Some(value.value());
+                custom_id = Some(parse_snapshot_ident(&value, "id")?);
             }
             Ok(())
-        });
+        })?;
     }
 
-    (entity_field, custom_id)
+    Ok((entity_field, custom_id))
+}
+
+fn parse_snapshot_ident(value: &LitStr, attr_name: &str) -> syn::Result<syn::Ident> {
+    value.parse().map_err(|err| {
+        syn::Error::new(
+            value.span(),
+            format!("expected identifier for snapshot {attr_name} attribute: {err}"),
+        )
+    })
 }
 
 fn has_serde_skip(attrs: &[syn::Attribute]) -> bool {
@@ -163,4 +187,72 @@ fn has_serde_skip(attrs: &[syn::Attribute]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_snapshot_accepts_named_struct() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let expanded = expand_snapshot(input).unwrap().to_string();
+
+        assert!(expanded.contains("pub struct TodoSnapshot"));
+        assert!(expanded.contains("impl sourced_rust :: Snapshottable for Todo"));
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_tuple_structs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Todo(String);
+        };
+
+        let err = expand_snapshot(input).expect_err("tuple struct should return an error");
+
+        assert!(
+            err.to_string().contains("requires named fields"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_enums() {
+        let input: DeriveInput = syn::parse_quote! {
+            enum Todo {
+                Created,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("enum should return an error");
+
+        assert!(
+            err.to_string().contains("can only be used on structs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_invalid_id_identifiers() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(id = "not-valid")]
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("invalid id should return an error");
+
+        assert!(
+            err.to_string().contains("expected identifier"),
+            "unexpected error: {err}"
+        );
+    }
 }
