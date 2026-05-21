@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{digest, Entity, Snapshottable};
 
+pub type InitializedV1 = (String, String, String);
+pub type InitializedV2 = (String, String, String, u8);
+pub type InitializedV3 = (String, String, String, u8, String);
+
 // =============================================================================
 // V1 aggregate: original schema
 // =============================================================================
@@ -38,9 +42,8 @@ sourced_rust::aggregate!(TodoV1, entity {
 // =============================================================================
 
 /// Upcasts Initialized v1 (id, user_id, task) → v2 (id, user_id, task, priority)
-pub fn upcast_initialized_v1_v2(payload: &[u8]) -> Vec<u8> {
-    let (id, user_id, task): (String, String, String) = bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, user_id, task, 0u8)).unwrap()
+pub fn upcast_initialized_v1_v2((id, user_id, task): InitializedV1) -> InitializedV2 {
+    (id, user_id, task, 0)
 }
 
 #[derive(Default)]
@@ -71,7 +74,7 @@ sourced_rust::aggregate!(TodoV2, entity {
     "Initialized"(id, user_id, task, priority) => initialize,
     "Completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
+    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
 ]);
 
 // =============================================================================
@@ -79,11 +82,8 @@ sourced_rust::aggregate!(TodoV2, entity {
 // =============================================================================
 
 /// Upcasts Initialized v2 (id, user_id, task, priority) → v3 (id, user_id, task, priority, due_date)
-pub fn upcast_initialized_v2_v3(payload: &[u8]) -> Vec<u8> {
-    let (id, user_id, task, priority): (String, String, String, u8) =
-        bitcode::deserialize(payload).unwrap();
-    // Default due_date: empty string meaning "no due date"
-    bitcode::serialize(&(id, user_id, task, priority, String::new())).unwrap()
+pub fn upcast_initialized_v2_v3((id, user_id, task, priority): InitializedV2) -> InitializedV3 {
+    (id, user_id, task, priority, String::new())
 }
 
 #[derive(Default)]
@@ -123,8 +123,8 @@ sourced_rust::aggregate!(TodoV3, entity {
     "Initialized"(id, user_id, task, priority, due_date) => initialize,
     "Completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
-    ("Initialized", 2 => 3, upcast_initialized_v2_v3),
+    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("Initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
 ]);
 
 // =============================================================================

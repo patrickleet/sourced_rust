@@ -21,8 +21,8 @@ pub mod snapshot;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
-    upcast_events, BitcodePayloadCodec, Committable, Entity, Event, EventRecord, EventRecordError,
-    EventUpcaster, LocalEvent, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
+    upcast_events, upcast_payload, BitcodePayloadCodec, Committable, Entity, Event, EventRecord,
+    EventRecordError, EventUpcaster, LocalEvent, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
 

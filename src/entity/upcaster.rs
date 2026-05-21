@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use super::EventRecord;
+use serde::{de::DeserializeOwned, Serialize};
+
+use super::{BitcodePayloadCodec, EventRecord, EventRecordError, PayloadCodec};
 
 /// A stateless, pure transformation that converts an event payload from one version to another.
 ///
@@ -11,7 +13,7 @@ pub struct EventUpcaster {
     pub event_type: &'static str,
     pub from_version: u64,
     pub to_version: u64,
-    pub transform: fn(payload: &[u8]) -> Vec<u8>,
+    pub transform: fn(event: &EventRecord) -> Result<Vec<u8>, UpcastError>,
 }
 
 /// Error returned when an upcaster chain cannot make safe forward progress.
@@ -29,6 +31,12 @@ pub enum UpcastError {
     CycleDetected {
         event_type: String,
         version: u64,
+    },
+    PayloadTransform {
+        event_type: String,
+        from: u64,
+        to: u64,
+        source: EventRecordError,
     },
 }
 
@@ -57,11 +65,48 @@ impl fmt::Display for UpcastError {
                 f,
                 "upcaster chain for event {event_type} cycles back to version {version}"
             ),
+            UpcastError::PayloadTransform {
+                event_type,
+                from,
+                to,
+                source,
+            } => write!(
+                f,
+                "failed to upcast event {event_type} from version {from} to {to}: {source}"
+            ),
         }
     }
 }
 
 impl std::error::Error for UpcastError {}
+
+/// Decode an event payload, transform it with typed Rust values, and encode the result.
+pub fn upcast_payload<From, To>(
+    event: &EventRecord,
+    to_version: u64,
+    transform: fn(From) -> To,
+) -> Result<Vec<u8>, UpcastError>
+where
+    From: DeserializeOwned,
+    To: Serialize,
+{
+    let decoded = event
+        .decode::<From>()
+        .map_err(|source| UpcastError::PayloadTransform {
+            event_type: event.event_name.clone(),
+            from: event.event_version,
+            to: to_version,
+            source,
+        })?;
+
+    let transformed = transform(decoded);
+    BitcodePayloadCodec::encode(&transformed).map_err(|source| UpcastError::PayloadTransform {
+        event_type: event.event_name.clone(),
+        from: event.event_version,
+        to: to_version,
+        source: EventRecordError::encode(source),
+    })
+}
 
 /// Apply upcasters to a list of events. Chains automatically (v1->v2->v3).
 pub fn upcast_events(
@@ -106,7 +151,7 @@ fn upcast_one(
                 }
 
                 let next_version = u.to_version;
-                event.payload = (u.transform)(&event.payload);
+                event.payload = (u.transform)(&event)?;
                 event.event_version = next_version;
                 if !seen_versions.insert(next_version) {
                     return Err(UpcastError::CycleDetected {
@@ -129,6 +174,36 @@ fn upcast_one(
 mod tests {
     use super::*;
 
+    fn event_payload<T: Serialize>(value: &T) -> Vec<u8> {
+        BitcodePayloadCodec::encode(value).unwrap()
+    }
+
+    fn add_default_priority((id, task): (String, String)) -> (String, String, u8) {
+        (id, task, 0)
+    }
+
+    fn add_empty_due_date(
+        (id, task, priority): (String, String, u8),
+    ) -> (String, String, u8, String) {
+        (id, task, priority, String::new())
+    }
+
+    fn upcast_test_event_v1_v2(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
+        upcast_payload::<(String, String), (String, String, u8)>(event, 2, add_default_priority)
+    }
+
+    fn upcast_test_event_v2_v3(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
+        upcast_payload::<(String, String, u8), (String, String, u8, String)>(
+            event,
+            3,
+            add_empty_due_date,
+        )
+    }
+
+    fn passthrough(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
+        Ok(event.payload.clone())
+    }
+
     #[test]
     fn no_upcasters_leaves_events_unchanged() {
         let event = EventRecord::new("TestEvent", vec![1, 2, 3], 1);
@@ -139,19 +214,22 @@ mod tests {
 
     #[test]
     fn single_upcaster_transforms_matching_event() {
-        let event = EventRecord::new("TestEvent", vec![1, 2], 1);
+        let event = EventRecord::new(
+            "TestEvent",
+            event_payload(&("id".to_string(), "task".to_string())),
+            1,
+        );
         let upcasters = [EventUpcaster {
             event_type: "TestEvent",
             from_version: 1,
             to_version: 2,
-            transform: |payload| {
-                let mut new = payload.to_vec();
-                new.push(99);
-                new
-            },
+            transform: upcast_test_event_v1_v2,
         }];
         let events = upcast_events(vec![event], &upcasters).unwrap();
-        assert_eq!(events[0].payload, vec![1, 2, 99]);
+        assert_eq!(
+            events[0].decode::<(String, String, u8)>().unwrap(),
+            ("id".to_string(), "task".to_string(), 0)
+        );
         assert_eq!(events[0].event_version, 2);
     }
 
@@ -162,7 +240,7 @@ mod tests {
             event_type: "TestEvent",
             from_version: 1,
             to_version: 2,
-            transform: |_| vec![99],
+            transform: upcast_test_event_v1_v2,
         }];
         let events = upcast_events(vec![event], &upcasters).unwrap();
         assert_eq!(events[0].payload, vec![1, 2]);
@@ -171,61 +249,98 @@ mod tests {
 
     #[test]
     fn chained_upcasters_v1_to_v3() {
-        let event = EventRecord::new("TestEvent", vec![1], 1);
+        let event = EventRecord::new(
+            "TestEvent",
+            event_payload(&("id".to_string(), "task".to_string())),
+            1,
+        );
         let upcasters = [
             EventUpcaster {
                 event_type: "TestEvent",
                 from_version: 1,
                 to_version: 2,
-                transform: |payload| {
-                    let mut new = payload.to_vec();
-                    new.push(2);
-                    new
-                },
+                transform: upcast_test_event_v1_v2,
             },
             EventUpcaster {
                 event_type: "TestEvent",
                 from_version: 2,
                 to_version: 3,
-                transform: |payload| {
-                    let mut new = payload.to_vec();
-                    new.push(3);
-                    new
-                },
+                transform: upcast_test_event_v2_v3,
             },
         ];
         let events = upcast_events(vec![event], &upcasters).unwrap();
-        assert_eq!(events[0].payload, vec![1, 2, 3]);
+        assert_eq!(
+            events[0].decode::<(String, String, u8, String)>().unwrap(),
+            ("id".to_string(), "task".to_string(), 0, String::new())
+        );
         assert_eq!(events[0].event_version, 3);
     }
 
     #[test]
     fn mixed_events_some_upcasted_some_not() {
         let events = vec![
-            EventRecord::new("A", vec![10], 1),
+            EventRecord::new(
+                "A",
+                event_payload(&("id".to_string(), "task".to_string())),
+                1,
+            ),
             EventRecord::new("B", vec![20], 1),
-            EventRecord::new_versioned("A", vec![10, 99], 3, 2),
+            EventRecord::new_versioned(
+                "A",
+                event_payload(&("id".to_string(), "task".to_string(), 99u8)),
+                3,
+                2,
+            ),
         ];
         let upcasters = [EventUpcaster {
             event_type: "A",
             from_version: 1,
             to_version: 2,
-            transform: |payload| {
-                let mut new = payload.to_vec();
-                new.push(99);
-                new
-            },
+            transform: upcast_test_event_v1_v2,
         }];
         let result = upcast_events(events, &upcasters).unwrap();
         // First A: upcasted from v1 to v2
-        assert_eq!(result[0].payload, vec![10, 99]);
+        assert_eq!(
+            result[0].decode::<(String, String, u8)>().unwrap(),
+            ("id".to_string(), "task".to_string(), 0)
+        );
         assert_eq!(result[0].event_version, 2);
         // B: untouched
         assert_eq!(result[1].payload, vec![20]);
         assert_eq!(result[1].event_version, 1);
         // Second A already at v2: untouched
-        assert_eq!(result[2].payload, vec![10, 99]);
+        assert_eq!(
+            result[2].decode::<(String, String, u8)>().unwrap(),
+            ("id".to_string(), "task".to_string(), 99)
+        );
         assert_eq!(result[2].event_version, 2);
+    }
+
+    #[test]
+    fn upcast_events_returns_payload_error_when_decode_fails() {
+        let event = EventRecord::new("A", vec![10], 1);
+        let upcasters = [EventUpcaster {
+            event_type: "A",
+            from_version: 1,
+            to_version: 2,
+            transform: upcast_test_event_v1_v2,
+        }];
+
+        let err = upcast_events(vec![event], &upcasters).unwrap_err();
+
+        match err {
+            UpcastError::PayloadTransform {
+                event_type,
+                from,
+                to,
+                ..
+            } => {
+                assert_eq!(event_type, "A");
+                assert_eq!(from, 1);
+                assert_eq!(to, 2);
+            }
+            other => panic!("expected payload transform error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -235,7 +350,7 @@ mod tests {
             event_type: "A",
             from_version: 1,
             to_version: 1,
-            transform: |payload| payload.to_vec(),
+            transform: passthrough,
         }];
 
         let err = upcast_events(vec![event], &upcasters).unwrap_err();
@@ -256,7 +371,7 @@ mod tests {
             event_type: "A",
             from_version: 3,
             to_version: 2,
-            transform: |payload| payload.to_vec(),
+            transform: passthrough,
         }];
 
         let err = upcast_events(vec![event], &upcasters).unwrap_err();
@@ -279,13 +394,13 @@ mod tests {
                 event_type: "A",
                 from_version: 1,
                 to_version: 2,
-                transform: |payload| payload.to_vec(),
+                transform: passthrough,
             },
             EventUpcaster {
                 event_type: "A",
                 from_version: 2,
                 to_version: 1,
-                transform: |payload| payload.to_vec(),
+                transform: passthrough,
             },
         ];
 

@@ -249,8 +249,15 @@ impl Todo {
 Create events at a specific version for [upcasting](#event-upcasting--versioning):
 
 ```rust
+type InitV1 = (String, String);
+type InitV2 = (String, String, u8);
+
+fn upcast_init_v1_v2((id, task): InitV1) -> InitV2 {
+    (id, task, 0)
+}
+
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, upcast_init_v1_v2),
+    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ))]
 impl TodoV2 {
     #[event("Initialized", version = 2)]
@@ -381,11 +388,18 @@ aggregate!(Todo, entity {
 With [upcasters](#event-upcasting--versioning) for event schema evolution:
 
 ```rust
+type InitV1 = (String, String);
+type InitV2 = (String, String, u8);
+
+fn upcast_initialized_v1_v2((id, task): InitV1) -> InitV2 {
+    (id, task, 0)
+}
+
 aggregate!(Todo, entity {
     "Initialized"(id, task, priority) => initialize,
     "Completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, upcast_initialized_v1_v2),
+    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_initialized_v1_v2),
 ]);
 ```
 
@@ -1251,17 +1265,19 @@ let todo = repo.get("todo-1")?.unwrap();
 
 ## Event Upcasting / Versioning
 
-Event schemas evolve over time. When you add a field to an event (e.g., `priority` to `Initialized`), old serialized events in storage can't deserialize into the new type — especially with bitcode's rigid binary format. **Upcasters** solve this: pure functions that transform old event payloads into the current format at read time, without modifying stored data.
+Event schemas evolve over time. When you add a field to an event (e.g., `priority` to `Initialized`), old serialized events in storage can't deserialize into the new type. **Upcasters** solve this: typed functions that transform old event payload shapes into the current format at read time, without modifying stored data.
 
 ### Defining an Upcaster
 
-An upcaster is a plain function that converts a payload from one version to the next:
+An upcaster is a plain function that converts a typed payload from one version to the next. The crate handles payload decoding and encoding:
 
 ```rust
+type InitV1 = (String, String);
+type InitV2 = (String, String, u8);
+
 /// Upcasts Initialized v1 (id, task) → v2 (id, task, priority)
-fn upcast_init_v1_v2(payload: &[u8]) -> Vec<u8> {
-    let (id, task): (String, String) = bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, task, 0u8)).unwrap()  // default priority = 0
+fn upcast_init_v1_v2((id, task): InitV1) -> InitV2 {
+    (id, task, 0)
 }
 ```
 
@@ -1279,7 +1295,7 @@ struct Todo {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, upcast_init_v1_v2),
+    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ))]
 impl Todo {
     #[event("Initialized", version = 2)]
@@ -1308,7 +1324,7 @@ aggregate!(Todo, entity {
     "Initialized"(id, task, priority) => initialize,
     "Completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, upcast_init_v1_v2),
+    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ]);
 ```
 
@@ -1319,19 +1335,21 @@ Old events stored as `(id, task)` at v1 get transparently upcasted to `(id, task
 Upcasters chain automatically. Each transforms one version to the next (v1->v2->v3):
 
 ```rust
-fn upcast_init_v1_v2(payload: &[u8]) -> Vec<u8> {
-    let (id, task): (String, String) = bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, task, 0u8)).unwrap()
+type InitV1 = (String, String);
+type InitV2 = (String, String, u8);
+type InitV3 = (String, String, u8, String);
+
+fn upcast_init_v1_v2((id, task): InitV1) -> InitV2 {
+    (id, task, 0)
 }
 
-fn upcast_init_v2_v3(payload: &[u8]) -> Vec<u8> {
-    let (id, task, priority): (String, String, u8) = bitcode::deserialize(payload).unwrap();
-    bitcode::serialize(&(id, task, priority, String::new())).unwrap()  // add due_date
+fn upcast_init_v2_v3((id, task, priority): InitV2) -> InitV3 {
+    (id, task, priority, String::new())
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, upcast_init_v1_v2),
-    ("Initialized", 2 => 3, upcast_init_v2_v3),
+    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
+    ("Initialized", 2 => 3, InitV2 => InitV3, upcast_init_v2_v3),
 ))]
 impl Todo {
     #[event("Initialized", version = 3)]
@@ -1351,26 +1369,14 @@ A v1 event automatically chains through v1->v2->v3. A v2 event only goes through
 - **No stored data modified**: Upcasters are read-time transformations. The event store is never touched.
 - **Zero overhead when unused**: If an aggregate has no upcasters, `hydrate()` takes the fast path with no extra allocation.
 
-### The `EventUpcaster` Struct
+### Direct Upcasting
 
-Under the hood, each upcaster is a plain struct with a function pointer — no traits, no boxing:
-
-```rust
-pub struct EventUpcaster {
-    pub event_type: &'static str,
-    pub from_version: u64,
-    pub to_version: u64,
-    pub transform: fn(payload: &[u8]) -> Vec<u8>,
-}
-```
-
-You can also use `upcast_events()` directly for custom hydration logic:
+You can also use `upcast_events()` directly with an aggregate's registered upcasters for custom hydration logic:
 
 ```rust
-use sourced_rust::{upcast_events, EventUpcaster};
+use sourced_rust::{upcast_events, Aggregate};
 
-let upcasters: &[EventUpcaster] = &[/* ... */];
-let upcasted = upcast_events(events, upcasters);
+let upcasted = upcast_events(events, Todo::upcasters());
 ```
 
 ## Project Structure

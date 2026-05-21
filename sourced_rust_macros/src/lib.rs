@@ -179,6 +179,78 @@ fn generate_enqueue_call(
     }
 }
 
+fn upcaster_wrapper_prefix(owner: &Ident) -> String {
+    owner
+        .to_string()
+        .trim_start_matches("r#")
+        .to_ascii_lowercase()
+}
+
+fn generate_upcaster_tokens(
+    owner: &Ident,
+    upcasters: &[UpcasterDef],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    if upcasters.is_empty() {
+        return (quote! {}, quote! {});
+    }
+
+    let prefix = upcaster_wrapper_prefix(owner);
+    let wrapper_names: Vec<_> = upcasters
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| format_ident!("__sourced_upcast_{}_{}", prefix, idx))
+        .collect();
+
+    let wrapper_defs = upcasters
+        .iter()
+        .zip(wrapper_names.iter())
+        .map(|(u, wrapper)| {
+            let source_type = &u.source_type;
+            let target_type = &u.target_type;
+            let to_version = &u.to_version;
+            let transform_fn = &u.transform_fn;
+            quote! {
+                fn #wrapper(
+                    event: &sourced_rust::EventRecord,
+                ) -> Result<Vec<u8>, sourced_rust::UpcastError> {
+                    sourced_rust::upcast_payload::<#source_type, #target_type>(
+                        event,
+                        #to_version,
+                        #transform_fn,
+                    )
+                }
+            }
+        });
+
+    let upcaster_entries = upcasters
+        .iter()
+        .zip(wrapper_names.iter())
+        .map(|(u, wrapper)| {
+            let event_name = &u.event_name;
+            let from_version = &u.from_version;
+            let to_version = &u.to_version;
+            quote! {
+                sourced_rust::EventUpcaster {
+                    event_type: #event_name,
+                    from_version: #from_version,
+                    to_version: #to_version,
+                    transform: #wrapper,
+                }
+            }
+        });
+
+    let upcasters_method = quote! {
+        fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
+            static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
+                #(#upcaster_entries),*
+            ];
+            UPCASTERS
+        }
+    };
+
+    (quote! { #(#wrapper_defs)* }, upcasters_method)
+}
+
 // ============================================================================
 // #[enqueue] attribute macro
 // ============================================================================
@@ -543,35 +615,12 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
         }
     });
 
-    // Generate upcasters() method if upcasters are defined
-    let upcasters_method = if input.upcasters.is_empty() {
-        quote! {}
-    } else {
-        let upcaster_entries = input.upcasters.iter().map(|u| {
-            let event_name = &u.event_name;
-            let from_version = &u.from_version;
-            let to_version = &u.to_version;
-            let transform_fn = &u.transform_fn;
-            quote! {
-                sourced_rust::EventUpcaster {
-                    event_type: #event_name,
-                    from_version: #from_version,
-                    to_version: #to_version,
-                    transform: #transform_fn,
-                }
-            }
-        });
-        quote! {
-            fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
-                static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
-                    #(#upcaster_entries),*
-                ];
-                UPCASTERS
-            }
-        }
-    };
+    let (upcaster_wrappers, upcasters_method) =
+        generate_upcaster_tokens(agg_name, &input.upcasters);
 
     let expanded = quote! {
+        #upcaster_wrappers
+
         impl sourced_rust::Aggregate for #agg_name {
             type ReplayError = String;
 
@@ -605,6 +654,8 @@ struct UpcasterDef {
     event_name: LitStr,
     from_version: syn::LitInt,
     to_version: syn::LitInt,
+    source_type: syn::Type,
+    target_type: syn::Type,
     transform_fn: syn::Path,
 }
 
@@ -681,7 +732,7 @@ impl Parse for AggregateInput {
             syn::bracketed!(upcaster_content in input);
 
             while !upcaster_content.is_empty() {
-                // Parse: ("EventName", from => to, transform_fn)
+                // Parse: ("EventName", from => to, SourceType => TargetType, transform_fn)
                 let inner;
                 syn::parenthesized!(inner in upcaster_content);
 
@@ -691,12 +742,18 @@ impl Parse for AggregateInput {
                 inner.parse::<Token![=>]>()?;
                 let to_version: syn::LitInt = inner.parse()?;
                 inner.parse::<Token![,]>()?;
+                let source_type: syn::Type = inner.parse()?;
+                inner.parse::<Token![=>]>()?;
+                let target_type: syn::Type = inner.parse()?;
+                inner.parse::<Token![,]>()?;
                 let transform_fn: syn::Path = inner.parse()?;
 
                 upcasters.push(UpcasterDef {
                     event_name,
                     from_version,
                     to_version,
+                    source_type,
+                    target_type,
                     transform_fn,
                 });
 
@@ -764,11 +821,17 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
                     inner.parse::<Token![=>]>()?;
                     let to_ver: syn::LitInt = inner.parse()?;
                     inner.parse::<Token![,]>()?;
+                    let source_type: syn::Type = inner.parse()?;
+                    inner.parse::<Token![=>]>()?;
+                    let target_type: syn::Type = inner.parse()?;
+                    inner.parse::<Token![,]>()?;
                     let transform: syn::Path = inner.parse()?;
                     upcasters.push(UpcasterDef {
                         event_name: ev_name,
                         from_version: from_ver,
                         to_version: to_ver,
+                        source_type,
+                        target_type,
                         transform_fn: transform,
                     });
                     if upcaster_content.peek(Token![,]) {
@@ -873,7 +936,7 @@ struct EventMethodInfo {
 /// Options:
 /// - `#[sourced(entity)]` - entity field name
 /// - `#[sourced(entity, events = "CustomName")]` - custom enum name
-/// - `#[sourced(entity, upcasters(("EventName", 1 => 2, upcast_fn)))]` - upcasters
+/// - `#[sourced(entity, upcasters(("EventName", 1 => 2, OldPayload => NewPayload, upcast_fn)))]` - upcasters
 #[proc_macro_attribute]
 pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_sourced_args);
@@ -1075,32 +1138,8 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     });
 
-    let upcasters_method = if args.upcasters.is_empty() {
-        quote! {}
-    } else {
-        let upcaster_entries = args.upcasters.iter().map(|u| {
-            let ev_name = &u.event_name;
-            let from_v = &u.from_version;
-            let to_v = &u.to_version;
-            let transform = &u.transform_fn;
-            quote! {
-                sourced_rust::EventUpcaster {
-                    event_type: #ev_name,
-                    from_version: #from_v,
-                    to_version: #to_v,
-                    transform: #transform,
-                }
-            }
-        });
-        quote! {
-            fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
-                static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
-                    #(#upcaster_entries),*
-                ];
-                UPCASTERS
-            }
-        }
-    };
+    let (upcaster_wrappers, upcasters_method) =
+        generate_upcaster_tokens(&struct_name, &args.upcasters);
 
     let aggregate_impl = quote! {
         impl sourced_rust::Aggregate for #struct_name {
@@ -1134,6 +1173,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         #enum_def
         #event_name_impl
         #try_from_impl
+        #upcaster_wrappers
         #aggregate_impl
     };
 
