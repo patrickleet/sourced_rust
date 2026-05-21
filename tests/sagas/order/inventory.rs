@@ -2,14 +2,6 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::{digest, Entity};
 use std::collections::HashMap;
 
-/// Represents a reservation of inventory for an order
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Reservation {
-    pub order_id: String,
-    pub sku: String,
-    pub quantity: u32,
-}
-
 /// Inventory aggregate - tracks stock levels and reservations
 #[derive(Default)]
 pub struct Inventory {
