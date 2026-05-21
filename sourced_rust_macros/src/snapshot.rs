@@ -37,14 +37,27 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
     };
 
     let mut snapshot_fields = Vec::new();
+    let mut all_field_names = Vec::new();
+    let mut entity_field_found = false;
+
+    if custom_id.as_ref() == Some(&entity_field) {
+        return Err(syn::Error::new_spanned(
+            &entity_field,
+            format!("snapshot entity field `{entity_field}` cannot also be the snapshot id field"),
+        ));
+    }
+
     for field in fields {
         let ident = field
             .ident
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(field, "Snapshot field must be named"))?;
 
+        all_field_names.push(ident.clone());
+
         // Skip the entity field
         if *ident == entity_field {
+            entity_field_found = true;
             continue;
         }
 
@@ -56,9 +69,37 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
         snapshot_fields.push((ident.clone(), field.ty.clone()));
     }
 
+    if !entity_field_found {
+        return Err(syn::Error::new_spanned(
+            &entity_field,
+            format!(
+                "snapshot entity field `{}` must match a named struct field; available fields: {}",
+                entity_field,
+                format_field_names(&all_field_names)
+            ),
+        ));
+    }
+
+    if let Some(id_field) = &custom_id {
+        if !snapshot_fields.iter().any(|(name, _)| name == id_field) {
+            let snapshot_field_names = snapshot_fields
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
+            return Err(syn::Error::new_spanned(
+                id_field,
+                format!(
+                    "snapshot id field `{}` must match a retained snapshot field; available snapshot fields: {}",
+                    id_field,
+                    format_field_names(&snapshot_field_names)
+                ),
+            ));
+        }
+    }
+
     // Determine if custom_id matches an existing field
     let has_custom_id = custom_id.is_some();
-    let id_field_name = custom_id.unwrap_or_else(|| format_ident!("id"));
+    let id_field_name = custom_id.clone().unwrap_or_else(|| format_ident!("id"));
 
     // Check if id_field_name already exists in snapshot_fields
     let id_already_in_fields = snapshot_fields.iter().any(|(n, _)| *n == id_field_name);
@@ -151,6 +192,9 @@ fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<(syn::Ident, Option<sy
             } else if meta.path.is_ident("id") {
                 let value: LitStr = meta.value()?.parse()?;
                 custom_id = Some(parse_snapshot_ident(&value, "id")?);
+            } else {
+                return Err(meta
+                    .error("unsupported key in #[snapshot(...)]; expected `entity` or `id`"));
             }
             Ok(())
         })?;
@@ -166,6 +210,18 @@ fn parse_snapshot_ident(value: &LitStr, attr_name: &str) -> syn::Result<syn::Ide
             format!("expected identifier for snapshot {attr_name} attribute: {err}"),
         )
     })
+}
+
+fn format_field_names(names: &[syn::Ident]) -> String {
+    if names.is_empty() {
+        return "<none>".to_string();
+    }
+
+    names
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn has_serde_skip(attrs: &[syn::Attribute]) -> bool {
@@ -252,6 +308,110 @@ mod tests {
 
         assert!(
             err.to_string().contains("expected identifier"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_unknown_attribute_keys() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(collection = "todos")]
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("unknown key should return an error");
+
+        assert!(
+            err.to_string().contains("unsupported key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_missing_entity_field() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(entity = "state")]
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("missing entity field should return an error");
+
+        assert!(
+            err.to_string().contains("snapshot entity field `state`"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("entity, task"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_missing_custom_id_field() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(id = "sku")]
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("missing id field should return an error");
+
+        assert!(
+            err.to_string().contains("snapshot id field `sku`"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("task"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_skipped_custom_id_field() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(id = "sku")]
+            struct Inventory {
+                entity: sourced_rust::Entity,
+                #[serde(skip)]
+                sku: String,
+                quantity: i32,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("skipped id field should return an error");
+
+        assert!(
+            err.to_string().contains("retained snapshot field"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("quantity"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_entity_field_as_custom_id() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(id = "entity")]
+            struct Todo {
+                entity: sourced_rust::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("entity id should return an error");
+
+        assert!(
+            err.to_string().contains("cannot also be the snapshot id field"),
             "unexpected error: {err}"
         );
     }
