@@ -50,17 +50,20 @@ Recommended table name: `aggregate_events`.
 | --- | --- | --- |
 | `aggregate_type` | `text` | Stable aggregate type name; `NOT NULL`. |
 | `aggregate_id` | `text` | Aggregate stream identifier; `NOT NULL`. |
-| `sequence` | `bigint` | One-based stream position. |
-| `event_name` | `text` | Stable replay event record name. |
-| `event_version` | `integer` | Payload schema version, default `1`. |
-| `payload` | `bytea` | Encoded event payload bytes. |
-| `payload_codec` | `text` | Codec label, initially `bitcode`. |
-| `payload_codec_version` | `integer` | Codec metadata, initially `1`. |
-| `metadata` | `jsonb` | Event metadata, default `{}`. |
-| `recorded_at` | `timestamptz` | UTC instant for the event record. |
+| `sequence` | `bigint` | One-based stream position; `NOT NULL`. |
+| `event_name` | `text` | Stable replay event record name; `NOT NULL`. |
+| `event_version` | `integer` | Payload schema version; `NOT NULL DEFAULT 1`. |
+| `payload` | `bytea` | Encoded event payload bytes; `NOT NULL`. |
+| `payload_codec` | `text` | Codec label, initially `bitcode`; `NOT NULL`. |
+| `payload_codec_version` | `integer` | Codec metadata, initially `1`; `NOT NULL`. |
+| `metadata` | `jsonb` | Event metadata; `NOT NULL DEFAULT '{}'`. |
+| `recorded_at` | `timestamptz` | UTC instant for the event record; `NOT NULL`. |
 
 The DDL must declare `aggregate_type` and `aggregate_id` as `NOT NULL`; the
-checks below also reject empty strings.
+checks below also reject empty strings. `sequence`, `event_name`,
+`event_version`, `payload`, `payload_codec`, `payload_codec_version`,
+`metadata`, and `recorded_at` must also be `NOT NULL`, and `metadata` must
+default to an empty JSON object.
 
 Required constraints:
 
@@ -138,14 +141,15 @@ Recommended table name: `aggregate_snapshots`.
 | --- | --- | --- |
 | `aggregate_type` | `text` | Same stable aggregate type as events; `NOT NULL`. |
 | `aggregate_id` | `text` | Same aggregate ID as events; `NOT NULL`. |
-| `version` | `bigint` | Stream sequence covered by this snapshot. |
-| `payload` | `bytea` | Encoded snapshot payload bytes. |
-| `payload_codec` | `text` | Codec label. |
-| `payload_codec_version` | `integer` | Codec metadata. |
-| `recorded_at` | `timestamptz` | UTC instant for the snapshot. |
+| `version` | `bigint` | Stream sequence covered by this snapshot; `NOT NULL`. |
+| `payload` | `bytea` | Encoded snapshot payload bytes; `NOT NULL`. |
+| `payload_codec` | `text` | Codec label; `NOT NULL`. |
+| `payload_codec_version` | `integer` | Codec metadata; `NOT NULL`. |
+| `recorded_at` | `timestamptz` | UTC instant for the snapshot; `NOT NULL`. |
 
 The DDL must declare `aggregate_type` and `aggregate_id` as `NOT NULL`; the
-checks below also reject empty strings.
+checks below also reject empty strings. `version`, `payload`, `payload_codec`,
+`payload_codec_version`, and `recorded_at` must also be `NOT NULL`.
 
 Required constraints and indexes:
 
@@ -154,6 +158,8 @@ PRIMARY KEY (aggregate_type, aggregate_id, version);
 CHECK (aggregate_type <> '');
 CHECK (aggregate_id <> '');
 CHECK (version > 0);
+CHECK (payload_codec <> '');
+CHECK (payload_codec_version > 0);
 CREATE INDEX aggregate_snapshots_latest
   ON aggregate_snapshots (aggregate_type, aggregate_id, version DESC);
 ```
@@ -161,6 +167,11 @@ CREATE INDEX aggregate_snapshots_latest
 Hydration should load the newest snapshot for the stream, then replay event rows
 where `sequence > snapshot.version` ordered ascending. If no snapshot exists,
 hydrate from sequence `1`.
+
+If the newest snapshot version exceeds the current maximum event sequence for
+the stream, the implementation should reject the load with
+`RepositoryError::Model`. That fail-fast behavior is preferred over continuing
+from an impossible snapshot tail because it surfaces data corruption early.
 
 Snapshot retention is implementation-specific but must be explicit. The
 contract permits multiple snapshots per stream. A Postgres implementation must
