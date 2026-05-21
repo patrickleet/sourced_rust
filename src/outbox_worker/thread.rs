@@ -6,6 +6,7 @@
 use std::sync::mpsc::{channel, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::{error::Error, fmt};
 
 use crate::bus::{Event, Publisher, Sender as BusSender};
 use crate::OutboxRepositoryExt;
@@ -17,6 +18,18 @@ pub struct WorkerStats {
     pub messages_failed: usize,
     pub polls: usize,
 }
+
+/// Error returned when an outbox worker thread fails during shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboxWorkerJoinError;
+
+impl fmt::Display for OutboxWorkerJoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "outbox worker thread panicked during shutdown")
+    }
+}
+
+impl Error for OutboxWorkerJoinError {}
 
 /// A background thread that drains outbox messages and publishes to a bus.
 ///
@@ -40,7 +53,7 @@ pub struct WorkerStats {
 /// // ... do work ...
 ///
 /// // Stop the worker and get stats
-/// let stats = worker.stop();
+/// let stats = worker.stop()?;
 /// println!("Published {} messages", stats.messages_published);
 /// ```
 pub struct OutboxWorkerThread {
@@ -216,12 +229,15 @@ impl OutboxWorkerThread {
 
     /// Signal the worker to stop and wait for it to finish.
     /// Returns the worker statistics.
-    pub fn stop(mut self) -> WorkerStats {
+    ///
+    /// Returns [`OutboxWorkerJoinError`] if the worker thread panicked before
+    /// shutdown completed.
+    pub fn stop(mut self) -> Result<WorkerStats, OutboxWorkerJoinError> {
         let _ = self.stop_tx.send(());
         if let Some(handle) = self.handle.take() {
-            handle.join().unwrap_or_default()
+            handle.join().map_err(|_| OutboxWorkerJoinError)
         } else {
-            WorkerStats::default()
+            Ok(WorkerStats::default())
         }
     }
 
@@ -235,5 +251,51 @@ impl Drop for OutboxWorkerThread {
     fn drop(&mut self) {
         let _ = self.stop_tx.send(());
         // Don't join on drop - let the thread finish naturally
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_returns_stats_when_worker_exits_cleanly() {
+        let (stop_tx, stop_rx) = channel();
+        let handle = thread::spawn(move || {
+            let _ = stop_rx.recv();
+            WorkerStats {
+                messages_published: 2,
+                messages_failed: 1,
+                polls: 3,
+            }
+        });
+        let worker = OutboxWorkerThread {
+            stop_tx,
+            handle: Some(handle),
+        };
+
+        let stats = worker.stop().unwrap();
+
+        assert_eq!(stats.messages_published, 2);
+        assert_eq!(stats.messages_failed, 1);
+        assert_eq!(stats.polls, 3);
+    }
+
+    #[test]
+    fn stop_returns_error_when_worker_thread_panics() {
+        let (stop_tx, _stop_rx) = channel();
+        let handle = thread::spawn(|| -> WorkerStats {
+            panic!("worker panic");
+        });
+        let worker = OutboxWorkerThread {
+            stop_tx,
+            handle: Some(handle),
+        };
+
+        let err = worker
+            .stop()
+            .expect_err("worker thread panic should be returned");
+
+        assert_eq!(err, OutboxWorkerJoinError);
     }
 }
