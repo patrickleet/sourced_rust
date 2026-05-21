@@ -39,6 +39,12 @@ Event payload bytes are currently bitcode-encoded. Postgres rows must carry code
 
 The repository should reject unknown codec labels or versions unless an explicit decoder/upcaster path exists. Payload schema changes still use `event_version` and aggregate upcasters; codec metadata describes the byte encoding, not the domain event version.
 
+## Locking Model
+
+`QueuedRepository` remains a process-local coordination wrapper for examples, tests, and single-process adapters. It complements a Postgres repository but must not be the durable cross-process locking mechanism.
+
+The Postgres repository should enforce optimistic concurrency with the `(aggregate_type, aggregate_id, sequence)` uniqueness constraint. If a queued read/modify/write API is exposed for Postgres, it should use database-backed row locks or advisory locks inside the repository/transaction boundary. Those database locks replace process-local queue locks for cross-process writer coordination; `QueuedRepository` can still wrap a Postgres repository only as an additional in-process convenience layer.
+
 ## Backward Compatibility
 
 Rows or imported JSON records without event metadata deserialize with empty metadata. Postgres migrations should still write `metadata jsonb NOT NULL DEFAULT '{}'` so newly stored rows are explicit.

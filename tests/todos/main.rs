@@ -4,7 +4,8 @@ use aggregate::{Todo, TodoSnapshot};
 use bitcode;
 use sourced_rust::{
     AggregateBuilder, Commit, EventEmitter, GetAggregate, HashMapRepository, LocalEmitterPublisher,
-    LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker, Queueable,
+    LockError, LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker,
+    Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -453,6 +454,72 @@ fn queued_repo_blocks_get_until_commit() {
     tx_release.send(()).unwrap();
     rx_committed.recv().unwrap();
     assert!(rx_done.recv_timeout(Duration::from_millis(500)).is_ok());
+}
+
+#[test]
+fn manual_lock_reports_failure_when_already_held() {
+    let repo = HashMapRepository::new().queued();
+    let id = next_id();
+
+    repo.lock(&id).unwrap();
+    let err = repo.lock(&id).expect_err("second manual lock should fail");
+    let is_lock_failure = matches!(
+        &err,
+        RepositoryError::Lock(LockError::AcquireFailed(message)) if message.contains(&id)
+    );
+
+    assert!(is_lock_failure, "unexpected error: {err}");
+    repo.unlock(&id).unwrap();
+}
+
+#[test]
+fn commit_failure_keeps_lock_until_abort() {
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(
+        id.clone(),
+        "user1".to_string(),
+        "Commit failure lock".to_string(),
+    )
+    .unwrap();
+    repo.commit(&mut todo).unwrap();
+
+    let mut locked = repo.get(&id).unwrap().unwrap();
+    let mut concurrent = repo
+        .repo()
+        .inner()
+        .get_aggregate::<Todo>(&id)
+        .unwrap()
+        .unwrap();
+    concurrent.complete().unwrap();
+    repo.repo().inner().commit(&mut concurrent.entity).unwrap();
+
+    locked.complete().unwrap();
+    let err = repo
+        .commit(&mut locked)
+        .expect_err("stale locked aggregate should fail optimistic commit");
+    assert!(
+        matches!(err, RepositoryError::ConcurrentWrite { .. }),
+        "unexpected error: {err}"
+    );
+
+    let (tx_started, rx_started) = mpsc::channel();
+    let (tx_got, rx_got) = mpsc::channel();
+    let repo_other = Arc::clone(&repo);
+    let id_other = id.clone();
+    thread::spawn(move || {
+        tx_started.send(()).unwrap();
+        let todo = repo_other.get(&id_other).unwrap().unwrap();
+        repo_other.abort(&todo).unwrap();
+        tx_got.send(()).unwrap();
+    });
+
+    rx_started.recv().unwrap();
+    assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
+
+    repo.abort(&locked).unwrap();
+    assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
 #[test]

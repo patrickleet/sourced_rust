@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::entity::{Committable, Entity};
-use crate::lock::{InMemoryLockManager, Lock, LockManager};
+use crate::lock::{InMemoryLockManager, Lock, LockError, LockManager};
 use crate::repository::{
     Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
     TransactionalCommit,
@@ -28,6 +28,17 @@ impl ReadOpts {
     }
 }
 
+/// Repository wrapper that serializes access with process-local per-stream locks.
+///
+/// Locking reads (`get`, `get_many`, `find`, and `find_one`) intentionally keep
+/// matching locks held after returning. Call `commit` to release those locks
+/// after a successful write, or call `abort`/`unlock` when the loaded entity is
+/// no longer being written. Dropping a loaded entity without `commit` or `abort`
+/// leaves its in-memory lock held until an explicit unlock.
+///
+/// Commit releases held locks only after the inner repository succeeds. On
+/// commit errors, locks remain held so callers can inspect state, retry, or
+/// explicitly abort.
 pub struct QueuedRepository<R, L: LockManager = InMemoryLockManager> {
     inner: R,
     lock_manager: Arc<L>,
@@ -71,8 +82,11 @@ impl<R, L: LockManager> QueuedRepository<R, L> {
     }
 
     pub fn lock(&self, id: impl AsRef<str>) -> Result<(), RepositoryError> {
-        let lock = self.ensure_lock(id.as_ref())?;
-        let _ = lock.try_lock()?;
+        let id = id.as_ref();
+        let lock = self.ensure_lock(id)?;
+        if !lock.try_lock()? {
+            return Err(LockError::AcquireFailed(format!("lock for {id} is already held")).into());
+        }
         Ok(())
     }
 
@@ -200,7 +214,9 @@ impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
         let entities = committable.entities_mut();
 
-        // Acquire locks for all entities
+        // Commit releases locks that were acquired by a prior locking read or
+        // manual lock call. It does not acquire ownership itself because this
+        // lock implementation has no guard token or owner tracking.
         let mut locks = Vec::with_capacity(entities.len());
         for entity in &entities {
             locks.push(self.ensure_lock(entity.id())?);
@@ -209,7 +225,7 @@ impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
         // Delegate to inner repository
         let result = self.inner.commit(committable);
 
-        // Unlock on success
+        // Keep locks held on errors so callers can retry or explicitly abort.
         if result.is_ok() {
             for lock in locks {
                 lock.unlock()?;
@@ -223,6 +239,8 @@ impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
 impl<R: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedRepository<R, L> {
     fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
         let ids: Vec<&str> = batch.entities.iter().map(|entity| entity.id()).collect();
+        // See `Commit::commit`: these handles are released after successful
+        // inner commit and intentionally kept held on errors.
         let mut locks = Vec::with_capacity(ids.len());
         for id in ids {
             locks.push(self.ensure_lock(id)?);
