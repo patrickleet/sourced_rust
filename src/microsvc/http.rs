@@ -76,7 +76,10 @@ async fn command_handler<R: Send + Sync + 'static>(
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(err) => {
             let status = status_for_error(&err);
-            let body = json!({ "error": err.to_string() });
+            if status.is_server_error() {
+                eprintln!("microsvc command `{command}` failed: {err}");
+            }
+            let body = json!({ "error": error_message_for_response(&err) });
             (status, Json(body)).into_response()
         }
     }
@@ -89,6 +92,14 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
         HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
         HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn error_message_for_response(error: &HandlerError) -> String {
+    if status_for_error(error).is_server_error() {
+        "Internal server error".to_string()
+    } else {
+        error.to_string()
     }
 }
 
@@ -155,6 +166,31 @@ mod tests {
             assert_eq!(status, expected);
             assert_eq!(status.as_u16(), error.status_code());
             assert!(!status.is_success());
+        }
+    }
+
+    #[test]
+    fn error_message_for_response_preserves_client_errors() {
+        let error = HandlerError::Rejected("invalid command".into());
+
+        assert_eq!(
+            error_message_for_response(&error),
+            "rejected: invalid command"
+        );
+    }
+
+    #[test]
+    fn error_message_for_response_hides_server_errors() {
+        let errors = [
+            HandlerError::Repository(RepositoryError::Model("store failed".into())),
+            HandlerError::Other(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "handler failed",
+            ))),
+        ];
+
+        for error in errors {
+            assert_eq!(error_message_for_response(&error), "Internal server error");
         }
     }
 }
