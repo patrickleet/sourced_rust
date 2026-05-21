@@ -779,6 +779,9 @@ order_repo.outbox(&mut outbox).commit(&mut order)?;
 
 // Other services receive the event via their subscriptions
 let events = bus.subscribe(&["OrderCreated"]);
+
+// Stop the worker and surface any thread panic during shutdown
+let _stats = worker.stop()?;
 ```
 
 ### With Outbox Worker (Point-to-Point)
@@ -823,6 +826,7 @@ repo.outbox(outbox_saga)
     .commit(&mut order)?;
 
 // Worker drains outbox and sends each message to its destination queue
+let _stats = worker.stop()?;
 ```
 
 ## Microservice Framework (`microsvc`)

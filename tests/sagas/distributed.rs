@@ -185,7 +185,7 @@ fn distributed_saga_with_threads() {
             final_order_fulfillment_saga.status()
         );
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -272,7 +272,7 @@ fn distributed_saga_with_threads() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -334,7 +334,7 @@ fn distributed_saga_with_threads() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -392,7 +392,7 @@ fn distributed_saga_with_threads() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -596,7 +596,7 @@ fn distributed_saga_with_send_listen() {
             final_order_fulfillment_saga.status()
         );
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -702,7 +702,7 @@ fn distributed_saga_with_send_listen() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -777,7 +777,7 @@ fn distributed_saga_with_send_listen() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -845,7 +845,7 @@ fn distributed_saga_with_send_listen() {
             }
         }
 
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================
@@ -957,7 +957,7 @@ fn metadata_propagates_across_bus_to_subscriber() {
 
         // Give the outbox worker time to publish
         thread::sleep(Duration::from_millis(200));
-        worker.stop();
+        worker.stop().expect("outbox worker should stop cleanly");
     });
 
     // =========================================================================

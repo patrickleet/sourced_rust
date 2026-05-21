@@ -65,7 +65,7 @@ pub use outbox_worker::{
 
 // Threaded outbox worker (requires bus feature)
 #[cfg(feature = "bus")]
-pub use outbox_worker::{OutboxWorkerThread, WorkerStats};
+pub use outbox_worker::{OutboxWorkerJoinError, OutboxWorkerThread, WorkerStats};
 
 // In-memory queue for testing and development (requires bus feature)
 #[cfg(feature = "bus")]

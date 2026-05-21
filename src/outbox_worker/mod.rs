@@ -48,4 +48,4 @@ pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
 
 // Threaded worker (requires bus feature)
 #[cfg(feature = "bus")]
-pub use thread::{OutboxWorkerThread, WorkerStats};
+pub use thread::{OutboxWorkerJoinError, OutboxWorkerThread, WorkerStats};

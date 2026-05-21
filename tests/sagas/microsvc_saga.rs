@@ -327,10 +327,18 @@ fn saga_distributed() {
     let _inventory_stats = inventory_listen.stop();
     let _payment_stats = payment_listen.stop();
 
-    saga_worker.stop();
-    order_worker.stop();
-    inventory_worker.stop();
-    payment_worker.stop();
+    saga_worker
+        .stop()
+        .expect("outbox worker should stop cleanly");
+    order_worker
+        .stop()
+        .expect("outbox worker should stop cleanly");
+    inventory_worker
+        .stop()
+        .expect("outbox worker should stop cleanly");
+    payment_worker
+        .stop()
+        .expect("outbox worker should stop cleanly");
 
     // === VERIFY FINAL STATE — typed repos return aggregates directly ===
 
