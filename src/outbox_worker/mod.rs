@@ -17,15 +17,22 @@
 //!
 //! ```ignore
 //! use sourced_rust::{OutboxWorker, OutboxRepositoryExt, LogPublisher};
+//! use std::time::Duration;
 //!
 //! // Claim pending messages
-//! let messages = repo.claim_outbox_messages("worker-1", 10, Duration::from_secs(60))?;
+//! let worker_id = "worker-1";
+//! let messages = repo.claim_outbox_messages(worker_id, 10, Duration::from_secs(60))?;
 //!
 //! // Process with a worker
-//! let mut worker = OutboxWorker::new(LogPublisher::default());
-//! for msg in messages {
-//!     worker.process_message(&mut msg);
-//!     repo.complete_outbox_message_for_worker(msg.id(), "worker-1")?;
+//! let mut worker = OutboxWorker::new(LogPublisher::default()).with_worker_id(worker_id);
+//! for mut msg in messages {
+//!     let result = worker.process_message(&mut msg)?;
+//!     if result.completed {
+//!         repo.complete_outbox_message_for_worker(msg.id(), worker_id)?;
+//!     } else if result.released || result.failed {
+//!         let error = msg.last_error.as_deref().unwrap_or("publish failed");
+//!         repo.record_outbox_publish_failure(msg.id(), worker_id, error, 3)?;
+//!     }
 //! }
 //! ```
 

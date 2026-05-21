@@ -33,7 +33,14 @@ pub trait OutboxRepositoryExt: Send + Sync {
         lease: Duration,
     ) -> Result<Vec<OutboxMessage>, RepositoryError>;
 
-    /// Mark an outbox message as completed (published).
+    /// Administrative completion path that does not verify a worker ID.
+    ///
+    /// Worker loops should use [`Self::complete_outbox_message_for_worker`]
+    /// so stale or stolen leases cannot complete messages claimed by another
+    /// worker.
+    #[deprecated(
+        note = "worker code should use complete_outbox_message_for_worker to validate the active claim"
+    )]
     fn complete_outbox_message(&self, message_id: &str) -> Result<(), RepositoryError>;
 
     /// Mark an outbox message as completed if it is still claimed by this worker.
@@ -43,7 +50,14 @@ pub trait OutboxRepositoryExt: Send + Sync {
         worker_id: &str,
     ) -> Result<(), RepositoryError>;
 
-    /// Release an outbox message back to pending (for retry).
+    /// Administrative release path that does not verify a worker ID.
+    ///
+    /// Worker loops should use [`Self::release_outbox_message_for_worker`] or
+    /// [`Self::record_outbox_publish_failure`] so stale or stolen leases cannot
+    /// release messages claimed by another worker.
+    #[deprecated(
+        note = "worker code should use release_outbox_message_for_worker or record_outbox_publish_failure to validate the active claim"
+    )]
     fn release_outbox_message(&self, message_id: &str, error: &str) -> Result<(), RepositoryError>;
 
     /// Release an outbox message if it is still claimed by this worker.
@@ -421,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn missing_message_updates_return_not_found() {
         let repo = HashMapRepository::new();
         let expected = RepositoryError::NotFound {
