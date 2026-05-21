@@ -56,7 +56,7 @@ fn dispatches_from_queue() {
     let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 10);
 
-    let stats = handle.stop();
+    let stats = handle.stop().expect("transport should stop cleanly");
     assert_eq!(stats.handled, 2);
     assert_eq!(stats.failed, 0);
 }
@@ -85,7 +85,7 @@ fn tracks_failures() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let stats = handle.stop();
+    let stats = handle.stop().expect("transport should stop cleanly");
     assert_eq!(stats.handled, 0);
     assert_eq!(stats.failed, 1);
 }
@@ -121,7 +121,7 @@ fn coexists_with_direct_dispatch() {
     assert_eq!(c1.value, 0);
     assert_eq!(c2.value, 0);
 
-    let stats = handle.stop();
+    let stats = handle.stop().expect("transport should stop cleanly");
     assert_eq!(stats.handled, 1);
 }
 
@@ -143,7 +143,7 @@ fn metadata_becomes_session() {
 
     thread::sleep(Duration::from_millis(200));
 
-    let stats = handle.stop();
+    let stats = handle.stop().expect("transport should stop cleanly");
     assert_eq!(stats.handled, 1);
     assert_eq!(stats.failed, 0);
 }
@@ -195,8 +195,8 @@ fn multiple_services_on_different_queues() {
     let counter: Counter = service_a.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 42);
 
-    let stats_a = handle_a.stop();
-    let stats_b = handle_b.stop();
+    let stats_a = handle_a.stop().expect("transport A should stop cleanly");
+    let stats_b = handle_b.stop().expect("transport B should stop cleanly");
     assert_eq!(stats_a.handled, 1);
     assert_eq!(stats_b.handled, 1);
 }

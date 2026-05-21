@@ -1032,7 +1032,7 @@ queue.send("counters", Event::with_string_payload("cmd-1", "counter.create", r#"
 let event = Event::with_string_payload("cmd-2", "counter.create", r#"{"id":"c2"}"#)
     .with_metadata("x-hasura-user-id", "user-42");
 
-let stats = handle.stop();
+let stats = handle.stop()?;
 println!("handled: {}, failed: {}", stats.handled, stats.failed);
 ```
 

@@ -63,7 +63,7 @@ fn dispatches_from_pubsub() {
     thread::sleep(Duration::from_millis(200));
 
     // Stop the worker before reading to avoid lock contention
-    let stats = handle.stop();
+    let stats = handle.stop().expect("transport should stop cleanly");
     assert_eq!(stats.failed, 0);
     assert_eq!(stats.handled, 3);
 

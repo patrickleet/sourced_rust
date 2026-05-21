@@ -322,10 +322,18 @@ fn saga_distributed() {
     }
 
     // === STOP TRANSPORTS AND WORKERS ===
-    let saga_stats = saga_listen.stop();
-    let order_stats = order_listen.stop();
-    let _inventory_stats = inventory_listen.stop();
-    let _payment_stats = payment_listen.stop();
+    let saga_stats = saga_listen
+        .stop()
+        .expect("saga listener should stop cleanly");
+    let order_stats = order_listen
+        .stop()
+        .expect("order listener should stop cleanly");
+    let _inventory_stats = inventory_listen
+        .stop()
+        .expect("inventory listener should stop cleanly");
+    let _payment_stats = payment_listen
+        .stop()
+        .expect("payment listener should stop cleanly");
 
     saga_worker
         .stop()
