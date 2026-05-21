@@ -19,6 +19,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::{error::Error, fmt};
 
 use serde_json::Value;
 
@@ -168,6 +169,21 @@ pub struct TransportStats {
     pub polls: usize,
 }
 
+/// Error returned when a bus transport thread fails during shutdown.
+#[cfg(feature = "bus")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportJoinError;
+
+#[cfg(feature = "bus")]
+impl fmt::Display for TransportJoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "microsvc transport thread panicked during shutdown")
+    }
+}
+
+#[cfg(feature = "bus")]
+impl Error for TransportJoinError {}
+
 /// Handle to a background listener thread. Drop or call `stop()` to shut down.
 #[cfg(feature = "bus")]
 pub struct TransportHandle {
@@ -178,12 +194,15 @@ pub struct TransportHandle {
 #[cfg(feature = "bus")]
 impl TransportHandle {
     /// Stop the transport and wait for it to finish. Returns stats.
-    pub fn stop(mut self) -> TransportStats {
+    ///
+    /// Returns [`TransportJoinError`] if the transport thread panicked before
+    /// shutdown completed.
+    pub fn stop(mut self) -> Result<TransportStats, TransportJoinError> {
         let _ = self.stop_tx.send(());
         if let Some(handle) = self.handle.take() {
-            handle.join().unwrap_or_default()
+            handle.join().map_err(|_| TransportJoinError)
         } else {
-            TransportStats::default()
+            Ok(TransportStats::default())
         }
     }
 
@@ -234,7 +253,7 @@ impl Drop for TransportHandle {
 /// // HTTP dispatch still works on the same service
 /// service.dispatch("counter.create", json!({"id":"c2"}), Session::new())?;
 ///
-/// let stats = handle.stop();
+/// let stats = handle.stop()?;
 /// ```
 #[cfg(feature = "bus")]
 pub fn listen<R, L>(
@@ -307,7 +326,7 @@ where
 ///     Duration::from_millis(50),
 /// );
 ///
-/// let stats = handle.stop();
+/// let stats = handle.stop()?;
 /// ```
 #[cfg(feature = "bus")]
 pub fn subscribe<R, S>(
@@ -563,6 +582,49 @@ mod tests {
         let event = crate::bus::Event::with_string_payload("evt-1", "ping", "not-json");
         let result = service.dispatch_event(&event);
         assert!(matches!(result, Err(HandlerError::DecodeFailed(_))));
+    }
+
+    #[cfg(feature = "bus")]
+    #[test]
+    fn transport_stop_returns_stats_when_thread_exits_cleanly() {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = stop_rx.recv();
+            TransportStats {
+                handled: 2,
+                failed: 1,
+                polls: 3,
+            }
+        });
+        let transport = TransportHandle {
+            stop_tx,
+            handle: Some(handle),
+        };
+
+        let stats = transport.stop().unwrap();
+
+        assert_eq!(stats.handled, 2);
+        assert_eq!(stats.failed, 1);
+        assert_eq!(stats.polls, 3);
+    }
+
+    #[cfg(feature = "bus")]
+    #[test]
+    fn transport_stop_returns_error_when_thread_panics() {
+        let (stop_tx, _stop_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(|| -> TransportStats {
+            panic!("transport panic");
+        });
+        let transport = TransportHandle {
+            stop_tx,
+            handle: Some(handle),
+        };
+
+        let err = transport
+            .stop()
+            .expect_err("transport thread panic should be returned");
+
+        assert_eq!(err, TransportJoinError);
     }
 }
 
