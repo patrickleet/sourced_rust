@@ -9,7 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  publish-macros:
+    uses: unbounded-tech/workflows-rust/.github/workflows/publish.yaml@feat/cargo-publish
+    secrets:
+      crates_io_token: ${{ secrets.CRATES_IO_TOKEN }}
+    with:
+      manifest_path: sourced_rust_macros/Cargo.toml
+      cargo_publish_args: "--locked"
+
   publish:
+    needs: publish-macros
     uses: unbounded-tech/workflows-rust/.github/workflows/publish.yaml@feat/cargo-publish
     secrets:
       crates_io_token: ${{ secrets.CRATES_IO_TOKEN }}
