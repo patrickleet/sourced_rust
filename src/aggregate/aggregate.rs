@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::entity::{upcast_events, Entity, EventRecord, EventUpcaster};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
-    Commit, CommitBatch, Find, Get, Repository, RepositoryError, TransactionalCommit,
+    Commit, CommitBatch, Get, Repository, RepositoryError, TransactionalCommit,
 };
 use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable};
 
@@ -138,98 +138,8 @@ pub trait CommitAggregate: Commit {
 
 impl<R: Commit> CommitAggregate for R {}
 
-/// Extension trait adding aggregate-aware find method.
-pub trait FindAggregate: Find {
-    fn find_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.find(|_| true)?;
-        let mut results = Vec::new();
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                results.push(agg);
-            }
-        }
-        Ok(results)
-    }
-}
-
-impl<R: Find> FindAggregate for R {}
-
-/// Extension trait adding aggregate-aware find_one method.
-pub trait FindOneAggregate: Find {
-    fn find_one_aggregate<A: Aggregate, F>(
-        &self,
-        predicate: F,
-    ) -> Result<Option<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.find(|_| true)?;
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                return Ok(Some(agg));
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl<R: Find> FindOneAggregate for R {}
-
-/// Extension trait adding aggregate-aware exists method.
-pub trait ExistsAggregate: Find {
-    fn exists_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<bool, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.find(|_| true)?;
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-}
-
-impl<R: Find> ExistsAggregate for R {}
-
-/// Extension trait adding aggregate-aware count method.
-pub trait CountAggregate: Find {
-    fn count_aggregate<A: Aggregate, F>(&self, predicate: F) -> Result<usize, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.find(|_| true)?;
-        let mut count = 0;
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-}
-
-impl<R: Find> CountAggregate for R {}
-
 /// Combined extension trait for full repository aggregate support.
-pub trait RepositoryExt:
-    GetAggregate
-    + GetAllAggregates
-    + CommitAggregate
-    + FindAggregate
-    + FindOneAggregate
-    + ExistsAggregate
-    + CountAggregate
-{
-}
+pub trait RepositoryExt: GetAggregate + GetAllAggregates + CommitAggregate {}
 
 impl<R: Repository> RepositoryExt for R {}
 
@@ -315,59 +225,6 @@ where
             .map(|agg| (*agg).entity_mut())
             .collect();
         self.repo.commit_batch(CommitBatch::new(entities))
-    }
-}
-
-impl<R, A> AggregateRepository<R, A>
-where
-    R: Find,
-    A: Aggregate,
-{
-    /// Find all aggregates matching a predicate.
-    pub fn find<F>(&self, predicate: F) -> Result<Vec<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.repo.find(|_| true)?;
-        let mut results = Vec::new();
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                results.push(agg);
-            }
-        }
-        Ok(results)
-    }
-
-    /// Find the first aggregate matching a predicate.
-    pub fn find_one<F>(&self, predicate: F) -> Result<Option<A>, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        let entities = self.repo.find(|_| true)?;
-        for entity in entities {
-            let agg = hydrate::<A>(entity)?;
-            if predicate(&agg) {
-                return Ok(Some(agg));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Check if any aggregate matches a predicate.
-    pub fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        Ok(self.find_one(predicate)?.is_some())
-    }
-
-    /// Count aggregates matching a predicate.
-    pub fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
-    where
-        F: Fn(&A) -> bool,
-    {
-        Ok(self.find(predicate)?.len())
     }
 }
 

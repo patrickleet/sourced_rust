@@ -47,13 +47,9 @@ fn returns_result(sig: &syn::Signature) -> bool {
     match &sig.output {
         ReturnType::Default => false,
         ReturnType::Type(_, ty) => match ty.as_ref() {
-            Type::Path(path) => path
-                .path
-                .segments
-                .last()
-                .is_some_and(|segment| {
-                    segment.ident == "Result" || segment.ident == "SourcedResult"
-                }),
+            Type::Path(path) => path.path.segments.last().is_some_and(|segment| {
+                segment.ident == "Result" || segment.ident == "SourcedResult"
+            }),
             _ => false,
         },
     }

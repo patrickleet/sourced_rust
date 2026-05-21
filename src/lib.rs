@@ -30,15 +30,14 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, Gettable,
-    ReadModelWrite, Repository, RepositoryError, SnapshotWrite, TransactionalCommit,
+    Commit, CommitBatch, Get, GetMany, GetOne, Gettable, ReadModelWrite, Repository,
+    RepositoryError, SnapshotWrite, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
 pub use aggregate::{
-    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, CountAggregate,
-    ExistsAggregate, FindAggregate, FindOneAggregate, GetAggregate, GetAllAggregates,
-    RepositoryExt,
+    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, GetAggregate,
+    GetAllAggregates, RepositoryExt,
 };
 
 pub use hashmap_repo::HashMapRepository;
@@ -82,8 +81,6 @@ pub use outbox_worker::LocalEmitterPublisher;
 
 pub use queued_repo::{
     // WithOpts traits for opting out of locking
-    FindOneWithOpts,
-    FindWithOpts,
     GetAllWithOpts,
     GetWithOpts,
     // Queued repository

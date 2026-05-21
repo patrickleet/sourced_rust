@@ -3,8 +3,7 @@ use std::sync::Arc;
 use crate::entity::{Committable, Entity};
 use crate::lock::{InMemoryLockManager, Lock, LockError, LockManager};
 use crate::repository::{
-    Commit, CommitBatch, Count, Exists, Find, FindOne, Get, GetMany, GetOne, RepositoryError,
-    TransactionalCommit,
+    Commit, CommitBatch, Get, GetMany, GetOne, RepositoryError, TransactionalCommit,
 };
 use crate::snapshot::{SnapshotRecord, SnapshotStore};
 
@@ -30,11 +29,11 @@ impl ReadOpts {
 
 /// Repository wrapper that serializes access with process-local per-stream locks.
 ///
-/// Locking reads (`get`, `get_many`, `find`, and `find_one`) intentionally keep
-/// matching locks held after returning. Call `commit` to release those locks
-/// after a successful write, or call `abort`/`unlock` when the loaded entity is
-/// no longer being written. Dropping a loaded entity without `commit` or `abort`
-/// leaves its in-memory lock held until an explicit unlock.
+/// Locking reads (`get` and `get_many`) intentionally keep matching locks held
+/// after returning. Call `commit` to release those locks after a successful
+/// write, or call `abort`/`unlock` when the loaded entity is no longer being
+/// written. Dropping a loaded entity without `commit` or `abort` leaves its
+/// in-memory lock held until an explicit unlock.
 ///
 /// Commit releases held locks only after the inner repository succeeds. On
 /// commit errors, locks remain held so callers can inspect state, retry, or
@@ -139,77 +138,6 @@ impl<R: GetMany + GetOne, L: LockManager> GetMany for QueuedRepository<R, L> {
     }
 }
 
-impl<R: Find + GetOne, L: LockManager> Find for QueuedRepository<R, L> {
-    fn find<F>(&self, predicate: F) -> Result<Vec<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        // First, find matching entities without locks
-        let entities = self.inner.find(&predicate)?;
-
-        // Lock all matching entity IDs
-        let ids: Vec<&str> = entities.iter().map(|e| e.id()).collect();
-        let _locks = self.lock_ids_in_order(&ids)?;
-
-        // Re-fetch with locks held to ensure consistency
-        let mut results = Vec::with_capacity(entities.len());
-        for id in ids {
-            if let Some(entity) = self.inner.get_one(id)? {
-                if predicate(&entity) {
-                    results.push(entity);
-                }
-            }
-        }
-        Ok(results)
-    }
-}
-
-impl<R: FindOne + GetOne, L: LockManager> FindOne for QueuedRepository<R, L> {
-    fn find_one<F>(&self, predicate: F) -> Result<Option<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        // First, find a matching entity without lock
-        let entity = self.inner.find_one(&predicate)?;
-
-        if let Some(entity) = entity {
-            // Lock the entity
-            let lock = self.ensure_lock(entity.id())?;
-            lock.lock()?;
-
-            // Re-fetch with lock held to ensure consistency
-            if let Some(entity) = self.inner.get_one(entity.id())? {
-                if predicate(&entity) {
-                    return Ok(Some(entity));
-                }
-            }
-            // Entity no longer matches, unlock
-            lock.unlock()?;
-        }
-        Ok(None)
-    }
-}
-
-impl<R: Exists, L: LockManager> Exists for QueuedRepository<R, L> {
-    /// Check if any entity matches (non-locking - just a read check).
-    fn exists<F>(&self, predicate: F) -> Result<bool, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        self.inner.exists(predicate)
-    }
-}
-
-impl<R: Count, L: LockManager> Count for QueuedRepository<R, L> {
-    /// Count matching entities (non-locking - just a read check).
-    fn count<F>(&self, predicate: F) -> Result<usize, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        self.inner.count(predicate)
-    }
-}
-
 impl<R: Commit, L: LockManager> Commit for QueuedRepository<R, L> {
     fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
         let entities = committable.entities_mut();
@@ -272,24 +200,6 @@ pub trait GetAllWithOpts: Get {
     fn get_all_with(&self, ids: &[&str], opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>;
 }
 
-/// Find entities with options.
-pub trait FindWithOpts: Find {
-    fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool;
-}
-
-/// Find one entity with options.
-pub trait FindOneWithOpts: FindOne {
-    fn find_one_with<F>(
-        &self,
-        predicate: F,
-        opts: ReadOpts,
-    ) -> Result<Option<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool;
-}
-
 impl<R: GetOne + GetMany, L: LockManager> GetWithOpts for QueuedRepository<R, L> {
     fn get_with(&self, id: &str, opts: ReadOpts) -> Result<Option<Entity>, RepositoryError> {
         if opts.lock {
@@ -306,36 +216,6 @@ impl<R: GetMany + GetOne, L: LockManager> GetAllWithOpts for QueuedRepository<R,
             self.get_many(ids)
         } else {
             self.inner.get_many(ids)
-        }
-    }
-}
-
-impl<R: Find + GetOne, L: LockManager> FindWithOpts for QueuedRepository<R, L> {
-    fn find_with<F>(&self, predicate: F, opts: ReadOpts) -> Result<Vec<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        if opts.lock {
-            self.find(predicate)
-        } else {
-            self.inner.find(predicate)
-        }
-    }
-}
-
-impl<R: FindOne + GetOne, L: LockManager> FindOneWithOpts for QueuedRepository<R, L> {
-    fn find_one_with<F>(
-        &self,
-        predicate: F,
-        opts: ReadOpts,
-    ) -> Result<Option<Entity>, RepositoryError>
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        if opts.lock {
-            self.find_one(predicate)
-        } else {
-            self.inner.find_one(predicate)
         }
     }
 }

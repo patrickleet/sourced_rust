@@ -114,11 +114,7 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
     } else {
         // Default case: prepend `pub id: String`
         let mut defs = vec![quote! { pub id: String }];
-        defs.extend(
-            snapshot_fields
-                .iter()
-                .map(|(n, ty)| quote! { pub #n: #ty }),
-        );
+        defs.extend(snapshot_fields.iter().map(|(n, ty)| quote! { pub #n: #ty }));
         defs
     };
 
@@ -193,8 +189,9 @@ fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<(syn::Ident, Option<sy
                 let value: LitStr = meta.value()?.parse()?;
                 custom_id = Some(parse_snapshot_ident(&value, "id")?);
             } else {
-                return Err(meta
-                    .error("unsupported key in #[snapshot(...)]; expected `entity` or `id`"));
+                return Err(
+                    meta.error("unsupported key in #[snapshot(...)]; expected `entity` or `id`")
+                );
             }
             Ok(())
         })?;
@@ -368,10 +365,7 @@ mod tests {
             err.to_string().contains("snapshot id field `sku`"),
             "unexpected error: {err}"
         );
-        assert!(
-            err.to_string().contains("task"),
-            "unexpected error: {err}"
-        );
+        assert!(err.to_string().contains("task"), "unexpected error: {err}");
     }
 
     #[test]
@@ -411,7 +405,8 @@ mod tests {
         let err = expand_snapshot(input).expect_err("entity id should return an error");
 
         assert!(
-            err.to_string().contains("cannot also be the snapshot id field"),
+            err.to_string()
+                .contains("cannot also be the snapshot id field"),
             "unexpected error: {err}"
         );
     }
