@@ -1,4 +1,4 @@
-//! Outbox - Atomic commit of aggregates with outbox messages.
+//! Outbox - Atomic commit of aggregates with publishable outbox messages.
 //!
 //! This module provides the outbox message entity and commit helpers:
 //! - `OutboxMessage` - Event-sourced outbox message entity
@@ -6,18 +6,23 @@
 //! - `OutboxCommit` - Helper for aggregate + outbox commits
 //! - `OutboxCommitExt` - Extension trait for repositories
 //!
+//! Outbox messages are durable publication work items. Their payload can be a
+//! domain event, integration event, command, or generic transport message.
+//! Aggregate `EventRecord`s are replayable model history and are not
+//! automatically published as domain events.
+//!
 //! ## Separation of Concerns
 //!
 //! The outbox pattern has two distinct phases:
-//! 1. **Commit phase** (this module) - Atomically commit aggregate + outbox message
-//! 2. **Worker phase** (see `outbox_worker` module) - Drain outbox and publish to external systems
+//! 1. **Commit phase** (this module) - Atomically commit aggregate event records + outbox message
+//! 2. **Worker phase** (see `outbox_worker` module) - Drain outbox and publish messages to external systems
 //!
 //! ## Example
 //!
 //! ```ignore
 //! use sourced_rust::{OutboxMessage, OutboxCommitExt};
 //!
-//! // Create aggregate and outbox message
+//! // Create aggregate and domain event outbox message
 //! let mut order = Order::new();
 //! order.create("order-1", ...);
 //!

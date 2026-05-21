@@ -17,7 +17,13 @@ pub enum OutboxMessageStatus {
     Failed,
 }
 
-/// Event-sourced outbox message.
+/// Durable publication work item stored through the outbox pattern.
+///
+/// `OutboxMessage` is itself event-sourced so claim/publish/fail lifecycle
+/// changes are auditable. Its `event_type` and `payload` describe the message
+/// to publish, which may be a domain event, integration event, command, or
+/// generic transport message. It is distinct from aggregate `EventRecord`s used
+/// for aggregate replay.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OutboxMessage {
     pub entity: Entity,
@@ -63,6 +69,9 @@ impl OutboxMessage {
     }
 
     /// Create a new outbox message with raw bytes payload.
+    ///
+    /// The `event_type` names the publishable message, not an aggregate replay
+    /// record unless the caller intentionally uses the same name.
     pub fn create(
         id: impl Into<String>,
         event_type: impl Into<String>,
@@ -156,10 +165,10 @@ impl OutboxMessage {
         Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
     }
 
-    /// Create a message from a `Snapshottable` aggregate.
+    /// Create a domain-event style message from a `Snapshottable` aggregate.
     ///
-    /// This is the recommended way to create outbox messages — it derives
-    /// everything from the aggregate automatically:
+    /// This is the recommended way to publish an aggregate-derived fact. It
+    /// derives everything from the aggregate automatically:
     /// - **id**: `"{entity_id}:{event_type}:{version}"`
     /// - **payload**: the aggregate's snapshot (via `create_snapshot()`)
     /// - **metadata**: propagated from the entity (correlation IDs, trace context, etc.)

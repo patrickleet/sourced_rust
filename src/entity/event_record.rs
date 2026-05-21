@@ -97,6 +97,11 @@ fn default_payload_codec_version() -> u16 {
     BITCODE_PAYLOAD_CODEC_VERSION
 }
 
+/// Replayable aggregate event record stored in an event-sourced entity stream.
+///
+/// `EventRecord` is model history for aggregate hydration. It is not
+/// automatically a domain event or integration message; publishable messages
+/// belong in the outbox/bus boundary.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,

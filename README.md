@@ -2,9 +2,9 @@
 
 Sourced Rust started as a small event-sourcing toolkit for Rust before expanding to become a full CQRS/ES+AR framework. 
 
-It keeps your domain model as a plain struct (PORS), inspired by POCO/POJO, while giving you append-only events, replay, and persistence.
+It keeps your domain model as a plain struct (PORS), inspired by POCO/POJO, while giving you append-only aggregate event records, replay, and persistence.
 
-It also provides you with tools for producing and consuming events for use locally in a multi-threaded process, or distributed across networks.
+It also provides tools for publishing domain or integration events locally in a multi-threaded process, or across networks.
 
 It is built with stateless vertical and horizontal scaling in Cloud Native environments in mind, and can be used to build a single service that can easily be broken into many later for partition based scaling.
 
@@ -15,7 +15,7 @@ Sourced Rust is inspired by the original [sourced](https://github.com/mateodelno
 ## Design Goals
 
 - Keep domain objects simple and explicit (Plain Old Rust Structs).
-- Make events the source of truth for state.
+- Make aggregate event records the source of truth for model state.
 - Make replay predictable and safe.
 - Keep storage pluggable and testable.
 - Add optional queue-based locking for serialized workflows.
@@ -121,18 +121,29 @@ fn main() {
 ## Core Concepts
 
 - **Entity**: Holds the event history. You embed it in your domain structs.
-- **EventRecord**: An immutable event with name, payload, sequence, timestamp, and optional metadata.
-- **Repository**: Persists and loads entities by event history.
+- **EventRecord**: An immutable aggregate event record with name, payload, sequence, timestamp, and optional metadata. It is replayable model history, not automatically a published domain event.
+- **Repository**: Persists and loads entities by aggregate event history. The event store is optimized for append and replay.
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
 - **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
 - **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration. Use `#[derive(Snapshot)]` to auto-generate the snapshot struct and trait impl.
 - **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
-- **OutboxMessage**: A durable integration event for the outbox pattern. Supports optional `destination` for point-to-point routing and metadata propagation.
+- **OutboxMessage**: A durable publication work item for a domain event, integration event, command, or generic transport message. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
+- **ReadModel**: Query-optimized projection state for UI/API reads. Read models may be updated atomically with a command or eventually from published messages.
 - **Bus**: Service bus with two patterns: `publish/subscribe` (fan-out) and `send/listen` (point-to-point).
 - **EventReceiver**: Filtered subscription that only receives specified event types.
 - **microsvc::Service**: Convention-based command handler framework with pluggable transports (HTTP, gRPC, bus, direct dispatch).
+
+## Terminology And CQRS Boundaries
+
+Event sourcing is the model-level persistence strategy: aggregates record replayable `EventRecord`s when command methods such as `#[digest]` or `#[sourced]` methods succeed. Those records are the write-side history used to hydrate the aggregate.
+
+CQRS is the architectural split between write-side aggregates and query-side read models. A repository can scan aggregate event streams for tests, examples, or administrative tools, but production business queries should usually read from `ReadModel` projections shaped for that query.
+
+Published messages are a separate boundary. An aggregate event record is not automatically a domain event. When other services, projections, or transports need a fact or command, create an `OutboxMessage` and commit it with the aggregate. The outbox payload can represent a domain event, integration event, command, or any other transport message.
+
+The existing names and serialized fields such as `EventRecord::event_name` remain part of the compatibility contract. Terminology cleanup should clarify usage without renaming stored event records unless a migration path is explicitly designed.
 
 ## Pluggable by Default
 
