@@ -42,16 +42,27 @@ impl GameMap {
     }
 
     pub fn collect_power_up(&mut self, x: i32, y: i32) -> SourcedResult<Option<PowerUp>> {
+        let Some(power_up) = self
+            .power_ups
+            .iter()
+            .find(|((px, py), _)| *px == x && *py == y)
+            .map(|(_, power_up)| power_up.clone())
+        else {
+            return Ok(None);
+        };
+
+        self.record_power_up_collected(x, y, power_up.clone())?;
+        Ok(Some(power_up))
+    }
+
+    #[digest("PowerUpCollected")]
+    fn record_power_up_collected(&mut self, x: i32, y: i32, power_up: PowerUp) {
         if let Some(idx) = self
             .power_ups
             .iter()
-            .position(|((px, py), _)| *px == x && *py == y)
+            .position(|((px, py), existing)| *px == x && *py == y && existing == &power_up)
         {
-            let (_, power_up) = self.power_ups.remove(idx);
-            self.entity.digest("PowerUpCollected", &(x, y))?;
-            Ok(Some(power_up))
-        } else {
-            Ok(None)
+            self.power_ups.remove(idx);
         }
     }
 
@@ -128,7 +139,7 @@ impl GameMap {
 sourced_rust::aggregate!(GameMap, entity {
     "MapCreated"(id, width, height, tiles, spawn_points) => create,
     "BlockDestroyed"(x, y) => destroy_block,
-    "PowerUpCollected"(x, y) => collect_power_up,
+    "PowerUpCollected"(x, y, power_up) => record_power_up_collected,
 });
 
 #[cfg(test)]
@@ -155,5 +166,11 @@ mod tests {
         assert_eq!(collected, Some(PowerUp::BombUp));
         assert_eq!(map.entity.events().len(), 1);
         assert_eq!(map.entity.events()[0].event_name, "PowerUpCollected");
+        assert_eq!(
+            map.entity.events()[0]
+                .decode::<(i32, i32, PowerUp)>()
+                .unwrap(),
+            (1, 1, PowerUp::BombUp)
+        );
     }
 }
