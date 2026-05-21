@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::entity::{Committable, Entity, EventRecord};
+use crate::read_model::in_memory::{next_model_version, StoredModel};
 use crate::read_model::{
     InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, Versioned,
 };
@@ -206,10 +207,7 @@ impl TransactionalCommit for HashMapRepository {
 
         // Phase 1: Validate all stream versions before staging any writes.
         for entity in &batch.entities {
-            let stored_len = staged_events
-                .get(entity.id())
-                .map(|v| v.len() as u64)
-                .unwrap_or(0);
+            let stored_len = stored_stream_version(staged_events.get(entity.id()));
             if stored_len != entity.committed_version() {
                 return Err(RepositoryError::ConcurrentWrite {
                     id: entity.id().to_string(),
@@ -229,13 +227,11 @@ impl TransactionalCommit for HashMapRepository {
         }
 
         for write in batch.read_models {
-            let new_version = staged_models
-                .get(&write.key)
-                .map(|s| s.version + 1)
-                .unwrap_or(1);
+            let new_version =
+                next_model_version(&write.key, staged_models.get(&write.key).map(|s| s.version))?;
             staged_models.insert(
                 write.key,
-                crate::read_model::in_memory::StoredModel {
+                StoredModel {
                     bytes: write.bytes,
                     version: new_version,
                 },
@@ -272,6 +268,12 @@ fn reject_duplicate_streams(entities: &[&mut Entity]) -> Result<(), RepositoryEr
         }
     }
     Ok(())
+}
+
+fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
+    // A missing stream has committed version 0; the first appended event will
+    // occupy sequence 1.
+    events.map_or(0, |events| events.len() as u64)
 }
 
 impl ReadModelStore for HashMapRepository {
@@ -398,6 +400,40 @@ mod tests {
         assert_eq!(entity2.committed_version(), 0);
         assert_eq!(entity1.new_events().len(), 1);
         assert_eq!(entity2.new_events().len(), 1);
+    }
+
+    #[test]
+    fn read_model_batch_rejects_version_overflow_without_writing() {
+        let repo = HashMapRepository::new();
+        let key = "test_models:1".to_string();
+        let original_bytes = b"old".to_vec();
+        repo.model_store.storage.write().unwrap().insert(
+            key.clone(),
+            StoredModel {
+                bytes: original_bytes.clone(),
+                version: u64::MAX,
+            },
+        );
+
+        let err = repo
+            .commit_batch(CommitBatch {
+                entities: Vec::new(),
+                read_models: vec![crate::repository::ReadModelWrite::new(
+                    key.clone(),
+                    b"new".to_vec(),
+                )],
+                snapshots: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, RepositoryError::Model(message) if message.contains("version overflow"))
+        );
+
+        let storage = repo.model_store.storage.read().unwrap();
+        let stored = storage.get(&key).unwrap();
+        assert_eq!(stored.version, u64::MAX);
+        assert_eq!(stored.bytes, original_bytes);
     }
 
     #[test]
