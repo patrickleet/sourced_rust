@@ -12,6 +12,24 @@ pub(crate) struct StoredModel {
     pub(crate) version: u64,
 }
 
+pub(crate) const INITIAL_MODEL_VERSION: u64 = 1;
+
+/// Return the next optimistic version for a read model row.
+///
+/// Missing rows start at version 1; existing rows must increment without
+/// overflowing so release builds cannot wrap back to 0.
+pub(crate) fn next_model_version(
+    key: &str,
+    current_version: Option<u64>,
+) -> Result<u64, ReadModelError> {
+    match current_version {
+        Some(version) => version.checked_add(1).ok_or_else(|| {
+            ReadModelError::Storage(format!("read model version overflow for {key}"))
+        }),
+        None => Ok(INITIAL_MODEL_VERSION),
+    }
+}
+
 /// In-memory read model store backed by a HashMap.
 ///
 /// Storage key is `"TABLE:id"`. Clone-friendly via Arc.
@@ -45,7 +63,7 @@ impl InMemoryReadModelStore {
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let new_version = storage.get(key).map(|s| s.version + 1).unwrap_or(1);
+        let new_version = next_model_version(key, storage.get(key).map(|s| s.version))?;
 
         storage.insert(
             key.to_string(),
@@ -89,7 +107,7 @@ impl ReadModelStore for InMemoryReadModelStore {
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let new_version = storage.get(&key).map(|s| s.version + 1).unwrap_or(1);
+        let new_version = next_model_version(&key, storage.get(&key).map(|s| s.version))?;
 
         storage.insert(
             key,
@@ -123,11 +141,17 @@ impl ReadModelStore for InMemoryReadModelStore {
             });
         }
 
-        storage.insert(key, StoredModel { bytes, version: 1 });
+        storage.insert(
+            key,
+            StoredModel {
+                bytes,
+                version: INITIAL_MODEL_VERSION,
+            },
+        );
 
         Ok(Versioned {
             data: model.clone(),
-            version: 1,
+            version: INITIAL_MODEL_VERSION,
         })
     }
 
@@ -162,7 +186,7 @@ impl ReadModelStore for InMemoryReadModelStore {
             });
         }
 
-        let new_version = actual_version + 1;
+        let new_version = next_model_version(&key, Some(actual_version))?;
         storage.insert(
             key,
             StoredModel {
@@ -302,6 +326,54 @@ mod tests {
     }
 
     #[test]
+    fn save_raw_returns_error_on_version_overflow() {
+        let store = InMemoryReadModelStore::new();
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "1");
+        let bytes = serde_json::to_vec(&TestModel {
+            id: "1".into(),
+            value: 1,
+        })
+        .unwrap();
+        store.storage.write().unwrap().insert(
+            key.clone(),
+            StoredModel {
+                bytes,
+                version: u64::MAX,
+            },
+        );
+
+        let err = store.save_raw(&key, b"{}".to_vec()).unwrap_err();
+
+        assert!(
+            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
+        );
+    }
+
+    #[test]
+    fn upsert_returns_error_on_version_overflow() {
+        let store = InMemoryReadModelStore::new();
+        let model = TestModel {
+            id: "1".into(),
+            value: 1,
+        };
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, model.id());
+        let bytes = serde_json::to_vec(&model).unwrap();
+        store.storage.write().unwrap().insert(
+            key,
+            StoredModel {
+                bytes,
+                version: u64::MAX,
+            },
+        );
+
+        let err = store.upsert(&model).unwrap_err();
+
+        assert!(
+            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
+        );
+    }
+
+    #[test]
     fn get_missing_returns_none() {
         let store = InMemoryReadModelStore::new();
         let result = store.get_model::<TestModel>("missing").unwrap();
@@ -338,6 +410,30 @@ mod tests {
         let result = store.update(&updated, 1).unwrap();
         assert_eq!(result.version, 2);
         assert_eq!(result.data.value, 2);
+    }
+
+    #[test]
+    fn update_returns_error_on_version_overflow() {
+        let store = InMemoryReadModelStore::new();
+        let model = TestModel {
+            id: "1".into(),
+            value: 1,
+        };
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, model.id());
+        let bytes = serde_json::to_vec(&model).unwrap();
+        store.storage.write().unwrap().insert(
+            key,
+            StoredModel {
+                bytes,
+                version: u64::MAX,
+            },
+        );
+
+        let err = store.update(&model, u64::MAX).unwrap_err();
+
+        assert!(
+            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
+        );
     }
 
     #[test]
