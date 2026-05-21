@@ -34,6 +34,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+use super::error::HandlerError;
 use super::service::Service;
 use super::session::Session;
 
@@ -73,12 +74,21 @@ async fn command_handler<R: Send + Sync + 'static>(
     let session = session_from_headers(&headers);
     match service.dispatch(&command, input, session) {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(e) => {
-            let status =
-                StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let body = json!({ "error": e.to_string() });
+        Err(err) => {
+            let status = status_for_error(&err);
+            let body = json!({ "error": err.to_string() });
             (status, Json(body)).into_response()
         }
+    }
+}
+
+fn status_for_error(error: &HandlerError) -> StatusCode {
+    match error {
+        HandlerError::UnknownCommand(_) | HandlerError::NotFound(_) => StatusCode::NOT_FOUND,
+        HandlerError::DecodeFailed(_) | HandlerError::GuardRejected(_) => StatusCode::BAD_REQUEST,
+        HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+        HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -93,4 +103,58 @@ fn session_from_headers(headers: &HeaderMap) -> Session {
         }
     }
     Session::from_map(vars)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repository::RepositoryError;
+
+    #[test]
+    fn status_for_error_maps_all_handler_errors() {
+        let cases = vec![
+            (
+                HandlerError::UnknownCommand("missing".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                HandlerError::DecodeFailed("bad json".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                HandlerError::Rejected("invalid command".into()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                HandlerError::NotFound("counter-1".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                HandlerError::Unauthorized("missing user".into()),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                HandlerError::Repository(RepositoryError::Model("store failed".into())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                HandlerError::GuardRejected("counter.create".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                HandlerError::Other(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "handler failed",
+                ))),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let status = status_for_error(&error);
+            assert_eq!(status, expected);
+            assert_eq!(status.as_u16(), error.status_code());
+            assert!(!status.is_success());
+        }
+    }
 }
