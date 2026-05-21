@@ -4,15 +4,22 @@ use syn::{Data, DeriveInput, Fields, LitStr};
 
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
+    match expand_read_model(input) {
+        Ok(expanded) => TokenStream::from(expanded),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
 
     // Extract #[readmodel(collection = "...")] from struct-level attributes
     let collection = extract_collection(&input);
 
     // Extract the field marked with #[readmodel(id)] or default to "id"
-    let id_field = extract_id_field(&input);
+    let id_field = extract_id_field(&input)?;
 
-    let expanded = quote! {
+    Ok(quote! {
         impl sourced_rust::ReadModel for #name {
             const COLLECTION: &'static str = #collection;
 
@@ -20,9 +27,7 @@ pub fn derive_read_model(input: TokenStream) -> TokenStream {
                 &self.#id_field
             }
         }
-    };
-
-    TokenStream::from(expanded)
+    })
 }
 
 fn extract_collection(input: &DeriveInput) -> String {
@@ -50,38 +55,67 @@ fn extract_collection(input: &DeriveInput) -> String {
     format!("{}s", to_snake_case(&name))
 }
 
-fn extract_id_field(input: &DeriveInput) -> syn::Ident {
-    if let Data::Struct(data_struct) = &input.data {
-        if let Fields::Named(fields) = &data_struct.fields {
-            for field in &fields.named {
-                for attr in &field.attrs {
-                    if attr.path().is_ident("readmodel") {
-                        let mut is_id = false;
-                        let _ = attr.parse_nested_meta(|meta| {
-                            if meta.path.is_ident("id") {
-                                is_id = true;
-                            }
-                            Ok(())
-                        });
-                        if is_id {
-                            return field.ident.clone().unwrap();
-                        }
-                    }
-                }
-            }
+fn extract_id_field(input: &DeriveInput) -> syn::Result<syn::Ident> {
+    let Data::Struct(data_struct) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            input,
+            "ReadModel derive can only be used on structs with named fields",
+        ));
+    };
 
-            // Default: look for a field named "id"
-            for field in &fields.named {
-                if let Some(ident) = &field.ident {
-                    if ident == "id" {
-                        return ident.clone();
+    let Fields::Named(fields) = &data_struct.fields else {
+        return Err(syn::Error::new_spanned(
+            &data_struct.fields,
+            "ReadModel derive requires named fields",
+        ));
+    };
+
+    let mut explicit_id: Option<syn::Ident> = None;
+    for field in &fields.named {
+        for attr in &field.attrs {
+            if attr.path().is_ident("readmodel") {
+                let mut is_id = false;
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("id") {
+                        is_id = true;
                     }
+                    Ok(())
+                })?;
+                if is_id {
+                    let ident = field.ident.clone().ok_or_else(|| {
+                        syn::Error::new_spanned(field, "ReadModel id field must be named")
+                    })?;
+                    if let Some(previous) = &explicit_id {
+                        return Err(syn::Error::new_spanned(
+                            field,
+                            format!(
+                                "Multiple #[readmodel(id)] fields found: `{}` and `{}`",
+                                previous, ident
+                            ),
+                        ));
+                    }
+                    explicit_id = Some(ident);
                 }
             }
         }
     }
+    if let Some(ident) = explicit_id {
+        return Ok(ident);
+    }
 
-    panic!("ReadModel derive: no field marked with #[readmodel(id)] and no field named `id`");
+    // Default: look for a field named "id"
+    for field in &fields.named {
+        if let Some(ident) = &field.ident {
+            if ident == "id" {
+                return Ok(ident.clone());
+            }
+        }
+    }
+
+    Err(syn::Error::new_spanned(
+        input,
+        "ReadModel derive requires a field named `id` or a field marked with #[readmodel(id)]",
+    ))
 }
 
 fn to_snake_case(s: &str) -> String {
@@ -91,10 +125,103 @@ fn to_snake_case(s: &str) -> String {
             if i > 0 {
                 result.push('_');
             }
-            result.push(ch.to_lowercase().next().unwrap());
+            result.extend(ch.to_lowercase());
         } else {
             result.push(ch);
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_read_model_accepts_named_id_field() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                id: String,
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("impl sourced_rust :: ReadModel for CounterView"));
+        assert!(expanded.contains("fn id"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_explicit_id_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                id: String,
+                #[readmodel(id)]
+                counter_id: String,
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("& self . counter_id"));
+        assert!(!expanded.contains("& self . id"));
+    }
+
+    #[test]
+    fn expand_read_model_rejects_missing_id_field() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("missing id field should return an error");
+
+        assert!(
+            err.to_string().contains("field named `id`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_multiple_explicit_id_attributes() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                #[readmodel(id)]
+                counter_id: String,
+                #[readmodel(id)]
+                tenant_id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("multiple ids should return an error");
+
+        assert!(
+            err.to_string()
+                .contains("Multiple #[readmodel(id)] fields found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_tuple_structs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView(String);
+        };
+
+        let err = expand_read_model(input).expect_err("tuple struct should return an error");
+
+        assert!(
+            err.to_string().contains("requires named fields"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn snake_case_preserves_multi_char_lowercase_mapping() {
+        assert_eq!(to_snake_case("İdView"), "i\u{307}d_view");
+    }
 }
