@@ -1374,9 +1374,11 @@ A v1 event automatically chains through v1->v2->v3. A v2 event only goes through
 You can also use `upcast_events()` directly with an aggregate's registered upcasters for custom hydration logic:
 
 ```rust
-use sourced_rust::{upcast_events, Aggregate};
+use sourced_rust::{upcast_events, Aggregate, EventRecord, UpcastError};
 
-let upcasted = upcast_events(events, Todo::upcasters());
+fn upcast_for_replay(events: Vec<EventRecord>) -> Result<Vec<EventRecord>, UpcastError> {
+    upcast_events(events, Todo::upcasters())
+}
 ```
 
 ## Project Structure

@@ -234,7 +234,7 @@ fn generate_upcaster_tokens(
                     event_type: #event_name,
                     from_version: #from_version,
                     to_version: #to_version,
-                    transform: #wrapper,
+                    transform: #owner::#wrapper,
                 }
             }
         });
@@ -248,7 +248,14 @@ fn generate_upcaster_tokens(
         }
     };
 
-    (quote! { #(#wrapper_defs)* }, upcasters_method)
+    (
+        quote! {
+            impl #owner {
+                #(#wrapper_defs)*
+            }
+        },
+        upcasters_method,
+    )
 }
 
 // ============================================================================

@@ -49,9 +49,13 @@ pub struct TodoV2 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, Self::upcast_initialized_v1_v2),
 ))]
 impl TodoV2 {
+    pub fn upcast_initialized_v1_v2(payload: InitializedV1) -> InitializedV2 {
+        upcast_initialized_v1_v2(payload)
+    }
+
     #[event("Initialized", version = 2)]
     pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8) {
         self.entity.set_id(&id);

@@ -78,7 +78,16 @@ impl fmt::Display for UpcastError {
     }
 }
 
-impl std::error::Error for UpcastError {}
+impl std::error::Error for UpcastError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            UpcastError::PayloadTransform { source, .. } => Some(source),
+            UpcastError::SameVersionTransition { .. }
+            | UpcastError::BackwardTransition { .. }
+            | UpcastError::CycleDetected { .. } => None,
+        }
+    }
+}
 
 /// Decode an event payload, transform it with typed Rust values, and encode the result.
 pub fn upcast_payload<From, To>(
@@ -341,6 +350,23 @@ mod tests {
             }
             other => panic!("expected payload transform error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn payload_transform_error_exposes_source() {
+        let source = EventRecordError {
+            message: "decode failed".to_string(),
+        };
+        let err = UpcastError::PayloadTransform {
+            event_type: "A".to_string(),
+            from: 1,
+            to: 2,
+            source: source.clone(),
+        };
+
+        let chained = std::error::Error::source(&err).unwrap();
+
+        assert_eq!(chained.to_string(), source.to_string());
     }
 
     #[test]
