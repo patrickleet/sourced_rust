@@ -1,6 +1,6 @@
 [package]
 name = "sourced_rust"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "CQRS/ES framework for Rust using Plain Old Rust Structs — append-only events, replay, snapshots, outbox, service bus, and pluggable infrastructure"
 license = "MIT"
