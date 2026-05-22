@@ -104,7 +104,7 @@ impl<R, L: LockManager> QueuedRepository<R, L> {
     }
 
     fn lock_ids_in_order(&self, ids: &[&str]) -> Result<Vec<Arc<L::Lock>>, RepositoryError> {
-        let mut unique: Vec<&str> = ids.iter().copied().collect();
+        let mut unique: Vec<&str> = ids.to_vec();
         unique.sort_unstable();
         unique.dedup();
 

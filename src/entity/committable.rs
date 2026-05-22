@@ -14,21 +14,21 @@ impl Committable for Entity {
 }
 
 // Slice of mutable Entity references
-impl<'a> Committable for [&'a mut Entity] {
+impl Committable for [&mut Entity] {
     fn entities_mut(&mut self) -> Vec<&mut Entity> {
         self.iter_mut().map(|e| &mut **e).collect()
     }
 }
 
 // Fixed-size arrays for common cases
-impl<'a, const N: usize> Committable for [&'a mut Entity; N] {
+impl<const N: usize> Committable for [&mut Entity; N] {
     fn entities_mut(&mut self) -> Vec<&mut Entity> {
         self.iter_mut().map(|e| &mut **e).collect()
     }
 }
 
 // Vec of mutable Entity references
-impl<'a> Committable for Vec<&'a mut Entity> {
+impl Committable for Vec<&mut Entity> {
     fn entities_mut(&mut self) -> Vec<&mut Entity> {
         self.iter_mut().map(|e| &mut **e).collect()
     }

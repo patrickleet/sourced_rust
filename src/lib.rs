@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as sourced_rust;
 

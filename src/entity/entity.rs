@@ -94,9 +94,10 @@ impl Entity {
     }
 
     pub fn with_id(id: impl Into<String>) -> Self {
-        let mut entity = Entity::default();
-        entity.id = id.into();
-        entity
+        Entity {
+            id: id.into(),
+            ..Entity::default()
+        }
     }
 
     pub fn id(&self) -> &str {

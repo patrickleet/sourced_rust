@@ -45,7 +45,7 @@ impl Gettable for &String {
 }
 
 // Slice of &str
-impl<'a> Gettable for &[&'a str] {
+impl Gettable for &[&str] {
     type Output = Vec<Entity>;
 
     fn get_from<R: GetOne + GetMany>(&self, repo: &R) -> Result<Self::Output, RepositoryError> {
@@ -54,7 +54,7 @@ impl<'a> Gettable for &[&'a str] {
 }
 
 // Fixed-size arrays
-impl<'a, const N: usize> Gettable for [&'a str; N] {
+impl<const N: usize> Gettable for [&str; N] {
     type Output = Vec<Entity>;
 
     fn get_from<R: GetOne + GetMany>(&self, repo: &R) -> Result<Self::Output, RepositoryError> {
@@ -63,7 +63,7 @@ impl<'a, const N: usize> Gettable for [&'a str; N] {
 }
 
 // Fixed-size arrays by reference
-impl<'a, const N: usize> Gettable for &[&'a str; N] {
+impl<const N: usize> Gettable for &[&str; N] {
     type Output = Vec<Entity>;
 
     fn get_from<R: GetOne + GetMany>(&self, repo: &R) -> Result<Self::Output, RepositoryError> {
@@ -72,7 +72,7 @@ impl<'a, const N: usize> Gettable for &[&'a str; N] {
 }
 
 // Vec of &str
-impl<'a> Gettable for Vec<&'a str> {
+impl Gettable for Vec<&str> {
     type Output = Vec<Entity>;
 
     fn get_from<R: GetOne + GetMany>(&self, repo: &R) -> Result<Self::Output, RepositoryError> {
@@ -81,7 +81,7 @@ impl<'a> Gettable for Vec<&'a str> {
 }
 
 // Vec of &str by reference
-impl<'a> Gettable for &Vec<&'a str> {
+impl Gettable for &Vec<&str> {
     type Output = Vec<Entity>;
 
     fn get_from<R: GetOne + GetMany>(&self, repo: &R) -> Result<Self::Output, RepositoryError> {

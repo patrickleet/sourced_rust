@@ -360,7 +360,7 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
         &func.block,
         signature_synthesized,
     );
-    func.block = Box::new(new_body);
+    *func.block = new_body;
 
     TokenStream::from(quote! { #func })
 }
@@ -493,7 +493,7 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
         &func.block,
         signature_synthesized,
     );
-    func.block = Box::new(new_body);
+    *func.block = new_body;
 
     TokenStream::from(quote! { #func })
 }
@@ -1049,6 +1049,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     let enum_def = quote! {
+        #[allow(clippy::enum_variant_names)]
         #[derive(Debug, Clone, PartialEq)]
         pub enum #enum_name {
             #(#enum_variants),*

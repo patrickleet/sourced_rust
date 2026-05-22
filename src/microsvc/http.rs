@@ -153,10 +153,7 @@ mod tests {
                 StatusCode::BAD_REQUEST,
             ),
             (
-                HandlerError::Other(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "handler failed",
-                ))),
+                HandlerError::Other(Box::new(std::io::Error::other("handler failed"))),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ];
@@ -183,10 +180,7 @@ mod tests {
     fn error_message_for_response_hides_server_errors() {
         let errors = [
             HandlerError::Repository(RepositoryError::Model("store failed".into())),
-            HandlerError::Other(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "handler failed",
-            ))),
+            HandlerError::Other(Box::new(std::io::Error::other("handler failed"))),
         ];
 
         for error in errors {

@@ -27,10 +27,13 @@ use super::context::Context;
 use super::error::HandlerError;
 use super::session::Session;
 
+type GuardFn<R> = dyn Fn(&Context<R>) -> bool + Send + Sync;
+type HandlerFn<R> = dyn Fn(&Context<R>) -> Result<Value, HandlerError> + Send + Sync;
+
 /// A registered command handler with optional guard.
 struct CommandHandler<R> {
-    guard: Option<Box<dyn Fn(&Context<R>) -> bool + Send + Sync>>,
-    handle: Box<dyn Fn(&Context<R>) -> Result<Value, HandlerError> + Send + Sync>,
+    guard: Option<Box<GuardFn<R>>>,
+    handle: Box<HandlerFn<R>>,
 }
 
 /// A microservice that routes commands to handler functions.
