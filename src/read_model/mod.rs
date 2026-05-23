@@ -66,7 +66,7 @@ pub trait ReadModel: Serialize + DeserializeOwned + Clone + Send + Sync {
 }
 
 /// A versioned wrapper around read model data for optimistic concurrency control.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Versioned<T> {
     pub data: T,
     pub version: u64,
@@ -129,7 +129,7 @@ impl From<crate::lock::LockError> for ReadModelError {
 pub use in_memory::InMemoryReadModelStore;
 pub use metadata::{
     ColumnDef, ColumnType, ForeignKey, IndexDef, PrimaryKey, ReadModelSchema, RelationalReadModel,
-    RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
+    RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
     DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 pub use queued::QueuedReadModelStore;
@@ -142,7 +142,9 @@ pub use schema::{
 pub use session::{
     DeleteRowMutation, DocumentMutation, ExpectedVersion, PatchMode, PatchRowMutation,
     ProcessedMessageMark, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelSession, ReadModelSessionStore,
-    ReadModelWritePlan, RowMutation, RowPatch, RowWriteMode,
+    ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation,
+    ReadModelQueryCapabilities, ReadModelSession, ReadModelSessionStore,
+    ReadModelSessionUnitOfWork, ReadModelUnitOfWorkExt, ReadModelWritePlan,
+    RelationalReadModelQueryStore, RowMutation, RowPatch, RowWriteMode,
 };
 pub use store::ReadModelStore;

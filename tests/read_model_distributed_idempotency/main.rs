@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::bus::{Event, Publisher, Subscriber};
 use sourced_rust::{
     InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelSession, ReadModelSessionStore,
-    ReadModelStore,
+    ReadModelStore, RowKey, RowValue,
 };
 
 const CONSUMER: &str = "counter-projection";
@@ -30,6 +30,10 @@ fn counter_session(view: &CounterView, message_id: &str) -> ReadModelSession {
         .unwrap()
         .mark_processed(CONSUMER, message_id);
     session
+}
+
+fn relational_counter_key(id: &str) -> RowKey {
+    RowKey::new([("id", RowValue::String(id.into()))])
 }
 
 #[test]
@@ -103,12 +107,14 @@ fn read_model_write_and_processed_mark_are_atomic() {
         .document(&view)
         .unwrap()
         .mark_processed(CONSUMER, "message-1")
+        .expect_version::<RelationalCounter>(relational_counter_key("counter-1"), 99)
+        .unwrap()
         .save(&row)
         .unwrap();
 
     let err = session.commit(&store).unwrap_err();
 
-    assert!(err.to_string().contains("relational row writes"));
+    assert!(err.to_string().contains("not found"));
     assert!(!store.is_processed(CONSUMER, "message-1").unwrap());
     assert!(store
         .get_by_primary_key::<CounterView>("counter-1")
@@ -135,13 +141,15 @@ fn ack_happens_only_after_successful_standalone_commit() {
     };
     let mut failed_session = ReadModelSession::new();
     failed_session
+        .expect_version::<RelationalCounter>(relational_counter_key("counter-1"), 99)
+        .unwrap()
         .save(&row)
         .unwrap()
         .mark_processed(CONSUMER, &failed.id);
 
     let err = failed_session.commit(&store).unwrap_err();
 
-    assert!(err.to_string().contains("relational row writes"));
+    assert!(err.to_string().contains("not found"));
     assert!(queue.acknowledged().is_empty());
     assert!(!store.is_processed(CONSUMER, &failed.id).unwrap());
 
