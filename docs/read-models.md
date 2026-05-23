@@ -142,10 +142,19 @@ read_models.commit()?;
 ```
 
 `has_many` relationships hydrate `Vec<T>` fields. `belongs_to` relationships
-hydrate `Option<T>` fields. Added `has_many` children have delegated foreign keys
-filled before the write plan is staged. Removing a child from a loaded
-collection does not delete storage by default; use an explicit delete operation
-when deletion is intended.
+hydrate `Option<T>` fields.
+
+`save_changes` makes storage match the struct: added items are inserted, changed
+items updated, and **removed items deleted**. For an included `has_many`
+collection, dropping a child from the `Vec<T>` deletes that child row (the loaded
+collection is the complete owned set, so the struct is the source of truth).
+Added children have their delegated foreign keys filled before the write plan is
+staged. Every change — including the delete — lowers to an explicit mutation in
+the `ReadModelWritePlan`; nothing cascades to rows you did not load.
+
+Clearing a `belongs_to` field to `None` is a no-op on the target: it never
+deletes the owner, since other rows may reference it. To delete a whole root,
+use `delete::<Root>(key)`.
 
 This API is for command handlers, projectors, tests, admin tools, and adapter
 conformance that need typed internal includes. It is not a public query DSL.

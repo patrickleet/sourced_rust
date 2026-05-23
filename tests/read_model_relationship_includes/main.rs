@@ -251,7 +251,7 @@ fn save_changes_persists_added_and_modified_related_rows() {
 }
 
 #[test]
-fn save_changes_does_not_delete_removed_related_rows_by_default() {
+fn save_changes_deletes_removed_related_rows() {
     let store = store_with_player_and_weapons([
         weapon("player-1", "shield", "2026-05-24"),
         weapon("player-1", "sword", "2026-05-23"),
@@ -276,7 +276,30 @@ fn save_changes_does_not_delete_removed_related_rows_by_default() {
         .one()
         .unwrap()
         .unwrap();
-    assert_eq!(reloaded.data.weapons.len(), 2);
+    assert_eq!(reloaded.data.weapons.len(), 1);
+    assert_eq!(reloaded.data.weapons[0].weapon_id, "sword");
+}
+
+#[test]
+fn save_changes_clearing_belongs_to_does_not_delete_target() {
+    let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
+    let mut read_models = store.session();
+    let mut loaded = read_models
+        .load::<PlayerWeapon>(weapon_key("player-1", "sword"))
+        .include("player")
+        .one()
+        .unwrap()
+        .unwrap()
+        .data;
+    assert!(loaded.player.is_some());
+    loaded.player = None;
+
+    read_models.save_changes(loaded).unwrap();
+    read_models.commit().unwrap();
+
+    let mut check = store.session();
+    let player = check.load::<Player>(player_key("player-1")).one().unwrap();
+    assert_eq!(player.unwrap().data.display_name, "Ada");
 }
 
 #[test]
