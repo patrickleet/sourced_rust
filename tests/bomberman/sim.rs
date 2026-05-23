@@ -40,7 +40,7 @@ where
     pub fn board(&self) -> Result<Versioned<BoardView>, GameError> {
         self.repo
             .read_models::<BoardView>()
-            .get(&self.game_id)
+            .get_by_primary_key(&self.game_id)
             .map_err(|e| {
                 GameError::Repository(sourced_rust::RepositoryError::Model(e.to_string()))
             })?

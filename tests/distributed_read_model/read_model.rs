@@ -3,10 +3,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sourced_rust::bus::{Bus, Event};
-use sourced_rust::{HashMapRepository, InMemoryQueue, ReadModelsExt};
+use sourced_rust::{
+    InMemoryQueue, InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelSession, ReadModelStore,
+};
 
 use crate::models::aggregates::account::AccountSnapshot;
 use crate::models::readmodels::account_summary::AccountSummary;
+
+pub const ACCOUNT_SUMMARY_CONSUMER: &str = "account-summary-projection";
 
 pub struct ReadModelServiceHandle {
     stop_tx: mpsc::Sender<()>,
@@ -24,7 +28,7 @@ impl ReadModelServiceHandle {
 
 pub fn start_account_summary_service(
     queue: InMemoryQueue,
-    store: HashMapRepository,
+    store: InMemoryReadModelStore,
 ) -> ReadModelServiceHandle {
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -62,22 +66,20 @@ pub fn start_account_summary_service(
     ReadModelServiceHandle { stop_tx, handle }
 }
 
-fn load_summary(store: &HashMapRepository, account_id: &str) -> AccountSummary {
+fn load_summary(store: &InMemoryReadModelStore, account_id: &str) -> AccountSummary {
     store
-        .read_models::<AccountSummary>()
-        .get(account_id)
+        .get_by_primary_key::<AccountSummary>(account_id)
         .expect("read model load should succeed")
         .map(|view| view.data)
         .unwrap_or_else(|| AccountSummary::empty(account_id))
 }
 
-fn project_account_summary(store: &HashMapRepository, event: &Event) {
+fn project_account_summary(
+    store: &InMemoryReadModelStore,
+    event: &Event,
+) -> ReadModelCommitOutcome {
     let snapshot: AccountSnapshot = event.decode().expect("account snapshot should decode");
     let mut summary = load_summary(store, &snapshot.id);
-
-    if summary.has_projected(&event.id) {
-        return;
-    }
 
     match event.event_type.as_str() {
         "AccountOpened" => {
@@ -91,15 +93,18 @@ fn project_account_summary(store: &HashMapRepository, event: &Event) {
         other => panic!("unexpected account event: {other}"),
     }
 
-    summary.mark_projected(&event.id);
-    store
-        .read_models::<AccountSummary>()
-        .upsert(&summary)
-        .expect("account summary projection should persist");
+    let mut session = ReadModelSession::new();
+    session
+        .document(&summary)
+        .expect("account summary projection should serialize")
+        .mark_processed(ACCOUNT_SUMMARY_CONSUMER, &event.id);
+    session
+        .commit(store)
+        .expect("account summary projection should persist")
 }
 
 pub fn wait_for_summary(
-    store: &HashMapRepository,
+    store: &InMemoryReadModelStore,
     account_id: &str,
     ready: impl Fn(&AccountSummary) -> bool,
 ) -> AccountSummary {
@@ -107,8 +112,7 @@ pub fn wait_for_summary(
 
     loop {
         if let Some(summary) = store
-            .read_models::<AccountSummary>()
-            .get(account_id)
+            .get_by_primary_key::<AccountSummary>(account_id)
             .expect("read model load should succeed")
             .map(|view| view.data)
         {

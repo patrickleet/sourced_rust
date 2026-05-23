@@ -27,11 +27,12 @@ use std::time::{Duration, Instant};
 use models::aggregates::account::{Account, DepositMoney, OpenAccount};
 use models::readmodels::account_summary::AccountSummary;
 use query_process::AccountSummaryQueryProcess;
-use read_model::{start_account_summary_service, wait_for_summary};
+use read_model::{start_account_summary_service, wait_for_summary, ACCOUNT_SUMMARY_CONSUMER};
 use sourced_rust::microsvc::{Service, Session};
 use sourced_rust::{
-    AggregateBuilder, AggregateRepository, GetAggregate, HashMapRepository, InMemoryQueue,
-    OutboxWorkerThread, Queueable, QueuedRepository, ReadModelsExt,
+    AggregateBuilder, AggregateRepository, HashMapRepository, InMemoryQueue,
+    InMemoryReadModelStore, OutboxWorkerThread, Queueable, QueuedRepository, ReadModelSessionStore,
+    ReadModelsExt,
 };
 
 pub(crate) type AccountRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Account>;
@@ -115,7 +116,7 @@ fn write_model_service_feeds_separate_read_model_service() {
     let outbox_worker =
         OutboxWorkerThread::spawn(write_store.clone(), queue.clone(), Duration::from_millis(5));
 
-    let read_store = HashMapRepository::new();
+    let read_store = InMemoryReadModelStore::new();
     let read_model_service = start_account_summary_service(queue.clone(), read_store.clone());
     let query_process = AccountSummaryQueryProcess::new(read_store.clone());
 
@@ -153,6 +154,14 @@ fn write_model_service_feeds_separate_read_model_service() {
     assert_eq!(summary.owner.as_deref(), Some("Ada Lovelace"));
     assert_eq!(summary.balance_cents, 2500);
     assert_eq!(summary.deposit_count, 1);
+    for event in queue.events() {
+        assert!(
+            read_store
+                .is_processed(ACCOUNT_SUMMARY_CONSUMER, &event.id)
+                .expect("processed-message lookup should succeed"),
+            "read-model service should mark projected events processed before they are acknowledged"
+        );
+    }
 
     let queried_summary = query_process
         .get("acct-1")
@@ -188,14 +197,6 @@ fn write_model_service_feeds_separate_read_model_service() {
     assert!(
         write_side_summary.is_none(),
         "write-side service should not own the account summary projection"
-    );
-
-    let read_side_account = read_store
-        .get_aggregate::<Account>("acct-1")
-        .expect("read-side aggregate lookup should succeed");
-    assert!(
-        read_side_account.is_none(),
-        "read-model service should not own the account aggregate"
     );
 
     read_model_service.stop();

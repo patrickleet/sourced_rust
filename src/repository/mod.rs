@@ -3,7 +3,7 @@ mod error;
 mod gettable;
 mod repository;
 
-pub use batch::{CommitBatch, ReadModelWrite, SnapshotWrite, TransactionalCommit};
+pub use batch::{CommitBatch, SnapshotWrite, TransactionalCommit};
 pub use error::RepositoryError;
 pub use gettable::{GetMany, GetOne, Gettable};
 pub use repository::{Commit, Get, Repository};

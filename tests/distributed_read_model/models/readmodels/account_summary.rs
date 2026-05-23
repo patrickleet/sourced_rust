@@ -22,12 +22,4 @@ impl AccountSummary {
             projected_event_ids: Vec::new(),
         }
     }
-
-    pub fn has_projected(&self, event_id: &str) -> bool {
-        self.projected_event_ids.iter().any(|id| id == event_id)
-    }
-
-    pub fn mark_projected(&mut self, event_id: &str) {
-        self.projected_event_ids.push(event_id.to_string());
-    }
 }

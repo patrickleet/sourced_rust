@@ -362,7 +362,7 @@ fn concurrent_bomb_placement() {
     // Verify both bombs placed
     let _board = repo
         .read_models::<views::BoardView>()
-        .get("game-5")
+        .get_by_primary_key("game-5")
         .unwrap()
         .unwrap();
     // Board may show 1 or 2 bombs depending on which thread's board view won the race,

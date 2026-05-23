@@ -2,7 +2,7 @@
 //!
 //! Mirrors the `QueuedRepository` pattern for entities:
 //! `get_model` acquires a lock, write operations (`upsert`, `insert`, `update`,
-//! `delete`, `upsert_raw`) release it. Callers can also release manually via `unlock`.
+//! `delete`) release it. Callers can also release manually via `unlock`.
 
 use std::sync::Arc;
 
@@ -11,13 +11,16 @@ use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::queued_repo::ReadOpts;
 use crate::repository::{Commit, CommitBatch, RepositoryError, TransactionalCommit};
 
-use super::{ReadModel, ReadModelError, ReadModelStore, Versioned};
+use super::{
+    ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
+    ReadModelSessionStore, ReadModelStore, ReadModelWritePlan, Versioned,
+};
 
 /// A `ReadModelStore` wrapper that provides per-instance locking.
 ///
 /// Lock lifecycle matches the entity `QueuedRepository` pattern:
 /// - `get_model` acquires a lock (or waits if already locked)
-/// - `upsert` / `insert` / `update` / `delete` / `upsert_raw` release the lock on success
+/// - `upsert` / `insert` / `update` / `delete` release the lock on success
 /// - `unlock` / `abort` release the lock manually
 ///
 /// Lock keys are `"collection:id"`, so different read model types with the same ID
@@ -116,6 +119,13 @@ impl<S: ReadModelStore, L: LockManager> ReadModelStore for QueuedReadModelStore<
         let lock = self.ensure_lock(&key)?;
         lock.lock()?;
         self.inner.get_model(id)
+    }
+
+    fn get_by_primary_key<M: ReadModel>(
+        &self,
+        id: &str,
+    ) -> Result<Option<Versioned<M>>, ReadModelError> {
+        self.inner.get_by_primary_key(id)
     }
 
     fn upsert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
@@ -217,14 +227,6 @@ impl<S: ReadModelStore, L: LockManager> ReadModelStore for QueuedReadModelStore<
 
         Ok(None)
     }
-
-    fn upsert_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ReadModelError> {
-        let result = self.inner.upsert_raw(key, bytes);
-        if result.is_ok() {
-            self.release(key);
-        }
-        result
-    }
 }
 
 // ============================================================================
@@ -240,9 +242,9 @@ impl<S: Commit, L: LockManager> Commit for QueuedReadModelStore<S, L> {
 impl<S: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedReadModelStore<S, L> {
     fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
         let read_model_keys: Vec<String> = batch
-            .read_models
+            .read_model_plans
             .iter()
-            .map(|write| write.key.clone())
+            .flat_map(|plan| plan.mutations.iter().map(|mutation| mutation.lock_key()))
             .collect();
 
         let result = self.inner.commit_batch(batch);
@@ -256,11 +258,63 @@ impl<S: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedReadM
     }
 }
 
+impl<S: ReadModelSessionStore, L: LockManager> ReadModelSessionStore
+    for QueuedReadModelStore<S, L>
+{
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+        self.inner.read_model_capabilities()
+    }
+
+    fn commit_write_plan(
+        &self,
+        plan: ReadModelWritePlan,
+    ) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        let read_model_keys: Vec<String> = plan
+            .mutations
+            .iter()
+            .map(|mutation| mutation.lock_key())
+            .collect();
+        let _locks = self.lock_ids_in_order(&read_model_keys)?;
+
+        let result = self.inner.commit_write_plan(plan);
+        if result.is_ok() {
+            for key in read_model_keys {
+                self.release(&key);
+            }
+        }
+
+        result
+    }
+
+    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
+        self.inner.is_processed(consumer_name, message_id)
+    }
+}
+
 // ============================================================================
 // WithOpts methods for opting out of locking
 // ============================================================================
 
 impl<S: ReadModelStore, L: LockManager> QueuedReadModelStore<S, L> {
+    /// Load and lock a read model for update.
+    ///
+    /// This is the explicit spelling for the default locking behavior of
+    /// `get_model`.
+    pub fn load_for_update<M: ReadModel>(
+        &self,
+        id: &str,
+    ) -> Result<Option<Versioned<M>>, ReadModelError> {
+        self.get_model(id)
+    }
+
+    /// Load a read model without acquiring the document-store lock.
+    pub fn load_no_lock<M: ReadModel>(
+        &self,
+        id: &str,
+    ) -> Result<Option<Versioned<M>>, ReadModelError> {
+        self.get_model_with(id, ReadOpts::no_lock())
+    }
+
     /// Get a read model with options (opt out of locking with `ReadOpts::no_lock()`).
     pub fn get_model_with<M: ReadModel>(
         &self,
@@ -557,36 +611,5 @@ mod tests {
 
         // cleanup
         store.unlock::<TestModel>("2").unwrap();
-    }
-
-    #[test]
-    fn upsert_raw_releases_lock() {
-        let store = QueuedReadModelStore::new(InMemoryReadModelStore::new());
-        let key = "test_models:1";
-
-        // Seed via inner
-        store
-            .inner()
-            .upsert(&TestModel {
-                id: "1".into(),
-                value: 10,
-            })
-            .unwrap();
-
-        // get_model locks
-        let _loaded = store.get_model::<TestModel>("1").unwrap();
-
-        // upsert_raw releases (this is what CommitBuilder calls)
-        let bytes = serde_json::to_vec(&TestModel {
-            id: "1".into(),
-            value: 99,
-        })
-        .unwrap();
-        store.upsert_raw(key, bytes).unwrap();
-
-        // Can get again
-        let reloaded = store.get_model::<TestModel>("1").unwrap().unwrap();
-        assert_eq!(reloaded.data.value, 99);
-        store.unlock::<TestModel>("1").unwrap();
     }
 }

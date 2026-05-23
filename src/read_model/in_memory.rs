@@ -1,9 +1,13 @@
 //! InMemoryReadModelStore - HashMap-backed read model store for testing and development.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::{ReadModel, ReadModelError, ReadModelStore, Versioned};
+use super::{
+    ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelMutation, ReadModelSessionStore, ReadModelStore, ReadModelWritePlan,
+    Versioned,
+};
 
 /// Internal stored representation of a read model.
 #[derive(Clone)]
@@ -11,6 +15,8 @@ pub(crate) struct StoredModel {
     pub(crate) bytes: Vec<u8>,
     pub(crate) version: u64,
 }
+
+pub(crate) type ProcessedMessageSet = HashSet<(String, String)>;
 
 pub(crate) const INITIAL_MODEL_VERSION: u64 = 1;
 
@@ -30,12 +36,64 @@ pub(crate) fn next_model_version(
     }
 }
 
+pub(crate) fn apply_document_write_plan(
+    plan: ReadModelWritePlan,
+    staged_models: &mut HashMap<String, StoredModel>,
+    staged_processed_messages: &mut ProcessedMessageSet,
+) -> Result<ReadModelCommitOutcome, ReadModelError> {
+    let capabilities = document_capabilities();
+    plan.validate_for(&capabilities)?;
+
+    let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
+    for mark in &plan.processed_messages {
+        let key = processed_message_key(mark);
+        if staged_processed_messages.contains(&key) || !marks_in_plan.insert(key) {
+            return Ok(ReadModelCommitOutcome::skipped_duplicate(mark.clone()));
+        }
+    }
+
+    for mutation in plan.mutations {
+        if let ReadModelMutation::Document(mutation) = mutation {
+            let key = mutation.key();
+            let new_version = next_model_version(&key, staged_models.get(&key).map(|s| s.version))?;
+            staged_models.insert(
+                key,
+                StoredModel {
+                    bytes: mutation.bytes,
+                    version: new_version,
+                },
+            );
+        }
+    }
+
+    for mark in plan.processed_messages {
+        staged_processed_messages.insert(processed_message_key(&mark));
+    }
+
+    Ok(ReadModelCommitOutcome::applied())
+}
+
+pub(crate) fn document_capabilities() -> ReadModelAdapterCapabilities {
+    ReadModelAdapterCapabilities {
+        relational_rows: false,
+        document_rows: true,
+        sparse_patches: false,
+        deletes: false,
+        processed_messages: true,
+    }
+}
+
+fn processed_message_key(mark: &ProcessedMessageMark) -> (String, String) {
+    (mark.consumer_name.clone(), mark.message_id.clone())
+}
+
 /// In-memory read model store backed by a HashMap.
 ///
 /// Storage key is `"TABLE:id"`. Clone-friendly via Arc.
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
     pub(crate) storage: Arc<RwLock<HashMap<String, StoredModel>>>,
+    pub(crate) processed_messages: Arc<RwLock<ProcessedMessageSet>>,
 }
 
 impl Default for InMemoryReadModelStore {
@@ -49,6 +107,7 @@ impl InMemoryReadModelStore {
     pub fn new() -> Self {
         Self {
             storage: Arc::new(RwLock::new(HashMap::new())),
+            processed_messages: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -56,8 +115,13 @@ impl InMemoryReadModelStore {
         format!("{}:{}", table, id)
     }
 
-    /// Save a raw read model entry (used by CommitBuilder for type-erased writes).
-    pub(crate) fn save_raw(&self, key: &str, bytes: Vec<u8>) -> Result<u64, ReadModelError> {
+    /// Save pre-serialized document bytes by storage key for in-memory test setup.
+    #[cfg(test)]
+    pub(crate) fn save_document_bytes(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<u64, ReadModelError> {
         let mut storage = self
             .storage
             .write()
@@ -74,6 +138,46 @@ impl InMemoryReadModelStore {
         );
 
         Ok(new_version)
+    }
+}
+
+impl ReadModelSessionStore for InMemoryReadModelStore {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+        document_capabilities()
+    }
+
+    fn commit_write_plan(
+        &self,
+        plan: ReadModelWritePlan,
+    ) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        let mut storage = self
+            .storage
+            .write()
+            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+        let mut processed_messages = self
+            .processed_messages
+            .write()
+            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+
+        let mut staged_models = storage.clone();
+        let mut staged_processed_messages = processed_messages.clone();
+        let outcome =
+            apply_document_write_plan(plan, &mut staged_models, &mut staged_processed_messages)?;
+
+        if outcome.was_applied() {
+            *storage = staged_models;
+            *processed_messages = staged_processed_messages;
+        }
+
+        Ok(outcome)
+    }
+
+    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
+        let processed_messages = self
+            .processed_messages
+            .read()
+            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+        Ok(processed_messages.contains(&(consumer_name.to_string(), message_id.to_string())))
     }
 }
 
@@ -266,11 +370,6 @@ impl ReadModelStore for InMemoryReadModelStore {
 
         Ok(matched)
     }
-
-    fn upsert_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ReadModelError> {
-        self.save_raw(key, bytes)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -326,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn save_raw_returns_error_on_version_overflow() {
+    fn save_document_bytes_returns_error_on_version_overflow() {
         let store = InMemoryReadModelStore::new();
         let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "1");
         let bytes = serde_json::to_vec(&TestModel {
@@ -342,7 +441,7 @@ mod tests {
             },
         );
 
-        let err = store.save_raw(&key, b"{}".to_vec()).unwrap_err();
+        let err = store.save_document_bytes(&key, b"{}".to_vec()).unwrap_err();
 
         assert!(
             matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
@@ -533,7 +632,7 @@ mod tests {
     fn find_models_returns_error_for_corrupted_rows() {
         let store = InMemoryReadModelStore::new();
         store
-            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
             .unwrap();
 
         let err = store.find_models::<TestModel>(&|_| true).unwrap_err();
@@ -545,7 +644,7 @@ mod tests {
     fn find_one_model_returns_error_for_corrupted_rows() {
         let store = InMemoryReadModelStore::new();
         store
-            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
             .unwrap();
 
         let err = store.find_one_model::<TestModel>(&|_| true).unwrap_err();
@@ -563,7 +662,7 @@ mod tests {
             })
             .unwrap();
         store
-            .save_raw("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
             .unwrap();
 
         let err = store

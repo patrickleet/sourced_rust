@@ -15,7 +15,7 @@ use crate::views::{build_board, BoardView};
 
 fn load_board<R: ReadModelStore>(repo: &R, game_id: &str) -> Result<BoardView, GameError> {
     repo.read_models::<BoardView>()
-        .get(game_id)
+        .get_by_primary_key(game_id)
         .map_err(RepositoryError::from)?
         .map(|board| board.data)
         .ok_or(GameError::GameNotFound)

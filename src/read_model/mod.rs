@@ -1,29 +1,55 @@
-//! Read Models - Storage-backed data for projections and read-optimized views.
+//! Read Models - storage-backed projections and read-optimized views.
 //!
-//! Read models provide a simple CRUD abstraction for storing typed data,
-//! updated alongside event-sourced aggregates through transactional commit batches.
+//! The crate supports one read-model write-plan surface with two row shapes:
 //!
-//! ## Example
+//! - document rows through [`ReadModelStore`] and `collection:id` JSON payloads;
+//! - normalized relational rows through [`RelationalReadModel`],
+//!   [`ReadModelSession`], [`ReadModelWritePlan`], and schema metadata.
+//!
+//! Document views can use typed key/value CRUD:
 //!
 //! ```ignore
-//! use sourced_rust::{ReadModel, InMemoryReadModelStore, ReadModelsExt, Versioned};
+//! use sourced_rust::{InMemoryReadModelStore, ReadModel, ReadModelsExt};
 //!
 //! #[derive(Serialize, Deserialize, Clone, ReadModel)]
 //! #[readmodel(collection = "game_views")]
 //! struct GameView {
 //!     #[readmodel(id)]
-//!     pub id: String,
-//!     pub score: u32,
+//!     id: String,
+//!     score: u32,
 //! }
 //!
 //! let store = InMemoryReadModelStore::new();
 //! store.read_models::<GameView>().upsert(&view)?;
-//! let loaded = store.read_models::<GameView>().get("game-1")?;
+//! let loaded = store.read_models::<GameView>().get_by_primary_key("game-1")?;
+//! ```
+//!
+//! Relational models stage explicit row mutations:
+//!
+//! ```ignore
+//! use sourced_rust::{ReadModelSession, ReadModelSessionCommitExt};
+//!
+//! let mut read_models = ReadModelSession::new();
+//! read_models.save(&player)?;
+//! read_models.save_related(&player, "weapons", &weapon)?;
+//! repo.read_models(read_models).commit(&mut aggregate)?;
+//! ```
+//!
+//! Distributed projectors can commit a session directly against a read-model
+//! adapter and mark messages processed in the same adapter transaction:
+//!
+//! ```ignore
+//! let mut read_models = ReadModelSession::new();
+//! read_models.document(&view)?.mark_processed("projection", event_id);
+//! let outcome = read_models.commit(&read_store)?;
 //! ```
 
 pub(crate) mod in_memory;
+mod metadata;
 mod queued;
 mod repository;
+mod schema;
+mod session;
 mod store;
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -64,6 +90,8 @@ pub enum ReadModelError {
     NotFound { collection: String, id: String },
     /// Lock error.
     Lock(crate::lock::LockError),
+    /// Relational read-model metadata error.
+    Metadata(String),
 }
 
 impl fmt::Display for ReadModelError {
@@ -85,6 +113,7 @@ impl fmt::Display for ReadModelError {
                 write!(f, "read model not found: {}:{}", collection, id)
             }
             ReadModelError::Lock(err) => write!(f, "read model lock error: {}", err),
+            ReadModelError::Metadata(msg) => write!(f, "read model metadata error: {}", msg),
         }
     }
 }
@@ -98,6 +127,22 @@ impl From<crate::lock::LockError> for ReadModelError {
 }
 
 pub use in_memory::InMemoryReadModelStore;
+pub use metadata::{
+    ColumnDef, ColumnType, ForeignKey, IndexDef, PrimaryKey, ReadModelSchema, RelationalReadModel,
+    RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
+    DEFAULT_READ_MODEL_VERSION_COLUMN,
+};
 pub use queued::QueuedReadModelStore;
 pub use repository::{ReadModelRepository, ReadModelsExt};
+pub use schema::{
+    ReadModelMigrationArtifact, ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities,
+    ReadModelSchemaBootstrap, ReadModelSchemaIssue, ReadModelSchemaIssueKind,
+    ReadModelSchemaRegistry, ReadModelSchemaVerification,
+};
+pub use session::{
+    DeleteRowMutation, DocumentMutation, ExpectedVersion, PatchMode, PatchRowMutation,
+    ProcessedMessageMark, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelLoadRequest, ReadModelMutation, ReadModelSession, ReadModelSessionStore,
+    ReadModelWritePlan, RowMutation, RowPatch, RowWriteMode,
+};
 pub use store::ReadModelStore;
