@@ -23,7 +23,20 @@ use sourced_rust::ReadModel;
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[readmodel(collection = "game_views")]
 pub struct GameView {
-    #[readmodel(id)]
+    #[id]
+    pub id: String,
+    pub player_name: String,
+    pub score: i32,
+}
+```
+
+The same collection mapping can be written with the higher-level helper:
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
+#[collection("game_views")]
+pub struct GameView {
+    #[id]
     pub id: String,
     pub player_name: String,
     pub score: i32,
@@ -50,16 +63,17 @@ helpers; SQL adapters are not required to translate Rust closures into queries.
 ## Relational Models
 
 A model opts into relational metadata with `#[readmodel(table = "...")]` and
-field attributes:
+field attributes. Common collection, table, column, id, index, and unique
+metadata also have direct helper attributes:
 
 ```rust
 use serde::{Deserialize, Serialize};
 use sourced_rust::ReadModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "players")]
+#[table("players")]
 pub struct PlayerView {
-    #[readmodel(id, column = "player_id")]
+    #[id("player_id")]
     pub id: String,
     pub display_name: String,
     #[readmodel(jsonb)]
@@ -68,11 +82,15 @@ pub struct PlayerView {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[readmodel(table = "player_weapons", primary_key = ["player_id", "weapon_id"])]
+#[index(
+    name = "idx_player_weapons_player_acquired",
+    columns = ["player_id", "acquired_at"]
+)]
 pub struct PlayerWeaponView {
     #[readmodel(foreign_key = "players.player_id", delegated_from = "PlayerView.player_id")]
     pub player_id: String,
     pub weapon_id: String,
-    #[readmodel(index)]
+    #[index]
     pub acquired_at: String,
 }
 ```
@@ -81,6 +99,12 @@ The derive emits `RelationalReadModel` metadata, row conversion, primary-key
 metadata, JSONB column metadata, indexes, and an adapter-owned version column.
 Composite and delegated keys are represented in the schema and in session row
 mutations.
+
+Use `#[index]` or `#[index("index_name")]` for a secondary field index. Use
+`#[unique]` or `#[unique("index_name")]` for a unique field index.
+For compound indexes, put `#[index(columns = ["field_a", "field_b"])]` or
+`#[unique(columns = ["field_a", "field_b"])]` on the struct. Add
+`name = "..."` when the storage index name must be fixed.
 
 ## Command-Side Atomic Writes
 

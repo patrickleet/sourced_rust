@@ -1198,20 +1198,39 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[derive(Clone, Serialize, Deserialize, ReadModel)]
-/// #[readmodel(collection = "counter_views")]
+/// #[collection("counter_views")]
 /// struct CounterView {
-///     #[readmodel(id)]
+///     #[id]
 ///     pub id: String,
 ///     pub name: String,
 ///     pub value: i32,
 /// }
 /// ```
 ///
-/// - `#[readmodel(collection = "...")]` sets the collection name.
+/// - `#[readmodel(collection = "...")]` or `#[collection("...")]` sets the
+///   collection name.
 ///   If omitted, defaults to snake_case struct name + "s".
-/// - `#[readmodel(id)]` marks the field used as the unique identifier.
+/// - `#[readmodel(table = "...")]` or `#[table("...")]` opts into relational
+///   table metadata.
+/// - `#[readmodel(column = "...")]` or `#[column("...")]` sets a relational
+///   column name.
+/// - `#[readmodel(id)]`, `#[id]`, or `#[id("column_name")]` marks the field
+///   used as the unique identifier.
 ///   If omitted, defaults to a field named `id`.
-#[proc_macro_derive(ReadModel, attributes(readmodel))]
+/// - `#[readmodel(index)]`, `#[index]`, or `#[index("index_name")]` declares a
+///   secondary index on a field.
+/// - `#[readmodel(unique)]`, `#[unique]`, or `#[unique("index_name")]`
+///   declares a unique secondary index on a field.
+/// - `#[index(columns = ["field_a", "field_b"])]` or
+///   `#[index(name = "...", columns = ["field_a", "field_b"])]` declares a
+///   compound secondary index on a struct.
+/// - `#[unique(columns = ["field_a", "field_b"])]` or
+///   `#[unique(name = "...", columns = ["field_a", "field_b"])]` declares a
+///   compound unique index on a struct.
+#[proc_macro_derive(
+    ReadModel,
+    attributes(readmodel, collection, table, column, id, index, unique)
+)]
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
     read_model::derive_read_model(input)
 }
