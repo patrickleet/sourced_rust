@@ -311,6 +311,8 @@ impl StructAttrs {
                 } else if meta.path.is_ident("primary_key") {
                     let expr = meta.value()?.parse::<Expr>()?;
                     attrs.primary_key = parse_string_list(expr)?;
+                } else {
+                    return Err(meta.error("unknown readmodel struct attribute"));
                 }
                 Ok(())
             })?;
@@ -343,6 +345,8 @@ struct FieldAttrs {
 impl FieldAttrs {
     fn from_field(field: &Field) -> syn::Result<Self> {
         let mut attrs = Self::default();
+        let mut pending_foreign_key: Option<String> = None;
+        let mut pending_through: Option<String> = None;
         for attr in &field.attrs {
             if !attr.path().is_ident("readmodel") {
                 continue;
@@ -380,7 +384,7 @@ impl FieldAttrs {
                     if attrs.relationship.is_some() {
                         relationship_mut(&mut attrs, "foreign_key")?.foreign_key = Some(value);
                     } else {
-                        attrs.foreign_key = Some(parse_foreign_key(&value)?);
+                        pending_foreign_key = Some(value);
                     }
                 } else if meta.path.is_ident("delegated_from") {
                     attrs.delegated_from = Some(meta.value()?.parse::<LitStr>()?.value());
@@ -410,11 +414,49 @@ impl FieldAttrs {
                     });
                 } else if meta.path.is_ident("through") {
                     let through = meta.value()?.parse::<LitStr>()?.value();
-                    relationship_mut(&mut attrs, "through")?.through = Some(through);
+                    if attrs.relationship.is_some() {
+                        relationship_mut(&mut attrs, "through")?.through = Some(through);
+                    } else {
+                        pending_through = Some(through);
+                    }
+                } else {
+                    return Err(meta.error("unknown readmodel field attribute"));
                 }
                 Ok(())
             })?;
         }
+
+        if let Some(value) = pending_foreign_key {
+            if let Some(relationship) = attrs.relationship.as_mut() {
+                if relationship.foreign_key.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "relationship foreign_key declared more than once",
+                    ));
+                }
+                relationship.foreign_key = Some(value);
+            } else {
+                attrs.foreign_key = Some(parse_foreign_key(&value)?);
+            }
+        }
+
+        if let Some(through) = pending_through {
+            if let Some(relationship) = attrs.relationship.as_mut() {
+                if relationship.through.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "relationship through declared more than once",
+                    ));
+                }
+                relationship.through = Some(through);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`through` must be declared with a relationship attribute",
+                ));
+            }
+        }
+
         Ok(attrs)
     }
 
@@ -758,6 +800,81 @@ mod tests {
                 .contains("Multiple #[readmodel(id)] fields found"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_unknown_struct_attributes() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[readmodel(tabel = "counter_views")]
+            struct CounterView {
+                id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("unknown struct attribute should fail");
+
+        assert!(
+            err.to_string()
+                .contains("unknown readmodel struct attribute"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_unknown_field_attributes() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct CounterView {
+                #[readmodel(ide)]
+                id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("unknown field attribute should fail");
+
+        assert!(
+            err.to_string()
+                .contains("unknown readmodel field attribute"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_accepts_relationship_metadata_before_relationship_kind() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[readmodel(table = "players")]
+            struct Player {
+                #[readmodel(id, column = "player_id")]
+                id: String,
+                #[readmodel(foreign_key = "player_id", has_many = "PlayerWeapon")]
+                weapons: Vec<PlayerWeapon>,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("RelationshipKind :: HasMany"));
+        assert!(expanded.contains("foreign_key : Some (\"player_id\""));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_through_before_many_to_many() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[readmodel(table = "players")]
+            struct Player {
+                #[readmodel(id, column = "player_id")]
+                id: String,
+                #[readmodel(through = "player_weapon_links", foreign_key = "player_id", many_to_many = "Weapon")]
+                weapons: Vec<Weapon>,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("RelationshipKind :: ManyToMany"));
+        assert!(expanded.contains("through : Some (\"player_weapon_links\""));
+        assert!(expanded.contains("foreign_key : Some (\"player_id\""));
     }
 
     #[test]
