@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{
-    punctuated::Punctuated, Data, DeriveInput, Expr, ExprArray, ExprLit, Field, Fields,
-    GenericArgument, Lit, LitStr, PathArguments, Token, Type,
+    punctuated::Punctuated, Attribute, Data, DeriveInput, Expr, ExprArray, ExprLit, Field, Fields,
+    GenericArgument, Lit, LitStr, Meta, PathArguments, Token, Type,
 };
 
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
@@ -188,19 +188,27 @@ fn expand_relational_read_model(
         }
 
         if attrs.indexed || attrs.unique {
+            let index_columns = vec![column_name.clone()];
             let index_name = attrs
                 .index_name
                 .clone()
-                .unwrap_or_else(|| format!("idx_{}_{}", table_name, column_name));
+                .unwrap_or_else(|| default_index_name(&table_name, &index_columns, attrs.unique));
             let unique = attrs.unique;
-            indexes.push(quote! {
-                sourced_rust::IndexDef {
-                    name: Some(#index_name.to_string()),
-                    columns: vec![#column_name.to_string()],
-                    unique: #unique,
-                }
-            });
+            indexes.push(index_def_tokens(index_name, index_columns, unique));
         }
+    }
+
+    for index in &struct_attrs.indexes {
+        let index_columns = index
+            .columns
+            .iter()
+            .map(|column| resolve_column_reference(column, fields, field_attrs))
+            .collect::<Vec<_>>();
+        let index_name = index
+            .name
+            .clone()
+            .unwrap_or_else(|| default_index_name(&table_name, &index_columns, index.unique));
+        indexes.push(index_def_tokens(index_name, index_columns, index.unique));
     }
 
     Ok(quote! {
@@ -251,41 +259,60 @@ fn relational_primary_key_fields(
         return struct_attrs
             .primary_key
             .iter()
-            .map(|key| {
-                fields
-                    .iter()
-                    .zip(field_attrs)
-                    .find_map(|(field, attrs)| {
-                        let field_name = field.ident.as_ref()?.to_string();
-                        if &field_name == key {
-                            Some(attrs.column.clone().unwrap_or(field_name))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| key.clone())
-            })
+            .map(|key| resolve_column_reference(key, fields, field_attrs))
             .collect();
     }
 
     id_field
         .map(|id| {
             let id_name = id.to_string();
-            fields
-                .iter()
-                .zip(field_attrs)
-                .find_map(|(field, attrs)| {
-                    let field_name = field.ident.as_ref()?.to_string();
-                    if field_name == id_name {
-                        Some(attrs.column.clone().unwrap_or(field_name))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(id_name)
+            resolve_column_reference(&id_name, fields, field_attrs)
         })
         .into_iter()
         .collect()
+}
+
+fn resolve_column_reference(
+    reference: &str,
+    fields: &Punctuated<Field, Token![,]>,
+    field_attrs: &[FieldAttrs],
+) -> String {
+    fields
+        .iter()
+        .zip(field_attrs)
+        .find_map(|(field, attrs)| {
+            let field_name = field.ident.as_ref()?.to_string();
+            if field_name == reference {
+                Some(attrs.column.clone().unwrap_or(field_name))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| reference.to_string())
+}
+
+fn default_index_name(table_name: &str, columns: &[String], unique: bool) -> String {
+    let prefix = if unique { "uq" } else { "idx" };
+    format!("{prefix}_{table_name}_{}", columns.join("_"))
+}
+
+fn index_def_tokens(
+    index_name: String,
+    index_columns: Vec<String>,
+    unique: bool,
+) -> proc_macro2::TokenStream {
+    let columns = index_columns
+        .iter()
+        .map(|column| quote! { #column.to_string() })
+        .collect::<Vec<_>>();
+
+    quote! {
+        sourced_rust::IndexDef {
+            name: Some(#index_name.to_string()),
+            columns: vec![#(#columns),*],
+            unique: #unique,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -293,12 +320,43 @@ struct StructAttrs {
     collection: Option<String>,
     table: Option<String>,
     primary_key: Vec<String>,
+    indexes: Vec<IndexAttr>,
+}
+
+struct IndexAttr {
+    name: Option<String>,
+    columns: Vec<String>,
+    unique: bool,
 }
 
 impl StructAttrs {
     fn from_input(input: &DeriveInput) -> syn::Result<Self> {
         let mut attrs = Self::default();
         for attr in &input.attrs {
+            if attr.path().is_ident("collection") {
+                attrs.collection = Some(parse_direct_string_attr(attr, "collection")?);
+                continue;
+            }
+
+            if attr.path().is_ident("table") {
+                attrs.table = Some(parse_direct_string_attr(attr, "table")?);
+                continue;
+            }
+
+            if attr.path().is_ident("index") {
+                attrs
+                    .indexes
+                    .push(parse_direct_index_attr(attr, "index", false)?);
+                continue;
+            }
+
+            if attr.path().is_ident("unique") {
+                attrs
+                    .indexes
+                    .push(parse_direct_index_attr(attr, "unique", true)?);
+                continue;
+            }
+
             if !attr.path().is_ident("readmodel") {
                 continue;
             }
@@ -321,7 +379,7 @@ impl StructAttrs {
     }
 
     fn is_relational(&self) -> bool {
-        self.table.is_some() || !self.primary_key.is_empty()
+        self.table.is_some() || !self.primary_key.is_empty() || !self.indexes.is_empty()
     }
 }
 
@@ -348,6 +406,36 @@ impl FieldAttrs {
         let mut pending_foreign_key: Option<String> = None;
         let mut pending_through: Option<String> = None;
         for attr in &field.attrs {
+            if attr.path().is_ident("id") {
+                attrs.id = true;
+                if let Some(column) = parse_optional_direct_string_attr(attr)? {
+                    attrs.column = Some(column);
+                }
+                continue;
+            }
+
+            if attr.path().is_ident("column") {
+                attrs.column = Some(parse_direct_string_attr(attr, "column")?);
+                continue;
+            }
+
+            if attr.path().is_ident("index") {
+                attrs.indexed = true;
+                if let Some(index_name) = parse_optional_direct_string_attr(attr)? {
+                    attrs.index_name = Some(index_name);
+                }
+                continue;
+            }
+
+            if attr.path().is_ident("unique") {
+                attrs.unique = true;
+                attrs.indexed = true;
+                if let Some(index_name) = parse_optional_direct_string_attr(attr)? {
+                    attrs.index_name = Some(index_name);
+                }
+                continue;
+            }
+
             if !attr.path().is_ident("readmodel") {
                 continue;
             }
@@ -593,6 +681,65 @@ fn parse_string_expr(expr: Expr) -> syn::Result<String> {
     }
 }
 
+fn parse_direct_string_attr(attr: &Attribute, attr_name: &str) -> syn::Result<String> {
+    parse_optional_direct_string_attr(attr)?.ok_or_else(|| {
+        syn::Error::new_spanned(attr, format!("#[{attr_name}] requires a string literal"))
+    })
+}
+
+fn parse_optional_direct_string_attr(attr: &Attribute) -> syn::Result<Option<String>> {
+    match &attr.meta {
+        Meta::List(list) => Ok(Some(list.parse_args::<LitStr>()?.value())),
+        Meta::NameValue(name_value) => parse_string_expr(name_value.value.clone()).map(Some),
+        Meta::Path(_) => Ok(None),
+    }
+}
+
+fn parse_direct_index_attr(
+    attr: &Attribute,
+    attr_name: &str,
+    unique: bool,
+) -> syn::Result<IndexAttr> {
+    let mut name = None;
+    let mut columns = None;
+
+    match &attr.meta {
+        Meta::List(_) => {
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("name") {
+                    name = Some(meta.value()?.parse::<LitStr>()?.value());
+                } else if meta.path.is_ident("columns") {
+                    let expr = meta.value()?.parse::<Expr>()?;
+                    columns = Some(parse_string_list(expr)?);
+                } else {
+                    return Err(meta.error(format!("unknown {attr_name} attribute")));
+                }
+                Ok(())
+            })?;
+        }
+        Meta::NameValue(name_value) => {
+            columns = Some(parse_string_list(name_value.value.clone())?);
+        }
+        Meta::Path(_) => {}
+    }
+
+    let columns = columns.ok_or_else(|| {
+        syn::Error::new_spanned(attr, format!("#[{attr_name}] requires columns = [\"...\"]"))
+    })?;
+    if columns.is_empty() {
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!("#[{attr_name}] requires at least one column"),
+        ));
+    }
+
+    Ok(IndexAttr {
+        name,
+        columns,
+        unique,
+    })
+}
+
 fn parse_foreign_key(value: &str) -> syn::Result<ForeignKeyParts> {
     let Some((table, column)) = value.split_once('.') else {
         return Err(syn::Error::new(
@@ -746,6 +893,176 @@ mod tests {
 
         assert!(expanded.contains("& self . counter_id"));
         assert!(!expanded.contains("& self . id"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_direct_collection_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[collection("counter_views")]
+            struct CounterView {
+                #[id]
+                counter_id: String,
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("const COLLECTION : & 'static str = \"counter_views\""));
+        assert!(expanded.contains("& self . counter_id"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_direct_table_and_id_column_attributes() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table = "counter_views"]
+            struct CounterView {
+                #[id("counter_id")]
+                id: String,
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("table_name : \"counter_views\""));
+        assert!(expanded.contains("column_name : \"counter_id\""));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_direct_column_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("counter_views")]
+            struct CounterView {
+                #[id]
+                id: String,
+                #[column("counter_value")]
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("column_name : \"counter_value\""));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_direct_index_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("counter_views")]
+            struct CounterView {
+                #[id]
+                id: String,
+                #[index("idx_counter_views_value")]
+                value: i32,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("name : Some (\"idx_counter_views_value\""));
+        assert!(expanded.contains("columns : vec ! [\"value\""));
+        assert!(expanded.contains("unique : false"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_direct_unique_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("counter_views")]
+            struct CounterView {
+                #[id]
+                id: String,
+                #[unique("uq_counter_views_slug")]
+                slug: String,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("name : Some (\"uq_counter_views_slug\""));
+        assert!(expanded.contains("columns : vec ! [\"slug\""));
+        assert!(expanded.contains("unique : true"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_struct_compound_index_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("account_summaries")]
+            #[index(name = "idx_account_summaries_owner_created", columns = ["owner", "created_at"])]
+            struct AccountSummary {
+                #[id("account_id")]
+                id: String,
+                owner: String,
+                #[column("created_at_utc")]
+                created_at: String,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("name : Some (\"idx_account_summaries_owner_created\""));
+        assert!(expanded.contains("columns : vec ! [\"owner\" . to_string () , \"created_at_utc\""));
+        assert!(expanded.contains("unique : false"));
+    }
+
+    #[test]
+    fn expand_read_model_accepts_struct_compound_unique_attribute() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("accounts")]
+            #[unique(columns = ["tenant_id", "slug"])]
+            struct AccountSummary {
+                #[id("account_id")]
+                id: String,
+                tenant_id: String,
+                slug: String,
+            }
+        };
+
+        let expanded = expand_read_model(input).unwrap().to_string();
+
+        assert!(expanded.contains("name : Some (\"uq_accounts_tenant_id_slug\""));
+        assert!(expanded.contains("columns : vec ! [\"tenant_id\""));
+        assert!(expanded.contains("\"slug\""));
+        assert!(expanded.contains("unique : true"));
+    }
+
+    #[test]
+    fn expand_read_model_rejects_struct_index_without_columns() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[table("counter_views")]
+            #[index]
+            struct CounterView {
+                #[id]
+                id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("struct index needs columns");
+
+        assert!(
+            err.to_string().contains("#[index] requires columns"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_direct_attributes_without_values() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[collection]
+            struct CounterView {
+                id: String,
+                value: i32,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("direct collection needs a value");
+
+        assert!(
+            err.to_string()
+                .contains("#[collection] requires a string literal"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

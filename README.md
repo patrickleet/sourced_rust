@@ -1198,9 +1198,9 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::ReadModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[readmodel(collection = "game_views")]
+#[collection("game_views")]
 pub struct GameView {
-    #[readmodel(id)]
+    #[id]
     pub id: String,
     pub player_name: String,
     pub score: i32,

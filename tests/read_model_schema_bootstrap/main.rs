@@ -13,7 +13,7 @@ use sourced_rust::{
 struct AccountSummary {
     #[readmodel(id, column = "account_id")]
     account_id: String,
-    #[readmodel(unique)]
+    #[unique]
     owner_slug: String,
     balance_cents: i64,
     #[readmodel(default = "0")]
@@ -38,7 +38,7 @@ struct PlayerWeapon {
     #[readmodel(foreign_key = "players.player_id", delegated_from = "Player.player_id")]
     player_id: String,
     weapon_id: String,
-    #[readmodel(index)]
+    #[index]
     acquired_at: String,
 }
 

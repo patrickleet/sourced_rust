@@ -11,7 +11,7 @@ use sourced_rust::{
 struct AccountSummary {
     #[readmodel(id, column = "account_id")]
     account_id: String,
-    #[readmodel(index)]
+    #[index]
     owner: Option<String>,
     balance_cents: i64,
     #[readmodel(default = "0")]

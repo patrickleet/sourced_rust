@@ -8,17 +8,17 @@ use sourced_rust::{
 const CONSUMER: &str = "counter-projection";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(collection = "counter_views")]
+#[collection("counter_views")]
 struct CounterView {
-    #[readmodel(id)]
+    #[id]
     id: String,
     value: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "relational_counters")]
+#[table("relational_counters")]
 struct RelationalCounter {
-    #[readmodel(id)]
+    #[id]
     id: String,
     value: i32,
 }

@@ -11,7 +11,7 @@ use sourced_rust::{
 struct AccountSummary {
     #[readmodel(id, column = "account_id")]
     account_id: String,
-    #[readmodel(index)]
+    #[index]
     owner: Option<String>,
     balance_cents: i64,
     #[readmodel(default = "0")]
@@ -39,6 +39,31 @@ struct PlayerWeapon {
     player_id: String,
     weapon_id: String,
     acquired_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[collection("direct_document_views")]
+struct DirectDocumentView {
+    #[id]
+    id: String,
+    value: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("direct_table_views")]
+#[index(
+    name = "idx_direct_table_views_tenant_value",
+    columns = ["tenant_id", "value"]
+)]
+#[unique(columns = ["tenant_id", "slug"])]
+struct DirectTableView {
+    #[id("direct_id")]
+    id: String,
+    tenant_id: String,
+    slug: String,
+    #[column("direct_value")]
+    #[index("idx_direct_table_views_direct_value")]
+    value: i32,
 }
 
 #[test]
@@ -164,4 +189,42 @@ fn metadata_validation_reports_missing_keys_before_storage_writes() {
     let err = MissingKeyModel::schema().validate().unwrap_err();
 
     assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key")));
+}
+
+#[test]
+fn direct_collection_table_column_and_index_attributes_wrap_readmodel_metadata() {
+    let direct = DirectDocumentView {
+        id: "doc-1".into(),
+        value: 7,
+    };
+    let schema = DirectTableView::schema();
+
+    assert_eq!(DirectDocumentView::COLLECTION, "direct_document_views");
+    assert_eq!(direct.id(), "doc-1");
+    assert_eq!(DirectTableView::COLLECTION, "direct_table_views");
+    assert_eq!(schema.table_name, "direct_table_views");
+    assert_eq!(schema.primary_key.columns, vec!["direct_id"]);
+    assert!(schema
+        .columns
+        .iter()
+        .any(|column| column.field_name == "id" && column.column_name == "direct_id"));
+    assert!(schema
+        .columns
+        .iter()
+        .any(|column| column.field_name == "value" && column.column_name == "direct_value"));
+    assert!(schema.indexes.iter().any(|index| {
+        index.name.as_deref() == Some("idx_direct_table_views_direct_value")
+            && index.columns == vec!["direct_value"]
+            && !index.unique
+    }));
+    assert!(schema.indexes.iter().any(|index| {
+        index.name.as_deref() == Some("idx_direct_table_views_tenant_value")
+            && index.columns == vec!["tenant_id", "direct_value"]
+            && !index.unique
+    }));
+    assert!(schema.indexes.iter().any(|index| {
+        index.name.as_deref() == Some("uq_direct_table_views_tenant_id_slug")
+            && index.columns == vec!["tenant_id", "slug"]
+            && index.unique
+    }));
 }

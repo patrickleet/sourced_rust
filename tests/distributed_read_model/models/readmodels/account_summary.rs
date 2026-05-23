@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::ReadModel;
 
 #[derive(Clone, Debug, Deserialize, Serialize, ReadModel)]
-#[readmodel(collection = "account_summaries")]
+#[collection("account_summaries")]
 pub struct AccountSummary {
-    #[readmodel(id)]
+    #[id]
     pub account_id: String,
     pub owner: Option<String>,
     pub balance_cents: i64,
