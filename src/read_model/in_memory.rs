@@ -166,9 +166,12 @@ fn apply_read_model_write_plan(
 
                 match staged_rows.get_mut(&key) {
                     Some(row) => {
-                        for (column, value) in mutation.patch.into_values() {
-                            row.values.insert(column, value);
-                        }
+                        apply_patch_values_preserving_key(
+                            &mutation.schema,
+                            &mutation.key,
+                            &mut row.values,
+                            mutation.patch.into_values(),
+                        )?;
                         row.version = next_model_version(&key, current_version)?;
                     }
                     None if matches!(mutation.mode, PatchMode::InsertMissing) => {
@@ -231,11 +234,40 @@ fn row_values_from_key_and_patch(
     for (column, value) in key.iter() {
         values.insert(column.to_string(), value.clone());
     }
-    for (column, value) in patch_values {
-        values.insert(column, value);
-    }
+    apply_patch_values_preserving_key(schema, key, &mut values, patch_values)?;
     validate_row_values(schema, &values, true)?;
     Ok(values)
+}
+
+fn apply_patch_values_preserving_key(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    values: &mut RowValues,
+    patch_values: RowValues,
+) -> Result<(), ReadModelError> {
+    for (column, value) in patch_values {
+        if schema
+            .primary_key
+            .columns
+            .iter()
+            .any(|primary_key| primary_key == &column)
+        {
+            let key_value = key.get(&column).ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` row key is missing primary-key column `{}`",
+                    schema.model_name, column
+                ))
+            })?;
+            if key_value != &value {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` patch cannot change primary-key column `{}`",
+                    schema.model_name, column
+                )));
+            }
+        }
+        values.insert(column, value);
+    }
+    Ok(())
 }
 
 fn validate_row_expected_version(
