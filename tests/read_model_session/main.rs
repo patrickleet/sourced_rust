@@ -156,6 +156,7 @@ fn insert_missing_patch_builds_full_row_from_key_before_insert() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<AccountSummary>().unwrap();
     let patch = RowPatch::new()
+        .set("account_id", RowValue::String("acct-1".into()))
         .set("owner", RowValue::String("Grace".into()))
         .set("balance_cents", RowValue::I64(250))
         .set("deposit_count", RowValue::U64(2))
@@ -183,6 +184,27 @@ fn insert_missing_patch_builds_full_row_from_key_before_insert() {
 }
 
 #[test]
+fn insert_missing_patch_rejects_primary_key_mismatch() {
+    let store = InMemoryReadModelStore::new();
+    let patch = RowPatch::new()
+        .set("account_id", RowValue::String("acct-2".into()))
+        .set("owner", RowValue::String("Grace".into()))
+        .set("balance_cents", RowValue::I64(250))
+        .set("deposit_count", RowValue::U64(2))
+        .set("counters_by_game", RowValue::Json(serde_json::json!({})));
+    let mut session = ReadModelSession::new();
+
+    session
+        .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+    let err = session.commit(&store).unwrap_err();
+
+    assert!(
+        matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))
+    );
+}
+
+#[test]
 fn insert_missing_patch_rejects_partial_new_row() {
     let store = InMemoryReadModelStore::new();
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
@@ -195,6 +217,27 @@ fn insert_missing_patch_rejects_partial_new_row() {
 
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
+    );
+}
+
+#[test]
+fn existing_patch_rejects_primary_key_mismatch() {
+    let store = InMemoryReadModelStore::new();
+    let mut setup = ReadModelSession::new();
+    setup.save(&AccountSummary::new("acct-1")).unwrap();
+    setup.commit(&store).unwrap();
+    let patch = RowPatch::new()
+        .set("account_id", RowValue::String("acct-2".into()))
+        .set("owner", RowValue::String("Grace".into()));
+    let mut session = ReadModelSession::new();
+
+    session
+        .patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+    let err = session.commit(&store).unwrap_err();
+
+    assert!(
+        matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))
     );
 }
 
