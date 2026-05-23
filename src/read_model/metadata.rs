@@ -416,6 +416,17 @@ pub trait RelationalReadModel: Clone + Send + Sync + Sized {
     fn from_row(row: RowValues) -> Result<Self, ReadModelError>;
 }
 
+/// Relationship hydration hooks generated for table-mapped read models.
+pub trait RelationalReadModelIncludes: RelationalReadModel {
+    fn hydrate_include(
+        &mut self,
+        include: &str,
+        rows: Vec<RowValues>,
+    ) -> Result<(), ReadModelError>;
+
+    fn include_rows(&self, include: &str) -> Result<Vec<RowValues>, ReadModelError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
