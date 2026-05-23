@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use serde::Serialize;
 
 use super::{
-    ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationshipDef, RowKey,
-    RowValue, RowValues, Versioned,
+    ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
+    RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, Versioned,
 };
 
 /// Expected optimistic version carried by a staged read-model write.
@@ -108,6 +109,60 @@ pub struct ReadModelLoadRequest {
     pub schema: ReadModelSchema,
     pub key: RowKey,
     pub includes: Vec<String>,
+}
+
+impl ReadModelLoadRequest {
+    pub fn validate_for_query_capabilities(
+        &self,
+        capabilities: &ReadModelQueryCapabilities,
+    ) -> Result<(), ReadModelError> {
+        if !self.includes.is_empty() && !capabilities.relationship_includes {
+            return Err(ReadModelError::Metadata(
+                "read-model adapter does not support relationship includes".into(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+/// Adapter capabilities for primary-key relational read-model loads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReadModelQueryCapabilities {
+    pub relationship_includes: bool,
+}
+
+impl ReadModelQueryCapabilities {
+    pub fn relationship_includes() -> Self {
+        Self {
+            relationship_includes: true,
+        }
+    }
+}
+
+/// Rows loaded for one requested relationship include.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadModelIncludeRows {
+    pub relationship: RelationshipDef,
+    pub target_schema: ReadModelSchema,
+    pub rows: Vec<Versioned<RowValues>>,
+}
+
+/// Untyped graph loaded by a relational read-model adapter.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReadModelLoadGraph {
+    pub root: Option<Versioned<RowValues>>,
+    pub includes: BTreeMap<String, ReadModelIncludeRows>,
+}
+
+/// Adapter contract for explicit primary-key read-model loads and includes.
+pub trait RelationalReadModelQueryStore: Send + Sync {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities;
+
+    fn load_graph(
+        &self,
+        request: ReadModelLoadRequest,
+    ) -> Result<ReadModelLoadGraph, ReadModelError>;
 }
 
 /// Sparse column updates for a relational row.
@@ -710,6 +765,377 @@ impl ReadModelSession {
     }
 }
 
+#[derive(Clone, Debug)]
+struct TrackedRowBaseline {
+    key: RowKey,
+    row: RowValues,
+    version: u64,
+}
+
+#[derive(Clone, Debug)]
+struct TrackedIncludeBaseline {
+    relationship: RelationshipDef,
+    target_schema: ReadModelSchema,
+    rows: BTreeMap<String, TrackedRowBaseline>,
+}
+
+#[derive(Clone, Debug)]
+struct TrackedModelBaseline {
+    root_schema: ReadModelSchema,
+    root_key: RowKey,
+    root_row: RowValues,
+    root_version: u64,
+    includes: BTreeMap<String, TrackedIncludeBaseline>,
+}
+
+/// Store-bound read-model unit of work for load, mutate, save-changes, commit workflows.
+pub struct ReadModelSessionUnitOfWork<'a, S> {
+    store: &'a S,
+    writes: ReadModelSession,
+    baselines: Vec<TrackedModelBaseline>,
+}
+
+impl<'a, S> ReadModelSessionUnitOfWork<'a, S>
+where
+    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+{
+    pub fn new(store: &'a S) -> Self {
+        Self {
+            store,
+            writes: ReadModelSession::new(),
+            baselines: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+    }
+
+    pub fn load<M>(&mut self, key: RowKey) -> ReadModelLoadBuilder<'_, 'a, S, M>
+    where
+        M: RelationalReadModel + RelationalReadModelIncludes,
+    {
+        ReadModelLoadBuilder {
+            unit: self,
+            key,
+            includes: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn save_changes<M>(&mut self, model: M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel + RelationalReadModelIncludes,
+    {
+        let schema = validated_schema::<M>()?;
+        let key = model.primary_key()?;
+        validate_key(&schema, &key)?;
+        let identity = RowIdentity {
+            table_name: schema.table_name.clone(),
+            key: key_fingerprint(&key),
+        };
+        let baseline = self
+            .baselines
+            .iter()
+            .find(|baseline| {
+                baseline.root_schema.table_name == identity.table_name
+                    && key_fingerprint(&baseline.root_key) == identity.key
+            })
+            .cloned()
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` has no tracked baseline for save_changes",
+                    schema.model_name
+                ))
+            })?;
+        let current_row = model.to_row()?;
+
+        self.stage_row_diff(
+            schema,
+            key,
+            &baseline.root_row,
+            &current_row,
+            baseline.root_version,
+        )?;
+
+        for (include_name, include) in &baseline.includes {
+            let current_rows = model.include_rows(include_name)?;
+            self.stage_include_changes(&baseline.root_schema, &current_row, include, current_rows)?;
+        }
+
+        Ok(self)
+    }
+
+    pub fn save<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.save(model)?;
+        Ok(self)
+    }
+
+    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.insert(model)?;
+        Ok(self)
+    }
+
+    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.patch::<M>(key, patch)?;
+        Ok(self)
+    }
+
+    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.delete::<M>(key)?;
+        Ok(self)
+    }
+
+    pub fn mark_processed(
+        &mut self,
+        consumer_name: impl Into<String>,
+        message_id: impl Into<String>,
+    ) -> &mut Self {
+        self.writes.mark_processed(consumer_name, message_id);
+        self
+    }
+
+    pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
+        self.writes.into_write_plan()
+    }
+
+    pub fn commit(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        self.writes.commit(self.store)
+    }
+
+    fn track_graph(
+        &mut self,
+        schema: ReadModelSchema,
+        root: Versioned<RowValues>,
+        includes: BTreeMap<String, ReadModelIncludeRows>,
+    ) -> Result<(), ReadModelError> {
+        let root_key = key_from_row(&schema, &root.data)?;
+        let root_identity = RowIdentity {
+            table_name: schema.table_name.clone(),
+            key: key_fingerprint(&root_key),
+        };
+        self.writes
+            .expected_versions
+            .insert(root_identity, root.version);
+
+        let mut tracked_includes = BTreeMap::new();
+        for (include_name, include_rows) in includes {
+            let mut rows = BTreeMap::new();
+            for row in include_rows.rows {
+                let key = key_from_row(&include_rows.target_schema, &row.data)?;
+                rows.insert(
+                    key_fingerprint(&key),
+                    TrackedRowBaseline {
+                        key,
+                        row: row.data,
+                        version: row.version,
+                    },
+                );
+            }
+            tracked_includes.insert(
+                include_name,
+                TrackedIncludeBaseline {
+                    relationship: include_rows.relationship,
+                    target_schema: include_rows.target_schema,
+                    rows,
+                },
+            );
+        }
+
+        let fingerprint = key_fingerprint(&root_key);
+        self.baselines.retain(|baseline| {
+            baseline.root_schema.table_name != schema.table_name
+                || key_fingerprint(&baseline.root_key) != fingerprint
+        });
+        self.baselines.push(TrackedModelBaseline {
+            root_schema: schema,
+            root_key,
+            root_row: root.data,
+            root_version: root.version,
+            includes: tracked_includes,
+        });
+        Ok(())
+    }
+
+    fn stage_include_changes(
+        &mut self,
+        root_schema: &ReadModelSchema,
+        root_row: &RowValues,
+        baseline: &TrackedIncludeBaseline,
+        current_rows: Vec<RowValues>,
+    ) -> Result<(), ReadModelError> {
+        if matches!(baseline.relationship.kind, RelationshipKind::BelongsTo)
+            && current_rows.len() > 1
+        {
+            return Err(ReadModelError::Metadata(format!(
+                "belongs_to relationship `{}` can save at most one related row",
+                baseline.relationship.field_name
+            )));
+        }
+
+        for mut current_row in current_rows {
+            match baseline.relationship.kind {
+                RelationshipKind::HasMany => populate_delegated_relationship_values(
+                    root_schema,
+                    root_row,
+                    &baseline.relationship,
+                    &baseline.target_schema,
+                    &mut current_row,
+                )?,
+                RelationshipKind::BelongsTo => {}
+                RelationshipKind::ManyToMany => {
+                    return Err(ReadModelError::Metadata(format!(
+                        "many-to-many relationship `{}` includes are not supported yet",
+                        baseline.relationship.field_name
+                    )));
+                }
+            }
+
+            let key = key_from_row(&baseline.target_schema, &current_row)?;
+            let fingerprint = key_fingerprint(&key);
+            if let Some(loaded) = baseline.rows.get(&fingerprint) {
+                self.stage_row_diff(
+                    baseline.target_schema.clone(),
+                    loaded.key.clone(),
+                    &loaded.row,
+                    &current_row,
+                    loaded.version,
+                )?;
+            } else {
+                self.stage_upsert_row(baseline.target_schema.clone(), key, current_row)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn stage_row_diff(
+        &mut self,
+        schema: ReadModelSchema,
+        key: RowKey,
+        before: &RowValues,
+        after: &RowValues,
+        expected_version: u64,
+    ) -> Result<(), ReadModelError> {
+        let patch = diff_rows(before, after);
+        if patch.is_empty() {
+            return Ok(());
+        }
+
+        let mutation = PatchRowMutation {
+            schema,
+            key,
+            patch,
+            expected_version: ExpectedVersion::Exact(expected_version),
+            mode: PatchMode::UpdateExisting,
+        };
+        validate_patch_mutation(&mutation)?;
+        self.writes.push(ReadModelMutation::PatchRow(mutation));
+        Ok(())
+    }
+
+    fn stage_upsert_row(
+        &mut self,
+        schema: ReadModelSchema,
+        key: RowKey,
+        values: RowValues,
+    ) -> Result<(), ReadModelError> {
+        let mutation = RowMutation {
+            schema,
+            key,
+            values,
+            expected_version: ExpectedVersion::Any,
+            mode: RowWriteMode::Upsert,
+        };
+        validate_row_mutation(&mutation)?;
+        self.writes.push(ReadModelMutation::UpsertRow(mutation));
+        Ok(())
+    }
+}
+
+/// Builder for one explicit primary-key read-model load.
+pub struct ReadModelLoadBuilder<'session, 'store, S, M>
+where
+    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+{
+    unit: &'session mut ReadModelSessionUnitOfWork<'store, S>,
+    key: RowKey,
+    includes: Vec<String>,
+    _marker: PhantomData<M>,
+}
+
+impl<'session, 'store, S, M> ReadModelLoadBuilder<'session, 'store, S, M>
+where
+    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+    M: RelationalReadModel + RelationalReadModelIncludes,
+{
+    pub fn include(mut self, relationship: impl Into<String>) -> Self {
+        self.includes.push(relationship.into());
+        self
+    }
+
+    pub fn one(self) -> Result<Option<Versioned<M>>, ReadModelError> {
+        let request = self
+            .unit
+            .writes
+            .load_with::<M, _, _>(self.key, self.includes)?;
+        let graph = self.unit.store.load_graph(request.clone())?;
+        let Some(root) = graph.root else {
+            return Ok(None);
+        };
+
+        let mut model = M::from_row(root.data.clone())?;
+        for (include_name, include_rows) in &graph.includes {
+            let rows = include_rows
+                .rows
+                .iter()
+                .map(|row| row.data.clone())
+                .collect::<Vec<_>>();
+            model.hydrate_include(include_name, rows)?;
+        }
+
+        self.unit
+            .track_graph(request.schema, root.clone(), graph.includes)?;
+        Ok(Some(Versioned {
+            data: model,
+            version: root.version,
+        }))
+    }
+}
+
+/// Extension trait that starts a friendly tracked read-model session from a store.
+pub trait ReadModelUnitOfWorkExt:
+    ReadModelSessionStore + RelationalReadModelQueryStore + Sized
+{
+    fn session(&self) -> ReadModelSessionUnitOfWork<'_, Self> {
+        ReadModelSessionUnitOfWork::new(self)
+    }
+}
+
+impl<S> ReadModelUnitOfWorkExt for S where S: ReadModelSessionStore + RelationalReadModelQueryStore {}
+
+fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
+    let mut patch = RowPatch::new();
+    for (column, value) in after.iter() {
+        if before.get(column) != Some(value) {
+            patch = patch.set(column.to_string(), value.clone());
+        }
+    }
+    patch
+}
+
 fn validated_schema<M>() -> Result<ReadModelSchema, ReadModelError>
 where
     M: RelationalReadModel,
@@ -767,7 +1193,7 @@ fn validate_expected_version(
     Ok(())
 }
 
-fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(), ReadModelError> {
+pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(), ReadModelError> {
     if key.is_empty() {
         return Err(ReadModelError::Metadata(format!(
             "read model `{}` row key cannot be empty",
@@ -871,7 +1297,10 @@ fn validate_row_values(
     Ok(())
 }
 
-fn key_from_row(schema: &ReadModelSchema, row: &RowValues) -> Result<RowKey, ReadModelError> {
+pub(crate) fn key_from_row(
+    schema: &ReadModelSchema,
+    row: &RowValues,
+) -> Result<RowKey, ReadModelError> {
     let mut key = RowKey::default();
     for column in &schema.primary_key.columns {
         let value = row.get(column).cloned().ok_or_else(|| {
@@ -960,7 +1389,7 @@ fn populate_delegated_relationship_values(
     Ok(())
 }
 
-fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<String> {
+pub(crate) fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<String> {
     schema
         .columns
         .iter()
@@ -970,7 +1399,7 @@ fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<St
         .map(|column| column.column_name.clone())
 }
 
-fn key_fingerprint(key: &RowKey) -> String {
+pub(crate) fn key_fingerprint(key: &RowKey) -> String {
     let mut fingerprint = String::new();
     for (column, value) in key.iter() {
         push_fingerprint_part(&mut fingerprint, column);

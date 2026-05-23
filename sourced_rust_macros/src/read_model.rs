@@ -117,6 +117,8 @@ fn expand_relational_read_model(
     let mut foreign_keys = Vec::new();
     let mut indexes = Vec::new();
     let mut relationships = Vec::new();
+    let mut hydrate_include_arms = Vec::new();
+    let mut include_rows_arms = Vec::new();
 
     for (field, attrs) in fields.iter().zip(field_attrs) {
         let ident = field
@@ -127,6 +129,10 @@ fn expand_relational_read_model(
 
         if let Some(relationship) = attrs.relationship_tokens(&field_name)? {
             relationships.push(relationship);
+            let (hydrate_arm, include_rows_arm) =
+                attrs.relationship_include_tokens(field, &field_name)?;
+            hydrate_include_arms.push(hydrate_arm);
+            include_rows_arms.push(include_rows_arm);
             row_fields.push(quote! { #ident: ::core::default::Default::default() });
             continue;
         }
@@ -244,6 +250,37 @@ fn expand_relational_read_model(
                 Ok(Self {
                     #(#row_fields),*
                 })
+            }
+        }
+
+        impl sourced_rust::RelationalReadModelIncludes for #name {
+            fn hydrate_include(
+                &mut self,
+                include: &str,
+                rows: Vec<sourced_rust::RowValues>,
+            ) -> Result<(), sourced_rust::ReadModelError> {
+                match include {
+                    #(#hydrate_include_arms,)*
+                    _ => Err(sourced_rust::ReadModelError::Metadata(format!(
+                        "read model `{}` has no hydratable relationship `{}`",
+                        #model_name,
+                        include
+                    ))),
+                }
+            }
+
+            fn include_rows(
+                &self,
+                include: &str,
+            ) -> Result<Vec<sourced_rust::RowValues>, sourced_rust::ReadModelError> {
+                match include {
+                    #(#include_rows_arms,)*
+                    _ => Err(sourced_rust::ReadModelError::Metadata(format!(
+                        "read model `{}` has no tracked relationship `{}`",
+                        #model_name,
+                        include
+                    ))),
+                }
             }
         }
     })
@@ -593,6 +630,96 @@ impl FieldAttrs {
             }
         }))
     }
+
+    fn relationship_include_tokens(
+        &self,
+        field: &Field,
+        field_name: &str,
+    ) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+        let relationship = self.relationship.as_ref().ok_or_else(|| {
+            syn::Error::new_spanned(field, "field is not a read-model relationship")
+        })?;
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new_spanned(field, "ReadModel fields must be named"))?;
+
+        match relationship.kind {
+            RelationshipKindAttr::HasMany | RelationshipKindAttr::ManyToMany => {
+                let inner = vec_inner_type(&field.ty).ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        field,
+                        format!("relationship `{field_name}` must be shaped as `Vec<T>`"),
+                    )
+                })?;
+                validate_relationship_target_type(
+                    field,
+                    inner,
+                    &relationship.target_model,
+                    field_name,
+                )?;
+                let hydrate = quote! {
+                    #field_name => {
+                        self.#ident = rows
+                            .into_iter()
+                            .map(<#inner as sourced_rust::RelationalReadModel>::from_row)
+                            .collect::<Result<Vec<_>, sourced_rust::ReadModelError>>()?;
+                        Ok(())
+                    }
+                };
+                let include_rows = quote! {
+                    #field_name => self
+                        .#ident
+                        .iter()
+                        .map(sourced_rust::RelationalReadModel::to_row)
+                        .collect::<Result<Vec<_>, sourced_rust::ReadModelError>>()
+                };
+                Ok((hydrate, include_rows))
+            }
+            RelationshipKindAttr::BelongsTo => {
+                let inner = option_inner_type(&field.ty).ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        field,
+                        format!(
+                            "belongs_to relationship `{field_name}` must be shaped as `Option<T>`"
+                        ),
+                    )
+                })?;
+                validate_relationship_target_type(
+                    field,
+                    inner,
+                    &relationship.target_model,
+                    field_name,
+                )?;
+                let hydrate = quote! {
+                    #field_name => {
+                        let mut rows = rows.into_iter();
+                        self.#ident = match rows.next() {
+                            Some(row) => Some(<#inner as sourced_rust::RelationalReadModel>::from_row(row)?),
+                            None => None,
+                        };
+                        if rows.next().is_some() {
+                            return Err(sourced_rust::ReadModelError::Metadata(format!(
+                                "belongs_to relationship `{}` returned more than one row",
+                                #field_name
+                            )));
+                        }
+                        Ok(())
+                    }
+                };
+                let include_rows = quote! {
+                    #field_name => {
+                        let mut rows = Vec::new();
+                        if let Some(value) = &self.#ident {
+                            rows.push(sourced_rust::RelationalReadModel::to_row(value)?);
+                        }
+                        Ok(rows)
+                    }
+                };
+                Ok((hydrate, include_rows))
+            }
+        }
+    }
 }
 
 fn relationship_mut<'a>(
@@ -820,6 +947,44 @@ fn option_inner_type(ty: &Type) -> Option<&Type> {
         GenericArgument::Type(ty) => Some(ty),
         _ => None,
     })
+}
+
+fn vec_inner_type(ty: &Type) -> Option<&Type> {
+    let segment = last_type_segment(ty)?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    })
+}
+
+fn validate_relationship_target_type(
+    field: &Field,
+    ty: &Type,
+    target_model: &str,
+    field_name: &str,
+) -> syn::Result<()> {
+    let Some(segment) = last_type_segment(ty) else {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!("relationship `{field_name}` target type must be a named read model"),
+        ));
+    };
+    if segment.ident != target_model {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "relationship `{field_name}` targets `{target_model}` but the field stores `{}`",
+                segment.ident
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn last_type_segment(ty: &Type) -> Option<&syn::PathSegment> {

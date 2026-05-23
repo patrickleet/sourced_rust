@@ -10,6 +10,7 @@ The current implementation keeps these paths explicit:
 |---|---|---|
 | Document rows | `ReadModelStore`, `.readmodel(&view)`, `ReadModelSession::document` | Whole-view JSON documents backed by a document payload column |
 | Relational write mapping | `RelationalReadModel`, `ReadModelSession`, `ReadModelWritePlan` | Normalized tables, composite keys, foreign keys, JSONB columns |
+| Explicit relationship includes | `store.session().load(...).include(...).one()`, `save_changes` | Internal primary-key reads with declared one-level relationships |
 | Schema lifecycle | `ReadModelSchemaRegistry`, `ReadModelSchemaAdapter` | Migration artifact generation, startup verification, explicit dev/test bootstrap |
 
 ## Document Read Models
@@ -105,6 +106,49 @@ Use `#[index]` or `#[index("index_name")]` for a secondary field index. Use
 For compound indexes, put `#[index(columns = ["field_a", "field_b"])]` or
 `#[unique(columns = ["field_a", "field_b"])]` on the struct. Add
 `name = "..."` when the storage index name must be fixed.
+
+## Explicit Relationship Includes
+
+Relationship includes are primary-key anchored and opt-in. Register the
+relational schemas with an adapter, load one root row, ask for each relationship
+explicitly, mutate the hydrated struct, then save the tracked changes:
+
+```rust
+use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt, RowKey, RowValue};
+
+let store = InMemoryReadModelStore::new();
+store.register_schema::<PlayerView>()?;
+store.register_schema::<PlayerWeaponView>()?;
+
+let mut read_models = store.session();
+let mut player = read_models
+    .load::<PlayerView>(RowKey::new([("player_id", RowValue::String("player-1".into()))]))
+    .include("weapons")
+    .one()?
+    .expect("player should exist")
+    .data;
+
+player.display_name = "Ada Lovelace".into();
+player.weapons.push(PlayerWeaponView {
+    player_id: String::new(),
+    weapon_id: "sword".into(),
+    acquired_at: "2026-05-23".into(),
+});
+
+read_models.save_changes(player)?;
+read_models.commit()?;
+```
+
+`has_many` relationships hydrate `Vec<T>` fields. `belongs_to` relationships
+hydrate `Option<T>` fields. Added `has_many` children have delegated foreign keys
+filled before the write plan is staged. Removing a child from a loaded
+collection does not delete storage by default; use an explicit delete operation
+when deletion is intended.
+
+This API is for command handlers, projectors, tests, admin tools, and adapter
+conformance that need typed internal includes. It is not a public query DSL.
+Hasura or another query gateway remains the intended public GraphQL/query API
+for normalized Postgres read models.
 
 ## Command-Side Atomic Writes
 
