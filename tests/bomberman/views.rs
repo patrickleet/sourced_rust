@@ -28,6 +28,7 @@ pub struct ExplosionState {
     pub cells: Vec<(i32, i32)>,
 }
 
+/// Whole-board document view stored as a single read-model document row.
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[readmodel(collection = "boards")]
 pub struct BoardView {

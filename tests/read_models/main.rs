@@ -11,7 +11,7 @@ use std::time::Duration;
 use aggregate::Counter;
 use sourced_rust::{
     AggregateBuilder, CommitBuilderExt, HashMapRepository, OutboxMessage, QueuedReadModelStore,
-    ReadModelsExt, ReadOpts,
+    ReadModelSession, ReadModelStore, ReadModelsExt, ReadOpts,
 };
 use views::{CounterView, UserCountersIndexView};
 
@@ -237,6 +237,79 @@ fn commit_all_without_aggregate() {
         .unwrap();
     assert_eq!(loaded1.data.id, "standalone-1");
     assert_eq!(loaded2.data.id, "standalone-2");
+}
+
+#[test]
+fn standalone_session_commit_and_primary_key_read() {
+    let repo = HashMapRepository::new();
+    let view = CounterView::new("session-standalone", "Session", "user-session");
+    let mut session = ReadModelSession::new();
+    session.document(&view).unwrap();
+
+    let outcome = session.commit(&repo).unwrap();
+
+    assert!(outcome.was_applied());
+    let loaded = repo
+        .get_by_primary_key::<CounterView>("session-standalone")
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.data.name, "Session");
+}
+
+#[test]
+fn read_models_session_commits_with_aggregate() {
+    let repo = HashMapRepository::new();
+    let mut counter = Counter::new();
+    counter
+        .create(
+            "counter-session".into(),
+            "Session Commit".into(),
+            "user-session".into(),
+        )
+        .unwrap();
+    counter.increment(11).unwrap();
+
+    let mut view = CounterView::new("counter-session", "Session Commit", "user-session");
+    view.set_value(counter.value());
+    let mut session = ReadModelSession::new();
+    session.document(&view).unwrap();
+
+    sourced_rust::ReadModelSessionCommitExt::read_models(&repo, session)
+        .commit(&mut counter)
+        .unwrap();
+
+    let stored_counter = repo
+        .clone()
+        .aggregate::<Counter>()
+        .get("counter-session")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_counter.value(), 11);
+    let stored_view = repo
+        .read_models::<CounterView>()
+        .get("counter-session")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_view.data.value, 11);
+}
+
+#[test]
+fn readmodel_commits_document_path() {
+    let repo = HashMapRepository::new();
+    let mut counter = Counter::new();
+    counter
+        .create("alias-1".into(), "Alias".into(), "user-alias".into())
+        .unwrap();
+    let view = CounterView::new("alias-1", "Alias", "user-alias");
+
+    repo.readmodel(&view).commit(&mut counter).unwrap();
+
+    let stored = repo
+        .read_models::<CounterView>()
+        .get("alias-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.data.name, "Alias");
 }
 
 #[test]

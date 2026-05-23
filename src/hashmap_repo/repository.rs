@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::entity::{Committable, Entity, EventRecord};
-use crate::read_model::in_memory::{next_model_version, StoredModel};
+use crate::read_model::in_memory::apply_document_write_plan;
 use crate::read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore, Versioned,
+    InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelSessionStore, ReadModelStore, ReadModelWritePlan, Versioned,
 };
 use crate::repository::{
     Commit, CommitBatch, GetMany, GetOne, RepositoryError, SnapshotWrite, TransactionalCommit,
@@ -104,6 +105,11 @@ impl TransactionalCommit for HashMapRepository {
             .storage
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("read model write"))?;
+        let mut processed_messages = self
+            .model_store
+            .processed_messages
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("processed-message write"))?;
         let mut snapshot_storage = self
             .snapshot_store
             .storage
@@ -112,6 +118,7 @@ impl TransactionalCommit for HashMapRepository {
 
         let mut staged_events = storage.clone();
         let mut staged_models = model_storage.clone();
+        let mut staged_processed_messages = processed_messages.clone();
         let mut staged_snapshots = snapshot_storage.clone();
 
         // Phase 1: Validate all stream versions before staging any writes.
@@ -135,16 +142,18 @@ impl TransactionalCommit for HashMapRepository {
             stored.extend(new_events);
         }
 
-        for write in batch.read_models {
-            let new_version =
-                next_model_version(&write.key, staged_models.get(&write.key).map(|s| s.version))?;
-            staged_models.insert(
-                write.key,
-                StoredModel {
-                    bytes: write.bytes,
-                    version: new_version,
-                },
-            );
+        for plan in batch.read_model_plans {
+            let outcome = apply_document_write_plan(
+                plan,
+                &mut staged_models,
+                &mut staged_processed_messages,
+            )?;
+            if let Some(mark) = outcome.duplicate_message() {
+                return Err(RepositoryError::Model(format!(
+                    "processed message already handled by consumer `{}`: `{}`",
+                    mark.consumer_name, mark.message_id
+                )));
+            }
         }
 
         for write in batch.snapshots {
@@ -158,6 +167,7 @@ impl TransactionalCommit for HashMapRepository {
         // Phase 3: Publish staged state only after all validation and staging succeeds.
         *storage = staged_events;
         *model_storage = staged_models;
+        *processed_messages = staged_processed_messages;
         *snapshot_storage = staged_snapshots;
 
         for entity in batch.entities {
@@ -188,6 +198,13 @@ fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
 impl ReadModelStore for HashMapRepository {
     fn get_model<M: ReadModel>(&self, id: &str) -> Result<Option<Versioned<M>>, ReadModelError> {
         self.model_store.get_model(id)
+    }
+
+    fn get_by_primary_key<M: ReadModel>(
+        &self,
+        id: &str,
+    ) -> Result<Option<Versioned<M>>, ReadModelError> {
+        self.model_store.get_by_primary_key(id)
     }
 
     fn upsert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
@@ -223,9 +240,22 @@ impl ReadModelStore for HashMapRepository {
     ) -> Result<Option<Versioned<M>>, ReadModelError> {
         self.model_store.find_one_model(predicate)
     }
+}
 
-    fn upsert_raw(&self, key: &str, bytes: Vec<u8>) -> Result<(), ReadModelError> {
-        self.model_store.upsert_raw(key, bytes)
+impl ReadModelSessionStore for HashMapRepository {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+        self.model_store.read_model_capabilities()
+    }
+
+    fn commit_write_plan(
+        &self,
+        plan: ReadModelWritePlan,
+    ) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        self.model_store.commit_write_plan(plan)
+    }
+
+    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
+        self.model_store.is_processed(consumer_name, message_id)
     }
 }
 
@@ -246,6 +276,8 @@ impl SnapshotStore for HashMapRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::read_model::in_memory::StoredModel;
+    use crate::read_model::{DocumentMutation, ReadModelMutation};
     use crate::repository::Get;
 
     #[test]
@@ -312,9 +344,9 @@ mod tests {
     }
 
     #[test]
-    fn read_model_batch_rejects_version_overflow_without_writing() {
+    fn document_plan_rejects_version_overflow_without_writing() {
         let repo = HashMapRepository::new();
-        let key = "test_models:1".to_string();
+        let key = "test_models:plan-overflow".to_string();
         let original_bytes = b"old".to_vec();
         repo.model_store.storage.write().unwrap().insert(
             key.clone(),
@@ -323,14 +355,19 @@ mod tests {
                 version: u64::MAX,
             },
         );
+        let plan = ReadModelWritePlan::new(
+            vec![ReadModelMutation::Document(DocumentMutation {
+                collection: "test_models".into(),
+                id: "plan-overflow".into(),
+                bytes: b"new".to_vec(),
+            })],
+            Vec::new(),
+        );
 
         let err = repo
             .commit_batch(CommitBatch {
                 entities: Vec::new(),
-                read_models: vec![crate::repository::ReadModelWrite::new(
-                    key.clone(),
-                    b"new".to_vec(),
-                )],
+                read_model_plans: vec![plan],
                 snapshots: Vec::new(),
             })
             .unwrap_err();

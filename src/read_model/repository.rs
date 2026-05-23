@@ -25,6 +25,11 @@ impl<'a, S: ReadModelStore, M: ReadModel> ReadModelRepository<'a, S, M> {
         self.store.get_model(id)
     }
 
+    /// Read a model by primary key without implying command-side ownership.
+    pub fn get_by_primary_key(&self, id: &str) -> Result<Option<Versioned<M>>, ReadModelError> {
+        self.store.get_by_primary_key(id)
+    }
+
     /// Upsert a read model (insert or update, no version check).
     pub fn upsert(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
         self.store.upsert(model)

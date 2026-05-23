@@ -1,0 +1,991 @@
+use std::collections::BTreeMap;
+
+use serde::Serialize;
+
+use super::{
+    ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationshipDef, RowKey,
+    RowValue, RowValues, Versioned,
+};
+
+/// Expected optimistic version carried by a staged read-model write.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ExpectedVersion {
+    /// No optimistic version check is requested.
+    #[default]
+    Any,
+    /// The target row must currently have this version.
+    Exact(u64),
+    /// The target row must not exist yet.
+    NotExists,
+}
+
+/// Full-row write behavior for a relational row mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowWriteMode {
+    Insert,
+    Upsert,
+}
+
+/// Sparse patch behavior for a relational row mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatchMode {
+    UpdateExisting,
+    InsertMissing,
+}
+
+/// Adapter capabilities used to validate a write plan before any storage write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadModelAdapterCapabilities {
+    pub relational_rows: bool,
+    pub document_rows: bool,
+    pub sparse_patches: bool,
+    pub deletes: bool,
+    pub processed_messages: bool,
+}
+
+impl Default for ReadModelAdapterCapabilities {
+    fn default() -> Self {
+        Self {
+            relational_rows: true,
+            document_rows: true,
+            sparse_patches: true,
+            deletes: true,
+            processed_messages: true,
+        }
+    }
+}
+
+/// Result of applying a standalone read-model write plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadModelCommitOutcome {
+    applied: bool,
+    duplicate_message: Option<ProcessedMessageMark>,
+}
+
+impl ReadModelCommitOutcome {
+    pub fn applied() -> Self {
+        Self {
+            applied: true,
+            duplicate_message: None,
+        }
+    }
+
+    pub fn skipped_duplicate(mark: ProcessedMessageMark) -> Self {
+        Self {
+            applied: false,
+            duplicate_message: Some(mark),
+        }
+    }
+
+    pub fn was_applied(&self) -> bool {
+        self.applied
+    }
+
+    pub fn was_skipped(&self) -> bool {
+        !self.applied
+    }
+
+    pub fn duplicate_message(&self) -> Option<&ProcessedMessageMark> {
+        self.duplicate_message.as_ref()
+    }
+}
+
+/// Adapter contract for committing read-model sessions without an aggregate repository.
+pub trait ReadModelSessionStore: Send + Sync {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities;
+
+    fn commit_write_plan(
+        &self,
+        plan: ReadModelWritePlan,
+    ) -> Result<ReadModelCommitOutcome, ReadModelError>;
+
+    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError>;
+}
+
+/// A request an adapter can satisfy with a primary-key read plus explicit includes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadModelLoadRequest {
+    pub schema: ReadModelSchema,
+    pub key: RowKey,
+    pub includes: Vec<String>,
+}
+
+/// Sparse column updates for a relational row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowPatch {
+    values: RowValues,
+}
+
+impl RowPatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(mut self, column: impl Into<String>, value: RowValue) -> Self {
+        self.values.insert(column, value);
+        self
+    }
+
+    pub fn set_serde<T: Serialize + ?Sized>(
+        mut self,
+        column: impl Into<String>,
+        value: &T,
+    ) -> Result<Self, ReadModelError> {
+        self.values.insert_serde(column, value)?;
+        Ok(self)
+    }
+
+    pub fn get(&self, column: &str) -> Option<&RowValue> {
+        self.values.get(column)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &RowValue)> {
+        self.values.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn into_values(self) -> RowValues {
+        self.values
+    }
+}
+
+/// Whole-document read-model write backed by a document column such as JSONB.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentMutation {
+    pub collection: String,
+    pub id: String,
+    pub bytes: Vec<u8>,
+}
+
+impl DocumentMutation {
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.collection, self.id)
+    }
+}
+
+/// Full relational row insert/upsert mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowMutation {
+    pub schema: ReadModelSchema,
+    pub key: RowKey,
+    pub values: RowValues,
+    pub expected_version: ExpectedVersion,
+    pub mode: RowWriteMode,
+}
+
+/// Sparse relational row patch mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatchRowMutation {
+    pub schema: ReadModelSchema,
+    pub key: RowKey,
+    pub patch: RowPatch,
+    pub expected_version: ExpectedVersion,
+    pub mode: PatchMode,
+}
+
+/// Relational row delete mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeleteRowMutation {
+    pub schema: ReadModelSchema,
+    pub key: RowKey,
+    pub expected_version: ExpectedVersion,
+}
+
+/// First-pass read-model write-plan mutation surface.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReadModelMutation {
+    Document(DocumentMutation),
+    UpsertRow(RowMutation),
+    PatchRow(PatchRowMutation),
+    DeleteRow(DeleteRowMutation),
+}
+
+impl ReadModelMutation {
+    pub fn table_name(&self) -> Option<&str> {
+        match self {
+            ReadModelMutation::Document(mutation) => Some(mutation.collection.as_str()),
+            ReadModelMutation::UpsertRow(mutation) => Some(mutation.schema.table_name.as_str()),
+            ReadModelMutation::PatchRow(mutation) => Some(mutation.schema.table_name.as_str()),
+            ReadModelMutation::DeleteRow(mutation) => Some(mutation.schema.table_name.as_str()),
+        }
+    }
+
+    pub fn lock_key(&self) -> String {
+        match self {
+            ReadModelMutation::Document(mutation) => mutation.key(),
+            ReadModelMutation::UpsertRow(mutation) => format!(
+                "{}:{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+            ReadModelMutation::PatchRow(mutation) => format!(
+                "{}:{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+            ReadModelMutation::DeleteRow(mutation) => format!(
+                "{}:{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+        }
+    }
+
+    fn sort_key(&self) -> String {
+        match self {
+            ReadModelMutation::Document(mutation) => format!("0|{}", mutation.key()),
+            ReadModelMutation::UpsertRow(mutation) => format!(
+                "1|{}|{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+            ReadModelMutation::PatchRow(mutation) => format!(
+                "2|{}|{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+            ReadModelMutation::DeleteRow(mutation) => format!(
+                "3|{}|{}",
+                mutation.schema.table_name,
+                key_fingerprint(&mutation.key)
+            ),
+        }
+    }
+}
+
+/// A processed-message marker staged with read-model writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessedMessageMark {
+    pub consumer_name: String,
+    pub message_id: String,
+}
+
+/// Deterministic unit-of-work output for relational read-model adapters.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReadModelWritePlan {
+    pub mutations: Vec<ReadModelMutation>,
+    pub processed_messages: Vec<ProcessedMessageMark>,
+}
+
+impl ReadModelWritePlan {
+    pub fn new(
+        mutations: Vec<ReadModelMutation>,
+        processed_messages: Vec<ProcessedMessageMark>,
+    ) -> Self {
+        Self {
+            mutations,
+            processed_messages,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mutations.is_empty() && self.processed_messages.is_empty()
+    }
+
+    pub fn validate(&self) -> Result<(), ReadModelError> {
+        self.validate_for(&ReadModelAdapterCapabilities::default())
+    }
+
+    pub fn validate_for(
+        &self,
+        capabilities: &ReadModelAdapterCapabilities,
+    ) -> Result<(), ReadModelError> {
+        for mutation in &self.mutations {
+            match mutation {
+                ReadModelMutation::Document(mutation) => {
+                    if !capabilities.document_rows {
+                        return Err(ReadModelError::Metadata(
+                            "read-model adapter does not support document row writes".into(),
+                        ));
+                    }
+                    validate_document_mutation(mutation)?;
+                }
+                ReadModelMutation::UpsertRow(mutation) => {
+                    if !capabilities.relational_rows {
+                        return Err(ReadModelError::Metadata(
+                            "read-model adapter does not support relational row writes".into(),
+                        ));
+                    }
+                    validate_row_mutation(mutation)?;
+                }
+                ReadModelMutation::PatchRow(mutation) => {
+                    if !capabilities.relational_rows || !capabilities.sparse_patches {
+                        return Err(ReadModelError::Metadata(
+                            "read-model adapter does not support sparse row patches".into(),
+                        ));
+                    }
+                    validate_patch_mutation(mutation)?;
+                }
+                ReadModelMutation::DeleteRow(mutation) => {
+                    if !capabilities.relational_rows || !capabilities.deletes {
+                        return Err(ReadModelError::Metadata(
+                            "read-model adapter does not support row deletes".into(),
+                        ));
+                    }
+                    validate_delete_mutation(mutation)?;
+                }
+            }
+        }
+
+        if !capabilities.processed_messages && !self.processed_messages.is_empty() {
+            return Err(ReadModelError::Metadata(
+                "read-model adapter does not support processed-message marks".into(),
+            ));
+        }
+
+        for mark in &self.processed_messages {
+            if mark.consumer_name.is_empty() || mark.message_id.is_empty() {
+                return Err(ReadModelError::Metadata(
+                    "processed-message marks require consumer name and message id".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RowIdentity {
+    table_name: String,
+    key: String,
+}
+
+#[derive(Clone, Debug)]
+struct StagedMutation {
+    sequence: u64,
+    mutation: ReadModelMutation,
+}
+
+/// Short-lived unit of work that stages read-model mutations before commit.
+#[derive(Clone, Debug, Default)]
+pub struct ReadModelSession {
+    mutations: Vec<StagedMutation>,
+    processed_messages: Vec<ProcessedMessageMark>,
+    expected_versions: BTreeMap<RowIdentity, u64>,
+    next_sequence: u64,
+}
+
+impl ReadModelSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mutations.is_empty() && self.processed_messages.is_empty()
+    }
+
+    pub fn load<M>(&self, key: RowKey) -> Result<ReadModelLoadRequest, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.load_with::<M, Vec<String>, String>(key, Vec::new())
+    }
+
+    pub fn load_with<M, I, S>(
+        &self,
+        key: RowKey,
+        includes: I,
+    ) -> Result<ReadModelLoadRequest, ReadModelError>
+    where
+        M: RelationalReadModel,
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(&schema, &key)?;
+        let includes: Vec<String> = includes.into_iter().map(Into::into).collect();
+        for include in &includes {
+            if !schema
+                .relationships
+                .iter()
+                .any(|relationship| relationship.field_name == *include)
+            {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` has no relationship `{}`",
+                    schema.model_name, include
+                )));
+            }
+        }
+
+        Ok(ReadModelLoadRequest {
+            schema,
+            key,
+            includes,
+        })
+    }
+
+    pub fn track_loaded<M>(&mut self, versioned: &Versioned<M>) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.expect_version::<M>(versioned.data.primary_key()?, versioned.version)
+    }
+
+    pub fn expect_version<M>(
+        &mut self,
+        key: RowKey,
+        expected_version: u64,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(&schema, &key)?;
+        validate_expected_version(&ExpectedVersion::Exact(expected_version), &schema)?;
+        self.expected_versions.insert(
+            RowIdentity {
+                table_name: schema.table_name,
+                key: key_fingerprint(&key),
+            },
+            expected_version,
+        );
+        Ok(self)
+    }
+
+    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.stage_full_row(
+            model,
+            RowWriteMode::Insert,
+            Some(ExpectedVersion::NotExists),
+        )
+    }
+
+    pub fn save<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.stage_full_row(model, RowWriteMode::Upsert, None)
+    }
+
+    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.save(model)
+    }
+
+    pub fn insert_related<P, C>(
+        &mut self,
+        parent: &P,
+        relationship_field: &str,
+        child: &C,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        self.stage_related_row(parent, relationship_field, child, RowWriteMode::Insert)
+    }
+
+    pub fn save_related<P, C>(
+        &mut self,
+        parent: &P,
+        relationship_field: &str,
+        child: &C,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        self.stage_related_row(parent, relationship_field, child, RowWriteMode::Upsert)
+    }
+
+    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.stage_patch::<M>(key, patch, PatchMode::UpdateExisting)
+    }
+
+    pub fn upsert_patch<M>(
+        &mut self,
+        key: RowKey,
+        patch: RowPatch,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.stage_patch::<M>(key, patch, PatchMode::InsertMissing)
+    }
+
+    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(&schema, &key)?;
+        let expected_version = self.expected_for(&schema, &key);
+        let mutation = DeleteRowMutation {
+            schema,
+            key,
+            expected_version,
+        };
+        self.push(ReadModelMutation::DeleteRow(mutation));
+        Ok(self)
+    }
+
+    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.delete::<M>(model.primary_key()?)
+    }
+
+    pub fn document<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: ReadModel,
+    {
+        let bytes =
+            serde_json::to_vec(model).map_err(|err| ReadModelError::Serde(err.to_string()))?;
+        self.push(ReadModelMutation::Document(DocumentMutation {
+            collection: M::COLLECTION.to_string(),
+            id: model.id().to_string(),
+            bytes,
+        }));
+        Ok(self)
+    }
+
+    pub fn mark_processed(
+        &mut self,
+        consumer_name: impl Into<String>,
+        message_id: impl Into<String>,
+    ) -> &mut Self {
+        self.processed_messages.push(ProcessedMessageMark {
+            consumer_name: consumer_name.into(),
+            message_id: message_id.into(),
+        });
+        self
+    }
+
+    pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
+        let mut mutations = self.mutations;
+        mutations.sort_by(|left, right| {
+            left.mutation
+                .sort_key()
+                .cmp(&right.mutation.sort_key())
+                .then(left.sequence.cmp(&right.sequence))
+        });
+        let mutations = mutations
+            .into_iter()
+            .map(|staged| staged.mutation)
+            .collect::<Vec<_>>();
+        let plan = ReadModelWritePlan::new(mutations, self.processed_messages);
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn commit<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
+    where
+        S: ReadModelSessionStore + ?Sized,
+    {
+        store.commit_write_plan(self.into_write_plan()?)
+    }
+
+    fn stage_full_row<M>(
+        &mut self,
+        model: &M,
+        mode: RowWriteMode,
+        expected_version: Option<ExpectedVersion>,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        let key = model.primary_key()?;
+        let values = model.to_row()?;
+        validate_key(&schema, &key)?;
+        let expected_version = expected_version.unwrap_or_else(|| self.expected_for(&schema, &key));
+        let mutation = RowMutation {
+            schema,
+            key,
+            values,
+            expected_version,
+            mode,
+        };
+        self.push(ReadModelMutation::UpsertRow(mutation));
+        Ok(self)
+    }
+
+    fn stage_related_row<P, C>(
+        &mut self,
+        parent: &P,
+        relationship_field: &str,
+        child: &C,
+        mode: RowWriteMode,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        let parent_schema = validated_schema::<P>()?;
+        let child_schema = validated_schema::<C>()?;
+        let relationship = parent_schema
+            .relationships
+            .iter()
+            .find(|relationship| relationship.field_name == relationship_field)
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` has no relationship `{}`",
+                    parent_schema.model_name, relationship_field
+                ))
+            })?;
+
+        if relationship.target_model != child_schema.model_name {
+            return Err(ReadModelError::Metadata(format!(
+                "relationship `{}` targets `{}`, not `{}`",
+                relationship.field_name, relationship.target_model, child_schema.model_name
+            )));
+        }
+
+        let parent_row = parent.to_row()?;
+        let mut child_row = child.to_row()?;
+        populate_delegated_relationship_values(
+            &parent_schema,
+            &parent_row,
+            relationship,
+            &child_schema,
+            &mut child_row,
+        )?;
+        let key = key_from_row(&child_schema, &child_row)?;
+        let expected_version = match mode {
+            RowWriteMode::Insert => ExpectedVersion::NotExists,
+            RowWriteMode::Upsert => self.expected_for(&child_schema, &key),
+        };
+        let mutation = RowMutation {
+            schema: child_schema,
+            key,
+            values: child_row,
+            expected_version,
+            mode,
+        };
+        self.push(ReadModelMutation::UpsertRow(mutation));
+        Ok(self)
+    }
+
+    fn stage_patch<M>(
+        &mut self,
+        key: RowKey,
+        patch: RowPatch,
+        mode: PatchMode,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        let schema = validated_schema::<M>()?;
+        validate_key(&schema, &key)?;
+        let expected_version = self.expected_for(&schema, &key);
+        let mutation = PatchRowMutation {
+            schema,
+            key,
+            patch,
+            expected_version,
+            mode,
+        };
+        self.push(ReadModelMutation::PatchRow(mutation));
+        Ok(self)
+    }
+
+    fn push(&mut self, mutation: ReadModelMutation) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.mutations.push(StagedMutation { sequence, mutation });
+    }
+
+    fn expected_for(&self, schema: &ReadModelSchema, key: &RowKey) -> ExpectedVersion {
+        self.expected_versions
+            .get(&RowIdentity {
+                table_name: schema.table_name.clone(),
+                key: key_fingerprint(key),
+            })
+            .copied()
+            .map(ExpectedVersion::Exact)
+            .unwrap_or(ExpectedVersion::Any)
+    }
+}
+
+fn validated_schema<M>() -> Result<ReadModelSchema, ReadModelError>
+where
+    M: RelationalReadModel,
+{
+    let schema = M::schema();
+    schema.validate()?;
+    Ok(schema)
+}
+
+fn validate_document_mutation(mutation: &DocumentMutation) -> Result<(), ReadModelError> {
+    if mutation.collection.is_empty() || mutation.id.is_empty() {
+        return Err(ReadModelError::Metadata(
+            "document read-model writes require collection and id".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_row_mutation(mutation: &RowMutation) -> Result<(), ReadModelError> {
+    mutation.schema.validate()?;
+    validate_key(&mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, &mutation.schema)?;
+    validate_row_values(&mutation.schema, &mutation.values, true)
+}
+
+fn validate_patch_mutation(mutation: &PatchRowMutation) -> Result<(), ReadModelError> {
+    mutation.schema.validate()?;
+    validate_key(&mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, &mutation.schema)?;
+    if mutation.patch.is_empty() {
+        return Err(ReadModelError::Metadata(format!(
+            "read model `{}` patch must set at least one column",
+            mutation.schema.model_name
+        )));
+    }
+    validate_row_values(&mutation.schema, &mutation.patch.values, false)
+}
+
+fn validate_delete_mutation(mutation: &DeleteRowMutation) -> Result<(), ReadModelError> {
+    mutation.schema.validate()?;
+    validate_key(&mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, &mutation.schema)
+}
+
+fn validate_expected_version(
+    expected_version: &ExpectedVersion,
+    schema: &ReadModelSchema,
+) -> Result<(), ReadModelError> {
+    if matches!(expected_version, ExpectedVersion::Exact(0)) {
+        return Err(ReadModelError::Metadata(format!(
+            "read model `{}` expected version must be greater than zero",
+            schema.model_name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(), ReadModelError> {
+    if key.is_empty() {
+        return Err(ReadModelError::Metadata(format!(
+            "read model `{}` row key cannot be empty",
+            schema.model_name
+        )));
+    }
+
+    for column in &schema.primary_key.columns {
+        match key.get(column) {
+            Some(RowValue::Null) => {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` primary-key column `{}` cannot be null",
+                    schema.model_name, column
+                )));
+            }
+            Some(_) => {}
+            None => {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` row key is missing primary-key column `{}`",
+                    schema.model_name, column
+                )));
+            }
+        }
+    }
+
+    for (column, _) in key.iter() {
+        if !schema.primary_key.columns.iter().any(|key| key == column) {
+            return Err(ReadModelError::Metadata(format!(
+                "read model `{}` row key includes non-primary-key column `{}`",
+                schema.model_name, column
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_row_values(
+    schema: &ReadModelSchema,
+    values: &RowValues,
+    full_row: bool,
+) -> Result<(), ReadModelError> {
+    for (column_name, value) in values.iter() {
+        let column = schema
+            .columns
+            .iter()
+            .find(|column| column.column_name == column_name)
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` write references missing column `{}`",
+                    schema.model_name, column_name
+                ))
+            })?;
+
+        if matches!(value, RowValue::Null) {
+            if column.primary_key {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` primary-key column `{}` cannot be null",
+                    schema.model_name, column.column_name
+                )));
+            }
+            if !column.nullable && !column.has_default {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` column `{}` is not nullable",
+                    schema.model_name, column.column_name
+                )));
+            }
+        }
+    }
+
+    if full_row {
+        for column in &schema.columns {
+            if column.skipped || column.nullable || column.has_default {
+                continue;
+            }
+            if !values.contains_key(&column.column_name) {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` row is missing required column `{}`",
+                    schema.model_name, column.column_name
+                )));
+            }
+        }
+
+        for column in schema
+            .columns
+            .iter()
+            .filter(|column| column.delegated_from.is_some())
+        {
+            match values.get(&column.column_name) {
+                Some(RowValue::Null) | None => {
+                    return Err(ReadModelError::Metadata(format!(
+                        "read model `{}` delegated column `{}` must be populated before write",
+                        schema.model_name, column.column_name
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn key_from_row(schema: &ReadModelSchema, row: &RowValues) -> Result<RowKey, ReadModelError> {
+    let mut key = RowKey::default();
+    for column in &schema.primary_key.columns {
+        let value = row.get(column).cloned().ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` row is missing primary-key column `{}`",
+                schema.model_name, column
+            ))
+        })?;
+        key.insert(column.clone(), value);
+    }
+    validate_key(schema, &key)?;
+    Ok(key)
+}
+
+fn populate_delegated_relationship_values(
+    parent_schema: &ReadModelSchema,
+    parent_row: &RowValues,
+    relationship: &RelationshipDef,
+    child_schema: &ReadModelSchema,
+    child_row: &mut RowValues,
+) -> Result<(), ReadModelError> {
+    let mut populated = 0;
+    for column in child_schema
+        .columns
+        .iter()
+        .filter(|column| column.delegated_from.is_some())
+    {
+        let delegated_from = column.delegated_from.as_deref().unwrap_or_default();
+        let Some((model_name, source_name)) = delegated_from.split_once('.') else {
+            return Err(ReadModelError::Metadata(format!(
+                "read model `{}` delegated column `{}` has invalid source `{}`",
+                child_schema.model_name, column.column_name, delegated_from
+            )));
+        };
+
+        if model_name != parent_schema.model_name {
+            continue;
+        }
+
+        let source_column = column_name_for(parent_schema, source_name).ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` delegated source `{}` is not a parent column",
+                child_schema.model_name, delegated_from
+            ))
+        })?;
+        let value = parent_row.get(&source_column).cloned().ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` parent row is missing delegated source column `{}`",
+                parent_schema.model_name, source_column
+            ))
+        })?;
+        child_row.insert(column.column_name.clone(), value);
+        populated += 1;
+    }
+
+    if populated == 0 {
+        let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` relationship `{}` must declare a foreign key",
+                parent_schema.model_name, relationship.field_name
+            ))
+        })?;
+        let child_column = column_name_for(child_schema, foreign_key).ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "relationship `{}` foreign key `{}` is not a child column",
+                relationship.field_name, foreign_key
+            ))
+        })?;
+        let parent_column = column_name_for(parent_schema, foreign_key)
+            .or_else(|| parent_schema.primary_key.columns.first().cloned())
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "relationship `{}` has no parent key to delegate",
+                    relationship.field_name
+                ))
+            })?;
+        let value = parent_row.get(&parent_column).cloned().ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` parent row is missing relationship key `{}`",
+                parent_schema.model_name, parent_column
+            ))
+        })?;
+        child_row.insert(child_column, value);
+    }
+
+    Ok(())
+}
+
+fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<String> {
+    schema
+        .columns
+        .iter()
+        .find(|column| {
+            column.field_name == field_or_column || column.column_name == field_or_column
+        })
+        .map(|column| column.column_name.clone())
+}
+
+fn key_fingerprint(key: &RowKey) -> String {
+    key.iter()
+        .map(|(column, value)| format!("{column}={}", value_fingerprint(value)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn value_fingerprint(value: &RowValue) -> String {
+    match value {
+        RowValue::Null => "null".into(),
+        RowValue::Bool(value) => value.to_string(),
+        RowValue::I64(value) => value.to_string(),
+        RowValue::U64(value) => value.to_string(),
+        RowValue::F64(value) => value.to_string(),
+        RowValue::String(value) => value.clone(),
+        RowValue::Bytes(value) => format!("{value:?}"),
+        RowValue::Json(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+    }
+}

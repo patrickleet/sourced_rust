@@ -1189,7 +1189,7 @@ microsvc::serve(service.clone(), "0.0.0.0:3000").await?;
 
 ## Read Models
 
-Read models are denormalized views derived from event-sourced aggregates. They give you fast, purpose-built query models shaped for your UI or API consumers.
+Read models are query-optimized projections derived from aggregates, event records, or published messages. Document read models store a whole view in a document payload column; normalized relational read models use table metadata plus `ReadModelSession` write plans.
 
 ### Defining a Read Model
 
@@ -1226,9 +1226,31 @@ repo.readmodel(&view).commit(&mut game)?;
 // Return `view` to the client — it reflects the committed state
 ```
 
-This is a deliberate CAP theorem tradeoff: you're choosing **consistency** over **partition tolerance**. The read model is in sync with the aggregate when the repository implements `TransactionalCommit` and can write both in the same transaction boundary. For cross-service or cross-database views, use the eventually consistent outbox pattern instead.
+For relational read models, stage structured row mutations in a session:
 
-See [`docs/read-models.md`](docs/read-models.md) for the full guide, including eventually consistent projections, `QueuedReadModelStore`, and a decision flowchart.
+```rust
+use sourced_rust::{ReadModelSession, ReadModelSessionCommitExt};
+
+let mut read_models = ReadModelSession::new();
+read_models.save(&player_view)?;
+read_models.save_related(&player_view, "weapons", &weapon_view)?;
+
+repo.read_models(read_models).commit(&mut game)?;
+```
+
+Distributed projectors can commit the same session shape directly against a read-model adapter and mark messages processed in the same adapter transaction:
+
+```rust
+let mut read_models = ReadModelSession::new();
+read_models.document(&view)?.mark_processed("game-view-projector", event_id);
+let outcome = read_models.commit(&read_store)?;
+```
+
+This is a deliberate consistency tradeoff. The read model is in sync with the aggregate only when the repository implements `TransactionalCommit` and can write both in the same transaction boundary. For cross-service or cross-database views, use the eventually consistent outbox/projector pattern instead.
+
+Bomberman `BoardView` remains a document-row example backed by a whole-view payload, not a normalized relational ORM example.
+
+See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, document rows, session commits, schema bootstrap, distributed idempotency, and non-goals.
 
 ## Snapshots
 

@@ -1,31 +1,47 @@
-//! CommitBuilder - Chain read models, outbox, and aggregates into one transactional commit batch.
+//! CommitBuilder - chain read models, sessions, outbox, and aggregates into one transactional batch.
 //!
 //! ## Example
 //!
 //! ```ignore
-//! // All of these are equivalent - chain methods in any order:
+//! // Document read model.
 //! repo
 //!     .readmodel(&game_view)
 //!     .outbox(message)
 //!     .commit(&mut game)?;
 //!
+//! // Relational/session read models.
+//! let mut read_models = sourced_rust::ReadModelSession::new();
+//! read_models.save(&player)?;
+//! read_models.save_related(&player, "weapons", &weapon)?;
+//!
+//! repo
+//!     .read_models(read_models)
+//!     .commit(&mut game)?;
+//!
+//! // Ordering is semantic staging only.
 //! repo
 //!     .outbox(message)
-//!     .readmodel(&game_view)
+//!     .read_models(read_models)
 //!     .commit(&mut game)?;
+//!
+//! repo
+//!     .aggregate(&mut game)
+//!     .read_models(read_models)
+//!     .outbox(message)
+//!     .commit()?;
 //! ```
 
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
 use crate::outbox::OutboxMessage;
-use crate::read_model::ReadModel;
-use crate::repository::{CommitBatch, ReadModelWrite, RepositoryError, TransactionalCommit};
+use crate::read_model::{ReadModel, ReadModelError, ReadModelSession, ReadModelWritePlan};
+use crate::repository::{CommitBatch, RepositoryError, TransactionalCommit};
 
 /// Builder for chaining multiple items into a single transactional commit batch.
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
-    models: Vec<ReadModelWrite>,
+    read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
 
@@ -34,7 +50,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         Self {
             repo,
             entities: vec![],
-            models: vec![],
+            read_model_plans: vec![],
             error: None,
         }
     }
@@ -48,15 +64,22 @@ impl<'a, R> CommitBuilder<'a, R> {
             return self;
         }
 
-        let key = format!("{}:{}", M::COLLECTION, model.id());
-        match serde_json::to_vec(model) {
-            Ok(bytes) => self.models.push(ReadModelWrite::new(key, bytes)),
-            Err(err) => {
-                self.error = Some(RepositoryError::Model(format!(
-                    "failed to serialize read model {}: {}",
-                    key, err
-                )));
-            }
+        match document_plan(model) {
+            Ok(plan) => self.read_model_plans.push(plan),
+            Err(err) => self.error = Some(err),
+        }
+        self
+    }
+
+    /// Add a read-model session to the commit.
+    pub fn read_models(mut self, session: ReadModelSession) -> Self {
+        if self.error.is_some() {
+            return self;
+        }
+
+        match session.into_write_plan() {
+            Ok(plan) => self.read_model_plans.push(plan),
+            Err(err) => self.error = Some(err.into()),
         }
         self
     }
@@ -65,6 +88,13 @@ impl<'a, R> CommitBuilder<'a, R> {
     pub fn outbox(mut self, msg: OutboxMessage) -> Self {
         self.entities.push(msg.into_entity());
         self
+    }
+
+    /// Stage an aggregate and switch to a no-argument staged commit builder.
+    pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
+        let mut builder = StagedCommitBuilder::from_builder(self);
+        builder.staged_entities.push(aggregate.entity_mut());
+        builder
     }
 
     /// Commit all items plus the primary aggregate.
@@ -78,7 +108,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         entity_refs.push(aggregate.entity_mut());
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
-            read_models: self.models,
+            read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
     }
@@ -102,7 +132,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         }
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
-            read_models: self.models,
+            read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
     }
@@ -117,7 +147,89 @@ impl<'a, R> CommitBuilder<'a, R> {
         let entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
-            read_models: self.models,
+            read_model_plans: self.read_model_plans,
+            snapshots: Vec::new(),
+        })
+    }
+
+    fn check_staged(&mut self) -> Result<(), RepositoryError> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+        Ok(())
+    }
+}
+
+/// Builder returned after one or more aggregates are staged explicitly.
+pub struct StagedCommitBuilder<'a, R> {
+    repo: &'a R,
+    entities: Vec<Entity>,
+    staged_entities: Vec<&'a mut Entity>,
+    read_model_plans: Vec<ReadModelWritePlan>,
+    error: Option<RepositoryError>,
+}
+
+impl<'a, R> StagedCommitBuilder<'a, R> {
+    fn from_builder(builder: CommitBuilder<'a, R>) -> Self {
+        Self {
+            repo: builder.repo,
+            entities: builder.entities,
+            staged_entities: Vec::new(),
+            read_model_plans: builder.read_model_plans,
+            error: builder.error,
+        }
+    }
+
+    pub fn readmodel<M: ReadModel>(mut self, model: &M) -> Self {
+        if self.error.is_some() {
+            return self;
+        }
+
+        match document_plan(model) {
+            Ok(plan) => self.read_model_plans.push(plan),
+            Err(err) => self.error = Some(err),
+        }
+        self
+    }
+
+    pub fn read_models(mut self, session: ReadModelSession) -> Self {
+        if self.error.is_some() {
+            return self;
+        }
+
+        match session.into_write_plan() {
+            Ok(plan) => self.read_model_plans.push(plan),
+            Err(err) => self.error = Some(err.into()),
+        }
+        self
+    }
+
+    pub fn outbox(mut self, msg: OutboxMessage) -> Self {
+        self.entities.push(msg.into_entity());
+        self
+    }
+
+    pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
+        self.staged_entities.push(aggregate.entity_mut());
+        self
+    }
+
+    pub fn entity(mut self, entity: &'a mut Entity) -> Self {
+        self.staged_entities.push(entity);
+        self
+    }
+
+    pub fn commit(mut self) -> Result<(), RepositoryError>
+    where
+        R: TransactionalCommit,
+    {
+        self.check_staged()?;
+
+        let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
+        entity_refs.extend(self.staged_entities);
+        self.repo.commit_batch(CommitBatch {
+            entities: entity_refs,
+            read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
     }
@@ -145,11 +257,50 @@ pub trait CommitBuilderExt: TransactionalCommit + Sized {
 
 impl<R: TransactionalCommit> CommitBuilderExt for R {}
 
+fn document_plan<M: ReadModel>(model: &M) -> Result<ReadModelWritePlan, RepositoryError> {
+    let mut session = ReadModelSession::new();
+    session.document(model).map_err(|err| match err {
+        ReadModelError::Serde(message) => RepositoryError::Model(format!(
+            "failed to serialize read model {}:{}: {}",
+            M::COLLECTION,
+            model.id(),
+            message
+        )),
+        other => other.into(),
+    })?;
+    Ok(session.into_write_plan()?)
+}
+
+/// Extension trait for the new relational read-model session commit entrypoints.
+///
+/// Kept separate from `CommitBuilderExt` so the existing
+/// `ReadModelsExt::read_models::<M>()` query accessor remains unambiguous unless
+/// callers explicitly opt into the session starter.
+pub trait ReadModelSessionCommitExt: TransactionalCommit + Sized {
+    /// Start a commit builder chain with a relational read-model session.
+    fn read_models(&self, session: ReadModelSession) -> CommitBuilder<'_, Self> {
+        CommitBuilder::new(self).read_models(session)
+    }
+
+    /// Start a staged commit builder with an aggregate.
+    fn aggregate<'a, A: Aggregate>(
+        &'a self,
+        aggregate: &'a mut A,
+    ) -> StagedCommitBuilder<'a, Self> {
+        CommitBuilder::new(self).aggregate(aggregate)
+    }
+}
+
+impl<R: TransactionalCommit> ReadModelSessionCommitExt for R {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lock::{Lock, LockManager};
     use crate::read_model::ReadModelsExt;
-    use crate::{impl_aggregate, Entity, EventRecord, Get, HashMapRepository};
+    use crate::{
+        impl_aggregate, Entity, EventRecord, Get, HashMapRepository, QueuedReadModelStore,
+    };
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
 
@@ -184,6 +335,14 @@ mod tests {
         fn id(&self) -> &str {
             &self.id
         }
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, crate::ReadModel)]
+    #[readmodel(table = "relational_views")]
+    struct RelationalView {
+        #[readmodel(id)]
+        id: String,
+        counter: i32,
     }
 
     #[derive(Deserialize, Clone)]
@@ -222,9 +381,14 @@ mod tests {
                 .map(|entity| entity.id().to_string())
                 .collect();
             *self.read_model_keys.borrow_mut() = batch
-                .read_models
+                .read_model_plans
                 .iter()
-                .map(|write| write.key.clone())
+                .flat_map(|plan| {
+                    plan.mutations
+                        .iter()
+                        .map(|mutation| mutation.lock_key())
+                        .collect::<Vec<_>>()
+                })
                 .collect();
 
             if self.fail {
@@ -236,6 +400,12 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    fn raw_session(view: &TestView) -> crate::read_model::ReadModelSession {
+        let mut session = crate::read_model::ReadModelSession::new();
+        session.document(view).unwrap();
+        session
     }
 
     #[test]
@@ -253,9 +423,52 @@ mod tests {
         repo.readmodel(&view).commit(&mut agg).unwrap();
 
         // Verify read model stored
-        let loaded = repo.read_models::<TestView>().get("1").unwrap();
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("1")
+            .unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 42);
+    }
+
+    #[test]
+    fn readmodel_commits_document_plan() {
+        let repo = HashMapRepository::new();
+        let view = TestView {
+            id: "alias".into(),
+            counter: 12,
+        };
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        repo.readmodel(&view).commit(&mut agg).unwrap();
+
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("alias")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.data.counter, 12);
+    }
+
+    #[test]
+    fn read_models_session_primary_command_side_form_commits_document_plan() {
+        let repo = HashMapRepository::new();
+        let view = TestView {
+            id: "session".into(),
+            counter: 13,
+        };
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+            .commit(&mut agg)
+            .unwrap();
+
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("session")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.data.counter, 13);
+        assert_eq!(agg.entity().committed_version(), 1);
     }
 
     #[test]
@@ -279,8 +492,14 @@ mod tests {
             .commit(&mut agg)
             .unwrap();
 
-        let loaded1 = repo.read_models::<TestView>().get("1").unwrap().unwrap();
-        let loaded2 = repo.read_models::<TestView>().get("2").unwrap().unwrap();
+        let loaded1 = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("1")
+            .unwrap()
+            .unwrap();
+        let loaded2 = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("2")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded1.data.counter, 10);
         assert_eq!(loaded2.data.counter, 20);
     }
@@ -305,7 +524,9 @@ mod tests {
             .commit(&mut agg)
             .unwrap();
 
-        let loaded = repo.read_models::<TestView>().get("1").unwrap();
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("1")
+            .unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 42);
     }
@@ -330,7 +551,9 @@ mod tests {
             .commit(&mut agg)
             .unwrap();
 
-        let loaded = repo.read_models::<TestView>().get("1").unwrap();
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("1")
+            .unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().data.counter, 99);
     }
@@ -353,13 +576,11 @@ mod tests {
             .commit_all()
             .unwrap();
 
-        let loaded1 = repo
-            .read_models::<TestView>()
+        let loaded1 = ReadModelsExt::read_models::<TestView>(&repo)
             .get("standalone-1")
             .unwrap()
             .unwrap();
-        let loaded2 = repo
-            .read_models::<TestView>()
+        let loaded2 = ReadModelsExt::read_models::<TestView>(&repo)
             .get("standalone-2")
             .unwrap()
             .unwrap();
@@ -389,8 +610,7 @@ mod tests {
             .unwrap();
 
         // Verify read model stored
-        let loaded = repo
-            .read_models::<TestView>()
+        let loaded = ReadModelsExt::read_models::<TestView>(&repo)
             .get("multi")
             .unwrap()
             .unwrap();
@@ -401,6 +621,152 @@ mod tests {
         assert!(e1.is_some());
         let e2 = repo.get("agg-2").unwrap();
         assert!(e2.is_some());
+    }
+
+    #[test]
+    fn staged_builder_ordering_is_semantic_for_outbox_session_and_aggregate() {
+        fn record(order: u8) -> (Vec<String>, Vec<String>) {
+            let repo = RecordingBatchRepo::default();
+            let view = TestView {
+                id: "ordered".into(),
+                counter: 7,
+            };
+            let outbox = OutboxMessage::create("ordered-msg", "TestEvent", b"{}".to_vec()).unwrap();
+            let mut agg = TestAggregate::default();
+            agg.touch();
+
+            match order {
+                0 => ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+                    .outbox(outbox)
+                    .aggregate(&mut agg)
+                    .commit()
+                    .unwrap(),
+                1 => repo
+                    .outbox(outbox)
+                    .read_models(raw_session(&view))
+                    .aggregate(&mut agg)
+                    .commit()
+                    .unwrap(),
+                _ => ReadModelSessionCommitExt::aggregate(&repo, &mut agg)
+                    .read_models(raw_session(&view))
+                    .outbox(outbox)
+                    .commit()
+                    .unwrap(),
+            }
+
+            let recorded = (
+                repo.entity_ids.borrow().clone(),
+                repo.read_model_keys.borrow().clone(),
+            );
+            recorded
+        }
+
+        let baseline = record(0);
+        assert_eq!(record(1), baseline);
+        assert_eq!(record(2), baseline);
+    }
+
+    #[test]
+    fn staged_builder_supports_multiple_aggregates() {
+        let repo = RecordingBatchRepo::default();
+        let view = TestView {
+            id: "staged-multi".into(),
+            counter: 77,
+        };
+        let mut agg1 = TestAggregate::default();
+        agg1.touch();
+        agg1.entity.set_id("agg-1");
+        let mut agg2 = TestAggregate::default();
+        agg2.touch();
+        agg2.entity.set_id("agg-2");
+
+        ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+            .aggregate(&mut agg1)
+            .aggregate(&mut agg2)
+            .commit()
+            .unwrap();
+
+        assert_eq!(
+            repo.read_model_keys.borrow().as_slice(),
+            &["test_view:staged-multi".to_string()]
+        );
+        assert_eq!(
+            repo.entity_ids.borrow().as_slice(),
+            &["agg-1".to_string(), "agg-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn queued_read_model_lock_is_released_after_session_commit() {
+        let repo = QueuedReadModelStore::new(HashMapRepository::new());
+        let view = TestView {
+            id: "locked".into(),
+            counter: 1,
+        };
+        ReadModelsExt::read_models::<TestView>(&repo)
+            .upsert(&view)
+            .unwrap();
+        let _loaded = ReadModelsExt::read_models::<TestView>(&repo)
+            .get("locked")
+            .unwrap()
+            .unwrap();
+
+        let updated = TestView {
+            id: "locked".into(),
+            counter: 2,
+        };
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        ReadModelSessionCommitExt::read_models(&repo, raw_session(&updated))
+            .commit(&mut agg)
+            .unwrap();
+
+        let lock = repo.lock_manager().get_lock("test_view:locked").unwrap();
+        assert!(lock.try_lock().unwrap());
+        lock.unlock().unwrap();
+    }
+
+    #[test]
+    fn invalid_session_plan_does_not_commit_aggregate() {
+        let repo = RecordingBatchRepo::default();
+        let mut session = crate::read_model::ReadModelSession::new();
+        session.mark_processed("", "message-1");
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        let err = ReadModelSessionCommitExt::read_models(&repo, session)
+            .commit(&mut agg)
+            .unwrap_err();
+
+        assert!(
+            matches!(err, RepositoryError::Model(message) if message.contains("processed-message"))
+        );
+        assert_eq!(agg.entity().committed_version(), 0);
+        assert!(repo.entity_ids.borrow().is_empty());
+    }
+
+    #[test]
+    fn unsupported_relational_write_plan_does_not_commit_aggregate() {
+        let repo = HashMapRepository::new();
+        let view = RelationalView {
+            id: "relational".into(),
+            counter: 3,
+        };
+        let mut session = crate::read_model::ReadModelSession::new();
+        session.save(&view).unwrap();
+        let mut agg = TestAggregate::default();
+        agg.touch();
+
+        let err = ReadModelSessionCommitExt::read_models(&repo, session)
+            .commit(&mut agg)
+            .unwrap_err();
+
+        assert!(
+            matches!(err, RepositoryError::Model(message) if message.contains("relational row writes"))
+        );
+        assert_eq!(agg.entity().committed_version(), 0);
+        assert!(repo.get("agg-1").unwrap().is_none());
     }
 
     #[test]

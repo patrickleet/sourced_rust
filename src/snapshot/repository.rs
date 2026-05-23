@@ -129,7 +129,7 @@ where
 
         self.inner.repo().commit_batch(CommitBatch {
             entities: vec![aggregate.entity_mut()],
-            read_models: Vec::new(),
+            read_model_plans: Vec::new(),
             snapshots,
         })?;
 
@@ -157,7 +157,7 @@ where
             .collect();
         self.inner.repo().commit_batch(CommitBatch {
             entities,
-            read_models: Vec::new(),
+            read_model_plans: Vec::new(),
             snapshots,
         })?;
 
@@ -285,7 +285,7 @@ where
 
         self.snap_repo.inner.repo().commit_batch(CommitBatch {
             entities: vec![aggregate.entity_mut(), self.outbox.entity_mut()],
-            read_models: Vec::new(),
+            read_model_plans: Vec::new(),
             snapshots,
         })?;
 

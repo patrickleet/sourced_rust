@@ -1,0 +1,270 @@
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use sourced_rust::{
+    ExpectedVersion, PatchMode, ReadModel, ReadModelAdapterCapabilities, ReadModelError,
+    ReadModelMutation, ReadModelSession, RowKey, RowPatch, RowValue, RowWriteMode, Versioned,
+};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "account_summaries")]
+struct AccountSummary {
+    #[readmodel(id, column = "account_id")]
+    account_id: String,
+    #[readmodel(index)]
+    owner: Option<String>,
+    balance_cents: i64,
+    #[readmodel(default = "0")]
+    deposit_count: u32,
+    #[readmodel(jsonb)]
+    counters_by_game: HashMap<String, i64>,
+    #[readmodel(skip_query)]
+    projected_event_ids: Vec<String>,
+}
+
+impl AccountSummary {
+    fn new(account_id: &str) -> Self {
+        Self {
+            account_id: account_id.into(),
+            owner: Some("Ada".into()),
+            balance_cents: 100,
+            deposit_count: 1,
+            counters_by_game: HashMap::new(),
+            projected_event_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "players")]
+struct Player {
+    #[readmodel(id, column = "player_id")]
+    player_id: String,
+    display_name: String,
+    #[readmodel(has_many = "PlayerWeapon", foreign_key = "player_id")]
+    weapons: Vec<PlayerWeapon>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "player_weapons", primary_key = ["player_id", "weapon_id"])]
+struct PlayerWeapon {
+    #[readmodel(foreign_key = "players.player_id", delegated_from = "Player.player_id")]
+    player_id: String,
+    weapon_id: String,
+    acquired_at: String,
+}
+
+fn account_key(account_id: &str) -> RowKey {
+    RowKey::new([("account_id", RowValue::String(account_id.into()))])
+}
+
+#[test]
+fn session_stages_multiple_read_model_types_in_deterministic_plan() {
+    let mut session = ReadModelSession::new();
+    let weapon = PlayerWeapon {
+        player_id: "player-1".into(),
+        weapon_id: "sword".into(),
+        acquired_at: "2026-05-23T00:00:00Z".into(),
+    };
+    let account = AccountSummary::new("acct-1");
+
+    session.save(&weapon).unwrap().save(&account).unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    assert_eq!(plan.mutations.len(), 2);
+    assert_eq!(plan.mutations[0].table_name(), Some("account_summaries"));
+    assert_eq!(plan.mutations[1].table_name(), Some("player_weapons"));
+}
+
+#[test]
+fn write_plan_contains_document_and_relational_rows_only() {
+    let mut session = ReadModelSession::new();
+    let account = AccountSummary::new("acct-1");
+
+    session
+        .document(&account)
+        .unwrap()
+        .save(&account)
+        .unwrap()
+        .delete::<AccountSummary>(account_key("acct-2"))
+        .unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    assert!(matches!(plan.mutations[0], ReadModelMutation::Document(_)));
+    assert!(matches!(plan.mutations[1], ReadModelMutation::UpsertRow(_)));
+    assert!(matches!(plan.mutations[2], ReadModelMutation::DeleteRow(_)));
+}
+
+#[test]
+fn sparse_patches_and_full_replacements_are_distinct() {
+    let mut session = ReadModelSession::new();
+    let account = AccountSummary::new("acct-1");
+    let patch = RowPatch::new().set("owner", RowValue::Null);
+
+    session.save(&account).unwrap();
+    session
+        .patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    let ReadModelMutation::UpsertRow(full_row) = &plan.mutations[0] else {
+        panic!("expected full-row mutation");
+    };
+    assert_eq!(full_row.mode, RowWriteMode::Upsert);
+    assert!(full_row.values.contains_key("balance_cents"));
+    assert!(full_row.values.contains_key("counters_by_game"));
+
+    let ReadModelMutation::PatchRow(patch_row) = &plan.mutations[1] else {
+        panic!("expected patch-row mutation");
+    };
+    assert_eq!(patch_row.mode, PatchMode::UpdateExisting);
+    assert_eq!(patch_row.patch.get("owner"), Some(&RowValue::Null));
+    assert_eq!(patch_row.patch.iter().count(), 1);
+}
+
+#[test]
+fn insert_and_upsert_patch_carry_explicit_missing_row_behavior() {
+    let mut session = ReadModelSession::new();
+    let account = AccountSummary::new("acct-1");
+    let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
+
+    session.insert(&account).unwrap();
+    session
+        .upsert_patch::<AccountSummary>(account_key("acct-2"), patch)
+        .unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    let ReadModelMutation::UpsertRow(insert_row) = &plan.mutations[0] else {
+        panic!("expected insert row mutation");
+    };
+    assert_eq!(insert_row.mode, RowWriteMode::Insert);
+    assert_eq!(insert_row.expected_version, ExpectedVersion::NotExists);
+
+    let ReadModelMutation::PatchRow(upsert_patch) = &plan.mutations[1] else {
+        panic!("expected upsert patch mutation");
+    };
+    assert_eq!(upsert_patch.mode, PatchMode::InsertMissing);
+}
+
+#[test]
+fn relationship_operation_populates_child_foreign_key_in_explicit_row_mutation() {
+    let player = Player {
+        player_id: "player-1".into(),
+        display_name: "Ada".into(),
+        weapons: Vec::new(),
+    };
+    let weapon = PlayerWeapon {
+        player_id: String::new(),
+        weapon_id: "sword".into(),
+        acquired_at: "2026-05-23T00:00:00Z".into(),
+    };
+    let mut session = ReadModelSession::new();
+
+    session.save_related(&player, "weapons", &weapon).unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    let ReadModelMutation::UpsertRow(child_row) = &plan.mutations[0] else {
+        panic!("expected child row mutation");
+    };
+    assert_eq!(child_row.schema.table_name, "player_weapons");
+    assert_eq!(
+        child_row.values.get("player_id"),
+        Some(&RowValue::String("player-1".into()))
+    );
+    assert_eq!(
+        child_row.key.get("player_id"),
+        Some(&RowValue::String("player-1".into()))
+    );
+}
+
+#[test]
+fn expected_versions_and_processed_messages_are_carried_into_plan() {
+    let mut account = AccountSummary::new("acct-1");
+    let loaded = Versioned {
+        data: account.clone(),
+        version: 7,
+    };
+    account.balance_cents = 250;
+    let mut session = ReadModelSession::new();
+
+    session
+        .track_loaded(&loaded)
+        .unwrap()
+        .save(&account)
+        .unwrap()
+        .mark_processed("account-projection", "message-1");
+
+    let plan = session.into_write_plan().unwrap();
+
+    let ReadModelMutation::UpsertRow(row) = &plan.mutations[0] else {
+        panic!("expected upsert row");
+    };
+    assert_eq!(row.expected_version, ExpectedVersion::Exact(7));
+    assert_eq!(
+        plan.processed_messages[0].consumer_name,
+        "account-projection"
+    );
+    assert_eq!(plan.processed_messages[0].message_id, "message-1");
+}
+
+#[test]
+fn load_requests_validate_primary_keys_and_explicit_relationship_includes() {
+    let session = ReadModelSession::new();
+
+    let request = session
+        .load_with::<Player, _, _>(
+            RowKey::new([("player_id", RowValue::String("player-1".into()))]),
+            ["weapons"],
+        )
+        .unwrap();
+
+    assert_eq!(request.schema.table_name, "players");
+    assert_eq!(request.includes, vec!["weapons"]);
+
+    let err = session
+        .load_with::<Player, _, _>(
+            RowKey::new([("player_id", RowValue::String("player-1".into()))]),
+            ["missing"],
+        )
+        .unwrap_err();
+    assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("relationship")));
+}
+
+#[test]
+fn validation_failures_happen_before_storage_writes() {
+    let mut session = ReadModelSession::new();
+    let patch = RowPatch::new().set("balance_cents", RowValue::Null);
+
+    session
+        .patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+
+    let err = session.into_write_plan().unwrap_err();
+
+    assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("not nullable")));
+}
+
+#[test]
+fn write_plan_validation_reports_unsupported_adapter_capabilities() {
+    let mut session = ReadModelSession::new();
+    let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
+    session
+        .patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+    let plan = session.into_write_plan().unwrap();
+    let capabilities = ReadModelAdapterCapabilities {
+        sparse_patches: false,
+        ..ReadModelAdapterCapabilities::default()
+    };
+
+    let err = plan.validate_for(&capabilities).unwrap_err();
+
+    assert!(
+        matches!(err, ReadModelError::Metadata(message) if message.contains("sparse row patches"))
+    );
+}

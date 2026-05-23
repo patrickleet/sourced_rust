@@ -32,8 +32,8 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    Commit, CommitBatch, Get, GetMany, GetOne, Gettable, ReadModelWrite, Repository,
-    RepositoryError, SnapshotWrite, TransactionalCommit,
+    Commit, CommitBatch, Get, GetMany, GetOne, Gettable, Repository, RepositoryError,
+    SnapshotWrite, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
@@ -93,12 +93,22 @@ pub use queued_repo::{
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    InMemoryReadModelStore, QueuedReadModelStore, ReadModel, ReadModelError, ReadModelStore,
-    ReadModelsExt, Versioned,
+    ColumnDef, ColumnType, DeleteRowMutation, DocumentMutation, ExpectedVersion, ForeignKey,
+    InMemoryReadModelStore, IndexDef, PatchMode, PatchRowMutation, PrimaryKey,
+    ProcessedMessageMark, QueuedReadModelStore, ReadModel, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelError, ReadModelLoadRequest, ReadModelMigrationArtifact,
+    ReadModelMutation, ReadModelSchema, ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities,
+    ReadModelSchemaBootstrap, ReadModelSchemaIssue, ReadModelSchemaIssueKind,
+    ReadModelSchemaRegistry, ReadModelSchemaVerification, ReadModelSession, ReadModelSessionStore,
+    ReadModelStore, ReadModelWritePlan, ReadModelsExt, RelationalReadModel, RelationshipDef,
+    RelationshipKind, RowKey, RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
+    DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates
-pub use commit_builder::{CommitBuilder, CommitBuilderExt};
+pub use commit_builder::{
+    CommitBuilder, CommitBuilderExt, ReadModelSessionCommitExt, StagedCommitBuilder,
+};
 
 // Snapshot: periodic aggregate snapshots for fast hydration
 pub use snapshot::{
