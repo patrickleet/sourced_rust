@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::session::{column_name_for, key_fingerprint, validate_key};
+use super::session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 use super::{
     ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities,
     ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
@@ -172,10 +172,15 @@ fn apply_read_model_write_plan(
                         row.version = next_model_version(&key, current_version)?;
                     }
                     None if matches!(mutation.mode, PatchMode::InsertMissing) => {
+                        let values = row_values_from_key_and_patch(
+                            &mutation.schema,
+                            &mutation.key,
+                            mutation.patch.into_values(),
+                        )?;
                         staged_rows.insert(
                             key.clone(),
                             StoredRow {
-                                values: mutation.patch.into_values(),
+                                values,
                                 version: INITIAL_MODEL_VERSION,
                             },
                         );
@@ -215,6 +220,22 @@ fn processed_message_key(mark: &ProcessedMessageMark) -> (String, String) {
 
 fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
     format!("{}:{}", table_name, key_fingerprint(key))
+}
+
+fn row_values_from_key_and_patch(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    patch_values: RowValues,
+) -> Result<RowValues, ReadModelError> {
+    let mut values = RowValues::new();
+    for (column, value) in key.iter() {
+        values.insert(column.to_string(), value.clone());
+    }
+    for (column, value) in patch_values {
+        values.insert(column, value);
+    }
+    validate_row_values(schema, &values, true)?;
+    Ok(values)
 }
 
 fn validate_row_expected_version(
@@ -602,22 +623,14 @@ fn belongs_to_target_column(
     target_schema: &ReadModelSchema,
     source_column: &str,
 ) -> Result<String, ReadModelError> {
-    if target_schema.primary_key.columns.len() == 1 {
-        return Ok(target_schema.primary_key.columns[0].clone());
+    if target_schema.primary_key.columns.len() != 1 {
+        return Err(ReadModelError::Metadata(format!(
+            "belongs_to target `{}` must have a single-column primary key to load from `{}`",
+            target_schema.model_name, source_column
+        )));
     }
 
-    target_schema
-        .primary_key
-        .columns
-        .iter()
-        .find(|column| column.as_str() == source_column)
-        .cloned()
-        .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "belongs_to target `{}` has a composite primary key that cannot be loaded from `{}`",
-                target_schema.model_name, source_column
-            ))
-        })
+    Ok(target_schema.primary_key.columns[0].clone())
 }
 
 fn rows_matching_column(

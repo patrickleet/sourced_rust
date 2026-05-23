@@ -79,6 +79,8 @@ pub struct PlayerView {
     pub display_name: String,
     #[readmodel(jsonb)]
     pub counters_by_game: std::collections::HashMap<String, i64>,
+    #[readmodel(has_many = "PlayerWeaponView", foreign_key = "player_id")]
+    pub weapons: Vec<PlayerWeaponView>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]

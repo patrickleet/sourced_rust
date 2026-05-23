@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    ExpectedVersion, PatchMode, ReadModel, ReadModelAdapterCapabilities, ReadModelError,
-    ReadModelMutation, ReadModelSession, RowKey, RowPatch, RowValue, RowWriteMode, Versioned,
+    ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel, ReadModelAdapterCapabilities,
+    ReadModelError, ReadModelMutation, ReadModelSession, ReadModelUnitOfWorkExt, RowKey, RowPatch,
+    RowValue, RowWriteMode, Versioned,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -148,6 +149,53 @@ fn insert_and_upsert_patch_carry_explicit_missing_row_behavior() {
         panic!("expected upsert patch mutation");
     };
     assert_eq!(upsert_patch.mode, PatchMode::InsertMissing);
+}
+
+#[test]
+fn insert_missing_patch_builds_full_row_from_key_before_insert() {
+    let store = InMemoryReadModelStore::new();
+    store.register_schema::<AccountSummary>().unwrap();
+    let patch = RowPatch::new()
+        .set("owner", RowValue::String("Grace".into()))
+        .set("balance_cents", RowValue::I64(250))
+        .set("deposit_count", RowValue::U64(2))
+        .set(
+            "counters_by_game",
+            RowValue::Json(serde_json::json!({"deposits": 1})),
+        );
+    let mut session = ReadModelSession::new();
+
+    session
+        .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+    session.commit(&store).unwrap();
+
+    let mut read_models = store.session();
+    let loaded = read_models
+        .load::<AccountSummary>(account_key("acct-1"))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.data.account_id, "acct-1");
+    assert_eq!(loaded.data.owner, Some("Grace".into()));
+    assert_eq!(loaded.data.balance_cents, 250);
+    assert_eq!(loaded.data.deposit_count, 2);
+}
+
+#[test]
+fn insert_missing_patch_rejects_partial_new_row() {
+    let store = InMemoryReadModelStore::new();
+    let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
+    let mut session = ReadModelSession::new();
+
+    session
+        .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
+        .unwrap();
+    let err = session.commit(&store).unwrap_err();
+
+    assert!(
+        matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
+    );
 }
 
 #[test]

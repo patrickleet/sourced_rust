@@ -1231,7 +1231,7 @@ pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(),
     Ok(())
 }
 
-fn validate_row_values(
+pub(crate) fn validate_row_values(
     schema: &ReadModelSchema,
     values: &RowValues,
     full_row: bool,
