@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{ReadModelError, ReadModelSchema, RelationalReadModel};
+use super::{ReadModelError, ReadModelSchema, RelationalReadModel, RelationshipKind};
 
 /// Registry of table-mapped read-model schemas an adapter should manage.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -79,17 +79,11 @@ impl ReadModelSchemaRegistry {
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let model_names = self
-            .tables_by_model
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-
         for schema in self.schemas() {
             schema.validate()?;
             self.validate_column_foreign_keys(schema, &table_names)?;
             self.validate_schema_foreign_keys(schema, &table_names)?;
-            self.validate_relationships(schema, &model_names, &table_names)?;
+            self.validate_relationships(schema, &table_names)?;
         }
 
         Ok(())
@@ -137,16 +131,17 @@ impl ReadModelSchemaRegistry {
     fn validate_relationships(
         &self,
         schema: &ReadModelSchema,
-        model_names: &BTreeSet<String>,
         table_names: &BTreeSet<String>,
     ) -> Result<(), ReadModelError> {
         for relationship in &schema.relationships {
-            if !model_names.contains(&relationship.target_model) {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` relationship `{}` targets unregistered model `{}`",
-                    schema.model_name, relationship.field_name, relationship.target_model
-                )));
-            }
+            let target_schema = self
+                .schema_for_model(&relationship.target_model)
+                .ok_or_else(|| {
+                    ReadModelError::Metadata(format!(
+                        "read model `{}` relationship `{}` targets unregistered model `{}`",
+                        schema.model_name, relationship.field_name, relationship.target_model
+                    ))
+                })?;
 
             if let Some(through) = relationship.through.as_deref() {
                 if !table_names.contains(through) {
@@ -154,6 +149,51 @@ impl ReadModelSchemaRegistry {
                         "read model `{}` relationship `{}` references unregistered join table `{}`",
                         schema.model_name, relationship.field_name, through
                     )));
+                }
+            }
+
+            let foreign_key = relationship.foreign_key.as_deref().unwrap_or_default();
+            match relationship.kind {
+                RelationshipKind::HasMany => {
+                    if !schema_has_column_or_field(target_schema, foreign_key) {
+                        return Err(ReadModelError::Metadata(format!(
+                            "read model `{}` relationship `{}` foreign key `{}` is not a column on target model `{}`",
+                            schema.model_name,
+                            relationship.field_name,
+                            foreign_key,
+                            relationship.target_model
+                        )));
+                    }
+                }
+                RelationshipKind::BelongsTo => {
+                    if !schema_has_column_or_field(schema, foreign_key) {
+                        return Err(ReadModelError::Metadata(format!(
+                            "read model `{}` relationship `{}` foreign key `{}` is not a column on source model `{}`",
+                            schema.model_name,
+                            relationship.field_name,
+                            foreign_key,
+                            schema.model_name
+                        )));
+                    }
+                }
+                RelationshipKind::ManyToMany => {
+                    if let Some(through) = relationship.through.as_deref() {
+                        let through_schema = self.schema_for_table(through).ok_or_else(|| {
+                            ReadModelError::Metadata(format!(
+                                "read model `{}` relationship `{}` references unavailable join table `{}`",
+                                schema.model_name, relationship.field_name, through
+                            ))
+                        })?;
+                        if !schema_has_column_or_field(through_schema, foreign_key) {
+                            return Err(ReadModelError::Metadata(format!(
+                                "read model `{}` relationship `{}` foreign key `{}` is not a column on join table `{}`",
+                                schema.model_name,
+                                relationship.field_name,
+                                foreign_key,
+                                through
+                            )));
+                        }
+                    }
                 }
             }
         }
@@ -197,6 +237,13 @@ impl ReadModelSchemaRegistry {
 
         Ok(())
     }
+}
+
+fn schema_has_column_or_field(schema: &ReadModelSchema, name: &str) -> bool {
+    schema
+        .columns
+        .iter()
+        .any(|column| column.column_name == name || column.field_name == name)
 }
 
 /// Schema lifecycle operations an adapter can support.

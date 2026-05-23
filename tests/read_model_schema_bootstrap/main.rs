@@ -227,6 +227,26 @@ fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
 }
 
 #[test]
+fn registry_rejects_relationship_foreign_keys_missing_from_target_model() {
+    let mut player_schema = Player::schema();
+    player_schema.relationships[0].foreign_key = Some("missing_player_id".into());
+    let mut registry = ReadModelSchemaRegistry::new();
+    registry
+        .register::<AccountSummary>()
+        .unwrap()
+        .register_schema(player_schema)
+        .unwrap()
+        .register::<PlayerWeapon>()
+        .unwrap();
+
+    let err = registry.validate().unwrap_err();
+
+    assert!(matches!(err, ReadModelError::Metadata(message)
+            if message.contains("foreign key `missing_player_id`")
+                && message.contains("target model `PlayerWeapon`")));
+}
+
+#[test]
 fn adapters_can_generate_migration_artifacts_or_report_unsupported() {
     let registry = registry();
     let unsupported = UnsupportedSchemaAdapter;
