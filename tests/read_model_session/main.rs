@@ -207,6 +207,7 @@ fn insert_missing_patch_rejects_primary_key_mismatch() {
 #[test]
 fn insert_missing_patch_rejects_partial_new_row() {
     let store = InMemoryReadModelStore::new();
+    store.register_schema::<AccountSummary>().unwrap();
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
     let mut session = ReadModelSession::new();
 
@@ -218,6 +219,13 @@ fn insert_missing_patch_rejects_partial_new_row() {
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
     );
+
+    let mut read_models = store.session();
+    let loaded = read_models
+        .load::<AccountSummary>(account_key("acct-1"))
+        .one()
+        .unwrap();
+    assert!(loaded.is_none());
 }
 
 #[test]
