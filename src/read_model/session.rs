@@ -971,21 +971,60 @@ fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<St
 }
 
 fn key_fingerprint(key: &RowKey) -> String {
-    key.iter()
-        .map(|(column, value)| format!("{column}={}", value_fingerprint(value)))
-        .collect::<Vec<_>>()
-        .join(",")
+    let mut fingerprint = String::new();
+    for (column, value) in key.iter() {
+        push_fingerprint_part(&mut fingerprint, column);
+        push_fingerprint_part(&mut fingerprint, &value_fingerprint(value));
+    }
+    fingerprint
+}
+
+fn push_fingerprint_part(fingerprint: &mut String, part: &str) {
+    fingerprint.push_str(&part.len().to_string());
+    fingerprint.push(':');
+    fingerprint.push_str(part);
+    fingerprint.push(';');
 }
 
 fn value_fingerprint(value: &RowValue) -> String {
     match value {
         RowValue::Null => "null".into(),
-        RowValue::Bool(value) => value.to_string(),
-        RowValue::I64(value) => value.to_string(),
-        RowValue::U64(value) => value.to_string(),
-        RowValue::F64(value) => value.to_string(),
-        RowValue::String(value) => value.clone(),
-        RowValue::Bytes(value) => format!("{value:?}"),
-        RowValue::Json(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+        RowValue::Bool(value) => format!("bool:{value}"),
+        RowValue::I64(value) => format!("i64:{value}"),
+        RowValue::U64(value) => format!("u64:{value}"),
+        RowValue::F64(value) => format!("f64:{value:?}"),
+        RowValue::String(value) => format!("string:{value}"),
+        RowValue::Bytes(value) => format!("bytes:{value:?}"),
+        RowValue::Json(value) => format!(
+            "json:{}",
+            serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_fingerprint_distinguishes_delimiter_collisions() {
+        let left = RowKey::new([
+            ("a", RowValue::String("x,b=y".into())),
+            ("b", RowValue::String("z".into())),
+        ]);
+        let right = RowKey::new([
+            ("a", RowValue::String("x".into())),
+            ("b", RowValue::String("y,b=z".into())),
+        ]);
+
+        assert_ne!(key_fingerprint(&left), key_fingerprint(&right));
+    }
+
+    #[test]
+    fn key_fingerprint_distinguishes_row_value_types() {
+        let integer = RowKey::new([("id", RowValue::I64(1))]);
+        let string = RowKey::new([("id", RowValue::String("1".into()))]);
+
+        assert_ne!(key_fingerprint(&integer), key_fingerprint(&string));
     }
 }
