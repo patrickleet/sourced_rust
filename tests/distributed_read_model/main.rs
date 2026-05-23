@@ -3,10 +3,10 @@
 //! This demonstrates a distributed CQRS deployment shape:
 //! - the account model service owns the event-sourced aggregate and outbox
 //! - the account summary projector owns read-model updates
-//! - a separate query process reads from the projected read-model store
+//! - a separate query service reads from the projected read-model store
 //! - the write side and projector are connected only through the bus
 //!
-//! The test uses threads and `InMemoryQueue` as process stand-ins. In a real
+//! The test uses threads and `InMemoryQueue` as service stand-ins. In a real
 //! deployment, each service would use its own process, a shared broker, and a
 //! shared read-model database. A query API such as Hasura can sit in front of
 //! that database while the read-model worker keeps the tables updated.
@@ -15,35 +15,23 @@
 //! be exposed through direct dispatch, HTTP, or gRPC. The query side is not a
 //! command handler; it just reads the projected store.
 
-mod handlers;
-mod models;
-mod query_process;
-mod read_model;
+mod account_service;
+mod projections_service;
+mod query_service;
 
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use models::aggregates::account::{Account, DepositMoney, OpenAccount};
-use models::readmodels::account_summary::AccountSummary;
-use query_process::AccountSummaryQueryProcess;
-use read_model::{start_account_summary_service, wait_for_summary, ACCOUNT_SUMMARY_CONSUMER};
-use sourced_rust::microsvc::{Service, Session};
-use sourced_rust::{
-    AggregateBuilder, AggregateRepository, HashMapRepository, InMemoryQueue,
-    InMemoryReadModelStore, OutboxWorkerThread, Queueable, QueuedRepository, ReadModelSessionStore,
-    ReadModelsExt,
+use account_service::{Account, DepositMoney, OpenAccount};
+use projections_service::{
+    start_account_summary_projection_service, wait_for_summary, ACCOUNT_SUMMARY_CONSUMER,
 };
-
-pub(crate) type AccountRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Account>;
-
-fn account_model_service(repo: AccountRepo) -> Arc<Service<AccountRepo>> {
-    Arc::new(sourced_rust::register_handlers!(
-        Service::new(repo),
-        handlers::account_open,
-        handlers::account_deposit,
-    ))
-}
+use query_service::{AccountSummary, AccountSummaryQueryService};
+use sourced_rust::microsvc::Session;
+use sourced_rust::{
+    AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
+    Queueable, ReadModelSessionStore, ReadModelsExt,
+};
 
 fn wait_for_published_events(queue: &InMemoryQueue, expected_count: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -61,64 +49,21 @@ fn wait_for_published_events(queue: &InMemoryQueue, expected_count: usize) {
     }
 }
 
-#[cfg(feature = "http")]
-async fn start_http_service<R: Send + Sync + 'static>(service: Arc<Service<R>>) -> String {
-    let app = sourced_rust::microsvc::router(service);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("HTTP test server should bind");
-    let addr = listener
-        .local_addr()
-        .expect("HTTP test server should expose local address");
-
-    tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("HTTP test server should serve");
-    });
-
-    format!("http://{addr}")
-}
-
-#[cfg(feature = "grpc")]
-async fn start_grpc_service<R: Send + Sync + 'static>(
-    service: Arc<Service<R>>,
-) -> sourced_rust::microsvc::grpc::CommandServiceClient<tonic::transport::Channel> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("gRPC test server should bind");
-    let addr = listener
-        .local_addr()
-        .expect("gRPC test server should expose local address");
-    let grpc_svc = sourced_rust::microsvc::grpc_server(service);
-
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(grpc_svc)
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-            .await
-            .expect("gRPC test server should serve");
-    });
-
-    sourced_rust::microsvc::grpc::CommandServiceClient::connect(format!("http://{addr}"))
-        .await
-        .expect("gRPC test client should connect")
-}
-
 #[test]
 fn write_model_service_feeds_separate_read_model_service() {
     let queue = InMemoryQueue::new();
 
     let write_store = HashMapRepository::new();
     let account_repo = write_store.clone().queued().aggregate::<Account>();
-    let model_service = account_model_service(account_repo);
+    let model_service = account_service::model_service(account_repo);
 
     let outbox_worker =
         OutboxWorkerThread::spawn(write_store.clone(), queue.clone(), Duration::from_millis(5));
 
     let read_store = InMemoryReadModelStore::new();
-    let read_model_service = start_account_summary_service(queue.clone(), read_store.clone());
-    let query_process = AccountSummaryQueryProcess::new(read_store.clone());
+    let projections_service =
+        start_account_summary_projection_service(queue.clone(), read_store.clone());
+    let query_service = AccountSummaryQueryService::new(read_store.clone());
 
     model_service
         .dispatch(
@@ -163,16 +108,16 @@ fn write_model_service_feeds_separate_read_model_service() {
         );
     }
 
-    let queried_summary = query_process
+    let queried_summary = query_service
         .get("acct-1")
-        .expect("query process should read projected account summary")
-        .expect("query process should find projected account summary");
+        .expect("query service should read projected account summary")
+        .expect("query service should find projected account summary");
     assert_eq!(queried_summary.owner.as_deref(), Some("Ada Lovelace"));
     assert_eq!(queried_summary.balance_cents, 2500);
     assert_eq!(queried_summary.deposit_count, 1);
-    assert!(query_process
+    assert!(query_service
         .get("missing-account")
-        .expect("query process should read projected account summary")
+        .expect("query service should read projected account summary")
         .is_none());
 
     let mut model_commands = model_service.commands();
@@ -199,7 +144,7 @@ fn write_model_service_feeds_separate_read_model_service() {
         "write-side service should not own the account summary projection"
     );
 
-    read_model_service.stop();
+    projections_service.stop();
     let worker_stats = outbox_worker
         .stop()
         .expect("outbox worker should stop cleanly");
@@ -212,8 +157,8 @@ fn write_model_service_feeds_separate_read_model_service() {
 async fn model_commands_can_be_http_service() {
     let write_store = HashMapRepository::new();
     let account_repo = write_store.clone().queued().aggregate::<Account>();
-    let model_service = account_model_service(account_repo);
-    let model_base = start_http_service(model_service.clone()).await;
+    let model_service = account_service::model_service(account_repo);
+    let model_base = account_service::start_http_service(model_service.clone()).await;
 
     let client = reqwest::Client::new();
     let open = client
@@ -251,8 +196,8 @@ async fn model_commands_can_be_http_service() {
 async fn model_commands_can_be_grpc_service() {
     let write_store = HashMapRepository::new();
     let account_repo = write_store.clone().queued().aggregate::<Account>();
-    let model_service = account_model_service(account_repo);
-    let mut model_client = start_grpc_service(model_service.clone()).await;
+    let model_service = account_service::model_service(account_repo);
+    let mut model_client = account_service::start_grpc_service(model_service.clone()).await;
 
     let open = model_client
         .dispatch(sourced_rust::microsvc::grpc::GrpcRequest {

@@ -7,29 +7,29 @@ use sourced_rust::{
     InMemoryQueue, InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelSession, ReadModelStore,
 };
 
-use crate::models::aggregates::account::AccountSnapshot;
-use crate::models::readmodels::account_summary::AccountSummary;
+use crate::account_service::account::AccountSnapshot;
+use crate::query_service::AccountSummary;
 
 pub const ACCOUNT_SUMMARY_CONSUMER: &str = "account-summary-projection";
 
-pub struct ReadModelServiceHandle {
+pub struct ProjectionServiceHandle {
     stop_tx: mpsc::Sender<()>,
     handle: thread::JoinHandle<()>,
 }
 
-impl ReadModelServiceHandle {
+impl ProjectionServiceHandle {
     pub fn stop(self) {
         let _ = self.stop_tx.send(());
         self.handle
             .join()
-            .expect("read model service should stop cleanly");
+            .expect("projection service should stop cleanly");
     }
 }
 
-pub fn start_account_summary_service(
+pub fn start_account_summary_projection_service(
     queue: InMemoryQueue,
     store: InMemoryReadModelStore,
-) -> ReadModelServiceHandle {
+) -> ProjectionServiceHandle {
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
 
@@ -38,7 +38,7 @@ pub fn start_account_summary_service(
         let events = bus.subscribe(&["AccountOpened", "MoneyDeposited"]);
         ready_tx
             .send(())
-            .expect("read model service should signal readiness");
+            .expect("projection service should signal readiness");
 
         loop {
             match stop_rx.try_recv() {
@@ -51,19 +51,19 @@ pub fn start_account_summary_service(
                     project_account_summary(&store, &event);
                     events
                         .ack(&event.id)
-                        .expect("read model service should ack projected events");
+                        .expect("projection service should ack projected events");
                 }
                 Ok(None) => {}
-                Err(err) => panic!("read model service failed to receive event: {err}"),
+                Err(err) => panic!("projection service failed to receive event: {err}"),
             }
         }
     });
 
     ready_rx
         .recv_timeout(Duration::from_secs(3))
-        .expect("read model service should subscribe before accepting writes");
+        .expect("projection service should subscribe before accepting writes");
 
-    ReadModelServiceHandle { stop_tx, handle }
+    ProjectionServiceHandle { stop_tx, handle }
 }
 
 fn load_summary(store: &InMemoryReadModelStore, account_id: &str) -> AccountSummary {
