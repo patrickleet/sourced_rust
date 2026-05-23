@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::{OutboxCommitExt, OutboxMessage};
 
-use crate::models::aggregates::account::{Account, OpenAccount};
-use crate::AccountRepo;
+use crate::account_service::account::{Account, OpenAccount};
+use crate::account_service::AccountRepo;
 
 pub const COMMAND: &str = "account.open";
 

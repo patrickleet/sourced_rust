@@ -1,13 +1,15 @@
 use sourced_rust::{InMemoryReadModelStore, ReadModelError, ReadModelStore};
 
-use crate::models::readmodels::account_summary::AccountSummary;
+pub mod account_summary;
+
+pub use account_summary::AccountSummary;
 
 #[derive(Clone)]
-pub struct AccountSummaryQueryProcess {
+pub struct AccountSummaryQueryService {
     store: InMemoryReadModelStore,
 }
 
-impl AccountSummaryQueryProcess {
+impl AccountSummaryQueryService {
     pub fn new(store: InMemoryReadModelStore) -> Self {
         Self { store }
     }
