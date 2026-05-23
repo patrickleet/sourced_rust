@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use serde::Serialize;
@@ -985,6 +985,7 @@ where
             )));
         }
 
+        let mut current_fingerprints = BTreeSet::new();
         for mut current_row in current_rows {
             match baseline.relationship.kind {
                 RelationshipKind::HasMany => populate_delegated_relationship_values(
@@ -1005,6 +1006,7 @@ where
 
             let key = key_from_row(&baseline.target_schema, &current_row)?;
             let fingerprint = key_fingerprint(&key);
+            current_fingerprints.insert(fingerprint.clone());
             if let Some(loaded) = baseline.rows.get(&fingerprint) {
                 self.stage_row_diff(
                     baseline.target_schema.clone(),
@@ -1015,6 +1017,21 @@ where
                 )?;
             } else {
                 self.stage_upsert_row(baseline.target_schema.clone(), key, current_row)?;
+            }
+        }
+
+        // `save_changes` makes storage match the struct: an owned `has_many` child
+        // dropped from the loaded collection is deleted. `belongs_to` clears never
+        // delete the target, which is the owner that other rows may reference.
+        if matches!(baseline.relationship.kind, RelationshipKind::HasMany) {
+            for (fingerprint, loaded) in &baseline.rows {
+                if !current_fingerprints.contains(fingerprint) {
+                    self.stage_delete_row(
+                        baseline.target_schema.clone(),
+                        loaded.key.clone(),
+                        loaded.version,
+                    )?;
+                }
             }
         }
 
@@ -1061,6 +1078,22 @@ where
         };
         validate_row_mutation(&mutation)?;
         self.writes.push(ReadModelMutation::UpsertRow(mutation));
+        Ok(())
+    }
+
+    fn stage_delete_row(
+        &mut self,
+        schema: ReadModelSchema,
+        key: RowKey,
+        expected_version: u64,
+    ) -> Result<(), ReadModelError> {
+        let mutation = DeleteRowMutation {
+            schema,
+            key,
+            expected_version: ExpectedVersion::Exact(expected_version),
+        };
+        validate_delete_mutation(&mutation)?;
+        self.writes.push(ReadModelMutation::DeleteRow(mutation));
         Ok(())
     }
 }
