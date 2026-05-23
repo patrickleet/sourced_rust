@@ -47,6 +47,24 @@ struct Weapon {
     weapon_id: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "weapon_label_refs")]
+struct WeaponLabelRef {
+    #[readmodel(id, column = "ref_id")]
+    ref_id: String,
+    player_id: String,
+    #[readmodel(belongs_to = "CompositeWeaponLabel", foreign_key = "player_id")]
+    label: Option<CompositeWeaponLabel>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "weapon_labels", primary_key = ["player_id", "weapon_id"])]
+struct CompositeWeaponLabel {
+    player_id: String,
+    weapon_id: String,
+    label: String,
+}
+
 struct NoIncludeStore {
     inner: InMemoryReadModelStore,
 }
@@ -357,5 +375,40 @@ fn many_to_many_include_fails_until_join_metadata_is_rich_enough() {
 
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("many-to-many relationship"))
+    );
+}
+
+#[test]
+fn belongs_to_include_rejects_composite_target_primary_key() {
+    let store = InMemoryReadModelStore::new();
+    store.register_schema::<WeaponLabelRef>().unwrap();
+    store.register_schema::<CompositeWeaponLabel>().unwrap();
+    let mut session = sourced_rust::ReadModelSession::new();
+    session
+        .save(&WeaponLabelRef {
+            ref_id: "ref-1".into(),
+            player_id: "player-1".into(),
+            label: None,
+        })
+        .unwrap()
+        .save(&CompositeWeaponLabel {
+            player_id: "player-1".into(),
+            weapon_id: "sword".into(),
+            label: "Sword".into(),
+        })
+        .unwrap();
+    session.commit(&store).unwrap();
+    let mut read_models = store.session();
+
+    let err = read_models
+        .load::<WeaponLabelRef>(RowKey::new([("ref_id", RowValue::String("ref-1".into()))]))
+        .include("label")
+        .one()
+        .unwrap_err();
+
+    assert!(
+        matches!(err, ReadModelError::Metadata(message) if message.contains("CompositeWeaponLabel")
+            && message.contains("player_id")
+            && message.contains("single-column primary key"))
     );
 }
