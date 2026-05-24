@@ -1,20 +1,18 @@
-//! One projection service. It subscribes to every event type the projection
-//! handlers consume and dispatches each event (a message) to the handler that
-//! owns the matching read-model rows. Handlers mark messages processed in the
-//! same commit for idempotency.
+//! One projection service. Subscribes to every event type the projection
+//! handlers consume and dispatches each event (a message) to the owning handler.
 
 mod handlers;
 
-pub use handlers::fulfillment::CONSUMER as FULFILLMENT_CONSUMER;
-pub use handlers::order::CONSUMER as ORDER_CONSUMER;
-pub use handlers::product::CONSUMER as CATALOG_CONSUMER;
+pub use handlers::board::CONSUMER as BOARD_CONSUMER;
 
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sourced_rust::bus::Bus;
-use sourced_rust::{InMemoryQueue, InMemoryReadModelStore};
+use sourced_rust::{InMemoryQueue, InMemoryReadModelStore, ReadModelUnitOfWorkExt};
+
+use crate::read_models::{board_key, BoardView};
 
 pub struct ProjectionServiceHandle {
     stop_tx: mpsc::Sender<()>,
@@ -30,7 +28,7 @@ impl ProjectionServiceHandle {
     }
 }
 
-pub fn start_projection_service(
+pub fn start_board_projection_service(
     queue: InMemoryQueue,
     store: InMemoryReadModelStore,
 ) -> ProjectionServiceHandle {
@@ -69,4 +67,33 @@ pub fn start_projection_service(
         .expect("projection service should subscribe before accepting writes");
 
     ProjectionServiceHandle { stop_tx, handle }
+}
+
+pub fn wait_for_board(
+    store: &InMemoryReadModelStore,
+    board_id: &str,
+    ready: impl Fn(&BoardView) -> bool,
+) -> BoardView {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let mut session = store.session();
+        if let Some(board) = session
+            .load::<BoardView>(board_key(board_id))
+            .include("cards")
+            .one()
+            .expect("board load should succeed")
+            .map(|view| view.data)
+        {
+            if ready(&board) {
+                return board;
+            }
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for board projection"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }

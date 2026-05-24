@@ -1,25 +1,24 @@
-pub mod account;
-mod handlers;
-
 use std::sync::Arc;
 
 use sourced_rust::microsvc::Service;
-use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 
-pub use account::{Account, DepositMoney, OpenAccount};
+use super::{handlers, OrderRepo};
 
-pub type AccountRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Account>;
-
-pub fn model_service(repo: AccountRepo) -> Arc<Service<AccountRepo>> {
+pub fn model_service(repo: OrderRepo) -> Arc<Service<OrderRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
-        handlers::account_open,
-        handlers::account_deposit,
+        handlers::order_place,
+        handlers::order_add_line,
+        handlers::order_change_quantity,
+        handlers::order_remove_line,
+        handlers::order_submit,
+        handlers::order_confirm,
+        handlers::order_cancel,
     ))
 }
 
 #[cfg(feature = "http")]
-pub async fn start_http_service(service: Arc<Service<AccountRepo>>) -> String {
+pub async fn start_http_service(service: Arc<Service<OrderRepo>>) -> String {
     let app = sourced_rust::microsvc::router(service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -39,7 +38,7 @@ pub async fn start_http_service(service: Arc<Service<AccountRepo>>) -> String {
 
 #[cfg(feature = "grpc")]
 pub async fn start_grpc_service(
-    service: Arc<Service<AccountRepo>>,
+    service: Arc<Service<OrderRepo>>,
 ) -> sourced_rust::microsvc::grpc::CommandServiceClient<tonic::transport::Channel> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
