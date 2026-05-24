@@ -177,20 +177,32 @@ fn expand_relational_read_model(
             }
         });
 
-        row_inserts.push(quote! {
-            row.insert_serde(#column_name, &self.#ident)?;
-        });
+        if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
+            row_inserts.push(quote! {
+                row.insert(#column_name, #value);
+            });
+        } else {
+            row_inserts.push(quote! {
+                row.insert_serde(#column_name, &self.#ident)?;
+            });
+        }
         row_fields.push(quote! {
             #ident: row.get_serde(#column_name)?
         });
 
         if primary_key {
-            key_inserts.push(quote! {
-                key.values.insert(
-                    #column_name.to_string(),
-                    sourced_rust::RowValue::from_serde(&self.#ident)?,
-                );
-            });
+            if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
+                key_inserts.push(quote! {
+                    key.values.insert(#column_name.to_string(), #value);
+                });
+            } else {
+                key_inserts.push(quote! {
+                    key.values.insert(
+                        #column_name.to_string(),
+                        sourced_rust::RowValue::from_serde(&self.#ident)?,
+                    );
+                });
+            }
         }
 
         if attrs.indexed || attrs.unique {
@@ -933,6 +945,31 @@ fn column_type_tokens(ty: &Type, jsonb: bool) -> proc_macro2::TokenStream {
 
     let type_name = ty.to_token_stream().to_string();
     quote! { sourced_rust::ColumnType::Unsupported(#type_name.to_string()) }
+}
+
+fn bytes_row_value_tokens(
+    ty: &Type,
+    value: proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
+    let option_inner = option_inner_type(ty);
+    let ty = option_inner.unwrap_or(ty);
+    let segment = last_type_segment(ty)?;
+    if segment.ident != "Vec" || !vec_inner_is_u8(segment) {
+        return None;
+    }
+
+    if option_inner.is_some() {
+        Some(quote! {
+            match &#value {
+                Some(value) => sourced_rust::RowValue::Bytes(value.clone()),
+                None => sourced_rust::RowValue::Null,
+            }
+        })
+    } else {
+        Some(quote! {
+            sourced_rust::RowValue::Bytes(#value.clone())
+        })
+    }
 }
 
 fn option_inner_type(ty: &Type) -> Option<&Type> {
