@@ -66,6 +66,15 @@ struct DirectTableView {
     value: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("binary_assets")]
+struct BinaryAsset {
+    #[id("asset_id")]
+    id: String,
+    payload: Vec<u8>,
+    optional_payload: Option<Vec<u8>>,
+}
+
 #[test]
 fn derive_allows_table_models_with_string_ids_to_use_document_rows() {
     let summary = AccountSummary {
@@ -141,6 +150,35 @@ fn row_conversion_round_trips_scalar_option_and_jsonb_fields() {
 
     let round_trip = AccountSummary::from_row(row).unwrap();
     assert_eq!(round_trip, summary);
+}
+
+#[test]
+fn row_conversion_keeps_binary_columns_as_bytes_values() {
+    let asset = BinaryAsset {
+        id: "asset-1".into(),
+        payload: vec![0, 1, 255],
+        optional_payload: Some(vec![2, 3, 5]),
+    };
+
+    let row = asset.to_row().unwrap();
+
+    assert_eq!(row.get("payload"), Some(&RowValue::Bytes(vec![0, 1, 255])));
+}
+
+#[test]
+fn row_conversion_keeps_optional_binary_columns_as_bytes_values() {
+    let asset = BinaryAsset {
+        id: "asset-1".into(),
+        payload: vec![0, 1, 255],
+        optional_payload: Some(vec![2, 3, 5]),
+    };
+
+    let row = asset.to_row().unwrap();
+
+    assert_eq!(
+        row.get("optional_payload"),
+        Some(&RowValue::Bytes(vec![2, 3, 5]))
+    );
 }
 
 #[test]
