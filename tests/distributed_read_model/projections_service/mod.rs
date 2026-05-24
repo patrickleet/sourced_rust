@@ -8,4 +8,4 @@ mod service;
 pub use handlers::fulfillment::CONSUMER as FULFILLMENT_CONSUMER;
 pub use handlers::order::CONSUMER as ORDER_CONSUMER;
 pub use handlers::product::CONSUMER as CATALOG_CONSUMER;
-pub use service::{service, start_projection_service, ProjectionServiceHandle};
+pub use service::{service, subscriber};

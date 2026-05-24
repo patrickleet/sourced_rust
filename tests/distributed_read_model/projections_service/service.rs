@@ -1,30 +1,43 @@
-use std::collections::HashMap;
-use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use serde_json::Value;
-use sourced_rust::bus::{Bus, Event};
-use sourced_rust::microsvc::{Context, HandlerError, Service, Session};
-use sourced_rust::{InMemoryQueue, InMemoryReadModelStore};
+use sourced_rust::bus::{Event, PublishError, Subscriber};
+use sourced_rust::microsvc::{Context, HandlerError, Service};
+use sourced_rust::InMemoryReadModelStore;
 
 use super::handlers::{self, ProjectionMessage};
 
 type ProjectionGuard = fn(&Context<InMemoryReadModelStore>) -> bool;
 type ProjectionHandler = fn(&Context<InMemoryReadModelStore>) -> Result<Value, HandlerError>;
 
-pub struct ProjectionServiceHandle {
-    stop_tx: mpsc::Sender<()>,
-    handle: thread::JoinHandle<()>,
+pub struct ProjectionSubscriber<S> {
+    inner: S,
 }
 
-impl ProjectionServiceHandle {
-    pub fn stop(self) {
-        let _ = self.stop_tx.send(());
-        self.handle
-            .join()
-            .expect("projection service should stop cleanly");
+impl<S> Subscriber for ProjectionSubscriber<S>
+where
+    S: Subscriber,
+{
+    fn poll(&self, timeout_ms: u64) -> Result<Option<Event>, PublishError> {
+        self.inner.poll(timeout_ms).and_then(|event| {
+            event
+                .map(|event| {
+                    let payload = serde_json::to_vec(&ProjectionMessage::from(&event))
+                        .map_err(|err| PublishError::SerializationFailed(err.to_string()))?;
+                    let mut wrapped = Event::new(event.id, event.event_type, payload);
+                    wrapped.metadata = event.metadata;
+                    Ok(wrapped)
+                })
+                .transpose()
+        })
+    }
+
+    fn ack(&self, event_id: &str) -> Result<(), PublishError> {
+        self.inner.ack(event_id)
+    }
+
+    fn nack(&self, event_id: &str, reason: &str) -> Result<(), PublishError> {
+        self.inner.nack(event_id, reason)
     }
 }
 
@@ -52,54 +65,11 @@ pub fn service(store: InMemoryReadModelStore) -> Arc<Service<InMemoryReadModelSt
     Arc::new(service)
 }
 
-pub fn start_projection_service(
-    queue: InMemoryQueue,
-    service: Arc<Service<InMemoryReadModelStore>>,
-) -> ProjectionServiceHandle {
-    let (stop_tx, stop_rx) = mpsc::channel();
-    let (ready_tx, ready_rx) = mpsc::channel();
-
-    let handle = thread::spawn(move || {
-        let bus = Bus::from_queue(queue);
-        let event_types = handlers::event_types();
-        let events = bus.subscribe(&event_types);
-        ready_tx
-            .send(())
-            .expect("projection service should signal readiness");
-
-        loop {
-            match stop_rx.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {}
-            }
-
-            match events.recv(10) {
-                Ok(Some(event)) => {
-                    let input = serde_json::to_value(ProjectionMessage::from(&event))
-                        .expect("projection event envelope should encode");
-                    service
-                        .dispatch(&event.event_type, input, session_from_event(&event))
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "projection service failed to dispatch {}: {err}",
-                                event.event_type
-                            )
-                        });
-                    events
-                        .ack(&event.id)
-                        .expect("projection service should ack projected events");
-                }
-                Ok(None) => {}
-                Err(err) => panic!("projection service failed to receive event: {err}"),
-            }
-        }
-    });
-
-    ready_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("projection service should subscribe before accepting writes");
-
-    ProjectionServiceHandle { stop_tx, handle }
+pub fn subscriber<S>(subscriber: S) -> ProjectionSubscriber<S>
+where
+    S: Subscriber,
+{
+    ProjectionSubscriber { inner: subscriber }
 }
 
 fn register_handler_events(
@@ -112,17 +82,4 @@ fn register_handler_events(
         service = service.command_guarded(event, guard, handle);
     }
     service
-}
-
-fn session_from_event(event: &Event) -> Session {
-    let Some(metadata) = &event.metadata else {
-        return Session::new();
-    };
-
-    Session::from_map(
-        metadata
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect::<HashMap<_, _>>(),
-    )
 }

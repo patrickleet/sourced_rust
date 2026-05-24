@@ -4,8 +4,9 @@
 //! - the **catalog service** owns the `Product` aggregate and its outbox;
 //! - the **order service** owns the `Order` aggregate (with line items as
 //!   aggregate state) and its outbox;
-//! - two **projection services** consume the bus and reconcile normalized
-//!   `products`, `orders`, and `order_lines` rows in a shared read store;
+//! - the **projection service** consumes the bus and reconciles normalized
+//!   `products`, `orders`, fulfillment steps, and `order_lines` rows in a shared
+//!   read store;
 //! - a **query service** reads the projected graph through primary-key loads
 //!   plus `has_many` / `belongs_to` relationship includes.
 //!
@@ -29,19 +30,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use catalog_service::AddProduct;
-use fulfillment::{requested_event, FulfillmentMsg};
+use fulfillment::{command, FulfillmentMsg};
 use inventory_service::Inventory;
 use order_fulfillment_saga_service::OrderFulfillmentSaga;
 use order_service::{AddLine, ChangeQuantity, PlaceOrder, RemoveLine, SubmitOrder};
 use payment_service::Payment;
 use projections_service::{
-    service as projection_service, start_projection_service, ProjectionServiceHandle,
-    CATALOG_CONSUMER, FULFILLMENT_CONSUMER, ORDER_CONSUMER,
+    service as projection_service, subscriber as projection_subscriber, CATALOG_CONSUMER,
+    FULFILLMENT_CONSUMER, ORDER_CONSUMER,
 };
 use query_service::OrderQueryService;
 use read_models::{register_schemas, OrderView};
 use serde::Serialize;
-use sourced_rust::bus::{Bus, Subscribable};
+use sourced_rust::bus::Subscribable;
 use sourced_rust::microsvc::{self, Service, Session};
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
@@ -109,16 +110,17 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
     let projection_svc = projection_service(read_store.clone());
-    let projection: ProjectionServiceHandle =
-        start_projection_service(queue.clone(), projection_svc);
     let query_service = OrderQueryService::new(read_store.clone());
 
     // Saga subsystem: inventory, payment, and the orchestrator are ordinary
-    // `microsvc::Service`s. Each publishes via its outbox worker and subscribes
-    // to the bus with `microsvc::subscribe`, dispatching events to handlers by
-    // type — the same shape as every other service. The order service also
-    // subscribes, so it reacts to the saga's confirm/cancel decisions.
+    // `microsvc::Service`s sharing one broker. Services publish domain events;
+    // each subscriber reacts only to the facts it owns.
     let poll = Duration::from_millis(5);
+
+    let saga_store = HashMapRepository::new();
+    let saga_svc = order_fulfillment_saga_service::service(saga_store.clone().queued().aggregate());
+    let saga_worker = OutboxWorkerThread::spawn(saga_store.clone(), queue.clone(), poll);
+    let saga_sub = microsvc::subscribe(saga_svc.clone(), queue.new_subscriber(), poll);
 
     let inventory_store = HashMapRepository::new();
     inventory_service::seed_stock(&inventory_store, "W", 100);
@@ -131,12 +133,12 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     let payment_worker = OutboxWorkerThread::spawn(payment_store.clone(), queue.clone(), poll);
     let payment_sub = microsvc::subscribe(payment_svc.clone(), queue.new_subscriber(), poll);
 
-    let saga_store = HashMapRepository::new();
-    let saga_svc = order_fulfillment_saga_service::service(saga_store.clone().queued().aggregate());
-    let saga_worker = OutboxWorkerThread::spawn(saga_store.clone(), queue.clone(), poll);
-    let saga_sub = microsvc::subscribe(saga_svc.clone(), queue.new_subscriber(), poll);
-
     let order_sub = microsvc::subscribe(order_service.clone(), queue.new_subscriber(), poll);
+    let projection_sub = microsvc::subscribe(
+        projection_svc.clone(),
+        projection_subscriber(queue.new_subscriber()),
+        poll,
+    );
 
     // Catalog commands.
     dispatch(
@@ -215,15 +217,17 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     );
 
     // Kick off fulfillment for the happy order (amount within the payment cap).
-    Bus::from_queue(queue.clone())
-        .publish(requested_event(&FulfillmentMsg {
+    dispatch(
+        &saga_svc,
+        command::START,
+        FulfillmentMsg {
             order_id: "order-1".to_string(),
             sku: "W".to_string(),
             quantity: 3,
             amount_cents: 1500,
             ..Default::default()
-        }))
-        .expect("fulfillment kickoff should publish");
+        },
+    );
 
     // A second, expensive order the payment service declines, exercising the
     // compensation path (release inventory, cancel the order).
@@ -253,15 +257,17 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
             id: "order-2".to_string(),
         },
     );
-    Bus::from_queue(queue.clone())
-        .publish(requested_event(&FulfillmentMsg {
+    dispatch(
+        &saga_svc,
+        command::START,
+        FulfillmentMsg {
             order_id: "order-2".to_string(),
             sku: "W".to_string(),
             quantity: 1,
             amount_cents: 200_000,
             ..Default::default()
-        }))
-        .expect("fulfillment kickoff should publish");
+        },
+    );
 
     // === Happy path: the saga drives order-1 to confirmed ===
     let order = wait_for_order_state(&query_service, "order-1", |order| {
@@ -284,10 +290,7 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
         .map(|step| step.step.as_str())
         .collect();
     steps.sort();
-    assert_eq!(
-        steps,
-        vec!["inventory_reserved", "payment_succeeded", "requested"]
-    );
+    assert_eq!(steps, vec!["completed", "inventory_reserved", "started"]);
 
     // belongs_to include joins the line to its catalog product (cross-service).
     let line = query_service
@@ -309,12 +312,7 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     comp_steps.sort();
     assert_eq!(
         comp_steps,
-        vec![
-            "inventory_released",
-            "inventory_reserved",
-            "payment_declined",
-            "requested",
-        ]
+        vec!["cancelled", "compensating", "inventory_reserved", "started"]
     );
 
     // Write-side aggregates reflect the saga outcomes.
@@ -382,11 +380,11 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
             ORDER_CONSUMER
         } else if matches!(
             event_type,
-            "fulfillment.requested"
+            "fulfillment.started"
                 | "fulfillment.inventory_reserved"
-                | "fulfillment.payment_succeeded"
-                | "fulfillment.payment_declined"
-                | "fulfillment.inventory_released"
+                | "fulfillment.completed"
+                | "fulfillment.compensating"
+                | "fulfillment.cancelled"
         ) {
             FULFILLMENT_CONSUMER
         } else {
@@ -405,7 +403,7 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     let _ = saga_sub.stop();
     let _ = payment_sub.stop();
     let _ = inventory_sub.stop();
-    projection.stop();
+    let _ = projection_sub.stop();
     let _ = saga_worker.stop();
     let _ = payment_worker.stop();
     let _ = inventory_worker.stop();

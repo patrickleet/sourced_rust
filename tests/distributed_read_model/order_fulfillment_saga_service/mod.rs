@@ -1,7 +1,7 @@
-//! Order fulfillment saga orchestrator. A `microsvc::Service` whose handlers
-//! react to fulfillment result events and publish the next step's command —
-//! reserve → charge → confirm; on decline → release → cancel. Just another
-//! service combining message subscribe/publish, with the saga as its model.
+//! Order fulfillment saga orchestrator. A `microsvc::Service` whose command
+//! handlers mutate the saga model and publish saga domain events. Inventory,
+//! payment, order, and projection services react to those events; the saga also
+//! reacts to inventory/payment domain events to advance its own state.
 
 pub mod models;
 

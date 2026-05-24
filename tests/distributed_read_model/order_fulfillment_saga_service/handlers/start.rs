@@ -2,31 +2,33 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::OutboxCommitExt;
 
-use crate::fulfillment::{self, event, FulfillmentMsg};
+use crate::fulfillment::{self, command, event, FulfillmentMsg};
 use crate::order_fulfillment_saga_service::{OrderFulfillmentSaga, SagaRepo};
 
-pub const COMMAND: &str = event::PAYMENT_DECLINED;
+pub const COMMAND: &str = command::START;
 
 pub fn guard(ctx: &Context<SagaRepo>) -> bool {
-    ctx.has_fields(&["order_id"])
+    ctx.has_fields(&["order_id", "sku", "quantity", "amount_cents"])
 }
 
 pub fn handle(ctx: &Context<SagaRepo>) -> Result<Value, HandlerError> {
     let msg = ctx.input::<FulfillmentMsg>()?;
 
-    let mut saga: OrderFulfillmentSaga = ctx
-        .repo()
-        .get(&msg.order_id)?
-        .ok_or_else(|| HandlerError::NotFound(msg.order_id.clone()))?;
-    saga.compensate(msg.detail.clone())?;
-    let (sku, quantity) = (saga.sku.clone(), saga.quantity);
+    let mut saga = OrderFulfillmentSaga::default();
+    saga.start(
+        msg.order_id.clone(),
+        msg.sku.clone(),
+        msg.quantity,
+        msg.amount_cents,
+    )?;
 
-    let mut out = fulfillment::fulfillment_event(
-        event::RELEASE_INVENTORY,
+    let mut out = fulfillment::saga_event(
+        event::STARTED,
         &FulfillmentMsg {
             order_id: msg.order_id.clone(),
-            sku,
-            quantity,
+            sku: msg.sku.clone(),
+            quantity: msg.quantity,
+            amount_cents: msg.amount_cents,
             ..Default::default()
         },
     );
