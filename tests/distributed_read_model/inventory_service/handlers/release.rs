@@ -13,11 +13,22 @@ pub fn guard(ctx: &Context<InventoryRepo>) -> bool {
 
 pub fn handle(ctx: &Context<InventoryRepo>) -> Result<Value, HandlerError> {
     let msg = ctx.input::<FulfillmentMsg>()?;
+    if msg.quantity <= 0 {
+        return Err(HandlerError::Rejected(
+            "quantity must be positive".to_string(),
+        ));
+    }
 
     let mut inventory = ctx
         .repo()
         .get(&msg.sku)?
         .ok_or_else(|| HandlerError::NotFound(msg.sku.clone()))?;
+    if inventory.reserved < msg.quantity {
+        return Err(HandlerError::Rejected(
+            "reserved stock must cover release".to_string(),
+        ));
+    }
+
     inventory.release(msg.quantity)?;
 
     let mut out = fulfillment::domain_event(
