@@ -270,11 +270,13 @@ impl<S: ReadModelSessionStore, L: LockManager> ReadModelSessionStore
         &self,
         plan: ReadModelWritePlan,
     ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        let read_model_keys: Vec<String> = plan
+        let mut read_model_keys: Vec<String> = plan
             .mutations
             .iter()
             .map(|mutation| mutation.lock_key())
             .collect();
+        read_model_keys.sort_unstable();
+        read_model_keys.dedup();
         let _locks = self.lock_ids_in_order(&read_model_keys)?;
 
         let result = self.inner.commit_write_plan(plan);
@@ -360,8 +362,11 @@ impl<S: ReadModelStore, L: LockManager> QueuedReadModelStore<S, L> {
 mod tests {
     use super::*;
     use crate::read_model::InMemoryReadModelStore;
+    use crate::{DocumentMutation, LockError, ReadModelMutation};
     use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -375,6 +380,54 @@ mod tests {
         const COLLECTION: &'static str = "test_models";
         fn id(&self) -> &str {
             &self.id
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingLock {
+        lock_count: AtomicUsize,
+        unlock_count: AtomicUsize,
+    }
+
+    impl Lock for CountingLock {
+        fn lock(&self) -> Result<(), LockError> {
+            self.lock_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn try_lock(&self) -> Result<bool, LockError> {
+            Ok(true)
+        }
+
+        fn unlock(&self) -> Result<(), LockError> {
+            self.unlock_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingLockManager {
+        locks: Arc<Mutex<HashMap<String, Arc<CountingLock>>>>,
+    }
+
+    impl CountingLockManager {
+        fn unlock_count(&self, key: &str) -> usize {
+            self.get_lock(key)
+                .unwrap()
+                .unlock_count
+                .load(Ordering::SeqCst)
+        }
+    }
+
+    impl LockManager for CountingLockManager {
+        type Lock = CountingLock;
+
+        fn get_lock(&self, id: &str) -> Result<Arc<Self::Lock>, LockError> {
+            let mut locks = self
+                .locks
+                .lock()
+                .map_err(|_| LockError::Poisoned("counting lock manager".into()))?;
+            Ok(locks.entry(id.to_string()).or_default().clone())
         }
     }
 
@@ -612,5 +665,35 @@ mod tests {
 
         // cleanup
         store.unlock::<TestModel>("2").unwrap();
+    }
+
+    #[test]
+    fn commit_write_plan_releases_duplicate_document_lock_once() {
+        let lock_manager = CountingLockManager::default();
+        let store = QueuedReadModelStore::with_lock_manager(
+            InMemoryReadModelStore::new(),
+            lock_manager.clone(),
+        );
+        let mutation = DocumentMutation {
+            collection: TestModel::COLLECTION.into(),
+            id: "1".into(),
+            bytes: serde_json::to_vec(&TestModel {
+                id: "1".into(),
+                value: 1,
+            })
+            .unwrap(),
+        };
+        let key = mutation.key();
+        let plan = ReadModelWritePlan::new(
+            vec![
+                ReadModelMutation::Document(mutation.clone()),
+                ReadModelMutation::Document(mutation),
+            ],
+            Vec::new(),
+        );
+
+        store.commit_write_plan(plan).unwrap();
+
+        assert_eq!(lock_manager.unlock_count(&key), 1);
     }
 }
