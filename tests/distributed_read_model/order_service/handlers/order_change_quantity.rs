@@ -22,6 +22,10 @@ pub fn handle(ctx: &Context<OrderRepo>) -> Result<Value, HandlerError> {
         .repo()
         .get(&input.id)?
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
+    if order.status.as_str() != "open" {
+        return Err(HandlerError::Rejected("order is not open".to_string()));
+    }
+
     order.change_quantity(input.sku.clone(), input.quantity)?;
 
     let mut outbox = OutboxMessage::domain_event("order.line_quantity_changed", &order)?;

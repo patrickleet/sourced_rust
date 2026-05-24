@@ -12,7 +12,7 @@ pub fn guard(ctx: &Context<OrderRepo>) -> bool {
 
 pub fn handle(ctx: &Context<OrderRepo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<AddLine>()?;
-    if input.quantity <= 0 || input.unit_cents < 0 {
+    if input.quantity <= 0 || input.unit_cents <= 0 {
         return Err(HandlerError::Rejected("invalid line".to_string()));
     }
 
@@ -20,6 +20,10 @@ pub fn handle(ctx: &Context<OrderRepo>) -> Result<Value, HandlerError> {
         .repo()
         .get(&input.id)?
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
+    if order.status.as_str() != "open" {
+        return Err(HandlerError::Rejected("order is not open".to_string()));
+    }
+
     order.add_line(
         input.sku.clone(),
         input.product_id.clone(),
