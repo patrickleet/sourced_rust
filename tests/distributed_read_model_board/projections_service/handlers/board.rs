@@ -82,6 +82,37 @@ fn event_version(event: &Event) -> i64 {
         .id
         .rsplit(':')
         .next()
-        .and_then(|raw| raw.parse().ok())
-        .unwrap_or(0)
+        .expect("board projection event id should include a version segment")
+        .parse()
+        .expect("board projection event id should end with a numeric aggregate version")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_version_parses_trailing_outbox_segment() {
+        let event = Event::with_string_payload(
+            "outbox:board-1:board.card_added:42",
+            "board.card_added",
+            "{}",
+        );
+
+        assert_eq!(event_version(&event), 42);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "board projection event id should end with a numeric aggregate version"
+    )]
+    fn event_version_panics_on_malformed_outbox_segment() {
+        let event = Event::with_string_payload(
+            "outbox:board-1:board.card_added:bad",
+            "board.card_added",
+            "{}",
+        );
+
+        event_version(&event);
+    }
 }
