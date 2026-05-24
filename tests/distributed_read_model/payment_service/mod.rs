@@ -1,6 +1,6 @@
-//! Payment write service: charges the order amount, declining over a cap to
-//! drive the saga's compensation path. A `microsvc::Service` reacting to
-//! `fulfillment.charge_payment`.
+//! Payment write service: charges after the saga records reserved inventory,
+//! declining over a cap to drive the saga's compensation path. It publishes
+//! payment domain events after updating the payment model.
 
 pub mod models;
 

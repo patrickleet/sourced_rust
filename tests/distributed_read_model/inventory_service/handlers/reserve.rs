@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::OutboxCommitExt;
 
-use crate::fulfillment::{self, event, FulfillmentMsg};
+use crate::fulfillment::{self, event, inventory_event, FulfillmentMsg};
 use crate::inventory_service::InventoryRepo;
 
-pub const COMMAND: &str = event::RESERVE_INVENTORY;
+pub const COMMAND: &str = event::STARTED;
 
 pub fn guard(ctx: &Context<InventoryRepo>) -> bool {
     ctx.has_fields(&["order_id", "sku", "quantity"])
@@ -20,10 +20,12 @@ pub fn handle(ctx: &Context<InventoryRepo>) -> Result<Value, HandlerError> {
         .ok_or_else(|| HandlerError::NotFound(msg.sku.clone()))?;
     inventory.reserve(msg.quantity)?;
 
-    let mut out = fulfillment::fulfillment_event(
-        event::INVENTORY_RESERVED,
+    let mut out = fulfillment::domain_event(
+        inventory_event::RESERVED,
         &FulfillmentMsg {
             order_id: msg.order_id.clone(),
+            sku: msg.sku.clone(),
+            quantity: msg.quantity,
             ..Default::default()
         },
     );

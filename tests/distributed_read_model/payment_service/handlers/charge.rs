@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::OutboxCommitExt;
 
-use crate::fulfillment::{self, event, FulfillmentMsg};
+use crate::fulfillment::{self, event, payment_event, FulfillmentMsg};
 use crate::payment_service::PaymentRepo;
 
-pub const COMMAND: &str = event::CHARGE_PAYMENT;
+pub const COMMAND: &str = event::INVENTORY_RESERVED;
 
 /// Amounts over this cap are declined (drives the compensation path).
 const PAYMENT_CAP_CENTS: i64 = 100_000;
@@ -20,8 +20,8 @@ pub fn handle(ctx: &Context<PaymentRepo>) -> Result<Value, HandlerError> {
 
     let mut out = if msg.amount_cents <= PAYMENT_CAP_CENTS {
         payment.charge(msg.order_id.clone(), msg.amount_cents)?;
-        fulfillment::fulfillment_event(
-            event::PAYMENT_SUCCEEDED,
+        fulfillment::domain_event(
+            payment_event::SUCCEEDED,
             &FulfillmentMsg {
                 order_id: msg.order_id.clone(),
                 ..Default::default()
@@ -29,8 +29,8 @@ pub fn handle(ctx: &Context<PaymentRepo>) -> Result<Value, HandlerError> {
         )
     } else {
         payment.decline(msg.order_id.clone(), "amount over limit".to_string())?;
-        fulfillment::fulfillment_event(
-            event::PAYMENT_DECLINED,
+        fulfillment::domain_event(
+            payment_event::DECLINED,
             &FulfillmentMsg {
                 order_id: msg.order_id.clone(),
                 detail: "amount over limit".to_string(),

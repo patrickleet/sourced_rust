@@ -1,24 +1,31 @@
 //! Shared fulfillment-saga message contract.
 //!
-//! Saga steps are pub/sub JSON domain events (no outbox destination, fan-out via
-//! the shared log). The orchestrator decides the next step; inventory/payment/
-//! order services react and report. Each handler publishes exactly one next
-//! event, so a single outbox message per commit is enough.
+//! The saga starts from a command. Every cross-service notification after that
+//! is a pub/sub JSON domain event on the shared broker.
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::OutboxMessage;
 
+pub mod command {
+    pub const START: &str = "fulfillment.start";
+}
+
 pub mod event {
-    pub const REQUESTED: &str = "fulfillment.requested";
-    pub const RESERVE_INVENTORY: &str = "fulfillment.reserve_inventory";
+    pub const STARTED: &str = "fulfillment.started";
     pub const INVENTORY_RESERVED: &str = "fulfillment.inventory_reserved";
-    pub const CHARGE_PAYMENT: &str = "fulfillment.charge_payment";
-    pub const PAYMENT_SUCCEEDED: &str = "fulfillment.payment_succeeded";
-    pub const PAYMENT_DECLINED: &str = "fulfillment.payment_declined";
-    pub const RELEASE_INVENTORY: &str = "fulfillment.release_inventory";
-    pub const INVENTORY_RELEASED: &str = "fulfillment.inventory_released";
-    pub const CONFIRM_ORDER: &str = "fulfillment.confirm_order";
-    pub const CANCEL_ORDER: &str = "fulfillment.cancel_order";
+    pub const COMPLETED: &str = "fulfillment.completed";
+    pub const COMPENSATING: &str = "fulfillment.compensating";
+    pub const CANCELLED: &str = "fulfillment.cancelled";
+}
+
+pub mod inventory_event {
+    pub const RESERVED: &str = "inventory.reserved";
+    pub const RELEASED: &str = "inventory.released";
+}
+
+pub mod payment_event {
+    pub const SUCCEEDED: &str = "payment.succeeded";
+    pub const DECLINED: &str = "payment.declined";
 }
 
 /// Correlation payload carried through every fulfillment step.
@@ -35,8 +42,13 @@ pub struct FulfillmentMsg {
     pub detail: String,
 }
 
-/// Build a pub/sub (no-destination) JSON fulfillment event for the outbox.
-pub fn fulfillment_event(event_type: &str, msg: &FulfillmentMsg) -> OutboxMessage {
+/// Build a pub/sub JSON saga domain event for the outbox.
+pub fn saga_event(event_type: &str, msg: &FulfillmentMsg) -> OutboxMessage {
+    domain_event(event_type, msg)
+}
+
+/// Build a pub/sub JSON domain event for the outbox.
+pub fn domain_event(event_type: &str, msg: &FulfillmentMsg) -> OutboxMessage {
     let id = format!("{}:{}", msg.order_id, event_type);
     let payload = serde_json::to_vec(msg).expect("fulfillment message should encode");
     OutboxMessage::create(id, event_type, payload).expect("fulfillment outbox should build")
@@ -45,14 +57,4 @@ pub fn fulfillment_event(event_type: &str, msg: &FulfillmentMsg) -> OutboxMessag
 /// Decode a fulfillment event payload.
 pub fn decode(event: &sourced_rust::bus::Event) -> FulfillmentMsg {
     serde_json::from_slice(&event.payload).expect("fulfillment message should decode")
-}
-
-/// Build the `fulfillment.requested` bus event that kicks off the saga.
-pub fn requested_event(msg: &FulfillmentMsg) -> sourced_rust::bus::Event {
-    let payload = serde_json::to_vec(msg).expect("fulfillment message should encode");
-    sourced_rust::bus::Event::new(
-        format!("{}:{}", msg.order_id, event::REQUESTED),
-        event::REQUESTED,
-        payload,
-    )
 }
