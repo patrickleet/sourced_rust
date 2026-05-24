@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
+use super::session::{
+    column_name_for, document_key, document_key_prefix, key_fingerprint, validate_key,
+    validate_row_values,
+};
 use super::{
     ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities,
     ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
@@ -327,7 +330,7 @@ fn concurrency_conflict(
 
 /// In-memory read model store backed by a HashMap.
 ///
-/// Storage key is `"TABLE:id"`. Clone-friendly via Arc.
+/// Clone-friendly via Arc.
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
     pub(crate) storage: Arc<RwLock<HashMap<String, StoredModel>>>,
@@ -354,7 +357,7 @@ impl InMemoryReadModelStore {
     }
 
     fn make_key(table: &str, id: &str) -> String {
-        format!("{}:{}", table, id)
+        document_key(table, id)
     }
 
     /// Register a relational read-model schema for explicit include execution.
@@ -850,7 +853,7 @@ impl ReadModelStore for InMemoryReadModelStore {
             .read()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let prefix = format!("{}:", M::COLLECTION);
+        let prefix = document_key_prefix(M::COLLECTION);
         let mut results = Vec::new();
 
         for (key, stored) in storage.iter() {
@@ -878,7 +881,7 @@ impl ReadModelStore for InMemoryReadModelStore {
             .read()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let prefix = format!("{}:", M::COLLECTION);
+        let prefix = document_key_prefix(M::COLLECTION);
         let mut matched = None;
 
         for (key, stored) in storage.iter() {
@@ -1199,8 +1202,9 @@ mod tests {
     #[test]
     fn find_models_returns_error_for_corrupted_rows() {
         let store = InMemoryReadModelStore::new();
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
         store
-            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes(&key, b"not valid json".to_vec())
             .unwrap();
 
         let err = store.find_models::<TestModel>(&|_| true).unwrap_err();
@@ -1211,8 +1215,9 @@ mod tests {
     #[test]
     fn find_one_model_returns_error_for_corrupted_rows() {
         let store = InMemoryReadModelStore::new();
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
         store
-            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes(&key, b"not valid json".to_vec())
             .unwrap();
 
         let err = store.find_one_model::<TestModel>(&|_| true).unwrap_err();
@@ -1229,8 +1234,9 @@ mod tests {
                 value: 20,
             })
             .unwrap();
+        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
         store
-            .save_document_bytes("test_models:bad", b"not valid json".to_vec())
+            .save_document_bytes(&key, b"not valid json".to_vec())
             .unwrap();
 
         let err = store

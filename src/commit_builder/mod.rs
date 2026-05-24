@@ -408,6 +408,15 @@ mod tests {
         session
     }
 
+    fn test_view_key(id: &str) -> String {
+        crate::read_model::DocumentMutation {
+            collection: TestView::COLLECTION.into(),
+            id: id.into(),
+            bytes: Vec::new(),
+        }
+        .key()
+    }
+
     #[test]
     fn commit_readmodel_and_aggregate() {
         let repo = HashMapRepository::new();
@@ -688,7 +697,7 @@ mod tests {
 
         assert_eq!(
             repo.read_model_keys.borrow().as_slice(),
-            &["test_view:staged-multi".to_string()]
+            &[test_view_key("staged-multi")]
         );
         assert_eq!(
             repo.entity_ids.borrow().as_slice(),
@@ -722,7 +731,10 @@ mod tests {
             .commit(&mut agg)
             .unwrap();
 
-        let lock = repo.lock_manager().get_lock("test_view:locked").unwrap();
+        let lock = repo
+            .lock_manager()
+            .get_lock(&test_view_key("locked"))
+            .unwrap();
         assert!(lock.try_lock().unwrap());
         lock.unlock().unwrap();
     }
@@ -795,7 +807,7 @@ mod tests {
         assert_eq!(agg.entity().new_events().len(), 1);
         assert_eq!(
             repo.read_model_keys.borrow().as_slice(),
-            &["test_view:rollback".to_string()]
+            &[test_view_key("rollback")]
         );
         assert!(repo.entity_ids.borrow().iter().any(|id| id == "agg-1"));
         assert!(repo

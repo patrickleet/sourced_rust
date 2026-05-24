@@ -11,6 +11,7 @@ use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::queued_repo::ReadOpts;
 use crate::repository::{Commit, CommitBatch, RepositoryError, TransactionalCommit};
 
+use super::session::document_key;
 use super::{
     ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
     ReadModelSessionStore, ReadModelStore, ReadModelWritePlan, Versioned,
@@ -23,8 +24,8 @@ use super::{
 /// - `upsert` / `insert` / `update` / `delete` release the lock on success
 /// - `unlock` / `abort` release the lock manually
 ///
-/// Lock keys are `"collection:id"`, so different read model types with the same ID
-/// do not contend with each other.
+/// Lock keys include the collection and id, so different read model types with
+/// the same ID do not contend with each other.
 pub struct QueuedReadModelStore<S, L: LockManager = InMemoryLockManager> {
     inner: S,
     lock_manager: L,
@@ -105,7 +106,7 @@ impl<S, L: LockManager> QueuedReadModelStore<S, L> {
     }
 
     fn make_key(collection: &str, id: &str) -> String {
-        format!("{}:{}", collection, id)
+        document_key(collection, id)
     }
 }
 
