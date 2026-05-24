@@ -1,36 +1,28 @@
 //! Normalized relational read models shared by the projector and query
-//! services. `OrderView` has_many `OrderLineView`; `OrderLineView` belongs_to
-//! `ProductView`. A Hasura-style gateway could expose these tables directly as
-//! object/array relationships.
+//! services. `CheckoutView` has_many `CheckoutStepView` and belongs_to
+//! `SeatView`, mirroring a query gateway over projected tables.
 
-mod order_fulfillment_step_view;
-mod order_line_view;
-mod order_view;
-mod product_view;
+mod checkout_step_view;
+mod checkout_view;
+mod seat_view;
 
-pub use order_fulfillment_step_view::OrderFulfillmentStepView;
-pub use order_line_view::OrderLineView;
-pub use order_view::OrderView;
-pub use product_view::ProductView;
+pub use checkout_step_view::CheckoutStepView;
+pub use checkout_view::CheckoutView;
+pub use seat_view::SeatView;
 
 use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
 
-/// Register every relational schema this example reads or projects.
 pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
-    store.register_schema::<ProductView>()?;
-    store.register_schema::<OrderView>()?;
-    store.register_schema::<OrderLineView>()?;
-    store.register_schema::<OrderFulfillmentStepView>()?;
+    store.register_schema::<SeatView>()?;
+    store.register_schema::<CheckoutView>()?;
+    store.register_schema::<CheckoutStepView>()?;
     Ok(())
 }
 
-pub fn order_key(order_id: &str) -> RowKey {
-    RowKey::new([("order_id", RowValue::String(order_id.into()))])
+pub fn checkout_key(checkout_id: &str) -> RowKey {
+    RowKey::new([("checkout_id", RowValue::String(checkout_id.into()))])
 }
 
-pub fn order_line_key(order_id: &str, sku: &str) -> RowKey {
-    RowKey::new([
-        ("order_id", RowValue::String(order_id.into())),
-        ("sku", RowValue::String(sku.into())),
-    ])
+pub fn seat_key(seat_id: &str) -> RowKey {
+    RowKey::new([("seat_id", RowValue::String(seat_id.into()))])
 }

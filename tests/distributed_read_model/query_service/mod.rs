@@ -1,48 +1,39 @@
 //! Read-only query service. It owns no aggregate repository; it reads the
 //! projected relational tables through primary-key loads plus explicit
-//! relationship includes (the in-library equivalent of a Hasura object/array
-//! relationship query).
+//! relationship includes.
 
 use sourced_rust::{InMemoryReadModelStore, ReadModelError, ReadModelUnitOfWorkExt};
 
-use crate::read_models::{order_key, order_line_key, OrderLineView, OrderView};
+use crate::read_models::{checkout_key, seat_key, CheckoutView, SeatView};
 
 #[derive(Clone)]
-pub struct OrderQueryService {
+pub struct CheckoutQueryService {
     store: InMemoryReadModelStore,
 }
 
-impl OrderQueryService {
+impl CheckoutQueryService {
     pub fn new(store: InMemoryReadModelStore) -> Self {
         Self { store }
     }
 
-    /// Load an order with both its lines and its fulfillment steps (two includes
-    /// on one root — lines owned by the order projector, steps by the fulfillment
-    /// projector).
-    pub fn order_with_lines_and_steps(
+    /// Load the checkout screen with its audit steps and current seat row.
+    pub fn checkout_screen(
         &self,
-        order_id: &str,
-    ) -> Result<Option<OrderView>, ReadModelError> {
+        checkout_id: &str,
+    ) -> Result<Option<CheckoutView>, ReadModelError> {
         let mut session = self.store.session();
         Ok(session
-            .load::<OrderView>(order_key(order_id))
-            .include("lines")
-            .include("fulfillment_steps")
+            .load::<CheckoutView>(checkout_key(checkout_id))
+            .include("steps")
+            .include("seat")
             .one()?
             .map(|view| view.data))
     }
 
-    /// Load one line with its product (`belongs_to` include).
-    pub fn line_with_product(
-        &self,
-        order_id: &str,
-        sku: &str,
-    ) -> Result<Option<OrderLineView>, ReadModelError> {
+    pub fn seat(&self, seat_id: &str) -> Result<Option<SeatView>, ReadModelError> {
         let mut session = self.store.session();
         Ok(session
-            .load::<OrderLineView>(order_line_key(order_id, sku))
-            .include("product")
+            .load::<SeatView>(seat_key(seat_id))
             .one()?
             .map(|view| view.data))
     }
