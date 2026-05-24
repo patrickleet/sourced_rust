@@ -4,7 +4,7 @@ use sourced_rust::microsvc::Service;
 
 use super::{handlers, SagaRepo};
 
-pub fn model_service(repo: SagaRepo) -> Arc<Service<SagaRepo>> {
+pub fn service(repo: SagaRepo) -> Arc<Service<SagaRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
         handlers::on_requested,
