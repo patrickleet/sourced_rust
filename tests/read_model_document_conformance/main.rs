@@ -73,9 +73,9 @@ fn unsupported_row_plan_rejection_does_not_apply_prior_document_write() {
 
     let err = repo.read_models(session).commit_all().unwrap_err();
 
-    assert!(
-        matches!(err, sourced_rust::RepositoryError::Model(message) if message.contains("relational row writes"))
-    );
+    assert!(matches!(err, sourced_rust::RepositoryError::Model(message)
+            if message.contains("apply_document_write_plan")
+                && message.contains("ReadModelMutation::UpsertRow")));
     assert!(repo.get_model::<DocumentView>("mixed").unwrap().is_none());
 }
 
@@ -202,9 +202,9 @@ fn queued_session_commit_failure_keeps_lock_until_explicit_abort() {
 
     let err = store.read_models(session).commit_all().unwrap_err();
 
-    assert!(
-        matches!(err, sourced_rust::RepositoryError::Model(message) if message.contains("relational row writes"))
-    );
+    assert!(matches!(err, sourced_rust::RepositoryError::Model(message)
+            if message.contains("apply_document_write_plan")
+                && message.contains("ReadModelMutation::UpsertRow")));
     let lock = store
         .lock_manager()
         .get_lock("document_views:failed")

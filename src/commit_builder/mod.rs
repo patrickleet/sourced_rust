@@ -762,9 +762,9 @@ mod tests {
             .commit(&mut agg)
             .unwrap_err();
 
-        assert!(
-            matches!(err, RepositoryError::Model(message) if message.contains("relational row writes"))
-        );
+        assert!(matches!(err, RepositoryError::Model(message)
+                if message.contains("apply_document_write_plan")
+                    && message.contains("ReadModelMutation::UpsertRow")));
         assert_eq!(agg.entity().committed_version(), 0);
         assert!(repo.get("agg-1").unwrap().is_none());
     }
