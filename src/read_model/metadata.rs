@@ -239,7 +239,16 @@ impl ReadModelSchema {
             validate_foreign_key(&self.model_name, foreign_key)?;
         }
 
+        let mut index_names = BTreeSet::new();
         for index in &self.indexes {
+            if let Some(name) = index.name.as_deref() {
+                if !index_names.insert(name) {
+                    return Err(ReadModelError::Metadata(format!(
+                        "read model `{}` declares duplicate index name `{}`",
+                        self.model_name, name
+                    )));
+                }
+            }
             if index.columns.is_empty() {
                 return Err(ReadModelError::Metadata(format!(
                     "read model `{}` declares an index with no columns",
@@ -506,6 +515,28 @@ mod tests {
         assert!(
             matches!(err, ReadModelError::Metadata(message) if message.contains("foreign key"))
         );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_explicit_index_names() {
+        let mut schema = valid_schema();
+        schema.indexes = vec![
+            IndexDef {
+                name: Some("idx_player_weapons_player_id".into()),
+                columns: vec!["player_id".into()],
+                unique: false,
+            },
+            IndexDef {
+                name: Some("idx_player_weapons_player_id".into()),
+                columns: vec!["weapon_id".into()],
+                unique: false,
+            },
+        ];
+
+        let err = schema.validate().unwrap_err();
+
+        assert!(matches!(err, ReadModelError::Metadata(message)
+                if message.contains("duplicate index name `idx_player_weapons_player_id`")));
     }
 
     #[test]
