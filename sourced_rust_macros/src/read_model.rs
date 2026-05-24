@@ -519,7 +519,15 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("foreign_key") {
                     let value = meta.value()?.parse::<LitStr>()?.value();
                     if attrs.relationship.is_some() {
-                        relationship_mut(&mut attrs, "foreign_key")?.foreign_key = Some(value);
+                        let relationship = relationship_mut(&mut attrs, "foreign_key")?;
+                        if relationship.foreign_key.is_some() {
+                            return Err(
+                                meta.error("relationship foreign_key declared more than once")
+                            );
+                        }
+                        relationship.foreign_key = Some(value);
+                    } else if pending_foreign_key.is_some() {
+                        return Err(meta.error("relationship foreign_key declared more than once"));
                     } else {
                         pending_foreign_key = Some(value);
                     }
@@ -552,7 +560,13 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("through") {
                     let through = meta.value()?.parse::<LitStr>()?.value();
                     if attrs.relationship.is_some() {
-                        relationship_mut(&mut attrs, "through")?.through = Some(through);
+                        let relationship = relationship_mut(&mut attrs, "through")?;
+                        if relationship.through.is_some() {
+                            return Err(meta.error("relationship through declared more than once"));
+                        }
+                        relationship.through = Some(through);
+                    } else if pending_through.is_some() {
+                        return Err(meta.error("relationship through declared more than once"));
                     } else {
                         pending_through = Some(through);
                     }
@@ -1426,6 +1440,47 @@ mod tests {
 
         assert!(
             err.to_string().contains("foreign_key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_duplicate_relationship_foreign_keys() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[readmodel(table = "players")]
+            struct Player {
+                #[readmodel(id)]
+                player_id: String,
+                #[readmodel(has_many = "PlayerWeapon", foreign_key = "player_id", foreign_key = "owner_id")]
+                weapons: Vec<PlayerWeapon>,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("duplicate relationship foreign key");
+
+        assert!(
+            err.to_string()
+                .contains("foreign_key declared more than once"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_read_model_rejects_duplicate_pending_relationship_through_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[readmodel(table = "players")]
+            struct Player {
+                #[readmodel(id)]
+                player_id: String,
+                #[readmodel(through = "player_weapon_links", through = "weapon_players", many_to_many = "Weapon")]
+                weapons: Vec<Weapon>,
+            }
+        };
+
+        let err = expand_read_model(input).expect_err("duplicate pending relationship through");
+
+        assert!(
+            err.to_string().contains("through declared more than once"),
             "unexpected error: {err}"
         );
     }
