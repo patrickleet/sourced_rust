@@ -52,6 +52,7 @@ pub(crate) fn apply_document_write_plan(
     staged_processed_messages: &mut ProcessedMessageSet,
 ) -> Result<ReadModelCommitOutcome, ReadModelError> {
     let capabilities = document_capabilities();
+    reject_non_document_mutations(&plan)?;
     plan.validate_for(&capabilities)?;
 
     let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
@@ -81,6 +82,23 @@ pub(crate) fn apply_document_write_plan(
     }
 
     Ok(ReadModelCommitOutcome::applied())
+}
+
+fn reject_non_document_mutations(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
+    for mutation in &plan.mutations {
+        let mutation_name = match mutation {
+            ReadModelMutation::Document(_) => continue,
+            ReadModelMutation::UpsertRow(_) => "ReadModelMutation::UpsertRow",
+            ReadModelMutation::PatchRow(_) => "ReadModelMutation::PatchRow",
+            ReadModelMutation::DeleteRow(_) => "ReadModelMutation::DeleteRow",
+        };
+
+        return Err(ReadModelError::Metadata(format!(
+            "apply_document_write_plan supports only ReadModelMutation::Document with document_capabilities; received {mutation_name}"
+        )));
+    }
+
+    Ok(())
 }
 
 pub(crate) fn document_capabilities() -> ReadModelAdapterCapabilities {
@@ -883,6 +901,7 @@ impl ReadModelStore for InMemoryReadModelStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ColumnDef, ColumnType, PrimaryKey, RowMutation};
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -896,6 +915,47 @@ mod tests {
         fn id(&self) -> &str {
             &self.id
         }
+    }
+
+    fn test_row_schema() -> ReadModelSchema {
+        ReadModelSchema {
+            model_name: "TestRow".into(),
+            table_name: "test_rows".into(),
+            columns: vec![ColumnDef::new("id", "id", ColumnType::Text)],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn apply_document_write_plan_rejects_non_document_mutations() {
+        let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
+        let mut values = RowValues::new();
+        values.insert("id", RowValue::String("row-1".into()));
+        let plan = ReadModelWritePlan::new(
+            vec![ReadModelMutation::UpsertRow(RowMutation {
+                schema: test_row_schema(),
+                key,
+                values,
+                expected_version: ExpectedVersion::Any,
+                mode: RowWriteMode::Upsert,
+            })],
+            Vec::new(),
+        );
+        let mut staged_models = HashMap::new();
+        let mut staged_processed_messages = HashSet::new();
+
+        let err =
+            apply_document_write_plan(plan, &mut staged_models, &mut staged_processed_messages)
+                .unwrap_err();
+
+        assert!(matches!(err, ReadModelError::Metadata(message)
+                if message.contains("apply_document_write_plan")
+                    && message.contains("ReadModelMutation::UpsertRow")
+                    && message.contains("document_capabilities")));
     }
 
     #[test]
