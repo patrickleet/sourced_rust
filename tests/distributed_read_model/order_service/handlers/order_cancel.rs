@@ -1,6 +1,6 @@
-//! Reacts to the saga's `fulfillment.cancel_order` decision: transitions the
-//! `Order` aggregate and publishes `order.cancelled` (a bitcode snapshot) so the
-//! order projector updates `OrderView.status`.
+//! Reacts to the saga's cancelled event: transitions the `Order` aggregate and
+//! publishes `order.cancelled` (a bitcode snapshot) so the order projector
+//! updates `OrderView.status`.
 
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
@@ -9,7 +9,7 @@ use sourced_rust::{OutboxCommitExt, OutboxMessage};
 use crate::fulfillment::{event, FulfillmentMsg};
 use crate::order_service::{Order, OrderRepo};
 
-pub const COMMAND: &str = event::CANCEL_ORDER;
+pub const COMMAND: &str = event::CANCELLED;
 
 pub fn guard(ctx: &Context<OrderRepo>) -> bool {
     ctx.has_fields(&["order_id"])

@@ -7,10 +7,10 @@ use super::{handlers, SagaRepo};
 pub fn service(repo: SagaRepo) -> Arc<Service<SagaRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
-        handlers::on_requested,
-        handlers::on_inventory_reserved,
-        handlers::on_payment_succeeded,
-        handlers::on_payment_declined,
-        handlers::on_inventory_released,
+        handlers::start,
+        handlers::record_inventory_reserved,
+        handlers::record_payment_succeeded,
+        handlers::record_payment_declined,
+        handlers::record_inventory_released,
     ))
 }

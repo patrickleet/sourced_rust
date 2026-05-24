@@ -41,15 +41,6 @@ impl From<ProjectionMessage> for Event {
     }
 }
 
-/// Every event type any projection handler consumes.
-pub fn event_types() -> Vec<&'static str> {
-    let mut types = Vec::new();
-    types.extend_from_slice(product::EVENTS);
-    types.extend_from_slice(order::EVENTS);
-    types.extend_from_slice(fulfillment::EVENTS);
-    types
-}
-
 pub fn event(ctx: &Context<InMemoryReadModelStore>) -> Result<Event, HandlerError> {
     Ok(ctx.input::<ProjectionMessage>()?.into())
 }

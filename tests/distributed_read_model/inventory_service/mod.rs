@@ -1,7 +1,6 @@
-//! Inventory write service: reserves stock for the saga and releases it on
-//! compensation. A `microsvc::Service` whose handlers react to
-//! `fulfillment.reserve_inventory` / `fulfillment.release_inventory` and publish
-//! the result through the outbox — same shape as every other service.
+//! Inventory write service: reserves stock when the saga starts and releases it
+//! on compensation. It reacts to saga domain events and publishes inventory
+//! domain events after updating stock.
 
 pub mod models;
 

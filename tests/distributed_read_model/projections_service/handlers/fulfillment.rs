@@ -11,11 +11,11 @@ use crate::read_models::OrderFulfillmentStepView;
 
 pub const CONSUMER: &str = "order-fulfillment-projection";
 pub const EVENTS: &[&str] = &[
-    event::REQUESTED,
+    event::STARTED,
     event::INVENTORY_RESERVED,
-    event::PAYMENT_SUCCEEDED,
-    event::PAYMENT_DECLINED,
-    event::INVENTORY_RELEASED,
+    event::COMPLETED,
+    event::COMPENSATING,
+    event::CANCELLED,
 ];
 
 pub fn guard(ctx: &Context<InMemoryReadModelStore>) -> bool {

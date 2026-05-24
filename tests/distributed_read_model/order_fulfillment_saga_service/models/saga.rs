@@ -1,8 +1,8 @@
 use sourced_rust::{sourced, Entity, Snapshot};
 
 /// Order fulfillment saga, keyed by order id. Tracks enough state to drive the
-/// next step and to compensate. Internal digests are PascalCase (replay names);
-/// the bus-facing steps are the lowercase `fulfillment.*` events.
+/// next step and to compensate. Internal digests are PascalCase replay names;
+/// bus-facing commands and events live in `fulfillment.rs`.
 #[derive(Default, Snapshot)]
 pub struct OrderFulfillmentSaga {
     pub entity: Entity,
