@@ -6,8 +6,10 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::{json, Value};
 use sourced_rust::bus::Event;
-use sourced_rust::{InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelUnitOfWorkExt};
+use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt};
 
 use crate::order_service::OrderSnapshot;
 use crate::read_models::{order_key, OrderLineView, OrderView};
@@ -23,37 +25,44 @@ pub const EVENTS: &[&str] = &[
     "order.cancelled",
 ];
 
-pub fn handle(store: &InMemoryReadModelStore, event: &Event) -> ReadModelCommitOutcome {
-    let snapshot: OrderSnapshot = event.decode().expect("order snapshot should decode");
-    let version = event_version(event);
+pub fn guard(ctx: &Context<InMemoryReadModelStore>) -> bool {
+    ctx.has_fields(&["id", "event_type", "payload"])
+}
+
+pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerError> {
+    let event = super::event(ctx)?;
+    let snapshot: OrderSnapshot = event
+        .decode()
+        .map_err(|err| HandlerError::DecodeFailed(format!("order snapshot: {err}")))?;
+    let version = event_version(&event);
     let desired = desired_order_view(&snapshot, version);
 
-    let mut session = store.session();
+    let mut session = ctx.repo().session();
     let existing = session
         .load::<OrderView>(order_key(&desired.order_id))
         .include("lines")
         .one()
-        .expect("order load should succeed");
+        .map_err(super::read_model_error)?;
 
     match existing {
         Some(current) if current.data.source_version >= version => {}
         Some(_) => {
             session
                 .save_changes(desired)
-                .expect("order save_changes should stage");
+                .map_err(super::read_model_error)?;
         }
         None => {
-            session
-                .save(&desired)
-                .expect("order root save should stage");
+            session.save(&desired).map_err(super::read_model_error)?;
             for line in &desired.lines {
-                session.save(line).expect("order line save should stage");
+                session.save(line).map_err(super::read_model_error)?;
             }
         }
     }
 
     session.mark_processed(CONSUMER, &event.id);
-    session.commit().expect("order projection should commit")
+    session.commit().map_err(super::read_model_error)?;
+
+    Ok(json!({ "event_id": event.id }))
 }
 
 fn desired_order_view(snapshot: &OrderSnapshot, version: i64) -> OrderView {

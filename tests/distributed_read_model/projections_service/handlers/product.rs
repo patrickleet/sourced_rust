@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use sourced_rust::bus::Event;
-use sourced_rust::{InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelUnitOfWorkExt};
+use serde_json::{json, Value};
+use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt};
 
 use crate::catalog_service::ProductSnapshot;
 use crate::read_models::ProductView;
@@ -9,8 +10,15 @@ use crate::read_models::ProductView;
 pub const CONSUMER: &str = "product-catalog-projection";
 pub const EVENTS: &[&str] = &["product.added", "product.repriced"];
 
-pub fn handle(store: &InMemoryReadModelStore, event: &Event) -> ReadModelCommitOutcome {
-    let snapshot: ProductSnapshot = event.decode().expect("product snapshot should decode");
+pub fn guard(ctx: &Context<InMemoryReadModelStore>) -> bool {
+    ctx.has_fields(&["id", "event_type", "payload"])
+}
+
+pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerError> {
+    let event = super::event(ctx)?;
+    let snapshot: ProductSnapshot = event
+        .decode()
+        .map_err(|err| HandlerError::DecodeFailed(format!("product snapshot: {err}")))?;
 
     let mut attributes = BTreeMap::new();
     attributes.insert("category".to_string(), "general".to_string());
@@ -21,10 +29,12 @@ pub fn handle(store: &InMemoryReadModelStore, event: &Event) -> ReadModelCommitO
         attributes,
     };
 
-    let mut session = store.session();
+    let mut session = ctx.repo().session();
     session
         .save(&view)
-        .expect("product projection should stage upsert")
+        .map_err(super::read_model_error)?
         .mark_processed(CONSUMER, &event.id);
-    session.commit().expect("product projection should commit")
+    session.commit().map_err(super::read_model_error)?;
+
+    Ok(json!({ "event_id": event.id }))
 }

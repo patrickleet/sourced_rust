@@ -1,72 +1,11 @@
-//! One projection service. It subscribes to every event type the projection
-//! handlers consume and dispatches each event (a message) to the handler that
-//! owns the matching read-model rows. Handlers mark messages processed in the
-//! same commit for idempotency.
+//! Projection service. It subscribes to every event type the projection handlers
+//! consume and dispatches each event through `microsvc::Service`. Handlers mark
+//! messages processed in the same commit for idempotency.
 
 mod handlers;
+mod service;
 
 pub use handlers::fulfillment::CONSUMER as FULFILLMENT_CONSUMER;
 pub use handlers::order::CONSUMER as ORDER_CONSUMER;
 pub use handlers::product::CONSUMER as CATALOG_CONSUMER;
-
-use std::sync::mpsc::{self, TryRecvError};
-use std::thread;
-use std::time::Duration;
-
-use sourced_rust::bus::Bus;
-use sourced_rust::{InMemoryQueue, InMemoryReadModelStore};
-
-pub struct ProjectionServiceHandle {
-    stop_tx: mpsc::Sender<()>,
-    handle: thread::JoinHandle<()>,
-}
-
-impl ProjectionServiceHandle {
-    pub fn stop(self) {
-        let _ = self.stop_tx.send(());
-        self.handle
-            .join()
-            .expect("projection service should stop cleanly");
-    }
-}
-
-pub fn start_projection_service(
-    queue: InMemoryQueue,
-    store: InMemoryReadModelStore,
-) -> ProjectionServiceHandle {
-    let (stop_tx, stop_rx) = mpsc::channel();
-    let (ready_tx, ready_rx) = mpsc::channel();
-
-    let handle = thread::spawn(move || {
-        let bus = Bus::from_queue(queue);
-        let event_types = handlers::event_types();
-        let events = bus.subscribe(&event_types);
-        ready_tx
-            .send(())
-            .expect("projection service should signal readiness");
-
-        loop {
-            match stop_rx.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {}
-            }
-
-            match events.recv(10) {
-                Ok(Some(event)) => {
-                    handlers::project(&store, &event);
-                    events
-                        .ack(&event.id)
-                        .expect("projection service should ack projected events");
-                }
-                Ok(None) => {}
-                Err(err) => panic!("projection service failed to receive event: {err}"),
-            }
-        }
-    });
-
-    ready_rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("projection service should subscribe before accepting writes");
-
-    ProjectionServiceHandle { stop_tx, handle }
-}
+pub use service::{service, start_projection_service, ProjectionServiceHandle};

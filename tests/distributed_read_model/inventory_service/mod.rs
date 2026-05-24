@@ -11,6 +11,6 @@ mod service;
 use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 
 pub use models::Inventory;
-pub use service::{model_service, seed_stock};
+pub use service::{seed_stock, service};
 
 pub type InventoryRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Inventory>;

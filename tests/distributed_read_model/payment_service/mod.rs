@@ -10,6 +10,6 @@ mod service;
 use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 
 pub use models::Payment;
-pub use service::model_service;
+pub use service::service;
 
 pub type PaymentRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Payment>;

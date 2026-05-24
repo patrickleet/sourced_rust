@@ -10,6 +10,6 @@ mod service;
 use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 
 pub use models::{AddProduct, Product, ProductSnapshot, RepriceProduct};
-pub use service::model_service;
+pub use service::service;
 
 pub type CatalogRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Product>;

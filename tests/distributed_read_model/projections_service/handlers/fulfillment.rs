@@ -2,8 +2,9 @@
 //! `OrderView`). Owns only the steps table — disjoint from the order handler, so
 //! there is no optimistic-version contention on the order row.
 
-use sourced_rust::bus::Event;
-use sourced_rust::{InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelUnitOfWorkExt};
+use serde_json::{json, Value};
+use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt};
 
 use crate::fulfillment::{self, event};
 use crate::read_models::OrderFulfillmentStepView;
@@ -17,8 +18,13 @@ pub const EVENTS: &[&str] = &[
     event::INVENTORY_RELEASED,
 ];
 
-pub fn handle(store: &InMemoryReadModelStore, evt: &Event) -> ReadModelCommitOutcome {
-    let msg = fulfillment::decode(evt);
+pub fn guard(ctx: &Context<InMemoryReadModelStore>) -> bool {
+    ctx.has_fields(&["id", "event_type", "payload"])
+}
+
+pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerError> {
+    let evt = super::event(ctx)?;
+    let msg = fulfillment::decode(&evt);
     let step = evt
         .event_type
         .strip_prefix("fulfillment.")
@@ -31,12 +37,12 @@ pub fn handle(store: &InMemoryReadModelStore, evt: &Event) -> ReadModelCommitOut
         detail: msg.detail.clone(),
     };
 
-    let mut session = store.session();
+    let mut session = ctx.repo().session();
     session
         .save(&row)
-        .expect("fulfillment step save should stage")
+        .map_err(super::read_model_error)?
         .mark_processed(CONSUMER, &evt.id);
-    session
-        .commit()
-        .expect("fulfillment projection should commit")
+    session.commit().map_err(super::read_model_error)?;
+
+    Ok(json!({ "event_id": evt.id }))
 }
