@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::bus::{Event, Publisher, Subscriber};
 use sourced_rust::{
-    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelSession, ReadModelSessionStore,
-    ReadModelStore, RowKey, RowValue,
+    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelSession,
+    ReadModelSessionStore, ReadModelStore, RowKey, RowValue,
 };
 
 const CONSUMER: &str = "counter-projection";
@@ -114,7 +114,7 @@ fn read_model_write_and_processed_mark_are_atomic() {
 
     let err = session.commit(&store).unwrap_err();
 
-    assert!(err.to_string().contains("not found"));
+    assert!(matches!(err, ReadModelError::NotFound { .. }));
     assert!(!store.is_processed(CONSUMER, "message-1").unwrap());
     assert!(store
         .get_by_primary_key::<CounterView>("counter-1")
@@ -149,7 +149,7 @@ fn ack_happens_only_after_successful_standalone_commit() {
 
     let err = failed_session.commit(&store).unwrap_err();
 
-    assert!(err.to_string().contains("not found"));
+    assert!(matches!(err, ReadModelError::NotFound { .. }));
     assert!(queue.acknowledged().is_empty());
     assert!(!store.is_processed(CONSUMER, &failed.id).unwrap());
 
