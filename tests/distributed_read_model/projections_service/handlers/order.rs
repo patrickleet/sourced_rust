@@ -34,7 +34,7 @@ pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerErr
     let snapshot: OrderSnapshot = event
         .decode()
         .map_err(|err| HandlerError::DecodeFailed(format!("order snapshot: {err}")))?;
-    let version = event_version(&event);
+    let version = event_version(&event)?;
     let desired = desired_order_view(&snapshot, version);
 
     let mut session = ctx.repo().session();
@@ -100,11 +100,48 @@ fn desired_order_view(snapshot: &OrderSnapshot, version: i64) -> OrderView {
 
 /// The aggregate version is the trailing segment of the outbox event id
 /// (`outbox:<aggregate-id>:<event-type>:<version>`).
-pub(super) fn event_version(event: &Event) -> i64 {
-    event
+pub(super) fn event_version(event: &Event) -> Result<i64, HandlerError> {
+    let raw = event
         .id
         .rsplit(':')
         .next()
-        .and_then(|raw| raw.parse().ok())
-        .unwrap_or(0)
+        .ok_or_else(|| HandlerError::Rejected("event id is missing a version".to_string()))?;
+
+    raw.parse().map_err(|_| {
+        HandlerError::Rejected(format!(
+            "event id {} should end with a numeric aggregate version",
+            event.id
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_version_parses_trailing_outbox_segment() {
+        let event = Event::with_string_payload(
+            "outbox:order-1:order.line_added:42",
+            "order.line_added",
+            "{}",
+        );
+
+        assert_eq!(event_version(&event).unwrap(), 42);
+    }
+
+    #[test]
+    fn event_version_rejects_malformed_outbox_segment() {
+        let event = Event::with_string_payload(
+            "outbox:order-1:order.line_added:bad",
+            "order.line_added",
+            "{}",
+        );
+
+        let err = event_version(&event).unwrap_err();
+
+        assert!(
+            matches!(err, HandlerError::Rejected(message) if message.contains("numeric aggregate version"))
+        );
+    }
 }
