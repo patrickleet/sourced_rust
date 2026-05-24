@@ -346,7 +346,12 @@ mod tests {
     #[test]
     fn document_plan_rejects_version_overflow_without_writing() {
         let repo = HashMapRepository::new();
-        let key = "test_models:plan-overflow".to_string();
+        let mutation = DocumentMutation {
+            collection: "test_models".into(),
+            id: "plan-overflow".into(),
+            bytes: b"new".to_vec(),
+        };
+        let key = mutation.key();
         let original_bytes = b"old".to_vec();
         repo.model_store.storage.write().unwrap().insert(
             key.clone(),
@@ -355,14 +360,7 @@ mod tests {
                 version: u64::MAX,
             },
         );
-        let plan = ReadModelWritePlan::new(
-            vec![ReadModelMutation::Document(DocumentMutation {
-                collection: "test_models".into(),
-                id: "plan-overflow".into(),
-                bytes: b"new".to_vec(),
-            })],
-            Vec::new(),
-        );
+        let plan = ReadModelWritePlan::new(vec![ReadModelMutation::Document(mutation)], Vec::new());
 
         let err = repo
             .commit_batch(CommitBatch {

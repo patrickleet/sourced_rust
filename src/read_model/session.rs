@@ -217,7 +217,7 @@ pub struct DocumentMutation {
 
 impl DocumentMutation {
     pub fn key(&self) -> String {
-        format!("{}:{}", self.collection, self.id)
+        document_key(&self.collection, &self.id)
     }
 }
 
@@ -1441,6 +1441,18 @@ pub(crate) fn key_fingerprint(key: &RowKey) -> String {
     fingerprint
 }
 
+pub(crate) fn document_key(collection: &str, id: &str) -> String {
+    let mut key = document_key_prefix(collection);
+    push_fingerprint_part(&mut key, id);
+    key
+}
+
+pub(crate) fn document_key_prefix(collection: &str) -> String {
+    let mut prefix = String::new();
+    push_fingerprint_part(&mut prefix, collection);
+    prefix
+}
+
 fn push_fingerprint_part(fingerprint: &mut String, part: &str) {
     fingerprint.push_str(&part.len().to_string());
     fingerprint.push(':');
@@ -1488,5 +1500,21 @@ mod tests {
         let string = RowKey::new([("id", RowValue::String("1".into()))]);
 
         assert_ne!(key_fingerprint(&integer), key_fingerprint(&string));
+    }
+
+    #[test]
+    fn document_key_distinguishes_delimiter_collisions() {
+        let left = DocumentMutation {
+            collection: "a:b".into(),
+            id: "c".into(),
+            bytes: Vec::new(),
+        };
+        let right = DocumentMutation {
+            collection: "a".into(),
+            id: "b:c".into(),
+            bytes: Vec::new(),
+        };
+
+        assert_ne!(left.key(), right.key());
     }
 }

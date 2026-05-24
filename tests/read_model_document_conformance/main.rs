@@ -29,6 +29,36 @@ struct RelationalDocumentView {
     value: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(collection = "a:b")]
+struct ColonCollectionDocumentView {
+    #[readmodel(id)]
+    id: String,
+    value: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(collection = "a")]
+struct PlainCollectionDocumentView {
+    #[readmodel(id)]
+    id: String,
+    value: i32,
+}
+
+fn document_key(collection: &str, id: &str) -> String {
+    let mut key = String::new();
+    push_key_part(&mut key, collection);
+    push_key_part(&mut key, id);
+    key
+}
+
+fn push_key_part(key: &mut String, part: &str) {
+    key.push_str(&part.len().to_string());
+    key.push(':');
+    key.push_str(part);
+    key.push(';');
+}
+
 fn document_view(id: &str, value: i32, category: &str) -> DocumentView {
     DocumentView {
         id: id.into(),
@@ -58,6 +88,41 @@ fn document_session_plan_uses_key_value_store_and_shared_clone_storage() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.data, view);
+}
+
+#[test]
+fn document_session_keys_distinguish_colons_in_collection_and_id() {
+    let store = InMemoryReadModelStore::new();
+    let left = ColonCollectionDocumentView {
+        id: "c".into(),
+        value: 1,
+    };
+    let right = PlainCollectionDocumentView {
+        id: "b:c".into(),
+        value: 2,
+    };
+    let mut session = ReadModelSession::new();
+    session.document(&left).unwrap();
+    session.document(&right).unwrap();
+
+    session.commit(&store).unwrap();
+
+    assert_eq!(
+        store.get_model::<ColonCollectionDocumentView>("c").unwrap(),
+        Some(sourced_rust::Versioned {
+            data: left,
+            version: 1,
+        })
+    );
+    assert_eq!(
+        store
+            .get_model::<PlainCollectionDocumentView>("b:c")
+            .unwrap(),
+        Some(sourced_rust::Versioned {
+            data: right,
+            version: 1,
+        })
+    );
 }
 
 #[test]
@@ -143,7 +208,7 @@ fn queued_load_for_update_no_lock_read_and_session_commit_release_lock() {
 
     let lock = store
         .lock_manager()
-        .get_lock("document_views:locked")
+        .get_lock(&document_key("document_views", "locked"))
         .unwrap();
     assert!(lock.try_lock().unwrap());
     lock.unlock().unwrap();
@@ -173,11 +238,11 @@ fn queued_abort_unlocks_and_same_id_different_models_are_independent() {
 
     let document_lock = store
         .lock_manager()
-        .get_lock("document_views:same")
+        .get_lock(&document_key("document_views", "same"))
         .unwrap();
     let other_lock = store
         .lock_manager()
-        .get_lock("other_document_views:same")
+        .get_lock(&document_key("other_document_views", "same"))
         .unwrap();
     assert!(document_lock.try_lock().unwrap());
     assert!(other_lock.try_lock().unwrap());
@@ -207,7 +272,7 @@ fn queued_session_commit_failure_keeps_lock_until_explicit_abort() {
                 && message.contains("ReadModelMutation::UpsertRow")));
     let lock = store
         .lock_manager()
-        .get_lock("document_views:failed")
+        .get_lock(&document_key("document_views", "failed"))
         .unwrap();
     assert!(!lock.try_lock().unwrap());
     store.abort::<DocumentView>("failed").unwrap();

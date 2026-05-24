@@ -2,7 +2,7 @@
 //!
 //! The crate supports one read-model write-plan surface with two row shapes:
 //!
-//! - document rows through [`ReadModelStore`] and `collection:id` JSON payloads;
+//! - document rows through [`ReadModelStore`] and collection/id JSON payloads;
 //! - normalized relational rows through [`RelationalReadModel`],
 //!   [`ReadModelSession`], [`ReadModelWritePlan`], and schema metadata.
 //!
