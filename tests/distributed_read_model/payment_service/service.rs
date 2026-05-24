@@ -4,7 +4,7 @@ use sourced_rust::microsvc::Service;
 
 use super::{handlers, PaymentRepo};
 
-pub fn model_service(repo: PaymentRepo) -> Arc<Service<PaymentRepo>> {
+pub fn service(repo: PaymentRepo) -> Arc<Service<PaymentRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
         handlers::charge,

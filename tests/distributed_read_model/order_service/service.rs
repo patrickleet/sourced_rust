@@ -4,7 +4,7 @@ use sourced_rust::microsvc::Service;
 
 use super::{handlers, OrderRepo};
 
-pub fn model_service(repo: OrderRepo) -> Arc<Service<OrderRepo>> {
+pub fn service(repo: OrderRepo) -> Arc<Service<OrderRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
         handlers::order_place,

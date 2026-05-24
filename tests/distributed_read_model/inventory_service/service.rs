@@ -5,7 +5,7 @@ use sourced_rust::{AggregateBuilder, HashMapRepository};
 
 use super::{handlers, Inventory, InventoryRepo};
 
-pub fn model_service(repo: InventoryRepo) -> Arc<Service<InventoryRepo>> {
+pub fn service(repo: InventoryRepo) -> Arc<Service<InventoryRepo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::new(repo),
         handlers::reserve,

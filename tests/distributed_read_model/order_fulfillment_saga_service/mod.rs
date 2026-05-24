@@ -11,6 +11,6 @@ mod service;
 use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 
 pub use models::OrderFulfillmentSaga;
-pub use service::model_service;
+pub use service::service;
 
 pub type SagaRepo = AggregateRepository<QueuedRepository<HashMapRepository>, OrderFulfillmentSaga>;

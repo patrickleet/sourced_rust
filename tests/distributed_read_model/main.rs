@@ -35,7 +35,8 @@ use order_fulfillment_saga_service::OrderFulfillmentSaga;
 use order_service::{AddLine, ChangeQuantity, PlaceOrder, RemoveLine, SubmitOrder};
 use payment_service::Payment;
 use projections_service::{
-    start_projection_service, CATALOG_CONSUMER, FULFILLMENT_CONSUMER, ORDER_CONSUMER,
+    service as projection_service, start_projection_service, ProjectionServiceHandle,
+    CATALOG_CONSUMER, FULFILLMENT_CONSUMER, ORDER_CONSUMER,
 };
 use query_service::OrderQueryService;
 use read_models::{register_schemas, OrderView};
@@ -92,10 +93,9 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
 
     // Two independent write services, each with its own event store and outbox.
     let catalog_store = HashMapRepository::new();
-    let catalog_service =
-        catalog_service::model_service(catalog_store.clone().queued().aggregate());
+    let catalog_service = catalog_service::service(catalog_store.clone().queued().aggregate());
     let order_store = HashMapRepository::new();
-    let order_service = order_service::model_service(order_store.clone().queued().aggregate());
+    let order_service = order_service::service(order_store.clone().queued().aggregate());
 
     let catalog_worker = OutboxWorkerThread::spawn(
         catalog_store.clone(),
@@ -108,7 +108,9 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
     // Shared downstream read store with normalized relational tables.
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
-    let projection = start_projection_service(queue.clone(), read_store.clone());
+    let projection_svc = projection_service(read_store.clone());
+    let projection: ProjectionServiceHandle =
+        start_projection_service(queue.clone(), projection_svc);
     let query_service = OrderQueryService::new(read_store.clone());
 
     // Saga subsystem: inventory, payment, and the orchestrator are ordinary
@@ -120,19 +122,17 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
 
     let inventory_store = HashMapRepository::new();
     inventory_service::seed_stock(&inventory_store, "W", 100);
-    let inventory_svc =
-        inventory_service::model_service(inventory_store.clone().queued().aggregate());
+    let inventory_svc = inventory_service::service(inventory_store.clone().queued().aggregate());
     let inventory_worker = OutboxWorkerThread::spawn(inventory_store.clone(), queue.clone(), poll);
     let inventory_sub = microsvc::subscribe(inventory_svc.clone(), queue.new_subscriber(), poll);
 
     let payment_store = HashMapRepository::new();
-    let payment_svc = payment_service::model_service(payment_store.clone().queued().aggregate());
+    let payment_svc = payment_service::service(payment_store.clone().queued().aggregate());
     let payment_worker = OutboxWorkerThread::spawn(payment_store.clone(), queue.clone(), poll);
     let payment_sub = microsvc::subscribe(payment_svc.clone(), queue.new_subscriber(), poll);
 
     let saga_store = HashMapRepository::new();
-    let saga_svc =
-        order_fulfillment_saga_service::model_service(saga_store.clone().queued().aggregate());
+    let saga_svc = order_fulfillment_saga_service::service(saga_store.clone().queued().aggregate());
     let saga_worker = OutboxWorkerThread::spawn(saga_store.clone(), queue.clone(), poll);
     let saga_sub = microsvc::subscribe(saga_svc.clone(), queue.new_subscriber(), poll);
 
@@ -417,7 +417,7 @@ fn catalog_and_order_services_feed_a_normalized_read_model() {
 #[tokio::test]
 async fn order_commands_can_be_http_service() {
     let order_store = HashMapRepository::new();
-    let order_service = order_service::model_service(order_store.clone().queued().aggregate());
+    let order_service = order_service::service(order_store.clone().queued().aggregate());
     let base = order_service::start_http_service(order_service.clone()).await;
 
     let client = reqwest::Client::new();
@@ -444,7 +444,7 @@ async fn order_commands_can_be_http_service() {
 #[tokio::test]
 async fn order_commands_can_be_grpc_service() {
     let order_store = HashMapRepository::new();
-    let order_service = order_service::model_service(order_store.clone().queued().aggregate());
+    let order_service = order_service::service(order_store.clone().queued().aggregate());
     let mut client = order_service::start_grpc_service(order_service.clone()).await;
 
     let placed = client

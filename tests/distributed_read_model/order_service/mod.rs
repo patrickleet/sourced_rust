@@ -12,7 +12,7 @@ use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
 pub use models::{
     AddLine, ChangeQuantity, Order, OrderSnapshot, PlaceOrder, RemoveLine, SubmitOrder,
 };
-pub use service::model_service;
+pub use service::service;
 #[cfg(feature = "grpc")]
 pub use service::start_grpc_service;
 #[cfg(feature = "http")]
