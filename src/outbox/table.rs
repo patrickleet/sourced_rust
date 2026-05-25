@@ -25,6 +25,7 @@ pub fn outbox_message_schema() -> TableSchema {
             table_column("status", ColumnType::Text, false),
             table_column("created_at", ColumnType::Timestamp, false),
             table_column("next_available_at", ColumnType::Timestamp, false),
+            timestamp_column_with_default("updated_at", "CURRENT_TIMESTAMP"),
             table_column("claimed_by", ColumnType::Text, true),
             table_column("claimed_until", ColumnType::Timestamp, true),
             table_column("attempts", ColumnType::UnsignedInteger, false),
@@ -148,6 +149,13 @@ impl TableModel for OutboxMessage {
 fn table_column(name: &str, column_type: ColumnType, nullable: bool) -> TableColumn {
     let mut column = TableColumn::new(name, name, column_type);
     column.nullable = nullable;
+    column
+}
+
+fn timestamp_column_with_default(name: &str, default: &str) -> TableColumn {
+    let mut column = table_column(name, ColumnType::Timestamp, false);
+    column.has_default = true;
+    column.default = Some(default.into());
     column
 }
 

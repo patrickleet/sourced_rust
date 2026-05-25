@@ -250,6 +250,8 @@ mod tests {
             .statements
             .iter()
             .any(|statement| statement.contains("\"created_at\" TEXT NOT NULL")));
+        assert!(artifact.statements.iter().any(|statement| statement
+            .contains("\"updated_at\" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")));
     }
 
     #[test]
@@ -273,6 +275,8 @@ mod tests {
             .statements
             .iter()
             .any(|statement| statement.contains("\"claimed_until\" timestamptz")));
+        assert!(artifact.statements.iter().any(|statement| statement
+            .contains("\"updated_at\" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP")));
     }
 
     #[test]
