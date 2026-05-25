@@ -43,6 +43,7 @@ mod table;
 
 // Outbox message record
 pub use message::{OutboxMessage, OutboxMessageStatus};
+pub(crate) use table::validate_outbox_message_table_write;
 pub use table::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
     outbox_message_schema, OUTBOX_MESSAGES_TABLE,

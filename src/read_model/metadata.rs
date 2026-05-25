@@ -16,6 +16,7 @@ pub enum ColumnType {
     Float,
     Bytes,
     Json,
+    Timestamp,
     Unsupported(String),
 }
 

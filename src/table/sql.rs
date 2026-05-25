@@ -187,6 +187,7 @@ fn sql_type(
         (TableSqlDialect::Sqlite, ColumnType::Float) => "REAL",
         (TableSqlDialect::Sqlite, ColumnType::Bytes) => "BLOB",
         (TableSqlDialect::Sqlite, ColumnType::Json) => "TEXT",
+        (TableSqlDialect::Sqlite, ColumnType::Timestamp) => "TEXT",
         (TableSqlDialect::Postgres, ColumnType::Text) => "text",
         (TableSqlDialect::Postgres, ColumnType::Boolean) => "boolean",
         (TableSqlDialect::Postgres, ColumnType::Integer | ColumnType::UnsignedInteger) => "bigint",
@@ -194,6 +195,7 @@ fn sql_type(
         (TableSqlDialect::Postgres, ColumnType::Bytes) => "bytea",
         (TableSqlDialect::Postgres, ColumnType::Json) if jsonb => "jsonb",
         (TableSqlDialect::Postgres, ColumnType::Json) => "jsonb",
+        (TableSqlDialect::Postgres, ColumnType::Timestamp) => "timestamptz",
         (_, ColumnType::Unsupported(type_name)) => {
             return Err(TableStoreError::Metadata(format!(
                 "unsupported table column type `{type_name}`"
@@ -244,6 +246,33 @@ mod tests {
             .statements
             .iter()
             .any(|statement| statement.contains("\"message_id\" TEXT NOT NULL")));
+        assert!(artifact
+            .statements
+            .iter()
+            .any(|statement| statement.contains("\"created_at\" TEXT NOT NULL")));
+    }
+
+    #[test]
+    fn renders_outbox_table_schema_for_postgres_with_timestamp_columns() {
+        let mut registry = TableSchemaRegistry::new();
+        registry
+            .register_schema(outbox_message_schema())
+            .expect("schema should register");
+
+        let artifact = generate_table_migration_artifacts(&registry, TableSqlDialect::Postgres)
+            .expect("artifact should render")
+            .pop()
+            .expect("artifact should exist");
+
+        assert_eq!(artifact.name, "postgres-tables");
+        assert!(artifact
+            .statements
+            .iter()
+            .any(|statement| statement.contains("\"created_at\" timestamptz NOT NULL")));
+        assert!(artifact
+            .statements
+            .iter()
+            .any(|statement| statement.contains("\"claimed_until\" timestamptz")));
     }
 
     #[test]

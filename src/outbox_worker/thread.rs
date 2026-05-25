@@ -108,11 +108,10 @@ impl OutboxWorkerThread {
     /// The worker will poll the outbox store for pending outbox messages,
     /// publish them to the given publisher, and mark them as complete.
     ///
-    /// The store must be `Clone + Send + 'static`. For `HashMapOutboxStore`,
-    /// cloning creates another handle to the same storage.
+    /// The store must be `Send + 'static`.
     pub fn spawn<S, P>(store: S, publisher: P, poll_interval: Duration) -> Self
     where
-        S: OutboxStore + Clone + Send + 'static,
+        S: OutboxStore + Send + 'static,
         P: Publisher + 'static,
     {
         Self::spawn_with_id(store, publisher, poll_interval, "outbox-worker")
@@ -126,7 +125,7 @@ impl OutboxWorkerThread {
         worker_id: &str,
     ) -> Self
     where
-        S: OutboxStore + Clone + Send + 'static,
+        S: OutboxStore + Send + 'static,
         P: Publisher + 'static,
     {
         let (stop_tx, stop_rx) = channel();
@@ -200,7 +199,7 @@ impl OutboxWorkerThread {
     /// Messages without a destination are published fan-out via `Publisher::publish()`.
     pub fn spawn_routed<S, P>(store: S, publisher: P, poll_interval: Duration) -> Self
     where
-        S: OutboxStore + Clone + Send + 'static,
+        S: OutboxStore + Send + 'static,
         P: Publisher + BusSender + 'static,
     {
         Self::spawn_routed_with_id(store, publisher, poll_interval, "outbox-worker")
@@ -214,7 +213,7 @@ impl OutboxWorkerThread {
         worker_id: &str,
     ) -> Self
     where
-        S: OutboxStore + Clone + Send + 'static,
+        S: OutboxStore + Send + 'static,
         P: Publisher + BusSender + 'static,
     {
         let (stop_tx, stop_rx) = channel();

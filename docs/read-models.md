@@ -262,7 +262,7 @@ path:
 
 ```rust
 let mut registry = TableSchemaRegistry::new();
-registry.register_schema(outbox_message_schema())?;
+registry.register_schema(sourced_rust::outbox_message_schema())?;
 
 let artifacts = repo.generate_table_migration_artifacts(&registry)?;
 let bootstrap = repo.bootstrap_table_schema_for_dev(&registry).await?;

@@ -133,7 +133,7 @@ impl SqliteRepository {
             sqlx::query(&statement)
                 .execute(&self.pool)
                 .await
-                .map_err(|err| read_model_storage_error("bootstrap table schema", err))?;
+                .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
         }
         Ok(table_schema_bootstrap_result(registry))
     }
@@ -177,7 +177,7 @@ impl SqliteOutboxStore {
             sqlx::query(&statement)
                 .execute(&self.pool)
                 .await
-                .map_err(|err| read_model_storage_error("bootstrap table schema", err))?;
+                .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
         }
         Ok(table_schema_bootstrap_result(registry))
     }
@@ -1593,4 +1593,8 @@ fn repository_storage_error(operation: &str, err: sqlx::Error) -> RepositoryErro
 
 fn read_model_storage_error(operation: &str, err: sqlx::Error) -> ReadModelError {
     sqlx_repo::read_model_storage_error(SQLITE_BACKEND, operation, err)
+}
+
+fn table_schema_storage_error(operation: &str, err: sqlx::Error) -> TableStoreError {
+    TableStoreError::Storage(format!("{SQLITE_BACKEND} {operation} failed: {err}"))
 }

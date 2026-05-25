@@ -161,6 +161,7 @@ fn logical_type_name(column_type: &ColumnType, jsonb: bool) -> &'static str {
         ColumnType::Float => "float",
         ColumnType::Bytes => "bytes",
         ColumnType::Json => "json",
+        ColumnType::Timestamp => "timestamp",
         ColumnType::Unsupported(_) => "unsupported",
     }
 }
