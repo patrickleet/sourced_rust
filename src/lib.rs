@@ -17,6 +17,8 @@ pub mod lock;
 pub mod microsvc;
 mod outbox;
 mod outbox_worker;
+#[cfg(feature = "postgres")]
+pub mod postgres_repo;
 pub mod queued_repo;
 pub mod read_model;
 pub mod snapshot;
@@ -48,6 +50,8 @@ pub use aggregate::{
 };
 
 pub use hashmap_repo::HashMapRepository;
+#[cfg(feature = "postgres")]
+pub use postgres_repo::PostgresRepository;
 #[cfg(feature = "sqlite")]
 pub use sqlite_repo::SqliteRepository;
 
