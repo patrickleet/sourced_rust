@@ -81,7 +81,11 @@ async fn high_level_outbox_commit_persists_row_without_stream() {
     let Some(repo) = repository().await else {
         return;
     };
-    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(repo).await;
+    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -97,7 +101,8 @@ async fn aggregate_conflict_rolls_back_outbox() {
     let Some(repo) = repository().await else {
         return;
     };
-    conformance::outbox::aggregate_conflict_rolls_back_outbox(repo).await;
+    conformance::outbox::aggregate_conflict_rolls_back_outbox(repo.clone(), repo.outbox_store())
+        .await;
 }
 
 #[tokio::test]
@@ -105,5 +110,9 @@ async fn worker_claim_complete_and_retry_lifecycle() {
     let Some(repo) = repository().await else {
         return;
     };
-    conformance::outbox::worker_claim_complete_and_retry_lifecycle(repo).await;
+    conformance::outbox::worker_claim_complete_and_retry_lifecycle(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
 }

@@ -256,6 +256,21 @@ schema changes should be generated or user-authored migrations plus
 verification; normal repository construction and command handling should not
 silently sync production schemas.
 
+SQL repositories expose the same lifecycle through neutral table-schema APIs so
+read models and operational tables, such as the outbox table, use one metadata
+path:
+
+```rust
+let mut registry = TableSchemaRegistry::new();
+registry.register_schema(outbox_message_schema())?;
+
+let artifacts = repo.generate_table_migration_artifacts(&registry)?;
+let bootstrap = repo.bootstrap_table_schema_for_dev(&registry).await?;
+```
+
+Use generated artifacts as migration input for production tooling such as Atlas.
+Reserve `bootstrap_table_schema_for_dev` for tests and local development.
+
 ## Bomberman And Document Views
 
 Bomberman `BoardView` is intentionally a document-row read model. It stores a

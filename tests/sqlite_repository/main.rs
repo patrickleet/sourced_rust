@@ -5,7 +5,7 @@ use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
     AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore, AsyncStreamWrite,
     AsyncTransactionalCommit, Entity, EventRecord, ReadModel, ReadModelSession, RepositoryError,
-    SnapshotRecord, SqliteRepository, StreamIdentity,
+    SnapshotRecord, SqliteRepository, StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -94,6 +94,38 @@ async fn migration_is_idempotent_and_aggregate_stream_round_trips() {
     assert_eq!(loaded.entity().events()[0].sequence, 1);
     assert_eq!(loaded.entity().events()[1].sequence, 2);
     assert_eq!(loaded.entity().events()[0].correlation_id(), Some("corr-1"));
+}
+
+#[tokio::test]
+async fn dev_bootstrap_applies_registered_table_schemas() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let mut registry = TableSchemaRegistry::new();
+    registry
+        .register_schema(sourced_rust::outbox_message_schema())
+        .unwrap();
+
+    let artifacts = repo.generate_table_migration_artifacts(&registry).unwrap();
+    assert!(artifacts[0]
+        .statements
+        .iter()
+        .any(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"outbox_messages\"")));
+
+    let bootstrap = repo
+        .bootstrap_table_schema_for_dev(&registry)
+        .await
+        .unwrap();
+    assert_eq!(
+        bootstrap.bootstrapped_tables,
+        vec![OUTBOX_MESSAGES_TABLE.to_string()]
+    );
+
+    let row = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .bind(OUTBOX_MESSAGES_TABLE)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let table_name: String = sqlx::Row::try_get(&row, "name").unwrap();
+    assert_eq!(table_name, OUTBOX_MESSAGES_TABLE);
 }
 
 #[tokio::test]

@@ -675,27 +675,32 @@ let message = OutboxMessage::encode_for_entity(
 A separate process claims and publishes pending messages:
 
 ```rust
-use sourced_rust::{LogPublisher, OutboxRepositoryExt, OutboxWorker};
+use sourced_rust::{ClaimOutboxMessages, LogPublisher, OutboxClaimRef, OutboxStore, OutboxWorker};
 use std::time::Duration;
 
 let repo = HashMapRepository::new();
+let outbox = repo.outbox_store();
 let worker_id = "worker-1";
 let mut worker = OutboxWorker::new(LogPublisher::new())
     .with_worker_id(worker_id)
     .with_max_attempts(3);
 
-let claimed = repo.claim_outbox_messages(worker_id, 100, Duration::from_secs(30))?;
+let mut claimed = outbox.claim(ClaimOutboxMessages::new(worker_id, 100, Duration::from_secs(30)))?;
+let claims = claimed
+    .iter()
+    .map(OutboxClaimRef::from_message)
+    .collect::<Result<Vec<_>, _>>()?;
 
-for mut message in claimed {
-    let result = worker.process_message(&mut message)?;
+for (message, claim) in claimed.iter_mut().zip(claims.iter()) {
+    let result = worker.process_message(message)?;
     if result.completed {
-        repo.complete_outbox_message_for_worker(message.id(), worker_id)?;
+        outbox.complete(claim)?;
     } else if result.released || result.failed {
         let error = match message.last_error.as_deref() {
             Some(error) => error,
             None => "publish failed",
         };
-        repo.record_outbox_publish_failure(message.id(), worker_id, error, 3)?;
+        outbox.record_failure(claim, error, 3)?;
     }
 }
 ```

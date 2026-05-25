@@ -6,9 +6,9 @@ mod identity;
 mod repository;
 
 pub use async_repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncReadModelSessionStore,
-    AsyncReadModelStore, AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore,
-    AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, PreparedEventAppend,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
+    AsyncStreamWrite, AsyncTransactionalCommit, PreparedEventAppend,
 };
 pub use batch::{CommitBatch, SnapshotWrite, TransactionalCommit};
 pub use error::RepositoryError;

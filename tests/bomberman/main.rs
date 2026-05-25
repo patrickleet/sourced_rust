@@ -193,9 +193,10 @@ fn player_killed_by_bomb() {
         .contains(&"player:p2".to_string()));
 
     // Verify outbox message was created (PlayerKilled)
-    use sourced_rust::{OutboxMessageStatus, OutboxRepositoryExt};
+    use sourced_rust::{OutboxMessageStatus, OutboxStore};
     let pending = repo2
-        .outbox_messages_by_status(OutboxMessageStatus::Pending)
+        .outbox_store()
+        .messages_by_status(OutboxMessageStatus::Pending)
         .unwrap();
     assert!(!pending.is_empty());
     assert_eq!(pending[0].event_type, "PlayerKilled");

@@ -39,9 +39,14 @@
 
 mod commit;
 mod message;
+mod table;
 
 // Outbox message record
 pub use message::{OutboxMessage, OutboxMessageStatus};
+pub use table::{
+    outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
+    outbox_message_schema, OUTBOX_MESSAGES_TABLE,
+};
 
 // Commit helpers
 pub use commit::{AsyncOutboxCommit, OutboxCommit, OutboxCommitExt};

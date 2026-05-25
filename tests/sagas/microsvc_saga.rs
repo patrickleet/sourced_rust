@@ -239,7 +239,8 @@ fn saga_distributed() {
 
     // === SAGA SERVICE ===
     let saga_repo = HashMapRepository::new();
-    let saga_worker = OutboxWorkerThread::spawn_routed(saga_repo.clone(), queue.clone(), poll);
+    let saga_worker =
+        OutboxWorkerThread::spawn_routed(saga_repo.outbox_store(), queue.clone(), poll);
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
         Service::new(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         handlers::saga::start,
@@ -252,7 +253,8 @@ fn saga_distributed() {
 
     // === ORDER SERVICE ===
     let order_repo = HashMapRepository::new();
-    let order_worker = OutboxWorkerThread::spawn_routed(order_repo.clone(), queue.clone(), poll);
+    let order_worker =
+        OutboxWorkerThread::spawn_routed(order_repo.outbox_store(), queue.clone(), poll);
     let order_svc = Arc::new(sourced_rust::register_handlers!(
         Service::new(order_repo.queued().aggregate::<Order>()),
         handlers::orders::create,
@@ -263,7 +265,7 @@ fn saga_distributed() {
     // === INVENTORY SERVICE ===
     let inventory_repo = HashMapRepository::new();
     let inventory_worker =
-        OutboxWorkerThread::spawn_routed(inventory_repo.clone(), queue.clone(), poll);
+        OutboxWorkerThread::spawn_routed(inventory_repo.outbox_store(), queue.clone(), poll);
 
     // Pre-seed inventory before starting the service
     {
@@ -284,7 +286,7 @@ fn saga_distributed() {
     // === PAYMENT SERVICE ===
     let payment_repo = HashMapRepository::new();
     let payment_worker =
-        OutboxWorkerThread::spawn_routed(payment_repo.clone(), queue.clone(), poll);
+        OutboxWorkerThread::spawn_routed(payment_repo.outbox_store(), queue.clone(), poll);
     let payment_svc = Arc::new(sourced_rust::register_handlers!(
         Service::new(payment_repo.queued().aggregate::<Payment>()),
         handlers::payments::process,
