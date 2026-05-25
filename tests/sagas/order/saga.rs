@@ -1,23 +1,18 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{digest, Entity};
 
-use super::order::OrderItem;
+use super::OrderItem;
 
 /// Saga status - tracks the overall state machine
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SagaStatus {
+    #[default]
     Started,
     InventoryReserved,
     PaymentProcessed,
     Completed,
     Compensating,
     Failed,
-}
-
-impl Default for SagaStatus {
-    fn default() -> Self {
-        SagaStatus::Started
-    }
 }
 
 /// Tracks what compensating actions are needed
