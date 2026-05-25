@@ -1,9 +1,6 @@
-use sourced_rust::{impl_aggregate, Entity, EventRecord};
+use sourced_rust::{sourced, Entity};
 
-use super::checkout::{
-    AddSeat, SeatAdded, SeatReserved, SEAT_ADDED, SEAT_AVAILABLE_STATUS, SEAT_RESERVED,
-    SEAT_RESERVED_STATUS,
-};
+use super::checkout::{SEAT_AVAILABLE_STATUS, SEAT_RESERVED_STATUS};
 
 #[derive(Default)]
 pub struct Seat {
@@ -13,64 +10,22 @@ pub struct Seat {
     pub checkout_id: String,
 }
 
+#[sourced(entity, aggregate_type = "conformance.seat")]
 impl Seat {
-    pub fn add(&mut self, command: AddSeat) -> Result<SeatAdded, String> {
-        let event = SeatAdded {
-            seat_id: command.seat_id,
-            category: command.category,
-        };
-        self.entity.set_id(&event.seat_id);
-        self.entity
-            .digest(SEAT_ADDED, &event)
-            .map_err(|err| err.to_string())?;
-        self.apply_added(&event);
-        Ok(event)
-    }
-
-    pub fn reserve(&mut self, checkout_id: String) -> Result<SeatReserved, String> {
-        if self.status != SEAT_AVAILABLE_STATUS {
-            return Err(format!("seat {} is not available", self.entity.id()));
-        }
-
-        let event = SeatReserved {
-            checkout_id,
-            seat_id: self.entity.id().to_string(),
-            seat_category: self.category.clone(),
-        };
-        self.entity
-            .digest(SEAT_RESERVED, &event)
-            .map_err(|err| err.to_string())?;
-        self.apply_reserved(&event);
-        Ok(event)
-    }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        match event.event_name.as_str() {
-            SEAT_ADDED => {
-                let event = event.decode::<SeatAdded>().map_err(|err| err.to_string())?;
-                self.apply_added(&event);
-            }
-            SEAT_RESERVED => {
-                let event = event
-                    .decode::<SeatReserved>()
-                    .map_err(|err| err.to_string())?;
-                self.apply_reserved(&event);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn apply_added(&mut self, event: &SeatAdded) {
-        self.category = event.category.clone();
+    #[event("SeatAdded", when = !seat_id.is_empty() && !category.is_empty())]
+    pub fn add(&mut self, seat_id: String, category: String) {
+        self.entity.set_id(&seat_id);
+        self.category = category;
         self.status = SEAT_AVAILABLE_STATUS.to_string();
         self.checkout_id.clear();
     }
 
-    fn apply_reserved(&mut self, event: &SeatReserved) {
+    #[event(
+        "SeatReserved",
+        when = self.status == SEAT_AVAILABLE_STATUS && !checkout_id.is_empty()
+    )]
+    pub fn reserve(&mut self, checkout_id: String, seat_id: String, seat_category: String) {
         self.status = SEAT_RESERVED_STATUS.to_string();
-        self.checkout_id = event.checkout_id.clone();
+        self.checkout_id = checkout_id;
     }
 }
-
-impl_aggregate!(Seat, entity, replay, aggregate_type = "conformance.seat");

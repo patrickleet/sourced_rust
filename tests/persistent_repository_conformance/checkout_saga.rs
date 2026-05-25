@@ -1,85 +1,41 @@
-use sourced_rust::{impl_aggregate, Entity, EventRecord};
+use sourced_rust::{sourced, Entity};
 
-use super::checkout::{
-    CheckoutStarted, SeatReservationCompleted, SeatReserved, StartCheckout,
-    CHECKOUT_SEAT_RESERVATION_COMPLETED, CHECKOUT_SEAT_RESERVED_STATUS, CHECKOUT_STARTED,
-    CHECKOUT_STARTED_STATUS,
-};
+use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, CHECKOUT_STARTED_STATUS};
 
 #[derive(Default)]
 pub struct CheckoutSaga {
     pub entity: Entity,
+    pub checkout_id: String,
     pub status: String,
     pub seat_id: String,
     pub seat_category: String,
     pub reserved_seat_id: String,
 }
 
+#[sourced(entity, aggregate_type = "conformance.checkout_saga")]
 impl CheckoutSaga {
-    pub fn start(&mut self, command: StartCheckout) -> Result<CheckoutStarted, String> {
-        let event = CheckoutStarted {
-            checkout_id: command.checkout_id,
-            seat_id: command.seat_id,
-            seat_category: command.seat_category,
-        };
-        self.entity.set_id(&event.checkout_id);
-        self.entity
-            .digest(CHECKOUT_STARTED, &event)
-            .map_err(|err| err.to_string())?;
-        self.apply_started(&event);
-        Ok(event)
+    #[event("CheckoutSagaStarted", when = !checkout_id.is_empty() && !seat_id.is_empty())]
+    pub fn start(&mut self, checkout_id: String, seat_id: String, seat_category: String) {
+        self.entity.set_id(&checkout_id);
+        self.checkout_id = checkout_id;
+        self.status = CHECKOUT_STARTED_STATUS.to_string();
+        self.seat_id = seat_id;
+        self.seat_category = seat_category;
     }
 
+    #[event(
+        "CheckoutSagaSeatReservationCompleted",
+        when = self.status == CHECKOUT_STARTED_STATUS && self.entity.id() == checkout_id.as_str()
+    )]
     pub fn record_seat_reserved(
         &mut self,
-        event: SeatReserved,
-    ) -> Result<SeatReservationCompleted, String> {
-        let completed = SeatReservationCompleted {
-            checkout_id: event.checkout_id,
-            seat_id: event.seat_id,
-            seat_category: event.seat_category,
-        };
-        self.entity
-            .digest(CHECKOUT_SEAT_RESERVATION_COMPLETED, &completed)
-            .map_err(|err| err.to_string())?;
-        self.apply_seat_reservation_completed(&completed);
-        Ok(completed)
-    }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        match event.event_name.as_str() {
-            CHECKOUT_STARTED => {
-                let event = event
-                    .decode::<CheckoutStarted>()
-                    .map_err(|err| err.to_string())?;
-                self.apply_started(&event);
-            }
-            CHECKOUT_SEAT_RESERVATION_COMPLETED => {
-                let event = event
-                    .decode::<SeatReservationCompleted>()
-                    .map_err(|err| err.to_string())?;
-                self.apply_seat_reservation_completed(&event);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn apply_started(&mut self, event: &CheckoutStarted) {
-        self.status = CHECKOUT_STARTED_STATUS.to_string();
-        self.seat_id = event.seat_id.clone();
-        self.seat_category = event.seat_category.clone();
-    }
-
-    fn apply_seat_reservation_completed(&mut self, event: &SeatReservationCompleted) {
+        checkout_id: String,
+        seat_id: String,
+        seat_category: String,
+    ) {
+        self.checkout_id = checkout_id;
+        self.seat_category = seat_category;
         self.status = CHECKOUT_SEAT_RESERVED_STATUS.to_string();
-        self.reserved_seat_id = event.seat_id.clone();
+        self.reserved_seat_id = seat_id;
     }
 }
-
-impl_aggregate!(
-    CheckoutSaga,
-    entity,
-    replay,
-    aggregate_type = "conformance.checkout_saga"
-);
