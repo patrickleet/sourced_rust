@@ -9,23 +9,33 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::collections::HashSet;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
-use crate::entity::{
-    Entity, EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
-};
+use crate::entity::{Entity, EventRecord};
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
+    AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncTransactionalCommit, PreparedEventAppend, RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
+use crate::sqlx_repo::{
+    self, deserialize_event_metadata, is_postgres_unique_violation, reject_duplicate_streams,
+    repository_i32_from_u64 as sqlx_repository_i32_from_u64,
+    repository_i64_from_u64 as sqlx_repository_i64_from_u64,
+    repository_u16_from_i32 as sqlx_repository_u16_from_i32,
+    repository_u64_from_i32 as sqlx_repository_u64_from_i32,
+    repository_u64_from_i64 as sqlx_repository_u64_from_i64, serialize_event_metadata,
+    validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
+    validate_supported_event_codec,
+};
 
 const POSTGRES_SCHEMA: &str = include_str!("../../migrations/postgres/0001_initial.sql");
+const POSTGRES_BACKEND: &str = "postgres";
+const BIGINT_STORAGE: &str = "bigint storage";
+const INTEGER_STORAGE: &str = "integer storage";
 
 /// Postgres-backed async repository.
 #[derive(Clone)]
@@ -277,68 +287,11 @@ impl AsyncSnapshotStore for PostgresRepository {
     }
 }
 
-fn reject_duplicate_streams(streams: &[AsyncStreamWrite<'_>]) -> Result<(), RepositoryError> {
-    let mut seen = HashSet::with_capacity(streams.len());
-    for stream in streams {
-        let key = stream.identity.storage_key();
-        if !seen.insert(key) {
-            return Err(RepositoryError::DuplicateStreamInBatch {
-                id: stream.identity.to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_entity_id_matches_identity(
-    streams: &[AsyncStreamWrite<'_>],
-) -> Result<(), RepositoryError> {
-    for stream in streams {
-        if stream.entity.id() != stream.identity.aggregate_id() {
-            return Err(RepositoryError::Model(format!(
-                "stream identity `{}` does not match entity id `{}`",
-                stream.identity,
-                stream.entity.id()
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn reject_read_model_plans(batch: &AsyncCommitBatch<'_>) -> Result<(), RepositoryError> {
     if batch.read_model_plans.iter().any(|plan| !plan.is_empty()) {
         return Err(RepositoryError::Model(
             "PostgresRepository first pass does not persist read-model write plans".into(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_prepared_appends(appends: &[PreparedEventAppend]) -> Result<(), RepositoryError> {
-    for append in appends {
-        for (offset, event) in append.events.iter().enumerate() {
-            validate_supported_event_codec(event)?;
-            let expected_sequence = append.expected_version + offset as u64 + 1;
-            if event.sequence != expected_sequence {
-                return Err(RepositoryError::Model(format!(
-                    "event `{}` for stream `{}` has sequence {}, expected {}",
-                    event.event_name, append.identity, event.sequence, expected_sequence
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_supported_event_codec(event: &EventRecord) -> Result<(), RepositoryError> {
-    if event.payload_codec != BITCODE_PAYLOAD_CODEC
-        || event.payload_codec_version != BITCODE_PAYLOAD_CODEC_VERSION
-    {
-        return Err(EventRecordError::unsupported_codec(
-            &event.payload_codec,
-            event.payload_codec_version,
-        )
-        .into());
     }
     Ok(())
 }
@@ -364,7 +317,7 @@ async fn stream_version_in_tx(
         .try_get("version")
         .map_err(|err| repository_storage_error("decode stream version row", err))?;
     version
-        .map(|value| repository_u64_from_i64(value, "sequence"))
+        .map(|value| sqlx_repository_u64_from_i64(POSTGRES_BACKEND, value, "sequence"))
         .unwrap_or(Ok(0))
 }
 
@@ -389,7 +342,7 @@ async fn stream_version_pool(
         .try_get("version")
         .map_err(|err| repository_storage_error("decode stream version row", err))?;
     version
-        .map(|value| repository_u64_from_i64(value, "sequence"))
+        .map(|value| sqlx_repository_u64_from_i64(POSTGRES_BACKEND, value, "sequence"))
         .unwrap_or(Ok(0))
 }
 
@@ -400,8 +353,7 @@ async fn insert_event_in_tx(
     expected_version: u64,
     event: &EventRecord,
 ) -> Result<(), RepositoryError> {
-    let metadata = serde_json::to_string(&event.metadata)
-        .map_err(|err| RepositoryError::Model(format!("serialize event metadata: {err}")))?;
+    let metadata = serialize_event_metadata(&event.metadata)?;
 
     let result = sqlx::query(
         r#"
@@ -422,11 +374,18 @@ async fn insert_event_in_tx(
     )
     .bind(identity.aggregate_type())
     .bind(identity.aggregate_id())
-    .bind(repository_i64_from_u64(event.sequence, "sequence")?)
+    .bind(sqlx_repository_i64_from_u64(
+        POSTGRES_BACKEND,
+        event.sequence,
+        "sequence",
+        BIGINT_STORAGE,
+    )?)
     .bind(&event.event_name)
-    .bind(repository_i32_from_u64(
+    .bind(sqlx_repository_i32_from_u64(
+        POSTGRES_BACKEND,
         event.event_version,
         "event_version",
+        INTEGER_STORAGE,
     )?)
     .bind(&event.payload)
     .bind(&event.payload_codec)
@@ -438,7 +397,7 @@ async fn insert_event_in_tx(
 
     match result {
         Ok(_) => Ok(()),
-        Err(err) if is_unique_violation(&err) => {
+        Err(err) if is_postgres_unique_violation(&err) => {
             let actual = stream_version_pool(pool, identity)
                 .await
                 .unwrap_or_default();
@@ -456,7 +415,8 @@ fn event_from_row(row: PgRow) -> Result<EventRecord, RepositoryError> {
     let payload_codec: String = row
         .try_get("payload_codec")
         .map_err(|err| repository_storage_error("decode payload codec row", err))?;
-    let payload_codec_version = repository_u16_from_i32(
+    let payload_codec_version = sqlx_repository_u16_from_i32(
+        POSTGRES_BACKEND,
         row.try_get("payload_codec_version")
             .map_err(|err| repository_storage_error("decode payload codec version row", err))?,
         "payload_codec_version",
@@ -464,8 +424,7 @@ fn event_from_row(row: PgRow) -> Result<EventRecord, RepositoryError> {
     let metadata_json: String = row
         .try_get("metadata")
         .map_err(|err| repository_storage_error("decode metadata row", err))?;
-    let metadata = serde_json::from_str(&metadata_json)
-        .map_err(|err| RepositoryError::Model(format!("deserialize event metadata: {err}")))?;
+    let metadata = deserialize_event_metadata(&metadata_json)?;
     let event = EventRecord {
         event_name: row
             .try_get("event_name")
@@ -475,12 +434,14 @@ fn event_from_row(row: PgRow) -> Result<EventRecord, RepositoryError> {
         payload: row
             .try_get("payload")
             .map_err(|err| repository_storage_error("decode payload row", err))?,
-        event_version: repository_u64_from_i32(
+        event_version: sqlx_repository_u64_from_i32(
+            POSTGRES_BACKEND,
             row.try_get("event_version")
                 .map_err(|err| repository_storage_error("decode event version row", err))?,
             "event_version",
         )?,
-        sequence: repository_u64_from_i64(
+        sequence: sqlx_repository_u64_from_i64(
+            POSTGRES_BACKEND,
             row.try_get("sequence")
                 .map_err(|err| repository_storage_error("decode sequence row", err))?,
             "sequence",
@@ -500,12 +461,7 @@ async fn save_snapshot_in_tx(
     identity: &StreamIdentity,
     record: SnapshotRecord,
 ) -> Result<(), RepositoryError> {
-    if record.aggregate_id != identity.aggregate_id() {
-        return Err(RepositoryError::Model(format!(
-            "snapshot aggregate id `{}` does not match stream identity `{}`",
-            record.aggregate_id, identity
-        )));
-    }
+    validate_snapshot_identity(identity, &record)?;
 
     sqlx::query(
         r#"
@@ -519,7 +475,12 @@ async fn save_snapshot_in_tx(
     )
     .bind(identity.aggregate_type())
     .bind(identity.aggregate_id())
-    .bind(repository_i64_from_u64(record.version, "snapshot version")?)
+    .bind(sqlx_repository_i64_from_u64(
+        POSTGRES_BACKEND,
+        record.version,
+        "snapshot version",
+        BIGINT_STORAGE,
+    )?)
     .bind(record.data)
     .execute(&mut **tx)
     .await
@@ -533,7 +494,8 @@ fn snapshot_from_row(row: PgRow) -> Result<SnapshotRecord, RepositoryError> {
         aggregate_id: row
             .try_get("aggregate_id")
             .map_err(|err| repository_storage_error("decode snapshot aggregate id row", err))?,
-        version: repository_u64_from_i64(
+        version: sqlx_repository_u64_from_i64(
+            POSTGRES_BACKEND,
             row.try_get("version")
                 .map_err(|err| repository_storage_error("decode snapshot version row", err))?,
             "snapshot version",
@@ -542,37 +504,6 @@ fn snapshot_from_row(row: PgRow) -> Result<SnapshotRecord, RepositoryError> {
             .try_get("data")
             .map_err(|err| repository_storage_error("decode snapshot data row", err))?,
     })
-}
-
-fn repository_i64_from_u64(value: u64, field: &str) -> Result<i64, RepositoryError> {
-    i64::try_from(value).map_err(|_| {
-        RepositoryError::Model(format!(
-            "postgres {field} value {value} exceeds bigint storage"
-        ))
-    })
-}
-
-fn repository_i32_from_u64(value: u64, field: &str) -> Result<i32, RepositoryError> {
-    i32::try_from(value).map_err(|_| {
-        RepositoryError::Model(format!(
-            "postgres {field} value {value} exceeds integer storage"
-        ))
-    })
-}
-
-fn repository_u64_from_i64(value: i64, field: &str) -> Result<u64, RepositoryError> {
-    u64::try_from(value)
-        .map_err(|_| RepositoryError::Model(format!("postgres {field} value {value} is negative")))
-}
-
-fn repository_u64_from_i32(value: i32, field: &str) -> Result<u64, RepositoryError> {
-    u64::try_from(value)
-        .map_err(|_| RepositoryError::Model(format!("postgres {field} value {value} is negative")))
-}
-
-fn repository_u16_from_i32(value: i32, field: &str) -> Result<u16, RepositoryError> {
-    u16::try_from(value)
-        .map_err(|_| RepositoryError::Model(format!("postgres {field} value {value} is invalid")))
 }
 
 fn system_time_to_epoch_secs(timestamp: SystemTime) -> Result<f64, RepositoryError> {
@@ -593,13 +524,6 @@ fn system_time_from_epoch_secs(value: f64) -> Result<SystemTime, RepositoryError
     Ok(UNIX_EPOCH + Duration::from_secs_f64(value))
 }
 
-fn is_unique_violation(err: &sqlx::Error) -> bool {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.code().as_deref() == Some("23505"),
-        _ => false,
-    }
-}
-
 fn repository_storage_error(operation: &str, err: sqlx::Error) -> RepositoryError {
-    RepositoryError::Model(format!("postgres {operation} failed: {err}"))
+    sqlx_repo::repository_storage_error(POSTGRES_BACKEND, operation, err)
 }
