@@ -16,6 +16,11 @@ pub enum RepositoryError {
     DuplicateStreamInBatch {
         id: String,
     },
+    InvalidStreamIdentity {
+        aggregate_type: String,
+        aggregate_id: String,
+        reason: String,
+    },
     NotFound {
         id: String,
     },
@@ -47,6 +52,15 @@ impl fmt::Display for RepositoryError {
             RepositoryError::DuplicateStreamInBatch { id } => {
                 write!(f, "duplicate stream id in commit batch: {}", id)
             }
+            RepositoryError::InvalidStreamIdentity {
+                aggregate_type,
+                aggregate_id,
+                reason,
+            } => write!(
+                f,
+                "invalid stream identity (type `{}`, id `{}`): {}",
+                aggregate_type, aggregate_id, reason
+            ),
             RepositoryError::NotFound { id } => write!(f, "entity not found: {}", id),
             RepositoryError::InvalidState {
                 id,

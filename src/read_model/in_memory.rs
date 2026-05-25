@@ -1,6 +1,11 @@
 //! InMemoryReadModelStore - HashMap-backed read model store for testing and development.
+#![expect(
+    clippy::manual_async_fn,
+    reason = "async trait impls return impl Future + Send to preserve public Send bounds"
+)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use super::session::{
@@ -14,6 +19,9 @@ use super::{
     ReadModelSchemaRegistry, ReadModelSessionStore, ReadModelStore, ReadModelWritePlan,
     RelationalReadModel, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey,
     RowValue, RowValues, RowWriteMode, Versioned,
+};
+use crate::repository::{
+    AsyncReadModelSessionStore, AsyncReadModelStore, AsyncRelationalReadModelQueryStore,
 };
 
 /// Internal stored representation of a read model.
@@ -462,6 +470,27 @@ impl ReadModelSessionStore for InMemoryReadModelStore {
     }
 }
 
+impl AsyncReadModelSessionStore for InMemoryReadModelStore {
+    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
+        ReadModelSessionStore::read_model_capabilities(self)
+    }
+
+    fn commit_write_plan_async(
+        &self,
+        plan: ReadModelWritePlan,
+    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
+        async move { ReadModelSessionStore::commit_write_plan(self, plan) }
+    }
+
+    fn is_processed_async<'a>(
+        &'a self,
+        consumer_name: &'a str,
+        message_id: &'a str,
+    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
+        async move { ReadModelSessionStore::is_processed(self, consumer_name, message_id) }
+    }
+}
+
 #[derive(Clone)]
 struct IncludeSpec {
     name: String,
@@ -519,6 +548,19 @@ impl RelationalReadModelQueryStore for InMemoryReadModelStore {
             root: Some(root),
             includes,
         })
+    }
+}
+
+impl AsyncRelationalReadModelQueryStore for InMemoryReadModelStore {
+    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+        RelationalReadModelQueryStore::read_model_query_capabilities(self)
+    }
+
+    fn load_graph_async(
+        &self,
+        request: ReadModelLoadRequest,
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+        async move { RelationalReadModelQueryStore::load_graph(self, request) }
     }
 }
 
@@ -898,6 +940,69 @@ impl ReadModelStore for InMemoryReadModelStore {
         }
 
         Ok(matched)
+    }
+}
+
+impl AsyncReadModelStore for InMemoryReadModelStore {
+    fn get_model_async<'a, M>(
+        &'a self,
+        id: &'a str,
+    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::get_model(self, id) }
+    }
+
+    fn get_by_primary_key_async<'a, M>(
+        &'a self,
+        id: &'a str,
+    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::get_by_primary_key(self, id) }
+    }
+
+    fn upsert_async<'a, M>(
+        &'a self,
+        model: &'a M,
+    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::upsert(self, model) }
+    }
+
+    fn insert_async<'a, M>(
+        &'a self,
+        model: &'a M,
+    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::insert(self, model) }
+    }
+
+    fn update_async<'a, M>(
+        &'a self,
+        model: &'a M,
+        expected_version: u64,
+    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::update(self, model, expected_version) }
+    }
+
+    fn delete_async<'a, M>(
+        &'a self,
+        id: &'a str,
+    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a
+    where
+        M: ReadModel + 'a,
+    {
+        async move { ReadModelStore::delete::<M>(self, id) }
     }
 }
 

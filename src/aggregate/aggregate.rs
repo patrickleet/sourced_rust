@@ -12,6 +12,15 @@ use crate::snapshot::{SnapshotAggregateRepository, SnapshotStore, Snapshottable}
 pub trait Aggregate: Sized + Default {
     type ReplayError: fmt::Display;
 
+    /// Stable aggregate type used by stream-aware persistence.
+    ///
+    /// The default is a development fallback based on Rust's type name so
+    /// existing examples keep working. Production persistence should override
+    /// this with an explicit, durable application name.
+    fn aggregate_type() -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     fn new_empty() -> Self {
         Self::default()
     }
@@ -31,9 +40,42 @@ macro_rules! impl_aggregate {
     ($ty:ty, $entity:ident, $replay:ident) => {
         $crate::impl_aggregate!($ty, $entity, $replay, String);
     };
+    ($ty:ty, $entity:ident, $replay:ident, aggregate_type = $aggregate_type:literal) => {
+        $crate::impl_aggregate!(
+            $ty,
+            $entity,
+            $replay,
+            String,
+            aggregate_type = $aggregate_type
+        );
+    };
     ($ty:ty, $entity:ident, $replay:ident, $err:ty) => {
         impl $crate::Aggregate for $ty {
             type ReplayError = $err;
+
+            fn entity(&self) -> &$crate::Entity {
+                &self.$entity
+            }
+
+            fn entity_mut(&mut self) -> &mut $crate::Entity {
+                &mut self.$entity
+            }
+
+            fn replay_event(
+                &mut self,
+                event: &$crate::EventRecord,
+            ) -> Result<(), Self::ReplayError> {
+                Self::$replay(self, event)
+            }
+        }
+    };
+    ($ty:ty, $entity:ident, $replay:ident, $err:ty, aggregate_type = $aggregate_type:literal) => {
+        impl $crate::Aggregate for $ty {
+            type ReplayError = $err;
+
+            fn aggregate_type() -> &'static str {
+                $aggregate_type
+            }
 
             fn entity(&self) -> &$crate::Entity {
                 &self.$entity

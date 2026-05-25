@@ -624,12 +624,21 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
 
     let (upcaster_wrappers, upcasters_method) =
         generate_upcaster_tokens(agg_name, &input.upcasters);
+    let aggregate_type_method = input.aggregate_type.as_ref().map(|aggregate_type| {
+        quote! {
+            fn aggregate_type() -> &'static str {
+                #aggregate_type
+            }
+        }
+    });
 
     let expanded = quote! {
         #upcaster_wrappers
 
         impl sourced_rust::Aggregate for #agg_name {
             type ReplayError = String;
+
+            #aggregate_type_method
 
             fn entity(&self) -> &sourced_rust::Entity {
                 &self.#entity_field
@@ -669,6 +678,7 @@ struct UpcasterDef {
 struct AggregateInput {
     agg_name: Ident,
     entity_field: Ident,
+    aggregate_type: Option<LitStr>,
     events: Vec<EventDef>,
     upcasters: Vec<UpcasterDef>,
 }
@@ -685,6 +695,17 @@ impl Parse for AggregateInput {
         let agg_name: Ident = input.parse()?;
         input.parse::<Token![,]>()?;
         let entity_field: Ident = input.parse()?;
+        let mut aggregate_type = None;
+
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            let kw: Ident = input.parse()?;
+            if kw != "aggregate_type" {
+                return Err(syn::Error::new(kw.span(), "expected `aggregate_type`"));
+            }
+            input.parse::<Token![=]>()?;
+            aggregate_type = Some(input.parse::<LitStr>()?);
+        }
 
         let content;
         braced!(content in input);
@@ -774,6 +795,7 @@ impl Parse for AggregateInput {
         Ok(AggregateInput {
             agg_name,
             entity_field,
+            aggregate_type,
             events,
             upcasters,
         })
@@ -787,6 +809,7 @@ impl Parse for AggregateInput {
 struct SourcedArgs {
     entity_field: Ident,
     enum_name: Option<LitStr>,
+    aggregate_type: Option<LitStr>,
     enqueue: Option<Ident>, // Some(emitter_field) if enqueue enabled
     upcasters: Vec<UpcasterDef>,
 }
@@ -794,6 +817,7 @@ struct SourcedArgs {
 fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
     let entity_field: Ident = input.parse()?;
     let mut enum_name = None;
+    let mut aggregate_type = None;
     let mut enqueue = None;
     let mut upcasters = Vec::new();
 
@@ -805,6 +829,10 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
                 input.parse::<Ident>()?;
                 input.parse::<Token![=]>()?;
                 enum_name = Some(input.parse::<LitStr>()?);
+            } else if kw == "aggregate_type" {
+                input.parse::<Ident>()?;
+                input.parse::<Token![=]>()?;
+                aggregate_type = Some(input.parse::<LitStr>()?);
             } else if kw == "enqueue" {
                 input.parse::<Ident>()?;
                 // Optional custom emitter field: enqueue(my_emitter)
@@ -852,6 +880,7 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
     Ok(SourcedArgs {
         entity_field,
         enum_name,
+        aggregate_type,
         enqueue,
         upcasters,
     })
@@ -943,6 +972,7 @@ struct EventMethodInfo {
 /// Options:
 /// - `#[sourced(entity)]` - entity field name
 /// - `#[sourced(entity, events = "CustomName")]` - custom enum name
+/// - `#[sourced(entity, aggregate_type = "todos")]` - stable stream type name
 /// - `#[sourced(entity, upcasters(("EventName", 1 => 2, OldPayload => NewPayload, upcast_fn)))]` - upcasters
 #[proc_macro_attribute]
 pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -1148,10 +1178,19 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let (upcaster_wrappers, upcasters_method) =
         generate_upcaster_tokens(&struct_name, &args.upcasters);
+    let aggregate_type_method = args.aggregate_type.as_ref().map(|aggregate_type| {
+        quote! {
+            fn aggregate_type() -> &'static str {
+                #aggregate_type
+            }
+        }
+    });
 
     let aggregate_impl = quote! {
         impl sourced_rust::Aggregate for #struct_name {
             type ReplayError = String;
+
+            #aggregate_type_method
 
             fn entity(&self) -> &sourced_rust::Entity {
                 &self.#entity_field

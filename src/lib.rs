@@ -32,14 +32,17 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    Commit, CommitBatch, Get, GetMany, GetOne, Gettable, Repository, RepositoryError,
-    SnapshotWrite, TransactionalCommit,
+    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncReadModelSessionStore,
+    AsyncReadModelStore, AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore,
+    AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get,
+    GetMany, GetOne, Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite,
+    StreamIdentity, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
 pub use aggregate::{
-    hydrate, Aggregate, AggregateBuilder, AggregateRepository, CommitAggregate, GetAggregate,
-    GetAllAggregates, RepositoryExt,
+    hydrate, Aggregate, AggregateBuilder, AggregateRepository, AsyncAggregateBuilder,
+    AsyncAggregateRepository, CommitAggregate, GetAggregate, GetAllAggregates, RepositoryExt,
 };
 
 pub use hashmap_repo::HashMapRepository;

@@ -1,0 +1,113 @@
+use std::marker::PhantomData;
+
+use crate::entity::Entity;
+use crate::repository::{
+    AsyncCommitBatch, AsyncGetStream, AsyncStreamWrite, AsyncTransactionalCommit, RepositoryError,
+    StreamIdentity,
+};
+
+use super::{hydrate, Aggregate};
+
+fn stream_identity_for<A: Aggregate>(
+    aggregate_id: &str,
+) -> Result<StreamIdentity, RepositoryError> {
+    StreamIdentity::new(A::aggregate_type(), aggregate_id)
+}
+
+/// Builder trait for creating typed async aggregate repositories.
+pub trait AsyncAggregateBuilder: Sized {
+    fn async_aggregate<A: Aggregate>(self) -> AsyncAggregateRepository<Self, A> {
+        AsyncAggregateRepository::new(self)
+    }
+}
+
+impl<T> AsyncAggregateBuilder for T {}
+
+/// Async repository wrapper for a specific aggregate type.
+pub struct AsyncAggregateRepository<R, A> {
+    repo: R,
+    _marker: PhantomData<A>,
+}
+
+impl<R, A> AsyncAggregateRepository<R, A> {
+    pub fn new(repo: R) -> Self {
+        Self {
+            repo,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn repo(&self) -> &R {
+        &self.repo
+    }
+
+    pub fn repo_mut(&mut self) -> &mut R {
+        &mut self.repo
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A>
+where
+    R: AsyncGetStream,
+    A: Aggregate + Send,
+{
+    pub async fn get(&self, id: &str) -> Result<Option<A>, RepositoryError> {
+        let identity = stream_identity_for::<A>(id)?;
+        let entity = self.repo.get_stream(&identity).await?;
+        let Some(entity) = entity else {
+            return Ok(None);
+        };
+        Ok(Some(hydrate::<A>(entity)?))
+    }
+
+    pub async fn get_all(&self, ids: &[&str]) -> Result<Vec<A>, RepositoryError> {
+        let identities = ids
+            .iter()
+            .map(|id| stream_identity_for::<A>(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let entities = self.repo.get_streams(&identities).await?;
+        let mut aggregates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            aggregates.push(hydrate::<A>(entity)?);
+        }
+        Ok(aggregates)
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A>
+where
+    R: AsyncTransactionalCommit,
+    A: Aggregate + Send,
+{
+    pub async fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
+        let identity = stream_identity_for::<A>(aggregate.entity().id())?;
+        let stream = AsyncStreamWrite::new(identity, aggregate.entity_mut());
+        self.repo
+            .commit_batch_async(AsyncCommitBatch::new(vec![stream]))
+            .await
+    }
+
+    pub async fn commit_all(&self, aggregates: &mut [&mut A]) -> Result<(), RepositoryError> {
+        let mut streams = Vec::with_capacity(aggregates.len());
+        for aggregate in aggregates.iter_mut() {
+            let identity = stream_identity_for::<A>((*aggregate).entity().id())?;
+            streams.push(AsyncStreamWrite::new(identity, (*aggregate).entity_mut()));
+        }
+        self.repo
+            .commit_batch_async(AsyncCommitBatch::new(streams))
+            .await
+    }
+
+    pub async fn commit_entities(
+        &self,
+        streams: Vec<(StreamIdentity, &mut Entity)>,
+    ) -> Result<(), RepositoryError> {
+        let streams = streams
+            .into_iter()
+            .map(|(identity, entity)| AsyncStreamWrite::new(identity, entity))
+            .collect();
+        self.repo
+            .commit_batch_async(AsyncCommitBatch::new(streams))
+            .await
+    }
+}

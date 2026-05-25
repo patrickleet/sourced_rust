@@ -1,7 +1,13 @@
+#![expect(
+    clippy::manual_async_fn,
+    reason = "async trait impls return impl Future + Send to preserve public Send bounds"
+)]
+
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use crate::repository::RepositoryError;
+use crate::repository::{AsyncSnapshotStore, RepositoryError, StreamIdentity};
 
 use super::store::{SnapshotRecord, SnapshotStore};
 
@@ -52,6 +58,49 @@ impl SnapshotStore for InMemorySnapshotStore {
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
         Ok(storage.remove(id).is_some())
+    }
+}
+
+impl AsyncSnapshotStore for InMemorySnapshotStore {
+    fn get_snapshot_async<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            let storage = self
+                .storage
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("async snapshot read"))?;
+            Ok(storage.get(&identity.storage_key()).cloned())
+        }
+    }
+
+    fn save_snapshot_async<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        record: SnapshotRecord,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            let mut storage = self
+                .storage
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("async snapshot write"))?;
+            storage.insert(identity.storage_key(), record);
+            Ok(())
+        }
+    }
+
+    fn delete_snapshot_async<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
+        async move {
+            let mut storage = self
+                .storage
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("async snapshot write"))?;
+            Ok(storage.remove(&identity.storage_key()).is_some())
+        }
     }
 }
 
