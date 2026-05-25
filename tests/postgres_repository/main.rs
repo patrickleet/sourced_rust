@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord,
-    PostgresRepository, ReadModel, ReadModelSession, RepositoryError, SnapshotRecord,
-    StreamIdentity,
+    AsyncOutboxStore, AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
+    EventRecord, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelSession,
+    RepositoryError, SnapshotRecord, StreamIdentity,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -358,4 +358,48 @@ async fn unsupported_codec_rows_fail_on_read() {
     assert!(
         matches!(err, RepositoryError::Model(message) if message.contains("unsupported payload codec"))
     );
+}
+
+#[tokio::test]
+async fn outbox_metadata_columns_round_trip_into_message_metadata() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    let message_id = unique_id("outbox-column-metadata");
+    sqlx::query(
+        r#"
+        INSERT INTO outbox_messages (
+          message_id,
+          event_type,
+          payload,
+          payload_codec,
+          payload_codec_version,
+          metadata,
+          status,
+          created_at,
+          next_available_at,
+          attempts,
+          correlation_id,
+          causation_id
+        )
+        VALUES ($1, 'OutboxColumns', decode('00', 'hex'), 'bytes', 1, '{}'::jsonb,
+                'pending', now(), now(), 0, 'corr-column', 'cause-column')
+        "#,
+    )
+    .bind(&message_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let stored = repo
+        .outbox_store()
+        .messages_by_status_async(OutboxMessageStatus::Pending)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id() == message_id)
+        .unwrap();
+
+    assert_eq!(stored.correlation_id(), Some("corr-column"));
+    assert_eq!(stored.causation_id(), Some("cause-column"));
 }

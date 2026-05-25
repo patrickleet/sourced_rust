@@ -342,6 +342,13 @@ impl OutboxMessage {
         self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
+        self.attempts = 0;
+        self.last_error = None;
+        self.worker_id = None;
+        self.leased_until = None;
+        self.source_aggregate_type = None;
+        self.source_aggregate_id = None;
+        self.source_sequence = None;
         Ok(())
     }
 
@@ -589,6 +596,34 @@ mod tests {
         assert!(err
             .message
             .contains("failed to compute outbox lease deadline before UNIX epoch"));
+    }
+
+    #[test]
+    fn initialize_resets_delivery_and_source_state() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message.claim("worker-1".into(), 1).unwrap();
+        message.last_error = Some("previous failure".into());
+        message.source_aggregate_type = Some("todo".into());
+        message.source_aggregate_id = Some("todo-1".into());
+        message.source_sequence = Some(7);
+
+        message
+            .initialize(
+                "msg-2".into(),
+                "OtherEvent".into(),
+                b"{}".to_vec(),
+                None,
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(message.attempts, 0);
+        assert_eq!(message.last_error, None);
+        assert_eq!(message.worker_id, None);
+        assert_eq!(message.leased_until, None);
+        assert_eq!(message.source_aggregate_type, None);
+        assert_eq!(message.source_aggregate_id, None);
+        assert_eq!(message.source_sequence, None);
     }
 
     #[test]

@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, EventRecord, ReadModel, ReadModelSession, RepositoryError,
-    SnapshotRecord, SqliteRepository, StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
+    AsyncOutboxStore, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
+    AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord, OutboxMessageStatus,
+    ReadModel, ReadModelSession, RepositoryError, SnapshotRecord, SqliteRepository, StreamIdentity,
+    TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -318,4 +319,46 @@ async fn unsupported_codec_rows_fail_on_read() {
     assert!(
         matches!(err, RepositoryError::Model(message) if message.contains("unsupported payload codec"))
     );
+}
+
+#[tokio::test]
+async fn outbox_metadata_columns_round_trip_into_message_metadata() {
+    let repo = repository().await;
+    let message_id = "outbox-column-metadata";
+    sqlx::query(
+        r#"
+        INSERT INTO outbox_messages (
+          message_id,
+          event_type,
+          payload,
+          payload_codec,
+          payload_codec_version,
+          metadata,
+          status,
+          created_at,
+          next_available_at,
+          attempts,
+          correlation_id,
+          causation_id
+        )
+        VALUES (?, 'OutboxColumns', x'00', 'bytes', 1, '{}', 'pending',
+                '0.000000000', '0.000000000', 0, 'corr-column', 'cause-column')
+        "#,
+    )
+    .bind(message_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let stored = repo
+        .outbox_store()
+        .messages_by_status_async(OutboxMessageStatus::Pending)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id() == message_id)
+        .unwrap();
+
+    assert_eq!(stored.correlation_id(), Some("corr-column"));
+    assert_eq!(stored.causation_id(), Some("cause-column"));
 }

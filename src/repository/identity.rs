@@ -14,6 +14,8 @@ pub struct StreamIdentity {
 }
 
 impl StreamIdentity {
+    const STORAGE_KEY_DELIMITER: char = '\u{1f}';
+
     /// Create a validated stream identity.
     pub fn new(
         aggregate_type: impl Into<String>,
@@ -38,6 +40,22 @@ impl StreamIdentity {
             });
         }
 
+        if aggregate_type.contains(Self::STORAGE_KEY_DELIMITER) {
+            return Err(RepositoryError::InvalidStreamIdentity {
+                aggregate_type,
+                aggregate_id,
+                reason: "aggregate type contains reserved delimiter".into(),
+            });
+        }
+
+        if aggregate_id.contains(Self::STORAGE_KEY_DELIMITER) {
+            return Err(RepositoryError::InvalidStreamIdentity {
+                aggregate_type,
+                aggregate_id,
+                reason: "aggregate id contains reserved delimiter".into(),
+            });
+        }
+
         Ok(Self {
             aggregate_type,
             aggregate_id,
@@ -55,7 +73,12 @@ impl StreamIdentity {
     }
 
     pub(crate) fn storage_key(&self) -> String {
-        format!("{}\u{1f}{}", self.aggregate_type, self.aggregate_id)
+        format!(
+            "{}{}{}",
+            self.aggregate_type,
+            Self::STORAGE_KEY_DELIMITER,
+            self.aggregate_id
+        )
     }
 }
 
@@ -96,6 +119,28 @@ mod tests {
             err,
             RepositoryError::InvalidStreamIdentity { reason, .. }
                 if reason == "aggregate id must not be empty"
+        ));
+    }
+
+    #[test]
+    fn rejects_reserved_delimiter_in_aggregate_type() {
+        let err = StreamIdentity::new("orders\u{1f}archived", "order-1").unwrap_err();
+
+        assert!(matches!(
+            err,
+            RepositoryError::InvalidStreamIdentity { reason, .. }
+                if reason == "aggregate type contains reserved delimiter"
+        ));
+    }
+
+    #[test]
+    fn rejects_reserved_delimiter_in_aggregate_id() {
+        let err = StreamIdentity::new("orders", "order\u{1f}1").unwrap_err();
+
+        assert!(matches!(
+            err,
+            RepositoryError::InvalidStreamIdentity { reason, .. }
+                if reason == "aggregate id contains reserved delimiter"
         ));
     }
 }

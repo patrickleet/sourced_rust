@@ -102,8 +102,14 @@ where
         .await
         .expect("get_all should reload both seats");
     assert_eq!(loaded.len(), 2);
-    assert_eq!(loaded[0].entity.id(), first_id);
-    assert_eq!(loaded[1].entity.id(), second_id);
+    let mut actual_ids = loaded
+        .iter()
+        .map(|seat| seat.entity.id().to_string())
+        .collect::<Vec<_>>();
+    actual_ids.sort();
+    let mut expected_ids = vec![first_id, second_id];
+    expected_ids.sort();
+    assert_eq!(actual_ids, expected_ids);
 }
 
 pub async fn multi_stream_conflict_rolls_back_other_stream_and_snapshot<R>(repo: R)

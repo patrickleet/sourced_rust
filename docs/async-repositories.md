@@ -1,7 +1,8 @@
 # Async Repository Boundary
 
-Distributed keeps the synchronous in-memory repository API intact and adds a
-parallel async persistence boundary for database-backed adapters.
+Distributed, currently published from the `sourced_rust` crate, keeps the
+synchronous in-memory repository API intact and adds a parallel async persistence
+boundary for database-backed adapters.
 
 The async traits are stream-aware. Event-store adapters should load and commit
 streams with `StreamIdentity`, the pair `(aggregate_type, aggregate_id)`, rather
