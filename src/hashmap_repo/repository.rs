@@ -7,7 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use crate::entity::{Committable, Entity, EventRecord};
+use crate::entity::{
+    Committable, Entity, EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC,
+    BITCODE_PAYLOAD_CODEC_VERSION,
+};
 use crate::read_model::in_memory::apply_document_write_plan;
 use crate::read_model::{
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
@@ -146,11 +149,16 @@ impl AsyncTransactionalCommit for HashMapRepository {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             reject_duplicate_async_streams(&batch.streams)?;
+            validate_async_entity_id_matches_identity(&batch.streams)?;
             let prepared = batch
                 .streams
                 .iter()
                 .map(PreparedEventAppend::from_stream_write)
                 .collect::<Vec<_>>();
+            validate_prepared_async_appends(&prepared)?;
+            for write in &batch.snapshots {
+                validate_async_snapshot_write(write)?;
+            }
 
             let mut storage = self
                 .event_store
@@ -327,6 +335,71 @@ fn reject_duplicate_async_streams(streams: &[AsyncStreamWrite<'_>]) -> Result<()
                 id: stream.identity.to_string(),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_async_entity_id_matches_identity(
+    streams: &[AsyncStreamWrite<'_>],
+) -> Result<(), RepositoryError> {
+    for stream in streams {
+        if stream.entity.id() != stream.identity.aggregate_id() {
+            return Err(RepositoryError::Model(format!(
+                "stream identity `{}` does not match entity id `{}`",
+                stream.identity,
+                stream.entity.id()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_prepared_async_appends(appends: &[PreparedEventAppend]) -> Result<(), RepositoryError> {
+    for append in appends {
+        for (offset, event) in append.events.iter().enumerate() {
+            validate_supported_event_codec(event)?;
+            let expected_sequence = append.expected_version + offset as u64 + 1;
+            if event.sequence != expected_sequence {
+                return Err(RepositoryError::Model(format!(
+                    "event `{}` for stream `{}` has sequence {}, expected {}",
+                    event.event_name, append.identity, event.sequence, expected_sequence
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_supported_event_codec(event: &EventRecord) -> Result<(), RepositoryError> {
+    if event.payload_codec != BITCODE_PAYLOAD_CODEC
+        || event.payload_codec_version != BITCODE_PAYLOAD_CODEC_VERSION
+    {
+        return Err(EventRecordError::unsupported_codec(
+            &event.payload_codec,
+            event.payload_codec_version,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_async_snapshot_write(write: &AsyncSnapshotWrite) -> Result<(), RepositoryError> {
+    match write {
+        AsyncSnapshotWrite::Save { identity, record } => {
+            validate_snapshot_identity(identity, record)
+        }
+    }
+}
+
+fn validate_snapshot_identity(
+    identity: &StreamIdentity,
+    record: &SnapshotRecord,
+) -> Result<(), RepositoryError> {
+    if record.aggregate_id != identity.aggregate_id() {
+        return Err(RepositoryError::Model(format!(
+            "snapshot aggregate id `{}` does not match stream identity `{}`",
+            record.aggregate_id, identity
+        )));
     }
     Ok(())
 }
@@ -531,6 +604,7 @@ impl AsyncSnapshotStore for HashMapRepository {
         record: SnapshotRecord,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
+            validate_snapshot_identity(identity, &record)?;
             let mut storage = self
                 .snapshot_store
                 .storage
