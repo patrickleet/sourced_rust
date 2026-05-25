@@ -7,9 +7,7 @@ use sourced_rust::{
     SnapshotRecord, StreamIdentity,
 };
 
-use super::checkout::{
-    AddSeat, StartCheckout, CHECKOUT_SEAT_RESERVED_STATUS, SEAT_RESERVED_STATUS,
-};
+use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, SEAT_RESERVED_STATUS};
 use super::checkout_saga::CheckoutSaga;
 use super::seat::Seat;
 
@@ -32,24 +30,16 @@ where
     let seat_id = unique_id("seat");
     let seat_category = "balcony".to_string();
 
-    let seat_added = add_seat(
-        repo.clone(),
-        AddSeat {
-            seat_id: seat_id.clone(),
-            category: seat_category.clone(),
-        },
-    )
-    .await
-    .expect("seat add should commit");
+    let seat_added = add_seat(repo.clone(), seat_id.clone(), seat_category.clone())
+        .await
+        .expect("seat add should commit");
     assert_eq!(seat_added.seat_id, seat_id);
 
     let checkout_started = start_checkout(
         repo.clone(),
-        StartCheckout {
-            checkout_id: checkout_id.clone(),
-            seat_id: seat_id.clone(),
-            seat_category: seat_category.clone(),
-        },
+        checkout_id.clone(),
+        seat_id.clone(),
+        seat_category.clone(),
     )
     .await
     .expect("checkout start should commit");
@@ -95,17 +85,11 @@ where
 
     let mut first = Seat::default();
     first
-        .add(AddSeat {
-            seat_id: first_id.clone(),
-            category: "floor".into(),
-        })
+        .add(first_id.clone(), "floor".into())
         .expect("first seat should be valid");
     let mut second = Seat::default();
     second
-        .add(AddSeat {
-            seat_id: second_id.clone(),
-            category: "box".into(),
-        })
+        .add(second_id.clone(), "box".into())
         .expect("second seat should be valid");
 
     seat_repo
@@ -137,10 +121,7 @@ where
 
     let mut original = Seat::default();
     original
-        .add(AddSeat {
-            seat_id: seat_id.clone(),
-            category: "balcony".into(),
-        })
+        .add(seat_id.clone(), "balcony".into())
         .expect("seat should be valid");
     seat_repo
         .commit(&mut original)
@@ -158,10 +139,18 @@ where
         .expect("winner load should succeed")
         .expect("winner seat should exist");
     stale
-        .reserve(unique_id("checkout-stale"))
+        .reserve(
+            unique_id("checkout-stale"),
+            seat_id.clone(),
+            stale.category.clone(),
+        )
         .expect("stale reservation should be valid locally");
     winner
-        .reserve(unique_id("checkout-winner"))
+        .reserve(
+            unique_id("checkout-winner"),
+            seat_id.clone(),
+            winner.category.clone(),
+        )
         .expect("winner reservation should be valid locally");
     seat_repo
         .commit(&mut winner)
@@ -171,11 +160,11 @@ where
     let checkout_id = unique_id("rollback-checkout");
     let mut checkout = CheckoutSaga::default();
     checkout
-        .start(StartCheckout {
-            checkout_id: checkout_id.clone(),
-            seat_id: unique_id("rollback-seat"),
-            seat_category: "floor".into(),
-        })
+        .start(
+            checkout_id.clone(),
+            unique_id("rollback-seat"),
+            "floor".into(),
+        )
         .expect("checkout should be valid locally");
 
     let stale_identity = StreamIdentity::new(Seat::aggregate_type(), &seat_id)
@@ -261,11 +250,8 @@ where
     let mut seat = Seat::default();
     seat.entity.set_correlation_id("corr-conformance");
     seat.entity.set_causation_id("cmd-conformance");
-    seat.add(AddSeat {
-        seat_id: id.clone(),
-        category: "gallery".into(),
-    })
-    .expect("seat should be valid");
+    seat.add(id.clone(), "gallery".into())
+        .expect("seat should be valid");
 
     repo.clone()
         .async_aggregate::<Seat>()
@@ -372,30 +358,40 @@ where
 
 async fn add_seat<R>(
     repo: R,
-    command: AddSeat,
+    seat_id: String,
+    category: String,
 ) -> Result<super::checkout::SeatAdded, RepositoryError>
 where
     R: AsyncTransactionalCommit + Clone + Send + Sync + 'static,
 {
     let mut seat = Seat::default();
-    let event = seat.add(command).map_err(RepositoryError::Model)?;
+    seat.add(seat_id.clone(), category.clone())
+        .map_err(|err| RepositoryError::Model(err.to_string()))?;
     repo.async_aggregate::<Seat>().commit(&mut seat).await?;
-    Ok(event)
+    Ok(super::checkout::SeatAdded { seat_id, category })
 }
 
 async fn start_checkout<R>(
     repo: R,
-    command: StartCheckout,
+    checkout_id: String,
+    seat_id: String,
+    seat_category: String,
 ) -> Result<super::checkout::CheckoutStarted, RepositoryError>
 where
     R: AsyncTransactionalCommit + Clone + Send + Sync + 'static,
 {
     let mut checkout = CheckoutSaga::default();
-    let event = checkout.start(command).map_err(RepositoryError::Model)?;
+    checkout
+        .start(checkout_id.clone(), seat_id.clone(), seat_category.clone())
+        .map_err(|err| RepositoryError::Model(err.to_string()))?;
     repo.async_aggregate::<CheckoutSaga>()
         .commit(&mut checkout)
         .await?;
-    Ok(event)
+    Ok(super::checkout::CheckoutStarted {
+        checkout_id,
+        seat_id,
+        seat_category,
+    })
 }
 
 async fn reserve_started_checkout_seat<R>(
@@ -413,11 +409,19 @@ where
             .ok_or_else(|| RepositoryError::NotFound {
                 id: event.seat_id.clone(),
             })?;
-    let event = seat
-        .reserve(event.checkout_id)
-        .map_err(RepositoryError::Model)?;
+    let reserved = super::checkout::SeatReserved {
+        checkout_id: event.checkout_id,
+        seat_id: event.seat_id.clone(),
+        seat_category: event.seat_category.clone(),
+    };
+    seat.reserve(
+        reserved.checkout_id.clone(),
+        reserved.seat_id.clone(),
+        reserved.seat_category.clone(),
+    )
+    .map_err(|err| RepositoryError::Model(err.to_string()))?;
     seat_repo.commit(&mut seat).await?;
-    Ok(event)
+    Ok(reserved)
 }
 
 async fn record_seat_reserved<R>(
@@ -434,9 +438,17 @@ where
         .ok_or_else(|| RepositoryError::NotFound {
             id: event.checkout_id.clone(),
         })?;
-    let completed = checkout
-        .record_seat_reserved(event)
-        .map_err(RepositoryError::Model)?;
+    checkout
+        .record_seat_reserved(
+            event.checkout_id.clone(),
+            event.seat_id.clone(),
+            event.seat_category.clone(),
+        )
+        .map_err(|err| RepositoryError::Model(err.to_string()))?;
     checkout_repo.commit(&mut checkout).await?;
-    Ok(completed)
+    Ok(super::checkout::SeatReservationCompleted {
+        checkout_id: event.checkout_id,
+        seat_id: event.seat_id,
+        seat_category: event.seat_category,
+    })
 }
