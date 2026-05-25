@@ -13,6 +13,21 @@ use crate::domain::types::{Direction, Tile};
 use crate::error::GameError;
 use crate::views::{build_board, BoardView};
 
+#[derive(Default)]
+struct DamageReport {
+    blocks_destroyed: Vec<(i32, i32)>,
+    players_killed: Vec<String>,
+    chain_detonations: Vec<String>,
+}
+
+impl DamageReport {
+    fn has_damage(&self) -> bool {
+        !self.blocks_destroyed.is_empty()
+            || !self.players_killed.is_empty()
+            || !self.chain_detonations.is_empty()
+    }
+}
+
 fn load_board<R: ReadModelStore>(repo: &R, game_id: &str) -> Result<BoardView, GameError> {
     repo.read_models::<BoardView>()
         .get_by_primary_key(game_id)
@@ -117,11 +132,14 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
             explosion.expand()?;
 
             let new_cells = explosion.newly_reached_cells().to_vec();
-            let (blocks, killed, chains) =
-                apply_damage(&new_cells, &mut map, &mut players, &mut bombs, None)?;
+            let damage = apply_damage(&new_cells, &mut map, &mut players, &mut bombs, None)?;
 
-            if !blocks.is_empty() || !killed.is_empty() || !chains.is_empty() {
-                saga.record_damage(blocks, killed, chains)?;
+            if damage.has_damage() {
+                saga.record_damage(
+                    damage.blocks_destroyed,
+                    damage.players_killed,
+                    damage.chain_detonations,
+                )?;
             }
         }
     }
@@ -159,7 +177,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
 
             // Apply center-cell damage (ring 0)
             let center_cells = explosion.newly_reached_cells().to_vec();
-            let (blocks, killed, chains) =
+            let damage =
                 apply_damage(&center_cells, &mut map, &mut players, &mut bombs, Some(idx))?;
 
             saga.record_detonation(Detonation {
@@ -168,8 +186,12 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
                 explosion_id,
             })?;
 
-            if !blocks.is_empty() || !killed.is_empty() || !chains.is_empty() {
-                saga.record_damage(blocks, killed, chains)?;
+            if damage.has_damage() {
+                saga.record_damage(
+                    damage.blocks_destroyed,
+                    damage.players_killed,
+                    damage.chain_detonations,
+                )?;
             }
 
             explosions.push(explosion);
@@ -256,46 +278,43 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
 }
 
 /// Apply damage to cells: destroy blocks, kill players, mark chain detonations.
-/// Returns (blocks_destroyed, players_killed, chain_detonations).
 fn apply_damage(
     cells: &[(i32, i32)],
     map: &mut GameMap,
     players: &mut [Player],
     bombs: &mut [Bomb],
     skip_bomb_idx: Option<usize>,
-) -> Result<(Vec<(i32, i32)>, Vec<String>, Vec<String>), GameError> {
-    let mut blocks_destroyed = Vec::new();
-    let mut players_killed = Vec::new();
-    let mut chain_detonations = Vec::new();
+) -> Result<DamageReport, GameError> {
+    let mut report = DamageReport::default();
 
     for &(cx, cy) in cells {
         // Destroy blocks
         if map.is_in_bounds(cx, cy) && *map.tile_at(cx, cy) == Tile::Block {
             map.destroy_block(cx, cy)?;
-            blocks_destroyed.push((cx, cy));
+            report.blocks_destroyed.push((cx, cy));
         }
 
         // Kill players
         for player in players.iter_mut() {
             if player.alive && player.x == cx && player.y == cy {
                 player.kill()?;
-                players_killed.push(player.entity.id().to_string());
+                report.players_killed.push(player.entity.id().to_string());
             }
         }
 
         // Chain-detonate other bombs
-        for i in 0..bombs.len() {
+        for (i, bomb) in bombs.iter_mut().enumerate() {
             if Some(i) == skip_bomb_idx {
                 continue;
             }
-            if !bombs[i].exploded && bombs[i].x == cx && bombs[i].y == cy {
-                bombs[i].ticks_remaining = 0;
-                chain_detonations.push(bombs[i].entity.id().to_string());
+            if !bomb.exploded && bomb.x == cx && bomb.y == cy {
+                bomb.ticks_remaining = 0;
+                report.chain_detonations.push(bomb.entity.id().to_string());
             }
         }
     }
 
-    Ok((blocks_destroyed, players_killed, chain_detonations))
+    Ok(report)
 }
 
 // ── Player commands ──
@@ -493,7 +512,7 @@ pub fn calculate_blast_rings(bomb: &Bomb, map: &GameMap) -> Vec<Vec<(i32, i32)>>
         let mut cx = bomb.x;
         let mut cy = bomb.y;
 
-        for dist in 1..=radius {
+        for ring in rings.iter_mut().take(radius + 1).skip(1) {
             let (nx, ny) = dir.apply(cx, cy);
 
             if !map.is_in_bounds(nx, ny) {
@@ -503,11 +522,11 @@ pub fn calculate_blast_rings(bomb: &Bomb, map: &GameMap) -> Vec<Vec<(i32, i32)>>
             match map.tile_at(nx, ny) {
                 Tile::Wall => break,
                 Tile::Block => {
-                    rings[dist].push((nx, ny));
+                    ring.push((nx, ny));
                     break;
                 }
                 _ => {
-                    rings[dist].push((nx, ny));
+                    ring.push((nx, ny));
                 }
             }
 
