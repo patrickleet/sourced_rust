@@ -413,7 +413,26 @@ impl AsyncReadModelStore for SqliteRepository {
                 });
             }
             let new_version = next_document_version(M::COLLECTION, model.id(), Some(actual))?;
-            update_document_in_tx(&mut tx, M::COLLECTION, model.id(), bytes, new_version).await?;
+            let rows_affected = update_document_in_tx(
+                &mut tx,
+                M::COLLECTION,
+                model.id(),
+                bytes,
+                actual,
+                new_version,
+            )
+            .await?;
+            if rows_affected == 0 {
+                let current = document_version_in_tx(&mut tx, M::COLLECTION, model.id())
+                    .await?
+                    .unwrap_or(actual);
+                return Err(ReadModelError::ConcurrencyConflict {
+                    collection: M::COLLECTION.to_string(),
+                    id: model.id().to_string(),
+                    expected: expected_version,
+                    actual: current,
+                });
+            }
             commit_read_model_tx(tx).await?;
             Ok(Versioned {
                 data: model.clone(),
@@ -1090,6 +1109,18 @@ fn outbox_message_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OutboxMessage
         .map_err(|err| repository_storage_error("decode outbox source sequence row", err))?
         .map(|value| sqlx_repository_u64_from_i64(SQLITE_BACKEND, value, "outbox source sequence"))
         .transpose()?;
+    if let Some(correlation_id) = row
+        .try_get::<Option<String>, _>("correlation_id")
+        .map_err(|err| repository_storage_error("decode outbox correlation_id row", err))?
+    {
+        message.set_correlation_id(correlation_id);
+    }
+    if let Some(causation_id) = row
+        .try_get::<Option<String>, _>("causation_id")
+        .map_err(|err| repository_storage_error("decode outbox causation_id row", err))?
+    {
+        message.set_causation_id(causation_id);
+    }
     Ok(message)
 }
 
@@ -1335,7 +1366,22 @@ async fn upsert_document_in_tx(
     let current = document_version_in_tx(tx, collection, id).await?;
     let new_version = next_document_version(collection, id, current)?;
     match current {
-        Some(_) => update_document_in_tx(tx, collection, id, bytes, new_version).await?,
+        Some(expected_version) => {
+            let rows_affected =
+                update_document_in_tx(tx, collection, id, bytes, expected_version, new_version)
+                    .await?;
+            if rows_affected == 0 {
+                let actual = document_version_in_tx(tx, collection, id)
+                    .await?
+                    .unwrap_or(expected_version);
+                return Err(ReadModelError::ConcurrencyConflict {
+                    collection: collection.to_string(),
+                    id: id.to_string(),
+                    expected: expected_version,
+                    actual,
+                });
+            }
+        }
         None => insert_document_in_tx(tx, collection, id, bytes, new_version).await?,
     }
     Ok(new_version)
@@ -1404,13 +1450,14 @@ async fn update_document_in_tx(
     collection: &str,
     id: &str,
     bytes: Vec<u8>,
+    expected_version: u64,
     version: u64,
-) -> Result<(), ReadModelError> {
-    sqlx::query(
+) -> Result<u64, ReadModelError> {
+    let result = sqlx::query(
         r#"
         UPDATE transactional_read_models
         SET version = ?, payload = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE collection = ? AND id = ?
+        WHERE collection = ? AND id = ? AND version = ?
         "#,
     )
     .bind(sqlx_read_model_i64_from_u64(
@@ -1422,11 +1469,17 @@ async fn update_document_in_tx(
     .bind(bytes)
     .bind(collection)
     .bind(id)
+    .bind(sqlx_read_model_i64_from_u64(
+        SQLITE_BACKEND,
+        expected_version,
+        "expected version",
+        SIGNED_INTEGER_STORAGE,
+    )?)
     .execute(&mut **tx)
     .await
     .map_err(|err| read_model_storage_error("update document", err))?;
 
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 async fn processed_message_exists_pool(
@@ -1584,6 +1637,9 @@ fn system_time_from_storage(value: &str) -> SystemTime {
     let Ok(nanos) = nanos.parse::<u32>() else {
         return UNIX_EPOCH;
     };
+    if nanos >= 1_000_000_000 {
+        return UNIX_EPOCH;
+    }
     UNIX_EPOCH + Duration::new(secs, nanos)
 }
 

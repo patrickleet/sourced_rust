@@ -64,7 +64,32 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
   CHECK (payload_codec <> ''),
   CHECK (payload_codec_version > 0),
   CHECK (status IN ('pending', 'in_flight', 'published', 'failed')),
-  CHECK (attempts >= 0)
+  CHECK (attempts >= 0),
+  CHECK (
+    CASE status
+      WHEN 'pending' THEN
+        claimed_by IS NULL
+        AND claimed_until IS NULL
+        AND published_at IS NULL
+        AND failed_at IS NULL
+      WHEN 'in_flight' THEN
+        claimed_by IS NOT NULL
+        AND claimed_until IS NOT NULL
+        AND published_at IS NULL
+        AND failed_at IS NULL
+      WHEN 'published' THEN
+        claimed_by IS NULL
+        AND claimed_until IS NULL
+        AND published_at IS NOT NULL
+        AND failed_at IS NULL
+      WHEN 'failed' THEN
+        claimed_by IS NULL
+        AND claimed_until IS NULL
+        AND published_at IS NULL
+        AND failed_at IS NOT NULL
+      ELSE FALSE
+    END
+  )
 );
 
 CREATE INDEX IF NOT EXISTS outbox_messages_pending_idx

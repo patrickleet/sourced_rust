@@ -690,6 +690,23 @@ struct EventDef {
     method_args: Option<Vec<Ident>>, // None = use event args, Some([]) = no args, Some([x,y]) = specific args
 }
 
+fn validate_aggregate_type_literal(lit: &LitStr) -> syn::Result<()> {
+    let value = lit.value();
+    if value.trim().is_empty() {
+        return Err(syn::Error::new_spanned(
+            lit,
+            "`aggregate_type` must not be empty or whitespace",
+        ));
+    }
+    if value.contains('\u{1f}') {
+        return Err(syn::Error::new_spanned(
+            lit,
+            "`aggregate_type` must not contain the reserved stream delimiter (U+001F)",
+        ));
+    }
+    Ok(())
+}
+
 impl Parse for AggregateInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let agg_name: Ident = input.parse()?;
@@ -704,7 +721,9 @@ impl Parse for AggregateInput {
                 return Err(syn::Error::new(kw.span(), "expected `aggregate_type`"));
             }
             input.parse::<Token![=]>()?;
-            aggregate_type = Some(input.parse::<LitStr>()?);
+            let lit = input.parse::<LitStr>()?;
+            validate_aggregate_type_literal(&lit)?;
+            aggregate_type = Some(lit);
         }
 
         let content;
@@ -832,7 +851,9 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
             } else if kw == "aggregate_type" {
                 input.parse::<Ident>()?;
                 input.parse::<Token![=]>()?;
-                aggregate_type = Some(input.parse::<LitStr>()?);
+                let lit = input.parse::<LitStr>()?;
+                validate_aggregate_type_literal(&lit)?;
+                aggregate_type = Some(lit);
             } else if kw == "enqueue" {
                 input.parse::<Ident>()?;
                 // Optional custom emitter field: enqueue(my_emitter)

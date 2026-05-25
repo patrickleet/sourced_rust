@@ -41,7 +41,7 @@ Reference these guidelines when:
 
 Read individual rule files for detailed explanations and SQL examples:
 
-```
+```text
 references/query-missing-indexes.md
 references/query-partial-indexes.md
 references/_sections.md

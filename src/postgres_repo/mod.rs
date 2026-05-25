@@ -775,9 +775,7 @@ async fn insert_event_in_tx(
     match result {
         Ok(_) => Ok(()),
         Err(err) if is_postgres_unique_violation(&err) => {
-            let actual = stream_version_pool(pool, identity)
-                .await
-                .unwrap_or_default();
+            let actual = stream_version_pool(pool, identity).await?;
             Err(RepositoryError::ConcurrentWrite {
                 id: identity.to_string(),
                 expected: expected_version,
@@ -961,6 +959,19 @@ fn outbox_message_from_row(row: PgRow) -> Result<OutboxMessage, RepositoryError>
             sqlx_repository_u64_from_i64(POSTGRES_BACKEND, value, "outbox source sequence")
         })
         .transpose()?;
+    let mut metadata = deserialize_event_metadata(&metadata_json)?;
+    if let Some(correlation_id) = row
+        .try_get::<Option<String>, _>("correlation_id")
+        .map_err(|err| repository_storage_error("decode outbox correlation_id row", err))?
+    {
+        metadata.insert("correlation_id".into(), correlation_id);
+    }
+    if let Some(causation_id) = row
+        .try_get::<Option<String>, _>("causation_id")
+        .map_err(|err| repository_storage_error("decode outbox causation_id row", err))?
+    {
+        metadata.insert("causation_id".into(), causation_id);
+    }
 
     Ok(OutboxMessage {
         id: row
@@ -982,7 +993,7 @@ fn outbox_message_from_row(row: PgRow) -> Result<OutboxMessage, RepositoryError>
             })?,
             "outbox payload codec version",
         )?,
-        metadata: deserialize_event_metadata(&metadata_json)?,
+        metadata,
         status,
         created_at: system_time_from_epoch_secs(
             row.try_get("created_at_epoch")

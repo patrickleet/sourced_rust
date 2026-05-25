@@ -22,7 +22,10 @@ impl Seat {
 
     #[event(
         "SeatReserved",
-        when = self.status == SEAT_AVAILABLE_STATUS && !checkout_id.is_empty()
+        when = self.status == SEAT_AVAILABLE_STATUS
+            && !checkout_id.is_empty()
+            && self.entity.id() == seat_id.as_str()
+            && self.category == seat_category
     )]
     pub fn reserve(&mut self, checkout_id: String, seat_id: String, seat_category: String) {
         self.status = SEAT_RESERVED_STATUS.to_string();

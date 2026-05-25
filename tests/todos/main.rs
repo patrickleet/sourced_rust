@@ -72,7 +72,9 @@ fn todos() {
             .unwrap();
 
     // Commit the Todo + Outbox message to the repository
-    let _ = repo.outbox(init_message).commit(&mut todo);
+    repo.outbox(init_message)
+        .commit(&mut todo)
+        .expect("initial todo outbox commit should succeed");
 
     // Verify the outbox event was captured
     {
@@ -93,7 +95,9 @@ fn todos() {
         )
         .unwrap();
 
-        let _ = repo.outbox(complete_message).commit(&mut retrieved_todo);
+        repo.outbox(complete_message)
+            .commit(&mut retrieved_todo)
+            .expect("completed todo outbox commit should succeed");
 
         // Verify we now have 2 outbox events
         {

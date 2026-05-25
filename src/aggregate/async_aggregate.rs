@@ -60,6 +60,12 @@ where
         Ok(Some(hydrate::<A>(entity)?))
     }
 
+    /// Load existing aggregates for the provided ids.
+    ///
+    /// Each id is converted to a `StreamIdentity`, fetched through `get_streams`,
+    /// and hydrated if present. Missing streams are skipped, and backend
+    /// implementations may return aggregates in storage order rather than input
+    /// order.
     pub async fn get_all(&self, ids: &[&str]) -> Result<Vec<A>, RepositoryError> {
         let identities = ids
             .iter()

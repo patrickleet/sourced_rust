@@ -25,7 +25,11 @@ impl CheckoutSaga {
 
     #[event(
         "CheckoutSagaSeatReservationCompleted",
-        when = self.status == CHECKOUT_STARTED_STATUS && self.entity.id() == checkout_id.as_str()
+        when = self.status == CHECKOUT_STARTED_STATUS
+            && self.entity.id() == checkout_id.as_str()
+            && (self.seat_id.is_empty() || self.seat_id == seat_id)
+            && (self.seat_category.is_empty() || self.seat_category == seat_category)
+            && (self.reserved_seat_id.is_empty() || self.reserved_seat_id == seat_id)
     )]
     pub fn record_seat_reserved(
         &mut self,

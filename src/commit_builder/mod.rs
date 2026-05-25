@@ -46,6 +46,58 @@ pub struct CommitBuilder<'a, R> {
     error: Option<RepositoryError>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OutboxSource {
+    aggregate_type: String,
+    aggregate_id: String,
+    source_sequence: u64,
+}
+
+impl OutboxSource {
+    fn from_aggregate<A: Aggregate>(aggregate: &A) -> Self {
+        Self {
+            aggregate_type: A::aggregate_type().to_string(),
+            aggregate_id: aggregate.entity().id().to_string(),
+            source_sequence: aggregate.entity().version(),
+        }
+    }
+
+    fn apply_to(&self, message: &mut OutboxMessage) {
+        message.source_aggregate_type = Some(self.aggregate_type.clone());
+        message.source_aggregate_id = Some(self.aggregate_id.clone());
+        message.source_sequence = Some(self.source_sequence);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum StagedOutboxSource {
+    #[default]
+    None,
+    Single(OutboxSource),
+    Ambiguous,
+}
+
+impl StagedOutboxSource {
+    fn record(&mut self, source: OutboxSource) {
+        match self {
+            Self::None => *self = Self::Single(source),
+            Self::Single(existing) if *existing == source => {}
+            Self::Single(_) => *self = Self::Ambiguous,
+            Self::Ambiguous => {}
+        }
+    }
+
+    fn apply_to(&self, messages: &mut [OutboxMessage]) {
+        let Self::Single(source) = self else {
+            return;
+        };
+
+        for message in messages {
+            source.apply_to(message);
+        }
+    }
+}
+
 impl<'a, R> CommitBuilder<'a, R> {
     pub fn new(repo: &'a R) -> Self {
         Self {
@@ -94,7 +146,9 @@ impl<'a, R> CommitBuilder<'a, R> {
 
     /// Stage an aggregate and switch to a no-argument staged commit builder.
     pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
+        let source = OutboxSource::from_aggregate(aggregate);
         let mut builder = StagedCommitBuilder::from_builder(self);
+        builder.outbox_source.record(source);
         builder.staged_entities.push(aggregate.entity_mut());
         builder
     }
@@ -174,6 +228,7 @@ pub struct StagedCommitBuilder<'a, R> {
     entities: Vec<Entity>,
     outbox_messages: Vec<OutboxMessage>,
     staged_entities: Vec<&'a mut Entity>,
+    outbox_source: StagedOutboxSource,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
@@ -185,6 +240,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
             entities: builder.entities,
             outbox_messages: builder.outbox_messages,
             staged_entities: Vec::new(),
+            outbox_source: StagedOutboxSource::default(),
             read_model_plans: builder.read_model_plans,
             error: builder.error,
         }
@@ -220,6 +276,8 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
     }
 
     pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
+        self.outbox_source
+            .record(OutboxSource::from_aggregate(aggregate));
         self.staged_entities.push(aggregate.entity_mut());
         self
     }
@@ -234,6 +292,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         R: TransactionalCommit,
     {
         self.check_staged()?;
+        self.outbox_source.apply_to(&mut self.outbox_messages);
 
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         entity_refs.extend(self.staged_entities);
@@ -382,6 +441,7 @@ mod tests {
         fail: bool,
         entity_ids: RefCell<Vec<String>>,
         outbox_ids: RefCell<Vec<String>>,
+        outbox_sources: RefCell<Vec<(String, Option<String>, Option<String>, Option<u64>)>>,
         read_model_keys: RefCell<Vec<String>>,
     }
 
@@ -396,6 +456,18 @@ mod tests {
                 .outbox_messages
                 .iter()
                 .map(|message| message.id().to_string())
+                .collect();
+            *self.outbox_sources.borrow_mut() = batch
+                .outbox_messages
+                .iter()
+                .map(|message| {
+                    (
+                        message.id().to_string(),
+                        message.source_aggregate_type.clone(),
+                        message.source_aggregate_id.clone(),
+                        message.source_sequence,
+                    )
+                })
                 .collect();
             *self.read_model_keys.borrow_mut() = batch
                 .read_model_plans
@@ -690,6 +762,29 @@ mod tests {
         let baseline = record(0);
         assert_eq!(record(1), baseline);
         assert_eq!(record(2), baseline);
+    }
+
+    #[test]
+    fn staged_commit_sets_outbox_source_from_single_aggregate() {
+        let repo = RecordingBatchRepo::default();
+        let mut agg = TestAggregate::default();
+        agg.touch();
+        let outbox = OutboxMessage::create("sourced-msg", "TestEvent", b"{}".to_vec()).unwrap();
+
+        ReadModelSessionCommitExt::aggregate(&repo, &mut agg)
+            .outbox(outbox)
+            .commit()
+            .unwrap();
+
+        assert_eq!(
+            repo.outbox_sources.borrow().as_slice(),
+            &[(
+                "sourced-msg".to_string(),
+                Some(TestAggregate::aggregate_type().to_string()),
+                Some("agg-1".to_string()),
+                Some(1),
+            )]
+        );
     }
 
     #[test]

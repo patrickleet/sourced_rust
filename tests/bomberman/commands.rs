@@ -28,6 +28,25 @@ impl DamageReport {
     }
 }
 
+struct KillAttribution {
+    player_id: String,
+    bomb_id: String,
+    bomb_owner: String,
+}
+
+fn record_kill_attributions(
+    attributions: &mut Vec<KillAttribution>,
+    killed_ids: &[String],
+    bomb_id: &str,
+    bomb_owner: &str,
+) {
+    attributions.extend(killed_ids.iter().map(|player_id| KillAttribution {
+        player_id: player_id.clone(),
+        bomb_id: bomb_id.to_string(),
+        bomb_owner: bomb_owner.to_string(),
+    }));
+}
+
 fn load_board<R: ReadModelStore>(repo: &R, game_id: &str) -> Result<BoardView, GameError> {
     repo.read_models::<BoardView>()
         .get_by_primary_key(game_id)
@@ -120,6 +139,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
     )?;
 
     let mut explosion_counter = board.explosions_created;
+    let mut kill_attributions = Vec::new();
 
     // ── Phase A: Expand existing explosions ──
     for explosion in &mut explosions {
@@ -133,6 +153,12 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
 
             let new_cells = explosion.newly_reached_cells().to_vec();
             let damage = apply_damage(&new_cells, &mut map, &mut players, &mut bombs, None)?;
+            record_kill_attributions(
+                &mut kill_attributions,
+                &damage.players_killed,
+                &explosion.bomb_id,
+                &explosion.owner,
+            );
 
             if damage.has_damage() {
                 saga.record_damage(
@@ -179,6 +205,12 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
             let center_cells = explosion.newly_reached_cells().to_vec();
             let damage =
                 apply_damage(&center_cells, &mut map, &mut players, &mut bombs, Some(idx))?;
+            record_kill_attributions(
+                &mut kill_attributions,
+                &damage.players_killed,
+                &bomb_id,
+                &bomb_owner,
+            );
 
             saga.record_detonation(Detonation {
                 bomb_id,
@@ -240,15 +272,20 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
     // Create outbox messages for killed players
     let mut builder = repo.readmodel(&board);
     for killed_id in &saga.players_killed {
-        // Use the most recent detonation for the kill event payload.
-        let det = saga.detonations.last();
+        let attribution = kill_attributions
+            .iter()
+            .find(|attribution| attribution.player_id.as_str() == killed_id.as_str());
         let outbox = OutboxMessage::create(
             format!("player-killed:{}", killed_id),
             "PlayerKilled",
             serde_json::to_vec(&serde_json::json!({
                 "player_id": killed_id,
-                "killed_by_bomb": det.map(|d| d.bomb_id.as_str()).unwrap_or("unknown"),
-                "bomb_owner": det.map(|d| d.owner.as_str()).unwrap_or("unknown"),
+                "killed_by_bomb": attribution
+                    .map(|attribution| attribution.bomb_id.as_str())
+                    .unwrap_or("unknown"),
+                "bomb_owner": attribution
+                    .map(|attribution| attribution.bomb_owner.as_str())
+                    .unwrap_or("unknown"),
             }))
             .map_err(|err| {
                 GameError::Repository(RepositoryError::Model(format!(
