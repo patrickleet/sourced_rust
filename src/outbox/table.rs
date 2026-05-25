@@ -23,14 +23,14 @@ pub fn outbox_message_schema() -> TableSchema {
             table_column("destination", ColumnType::Text, true),
             table_column("metadata", ColumnType::Json, false),
             table_column("status", ColumnType::Text, false),
-            table_column("created_at", ColumnType::UnsignedInteger, false),
-            table_column("next_available_at", ColumnType::UnsignedInteger, false),
+            table_column("created_at", ColumnType::Timestamp, false),
+            table_column("next_available_at", ColumnType::Timestamp, false),
             table_column("claimed_by", ColumnType::Text, true),
-            table_column("claimed_until", ColumnType::UnsignedInteger, true),
+            table_column("claimed_until", ColumnType::Timestamp, true),
             table_column("attempts", ColumnType::UnsignedInteger, false),
             table_column("last_error", ColumnType::Text, true),
-            table_column("published_at", ColumnType::UnsignedInteger, true),
-            table_column("failed_at", ColumnType::UnsignedInteger, true),
+            table_column("published_at", ColumnType::Timestamp, true),
+            table_column("failed_at", ColumnType::Timestamp, true),
             table_column("source_aggregate_type", ColumnType::Text, true),
             table_column("source_aggregate_id", ColumnType::Text, true),
             table_column("source_sequence", ColumnType::UnsignedInteger, true),
@@ -70,6 +70,13 @@ pub fn outbox_message_insert_plan(
         mode: RowWriteMode::Insert,
     });
     Ok(TableWritePlan::new(vec![mutation], Vec::new()))
+}
+
+pub(crate) fn validate_outbox_message_table_write(
+    message: &OutboxMessage,
+) -> Result<(), TableStoreError> {
+    let plan = outbox_message_insert_plan(message)?;
+    plan.validate()
 }
 
 pub fn outbox_message_key(message_id: &str) -> RowKey {
