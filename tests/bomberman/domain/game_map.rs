@@ -2,6 +2,8 @@ use sourced_rust::{digest, Entity, SourcedResult};
 
 use super::types::{PowerUp, Tile};
 
+pub type ParsedMap = (usize, usize, Vec<Vec<Tile>>, Vec<(i32, i32)>);
+
 #[derive(Default)]
 pub struct GameMap {
     pub entity: Entity,
@@ -91,7 +93,7 @@ impl GameMap {
     /// - `.` = Block (destructible)
     /// - ` ` = Floor
     /// - `1`-`4` = Spawn points (stored as Floor tiles)
-    pub fn from_ascii(ascii: &str) -> (usize, usize, Vec<Vec<Tile>>, Vec<(i32, i32)>) {
+    pub fn from_ascii(ascii: &str) -> ParsedMap {
         let lines: Vec<&str> = ascii.lines().filter(|l| !l.is_empty()).collect();
         let height = lines.len();
         let width = lines.iter().map(|l| l.len()).max().unwrap_or(0);

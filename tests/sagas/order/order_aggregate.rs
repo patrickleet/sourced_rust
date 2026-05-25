@@ -11,8 +11,9 @@ pub struct OrderItem {
 }
 
 /// Order status
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderStatus {
+    #[default]
     Pending,
     InventoryReserved,
     PaymentProcessed,
@@ -29,12 +30,6 @@ pub struct Order {
     status: OrderStatus,
     total_cents: u32,
     failure_reason: Option<String>,
-}
-
-impl Default for OrderStatus {
-    fn default() -> Self {
-        OrderStatus::Pending
-    }
 }
 
 #[allow(dead_code)]

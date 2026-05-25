@@ -2,19 +2,14 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::{digest, Entity};
 
 /// Payment status
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaymentStatus {
+    #[default]
     Pending,
     Authorized,
     Captured,
     Failed,
     Refunded,
-}
-
-impl Default for PaymentStatus {
-    fn default() -> Self {
-        PaymentStatus::Pending
-    }
 }
 
 /// Payment aggregate - represents a payment attempt for an order
