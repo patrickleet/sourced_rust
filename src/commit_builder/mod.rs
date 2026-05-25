@@ -41,6 +41,7 @@ use crate::repository::{CommitBatch, RepositoryError, TransactionalCommit};
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
+    outbox_messages: Vec<OutboxMessage>,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
@@ -50,6 +51,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         Self {
             repo,
             entities: vec![],
+            outbox_messages: vec![],
             read_model_plans: vec![],
             error: None,
         }
@@ -86,7 +88,7 @@ impl<'a, R> CommitBuilder<'a, R> {
 
     /// Add an outbox message to the commit (takes ownership).
     pub fn outbox(mut self, msg: OutboxMessage) -> Self {
-        self.entities.push(msg.into_entity());
+        self.outbox_messages.push(msg);
         self
     }
 
@@ -103,11 +105,15 @@ impl<'a, R> CommitBuilder<'a, R> {
         R: TransactionalCommit,
     {
         self.check_staged()?;
+        for message in &mut self.outbox_messages {
+            message.set_source(aggregate);
+        }
 
         let mut entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         entity_refs.push(aggregate.entity_mut());
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
+            outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
@@ -132,6 +138,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         }
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
+            outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
@@ -147,6 +154,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         let entity_refs: Vec<&mut Entity> = self.entities.iter_mut().collect();
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
+            outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
@@ -164,6 +172,7 @@ impl<'a, R> CommitBuilder<'a, R> {
 pub struct StagedCommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
+    outbox_messages: Vec<OutboxMessage>,
     staged_entities: Vec<&'a mut Entity>,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
@@ -174,6 +183,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         Self {
             repo: builder.repo,
             entities: builder.entities,
+            outbox_messages: builder.outbox_messages,
             staged_entities: Vec::new(),
             read_model_plans: builder.read_model_plans,
             error: builder.error,
@@ -205,7 +215,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
     }
 
     pub fn outbox(mut self, msg: OutboxMessage) -> Self {
-        self.entities.push(msg.into_entity());
+        self.outbox_messages.push(msg);
         self
     }
 
@@ -229,6 +239,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         entity_refs.extend(self.staged_entities);
         self.repo.commit_batch(CommitBatch {
             entities: entity_refs,
+            outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
         })
@@ -370,6 +381,7 @@ mod tests {
     struct RecordingBatchRepo {
         fail: bool,
         entity_ids: RefCell<Vec<String>>,
+        outbox_ids: RefCell<Vec<String>>,
         read_model_keys: RefCell<Vec<String>>,
     }
 
@@ -379,6 +391,11 @@ mod tests {
                 .entities
                 .iter()
                 .map(|entity| entity.id().to_string())
+                .collect();
+            *self.outbox_ids.borrow_mut() = batch
+                .outbox_messages
+                .iter()
+                .map(|message| message.id().to_string())
                 .collect();
             *self.read_model_keys.borrow_mut() = batch
                 .read_model_plans
@@ -811,10 +828,10 @@ mod tests {
         );
         assert!(repo.entity_ids.borrow().iter().any(|id| id == "agg-1"));
         assert!(repo
-            .entity_ids
+            .outbox_ids
             .borrow()
             .iter()
-            .any(|id| id == "outbox:msg-rollback"));
+            .any(|id| id == "msg-rollback"));
     }
 
     #[test]

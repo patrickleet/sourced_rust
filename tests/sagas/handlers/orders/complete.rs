@@ -17,7 +17,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     order.mark_payment_processed()?;
     order.complete()?;
 
-    let mut msg = json_outbox_to(
+    let msg = json_outbox_to(
         &format!("{}-order-completed", input.order_id),
         "OrderCompleted",
         "saga",
@@ -27,6 +27,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(&mut msg).commit(&mut order)?;
+    ctx.repo().outbox(msg).commit(&mut order)?;
     Ok(json!({ "order_id": input.order_id }))
 }

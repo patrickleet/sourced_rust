@@ -16,21 +16,23 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity::{Entity, EventRecord};
+use crate::outbox::{OutboxMessage, OutboxMessageStatus};
+use crate::outbox_worker::{ensure_active_claim, OutboxPublishFailureAction};
 use crate::read_model::{
     ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelMutation, ReadModelWritePlan, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
-    AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend,
-    RepositoryError, StreamIdentity,
+    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncReadModelSessionStore,
+    AsyncReadModelStore, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit,
+    PreparedEventAppend, RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
     self, deserialize_event_metadata, is_sqlite_unique_constraint,
     read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
-    read_model_u64_from_i64 as sqlx_read_model_u64_from_i64, reject_duplicate_streams,
-    repository_i64_from_u64 as sqlx_repository_i64_from_u64,
+    read_model_u64_from_i64 as sqlx_read_model_u64_from_i64, reject_duplicate_outbox_messages,
+    reject_duplicate_streams, repository_i64_from_u64 as sqlx_repository_i64_from_u64,
     repository_u16_from_i64 as sqlx_repository_u16_from_i64,
     repository_u64_from_i64 as sqlx_repository_u64_from_i64, serialize_event_metadata,
     validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
@@ -156,6 +158,7 @@ impl AsyncTransactionalCommit for SqliteRepository {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             reject_duplicate_streams(&batch.streams)?;
+            reject_duplicate_outbox_messages(&batch.outbox_messages)?;
             validate_entity_id_matches_identity(&batch.streams)?;
 
             let prepared = batch
@@ -191,6 +194,10 @@ impl AsyncTransactionalCommit for SqliteRepository {
                     insert_event_in_tx(&mut tx, &append.identity, append.expected_version, event)
                         .await?;
                 }
+            }
+
+            for message in &batch.outbox_messages {
+                insert_outbox_message_in_tx(&mut tx, message).await?;
             }
 
             for plan in batch.read_model_plans {
@@ -422,6 +429,296 @@ impl AsyncReadModelSessionStore for SqliteRepository {
     }
 }
 
+impl AsyncOutboxRepositoryExt for SqliteRepository {
+    fn outbox_messages_by_status_async(
+        &self,
+        status: OutboxMessageStatus,
+    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
+        async move {
+            let rows = sqlx::query(
+                r#"
+                SELECT message_id, event_type, payload, payload_codec, payload_codec_version,
+                       metadata, status, created_at,
+                       claimed_by, claimed_until, attempts, last_error, destination,
+                       source_aggregate_type, source_aggregate_id, source_sequence,
+                       correlation_id, causation_id
+                FROM outbox_messages
+                WHERE status = ?
+                ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
+                "#,
+            )
+            .bind(status.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("load outbox messages by status", err))?;
+
+            rows.into_iter().map(outbox_message_from_row).collect()
+        }
+    }
+
+    fn claim_outbox_messages_async<'a>(
+        &'a self,
+        worker_id: &'a str,
+        max: usize,
+        lease: Duration,
+    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
+        async move {
+            if max == 0 {
+                return Ok(Vec::new());
+            }
+
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let claimed_until = now.checked_add(lease).ok_or_else(|| {
+                RepositoryError::Model("failed to compute outbox lease deadline".into())
+            })?;
+            let claimed_until_storage = system_time_to_storage(claimed_until)?;
+
+            let mut tx =
+                self.pool.begin().await.map_err(|err| {
+                    repository_storage_error("begin outbox claim transaction", err)
+                })?;
+
+            let limit = sqlx_repository_i64_from_u64(
+                SQLITE_BACKEND,
+                max as u64,
+                "outbox claim limit",
+                SIGNED_INTEGER_STORAGE,
+            )?;
+            let candidate_rows = sqlx::query(
+                r#"
+                SELECT message_id
+                FROM outbox_messages
+                WHERE (status = ? AND CAST(next_available_at AS REAL) <= ?)
+                   OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
+                ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
+                LIMIT ?
+                "#,
+            )
+            .bind(OutboxMessageStatus::Pending.as_str())
+            .bind(now_epoch)
+            .bind(OutboxMessageStatus::InFlight.as_str())
+            .bind(now_epoch)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| repository_storage_error("select claimable outbox messages", err))?;
+
+            let mut claimed = Vec::new();
+            for row in candidate_rows {
+                let message_id: String = row
+                    .try_get("message_id")
+                    .map_err(|err| repository_storage_error("decode outbox message id row", err))?;
+                let result = sqlx::query(
+                    r#"
+                    UPDATE outbox_messages
+                    SET status = ?,
+                        claimed_by = ?,
+                        claimed_until = ?,
+                        attempts = attempts + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE message_id = ?
+                      AND (
+                        (status = ? AND CAST(next_available_at AS REAL) <= ?)
+                        OR (
+                          status = ?
+                          AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?)
+                        )
+                      )
+                    "#,
+                )
+                .bind(OutboxMessageStatus::InFlight.as_str())
+                .bind(worker_id)
+                .bind(&claimed_until_storage)
+                .bind(&message_id)
+                .bind(OutboxMessageStatus::Pending.as_str())
+                .bind(now_epoch)
+                .bind(OutboxMessageStatus::InFlight.as_str())
+                .bind(now_epoch)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| repository_storage_error("claim outbox message", err))?;
+
+                if result.rows_affected() == 0 {
+                    continue;
+                }
+
+                if let Some(message) = outbox_message_by_id_in_tx(&mut tx, &message_id).await? {
+                    claimed.push(message);
+                }
+            }
+
+            tx.commit()
+                .await
+                .map_err(|err| repository_storage_error("commit outbox claim transaction", err))?;
+            Ok(claimed)
+        }
+    }
+
+    fn complete_outbox_message_for_worker_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let result = sqlx::query(
+                r#"
+                UPDATE outbox_messages
+                SET status = ?,
+                    claimed_by = NULL,
+                    claimed_until = NULL,
+                    published_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE message_id = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND claimed_until IS NOT NULL
+                  AND CAST(claimed_until AS REAL) > ?
+                "#,
+            )
+            .bind(OutboxMessageStatus::Published.as_str())
+            .bind(system_time_to_storage(now)?)
+            .bind(message_id)
+            .bind(OutboxMessageStatus::InFlight.as_str())
+            .bind(worker_id)
+            .bind(now_epoch)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("complete outbox message", err))?;
+
+            ensure_outbox_update_applied(
+                &self.pool,
+                result.rows_affected(),
+                message_id,
+                |message| ensure_active_claim(message, Some(worker_id), now),
+            )
+            .await
+        }
+    }
+
+    fn release_outbox_message_for_worker_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let now_storage = system_time_to_storage(now)?;
+            let result = sqlx::query(
+                r#"
+                UPDATE outbox_messages
+                SET status = ?,
+                    claimed_by = NULL,
+                    claimed_until = NULL,
+                    next_available_at = ?,
+                    last_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE message_id = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND claimed_until IS NOT NULL
+                  AND CAST(claimed_until AS REAL) > ?
+                "#,
+            )
+            .bind(OutboxMessageStatus::Pending.as_str())
+            .bind(now_storage)
+            .bind(empty_string_as_none(error))
+            .bind(message_id)
+            .bind(OutboxMessageStatus::InFlight.as_str())
+            .bind(worker_id)
+            .bind(now_epoch)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("release outbox message", err))?;
+
+            ensure_outbox_update_applied(
+                &self.pool,
+                result.rows_affected(),
+                message_id,
+                |message| ensure_active_claim(message, Some(worker_id), now),
+            )
+            .await
+        }
+    }
+
+    fn fail_outbox_message_for_worker_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let result = sqlx::query(
+                r#"
+                UPDATE outbox_messages
+                SET status = ?,
+                    claimed_by = NULL,
+                    claimed_until = NULL,
+                    last_error = ?,
+                    failed_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE message_id = ?
+                  AND status = ?
+                  AND claimed_by = ?
+                  AND claimed_until IS NOT NULL
+                  AND CAST(claimed_until AS REAL) > ?
+                "#,
+            )
+            .bind(OutboxMessageStatus::Failed.as_str())
+            .bind(empty_string_as_none(error))
+            .bind(system_time_to_storage(now)?)
+            .bind(message_id)
+            .bind(OutboxMessageStatus::InFlight.as_str())
+            .bind(worker_id)
+            .bind(now_epoch)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("fail outbox message", err))?;
+
+            ensure_outbox_update_applied(
+                &self.pool,
+                result.rows_affected(),
+                message_id,
+                |message| ensure_active_claim(message, Some(worker_id), now),
+            )
+            .await
+        }
+    }
+
+    fn record_outbox_publish_failure_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+        error: &'a str,
+        max_attempts: u32,
+    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
+        async move {
+            let message = outbox_message_by_id_pool(&self.pool, message_id)
+                .await?
+                .ok_or_else(|| RepositoryError::NotFound {
+                    id: message_id.to_string(),
+                })?;
+            ensure_active_claim(&message, Some(worker_id), SystemTime::now())?;
+
+            if message.attempts >= max_attempts {
+                self.fail_outbox_message_for_worker_async(message_id, worker_id, error)
+                    .await?;
+                Ok(OutboxPublishFailureAction::Failed)
+            } else {
+                self.release_outbox_message_for_worker_async(message_id, worker_id, error)
+                    .await?;
+                Ok(OutboxPublishFailureAction::Released)
+            }
+        }
+    }
+}
+
 impl AsyncSnapshotStore for SqliteRepository {
     fn get_snapshot_async<'a>(
         &'a self,
@@ -488,6 +785,224 @@ impl AsyncSnapshotStore for SqliteRepository {
             Ok(result.rows_affected() > 0)
         }
     }
+}
+
+fn empty_string_as_none(value: &str) -> Option<&str> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+async fn insert_outbox_message_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    message: &OutboxMessage,
+) -> Result<(), RepositoryError> {
+    let metadata = serialize_event_metadata(&message.metadata)?;
+    let result = sqlx::query(
+        r#"
+        INSERT INTO outbox_messages (
+          message_id,
+          event_type,
+          payload,
+          payload_codec,
+          payload_codec_version,
+          destination,
+          metadata,
+          status,
+          created_at,
+          next_available_at,
+          claimed_by,
+          claimed_until,
+          attempts,
+          last_error,
+          source_aggregate_type,
+          source_aggregate_id,
+          source_sequence,
+          correlation_id,
+          causation_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(message.id())
+    .bind(&message.event_type)
+    .bind(&message.payload)
+    .bind(&message.payload_codec)
+    .bind(i64::from(message.payload_codec_version))
+    .bind(&message.destination)
+    .bind(metadata)
+    .bind(message.status.as_str())
+    .bind(system_time_to_storage(message.created_at)?)
+    .bind(system_time_to_storage(message.created_at)?)
+    .bind(&message.worker_id)
+    .bind(
+        message
+            .leased_until
+            .map(system_time_to_storage)
+            .transpose()?,
+    )
+    .bind(i64::from(message.attempts))
+    .bind(&message.last_error)
+    .bind(&message.source_aggregate_type)
+    .bind(&message.source_aggregate_id)
+    .bind(
+        message
+            .source_sequence
+            .map(|value| {
+                sqlx_repository_i64_from_u64(
+                    SQLITE_BACKEND,
+                    value,
+                    "outbox source sequence",
+                    SIGNED_INTEGER_STORAGE,
+                )
+            })
+            .transpose()?,
+    )
+    .bind(message.correlation_id())
+    .bind(message.causation_id())
+    .execute(&mut **tx)
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if is_sqlite_unique_constraint(&err) => {
+            Err(RepositoryError::DuplicateOutboxMessageInBatch {
+                id: message.id().to_string(),
+            })
+        }
+        Err(err) => Err(repository_storage_error("insert outbox message", err)),
+    }
+}
+
+async fn outbox_message_by_id_pool(
+    pool: &SqlitePool,
+    message_id: &str,
+) -> Result<Option<OutboxMessage>, RepositoryError> {
+    let row = sqlx::query(outbox_message_select_sql())
+        .bind(message_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| repository_storage_error("load outbox message", err))?;
+    row.map(outbox_message_from_row).transpose()
+}
+
+async fn outbox_message_by_id_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    message_id: &str,
+) -> Result<Option<OutboxMessage>, RepositoryError> {
+    let row = sqlx::query(outbox_message_select_sql())
+        .bind(message_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|err| repository_storage_error("load outbox message", err))?;
+    row.map(outbox_message_from_row).transpose()
+}
+
+fn outbox_message_select_sql() -> &'static str {
+    r#"
+    SELECT message_id, event_type, payload, payload_codec, payload_codec_version,
+           metadata, status, created_at,
+           claimed_by, claimed_until, attempts, last_error, destination,
+           source_aggregate_type, source_aggregate_id, source_sequence,
+           correlation_id, causation_id
+    FROM outbox_messages
+    WHERE message_id = ?
+    "#
+}
+
+fn outbox_message_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OutboxMessage, RepositoryError> {
+    let status_text: String = row
+        .try_get("status")
+        .map_err(|err| repository_storage_error("decode outbox status row", err))?;
+    let status = status_text.parse::<OutboxMessageStatus>().map_err(|_| {
+        RepositoryError::Model(format!("sqlite outbox status `{status_text}` is invalid"))
+    })?;
+    let metadata_json: String = row
+        .try_get("metadata")
+        .map_err(|err| repository_storage_error("decode outbox metadata row", err))?;
+    let mut message = OutboxMessage::new();
+    let message_id: String = row
+        .try_get("message_id")
+        .map_err(|err| repository_storage_error("decode outbox message id row", err))?;
+    message.id = message_id;
+    message.event_type = row
+        .try_get("event_type")
+        .map_err(|err| repository_storage_error("decode outbox event type row", err))?;
+    message.payload = row
+        .try_get("payload")
+        .map_err(|err| repository_storage_error("decode outbox payload row", err))?;
+    message.payload_codec = row
+        .try_get("payload_codec")
+        .map_err(|err| repository_storage_error("decode outbox payload codec row", err))?;
+    let payload_codec_version: i64 = row
+        .try_get("payload_codec_version")
+        .map_err(|err| repository_storage_error("decode outbox payload codec version row", err))?;
+    message.payload_codec_version = sqlx_repository_u16_from_i64(
+        SQLITE_BACKEND,
+        payload_codec_version,
+        "outbox payload codec version",
+    )?;
+    message.metadata = deserialize_event_metadata(&metadata_json)?;
+    message.status = status;
+    message.created_at = system_time_from_storage(
+        row.try_get::<String, _>("created_at")
+            .map_err(|err| repository_storage_error("decode outbox created_at row", err))?
+            .as_str(),
+    );
+    message.worker_id = row
+        .try_get("claimed_by")
+        .map_err(|err| repository_storage_error("decode outbox claimed_by row", err))?;
+    message.leased_until = row
+        .try_get::<Option<String>, _>("claimed_until")
+        .map_err(|err| repository_storage_error("decode outbox claimed_until row", err))?
+        .as_deref()
+        .map(system_time_from_storage);
+    let attempts: i64 = row
+        .try_get("attempts")
+        .map_err(|err| repository_storage_error("decode outbox attempts row", err))?;
+    message.attempts = u32::try_from(attempts).map_err(|_| {
+        RepositoryError::Model(format!(
+            "sqlite outbox attempts value {attempts} is invalid"
+        ))
+    })?;
+    message.last_error = row
+        .try_get("last_error")
+        .map_err(|err| repository_storage_error("decode outbox last_error row", err))?;
+    message.destination = row
+        .try_get("destination")
+        .map_err(|err| repository_storage_error("decode outbox destination row", err))?;
+    message.source_aggregate_type = row
+        .try_get("source_aggregate_type")
+        .map_err(|err| repository_storage_error("decode outbox source aggregate type row", err))?;
+    message.source_aggregate_id = row
+        .try_get("source_aggregate_id")
+        .map_err(|err| repository_storage_error("decode outbox source aggregate id row", err))?;
+    message.source_sequence = row
+        .try_get::<Option<i64>, _>("source_sequence")
+        .map_err(|err| repository_storage_error("decode outbox source sequence row", err))?
+        .map(|value| sqlx_repository_u64_from_i64(SQLITE_BACKEND, value, "outbox source sequence"))
+        .transpose()?;
+    Ok(message)
+}
+
+async fn ensure_outbox_update_applied(
+    pool: &SqlitePool,
+    rows_affected: u64,
+    message_id: &str,
+    validate: impl FnOnce(&OutboxMessage) -> Result<(), RepositoryError>,
+) -> Result<(), RepositoryError> {
+    if rows_affected > 0 {
+        return Ok(());
+    }
+
+    let message = outbox_message_by_id_pool(pool, message_id)
+        .await?
+        .ok_or_else(|| RepositoryError::NotFound {
+            id: message_id.to_string(),
+        })?;
+    validate(&message)
 }
 
 fn default_pool_size(database_url: &str) -> u32 {
@@ -942,6 +1457,15 @@ fn system_time_to_storage(timestamp: SystemTime) -> Result<String, RepositoryErr
         duration.as_secs(),
         duration.subsec_nanos()
     ))
+}
+
+fn system_time_to_epoch_secs(timestamp: SystemTime) -> Result<f64, RepositoryError> {
+    let duration = timestamp.duration_since(UNIX_EPOCH).map_err(|err| {
+        RepositoryError::Model(format!(
+            "event timestamp before UNIX epoch cannot be compared in sqlite: {err}"
+        ))
+    })?;
+    Ok(duration.as_secs_f64())
 }
 
 fn system_time_from_storage(value: &str) -> SystemTime {

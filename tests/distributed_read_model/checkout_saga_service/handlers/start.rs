@@ -27,8 +27,8 @@ pub fn handle(ctx: &Context<CheckoutRepo>) -> Result<Value, HandlerError> {
         seat_id: msg.seat_id.clone(),
         seat_category: msg.seat_category.clone(),
     };
-    let mut out = json_outbox_event(&msg.checkout_id, checkout_event::STARTED, &event)?;
-    ctx.repo().outbox(&mut out).commit(&mut saga)?;
+    let out = json_outbox_event(&msg.checkout_id, checkout_event::STARTED, &event)?;
+    ctx.repo().outbox(out).commit(&mut saga)?;
 
     Ok(json!({ "checkout_id": msg.checkout_id }))
 }

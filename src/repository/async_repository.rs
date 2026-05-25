@@ -37,6 +37,7 @@ pub enum AsyncSnapshotWrite {
 /// A structured async write batch that must commit under one backend transaction.
 pub struct AsyncCommitBatch<'a> {
     pub streams: Vec<AsyncStreamWrite<'a>>,
+    pub outbox_messages: Vec<OutboxMessage>,
     pub read_model_plans: Vec<ReadModelWritePlan>,
     pub snapshots: Vec<AsyncSnapshotWrite>,
 }
@@ -45,6 +46,7 @@ impl<'a> AsyncCommitBatch<'a> {
     pub fn new(streams: Vec<AsyncStreamWrite<'a>>) -> Self {
         Self {
             streams,
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: Vec::new(),
         }
@@ -226,9 +228,10 @@ pub trait AsyncOutboxRepositoryExt: Send + Sync {
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn fail_outbox_message_async<'a>(
+    fn fail_outbox_message_for_worker_async<'a>(
         &'a self,
         message_id: &'a str,
+        worker_id: &'a str,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 

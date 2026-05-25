@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::entity::{
     EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
 };
+use crate::outbox::OutboxMessage;
 #[cfg(feature = "sqlite")]
 use crate::read_model::ReadModelError;
 use crate::repository::{AsyncStreamWrite, PreparedEventAppend, RepositoryError, StreamIdentity};
@@ -18,6 +19,29 @@ pub(crate) fn reject_duplicate_streams(
             return Err(RepositoryError::DuplicateStreamInBatch {
                 id: stream.identity.to_string(),
             });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_duplicate_outbox_messages(
+    messages: &[OutboxMessage],
+) -> Result<(), RepositoryError> {
+    let mut seen = HashSet::with_capacity(messages.len());
+    for message in messages {
+        let id = message.id();
+        if id.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "outbox message id must not be empty".into(),
+            ));
+        }
+        if message.event_type.trim().is_empty() {
+            return Err(RepositoryError::Model(format!(
+                "outbox message `{id}` event type must not be empty"
+            )));
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(RepositoryError::DuplicateOutboxMessageInBatch { id: id.into() });
         }
     }
     Ok(())

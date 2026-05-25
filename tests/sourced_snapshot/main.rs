@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, SnapshotStore,
-    Snapshottable,
+    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt,
+    SnapshotStore, Snapshottable,
 };
 
 // ============================================================================
@@ -222,7 +222,7 @@ fn domain_event_derives_id_and_payload() {
         .unwrap();
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    assert_eq!(outbox.id(), "outbox:t1:TodoInitialized:1");
+    assert_eq!(outbox.id(), "t1:TodoInitialized:1");
     assert_eq!(outbox.event_type, "TodoInitialized");
 
     let decoded: TodoSnapshot = outbox.decode().unwrap();
@@ -254,10 +254,12 @@ fn domain_event_commits_with_outbox() {
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())
         .unwrap();
 
-    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    repo.outbox(&mut outbox).commit(&mut todo).unwrap();
+    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    repo.outbox(outbox).commit(&mut todo).unwrap();
 
     let loaded = repo.get("t1").unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");
-    assert!(outbox.is_pending());
+    let pending = repo.repo().outbox_messages_pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].is_pending());
 }

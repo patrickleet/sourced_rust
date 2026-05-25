@@ -37,9 +37,9 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let mut message = OutboxMessage::domain_event("CounterCreated", &counter)?;
+    let message = OutboxMessage::domain_event("CounterCreated", &counter)?;
 
-    ctx.repo().outbox(&mut message).commit(&mut counter)?;
+    ctx.repo().outbox(message).commit(&mut counter)?;
 
     Ok(json!({ "id": input.id }))
 }

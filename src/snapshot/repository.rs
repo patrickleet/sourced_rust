@@ -129,6 +129,7 @@ where
 
         self.inner.repo().commit_batch(CommitBatch {
             entities: vec![aggregate.entity_mut()],
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
         })?;
@@ -157,6 +158,7 @@ where
             .collect();
         self.inner.repo().commit_batch(CommitBatch {
             entities,
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
         })?;
@@ -258,7 +260,7 @@ where
     /// Start an outbox commit chain, same as AggregateRepository.
     pub fn outbox<'a>(
         &'a self,
-        outbox: &'a mut crate::outbox::OutboxMessage,
+        outbox: crate::outbox::OutboxMessage,
     ) -> SnapshotOutboxCommit<'a, R, A> {
         SnapshotOutboxCommit {
             snap_repo: self,
@@ -270,7 +272,7 @@ where
 /// Helper for chaining outbox + snapshot-aware commit.
 pub struct SnapshotOutboxCommit<'a, R, A> {
     snap_repo: &'a SnapshotAggregateRepository<R, A>,
-    outbox: &'a mut crate::outbox::OutboxMessage,
+    outbox: crate::outbox::OutboxMessage,
 }
 
 impl<'a, R, A> SnapshotOutboxCommit<'a, R, A>
@@ -278,16 +280,20 @@ where
     R: TransactionalCommit,
     A: Snapshottable,
 {
-    pub fn commit(self, aggregate: &mut A) -> Result<(), RepositoryError> {
+    pub fn commit(mut self, aggregate: &mut A) -> Result<(), RepositoryError> {
         let snapshot = self.snap_repo.snapshot_record(aggregate)?;
         let snapshot_version = snapshot.as_ref().map(|record| record.version);
         let snapshots = snapshot.into_iter().map(SnapshotWrite::Save).collect();
+        self.outbox.set_source(aggregate);
 
-        self.snap_repo.inner.repo().commit_batch(CommitBatch {
-            entities: vec![aggregate.entity_mut(), self.outbox.entity_mut()],
+        let mut batch = CommitBatch {
+            entities: vec![aggregate.entity_mut()],
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
-        })?;
+        };
+        batch.outbox_messages.push(self.outbox);
+        self.snap_repo.inner.repo().commit_batch(batch)?;
 
         if let Some(version) = snapshot_version {
             aggregate.entity_mut().set_snapshot_version(version);

@@ -152,6 +152,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
                 AsyncStreamWrite::new(stale_identity.clone(), stale.entity_mut()),
                 AsyncStreamWrite::new(other_identity.clone(), other.entity_mut()),
             ],
+            outbox_messages: Vec::new(),
             read_model_plans: vec![read_models.into_write_plan().unwrap()],
             snapshots: Vec::new(),
         })

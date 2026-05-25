@@ -177,6 +177,7 @@ where
                 AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
                 AsyncStreamWrite::new(checkout_identity.clone(), checkout.entity_mut()),
             ],
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: vec![AsyncSnapshotWrite::Save {
                 identity: checkout_identity.clone(),

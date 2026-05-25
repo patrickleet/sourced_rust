@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::digest;
+use crate::aggregate::Aggregate;
 use crate::entity::{BitcodePayloadCodec, Entity, EventRecordError, PayloadCodec};
 use crate::SourcedResult;
 
@@ -17,18 +17,43 @@ pub enum OutboxMessageStatus {
     Failed,
 }
 
+impl OutboxMessageStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InFlight => "in_flight",
+            Self::Published => "published",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for OutboxMessageStatus {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "in_flight" => Ok(Self::InFlight),
+            "published" => Ok(Self::Published),
+            "failed" => Ok(Self::Failed),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Durable publication work item stored through the outbox pattern.
 ///
-/// `OutboxMessage` is itself event-sourced so claim/publish/fail lifecycle
-/// changes are auditable. Its `event_type` and `payload` describe the message
-/// to publish, which may be a domain event, integration event, command, or
-/// generic transport message. It is distinct from aggregate `EventRecord`s used
-/// for aggregate replay.
-#[derive(Debug, Serialize, Deserialize)]
+/// The message is an immutable publishable envelope plus mutable delivery state.
+/// It is not an aggregate stream; repositories store it in their outbox storage
+/// and workers update delivery state directly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OutboxMessage {
-    pub entity: Entity,
+    pub id: String,
     pub event_type: String,
     pub payload: Vec<u8>,
+    pub payload_codec: String,
+    pub payload_codec_version: u16,
     pub status: OutboxMessageStatus,
     pub created_at: SystemTime,
     pub attempts: u32,
@@ -41,14 +66,19 @@ pub struct OutboxMessage {
     pub destination: Option<String>,
     /// Metadata propagated to the publisher (correlation IDs, trace context, etc.).
     pub metadata: HashMap<String, String>,
+    pub source_aggregate_type: Option<String>,
+    pub source_aggregate_id: Option<String>,
+    pub source_sequence: Option<u64>,
 }
 
 impl Default for OutboxMessage {
     fn default() -> Self {
         Self {
-            entity: Entity::default(),
+            id: String::new(),
             event_type: String::new(),
             payload: Vec::new(),
+            payload_codec: OutboxMessage::RAW_PAYLOAD_CODEC.to_string(),
+            payload_codec_version: OutboxMessage::RAW_PAYLOAD_CODEC_VERSION,
             status: OutboxMessageStatus::default(),
             created_at: SystemTime::UNIX_EPOCH,
             attempts: 0,
@@ -57,12 +87,16 @@ impl Default for OutboxMessage {
             leased_until: None,
             destination: None,
             metadata: HashMap::new(),
+            source_aggregate_type: None,
+            source_aggregate_id: None,
+            source_sequence: None,
         }
     }
 }
 
 impl OutboxMessage {
-    pub const ID_PREFIX: &'static str = "outbox:";
+    pub const RAW_PAYLOAD_CODEC: &'static str = "bytes";
+    pub const RAW_PAYLOAD_CODEC_VERSION: u16 = 1;
 
     pub fn new() -> Self {
         Self::default()
@@ -110,7 +144,7 @@ impl OutboxMessage {
         payload: &T,
     ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        Self::create(id, event_type, bytes)
+        Self::create_encoded_bytes(id, event_type, bytes, None, HashMap::new())
     }
 
     /// Create a new outbox message with bitcode serialization and a destination queue.
@@ -124,7 +158,13 @@ impl OutboxMessage {
         payload: &T,
     ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        Self::create_to(id, event_type, destination, bytes)
+        Self::create_encoded_bytes(
+            id,
+            event_type,
+            bytes,
+            Some(destination.into()),
+            HashMap::new(),
+        )
     }
 
     /// Create a message with metadata and raw bytes payload.
@@ -147,7 +187,7 @@ impl OutboxMessage {
         metadata: HashMap<String, String>,
     ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        Self::create_with_metadata(id, event_type, bytes, metadata)
+        Self::create_encoded_bytes(id, event_type, bytes, None, metadata)
     }
 
     /// Create a message that inherits metadata from an entity's context.
@@ -162,7 +202,7 @@ impl OutboxMessage {
         entity: &Entity,
     ) -> SourcedResult<Self> {
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
+        Self::create_encoded_bytes(id, event_type, bytes, None, entity.metadata().clone())
     }
 
     /// Create a domain-event style message from a `Snapshottable` aggregate.
@@ -174,8 +214,8 @@ impl OutboxMessage {
     /// - **metadata**: propagated from the entity (correlation IDs, trace context, etc.)
     ///
     /// ```ignore
-    /// let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
-    /// repo.outbox(&mut outbox).commit(&mut todo)?;
+    /// let outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+    /// repo.outbox(outbox).commit(&mut todo)?;
     /// ```
     pub fn domain_event<A: crate::Snapshottable>(
         event_type: impl Into<String>,
@@ -186,16 +226,28 @@ impl OutboxMessage {
         let id = format!("{}:{}:{}", entity.id(), event_type, entity.version());
         let snapshot = aggregate.create_snapshot();
         let bytes = BitcodePayloadCodec::encode(&snapshot).map_err(EventRecordError::encode)?;
-        Self::create_with_metadata(id, event_type, bytes, entity.metadata().clone())
+        let mut message =
+            Self::create_encoded_bytes(id, event_type, bytes, None, entity.metadata().clone())?;
+        message.set_source(aggregate);
+        Ok(message)
     }
 
     /// Decode the payload from the default binary codec.
     pub fn decode<T: serde::de::DeserializeOwned>(&self) -> SourcedResult<T> {
+        if self.payload_codec != BitcodePayloadCodec::NAME
+            || self.payload_codec_version != BitcodePayloadCodec::VERSION
+        {
+            return Err(EventRecordError::unsupported_codec(
+                &self.payload_codec,
+                self.payload_codec_version,
+            ));
+        }
+
         BitcodePayloadCodec::decode(&self.payload).map_err(|e| {
             EventRecordError::decode(
                 &self.event_type,
-                BitcodePayloadCodec::NAME,
-                BitcodePayloadCodec::VERSION,
+                &self.payload_codec,
+                self.payload_codec_version,
                 e,
             )
         })
@@ -203,7 +255,7 @@ impl OutboxMessage {
 
     // Getters
     pub fn id(&self) -> &str {
-        self.entity.id()
+        &self.id
     }
 
     pub fn payload_str(&self) -> Option<&str> {
@@ -243,7 +295,6 @@ impl OutboxMessage {
     }
 
     // Commands
-    #[digest("MessageCreated")]
     pub fn initialize(
         &mut self,
         id: String,
@@ -251,24 +302,85 @@ impl OutboxMessage {
         payload: Vec<u8>,
         destination: Option<String>,
         metadata: HashMap<String, String>,
-    ) {
-        let normalized_id = Self::normalize_id(id);
-        self.entity.set_id(&normalized_id);
+    ) -> SourcedResult {
+        self.initialize_with_codec(
+            id,
+            event_type,
+            payload,
+            destination,
+            metadata,
+            (
+                Self::RAW_PAYLOAD_CODEC.to_string(),
+                Self::RAW_PAYLOAD_CODEC_VERSION,
+            ),
+        )
+    }
+
+    fn initialize_with_codec(
+        &mut self,
+        id: String,
+        event_type: String,
+        payload: Vec<u8>,
+        destination: Option<String>,
+        metadata: HashMap<String, String>,
+        payload_codec: (String, u16),
+    ) -> SourcedResult {
+        validate_non_empty("outbox message id", &id)?;
+        validate_non_empty("outbox event type", &event_type)?;
+        validate_non_empty("outbox payload codec", &payload_codec.0)?;
+        if payload_codec.1 == 0 {
+            return Err(EventRecordError {
+                message: "outbox payload codec version must be greater than zero".into(),
+            });
+        }
+        self.id = id;
         self.event_type = event_type;
         self.payload = payload;
+        self.payload_codec = payload_codec.0;
+        self.payload_codec_version = payload_codec.1;
         self.destination = destination;
         self.metadata = metadata;
         self.status = OutboxMessageStatus::Pending;
         self.created_at = SystemTime::now();
+        Ok(())
     }
 
-    #[digest("MessageClaimed", when = self.is_claimable())]
-    pub fn claim(&mut self, worker_id: String, until_secs: u64) {
+    fn create_encoded_bytes(
+        id: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: Vec<u8>,
+        destination: Option<String>,
+        metadata: HashMap<String, String>,
+    ) -> SourcedResult<Self> {
+        let mut message = Self::new();
+        message.initialize_with_codec(
+            id.into(),
+            event_type.into(),
+            payload,
+            destination,
+            metadata,
+            (
+                BitcodePayloadCodec::NAME.to_string(),
+                BitcodePayloadCodec::VERSION,
+            ),
+        )?;
+        Ok(message)
+    }
+
+    pub fn claim(&mut self, worker_id: String, until_secs: u64) -> SourcedResult {
+        if !self.is_claimable() {
+            return Err(EventRecordError {
+                message: format!("outbox message `{}` is not claimable", self.id),
+            });
+        }
+        validate_non_empty("outbox worker id", &worker_id)?;
+
         let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
         self.status = OutboxMessageStatus::InFlight;
         self.attempts += 1;
         self.worker_id = Some(worker_id);
         self.leased_until = Some(until_time);
+        Ok(())
     }
 
     /// Claim with a Duration (convenience method that computes until_secs)
@@ -306,40 +418,46 @@ impl OutboxMessage {
         Ok(until_secs)
     }
 
-    #[digest("MessagePublished", when = self.is_in_flight())]
-    pub fn complete(&mut self) {
+    pub fn complete(&mut self) -> SourcedResult {
+        if !self.is_in_flight() {
+            return Err(EventRecordError {
+                message: format!("outbox message `{}` is not in flight", self.id),
+            });
+        }
         self.status = OutboxMessageStatus::Published;
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
-    #[digest("MessageReleased", when = self.is_in_flight())]
-    pub fn release(&mut self, error: String) {
+    pub fn release(&mut self, error: String) -> SourcedResult {
+        if !self.is_in_flight() {
+            return Err(EventRecordError {
+                message: format!("outbox message `{}` is not in flight", self.id),
+            });
+        }
         self.status = OutboxMessageStatus::Pending;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
-    #[digest("MessageFailed", when = self.can_fail())]
-    pub fn fail(&mut self, error: String) {
+    pub fn fail(&mut self, error: String) -> SourcedResult {
+        if !self.can_fail() {
+            return Err(EventRecordError {
+                message: format!("outbox message `{}` cannot be failed", self.id),
+            });
+        }
         self.status = OutboxMessageStatus::Failed;
         self.last_error = if error.is_empty() { None } else { Some(error) };
         self.worker_id = None;
         self.leased_until = None;
+        Ok(())
     }
 
     fn can_fail(&self) -> bool {
         self.status != OutboxMessageStatus::Published && self.status != OutboxMessageStatus::Failed
-    }
-
-    fn normalize_id(id: impl Into<String>) -> String {
-        let id = id.into();
-        if id.starts_with(Self::ID_PREFIX) {
-            id
-        } else {
-            format!("{}{}", Self::ID_PREFIX, id)
-        }
     }
 
     /// Set a single metadata key-value pair.
@@ -372,24 +490,21 @@ impl OutboxMessage {
         self.meta("causation_id")
     }
 
-    /// Get mutable reference to the underlying entity.
-    pub fn entity_mut(&mut self) -> &mut Entity {
-        &mut self.entity
-    }
-
-    /// Consume the message and return the underlying entity.
-    pub fn into_entity(self) -> Entity {
-        self.entity
+    pub fn set_source<A: Aggregate>(&mut self, aggregate: &A) {
+        self.source_aggregate_type = Some(A::aggregate_type().to_string());
+        self.source_aggregate_id = Some(aggregate.entity().id().to_string());
+        self.source_sequence = Some(aggregate.entity().version());
     }
 }
 
-crate::aggregate!(OutboxMessage, entity {
-    "MessageCreated"(id, event_type, payload, destination, metadata) => initialize,
-    "MessageClaimed"(worker_id, until_secs) => claim,
-    "MessagePublished"() => complete,
-    "MessageReleased"(error) => release,
-    "MessageFailed"(error) => fail,
-});
+fn validate_non_empty(field: &str, value: &str) -> SourcedResult {
+    if value.trim().is_empty() {
+        return Err(EventRecordError {
+            message: format!("{field} must not be empty"),
+        });
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

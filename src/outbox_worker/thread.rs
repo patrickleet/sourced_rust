@@ -304,10 +304,8 @@ impl Drop for OutboxWorkerThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregate::GetAggregate;
     use crate::bus::PublishError;
-    use crate::repository::Commit;
-    use crate::{HashMapRepository, OutboxMessage};
+    use crate::{CommitBatch, HashMapRepository, OutboxMessage, TransactionalCommit};
 
     struct FailingPublisher;
 
@@ -315,6 +313,18 @@ mod tests {
         fn publish(&self, _event: Event) -> Result<(), PublishError> {
             Err(PublishError::Rejected("forced failure".into()))
         }
+    }
+
+    fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
+        let id = message.id().to_string();
+        let mut batch = CommitBatch::empty();
+        batch.outbox_messages.push(message);
+        repo.commit_batch(batch).unwrap();
+        id
+    }
+
+    fn load_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+        repo.outbox_store().read().unwrap().get(id).unwrap().clone()
     }
 
     #[test]
@@ -361,9 +371,8 @@ mod tests {
     #[test]
     fn worker_thread_fails_message_after_retry_ceiling() {
         let repo = HashMapRepository::new();
-        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let id = message.id().to_string();
-        repo.commit(&mut message.entity).unwrap();
+        let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        let id = store_message(&repo, message);
 
         let worker = OutboxWorkerThread::spawn_with_id(
             repo.clone(),
@@ -373,7 +382,7 @@ mod tests {
         );
 
         for _ in 0..100 {
-            let stored = repo.get_aggregate::<OutboxMessage>(&id).unwrap().unwrap();
+            let stored = load_message(&repo, &id);
             if stored.is_failed() {
                 break;
             }
@@ -381,7 +390,7 @@ mod tests {
         }
 
         let stats = worker.stop().unwrap();
-        let stored = repo.get_aggregate::<OutboxMessage>(&id).unwrap().unwrap();
+        let stored = load_message(&repo, &id);
 
         assert!(stored.is_failed());
         assert_eq!(stored.attempts, DEFAULT_MAX_ATTEMPTS);

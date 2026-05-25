@@ -1,7 +1,7 @@
 //! Outbox - Atomic commit of aggregates with publishable outbox messages.
 //!
-//! This module provides the outbox message entity and commit helpers:
-//! - `OutboxMessage` - Event-sourced outbox message entity
+//! This module provides the outbox message type and commit helpers:
+//! - `OutboxMessage` - publishable message envelope plus delivery state
 //! - `OutboxMessageStatus` - Message status (Pending, InFlight, Published, Failed)
 //! - `OutboxCommit` - Helper for aggregate + outbox commits
 //! - `OutboxCommitExt` - Extension trait for repositories
@@ -31,17 +31,17 @@
 //! let mut order = Order::new();
 //! order.create("order-1", ...);
 //!
-//! let mut outbox = OutboxMessage::create("order-1:created", "OrderCreated", payload);
+//! let outbox = OutboxMessage::create("order-1:created", "OrderCreated", payload);
 //!
 //! // Commit in one repository batch
-//! repo.outbox(&mut outbox).commit(&mut order)?;
+//! repo.outbox(outbox).commit(&mut order)?;
 //! ```
 
 mod commit;
 mod message;
 
-// Event-sourced outbox message
+// Outbox message record
 pub use message::{OutboxMessage, OutboxMessageStatus};
 
 // Commit helpers
-pub use commit::{OutboxCommit, OutboxCommitExt};
+pub use commit::{AsyncOutboxCommit, OutboxCommit, OutboxCommitExt};

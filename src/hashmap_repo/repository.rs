@@ -11,6 +11,7 @@ use crate::entity::{
     Committable, Entity, EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC,
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
+use crate::outbox::OutboxMessage;
 use crate::read_model::in_memory::apply_document_write_plan;
 use crate::read_model::{
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
@@ -32,6 +33,7 @@ use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
 #[derive(Clone)]
 pub struct HashMapRepository {
     event_store: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
+    outbox_store: Arc<RwLock<HashMap<String, OutboxMessage>>>,
     model_store: InMemoryReadModelStore,
     snapshot_store: InMemorySnapshotStore,
 }
@@ -47,13 +49,14 @@ impl HashMapRepository {
     pub fn new() -> Self {
         HashMapRepository {
             event_store: Arc::new(RwLock::new(HashMap::new())),
+            outbox_store: Arc::new(RwLock::new(HashMap::new())),
             model_store: InMemoryReadModelStore::new(),
             snapshot_store: InMemorySnapshotStore::new(),
         }
     }
 
-    pub(crate) fn event_store(&self) -> &RwLock<HashMap<String, Vec<EventRecord>>> {
-        self.event_store.as_ref()
+    pub(crate) fn outbox_store(&self) -> &RwLock<HashMap<String, OutboxMessage>> {
+        self.outbox_store.as_ref()
     }
 
     /// Access the embedded read model store directly.
@@ -159,6 +162,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
             for write in &batch.snapshots {
                 validate_async_snapshot_write(write)?;
             }
+            reject_duplicate_outbox_messages(&batch.outbox_messages)?;
 
             let mut storage = self
                 .event_store
@@ -179,11 +183,16 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 .storage
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async snapshot write"))?;
+            let mut outbox_storage = self
+                .outbox_store
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
 
             let mut staged_events = storage.clone();
             let mut staged_models = model_storage.clone();
             let mut staged_processed_messages = processed_messages.clone();
             let mut staged_snapshots = snapshot_storage.clone();
+            let mut staged_outbox = outbox_storage.clone();
 
             for append in &prepared {
                 let stored_len =
@@ -226,10 +235,19 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 }
             }
 
+            for message in batch.outbox_messages {
+                let id = message.id().to_string();
+                if staged_outbox.contains_key(&id) {
+                    return Err(RepositoryError::DuplicateOutboxMessageInBatch { id });
+                }
+                staged_outbox.insert(id, message);
+            }
+
             *storage = staged_events;
             *model_storage = staged_models;
             *processed_messages = staged_processed_messages;
             *snapshot_storage = staged_snapshots;
+            *outbox_storage = staged_outbox;
 
             for stream in batch.streams {
                 stream.entity.mark_committed();
@@ -243,6 +261,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
 impl TransactionalCommit for HashMapRepository {
     fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
         reject_duplicate_streams(&batch.entities)?;
+        reject_duplicate_outbox_messages(&batch.outbox_messages)?;
 
         let mut storage = self
             .event_store
@@ -263,11 +282,16 @@ impl TransactionalCommit for HashMapRepository {
             .storage
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
+        let mut outbox_storage = self
+            .outbox_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
 
         let mut staged_events = storage.clone();
         let mut staged_models = model_storage.clone();
         let mut staged_processed_messages = processed_messages.clone();
         let mut staged_snapshots = snapshot_storage.clone();
+        let mut staged_outbox = outbox_storage.clone();
 
         // Phase 1: Validate all stream versions before staging any writes.
         for entity in &batch.entities {
@@ -312,11 +336,20 @@ impl TransactionalCommit for HashMapRepository {
             }
         }
 
+        for message in batch.outbox_messages {
+            let id = message.id().to_string();
+            if staged_outbox.contains_key(&id) {
+                return Err(RepositoryError::DuplicateOutboxMessageInBatch { id });
+            }
+            staged_outbox.insert(id, message);
+        }
+
         // Phase 3: Publish staged state only after all validation and staging succeeds.
         *storage = staged_events;
         *model_storage = staged_models;
         *processed_messages = staged_processed_messages;
         *snapshot_storage = staged_snapshots;
+        *outbox_storage = staged_outbox;
 
         for entity in batch.entities {
             entity.mark_committed();
@@ -334,6 +367,27 @@ fn reject_duplicate_async_streams(streams: &[AsyncStreamWrite<'_>]) -> Result<()
             return Err(RepositoryError::DuplicateStreamInBatch {
                 id: stream.identity.to_string(),
             });
+        }
+    }
+    Ok(())
+}
+
+fn reject_duplicate_outbox_messages(messages: &[OutboxMessage]) -> Result<(), RepositoryError> {
+    let mut seen = HashSet::with_capacity(messages.len());
+    for message in messages {
+        let id = message.id();
+        if id.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "outbox message id must not be empty".into(),
+            ));
+        }
+        if message.event_type.trim().is_empty() {
+            return Err(RepositoryError::Model(format!(
+                "outbox message `{id}` event type must not be empty"
+            )));
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(RepositoryError::DuplicateOutboxMessageInBatch { id: id.into() });
         }
     }
     Ok(())
@@ -722,6 +776,7 @@ mod tests {
         let err = repo
             .commit_batch(CommitBatch {
                 entities: Vec::new(),
+                outbox_messages: Vec::new(),
                 read_model_plans: vec![plan],
                 snapshots: Vec::new(),
             })

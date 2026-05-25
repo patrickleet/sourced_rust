@@ -48,6 +48,8 @@ pub use publisher::LocalEmitterPublisher;
 pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 
 // Repository helpers
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) use repository_ext::ensure_active_claim;
 pub use repository_ext::{OutboxPublishFailureAction, OutboxRepositoryExt};
 
 // Worker

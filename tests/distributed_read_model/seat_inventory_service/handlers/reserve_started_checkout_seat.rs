@@ -45,8 +45,8 @@ pub fn handle(ctx: &Context<SeatRepo>) -> Result<Value, HandlerError> {
         seat_id: msg.seat_id.clone(),
         seat_category: msg.seat_category.clone(),
     };
-    let mut out = json_outbox_event(&msg.checkout_id, seat_event::RESERVED, &event)?;
-    ctx.repo().outbox(&mut out).commit(&mut seat)?;
+    let out = json_outbox_event(&msg.checkout_id, seat_event::RESERVED, &event)?;
+    ctx.repo().outbox(out).commit(&mut seat)?;
 
     Ok(json!({ "seat_id": msg.seat_id }))
 }

@@ -19,7 +19,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     }
     inv.reserve(input.order_id.clone(), input.quantity)?;
 
-    let mut msg = json_outbox_to(
+    let msg = json_outbox_to(
         &format!("{}-inventory-reserved", input.order_id),
         "InventoryReserved",
         "saga",
@@ -29,6 +29,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(&mut msg).commit(&mut inv)?;
+    ctx.repo().outbox(msg).commit(&mut inv)?;
     Ok(json!({ "reserved": input.quantity }))
 }

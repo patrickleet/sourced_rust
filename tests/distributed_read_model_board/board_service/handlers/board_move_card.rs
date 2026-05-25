@@ -19,8 +19,8 @@ pub fn handle(ctx: &Context<BoardRepo>) -> Result<Value, HandlerError> {
         .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
     board.move_card(input.card_id.clone(), input.column.clone())?;
 
-    let mut outbox = OutboxMessage::domain_event("board.card_moved", &board)?;
-    ctx.repo().outbox(&mut outbox).commit(&mut board)?;
+    let outbox = OutboxMessage::domain_event("board.card_moved", &board)?;
+    ctx.repo().outbox(outbox).commit(&mut board)?;
 
     Ok(json!({ "id": input.id, "card_id": input.card_id, "column": input.column }))
 }
