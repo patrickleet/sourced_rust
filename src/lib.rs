@@ -20,6 +20,8 @@ mod outbox_worker;
 pub mod queued_repo;
 pub mod read_model;
 pub mod snapshot;
+#[cfg(feature = "sqlite")]
+pub mod sqlite_repo;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
@@ -46,6 +48,8 @@ pub use aggregate::{
 };
 
 pub use hashmap_repo::HashMapRepository;
+#[cfg(feature = "sqlite")]
+pub use sqlite_repo::SqliteRepository;
 
 // Re-export lock traits and types at crate root for convenience
 pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};

@@ -39,3 +39,23 @@ stream-aware contract before SQL code lands.
 The Postgres repository should implement the async traits directly with `sqlx`.
 It should not hide database I/O behind the synchronous traits with `block_on`,
 `block_in_place`, or a blocking wrapper in normal async runtimes.
+
+## SQLite Adapter
+
+The optional `sqlite` feature exports `SqliteRepository`, an async-only
+SQL-backed adapter for local persistence and conformance work:
+
+```rust
+let repo = sourced_rust::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
+```
+
+`SqliteRepository::migrate` applies explicit SQLite migrations from
+`migrations/sqlite`. Plain construction from an existing pool does not create
+tables implicitly, so applications can control bootstrap order.
+
+The first SQLite pass persists aggregate events, transactional document read
+models, processed-message marks, and snapshots in one SQL transaction when they
+are staged through `AsyncCommitBatch`. It intentionally does not claim Postgres
+production readiness: Postgres-specific column types, isolation behavior, error
+mapping, deployment, and migration validation still belong to the Postgres
+adapter and its own tests.
