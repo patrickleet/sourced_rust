@@ -30,7 +30,7 @@
 //!
 //! ```ignore
 //! // 1. Commit aggregate with outbox message
-//! repo.outbox(&mut outbox_msg).commit(&mut order)?;
+//! repo.outbox(outbox_msg).commit(&mut order)?;
 //!
 //! // 2. Worker drains outbox and publishes via bus
 //! let bus = Bus::new(kafka_publisher, kafka_subscriber);

@@ -61,7 +61,9 @@ pub use sqlite_repo::SqliteRepository;
 pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};
 
 // Outbox: commit concerns (aggregate + outbox in one commit)
-pub use outbox::{OutboxCommit, OutboxCommitExt, OutboxMessage, OutboxMessageStatus};
+pub use outbox::{
+    AsyncOutboxCommit, OutboxCommit, OutboxCommitExt, OutboxMessage, OutboxMessageStatus,
+};
 
 // Outbox Worker: drain and publish concerns
 pub use outbox_worker::{

@@ -12,7 +12,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     let mut order = Order::new();
     order.create(input.order_id.clone(), input.customer_id, input.items)?;
 
-    let mut msg = json_outbox_to(
+    let msg = json_outbox_to(
         &format!("{}-order-created", input.order_id),
         "OrderCreated",
         "saga",
@@ -22,6 +22,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(&mut msg).commit(&mut order)?;
+    ctx.repo().outbox(msg).commit(&mut order)?;
     Ok(json!({ "order_id": input.order_id }))
 }

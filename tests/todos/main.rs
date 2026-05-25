@@ -1,11 +1,10 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
-use bitcode;
 use sourced_rust::{
-    AggregateBuilder, Commit, EventEmitter, GetAggregate, HashMapRepository, LocalEmitterPublisher,
-    LockError, LogPublisher, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt, OutboxWorker,
-    Queueable, RepositoryError,
+    AggregateBuilder, Commit, CommitBuilderExt, EventEmitter, GetAggregate, HashMapRepository,
+    LocalEmitterPublisher, LockError, LogPublisher, OutboxCommitExt, OutboxMessage,
+    OutboxMessageStatus, OutboxRepositoryExt, OutboxWorker, Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -17,6 +16,38 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 fn next_id() -> String {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("todo-{}", id)
+}
+
+fn complete_published_outbox(
+    repo: &HashMapRepository,
+    worker_id: &str,
+    messages: &[OutboxMessage],
+) {
+    for message in messages {
+        if message.is_published() {
+            repo.complete_outbox_message_for_worker(message.id(), worker_id)
+                .unwrap();
+        }
+    }
+}
+
+fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+    for status in [
+        OutboxMessageStatus::Pending,
+        OutboxMessageStatus::InFlight,
+        OutboxMessageStatus::Published,
+        OutboxMessageStatus::Failed,
+    ] {
+        if let Some(message) = repo
+            .outbox_messages_by_status(status)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id() == id)
+        {
+            return message;
+        }
+    }
+    panic!("outbox message `{id}` should exist")
 }
 
 #[test]
@@ -34,12 +65,12 @@ fn todos() {
     .unwrap();
 
     // Add an outbox event for the initialization
-    let mut init_message =
+    let init_message =
         OutboxMessage::encode(format!("{}:init", id1), "TodoInitialized", &todo.snapshot())
             .unwrap();
 
     // Commit the Todo + Outbox message to the repository
-    let _ = repo.outbox(&mut init_message).commit(&mut todo);
+    let _ = repo.outbox(init_message).commit(&mut todo);
 
     // Verify the outbox event was captured
     {
@@ -53,16 +84,14 @@ fn todos() {
         retrieved_todo.complete().unwrap();
 
         // Add an outbox event for the completion
-        let mut complete_message = OutboxMessage::encode(
+        let complete_message = OutboxMessage::encode(
             format!("{}:complete", id1),
             "TodoCompleted",
             &retrieved_todo.snapshot(),
         )
         .unwrap();
 
-        let _ = repo
-            .outbox(&mut complete_message)
-            .commit(&mut retrieved_todo);
+        let _ = repo.outbox(complete_message).commit(&mut retrieved_todo);
 
         // Verify we now have 2 outbox events
         {
@@ -154,9 +183,9 @@ fn get_all_commit_all_roundtrip() {
     let todos = repo.get_all(&[&id1, &id2]).unwrap();
     assert_eq!(todos.len(), 2);
     assert_eq!(todos[0].snapshot().id, id1);
-    assert_eq!(todos[0].snapshot().completed, false);
+    assert!(!todos[0].snapshot().completed);
     assert_eq!(todos[1].snapshot().id, id2);
-    assert_eq!(todos[1].snapshot().completed, false);
+    assert!(!todos[1].snapshot().completed);
 
     let mut iter = todos.into_iter();
     let mut todo1v2 = iter.next().unwrap();
@@ -171,9 +200,9 @@ fn get_all_commit_all_roundtrip() {
 
     assert_eq!(v2_todos.len(), 2);
     assert_eq!(v2_todos[0].snapshot().id, id1);
-    assert_eq!(v2_todos[0].snapshot().completed, true);
+    assert!(v2_todos[0].snapshot().completed);
     assert_eq!(v2_todos[1].snapshot().id, id2);
-    assert_eq!(v2_todos[1].snapshot().completed, true);
+    assert!(v2_todos[1].snapshot().completed);
 }
 
 #[test]
@@ -184,11 +213,10 @@ fn outbox_records_persisted() {
     todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string())
         .unwrap();
     let snapshot = todo.snapshot();
-    let mut message =
+    let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
 
-    repo.commit(&mut [&mut todo.entity, &mut message.entity])
-        .unwrap();
+    repo.outbox(message).commit(&mut todo).unwrap();
 
     // Check pending outbox messages
     let pending = repo.outbox_messages_pending().unwrap();
@@ -214,11 +242,10 @@ fn outbox_worker_log_publisher() {
     )
     .unwrap();
     let snapshot = todo.snapshot();
-    let mut message =
+    let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
     let message_id = message.id().to_string();
-    repo.commit(&mut [&mut todo.entity, &mut message.entity])
-        .unwrap();
+    repo.outbox(message).commit(&mut todo).unwrap();
 
     // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -234,19 +261,14 @@ fn outbox_worker_log_publisher() {
         .unwrap();
     let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
-    for message in &mut claimed {
-        repo.commit(&mut message.entity).unwrap();
-    }
+    complete_published_outbox(&repo, "logger-1", &claimed);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("TodoInitialized"));
 
     // Check record is marked as published
-    let published = repo
-        .get_aggregate::<OutboxMessage>(&message_id)
-        .unwrap()
-        .unwrap();
+    let published = load_outbox_message(&repo, &message_id);
     assert!(published.is_published());
 }
 
@@ -262,10 +284,9 @@ fn outbox_worker_local_emitter_publisher() {
     )
     .unwrap();
     let snapshot = todo.snapshot();
-    let mut message =
+    let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
-    repo.commit(&mut [&mut todo.entity, &mut message.entity])
-        .unwrap();
+    repo.outbox(message).commit(&mut todo).unwrap();
 
     let mut emitter = EventEmitter::new();
     let (tx, rx) = mpsc::channel::<String>();
@@ -285,9 +306,7 @@ fn outbox_worker_local_emitter_publisher() {
         .unwrap();
     let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
-    for message in &mut claimed {
-        repo.commit(&mut message.entity).unwrap();
-    }
+    complete_published_outbox(&repo, "emitter-1", &claimed);
 
     // LocalEmitterPublisher converts bytes to lossy string, so we just verify something was received
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -536,9 +555,9 @@ fn outbox_worker_process_next_with_commit() {
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    let mut message1 = OutboxMessage::encode(format!("{}:1", id), "Event1", &snapshot).unwrap();
-    let mut message2 = OutboxMessage::encode(format!("{}:2", id), "Event2", &snapshot).unwrap();
-    let mut message3 = OutboxMessage::encode(format!("{}:3", id), "Event3", &snapshot).unwrap();
+    let message1 = OutboxMessage::encode(format!("{}:1", id), "Event1", &snapshot).unwrap();
+    let message2 = OutboxMessage::encode(format!("{}:2", id), "Event2", &snapshot).unwrap();
+    let message3 = OutboxMessage::encode(format!("{}:3", id), "Event3", &snapshot).unwrap();
 
     let message_ids = vec![
         message1.id().to_string(),
@@ -546,13 +565,11 @@ fn outbox_worker_process_next_with_commit() {
         message3.id().to_string(),
     ];
 
-    repo.commit(&mut [
-        &mut todo.entity,
-        &mut message1.entity,
-        &mut message2.entity,
-        &mut message3.entity,
-    ])
-    .unwrap();
+    repo.outbox(message1)
+        .outbox(message2)
+        .outbox(message3)
+        .commit(&mut todo)
+        .unwrap();
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
@@ -573,14 +590,12 @@ fn outbox_worker_process_next_with_commit() {
         }
         let result = worker.process_batch(&mut claimed).unwrap();
         processed += result.completed + result.released + result.failed;
-        for message in &mut claimed {
-            repo.commit(&mut message.entity).unwrap();
-        }
+        complete_published_outbox(&repo, "safe-worker", &claimed);
     }
 
     assert_eq!(processed, 3);
     for id in &message_ids {
-        let message = repo.get_aggregate::<OutboxMessage>(id).unwrap().unwrap();
+        let message = load_outbox_message(&repo, id);
         assert!(message.is_published());
     }
     assert_eq!(repo.outbox_messages_pending().unwrap().len(), 0);
@@ -611,7 +626,7 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
 
     // 3. Create outbox message — metadata propagates automatically from entity
     let snapshot = todo.snapshot();
-    let mut message = OutboxMessage::encode_for_entity(
+    let message = OutboxMessage::encode_for_entity(
         format!("{}:init", id),
         "TodoInitialized",
         &snapshot,
@@ -623,7 +638,7 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
 
     // 4. Commit both using outbox commit builder
     let repo = repo.aggregate::<Todo>();
-    repo.outbox(&mut message).commit(&mut todo).unwrap();
+    repo.outbox(message).commit(&mut todo).unwrap();
 
     // 5. Process through outbox worker, verify metadata reaches publisher
     let buffer = Arc::new(Mutex::new(Vec::new()));

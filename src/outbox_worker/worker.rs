@@ -91,8 +91,8 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     /// Process a single outbox message.
     ///
     /// If the message is pending, it will be claimed by this worker before
-    /// publishing. The caller is responsible for persisting the updated
-    /// message entity after processing.
+    /// publishing. Repository-backed worker loops should persist the outcome
+    /// with the outbox repository completion or failure APIs.
     pub fn process_message(
         &mut self,
         message: &mut OutboxMessage,

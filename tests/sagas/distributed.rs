@@ -79,8 +79,8 @@ fn distributed_saga_with_threads() {
             )
             .unwrap();
 
-        let mut outbox = OutboxMessage::encode(
-            &format!("{}:started", saga_id),
+        let outbox = OutboxMessage::encode(
+            format!("{}:started", saga_id),
             "SagaStarted",
             &OrderFulfillmentStartedPayload {
                 saga_id: saga_id.clone(),
@@ -92,7 +92,7 @@ fn distributed_saga_with_threads() {
         )
         .unwrap();
         order_fulfillment_saga_repo
-            .outbox(&mut outbox)
+            .outbox(outbox)
             .commit(&mut order_fulfillment_saga)
             .unwrap();
 
@@ -151,8 +151,8 @@ fn distributed_saga_with_threads() {
                                 order_fulfillment_saga_repo.get(&saga_id).unwrap().unwrap();
                             order_fulfillment_saga.complete().unwrap();
 
-                            let mut outbox = OutboxMessage::encode(
-                                &format!("{}:completed", saga_id),
+                            let outbox = OutboxMessage::encode(
+                                format!("{}:completed", saga_id),
                                 "SagaCompleted",
                                 &OrderFulfillmentCompletedPayload {
                                     saga_id: saga_id.clone(),
@@ -161,7 +161,7 @@ fn distributed_saga_with_threads() {
                             )
                             .unwrap();
                             order_fulfillment_saga_repo
-                                .outbox(&mut outbox)
+                                .outbox(outbox)
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
 
@@ -224,8 +224,8 @@ fn distributed_saga_with_threads() {
                             )
                             .unwrap();
 
-                        let mut outbox = OutboxMessage::encode(
-                            &format!("{}:created", data.order_id),
+                        let outbox = OutboxMessage::encode(
+                            format!("{}:created", data.order_id),
                             "OrderCreated",
                             &OrderCreatedPayload {
                                 order_id: data.order_id.clone(),
@@ -235,7 +235,7 @@ fn distributed_saga_with_threads() {
                             },
                         )
                         .unwrap();
-                        order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
+                        order_repo.outbox(outbox).commit(&mut order).unwrap();
 
                         println!("[Order Service] Created order {}", data.order_id);
                         order_id = Some(data.order_id);
@@ -254,13 +254,13 @@ fn distributed_saga_with_threads() {
                             order.mark_payment_processed().unwrap();
                             order.complete().unwrap();
 
-                            let mut outbox = OutboxMessage::encode(
-                                &format!("{}:completed", data.order_id),
+                            let outbox = OutboxMessage::encode(
+                                format!("{}:completed", data.order_id),
                                 "OrderCompleted",
                                 &data,
                             )
                             .unwrap();
-                            order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
+                            order_repo.outbox(outbox).commit(&mut order).unwrap();
 
                             println!("[Order Service] Order completed!");
                             thread::sleep(Duration::from_millis(50));
@@ -315,8 +315,8 @@ fn distributed_saga_with_threads() {
                 if inv.can_reserve(item.quantity) {
                     inv.reserve(data.order_id.clone(), item.quantity).unwrap();
 
-                    let mut outbox = OutboxMessage::encode(
-                        &format!("{}:reserved", data.order_id),
+                    let outbox = OutboxMessage::encode(
+                        format!("{}:reserved", data.order_id),
                         "InventoryReserved",
                         &InventoryReservedPayload {
                             order_id: data.order_id.clone(),
@@ -325,7 +325,7 @@ fn distributed_saga_with_threads() {
                         },
                     )
                     .unwrap();
-                    inventory_repo.outbox(&mut outbox).commit(&mut inv).unwrap();
+                    inventory_repo.outbox(outbox).commit(&mut inv).unwrap();
 
                     println!("[Inventory Service] Reserved {} units", item.quantity);
                     thread::sleep(Duration::from_millis(50));
@@ -372,8 +372,8 @@ fn distributed_saga_with_threads() {
                 payment.authorize("txn-123".to_string()).unwrap();
                 payment.capture().unwrap();
 
-                let mut outbox = OutboxMessage::encode(
-                    &format!("{}:paid", data.order_id),
+                let outbox = OutboxMessage::encode(
+                    format!("{}:paid", data.order_id),
                     "PaymentSucceeded",
                     &PaymentSucceededPayload {
                         order_id: data.order_id.clone(),
@@ -381,10 +381,7 @@ fn distributed_saga_with_threads() {
                     },
                 )
                 .unwrap();
-                payment_repo
-                    .outbox(&mut outbox)
-                    .commit(&mut payment)
-                    .unwrap();
+                payment_repo.outbox(outbox).commit(&mut payment).unwrap();
 
                 println!("[Payment Service] Payment succeeded!");
                 thread::sleep(Duration::from_millis(50));
@@ -491,8 +488,8 @@ fn distributed_saga_with_send_listen() {
             .unwrap();
 
         // Send to the "orders" queue (point-to-point)
-        let mut outbox = OutboxMessage::encode_to(
-            &format!("{}:started", saga_id),
+        let outbox = OutboxMessage::encode_to(
+            format!("{}:started", saga_id),
             "SagaStarted",
             "orders", // destination queue
             &OrderFulfillmentStartedPayload {
@@ -505,7 +502,7 @@ fn distributed_saga_with_send_listen() {
         )
         .unwrap();
         order_fulfillment_saga_repo
-            .outbox(&mut outbox)
+            .outbox(outbox)
             .commit(&mut order_fulfillment_saga)
             .unwrap();
 
@@ -560,8 +557,8 @@ fn distributed_saga_with_send_listen() {
 
                             // SagaCompleted has no specific destination, but we can
                             // still route it to a queue (or use publish for fan-out)
-                            let mut outbox = OutboxMessage::encode_to(
-                                &format!("{}:completed", saga_id),
+                            let outbox = OutboxMessage::encode_to(
+                                format!("{}:completed", saga_id),
                                 "SagaCompleted",
                                 "saga-completed", // destination queue
                                 &OrderFulfillmentCompletedPayload {
@@ -571,7 +568,7 @@ fn distributed_saga_with_send_listen() {
                             )
                             .unwrap();
                             order_fulfillment_saga_repo
-                                .outbox(&mut outbox)
+                                .outbox(outbox)
                                 .commit(&mut order_fulfillment_saga)
                                 .unwrap();
 
@@ -644,7 +641,7 @@ fn distributed_saga_with_send_listen() {
                         };
 
                         let outbox_saga = OutboxMessage::encode_to(
-                            &format!("{}:created:saga", data.order_id),
+                            format!("{}:created:saga", data.order_id),
                             "OrderCreated",
                             "saga",
                             &payload,
@@ -652,7 +649,7 @@ fn distributed_saga_with_send_listen() {
                         .unwrap();
 
                         let outbox_inventory = OutboxMessage::encode_to(
-                            &format!("{}:created:inventory", data.order_id),
+                            format!("{}:created:inventory", data.order_id),
                             "OrderCreated",
                             "inventory",
                             &payload,
@@ -681,14 +678,14 @@ fn distributed_saga_with_send_listen() {
                             order.mark_payment_processed().unwrap();
                             order.complete().unwrap();
 
-                            let mut outbox = OutboxMessage::encode_to(
-                                &format!("{}:completed", data.order_id),
+                            let outbox = OutboxMessage::encode_to(
+                                format!("{}:completed", data.order_id),
                                 "OrderCompleted",
                                 "saga",
                                 &data,
                             )
                             .unwrap();
-                            order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
+                            order_repo.outbox(outbox).commit(&mut order).unwrap();
 
                             println!("[Order/SendListen] Order completed!");
                             thread::sleep(Duration::from_millis(50));
@@ -750,7 +747,7 @@ fn distributed_saga_with_send_listen() {
                     };
 
                     let outbox_saga = OutboxMessage::encode_to(
-                        &format!("{}:reserved:saga", data.order_id),
+                        format!("{}:reserved:saga", data.order_id),
                         "InventoryReserved",
                         "saga",
                         &payload,
@@ -758,7 +755,7 @@ fn distributed_saga_with_send_listen() {
                     .unwrap();
 
                     let outbox_payments = OutboxMessage::encode_to(
-                        &format!("{}:reserved:payments", data.order_id),
+                        format!("{}:reserved:payments", data.order_id),
                         "InventoryReserved",
                         "payments",
                         &payload,
@@ -819,7 +816,7 @@ fn distributed_saga_with_send_listen() {
                 };
 
                 let outbox_saga = OutboxMessage::encode_to(
-                    &format!("{}:paid:saga", data.order_id),
+                    format!("{}:paid:saga", data.order_id),
                     "PaymentSucceeded",
                     "saga",
                     &payload,
@@ -827,7 +824,7 @@ fn distributed_saga_with_send_listen() {
                 .unwrap();
 
                 let outbox_orders = OutboxMessage::encode_to(
-                    &format!("{}:paid:orders", data.order_id),
+                    format!("{}:paid:orders", data.order_id),
                     "PaymentSucceeded",
                     "orders",
                     &payload,
@@ -936,7 +933,7 @@ fn metadata_propagates_across_bus_to_subscriber() {
             .unwrap();
 
         // Metadata propagates automatically from entity context
-        let mut outbox = OutboxMessage::encode_for_entity(
+        let outbox = OutboxMessage::encode_for_entity(
             "order-meta-001:created",
             "OrderCreated",
             &OrderCreatedPayload {
@@ -953,7 +950,7 @@ fn metadata_propagates_across_bus_to_subscriber() {
         )
         .unwrap();
 
-        order_repo.outbox(&mut outbox).commit(&mut order).unwrap();
+        order_repo.outbox(outbox).commit(&mut order).unwrap();
 
         // Give the outbox worker time to publish
         thread::sleep(Duration::from_millis(200));

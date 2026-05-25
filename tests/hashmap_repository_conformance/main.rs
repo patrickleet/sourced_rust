@@ -42,3 +42,23 @@ async fn unsupported_codec_is_rejected_on_write() {
 async fn snapshots_use_full_stream_identity() {
     conformance::scenario::snapshots_use_full_stream_identity(repository()).await;
 }
+
+#[tokio::test]
+async fn high_level_outbox_commit_persists_row_without_stream() {
+    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(repository()).await;
+}
+
+#[tokio::test]
+async fn duplicate_outbox_insert_rolls_back_aggregate() {
+    conformance::outbox::duplicate_outbox_insert_rolls_back_aggregate(repository()).await;
+}
+
+#[tokio::test]
+async fn aggregate_conflict_rolls_back_outbox() {
+    conformance::outbox::aggregate_conflict_rolls_back_outbox(repository()).await;
+}
+
+#[tokio::test]
+async fn worker_claim_complete_and_retry_lifecycle() {
+    conformance::outbox::worker_claim_complete_and_retry_lifecycle(repository()).await;
+}

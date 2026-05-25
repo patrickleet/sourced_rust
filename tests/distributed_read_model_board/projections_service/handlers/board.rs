@@ -76,7 +76,7 @@ fn desired_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
 }
 
 /// The aggregate version is the trailing segment of the outbox event id
-/// (`outbox:<aggregate-id>:<event-type>:<version>`).
+/// (`<aggregate-id>:<event-type>:<version>`).
 fn event_version(event: &Event) -> i64 {
     event
         .id
@@ -93,11 +93,8 @@ mod tests {
 
     #[test]
     fn event_version_parses_trailing_outbox_segment() {
-        let event = Event::with_string_payload(
-            "outbox:board-1:board.card_added:42",
-            "board.card_added",
-            "{}",
-        );
+        let event =
+            Event::with_string_payload("board-1:board.card_added:42", "board.card_added", "{}");
 
         assert_eq!(event_version(&event), 42);
     }
@@ -107,11 +104,8 @@ mod tests {
         expected = "board projection event id should end with a numeric aggregate version"
     )]
     fn event_version_panics_on_malformed_outbox_segment() {
-        let event = Event::with_string_payload(
-            "outbox:board-1:board.card_added:bad",
-            "board.card_added",
-            "{}",
-        );
+        let event =
+            Event::with_string_payload("board-1:board.card_added:bad", "board.card_added", "{}");
 
         event_version(&event);
     }

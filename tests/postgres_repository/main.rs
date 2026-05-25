@@ -201,6 +201,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
                 AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
                 AsyncStreamWrite::new(other_identity.clone(), other.entity_mut()),
             ],
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: vec![sourced_rust::AsyncSnapshotWrite::Save {
                 identity: other_identity.clone(),
@@ -269,6 +270,7 @@ async fn read_model_plans_are_rejected_in_first_pass() {
     let err = repo
         .commit_batch_async(AsyncCommitBatch {
             streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
+            outbox_messages: Vec::new(),
             read_model_plans: vec![session.into_write_plan().unwrap()],
             snapshots: Vec::new(),
         })

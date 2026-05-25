@@ -221,7 +221,7 @@ pub fn tick<R: Commit + ReadModelStore + TransactionalCommit + Get>(
         // Use the most recent detonation for the kill event payload.
         let det = saga.detonations.last();
         let outbox = OutboxMessage::create(
-            format!("outbox:killed:{}", killed_id),
+            format!("player-killed:{}", killed_id),
             "PlayerKilled",
             serde_json::to_vec(&serde_json::json!({
                 "player_id": killed_id,

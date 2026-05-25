@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
     AsyncOutboxRepositoryExt, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, Commit, Entity, EventRecord, HashMapRepository,
+    AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord, HashMapRepository,
     InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel, ReadModelSession,
     ReadModelWritePlan, RepositoryError, SnapshotRecord, StreamIdentity,
 };
@@ -126,6 +126,7 @@ async fn async_batch_read_model_failure_rolls_back_stream_append() {
     let err = repo
         .commit_batch_async(AsyncCommitBatch {
             streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
+            outbox_messages: Vec::new(),
             read_model_plans: vec![plan],
             snapshots: Vec::new(),
         })
@@ -208,8 +209,15 @@ async fn async_snapshot_store_uses_full_stream_identity() {
 #[tokio::test]
 async fn async_outbox_repository_delegates_worker_operations() {
     let repo = HashMapRepository::new();
-    let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-    repo.commit(&mut message.entity).unwrap();
+    let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+    let mut aggregate = AlphaAggregate::default();
+    aggregate.touch("outbox-aggregate-1");
+    repo.clone()
+        .async_aggregate::<AlphaAggregate>()
+        .outbox(message)
+        .commit(&mut aggregate)
+        .await
+        .unwrap();
 
     let claimed = repo
         .claim_outbox_messages_async("worker-1", 1, Duration::from_secs(60))

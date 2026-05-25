@@ -16,6 +16,9 @@ pub enum RepositoryError {
     DuplicateStreamInBatch {
         id: String,
     },
+    DuplicateOutboxMessageInBatch {
+        id: String,
+    },
     InvalidStreamIdentity {
         aggregate_type: String,
         aggregate_id: String,
@@ -51,6 +54,9 @@ impl fmt::Display for RepositoryError {
             ),
             RepositoryError::DuplicateStreamInBatch { id } => {
                 write!(f, "duplicate stream id in commit batch: {}", id)
+            }
+            RepositoryError::DuplicateOutboxMessageInBatch { id } => {
+                write!(f, "duplicate outbox message id in commit batch: {}", id)
             }
             RepositoryError::InvalidStreamIdentity {
                 aggregate_type,

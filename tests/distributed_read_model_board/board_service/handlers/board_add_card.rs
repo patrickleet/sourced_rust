@@ -25,8 +25,8 @@ pub fn handle(ctx: &Context<BoardRepo>) -> Result<Value, HandlerError> {
         input.assignee.clone(),
     )?;
 
-    let mut outbox = OutboxMessage::domain_event("board.card_added", &board)?;
-    ctx.repo().outbox(&mut outbox).commit(&mut board)?;
+    let outbox = OutboxMessage::domain_event("board.card_added", &board)?;
+    ctx.repo().outbox(outbox).commit(&mut board)?;
 
     Ok(json!({ "id": input.id, "card_id": input.card_id }))
 }

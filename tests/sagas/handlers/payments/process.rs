@@ -19,7 +19,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
     payment.authorize("txn-distributed-001".to_string())?;
     payment.capture()?;
 
-    let mut msg = json_outbox_to(
+    let msg = json_outbox_to(
         &format!("{}-payment-succeeded", input.order_id),
         "PaymentSucceeded",
         "saga",
@@ -29,6 +29,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(&mut msg).commit(&mut payment)?;
+    ctx.repo().outbox(msg).commit(&mut payment)?;
     Ok(json!({ "payment_id": payment_id }))
 }

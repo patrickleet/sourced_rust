@@ -30,9 +30,9 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
 
     counter.increment(input.amount)?;
 
-    let mut message = OutboxMessage::domain_event("CounterIncremented", &counter)?;
+    let message = OutboxMessage::domain_event("CounterIncremented", &counter)?;
 
-    ctx.repo().outbox(&mut message).commit(&mut counter)?;
+    ctx.repo().outbox(message).commit(&mut counter)?;
 
     Ok(json!({ "id": input.id, "value": counter.value }))
 }

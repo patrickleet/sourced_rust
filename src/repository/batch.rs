@@ -1,4 +1,5 @@
 use crate::entity::Entity;
+use crate::outbox::OutboxMessage;
 use crate::read_model::ReadModelWritePlan;
 use crate::snapshot::SnapshotRecord;
 
@@ -13,6 +14,7 @@ pub enum SnapshotWrite {
 /// A structured set of writes that must commit under one transaction boundary.
 pub struct CommitBatch<'a> {
     pub entities: Vec<&'a mut Entity>,
+    pub outbox_messages: Vec<OutboxMessage>,
     pub read_model_plans: Vec<ReadModelWritePlan>,
     pub snapshots: Vec<SnapshotWrite>,
 }
@@ -21,6 +23,7 @@ impl<'a> CommitBatch<'a> {
     pub fn new(entities: Vec<&'a mut Entity>) -> Self {
         Self {
             entities,
+            outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: Vec::new(),
         }

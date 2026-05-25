@@ -75,3 +75,35 @@ async fn snapshots_use_full_stream_identity() {
     };
     conformance::scenario::snapshots_use_full_stream_identity(repo).await;
 }
+
+#[tokio::test]
+async fn high_level_outbox_commit_persists_row_without_stream() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(repo).await;
+}
+
+#[tokio::test]
+async fn duplicate_outbox_insert_rolls_back_aggregate() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::duplicate_outbox_insert_rolls_back_aggregate(repo).await;
+}
+
+#[tokio::test]
+async fn aggregate_conflict_rolls_back_outbox() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::aggregate_conflict_rolls_back_outbox(repo).await;
+}
+
+#[tokio::test]
+async fn worker_claim_complete_and_retry_lifecycle() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::worker_claim_complete_and_retry_lifecycle(repo).await;
+}

@@ -110,9 +110,9 @@ pub fn handle<R: Repository + Clone>(ctx: &Context<R>) -> Result<Value, HandlerE
     todo.initialize(input.id.clone(), input.user_id, input.task)?;
 
     // Outbox message derives id, snapshot payload, and metadata automatically
-    let mut outbox = OutboxMessage::domain_event("TodoInitialized", &todo)
+    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo)
         .map_err(|e| HandlerError::Other(Box::new(e)))?;
-    repo.outbox(&mut outbox).commit(&mut todo)?;
+    repo.outbox(outbox).commit(&mut todo)?;
 
     Ok(json!({ "id": input.id }))
 }
@@ -475,14 +475,14 @@ Entity metadata is **transient** — it's not serialized with the entity. It's a
 Use `encode_for_entity` to create outbox messages that automatically inherit the entity's metadata context:
 
 ```rust
-let mut outbox = OutboxMessage::encode_for_entity(
+let outbox = OutboxMessage::encode_for_entity(
     format!("{}:created", order.entity.id()),
     "OrderCreated",
     &payload,
     &order.entity,  // metadata propagates automatically
 )?;
 
-repo.outbox(&mut outbox).commit(&mut order)?;
+repo.outbox(outbox).commit(&mut order)?;
 ```
 
 The metadata flows through the full chain:
@@ -638,7 +638,7 @@ let repo = HashMapRepository::new()
 
 ## Outbox Pattern
 
-Each outbox message is its own aggregate, committed alongside your domain entity:
+Each outbox message is a durable delivery row committed alongside your domain entity:
 
 Outbox messages are explicit publication records. Aggregate event records are
 write-side replay history; they become domain events, integration events,
@@ -653,16 +653,16 @@ todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into())?;
 
 // Derives id, snapshot payload, and metadata from the aggregate automatically
-let mut message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+let message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
 
 // Commit both in one repository batch
-repo.outbox(&mut message).commit(&mut todo)?;
+repo.outbox(message).commit(&mut todo)?;
 ```
 
 For custom payloads or IDs, use `encode_for_entity` instead:
 
 ```rust
-let mut message = OutboxMessage::encode_for_entity(
+let message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
     "TodoInitialized",
     &custom_payload,
@@ -862,13 +862,13 @@ let mut order = Order::new();
 order.entity.set_correlation_id("req-123");
 order.create("order-1".into(), "customer-1".into())?;
 
-let mut outbox = OutboxMessage::encode_for_entity(
+let outbox = OutboxMessage::encode_for_entity(
     "order-1:created",
     "OrderCreated",
     &OrderCreatedPayload { order_id: "order-1".into() },
     &order.entity,  // metadata propagates automatically
 )?;
-order_repo.outbox(&mut outbox).commit(&mut order)?;
+order_repo.outbox(outbox).commit(&mut order)?;
 
 // Other services receive the event via their subscriptions
 let events = bus.subscribe(&["OrderCreated"]);
