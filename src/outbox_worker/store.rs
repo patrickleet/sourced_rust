@@ -195,6 +195,26 @@ pub(crate) fn ensure_active_claim(
     Ok(())
 }
 
+fn sort_by_claim_order(messages: &mut [OutboxMessage]) {
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id().cmp(right.id()))
+    });
+}
+
+fn claim_order_ids<'a>(messages: impl Iterator<Item = &'a OutboxMessage>) -> Vec<String> {
+    let mut entries = messages
+        .map(|message| (message.created_at, message.id().to_string()))
+        .collect::<Vec<_>>();
+    entries.sort_by(|(left_time, left_id), (right_time, right_id)| {
+        left_time
+            .cmp(right_time)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    entries.into_iter().map(|(_, id)| id).collect()
+}
+
 impl HashMapOutboxStore {
     fn update_outbox_message<T>(
         &self,
@@ -231,11 +251,7 @@ impl OutboxStore for HashMapOutboxStore {
             .filter(|message| message.status == status)
             .cloned()
             .collect::<Vec<_>>();
-        messages.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id().cmp(right.id()))
-        });
+        sort_by_claim_order(&mut messages);
         Ok(messages)
     }
 
@@ -250,8 +266,7 @@ impl OutboxStore for HashMapOutboxStore {
         }
 
         let now = SystemTime::now();
-        let mut ids = storage.keys().cloned().collect::<Vec<_>>();
-        ids.sort();
+        let ids = claim_order_ids(storage.values());
         let mut claimed = Vec::new();
         for id in ids {
             let Some(message) = storage.get_mut(&id) else {
@@ -334,7 +349,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
                 .filter(|message| message.status == status)
                 .cloned()
                 .collect::<Vec<_>>();
-            messages.sort_by_key(|message| message.created_at);
+            sort_by_claim_order(&mut messages);
             Ok(messages)
         }
     }
@@ -353,8 +368,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
                 .storage
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
-            let mut ids = storage.keys().cloned().collect::<Vec<_>>();
-            ids.sort();
+            let ids = claim_order_ids(storage.values());
 
             let mut claimed = Vec::new();
             for id in ids {
@@ -552,6 +566,49 @@ mod tests {
         let stored = load_message(&repo, &id);
         assert_eq!(stored.worker_id.as_deref(), Some("worker-1"));
         assert_eq!(stored.attempts, 1);
+    }
+
+    #[test]
+    fn claim_uses_created_at_before_message_id_order() {
+        let repo = HashMapRepository::new();
+        let mut newer = OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap();
+        newer.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let mut older = OutboxMessage::create("msg-z", "Event", b"{}".to_vec()).unwrap();
+        older.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        store_message(&repo, newer);
+        store_message(&repo, older);
+
+        let claimed = repo
+            .outbox_store()
+            .claim(ClaimOutboxMessages::new(
+                "worker-1",
+                1,
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+
+        assert_eq!(claimed[0].id(), "msg-z");
+    }
+
+    #[test]
+    fn sort_by_claim_order_uses_message_id_tiebreaker() {
+        let mut later = OutboxMessage::create("msg-c", "Event", b"{}".to_vec()).unwrap();
+        later.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let mut second = OutboxMessage::create("msg-b", "Event", b"{}".to_vec()).unwrap();
+        second.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut first = OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap();
+        first.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut messages = vec![later, second, first];
+
+        sort_by_claim_order(&mut messages);
+
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.id())
+                .collect::<Vec<_>>(),
+            vec!["msg-a", "msg-b", "msg-c"]
+        );
     }
 
     #[test]
