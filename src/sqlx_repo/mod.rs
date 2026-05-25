@@ -29,6 +29,7 @@ pub(crate) fn reject_duplicate_outbox_messages(
 ) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(messages.len());
     for message in messages {
+        validate_outbox_table_write(message)?;
         let id = message.id();
         if id.trim().is_empty() {
             return Err(RepositoryError::Model(
@@ -45,6 +46,13 @@ pub(crate) fn reject_duplicate_outbox_messages(
         }
     }
     Ok(())
+}
+
+fn validate_outbox_table_write(message: &OutboxMessage) -> Result<(), RepositoryError> {
+    crate::outbox::outbox_message_insert_plan(message)
+        .and_then(|plan| plan.validate().map(|()| plan))
+        .map(|_| ())
+        .map_err(|err| RepositoryError::Model(err.to_string()))
 }
 
 pub(crate) fn validate_entity_id_matches_identity(

@@ -3,10 +3,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxRepositoryExt, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord, HashMapRepository,
-    InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel, ReadModelSession,
-    ReadModelWritePlan, RepositoryError, SnapshotRecord, StreamIdentity,
+    AsyncOutboxStore, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
+    AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, EventRecord,
+    HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel,
+    ReadModelSession, ReadModelWritePlan, RepositoryError, SnapshotRecord, StreamIdentity,
 };
 
 #[derive(Default)]
@@ -209,6 +209,7 @@ async fn async_snapshot_store_uses_full_stream_identity() {
 #[tokio::test]
 async fn async_outbox_repository_delegates_worker_operations() {
     let repo = HashMapRepository::new();
+    let outbox = repo.outbox_store();
     let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
     let mut aggregate = AlphaAggregate::default();
     aggregate.touch("outbox-aggregate-1");
@@ -219,8 +220,12 @@ async fn async_outbox_repository_delegates_worker_operations() {
         .await
         .unwrap();
 
-    let claimed = repo
-        .claim_outbox_messages_async("worker-1", 1, Duration::from_secs(60))
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "worker-1",
+            1,
+            Duration::from_secs(60),
+        ))
         .await
         .unwrap();
 

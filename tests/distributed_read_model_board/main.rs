@@ -64,8 +64,11 @@ fn board_service_feeds_a_normalized_card_read_model() {
 
     let board_store = HashMapRepository::new();
     let board_service = board_service::model_service(board_store.clone().queued().aggregate());
-    let worker =
-        OutboxWorkerThread::spawn(board_store.clone(), queue.clone(), Duration::from_millis(5));
+    let worker = OutboxWorkerThread::spawn(
+        board_store.outbox_store(),
+        queue.clone(),
+        Duration::from_millis(5),
+    );
 
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");

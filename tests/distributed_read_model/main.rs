@@ -89,12 +89,13 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
     let checkout_store = HashMapRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
-    let checkout_worker = OutboxWorkerThread::spawn(checkout_store.clone(), queue.clone(), poll);
+    let checkout_worker =
+        OutboxWorkerThread::spawn(checkout_store.outbox_store(), queue.clone(), poll);
     let checkout_sub = microsvc::subscribe(checkout_service.clone(), queue.new_subscriber(), poll);
 
     let seat_store = HashMapRepository::new();
     let seat_service = seat_inventory_service::service(seat_store.clone().queued().aggregate());
-    let seat_worker = OutboxWorkerThread::spawn(seat_store.clone(), queue.clone(), poll);
+    let seat_worker = OutboxWorkerThread::spawn(seat_store.outbox_store(), queue.clone(), poll);
     let seat_sub = microsvc::subscribe(seat_service.clone(), queue.new_subscriber(), poll);
 
     let read_store = InMemoryReadModelStore::new();

@@ -2,9 +2,10 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use sourced_rust::{
-    AggregateBuilder, Commit, CommitBuilderExt, EventEmitter, GetAggregate, HashMapRepository,
-    LocalEmitterPublisher, LockError, LogPublisher, OutboxCommitExt, OutboxMessage,
-    OutboxMessageStatus, OutboxRepositoryExt, OutboxWorker, Queueable, RepositoryError,
+    AggregateBuilder, ClaimOutboxMessages, Commit, CommitBuilderExt, EventEmitter, GetAggregate,
+    HashMapRepository, LocalEmitterPublisher, LockError, LogPublisher, OutboxClaimRef,
+    OutboxCommitExt, OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable,
+    RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -20,26 +21,27 @@ fn next_id() -> String {
 
 fn complete_published_outbox(
     repo: &HashMapRepository,
-    worker_id: &str,
     messages: &[OutboxMessage],
+    claims: &[OutboxClaimRef],
 ) {
-    for message in messages {
+    let store = repo.outbox_store();
+    for (message, claim) in messages.iter().zip(claims) {
         if message.is_published() {
-            repo.complete_outbox_message_for_worker(message.id(), worker_id)
-                .unwrap();
+            store.complete(claim).unwrap();
         }
     }
 }
 
 fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+    let store = repo.outbox_store();
     for status in [
         OutboxMessageStatus::Pending,
         OutboxMessageStatus::InFlight,
         OutboxMessageStatus::Published,
         OutboxMessageStatus::Failed,
     ] {
-        if let Some(message) = repo
-            .outbox_messages_by_status(status)
+        if let Some(message) = store
+            .messages_by_status(status)
             .unwrap()
             .into_iter()
             .find(|message| message.id() == id)
@@ -74,7 +76,7 @@ fn todos() {
 
     // Verify the outbox event was captured
     {
-        let pending = repo.repo().inner().outbox_messages_pending().unwrap();
+        let pending = repo.repo().inner().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "TodoInitialized");
     }
@@ -95,7 +97,7 @@ fn todos() {
 
         // Verify we now have 2 outbox events
         {
-            let pending = repo.repo().inner().outbox_messages_pending().unwrap();
+            let pending = repo.repo().inner().outbox_store().pending().unwrap();
             assert_eq!(pending.len(), 2);
             assert!(pending
                 .iter()
@@ -219,7 +221,7 @@ fn outbox_records_persisted() {
     repo.outbox(message).commit(&mut todo).unwrap();
 
     // Check pending outbox messages
-    let pending = repo.outbox_messages_pending().unwrap();
+    let pending = repo.outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "TodoInitialized");
 
@@ -256,12 +258,22 @@ fn outbox_worker_log_publisher() {
         .with_max_attempts(3);
 
     // Claim pending messages and process
-    let mut claimed = repo
-        .claim_outbox_messages("logger-1", 10, Duration::from_secs(30))
+    let store = repo.outbox_store();
+    let mut claimed = store
+        .claim(ClaimOutboxMessages::new(
+            "logger-1",
+            10,
+            Duration::from_secs(30),
+        ))
+        .unwrap();
+    let claims = claimed
+        .iter()
+        .map(OutboxClaimRef::from_message)
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, "logger-1", &claimed);
+    complete_published_outbox(&repo, &claimed, &claims);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
@@ -301,12 +313,22 @@ fn outbox_worker_local_emitter_publisher() {
         .with_max_attempts(3);
 
     // Claim pending messages and process
-    let mut claimed = repo
-        .claim_outbox_messages("emitter-1", 10, Duration::from_secs(30))
+    let store = repo.outbox_store();
+    let mut claimed = store
+        .claim(ClaimOutboxMessages::new(
+            "emitter-1",
+            10,
+            Duration::from_secs(30),
+        ))
+        .unwrap();
+    let claims = claimed
+        .iter()
+        .map(OutboxClaimRef::from_message)
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, "emitter-1", &claimed);
+    complete_published_outbox(&repo, &claimed, &claims);
 
     // LocalEmitterPublisher converts bytes to lossy string, so we just verify something was received
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -582,15 +604,25 @@ fn outbox_worker_process_next_with_commit() {
     let mut processed = 0;
 
     loop {
-        let mut claimed = repo
-            .claim_outbox_messages("safe-worker", 1, Duration::from_secs(30))
+        let store = repo.outbox_store();
+        let mut claimed = store
+            .claim(ClaimOutboxMessages::new(
+                "safe-worker",
+                1,
+                Duration::from_secs(30),
+            ))
             .unwrap();
         if claimed.is_empty() {
             break;
         }
+        let claims = claimed
+            .iter()
+            .map(OutboxClaimRef::from_message)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         let result = worker.process_batch(&mut claimed).unwrap();
         processed += result.completed + result.released + result.failed;
-        complete_published_outbox(&repo, "safe-worker", &claimed);
+        complete_published_outbox(&repo, &claimed, &claims);
     }
 
     assert_eq!(processed, 3);
@@ -598,7 +630,7 @@ fn outbox_worker_process_next_with_commit() {
         let message = load_outbox_message(&repo, id);
         assert!(message.is_published());
     }
-    assert_eq!(repo.outbox_messages_pending().unwrap().len(), 0);
+    assert_eq!(repo.outbox_store().pending().unwrap().len(), 0);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);
@@ -645,12 +677,22 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
     let mut worker = OutboxWorker::new(publisher).with_worker_id("meta-worker");
 
-    let mut claimed = repo
-        .repo()
-        .claim_outbox_messages("meta-worker", 10, Duration::from_secs(30))
+    let store = repo.repo().outbox_store();
+    let mut claimed = store
+        .claim(ClaimOutboxMessages::new(
+            "meta-worker",
+            10,
+            Duration::from_secs(30),
+        ))
+        .unwrap();
+    let claims = claimed
+        .iter()
+        .map(OutboxClaimRef::from_message)
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let result = worker.process_batch(&mut claimed).unwrap();
     assert_eq!(result.completed, 1);
+    complete_published_outbox(repo.repo(), &claimed, &claims);
 
     // 6. Verify the publisher received metadata
     let lines = buffer.lock().unwrap();

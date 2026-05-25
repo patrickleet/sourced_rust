@@ -20,8 +20,9 @@ persistence should override it with an explicit durable name through
   `AsyncRelationalReadModelQueryStore` mirror the current document and
   relational read-model surfaces for async adapters.
 - `AsyncSnapshotStore` keys snapshots by full stream identity.
-- `AsyncOutboxRepositoryExt` exposes async worker operations for durable outbox
-  implementations.
+- `AsyncOutboxStore` exposes async claim/update operations for durable outbox
+  table stores. Aggregate repositories commit outbox rows transactionally, but
+  workers do not hydrate outbox messages through aggregate repositories.
 
 Async methods use an `_async` suffix where a synchronous method with the same
 name already exists. This keeps `HashMapRepository`, `InMemoryReadModelStore`,

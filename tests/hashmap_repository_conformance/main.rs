@@ -45,7 +45,12 @@ async fn snapshots_use_full_stream_identity() {
 
 #[tokio::test]
 async fn high_level_outbox_commit_persists_row_without_stream() {
-    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(repository()).await;
+    let repo = repository();
+    conformance::outbox::high_level_outbox_commit_persists_row_without_stream(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -55,10 +60,17 @@ async fn duplicate_outbox_insert_rolls_back_aggregate() {
 
 #[tokio::test]
 async fn aggregate_conflict_rolls_back_outbox() {
-    conformance::outbox::aggregate_conflict_rolls_back_outbox(repository()).await;
+    let repo = repository();
+    conformance::outbox::aggregate_conflict_rolls_back_outbox(repo.clone(), repo.outbox_store())
+        .await;
 }
 
 #[tokio::test]
 async fn worker_claim_complete_and_retry_lifecycle() {
-    conformance::outbox::worker_claim_complete_and_retry_lifecycle(repository()).await;
+    let repo = repository();
+    conformance::outbox::worker_claim_complete_and_retry_lifecycle(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
 }

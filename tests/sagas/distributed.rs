@@ -50,7 +50,7 @@ fn distributed_saga_with_threads() {
     let order_fulfillment_saga_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn(
-            repo.clone(),
+            repo.outbox_store(),
             order_fulfillment_saga_queue.clone(),
             Duration::from_millis(10),
         );
@@ -194,8 +194,11 @@ fn distributed_saga_with_threads() {
     let order_queue = queue.clone();
     let order_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
-        let worker =
-            OutboxWorkerThread::spawn(repo.clone(), order_queue.clone(), Duration::from_millis(10));
+        let worker = OutboxWorkerThread::spawn(
+            repo.outbox_store(),
+            order_queue.clone(),
+            Duration::from_millis(10),
+        );
         let order_repo = repo.queued().aggregate::<Order>();
 
         // Create a bus for this service
@@ -282,7 +285,7 @@ fn distributed_saga_with_threads() {
     let inventory_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn(
-            repo.clone(),
+            repo.outbox_store(),
             inventory_queue.clone(),
             Duration::from_millis(10),
         );
@@ -344,7 +347,7 @@ fn distributed_saga_with_threads() {
     let payment_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn(
-            repo.clone(),
+            repo.outbox_store(),
             payment_queue.clone(),
             Duration::from_millis(10),
         );
@@ -459,7 +462,7 @@ fn distributed_saga_with_send_listen() {
         let repo = HashMapRepository::new();
         // spawn_routed: checks msg.destination → send() if set, publish() if not
         let worker = OutboxWorkerThread::spawn_routed(
-            repo.clone(),
+            repo.outbox_store(),
             order_fulfillment_saga_queue.clone(),
             Duration::from_millis(10),
         );
@@ -603,7 +606,7 @@ fn distributed_saga_with_send_listen() {
     let order_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn_routed(
-            repo.clone(),
+            repo.outbox_store(),
             order_queue.clone(),
             Duration::from_millis(10),
         );
@@ -709,7 +712,7 @@ fn distributed_saga_with_send_listen() {
     let inventory_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn_routed(
-            repo.clone(),
+            repo.outbox_store(),
             inventory_queue.clone(),
             Duration::from_millis(10),
         );
@@ -784,7 +787,7 @@ fn distributed_saga_with_send_listen() {
     let payment_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
         let worker = OutboxWorkerThread::spawn_routed(
-            repo.clone(),
+            repo.outbox_store(),
             payment_queue.clone(),
             Duration::from_millis(10),
         );
@@ -911,8 +914,11 @@ fn metadata_propagates_across_bus_to_subscriber() {
     let producer_queue = queue.clone();
     let producer_thread = thread::spawn(move || {
         let repo = HashMapRepository::new();
-        let worker =
-            OutboxWorkerThread::spawn(repo.clone(), producer_queue, Duration::from_millis(10));
+        let worker = OutboxWorkerThread::spawn(
+            repo.outbox_store(),
+            producer_queue,
+            Duration::from_millis(10),
+        );
         let order_repo = repo.aggregate::<Order>();
 
         // Create an order with metadata on the entity

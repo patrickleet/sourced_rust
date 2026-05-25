@@ -34,7 +34,8 @@
 //!
 //! // 2. Worker drains outbox and publishes via bus
 //! let bus = Bus::new(kafka_publisher, kafka_subscriber);
-//! for msg in repo.claim_outbox_messages(...) {
+//! let outbox = repo.outbox_store();
+//! for msg in outbox.claim(...) {
 //!     let event = Event::new(msg.id(), &msg.event_type, msg.payload.clone());
 //!     bus.publish(event)?;
 //! }
