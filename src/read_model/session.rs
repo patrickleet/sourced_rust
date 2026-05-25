@@ -3,6 +3,8 @@ use std::marker::PhantomData;
 
 use serde::Serialize;
 
+use crate::repository::AsyncReadModelSessionStore;
+
 use super::{
     ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
     RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, Versioned,
@@ -641,6 +643,13 @@ impl ReadModelSession {
         S: ReadModelSessionStore + ?Sized,
     {
         store.commit_write_plan(self.into_write_plan()?)
+    }
+
+    pub async fn commit_async<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
+    where
+        S: AsyncReadModelSessionStore + ?Sized,
+    {
+        store.commit_write_plan_async(self.into_write_plan()?).await
     }
 
     fn stage_full_row<M>(

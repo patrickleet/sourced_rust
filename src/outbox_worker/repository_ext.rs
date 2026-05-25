@@ -1,10 +1,16 @@
+#![expect(
+    clippy::manual_async_fn,
+    reason = "async trait impls return impl Future + Send to preserve public Send bounds"
+)]
+
+use std::future::Future;
 use std::time::{Duration, SystemTime};
 
 use crate::aggregate::hydrate;
 use crate::entity::{Entity, EventRecord};
 use crate::hashmap_repo::HashMapRepository;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::repository::RepositoryError;
+use crate::repository::{AsyncOutboxRepositoryExt, RepositoryError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboxPublishFailureAction {
@@ -304,6 +310,73 @@ impl OutboxRepositoryExt for HashMapRepository {
                 Ok(OutboxPublishFailureAction::Released)
             }
         })
+    }
+}
+
+impl AsyncOutboxRepositoryExt for HashMapRepository {
+    fn outbox_messages_by_status_async(
+        &self,
+        status: OutboxMessageStatus,
+    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
+        async move { OutboxRepositoryExt::outbox_messages_by_status(self, status) }
+    }
+
+    fn claim_outbox_messages_async<'a>(
+        &'a self,
+        worker_id: &'a str,
+        max: usize,
+        lease: Duration,
+    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
+        async move { OutboxRepositoryExt::claim_outbox_messages(self, worker_id, max, lease) }
+    }
+
+    fn complete_outbox_message_for_worker_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            OutboxRepositoryExt::complete_outbox_message_for_worker(self, message_id, worker_id)
+        }
+    }
+
+    fn release_outbox_message_for_worker_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            OutboxRepositoryExt::release_outbox_message_for_worker(
+                self, message_id, worker_id, error,
+            )
+        }
+    }
+
+    fn fail_outbox_message_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move { OutboxRepositoryExt::fail_outbox_message(self, message_id, error) }
+    }
+
+    fn record_outbox_publish_failure_async<'a>(
+        &'a self,
+        message_id: &'a str,
+        worker_id: &'a str,
+        error: &'a str,
+        max_attempts: u32,
+    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
+        async move {
+            OutboxRepositoryExt::record_outbox_publish_failure(
+                self,
+                message_id,
+                worker_id,
+                error,
+                max_attempts,
+            )
+        }
     }
 }
 
