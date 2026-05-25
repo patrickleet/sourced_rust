@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/rust-best-practices/SKILL.md",
       "computedHash": "fd336f2f772eb46ddf8658de5f9dd8faa1f35615b316665307fc82eeb4b2e658"
+    },
+    "supabase-postgres-best-practices": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase-postgres-best-practices/SKILL.md",
+      "computedHash": "292c93e5a86e2429204bc37abe26b3c9023c4760eb02418462887f2082f118ce"
     }
   }
 }
