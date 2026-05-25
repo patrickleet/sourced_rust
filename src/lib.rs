@@ -24,6 +24,8 @@ pub mod read_model;
 pub mod snapshot;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_repo;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod sqlx_repo;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
