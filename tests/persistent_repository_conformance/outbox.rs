@@ -1,23 +1,18 @@
 use std::time::Duration;
 
 use sourced_rust::{
-    Aggregate, AsyncAggregateBuilder, AsyncGetStream, AsyncOutboxRepositoryExt,
-    AsyncTransactionalCommit, OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction,
-    RepositoryError, StreamIdentity,
+    Aggregate, AsyncAggregateBuilder, AsyncGetStream, AsyncOutboxStore, AsyncTransactionalCommit,
+    ClaimOutboxMessages, OutboxClaimRef, OutboxMessage, OutboxMessageStatus,
+    OutboxPublishFailureAction, RepositoryError, StreamIdentity,
 };
 
 use super::scenario::unique_id;
 use super::seat::Seat;
 
-pub async fn high_level_outbox_commit_persists_row_without_stream<R>(repo: R)
+pub async fn high_level_outbox_commit_persists_row_without_stream<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncOutboxRepositoryExt
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    S: AsyncOutboxStore + Send + Sync,
 {
     let seat_id = unique_id("outbox-seat");
     let message_id = unique_id("outbox-message");
@@ -32,7 +27,7 @@ where
         .await
         .expect("aggregate and outbox should commit atomically");
 
-    let stored = find_outbox_by_id(&repo, &message_id)
+    let stored = find_outbox_by_id(&outbox, &message_id)
         .await
         .expect("outbox message should be stored");
     assert_eq!(stored.status, OutboxMessageStatus::Pending);
@@ -58,13 +53,7 @@ where
 
 pub async fn duplicate_outbox_insert_rolls_back_aggregate<R>(repo: R)
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncOutboxRepositoryExt
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
 {
     let duplicate_message_id = unique_id("duplicate-outbox");
     let mut existing_seat = added_seat(&unique_id("existing-seat"));
@@ -106,15 +95,10 @@ where
     assert_eq!(rollback_seat.entity.committed_version(), 0);
 }
 
-pub async fn aggregate_conflict_rolls_back_outbox<R>(repo: R)
+pub async fn aggregate_conflict_rolls_back_outbox<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncOutboxRepositoryExt
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    S: AsyncOutboxStore + Send + Sync,
 {
     let seat_id = unique_id("conflict-outbox-seat");
     let seat_repo = repo.clone().async_aggregate::<Seat>();
@@ -165,18 +149,13 @@ where
         .expect_err("stale aggregate should reject the batch");
 
     assert!(matches!(err, RepositoryError::ConcurrentWrite { .. }));
-    assert!(find_outbox_by_id(&repo, &message_id).await.is_none());
+    assert!(find_outbox_by_id(&outbox, &message_id).await.is_none());
 }
 
-pub async fn worker_claim_complete_and_retry_lifecycle<R>(repo: R)
+pub async fn worker_claim_complete_and_retry_lifecycle<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncOutboxRepositoryExt
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    S: AsyncOutboxStore + Send + Sync,
 {
     let complete_message_id = unique_id("complete-outbox");
     let mut complete_seat = added_seat(&unique_id("complete-seat"));
@@ -189,23 +168,35 @@ where
         .await
         .expect("complete message should be stored");
 
-    let claimed = repo
-        .claim_outbox_messages_async("worker-a", 1, Duration::from_secs(60))
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "worker-a",
+            1,
+            Duration::from_secs(60),
+        ))
         .await
         .expect("claim should succeed");
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].id(), complete_message_id);
 
-    let stale_err = repo
-        .complete_outbox_message_for_worker_async(claimed[0].id(), "worker-b")
+    let wrong_claim = OutboxClaimRef {
+        message_id: claimed[0].id().to_string(),
+        worker_id: "worker-b".into(),
+        leased_until: claimed[0].leased_until.expect("claim should have lease"),
+        attempt: claimed[0].attempts,
+    };
+    let stale_err = outbox
+        .complete_async(&wrong_claim)
         .await
         .expect_err("wrong worker should not complete a claim");
     assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
 
-    repo.complete_outbox_message_for_worker_async(claimed[0].id(), "worker-a")
+    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    outbox
+        .complete_async(&claim)
         .await
         .expect("owning worker should complete the claim");
-    let published = find_outbox_by_id(&repo, &complete_message_id)
+    let published = find_outbox_by_id(&outbox, &complete_message_id)
         .await
         .expect("completed message should still be queryable");
     assert_eq!(published.status, OutboxMessageStatus::Published);
@@ -221,34 +212,49 @@ where
         .await
         .expect("retry message should be stored");
 
-    let claimed = repo
-        .claim_outbox_messages_async("worker-r", 1, Duration::from_secs(60))
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "worker-r",
+            1,
+            Duration::from_secs(60),
+        ))
         .await
         .expect("retry claim should succeed");
-    let action = repo
-        .record_outbox_publish_failure_async(claimed[0].id(), "worker-r", "first failure", 2)
+    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    let action = outbox
+        .record_failure_async(&claim, "first failure", 2)
         .await
         .expect("first failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Released);
 
-    let released = find_outbox_by_id(&repo, &retry_message_id)
+    let released = find_outbox_by_id(&outbox, &retry_message_id)
         .await
         .expect("released message should exist");
     assert_eq!(released.status, OutboxMessageStatus::Pending);
     assert_eq!(released.attempts, 1);
     assert_eq!(released.last_error.as_deref(), Some("first failure"));
 
-    let claimed = repo
-        .claim_outbox_messages_async("worker-r", 1, Duration::from_secs(60))
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "worker-r",
+            1,
+            Duration::from_secs(60),
+        ))
         .await
         .expect("second retry claim should succeed");
-    let action = repo
-        .record_outbox_publish_failure_async(claimed[0].id(), "worker-r", "second failure", 2)
+    let stale_err = outbox
+        .complete_async(&claim)
+        .await
+        .expect_err("stale attempt should not complete a later claim");
+    assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
+    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    let action = outbox
+        .record_failure_async(&claim, "second failure", 2)
         .await
         .expect("second failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Failed);
 
-    let failed = find_outbox_by_id(&repo, &retry_message_id)
+    let failed = find_outbox_by_id(&outbox, &retry_message_id)
         .await
         .expect("failed message should exist");
     assert_eq!(failed.status, OutboxMessageStatus::Failed);
@@ -263,9 +269,9 @@ fn added_seat(id: &str) -> Seat {
     seat
 }
 
-async fn find_outbox_by_id<R>(repo: &R, id: &str) -> Option<OutboxMessage>
+async fn find_outbox_by_id<S>(outbox: &S, id: &str) -> Option<OutboxMessage>
 where
-    R: AsyncOutboxRepositoryExt + Send + Sync,
+    S: AsyncOutboxStore + Send + Sync,
 {
     for status in [
         OutboxMessageStatus::Pending,
@@ -273,8 +279,8 @@ where
         OutboxMessageStatus::Published,
         OutboxMessageStatus::Failed,
     ] {
-        let messages = repo
-            .outbox_messages_by_status_async(status)
+        let messages = outbox
+            .messages_by_status_async(status)
             .await
             .expect("outbox status lookup should succeed");
         if let Some(message) = messages.into_iter().find(|message| message.id() == id) {

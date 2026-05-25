@@ -87,7 +87,7 @@ mod tests {
     use super::*;
     use crate::{
         impl_aggregate, AggregateBuilder, CommitBatch, Entity, EventRecord, HashMapRepository,
-        OutboxRepositoryExt, TransactionalCommit,
+        OutboxStore, TransactionalCommit,
     };
     use std::cell::RefCell;
 
@@ -145,7 +145,7 @@ mod tests {
 
         repo.outbox(event).commit(&mut aggregate).unwrap();
 
-        let pending = repo.repo().outbox_messages_pending().unwrap();
+        let pending = repo.repo().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "msg-1");
     }

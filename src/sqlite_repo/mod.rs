@@ -17,15 +17,18 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{ensure_active_claim, OutboxPublishFailureAction};
+use crate::outbox_worker::{
+    ensure_active_claim, AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef,
+    OutboxPublishFailureAction,
+};
 use crate::read_model::{
     ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelMutation, ReadModelWritePlan, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncReadModelSessionStore,
-    AsyncReadModelStore, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit,
-    PreparedEventAppend, RepositoryError, StreamIdentity,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend,
+    RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -38,6 +41,11 @@ use crate::sqlx_repo::{
     validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
     validate_supported_event_codec,
 };
+use crate::table::{
+    generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
+    TableMigrationArtifact, TableSchemaBootstrap, TableSchemaRegistry, TableSqlDialect,
+    TableSqlSchemaAdapter, TableStoreError,
+};
 
 const SQLITE_SCHEMA: &str = include_str!("../../migrations/sqlite/0001_initial.sql");
 const SQLITE_BACKEND: &str = "sqlite";
@@ -46,6 +54,12 @@ const SIGNED_INTEGER_STORAGE: &str = "signed integer storage";
 /// SQLite-backed async repository.
 #[derive(Clone)]
 pub struct SqliteRepository {
+    pool: SqlitePool,
+}
+
+/// SQLite-backed outbox table store.
+#[derive(Clone)]
+pub struct SqliteOutboxStore {
     pool: SqlitePool,
 }
 
@@ -95,6 +109,77 @@ impl SqliteRepository {
     /// Access the underlying SQLx pool for application-specific setup or tests.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// SQL artifact adapter for registered table/read-model schemas.
+    pub fn table_schema_adapter(&self) -> TableSqlSchemaAdapter {
+        TableSqlSchemaAdapter::sqlite()
+    }
+
+    /// Generate SQL statements for registered table/read-model schemas.
+    pub fn generate_table_migration_artifacts(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
+        generate_table_migration_artifacts(registry, TableSqlDialect::Sqlite)
+    }
+
+    /// Explicit dev/test bootstrap for registered table/read-model schemas.
+    pub async fn bootstrap_table_schema_for_dev(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaBootstrap, TableStoreError> {
+        for statement in table_schema_statements(registry, TableSqlDialect::Sqlite)? {
+            sqlx::query(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|err| read_model_storage_error("bootstrap table schema", err))?;
+        }
+        Ok(table_schema_bootstrap_result(registry))
+    }
+
+    /// Access an outbox-store handle backed by this repository's pool.
+    pub fn outbox_store(&self) -> SqliteOutboxStore {
+        SqliteOutboxStore {
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+impl SqliteOutboxStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// SQL artifact adapter for registered table/read-model schemas.
+    pub fn table_schema_adapter(&self) -> TableSqlSchemaAdapter {
+        TableSqlSchemaAdapter::sqlite()
+    }
+
+    /// Generate SQL statements for registered table/read-model schemas.
+    pub fn generate_table_migration_artifacts(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
+        generate_table_migration_artifacts(registry, TableSqlDialect::Sqlite)
+    }
+
+    /// Explicit dev/test bootstrap for registered table/read-model schemas.
+    pub async fn bootstrap_table_schema_for_dev(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaBootstrap, TableStoreError> {
+        for statement in table_schema_statements(registry, TableSqlDialect::Sqlite)? {
+            sqlx::query(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|err| read_model_storage_error("bootstrap table schema", err))?;
+        }
+        Ok(table_schema_bootstrap_result(registry))
     }
 }
 
@@ -429,8 +514,8 @@ impl AsyncReadModelSessionStore for SqliteRepository {
     }
 }
 
-impl AsyncOutboxRepositoryExt for SqliteRepository {
-    fn outbox_messages_by_status_async(
+impl AsyncOutboxStore for SqliteOutboxStore {
+    fn messages_by_status_async(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
@@ -456,20 +541,18 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
         }
     }
 
-    fn claim_outbox_messages_async<'a>(
+    fn claim_async<'a>(
         &'a self,
-        worker_id: &'a str,
-        max: usize,
-        lease: Duration,
+        request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
         async move {
-            if max == 0 {
+            if request.batch_size == 0 {
                 return Ok(Vec::new());
             }
 
             let now = SystemTime::now();
             let now_epoch = system_time_to_epoch_secs(now)?;
-            let claimed_until = now.checked_add(lease).ok_or_else(|| {
+            let claimed_until = now.checked_add(request.lease).ok_or_else(|| {
                 RepositoryError::Model("failed to compute outbox lease deadline".into())
             })?;
             let claimed_until_storage = system_time_to_storage(claimed_until)?;
@@ -481,7 +564,7 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
 
             let limit = sqlx_repository_i64_from_u64(
                 SQLITE_BACKEND,
-                max as u64,
+                request.batch_size as u64,
                 "outbox claim limit",
                 SIGNED_INTEGER_STORAGE,
             )?;
@@ -489,8 +572,11 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
                 r#"
                 SELECT message_id
                 FROM outbox_messages
-                WHERE (status = ? AND CAST(next_available_at AS REAL) <= ?)
-                   OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
+                WHERE (
+                    (status = ? AND CAST(next_available_at AS REAL) <= ?)
+                    OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
+                )
+                  AND (? IS NULL OR destination = ?)
                 ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
                 LIMIT ?
                 "#,
@@ -499,6 +585,8 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
             .bind(now_epoch)
             .bind(OutboxMessageStatus::InFlight.as_str())
             .bind(now_epoch)
+            .bind(request.destination.as_deref())
+            .bind(request.destination.as_deref())
             .bind(limit)
             .fetch_all(&mut *tx)
             .await
@@ -525,16 +613,19 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
                           AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?)
                         )
                       )
+                      AND (? IS NULL OR destination = ?)
                     "#,
                 )
                 .bind(OutboxMessageStatus::InFlight.as_str())
-                .bind(worker_id)
+                .bind(&request.worker_id)
                 .bind(&claimed_until_storage)
                 .bind(&message_id)
                 .bind(OutboxMessageStatus::Pending.as_str())
                 .bind(now_epoch)
                 .bind(OutboxMessageStatus::InFlight.as_str())
                 .bind(now_epoch)
+                .bind(request.destination.as_deref())
+                .bind(request.destination.as_deref())
                 .execute(&mut *tx)
                 .await
                 .map_err(|err| repository_storage_error("claim outbox message", err))?;
@@ -555,10 +646,9 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
         }
     }
 
-    fn complete_outbox_message_for_worker_async<'a>(
+    fn complete_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             let now = SystemTime::now();
@@ -576,14 +666,21 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
                   AND claimed_by = ?
                   AND claimed_until IS NOT NULL
                   AND CAST(claimed_until AS REAL) > ?
+                  AND attempts = ?
                 "#,
             )
             .bind(OutboxMessageStatus::Published.as_str())
             .bind(system_time_to_storage(now)?)
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i64_from_u64(
+                SQLITE_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                SIGNED_INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("complete outbox message", err))?;
@@ -591,17 +688,16 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn release_outbox_message_for_worker_async<'a>(
+    fn release_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
@@ -622,15 +718,22 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
                   AND claimed_by = ?
                   AND claimed_until IS NOT NULL
                   AND CAST(claimed_until AS REAL) > ?
+                  AND attempts = ?
                 "#,
             )
             .bind(OutboxMessageStatus::Pending.as_str())
             .bind(now_storage)
             .bind(empty_string_as_none(error))
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i64_from_u64(
+                SQLITE_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                SIGNED_INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("release outbox message", err))?;
@@ -638,17 +741,16 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn fail_outbox_message_for_worker_async<'a>(
+    fn fail_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
@@ -668,15 +770,22 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
                   AND claimed_by = ?
                   AND claimed_until IS NOT NULL
                   AND CAST(claimed_until AS REAL) > ?
+                  AND attempts = ?
                 "#,
             )
             .bind(OutboxMessageStatus::Failed.as_str())
             .bind(empty_string_as_none(error))
             .bind(system_time_to_storage(now)?)
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i64_from_u64(
+                SQLITE_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                SIGNED_INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("fail outbox message", err))?;
@@ -684,35 +793,32 @@ impl AsyncOutboxRepositoryExt for SqliteRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn record_outbox_publish_failure_async<'a>(
+    fn record_failure_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
         max_attempts: u32,
     ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
         async move {
-            let message = outbox_message_by_id_pool(&self.pool, message_id)
+            let message = outbox_message_by_id_pool(&self.pool, &claim.message_id)
                 .await?
                 .ok_or_else(|| RepositoryError::NotFound {
-                    id: message_id.to_string(),
+                    id: claim.message_id.clone(),
                 })?;
-            ensure_active_claim(&message, Some(worker_id), SystemTime::now())?;
+            ensure_active_claim(&message, Some(claim), SystemTime::now())?;
 
             if message.attempts >= max_attempts {
-                self.fail_outbox_message_for_worker_async(message_id, worker_id, error)
-                    .await?;
+                self.fail_async(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Failed)
             } else {
-                self.release_outbox_message_for_worker_async(message_id, worker_id, error)
-                    .await?;
+                self.release_async(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Released)
             }
         }

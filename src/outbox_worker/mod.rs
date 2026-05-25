@@ -1,7 +1,7 @@
 //! Outbox Worker - Drains and publishes outbox messages.
 //!
 //! This module provides the worker infrastructure for processing outbox messages:
-//! - `OutboxRepositoryExt` - Repository operations for claiming and completing messages
+//! - `OutboxStore` - Store operations for claiming and completing messages
 //! - `OutboxWorker` - Synchronous message processor
 //! - `OutboxPublisher` - Trait for publishing to external systems
 //! - `LogPublisher` - Simple logging publisher for testing
@@ -16,28 +16,29 @@
 //! ## Example
 //!
 //! ```ignore
-//! use sourced_rust::{OutboxWorker, OutboxRepositoryExt, LogPublisher};
+//! use sourced_rust::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore, OutboxWorker, LogPublisher};
 //! use std::time::Duration;
 //!
 //! // Claim pending messages
 //! let worker_id = "worker-1";
-//! let messages = repo.claim_outbox_messages(worker_id, 10, Duration::from_secs(60))?;
+//! let messages = outbox.claim(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))?;
 //!
 //! // Process with a worker
 //! let mut worker = OutboxWorker::new(LogPublisher::default()).with_worker_id(worker_id);
 //! for mut msg in messages {
+//!     let claim = OutboxClaimRef::from_message(&msg)?;
 //!     let result = worker.process_message(&mut msg)?;
 //!     if result.completed {
-//!         repo.complete_outbox_message_for_worker(msg.id(), worker_id)?;
+//!         outbox.complete(&claim)?;
 //!     } else if result.released || result.failed {
 //!         let error = msg.last_error.as_deref().unwrap_or("publish failed");
-//!         repo.record_outbox_publish_failure(msg.id(), worker_id, error, 3)?;
+//!         outbox.record_failure(&claim, error, 3)?;
 //!     }
 //! }
 //! ```
 
 mod publisher;
-mod repository_ext;
+mod store;
 #[cfg(feature = "bus")]
 mod thread;
 mod worker;
@@ -49,8 +50,10 @@ pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 
 // Repository helpers
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub(crate) use repository_ext::ensure_active_claim;
-pub use repository_ext::{OutboxPublishFailureAction, OutboxRepositoryExt};
+pub(crate) use store::ensure_active_claim;
+pub use store::{
+    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore,
+};
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};

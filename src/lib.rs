@@ -26,6 +26,7 @@ pub mod snapshot;
 pub mod sqlite_repo;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_repo;
+pub mod table;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
@@ -38,11 +39,11 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncReadModelSessionStore,
-    AsyncReadModelStore, AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore,
-    AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get,
-    GetMany, GetOne, Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite,
-    StreamIdentity, TransactionalCommit,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
+    AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
+    Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
@@ -51,31 +52,35 @@ pub use aggregate::{
     AsyncAggregateRepository, CommitAggregate, GetAggregate, GetAllAggregates, RepositoryExt,
 };
 
-pub use hashmap_repo::HashMapRepository;
+pub use hashmap_repo::{HashMapOutboxStore, HashMapRepository};
 #[cfg(feature = "postgres")]
-pub use postgres_repo::PostgresRepository;
+pub use postgres_repo::{PostgresOutboxStore, PostgresRepository};
 #[cfg(feature = "sqlite")]
-pub use sqlite_repo::SqliteRepository;
+pub use sqlite_repo::{SqliteOutboxStore, SqliteRepository};
 
 // Re-export lock traits and types at crate root for convenience
 pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};
 
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
-    AsyncOutboxCommit, OutboxCommit, OutboxCommitExt, OutboxMessage, OutboxMessageStatus,
+    outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
+    outbox_message_schema, AsyncOutboxCommit, OutboxCommit, OutboxCommitExt, OutboxMessage,
+    OutboxMessageStatus, OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
 pub use outbox_worker::{
+    AsyncOutboxStore,
+    ClaimOutboxMessages,
     // Worker
     DrainResult,
     // Publishers
     LogPublisher,
     LogPublisherError,
+    OutboxClaimRef,
     OutboxPublishFailureAction,
     OutboxPublisher,
-    // Repository extension for claiming/completing messages
-    OutboxRepositoryExt,
+    OutboxStore,
     OutboxWorker,
     ProcessOneResult,
 };
@@ -121,6 +126,17 @@ pub use read_model::{
     RelationalReadModelIncludes, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind,
     RowKey, RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
     DEFAULT_READ_MODEL_VERSION_COLUMN,
+};
+
+// Neutral table/row primitives shared by read models and operational tables.
+pub use table::{
+    generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
+    DeleteTableRowMutation, PatchTableRowMutation, TableAdapterCapabilities, TableColumn,
+    TableCommitOutcome, TableDocumentMutation, TableIndex, TableMigrationArtifact, TableModel,
+    TableMutation, TableRowMutation, TableSchema, TableSchemaAdapter,
+    TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind,
+    TableSchemaRegistry, TableSchemaRegistryExt, TableSchemaVerification, TableSqlDialect,
+    TableSqlSchemaAdapter, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates

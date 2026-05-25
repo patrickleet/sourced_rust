@@ -2,7 +2,7 @@ mod aggregates;
 
 use aggregates::*;
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, OutboxRepositoryExt,
+    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, OutboxStore,
     SnapshotStore, Snapshottable,
 };
 
@@ -259,7 +259,7 @@ fn domain_event_commits_with_outbox() {
 
     let loaded = repo.get("t1").unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");
-    let pending = repo.repo().outbox_messages_pending().unwrap();
+    let pending = repo.repo().outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);
     assert!(pending[0].is_pending());
 }

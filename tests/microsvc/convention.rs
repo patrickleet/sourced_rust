@@ -9,7 +9,7 @@
 
 use serde_json::json;
 use sourced_rust::microsvc::{Service, Session};
-use sourced_rust::{AggregateBuilder, HashMapRepository, OutboxRepositoryExt, Queueable};
+use sourced_rust::{AggregateBuilder, HashMapRepository, OutboxStore, Queueable};
 
 use crate::handlers;
 use crate::models::counter::Counter;
@@ -100,7 +100,7 @@ fn create_persists_outbox_message() {
     assert_eq!(counter.value, 0);
 
     // Outbox message was persisted
-    let pending = inner.outbox_messages_pending().unwrap();
+    let pending = inner.outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "CounterCreated");
 }
@@ -124,7 +124,8 @@ fn duplicate_create_leaves_single_outbox_message() {
         .repo()
         .repo()
         .inner()
-        .outbox_messages_pending()
+        .outbox_store()
+        .pending()
         .unwrap();
     assert_eq!(pending.len(), 1);
 }
@@ -155,7 +156,7 @@ fn increment_persists_outbox_message() {
 
     // Both outbox messages were persisted
     let inner = service.repo().repo().inner();
-    let pending = inner.outbox_messages_pending().unwrap();
+    let pending = inner.outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
     event_types.sort();

@@ -38,6 +38,12 @@ pub struct HashMapRepository {
     snapshot_store: InMemorySnapshotStore,
 }
 
+/// In-memory outbox table handle.
+#[derive(Clone)]
+pub struct HashMapOutboxStore {
+    pub(crate) storage: Arc<RwLock<HashMap<String, OutboxMessage>>>,
+}
+
 impl Default for HashMapRepository {
     fn default() -> Self {
         Self::new()
@@ -55,8 +61,16 @@ impl HashMapRepository {
         }
     }
 
-    pub(crate) fn outbox_store(&self) -> &RwLock<HashMap<String, OutboxMessage>> {
+    #[cfg(test)]
+    pub(crate) fn outbox_storage(&self) -> &RwLock<HashMap<String, OutboxMessage>> {
         self.outbox_store.as_ref()
+    }
+
+    /// Access the in-memory outbox table handle.
+    pub fn outbox_store(&self) -> HashMapOutboxStore {
+        HashMapOutboxStore {
+            storage: Arc::clone(&self.outbox_store),
+        }
     }
 
     /// Access the embedded read model store directly.
@@ -375,6 +389,7 @@ fn reject_duplicate_async_streams(streams: &[AsyncStreamWrite<'_>]) -> Result<()
 fn reject_duplicate_outbox_messages(messages: &[OutboxMessage]) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(messages.len());
     for message in messages {
+        validate_outbox_table_write(message)?;
         let id = message.id();
         if id.trim().is_empty() {
             return Err(RepositoryError::Model(
@@ -391,6 +406,13 @@ fn reject_duplicate_outbox_messages(messages: &[OutboxMessage]) -> Result<(), Re
         }
     }
     Ok(())
+}
+
+fn validate_outbox_table_write(message: &OutboxMessage) -> Result<(), RepositoryError> {
+    crate::outbox::outbox_message_insert_plan(message)
+        .and_then(|plan| plan.validate().map(|()| plan))
+        .map(|_| ())
+        .map_err(|err| RepositoryError::Model(err.to_string()))
 }
 
 fn validate_async_entity_id_matches_identity(

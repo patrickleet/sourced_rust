@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::{error::Error, fmt};
 
 use crate::bus::{Event, Publisher, Sender as BusSender};
-use crate::OutboxRepositoryExt;
+use crate::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
@@ -33,37 +33,39 @@ impl fmt::Display for OutboxWorkerJoinError {
 
 impl Error for OutboxWorkerJoinError {}
 
-fn record_publish_success<R: OutboxRepositoryExt>(
-    repo: &R,
-    message_id: &str,
-    worker_id: &str,
+fn record_publish_success<S: OutboxStore>(
+    store: &S,
+    claim: &OutboxClaimRef,
     stats: &mut WorkerStats,
 ) {
-    match repo.complete_outbox_message_for_worker(message_id, worker_id) {
+    match store.complete(claim) {
         Ok(()) => {
             stats.messages_published += 1;
         }
         Err(err) => {
-            eprintln!("outbox worker `{worker_id}` could not complete `{message_id}`: {err}");
+            eprintln!(
+                "outbox worker `{}` could not complete `{}`: {err}",
+                claim.worker_id, claim.message_id
+            );
             stats.messages_failed += 1;
         }
     }
 }
 
-fn record_publish_failure<R: OutboxRepositoryExt>(
-    repo: &R,
-    message_id: &str,
-    worker_id: &str,
+fn record_publish_failure<S: OutboxStore>(
+    store: &S,
+    claim: &OutboxClaimRef,
     error: &str,
     stats: &mut WorkerStats,
 ) {
-    match repo.record_outbox_publish_failure(message_id, worker_id, error, DEFAULT_MAX_ATTEMPTS) {
+    match store.record_failure(claim, error, DEFAULT_MAX_ATTEMPTS) {
         Ok(_) => {
             stats.messages_failed += 1;
         }
         Err(err) => {
             eprintln!(
-                "outbox worker `{worker_id}` could not record publish failure for `{message_id}`: {err}"
+                "outbox worker `{}` could not record publish failure for `{}`: {err}",
+                claim.worker_id, claim.message_id
             );
             stats.messages_failed += 1;
         }
@@ -84,7 +86,7 @@ fn record_publish_failure<R: OutboxRepositoryExt>(
 ///
 /// // Start the worker
 /// let worker = OutboxWorkerThread::spawn(
-///     repo.clone(),
+///     repo.outbox_store(),
 ///     publisher,
 ///     Duration::from_millis(50),
 /// );
@@ -103,28 +105,28 @@ pub struct OutboxWorkerThread {
 impl OutboxWorkerThread {
     /// Spawn a new outbox worker thread.
     ///
-    /// The worker will poll the repository for pending outbox messages,
+    /// The worker will poll the outbox store for pending outbox messages,
     /// publish them to the given publisher, and mark them as complete.
     ///
-    /// The repository must be `Clone + Send + 'static`. For `HashMapRepository`,
-    /// cloning creates another handle to the same storage (thread-safe via `Arc<RwLock<...>>`).
-    pub fn spawn<R, P>(repo: R, publisher: P, poll_interval: Duration) -> Self
+    /// The store must be `Clone + Send + 'static`. For `HashMapOutboxStore`,
+    /// cloning creates another handle to the same storage.
+    pub fn spawn<S, P>(store: S, publisher: P, poll_interval: Duration) -> Self
     where
-        R: OutboxRepositoryExt + Clone + Send + 'static,
+        S: OutboxStore + Clone + Send + 'static,
         P: Publisher + 'static,
     {
-        Self::spawn_with_id(repo, publisher, poll_interval, "outbox-worker")
+        Self::spawn_with_id(store, publisher, poll_interval, "outbox-worker")
     }
 
     /// Spawn a new outbox worker thread with a custom worker ID.
-    pub fn spawn_with_id<R, P>(
-        repo: R,
+    pub fn spawn_with_id<S, P>(
+        store: S,
         publisher: P,
         poll_interval: Duration,
         worker_id: &str,
     ) -> Self
     where
-        R: OutboxRepositoryExt + Clone + Send + 'static,
+        S: OutboxStore + Clone + Send + 'static,
         P: Publisher + 'static,
     {
         let (stop_tx, stop_rx) = channel();
@@ -144,9 +146,20 @@ impl OutboxWorkerThread {
                 stats.polls += 1;
 
                 // Claim and process messages
-                match repo.claim_outbox_messages(&worker_id, 100, lease) {
+                match store.claim(ClaimOutboxMessages::new(&worker_id, 100, lease)) {
                     Ok(messages) => {
                         for msg in messages {
+                            let claim = match OutboxClaimRef::from_message(&msg) {
+                                Ok(claim) => claim,
+                                Err(err) => {
+                                    eprintln!(
+                                        "outbox worker `{worker_id}` received invalid claim `{}`: {err}",
+                                        msg.id()
+                                    );
+                                    stats.messages_failed += 1;
+                                    continue;
+                                }
+                            };
                             let mut event =
                                 Event::new(msg.id(), &msg.event_type, msg.payload.clone());
                             for (k, v) in &msg.metadata {
@@ -155,17 +168,11 @@ impl OutboxWorkerThread {
 
                             match publisher.publish(event) {
                                 Ok(()) => {
-                                    record_publish_success(&repo, msg.id(), &worker_id, &mut stats);
+                                    record_publish_success(&store, &claim, &mut stats);
                                 }
                                 Err(err) => {
                                     let error = err.to_string();
-                                    record_publish_failure(
-                                        &repo,
-                                        msg.id(),
-                                        &worker_id,
-                                        &error,
-                                        &mut stats,
-                                    );
+                                    record_publish_failure(&store, &claim, &error, &mut stats);
                                 }
                             }
                         }
@@ -191,23 +198,23 @@ impl OutboxWorkerThread {
     ///
     /// Messages with a `destination` are sent point-to-point via `Sender::send()`.
     /// Messages without a destination are published fan-out via `Publisher::publish()`.
-    pub fn spawn_routed<R, P>(repo: R, publisher: P, poll_interval: Duration) -> Self
+    pub fn spawn_routed<S, P>(store: S, publisher: P, poll_interval: Duration) -> Self
     where
-        R: OutboxRepositoryExt + Clone + Send + 'static,
+        S: OutboxStore + Clone + Send + 'static,
         P: Publisher + BusSender + 'static,
     {
-        Self::spawn_routed_with_id(repo, publisher, poll_interval, "outbox-worker")
+        Self::spawn_routed_with_id(store, publisher, poll_interval, "outbox-worker")
     }
 
     /// Spawn a routed worker with a custom worker ID.
-    pub fn spawn_routed_with_id<R, P>(
-        repo: R,
+    pub fn spawn_routed_with_id<S, P>(
+        store: S,
         publisher: P,
         poll_interval: Duration,
         worker_id: &str,
     ) -> Self
     where
-        R: OutboxRepositoryExt + Clone + Send + 'static,
+        S: OutboxStore + Clone + Send + 'static,
         P: Publisher + BusSender + 'static,
     {
         let (stop_tx, stop_rx) = channel();
@@ -225,9 +232,20 @@ impl OutboxWorkerThread {
 
                 stats.polls += 1;
 
-                match repo.claim_outbox_messages(&worker_id, 100, lease) {
+                match store.claim(ClaimOutboxMessages::new(&worker_id, 100, lease)) {
                     Ok(messages) => {
                         for msg in messages {
+                            let claim = match OutboxClaimRef::from_message(&msg) {
+                                Ok(claim) => claim,
+                                Err(err) => {
+                                    eprintln!(
+                                        "outbox worker `{worker_id}` received invalid claim `{}`: {err}",
+                                        msg.id()
+                                    );
+                                    stats.messages_failed += 1;
+                                    continue;
+                                }
+                            };
                             let mut event =
                                 Event::new(msg.id(), &msg.event_type, msg.payload.clone());
                             for (k, v) in &msg.metadata {
@@ -242,17 +260,11 @@ impl OutboxWorkerThread {
 
                             match result {
                                 Ok(()) => {
-                                    record_publish_success(&repo, msg.id(), &worker_id, &mut stats);
+                                    record_publish_success(&store, &claim, &mut stats);
                                 }
                                 Err(err) => {
                                     let error = err.to_string();
-                                    record_publish_failure(
-                                        &repo,
-                                        msg.id(),
-                                        &worker_id,
-                                        &error,
-                                        &mut stats,
-                                    );
+                                    record_publish_failure(&store, &claim, &error, &mut stats);
                                 }
                             }
                         }
@@ -324,7 +336,12 @@ mod tests {
     }
 
     fn load_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
-        repo.outbox_store().read().unwrap().get(id).unwrap().clone()
+        repo.outbox_storage()
+            .read()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .clone()
     }
 
     #[test]
@@ -375,7 +392,7 @@ mod tests {
         let id = store_message(&repo, message);
 
         let worker = OutboxWorkerThread::spawn_with_id(
-            repo.clone(),
+            repo.outbox_store(),
             FailingPublisher,
             Duration::from_millis(1),
             "worker-1",

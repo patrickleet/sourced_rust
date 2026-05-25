@@ -18,11 +18,13 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use crate::entity::Entity;
 use crate::entity::EventRecord;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{ensure_active_claim, OutboxPublishFailureAction};
+use crate::outbox_worker::{
+    ensure_active_claim, AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef,
+    OutboxPublishFailureAction,
+};
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncOutboxRepositoryExt, AsyncSnapshotStore,
-    AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend, RepositoryError,
-    StreamIdentity,
+    AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore, AsyncSnapshotWrite,
+    AsyncTransactionalCommit, PreparedEventAppend, RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -36,6 +38,11 @@ use crate::sqlx_repo::{
     validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
     validate_supported_event_codec,
 };
+use crate::table::{
+    generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
+    TableMigrationArtifact, TableSchemaBootstrap, TableSchemaRegistry, TableSqlDialect,
+    TableSqlSchemaAdapter, TableStoreError,
+};
 
 const POSTGRES_SCHEMA: &str = include_str!("../../migrations/postgres/0001_initial.sql");
 const POSTGRES_BACKEND: &str = "postgres";
@@ -45,6 +52,12 @@ const INTEGER_STORAGE: &str = "integer storage";
 /// Postgres-backed async repository.
 #[derive(Clone)]
 pub struct PostgresRepository {
+    pool: PgPool,
+}
+
+/// Postgres-backed outbox table store.
+#[derive(Clone)]
+pub struct PostgresOutboxStore {
     pool: PgPool,
 }
 
@@ -94,6 +107,77 @@ impl PostgresRepository {
     /// Access the underlying SQLx pool for application-specific setup or tests.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// SQL artifact adapter for registered table/read-model schemas.
+    pub fn table_schema_adapter(&self) -> TableSqlSchemaAdapter {
+        TableSqlSchemaAdapter::postgres()
+    }
+
+    /// Generate SQL statements for registered table/read-model schemas.
+    pub fn generate_table_migration_artifacts(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
+        generate_table_migration_artifacts(registry, TableSqlDialect::Postgres)
+    }
+
+    /// Explicit dev/test bootstrap for registered table/read-model schemas.
+    pub async fn bootstrap_table_schema_for_dev(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaBootstrap, TableStoreError> {
+        for statement in table_schema_statements(registry, TableSqlDialect::Postgres)? {
+            sqlx::query(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
+        }
+        Ok(table_schema_bootstrap_result(registry))
+    }
+
+    /// Access an outbox-store handle backed by this repository's pool.
+    pub fn outbox_store(&self) -> PostgresOutboxStore {
+        PostgresOutboxStore {
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+impl PostgresOutboxStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// SQL artifact adapter for registered table/read-model schemas.
+    pub fn table_schema_adapter(&self) -> TableSqlSchemaAdapter {
+        TableSqlSchemaAdapter::postgres()
+    }
+
+    /// Generate SQL statements for registered table/read-model schemas.
+    pub fn generate_table_migration_artifacts(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
+        generate_table_migration_artifacts(registry, TableSqlDialect::Postgres)
+    }
+
+    /// Explicit dev/test bootstrap for registered table/read-model schemas.
+    pub async fn bootstrap_table_schema_for_dev(
+        &self,
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaBootstrap, TableStoreError> {
+        for statement in table_schema_statements(registry, TableSqlDialect::Postgres)? {
+            sqlx::query(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
+        }
+        Ok(table_schema_bootstrap_result(registry))
     }
 }
 
@@ -229,8 +313,8 @@ impl AsyncTransactionalCommit for PostgresRepository {
     }
 }
 
-impl AsyncOutboxRepositoryExt for PostgresRepository {
-    fn outbox_messages_by_status_async(
+impl AsyncOutboxStore for PostgresOutboxStore {
+    fn messages_by_status_async(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
@@ -245,26 +329,24 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
         }
     }
 
-    fn claim_outbox_messages_async<'a>(
+    fn claim_async<'a>(
         &'a self,
-        worker_id: &'a str,
-        max: usize,
-        lease: Duration,
+        request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
         async move {
-            if max == 0 {
+            if request.batch_size == 0 {
                 return Ok(Vec::new());
             }
 
             let now = SystemTime::now();
             let now_epoch = system_time_to_epoch_secs(now)?;
-            let claimed_until = now.checked_add(lease).ok_or_else(|| {
+            let claimed_until = now.checked_add(request.lease).ok_or_else(|| {
                 RepositoryError::Model("failed to compute outbox lease deadline".into())
             })?;
             let claimed_until_epoch = system_time_to_epoch_secs(claimed_until)?;
             let limit = sqlx_repository_i64_from_u64(
                 POSTGRES_BACKEND,
-                max as u64,
+                request.batch_size as u64,
                 "outbox claim limit",
                 BIGINT_STORAGE,
             )?;
@@ -279,16 +361,19 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
                 WITH candidates AS (
                   SELECT message_id
                   FROM outbox_messages
-                  WHERE (status = $1 AND next_available_at <= to_timestamp($2))
-                     OR (status = $3 AND (claimed_until IS NULL OR claimed_until <= to_timestamp($2)))
+                  WHERE (
+                    (status = $1 AND next_available_at <= to_timestamp($2))
+                    OR (status = $3 AND (claimed_until IS NULL OR claimed_until <= to_timestamp($2)))
+                  )
+                    AND ($4::text IS NULL OR destination = $4)
                   ORDER BY created_at ASC, message_id ASC
-                  LIMIT $4
+                  LIMIT $5
                   FOR UPDATE SKIP LOCKED
                 )
                 UPDATE outbox_messages AS message
-                SET status = $5,
-                    claimed_by = $6,
-                    claimed_until = to_timestamp($7),
+                SET status = $6,
+                    claimed_by = $7,
+                    claimed_until = to_timestamp($8),
                     attempts = attempts + 1,
                     updated_at = now()
                 FROM candidates
@@ -316,9 +401,10 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
             .bind(OutboxMessageStatus::Pending.as_str())
             .bind(now_epoch)
             .bind(OutboxMessageStatus::InFlight.as_str())
+            .bind(request.destination.as_deref())
             .bind(limit)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&request.worker_id)
             .bind(claimed_until_epoch)
             .fetch_all(&mut *tx)
             .await
@@ -332,10 +418,9 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
         }
     }
 
-    fn complete_outbox_message_for_worker_async<'a>(
+    fn complete_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             let now = SystemTime::now();
@@ -353,14 +438,21 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
                   AND claimed_by = $5
                   AND claimed_until IS NOT NULL
                   AND claimed_until > to_timestamp($6)
+                  AND attempts = $7
                 "#,
             )
             .bind(OutboxMessageStatus::Published.as_str())
             .bind(now_epoch)
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i32_from_u64(
+                POSTGRES_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("complete outbox message", err))?;
@@ -368,17 +460,16 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn release_outbox_message_for_worker_async<'a>(
+    fn release_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
@@ -398,15 +489,22 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
                   AND claimed_by = $6
                   AND claimed_until IS NOT NULL
                   AND claimed_until > to_timestamp($7)
+                  AND attempts = $8
                 "#,
             )
             .bind(OutboxMessageStatus::Pending.as_str())
             .bind(now_epoch)
             .bind(empty_string_as_none(error))
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i32_from_u64(
+                POSTGRES_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("release outbox message", err))?;
@@ -414,17 +512,16 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn fail_outbox_message_for_worker_async<'a>(
+    fn fail_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
@@ -444,15 +541,22 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
                   AND claimed_by = $6
                   AND claimed_until IS NOT NULL
                   AND claimed_until > to_timestamp($7)
+                  AND attempts = $8
                 "#,
             )
             .bind(OutboxMessageStatus::Failed.as_str())
             .bind(empty_string_as_none(error))
             .bind(now_epoch)
-            .bind(message_id)
+            .bind(&claim.message_id)
             .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(worker_id)
+            .bind(&claim.worker_id)
             .bind(now_epoch)
+            .bind(sqlx_repository_i32_from_u64(
+                POSTGRES_BACKEND,
+                u64::from(claim.attempt),
+                "outbox claim attempt",
+                INTEGER_STORAGE,
+            )?)
             .execute(&self.pool)
             .await
             .map_err(|err| repository_storage_error("fail outbox message", err))?;
@@ -460,35 +564,32 @@ impl AsyncOutboxRepositoryExt for PostgresRepository {
             ensure_outbox_update_applied(
                 &self.pool,
                 result.rows_affected(),
-                message_id,
-                |message| ensure_active_claim(message, Some(worker_id), now),
+                &claim.message_id,
+                |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
         }
     }
 
-    fn record_outbox_publish_failure_async<'a>(
+    fn record_failure_async<'a>(
         &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
+        claim: &'a OutboxClaimRef,
         error: &'a str,
         max_attempts: u32,
     ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
         async move {
-            let message = outbox_message_by_id_pool(&self.pool, message_id)
+            let message = outbox_message_by_id_pool(&self.pool, &claim.message_id)
                 .await?
                 .ok_or_else(|| RepositoryError::NotFound {
-                    id: message_id.to_string(),
+                    id: claim.message_id.clone(),
                 })?;
-            ensure_active_claim(&message, Some(worker_id), SystemTime::now())?;
+            ensure_active_claim(&message, Some(claim), SystemTime::now())?;
 
             if message.attempts >= max_attempts {
-                self.fail_outbox_message_for_worker_async(message_id, worker_id, error)
-                    .await?;
+                self.fail_async(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Failed)
             } else {
-                self.release_outbox_message_for_worker_async(message_id, worker_id, error)
-                    .await?;
+                self.release_async(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Released)
             }
         }
@@ -1057,4 +1158,8 @@ fn system_time_from_epoch_secs(value: f64) -> Result<SystemTime, RepositoryError
 
 fn repository_storage_error(operation: &str, err: sqlx::Error) -> RepositoryError {
     sqlx_repo::repository_storage_error(POSTGRES_BACKEND, operation, err)
+}
+
+fn table_schema_storage_error(operation: &str, err: sqlx::Error) -> TableStoreError {
+    TableStoreError::Storage(format!("{POSTGRES_BACKEND} {operation} failed: {err}"))
 }

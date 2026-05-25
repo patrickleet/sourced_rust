@@ -1,3 +1,3 @@
 mod repository;
 
-pub use repository::HashMapRepository;
+pub use repository::{HashMapOutboxStore, HashMapRepository};

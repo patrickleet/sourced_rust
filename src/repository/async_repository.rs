@@ -1,9 +1,7 @@
 use std::future::Future;
-use std::time::Duration;
 
 use crate::entity::{Entity, EventRecord};
-use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::OutboxPublishFailureAction;
+use crate::outbox::OutboxMessage;
 use crate::read_model::{
     ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
     ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
@@ -190,56 +188,4 @@ pub trait AsyncSnapshotStore: Send + Sync {
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a;
-}
-
-/// Async worker-facing outbox repository operations.
-pub trait AsyncOutboxRepositoryExt: Send + Sync {
-    fn outbox_messages_by_status_async(
-        &self,
-        status: OutboxMessageStatus,
-    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_;
-
-    fn outbox_messages_pending_async(
-        &self,
-    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
-        async move {
-            self.outbox_messages_by_status_async(OutboxMessageStatus::Pending)
-                .await
-        }
-    }
-
-    fn claim_outbox_messages_async<'a>(
-        &'a self,
-        worker_id: &'a str,
-        max: usize,
-        lease: Duration,
-    ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a;
-
-    fn complete_outbox_message_for_worker_async<'a>(
-        &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
-
-    fn release_outbox_message_for_worker_async<'a>(
-        &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
-        error: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
-
-    fn fail_outbox_message_for_worker_async<'a>(
-        &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
-        error: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
-
-    fn record_outbox_publish_failure_async<'a>(
-        &'a self,
-        message_id: &'a str,
-        worker_id: &'a str,
-        error: &'a str,
-        max_attempts: u32,
-    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a;
 }
