@@ -59,3 +59,26 @@ are staged through `AsyncCommitBatch`. It intentionally does not claim Postgres
 production readiness: Postgres-specific column types, isolation behavior, error
 mapping, deployment, and migration validation still belong to the Postgres
 adapter and its own tests.
+
+## Postgres Adapter
+
+The optional `postgres` feature exports `PostgresRepository`, an async-only
+SQLx adapter for the production SQL event-store path:
+
+```rust
+let repo =
+    sourced_rust::PostgresRepository::connect_and_migrate(database_url).await?;
+```
+
+Local integration tests can use the root `compose.yaml` service:
+
+```bash
+docker compose up -d postgres
+DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
+  cargo test --features postgres --test postgres_repository
+```
+
+The first Postgres pass persists aggregate event streams and snapshots through
+explicit migrations in `migrations/postgres`. It rejects non-empty read-model
+write plans instead of creating generic read-model tables implicitly; durable
+read-model persistence remains a separate adapter track.
