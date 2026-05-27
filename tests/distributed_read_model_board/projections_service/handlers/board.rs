@@ -1,12 +1,15 @@
 //! Projects board events into `boards` + `cards`. The board snapshot is the
-//! desired state, so `save_changes` collection sync reflects added/moved/removed
-//! cards as inserts/patches/deletes. A monotonic `source_version` guard ignores
-//! stale snapshots under out-of-order delivery.
+//! updated view, so workspace sync reflects added/moved/removed cards as
+//! inserts/patches/deletes. A monotonic `source_version` guard ignores stale
+//! snapshots under out-of-order delivery.
 
+use serde_json::{json, Value};
 use sourced_rust::bus::Event;
-use sourced_rust::{InMemoryReadModelStore, ReadModelCommitOutcome, ReadModelUnitOfWorkExt};
+use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::ReadModelWorkspaceExt;
 
 use crate::board_service::BoardSnapshot;
+use crate::projections_service::{read_model_error, ProjectionDependencies};
 use crate::read_models::{board_key, BoardView, CardPayload, CardView};
 
 pub const CONSUMER: &str = "board-detail-projection";
@@ -17,40 +20,45 @@ pub const EVENTS: &[&str] = &[
     "board.card_removed",
 ];
 
-pub fn handle(store: &InMemoryReadModelStore, event: &Event) -> ReadModelCommitOutcome {
-    let snapshot: BoardSnapshot = event.decode().expect("board snapshot should decode");
-    let version = event_version(event);
-    let desired = desired_board_view(&snapshot, version);
+pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
+    ctx.has_fields(&["id", "event_type", "payload"])
+}
 
-    let mut session = store.session();
-    let existing = session
-        .load::<BoardView>(board_key(&desired.board_id))
+pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
+    let event = super::event(ctx)?;
+    let snapshot: BoardSnapshot = event
+        .decode()
+        .map_err(|err| HandlerError::DecodeFailed(format!("board snapshot: {err}")))?;
+    let version = event_version(&event);
+    let updated_view = updated_board_view(&snapshot, version);
+
+    let mut workspace = ctx.read_model_store().workspace();
+    let existing = workspace
+        .load::<BoardView>(board_key(&updated_view.board_id))
         .include("cards")
         .one()
-        .expect("board load should succeed");
+        .map_err(read_model_error)?;
 
     match existing {
         Some(current) if current.data.source_version >= version => {}
         Some(_) => {
-            session
-                .save_changes(desired)
-                .expect("board save_changes should stage");
+            workspace.sync(updated_view).map_err(read_model_error)?;
         }
         None => {
-            session
-                .save(&desired)
-                .expect("board root save should stage");
-            for card in &desired.cards {
-                session.save(card).expect("board card save should stage");
+            workspace.upsert(&updated_view).map_err(read_model_error)?;
+            for card in &updated_view.cards {
+                workspace.upsert(card).map_err(read_model_error)?;
             }
         }
     }
 
-    session.mark_processed(CONSUMER, &event.id);
-    session.commit().expect("board projection should commit")
+    workspace.mark_processed(CONSUMER, &event.id);
+    workspace.commit().map_err(read_model_error)?;
+
+    Ok(json!({ "event_id": event.id }))
 }
 
-fn desired_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
+fn updated_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
     let cards = snapshot
         .cards
         .iter()

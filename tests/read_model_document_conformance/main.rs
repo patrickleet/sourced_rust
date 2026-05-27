@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     HashMapRepository, InMemoryReadModelStore, Lock, LockManager, QueuedReadModelStore, ReadModel,
-    ReadModelError, ReadModelSession, ReadModelSessionCommitExt, ReadModelStore, ReadOpts,
+    ReadModelError, ReadModelStore, ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt,
+    ReadOpts,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -67,8 +68,8 @@ fn document_view(id: &str, value: i32, category: &str) -> DocumentView {
     }
 }
 
-fn document_session(view: &DocumentView) -> ReadModelSession {
-    let mut session = ReadModelSession::new();
+fn document_session(view: &DocumentView) -> ReadModelWritePlanBuilder {
+    let mut session = ReadModelWritePlanBuilder::new();
     session.document(view).unwrap();
     session
 }
@@ -101,7 +102,7 @@ fn document_session_keys_distinguish_colons_in_collection_and_id() {
         id: "b:c".into(),
         value: 2,
     };
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session.document(&left).unwrap();
     session.document(&right).unwrap();
 
@@ -134,7 +135,7 @@ fn unsupported_row_plan_rejection_does_not_apply_prior_document_write() {
         value: 20,
     };
     let mut session = document_session(&document);
-    session.save(&relational).unwrap();
+    session.upsert(&relational).unwrap();
 
     let err = repo.read_models(session).commit_all().unwrap_err();
 
@@ -262,8 +263,8 @@ fn queued_session_commit_failure_keeps_lock_until_explicit_abort() {
         id: "relational".into(),
         value: 20,
     };
-    let mut session = ReadModelSession::new();
-    session.save(&relational).unwrap();
+    let mut session = ReadModelWritePlanBuilder::new();
+    session.upsert(&relational).unwrap();
 
     let err = store.read_models(session).commit_all().unwrap_err();
 

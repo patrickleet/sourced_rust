@@ -15,10 +15,10 @@ use crate::outbox::OutboxMessage;
 use crate::read_model::in_memory::apply_document_write_plan;
 use crate::read_model::{
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelSessionStore, ReadModelStore, ReadModelWritePlan, Versioned,
+    ReadModelError, ReadModelStore, ReadModelWritePlan, ReadModelWritePlanStore, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
     AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Commit,
     CommitBatch, GetMany, GetOne, PreparedEventAppend, RepositoryError, SnapshotWrite,
     StreamIdentity, TransactionalCommit,
@@ -596,33 +596,33 @@ impl AsyncReadModelStore for HashMapRepository {
     }
 }
 
-impl ReadModelSessionStore for HashMapRepository {
+impl ReadModelWritePlanStore for HashMapRepository {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
-        ReadModelSessionStore::read_model_capabilities(&self.model_store)
+        ReadModelWritePlanStore::read_model_capabilities(&self.model_store)
     }
 
     fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        ReadModelSessionStore::commit_write_plan(&self.model_store, plan)
+        ReadModelWritePlanStore::commit_write_plan(&self.model_store, plan)
     }
 
     fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
-        ReadModelSessionStore::is_processed(&self.model_store, consumer_name, message_id)
+        ReadModelWritePlanStore::is_processed(&self.model_store, consumer_name, message_id)
     }
 }
 
-impl AsyncReadModelSessionStore for HashMapRepository {
+impl AsyncReadModelWritePlanStore for HashMapRepository {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        ReadModelSessionStore::read_model_capabilities(self)
+        ReadModelWritePlanStore::read_model_capabilities(self)
     }
 
     fn commit_write_plan_async(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move { ReadModelSessionStore::commit_write_plan(self, plan) }
+        async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
     }
 
     fn is_processed_async<'a>(
@@ -630,7 +630,7 @@ impl AsyncReadModelSessionStore for HashMapRepository {
         consumer_name: &'a str,
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
-        async move { ReadModelSessionStore::is_processed(self, consumer_name, message_id) }
+        async move { ReadModelWritePlanStore::is_processed(self, consumer_name, message_id) }
     }
 }
 

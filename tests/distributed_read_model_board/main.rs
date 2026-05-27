@@ -3,7 +3,7 @@
 //!
 //! - the **board service** owns the `Board` aggregate (cards are aggregate
 //!   state) and its outbox;
-//! - a **projection service** reconciles the relational rows via `save_changes`
+//! - a **projection service** reconciles the relational rows via `sync`
 //!   collection sync, so removing a card deletes its `cards` row, and each card
 //!   carries a JSONB `payload` column;
 //! - a **query service** reads the board with cards (`has_many`) and a card with
@@ -25,12 +25,12 @@ use serde::Serialize;
 use sourced_rust::microsvc::{Service, Session};
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable, ReadModelSessionStore,
+    Queueable, ReadModelWritePlanStore,
 };
 
-fn dispatch<R, C>(service: &Service<R>, command: &str, input: C)
+fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where
-    R: Send + Sync + 'static,
+    D: Send + Sync + 'static,
     C: Serialize,
 {
     service
@@ -182,7 +182,9 @@ fn board_service_feeds_a_normalized_card_read_model() {
         .expect("write-side board should exist");
     assert_eq!(write_side.cards.len(), 1);
 
-    projection.stop();
+    projection
+        .stop()
+        .expect("projection service should stop cleanly");
     let stats = worker.stop().expect("worker should stop cleanly");
     assert!(stats.messages_published >= 5);
 }

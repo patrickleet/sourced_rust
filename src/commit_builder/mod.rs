@@ -1,4 +1,4 @@
-//! CommitBuilder - chain read models, sessions, outbox, and aggregates into one transactional batch.
+//! CommitBuilder - chain read models, write plans, outbox, and aggregates into one transactional batch.
 //!
 //! ## Example
 //!
@@ -9,10 +9,10 @@
 //!     .outbox(message)
 //!     .commit(&mut game)?;
 //!
-//! // Relational/session read models.
-//! let mut read_models = sourced_rust::ReadModelSession::new();
-//! read_models.save(&player)?;
-//! read_models.save_related(&player, "weapons", &weapon)?;
+//! // Relational read-model write plans.
+//! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
+//! read_models.upsert(&player)?;
+//! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
 //!     .read_models(read_models)
@@ -34,7 +34,7 @@
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
 use crate::outbox::OutboxMessage;
-use crate::read_model::{ReadModel, ReadModelError, ReadModelSession, ReadModelWritePlan};
+use crate::read_model::{ReadModel, ReadModelError, ReadModelWritePlan, ReadModelWritePlanBuilder};
 use crate::repository::{CommitBatch, RepositoryError, TransactionalCommit};
 
 /// Builder for chaining multiple items into a single transactional commit batch.
@@ -125,13 +125,13 @@ impl<'a, R> CommitBuilder<'a, R> {
         self
     }
 
-    /// Add a read-model session to the commit.
-    pub fn read_models(mut self, session: ReadModelSession) -> Self {
+    /// Add a read-model write plan builder to the commit.
+    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
         if self.error.is_some() {
             return self;
         }
 
-        match session.into_write_plan() {
+        match read_models.into_write_plan() {
             Ok(plan) => self.read_model_plans.push(plan),
             Err(err) => self.error = Some(err.into()),
         }
@@ -258,12 +258,12 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         self
     }
 
-    pub fn read_models(mut self, session: ReadModelSession) -> Self {
+    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
         if self.error.is_some() {
             return self;
         }
 
-        match session.into_write_plan() {
+        match read_models.into_write_plan() {
             Ok(plan) => self.read_model_plans.push(plan),
             Err(err) => self.error = Some(err.into()),
         }
@@ -328,8 +328,8 @@ pub trait CommitBuilderExt: TransactionalCommit + Sized {
 impl<R: TransactionalCommit> CommitBuilderExt for R {}
 
 fn document_plan<M: ReadModel>(model: &M) -> Result<ReadModelWritePlan, RepositoryError> {
-    let mut session = ReadModelSession::new();
-    session.document(model).map_err(|err| match err {
+    let mut read_models = ReadModelWritePlanBuilder::new();
+    read_models.document(model).map_err(|err| match err {
         ReadModelError::Serde(message) => RepositoryError::Model(format!(
             "failed to serialize read model {}:{}: {}",
             M::COLLECTION,
@@ -338,18 +338,18 @@ fn document_plan<M: ReadModel>(model: &M) -> Result<ReadModelWritePlan, Reposito
         )),
         other => other.into(),
     })?;
-    Ok(session.into_write_plan()?)
+    Ok(read_models.into_write_plan()?)
 }
 
-/// Extension trait for the new relational read-model session commit entrypoints.
+/// Extension trait for relational read-model write-plan commit entrypoints.
 ///
 /// Kept separate from `CommitBuilderExt` so the existing
 /// `ReadModelsExt::read_models::<M>()` query accessor remains unambiguous unless
-/// callers explicitly opt into the session starter.
-pub trait ReadModelSessionCommitExt: TransactionalCommit + Sized {
-    /// Start a commit builder chain with a relational read-model session.
-    fn read_models(&self, session: ReadModelSession) -> CommitBuilder<'_, Self> {
-        CommitBuilder::new(self).read_models(session)
+/// callers explicitly opt into the write-plan starter.
+pub trait ReadModelWritePlanCommitExt: TransactionalCommit + Sized {
+    /// Start a commit builder chain with a relational read-model write plan.
+    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> CommitBuilder<'_, Self> {
+        CommitBuilder::new(self).read_models(read_models)
     }
 
     /// Start a staged commit builder with an aggregate.
@@ -361,7 +361,7 @@ pub trait ReadModelSessionCommitExt: TransactionalCommit + Sized {
     }
 }
 
-impl<R: TransactionalCommit> ReadModelSessionCommitExt for R {}
+impl<R: TransactionalCommit> ReadModelWritePlanCommitExt for R {}
 
 #[cfg(test)]
 mod tests {
@@ -491,8 +491,8 @@ mod tests {
         }
     }
 
-    fn raw_session(view: &TestView) -> crate::read_model::ReadModelSession {
-        let mut session = crate::read_model::ReadModelSession::new();
+    fn raw_session(view: &TestView) -> crate::read_model::ReadModelWritePlanBuilder {
+        let mut session = crate::read_model::ReadModelWritePlanBuilder::new();
         session.document(view).unwrap();
         session
     }
@@ -557,7 +557,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, raw_session(&view))
             .commit(&mut agg)
             .unwrap();
 
@@ -734,7 +734,7 @@ mod tests {
             agg.touch();
 
             match order {
-                0 => ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+                0 => ReadModelWritePlanCommitExt::read_models(&repo, raw_session(&view))
                     .outbox(outbox)
                     .aggregate(&mut agg)
                     .commit()
@@ -745,7 +745,7 @@ mod tests {
                     .aggregate(&mut agg)
                     .commit()
                     .unwrap(),
-                _ => ReadModelSessionCommitExt::aggregate(&repo, &mut agg)
+                _ => ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
                     .read_models(raw_session(&view))
                     .outbox(outbox)
                     .commit()
@@ -771,7 +771,7 @@ mod tests {
         agg.touch();
         let outbox = OutboxMessage::create("sourced-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
-        ReadModelSessionCommitExt::aggregate(&repo, &mut agg)
+        ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
             .outbox(outbox)
             .commit()
             .unwrap();
@@ -801,7 +801,7 @@ mod tests {
         agg2.touch();
         agg2.entity.set_id("agg-2");
 
-        ReadModelSessionCommitExt::read_models(&repo, raw_session(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, raw_session(&view))
             .aggregate(&mut agg1)
             .aggregate(&mut agg2)
             .commit()
@@ -839,7 +839,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        ReadModelSessionCommitExt::read_models(&repo, raw_session(&updated))
+        ReadModelWritePlanCommitExt::read_models(&repo, raw_session(&updated))
             .commit(&mut agg)
             .unwrap();
 
@@ -854,12 +854,12 @@ mod tests {
     #[test]
     fn invalid_session_plan_does_not_commit_aggregate() {
         let repo = RecordingBatchRepo::default();
-        let mut session = crate::read_model::ReadModelSession::new();
+        let mut session = crate::read_model::ReadModelWritePlanBuilder::new();
         session.mark_processed("", "message-1");
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        let err = ReadModelSessionCommitExt::read_models(&repo, session)
+        let err = ReadModelWritePlanCommitExt::read_models(&repo, session)
             .commit(&mut agg)
             .unwrap_err();
 
@@ -877,12 +877,12 @@ mod tests {
             id: "relational".into(),
             counter: 3,
         };
-        let mut session = crate::read_model::ReadModelSession::new();
-        session.save(&view).unwrap();
+        let mut session = crate::read_model::ReadModelWritePlanBuilder::new();
+        session.upsert(&view).unwrap();
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        let err = ReadModelSessionCommitExt::read_models(&repo, session)
+        let err = ReadModelWritePlanCommitExt::read_models(&repo, session)
             .commit(&mut agg)
             .unwrap_err();
 

@@ -26,7 +26,7 @@ use crate::read_model::{
     ReadModelError, ReadModelMutation, ReadModelWritePlan, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
     AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend,
     RepositoryError, StreamIdentity,
 };
@@ -504,7 +504,7 @@ impl SqliteRepository {
     }
 }
 
-impl AsyncReadModelSessionStore for SqliteRepository {
+impl AsyncReadModelWritePlanStore for SqliteRepository {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
         document_capabilities()
     }

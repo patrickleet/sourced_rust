@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
+    AsyncOutboxStore, AsyncReadModelStore, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
     AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord, OutboxMessageStatus,
-    ReadModel, ReadModelSession, RepositoryError, SnapshotRecord, SqliteRepository, StreamIdentity,
-    TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
+    ReadModel, ReadModelWritePlanBuilder, RepositoryError, SnapshotRecord, SqliteRepository,
+    StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -173,7 +173,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
         id: "should-not-commit".into(),
         value: 99,
     };
-    let mut read_models = ReadModelSession::new();
+    let mut read_models = ReadModelWritePlanBuilder::new();
     read_models.document(&view).unwrap();
 
     let stale_identity = StreamIdentity::new(Counter::aggregate_type(), "conflict-1").unwrap();
@@ -210,7 +210,7 @@ async fn read_model_session_persists_documents_and_processed_marks() {
         id: "view-1".into(),
         value: 42,
     };
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session
         .document(&view)
         .unwrap()
@@ -232,7 +232,7 @@ async fn read_model_session_persists_documents_and_processed_marks() {
     assert_eq!(loaded.data, view);
     assert!(processed);
 
-    let mut duplicate = ReadModelSession::new();
+    let mut duplicate = ReadModelWritePlanBuilder::new();
     duplicate
         .document(&CounterView {
             id: "view-1".into(),

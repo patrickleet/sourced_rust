@@ -6,7 +6,7 @@ use super::{handlers, BoardRepo};
 
 pub fn model_service(repo: BoardRepo) -> Arc<Service<BoardRepo>> {
     Arc::new(sourced_rust::register_handlers!(
-        Service::new(repo),
+        Service::with_repo(repo),
         handlers::board_open,
         handlers::board_add_card,
         handlers::board_move_card,

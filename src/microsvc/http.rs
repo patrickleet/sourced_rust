@@ -14,7 +14,7 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::new(HashMapRepository::new())
+//!     microsvc::Service::with_repo(HashMapRepository::new())
 //!         .command("counter.create", |ctx| { /* ... */ })
 //! );
 //!
@@ -39,7 +39,7 @@ use super::service::Service;
 use super::session::Session;
 
 /// Build an axum `Router` that dispatches commands via the given service.
-pub fn router<R: Send + Sync + 'static>(service: Arc<Service<R>>) -> Router {
+pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/:command", axum::routing::post(command_handler))
@@ -47,8 +47,8 @@ pub fn router<R: Send + Sync + 'static>(service: Arc<Service<R>>) -> Router {
 }
 
 /// Serve the service over HTTP at the given address (e.g. `"0.0.0.0:3000"`).
-pub async fn serve<R: Send + Sync + 'static>(
-    service: Arc<Service<R>>,
+pub async fn serve<D: Send + Sync + 'static>(
+    service: Arc<Service<D>>,
     addr: &str,
 ) -> Result<(), std::io::Error> {
     let app = router(service);
@@ -57,16 +57,16 @@ pub async fn serve<R: Send + Sync + 'static>(
 }
 
 /// `GET /health` — returns `{ "ok": true, "commands": [...] }`.
-async fn health_handler<R: Send + Sync + 'static>(
-    State(service): State<Arc<Service<R>>>,
+async fn health_handler<D: Send + Sync + 'static>(
+    State(service): State<Arc<Service<D>>>,
 ) -> impl IntoResponse {
     let commands: Vec<&str> = service.commands();
     Json(json!({ "ok": true, "commands": commands }))
 }
 
 /// `POST /:command` — dispatch a command with JSON body and headers as session.
-async fn command_handler<R: Send + Sync + 'static>(
-    State(service): State<Arc<Service<R>>>,
+async fn command_handler<D: Send + Sync + 'static>(
+    State(service): State<Arc<Service<D>>>,
     Path(command): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Value>,

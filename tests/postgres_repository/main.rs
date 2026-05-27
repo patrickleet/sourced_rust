@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
     AsyncOutboxStore, AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
-    EventRecord, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelSession,
+    EventRecord, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
     RepositoryError, SnapshotRecord, StreamIdentity,
 };
 
@@ -267,7 +267,7 @@ async fn read_model_plans_are_rejected_in_first_pass() {
     let mut entity = Entity::with_id(&id);
     entity.digest_empty("Touched").unwrap();
     let identity = StreamIdentity::new(Counter::aggregate_type(), &id).unwrap();
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session.document(&CounterView { id, value: 1 }).unwrap();
 
     let err = repo

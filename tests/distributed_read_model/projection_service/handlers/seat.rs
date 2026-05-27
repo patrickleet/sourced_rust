@@ -1,18 +1,18 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt};
+use sourced_rust::ReadModelWorkspaceExt;
 
 use crate::checkout::{seat_event, SeatAdded, SeatReserved, SEAT_AVAILABLE, SEAT_RESERVED};
-use crate::projection_service::CHECKOUT_SCREEN_CONSUMER;
+use crate::projection_service::{ProjectionDependencies, CHECKOUT_SCREEN_CONSUMER};
 use crate::read_models::{CheckoutStepView, SeatView};
 
 pub const EVENTS: &[&str] = &[seat_event::ADDED, seat_event::RESERVED];
 
-pub fn guard(ctx: &Context<InMemoryReadModelStore>) -> bool {
+pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
     ctx.has_fields(&["id", "event_type", "payload"])
 }
 
-pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerError> {
+pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
     let event = super::event(ctx)?;
 
     match event.event_type.as_str() {
@@ -27,10 +27,10 @@ pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerErr
                 checkout_id: String::new(),
             };
 
-            let mut session = ctx.repo().session();
-            session.save(&row).map_err(super::read_model_error)?;
-            session.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
-            session.commit().map_err(super::read_model_error)?;
+            let mut workspace = ctx.read_model_store().workspace();
+            workspace.upsert(&row).map_err(super::read_model_error)?;
+            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
+            workspace.commit().map_err(super::read_model_error)?;
         }
         seat_event::RESERVED => {
             let msg: SeatReserved = event
@@ -48,11 +48,11 @@ pub fn handle(ctx: &Context<InMemoryReadModelStore>) -> Result<Value, HandlerErr
                 detail: "seat reserved".to_string(),
             };
 
-            let mut session = ctx.repo().session();
-            session.save(&seat).map_err(super::read_model_error)?;
-            session.save(&step).map_err(super::read_model_error)?;
-            session.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
-            session.commit().map_err(super::read_model_error)?;
+            let mut workspace = ctx.read_model_store().workspace();
+            workspace.upsert(&seat).map_err(super::read_model_error)?;
+            workspace.upsert(&step).map_err(super::read_model_error)?;
+            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
+            workspace.commit().map_err(super::read_model_error)?;
         }
         other => return Err(HandlerError::UnknownCommand(other.to_string())),
     }

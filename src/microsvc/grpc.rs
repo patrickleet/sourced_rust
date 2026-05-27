@@ -15,7 +15,7 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::new(HashMapRepository::new())
+//!     microsvc::Service::with_repo(HashMapRepository::new())
 //!         .command("counter.create", |ctx| { /* ... */ })
 //! );
 //!
@@ -127,20 +127,20 @@ impl From<tonic::transport::Error> for GrpcServeError {
 // Handler implementation
 // ---------------------------------------------------------------------------
 
-/// gRPC handler that wraps a `Service<R>` and implements the generated
+/// gRPC handler that wraps a `Service<D>` and implements the generated
 /// `CommandService` trait. Mirrors the HTTP transport pattern.
-pub struct GrpcHandler<R> {
-    service: Arc<Service<R>>,
+pub struct GrpcHandler<D> {
+    service: Arc<Service<D>>,
 }
 
-impl<R> GrpcHandler<R> {
-    pub fn new(service: Arc<Service<R>>) -> Self {
+impl<D> GrpcHandler<D> {
+    pub fn new(service: Arc<Service<D>>) -> Self {
         Self { service }
     }
 }
 
 #[tonic::async_trait]
-impl<R: Send + Sync + 'static> CommandService for GrpcHandler<R> {
+impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
     async fn dispatch(
         &self,
         request: Request<GrpcRequest>,
@@ -224,10 +224,10 @@ fn build_session(
 // Convenience constructors
 // ---------------------------------------------------------------------------
 
-/// Create a `CommandServiceServer` from a shared `Service<R>`.
-pub fn grpc_server<R: Send + Sync + 'static>(
-    service: Arc<Service<R>>,
-) -> CommandServiceServer<GrpcHandler<R>> {
+/// Create a `CommandServiceServer` from a shared `Service<D>`.
+pub fn grpc_server<D: Send + Sync + 'static>(
+    service: Arc<Service<D>>,
+) -> CommandServiceServer<GrpcHandler<D>> {
     CommandServiceServer::new(GrpcHandler::new(service))
 }
 
@@ -236,8 +236,8 @@ pub fn grpc_server<R: Send + Sync + 'static>(
 /// Returns [`GrpcServeError::InvalidAddress`] when `addr` is not a valid socket
 /// address, and [`GrpcServeError::Transport`] for errors returned by tonic while
 /// serving.
-pub async fn serve_grpc<R: Send + Sync + 'static>(
-    service: Arc<Service<R>>,
+pub async fn serve_grpc<D: Send + Sync + 'static>(
+    service: Arc<Service<D>>,
     addr: &str,
 ) -> Result<(), GrpcServeError> {
     let addr: SocketAddr = addr

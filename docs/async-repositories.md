@@ -17,7 +17,7 @@ persistence should override it with an explicit durable name through
 - `AsyncGetStream` loads one or more event streams by full identity.
 - `AsyncTransactionalCommit` commits `AsyncCommitBatch` values with stream
   writes, read-model write plans, and snapshots under one backend transaction.
-- `AsyncReadModelStore`, `AsyncReadModelSessionStore`, and
+- `AsyncReadModelStore`, `AsyncReadModelWritePlanStore`, and
   `AsyncRelationalReadModelQueryStore` mirror the current document and
   relational read-model surfaces for async adapters.
 - `AsyncSnapshotStore` keys rebuildable snapshot cache records by full stream

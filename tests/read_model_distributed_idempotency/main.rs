@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::bus::{Event, Publisher, Subscriber};
 use sourced_rust::{
-    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelSession,
-    ReadModelSessionStore, ReadModelStore, RowKey, RowValue,
+    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore,
+    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RowKey, RowValue,
 };
 
 const CONSUMER: &str = "counter-projection";
@@ -23,8 +23,8 @@ struct RelationalCounter {
     value: i32,
 }
 
-fn counter_session(view: &CounterView, message_id: &str) -> ReadModelSession {
-    let mut session = ReadModelSession::new();
+fn counter_session(view: &CounterView, message_id: &str) -> ReadModelWritePlanBuilder {
+    let mut session = ReadModelWritePlanBuilder::new();
     session
         .document(view)
         .unwrap()
@@ -102,14 +102,14 @@ fn read_model_write_and_processed_mark_are_atomic() {
         id: "counter-1".into(),
         value: 1,
     };
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session
         .document(&view)
         .unwrap()
         .mark_processed(CONSUMER, "message-1")
         .expect_version::<RelationalCounter>(relational_counter_key("counter-1"), 99)
         .unwrap()
-        .save(&row)
+        .upsert(&row)
         .unwrap();
 
     let err = session.commit(&store).unwrap_err();
@@ -139,11 +139,11 @@ fn ack_happens_only_after_successful_standalone_commit() {
         id: "counter-1".into(),
         value: 1,
     };
-    let mut failed_session = ReadModelSession::new();
+    let mut failed_session = ReadModelWritePlanBuilder::new();
     failed_session
         .expect_version::<RelationalCounter>(relational_counter_key("counter-1"), 99)
         .unwrap()
-        .save(&row)
+        .upsert(&row)
         .unwrap()
         .mark_processed(CONSUMER, &failed.id);
 
