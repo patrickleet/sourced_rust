@@ -61,7 +61,7 @@ fn saga_orchestrated() {
         handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
-        handlers::saga::on_payment_succeeded,
+        event handlers::saga::on_payment_succeeded,
         event handlers::saga::on_order_completed,
     );
 
@@ -168,11 +168,10 @@ fn saga_orchestrated() {
 
     // 8. Saga: payment succeeded → outbox(CompleteOrder)
     saga_svc
-        .dispatch(
+        .dispatch_message(&event_message(
             "PaymentSucceeded",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
-            s(),
-        )
+        ))
         .unwrap();
 
     // 9. Complete order → outbox(OrderCompleted)
@@ -251,7 +250,7 @@ fn saga_distributed() {
         handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
-        handlers::saga::on_payment_succeeded,
+        event handlers::saga::on_payment_succeeded,
         event handlers::saga::on_order_completed,
     ));
     let saga_listen = microsvc::listen(saga_svc.clone(), "saga", queue.clone(), poll);
