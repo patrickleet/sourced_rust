@@ -44,6 +44,7 @@ impl SnapshotStore for InMemorySnapshotStore {
     }
 
     fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError> {
+        record.validate()?;
         let mut storage = self
             .storage
             .write()
@@ -81,6 +82,7 @@ impl AsyncSnapshotStore for InMemorySnapshotStore {
         record: SnapshotRecord,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
+            record.validate_for_identity(identity)?;
             let mut storage = self
                 .storage
                 .write()
@@ -111,16 +113,20 @@ mod tests {
     #[test]
     fn save_and_get() {
         let store = InMemorySnapshotStore::new();
-        let record = SnapshotRecord {
-            aggregate_id: "agg-1".into(),
-            version: 5,
-            data: vec![1, 2, 3],
-        };
+        let record = SnapshotRecord::new(
+            "test.aggregate",
+            "agg-1",
+            5,
+            "TestSnapshot",
+            1,
+            vec![1, 2, 3],
+        );
         store.save_snapshot(record).unwrap();
 
         let loaded = store.get_snapshot("agg-1").unwrap().unwrap();
         assert_eq!(loaded.version, 5);
-        assert_eq!(loaded.data, vec![1, 2, 3]);
+        assert_eq!(loaded.payload, vec![1, 2, 3]);
+        assert_eq!(loaded.snapshot_type, "TestSnapshot");
     }
 
     #[test]
@@ -133,34 +139,43 @@ mod tests {
     fn save_overwrites() {
         let store = InMemorySnapshotStore::new();
         store
-            .save_snapshot(SnapshotRecord {
-                aggregate_id: "agg-1".into(),
-                version: 1,
-                data: vec![1],
-            })
+            .save_snapshot(SnapshotRecord::new(
+                "test.aggregate",
+                "agg-1",
+                1,
+                "TestSnapshot",
+                1,
+                vec![1],
+            ))
             .unwrap();
         store
-            .save_snapshot(SnapshotRecord {
-                aggregate_id: "agg-1".into(),
-                version: 5,
-                data: vec![5],
-            })
+            .save_snapshot(SnapshotRecord::new(
+                "test.aggregate",
+                "agg-1",
+                5,
+                "TestSnapshot",
+                1,
+                vec![5],
+            ))
             .unwrap();
 
         let loaded = store.get_snapshot("agg-1").unwrap().unwrap();
         assert_eq!(loaded.version, 5);
-        assert_eq!(loaded.data, vec![5]);
+        assert_eq!(loaded.payload, vec![5]);
     }
 
     #[test]
     fn delete_existing() {
         let store = InMemorySnapshotStore::new();
         store
-            .save_snapshot(SnapshotRecord {
-                aggregate_id: "agg-1".into(),
-                version: 1,
-                data: vec![1],
-            })
+            .save_snapshot(SnapshotRecord::new(
+                "test.aggregate",
+                "agg-1",
+                1,
+                "TestSnapshot",
+                1,
+                vec![1],
+            ))
             .unwrap();
         assert!(store.delete_snapshot("agg-1").unwrap());
         assert!(store.get_snapshot("agg-1").unwrap().is_none());
@@ -177,11 +192,14 @@ mod tests {
         let store = InMemorySnapshotStore::new();
         let clone = store.clone();
         store
-            .save_snapshot(SnapshotRecord {
-                aggregate_id: "agg-1".into(),
-                version: 3,
-                data: vec![3],
-            })
+            .save_snapshot(SnapshotRecord::new(
+                "test.aggregate",
+                "agg-1",
+                3,
+                "TestSnapshot",
+                1,
+                vec![3],
+            ))
             .unwrap();
 
         let loaded = clone.get_snapshot("agg-1").unwrap().unwrap();

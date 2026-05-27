@@ -144,10 +144,10 @@ pub use commit_builder::{
     CommitBuilder, CommitBuilderExt, ReadModelSessionCommitExt, StagedCommitBuilder,
 };
 
-// Snapshot: periodic aggregate snapshots for fast hydration
+// Snapshot: state snapshot payloads and rebuildable cache records for hydration
 pub use snapshot::{
-    hydrate_from_snapshot, InMemorySnapshotStore, SnapshotAggregateRepository, SnapshotRecord,
-    SnapshotStore, Snapshottable,
+    hydrate_from_snapshot, AsyncSnapshotAggregateRepository, InMemorySnapshotStore,
+    SnapshotAggregateRepository, SnapshotRecord, SnapshotStore, Snapshottable,
 };
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)

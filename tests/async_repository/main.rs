@@ -6,7 +6,8 @@ use sourced_rust::{
     AsyncOutboxStore, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
     AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, EventRecord,
     HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel,
-    ReadModelSession, ReadModelWritePlan, RepositoryError, SnapshotRecord, StreamIdentity,
+    ReadModelSession, ReadModelWritePlan, RepositoryError, SnapshotRecord, Snapshottable,
+    StreamIdentity,
 };
 
 #[derive(Default)]
@@ -49,6 +50,46 @@ impl BetaAggregate {
 }
 
 impl_aggregate!(BetaAggregate, entity, replay, aggregate_type = "async.beta");
+
+#[derive(Default)]
+struct SnapshotCounter {
+    entity: Entity,
+    value: i32,
+}
+
+impl SnapshotCounter {
+    fn increment(&mut self, id: &str, by: i32) {
+        self.entity.set_id(id);
+        self.entity.digest("Incremented", &by).unwrap();
+        self.value += by;
+    }
+
+    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
+        if event.event_name == "Incremented" {
+            self.value += event.decode::<i32>().map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl_aggregate!(
+    SnapshotCounter,
+    entity,
+    replay,
+    aggregate_type = "async.snapshot_counter"
+);
+
+impl Snapshottable for SnapshotCounter {
+    type Snapshot = i32;
+
+    fn create_snapshot(&self) -> Self::Snapshot {
+        self.value
+    }
+
+    fn restore_from_snapshot(&mut self, snapshot: Self::Snapshot) {
+        self.value = snapshot;
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct TestView {
@@ -179,22 +220,14 @@ async fn async_snapshot_store_uses_full_stream_identity() {
     store
         .save_snapshot_async(
             &alpha,
-            SnapshotRecord {
-                aggregate_id: "same-id".into(),
-                version: 1,
-                data: vec![1],
-            },
+            SnapshotRecord::new("async.alpha", "same-id", 1, "AlphaSnapshot", 1, vec![1]),
         )
         .await
         .unwrap();
     store
         .save_snapshot_async(
             &beta,
-            SnapshotRecord {
-                aggregate_id: "same-id".into(),
-                version: 2,
-                data: vec![2],
-            },
+            SnapshotRecord::new("async.beta", "same-id", 2, "BetaSnapshot", 1, vec![2]),
         )
         .await
         .unwrap();
@@ -204,6 +237,101 @@ async fn async_snapshot_store_uses_full_stream_identity() {
 
     assert_eq!(loaded_alpha.version, 1);
     assert_eq!(loaded_beta.version, 2);
+    assert_eq!(loaded_alpha.aggregate_type, "async.alpha");
+    assert_eq!(loaded_beta.aggregate_type, "async.beta");
+}
+
+#[tokio::test]
+async fn async_snapshot_repository_writes_cache_without_event_record() {
+    let repo = HashMapRepository::new();
+    let snapshot_repo = repo
+        .clone()
+        .async_aggregate::<SnapshotCounter>()
+        .with_snapshots(2);
+    let id = "snapshot-counter-1";
+
+    let mut counter = SnapshotCounter::default();
+    counter.increment(id, 2);
+    snapshot_repo.commit(&mut counter).await.unwrap();
+    counter.increment(id, 3);
+    snapshot_repo.commit(&mut counter).await.unwrap();
+
+    let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
+    let stream = repo.get_stream(&identity).await.unwrap().unwrap();
+    let snapshot = repo.get_snapshot_async(&identity).await.unwrap().unwrap();
+
+    assert_eq!(stream.events().len(), 2);
+    assert_eq!(stream.events()[0].event_name, "Incremented");
+    assert_eq!(stream.events()[1].event_name, "Incremented");
+    assert_eq!(snapshot.version, 2);
+    assert_eq!(snapshot.aggregate_type, SnapshotCounter::aggregate_type());
+    assert_eq!(snapshot.payload, bitcode::serialize(&5_i32).unwrap());
+}
+
+#[tokio::test]
+async fn async_snapshot_repository_ignores_invalid_cache_and_replays_events() {
+    let repo = HashMapRepository::new();
+    let aggregate_repo = repo.clone().async_aggregate::<SnapshotCounter>();
+    let snapshot_repo = repo
+        .clone()
+        .async_aggregate::<SnapshotCounter>()
+        .with_snapshots(10);
+    let id = "snapshot-counter-invalid";
+
+    let mut counter = SnapshotCounter::default();
+    counter.increment(id, 4);
+    counter.increment(id, 6);
+    aggregate_repo.commit(&mut counter).await.unwrap();
+
+    let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
+    let mut invalid = SnapshotRecord::new(
+        SnapshotCounter::aggregate_type(),
+        id,
+        1,
+        std::any::type_name::<i32>(),
+        1,
+        vec![0xff],
+    );
+    invalid.payload_codec = "json".into();
+    repo.save_snapshot_async(&identity, invalid).await.unwrap();
+
+    let loaded = snapshot_repo.get(id).await.unwrap().unwrap();
+    assert_eq!(loaded.value, 10);
+    assert_eq!(loaded.entity().snapshot_version(), 0);
+}
+
+#[tokio::test]
+async fn async_snapshot_repository_rejects_cache_past_stream_version() {
+    let repo = HashMapRepository::new();
+    let aggregate_repo = repo.clone().async_aggregate::<SnapshotCounter>();
+    let snapshot_repo = repo
+        .clone()
+        .async_aggregate::<SnapshotCounter>()
+        .with_snapshots(10);
+    let id = "snapshot-counter-ahead";
+
+    let mut counter = SnapshotCounter::default();
+    counter.increment(id, 4);
+    aggregate_repo.commit(&mut counter).await.unwrap();
+
+    let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
+    let record = SnapshotRecord::new(
+        SnapshotCounter::aggregate_type(),
+        id,
+        2,
+        std::any::type_name::<i32>(),
+        1,
+        bitcode::serialize(&4_i32).unwrap(),
+    );
+    repo.save_snapshot_async(&identity, record).await.unwrap();
+
+    let err = match snapshot_repo.get(id).await {
+        Err(err) => err,
+        Ok(_) => panic!("snapshot cache past stream version should fail"),
+    };
+    assert!(
+        matches!(err, RepositoryError::Model(message) if message.contains("exceeds stream version"))
+    );
 }
 
 #[tokio::test]

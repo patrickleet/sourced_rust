@@ -2,10 +2,13 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::aggregate::Aggregate;
 
-/// Opt-in trait for aggregates that support snapshot-based hydration.
+/// Opt-in trait for aggregates that can produce state snapshot payloads.
 ///
-/// Aggregates implementing this trait can have their state serialized at a point
-/// in time and restored later, skipping costly full event replay.
+/// Aggregates implementing this trait can have their state captured as a DTO at
+/// a point in time and restored later. Repositories may serialize that payload
+/// into a snapshot cache record to skip costly full event replay, but the
+/// payload itself is not an aggregate event and is not durable history by
+/// itself.
 ///
 /// The associated `Snapshot` type is a separate struct (e.g., `TodoSnapshot`)
 /// that captures the aggregate's current state.

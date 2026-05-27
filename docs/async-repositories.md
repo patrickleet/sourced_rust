@@ -20,7 +20,10 @@ persistence should override it with an explicit durable name through
 - `AsyncReadModelStore`, `AsyncReadModelSessionStore`, and
   `AsyncRelationalReadModelQueryStore` mirror the current document and
   relational read-model surfaces for async adapters.
-- `AsyncSnapshotStore` keys snapshots by full stream identity.
+- `AsyncSnapshotStore` keys rebuildable snapshot cache records by full stream
+  identity. The record envelope carries stream identity, covered event version,
+  snapshot payload type/version, payload codec metadata, cache metadata, and
+  timestamp.
 - `AsyncOutboxStore` exposes async claim/update operations for durable outbox
   table stores. Aggregate repositories commit outbox rows transactionally, but
   workers do not hydrate outbox messages through aggregate repositories.

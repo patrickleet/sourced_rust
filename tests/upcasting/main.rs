@@ -381,10 +381,13 @@ fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
 
 #[test]
 fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode_fails() {
-    let snapshot = SnapshotRecord {
-        aggregate_id: "t1".to_string(),
-        version: 1,
-        data: bitcode::serialize(&aggregate::TodoV2Snapshot {
+    let snapshot = SnapshotRecord::new(
+        TodoV2::aggregate_type(),
+        "t1",
+        1,
+        std::any::type_name::<aggregate::TodoV2Snapshot>(),
+        1,
+        bitcode::serialize(&aggregate::TodoV2Snapshot {
             id: "t1".to_string(),
             user_id: "iris".to_string(),
             task: "Plan".to_string(),
@@ -392,7 +395,7 @@ fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode
             completed: false,
         })
         .unwrap(),
-    };
+    );
     let mut invalid_event = EventRecord::new("Initialized", vec![0xff], 2);
     invalid_event.sequence = 2;
 

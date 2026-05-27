@@ -113,13 +113,7 @@ pub(crate) fn validate_snapshot_identity(
     identity: &StreamIdentity,
     record: &SnapshotRecord,
 ) -> Result<(), RepositoryError> {
-    if record.aggregate_id != identity.aggregate_id() {
-        return Err(RepositoryError::Model(format!(
-            "snapshot aggregate id `{}` does not match stream identity `{}`",
-            record.aggregate_id, identity
-        )));
-    }
-    Ok(())
+    record.validate_for_identity(identity)
 }
 
 pub(crate) fn repository_i64_from_u64(
