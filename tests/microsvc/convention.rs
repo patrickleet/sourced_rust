@@ -22,8 +22,8 @@ use crate::models::counter::Counter;
 fn register_handlers_and_dispatch() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
-        handlers::counter_increment,
+        command handlers::counter_create,
+        command handlers::counter_increment,
     );
 
     let mut cmds = service.command_names();
@@ -55,7 +55,7 @@ fn register_handlers_and_dispatch() {
 fn guard_rejects_bad_input() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
+        command handlers::counter_create,
     );
 
     let result = service.dispatch("counter.create", json!({ "wrong": 1 }), Session::new());
@@ -66,7 +66,7 @@ fn guard_rejects_bad_input() {
 fn handler_rejects_duplicate_create() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
+        command handlers::counter_create,
     );
 
     service
@@ -85,7 +85,7 @@ fn handler_rejects_duplicate_create() {
 fn create_persists_outbox_message() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
+        command handlers::counter_create,
     );
 
     let result = service
@@ -109,7 +109,7 @@ fn create_persists_outbox_message() {
 fn duplicate_create_leaves_single_outbox_message() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
+        command handlers::counter_create,
     );
 
     service
@@ -134,8 +134,8 @@ fn duplicate_create_leaves_single_outbox_message() {
 fn increment_persists_outbox_message() {
     let service = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
-        handlers::counter_increment,
+        command handlers::counter_create,
+        command handlers::counter_increment,
     );
 
     service

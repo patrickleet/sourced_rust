@@ -58,7 +58,7 @@ fn saga_orchestrated() {
                 .queued()
                 .aggregate::<OrderFulfillmentSaga>()
         ),
-        handlers::saga::start,
+        command handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         event handlers::saga::on_payment_succeeded,
@@ -67,19 +67,19 @@ fn saga_orchestrated() {
 
     let order_svc = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Order>()),
-        handlers::orders::create,
-        handlers::orders::complete,
+        command handlers::orders::create,
+        command handlers::orders::complete,
     );
 
     let inventory_svc = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Inventory>()),
-        handlers::inventory::init,
-        handlers::inventory::reserve,
+        command handlers::inventory::init,
+        command handlers::inventory::reserve,
     );
 
     let payment_svc = sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Payment>()),
-        handlers::payments::process,
+        command handlers::payments::process,
     );
 
     let s = Session::new;
@@ -247,7 +247,7 @@ fn saga_distributed() {
         OutboxWorkerThread::spawn_routed(saga_repo.outbox_store(), queue.clone(), poll);
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
-        handlers::saga::start,
+        command handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         event handlers::saga::on_payment_succeeded,
@@ -261,8 +261,8 @@ fn saga_distributed() {
         OutboxWorkerThread::spawn_routed(order_repo.outbox_store(), queue.clone(), poll);
     let order_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(order_repo.queued().aggregate::<Order>()),
-        handlers::orders::create,
-        handlers::orders::complete,
+        command handlers::orders::create,
+        command handlers::orders::complete,
     ));
     let order_listen = microsvc::listen(order_svc.clone(), "orders", queue.clone(), poll);
 
@@ -281,8 +281,8 @@ fn saga_distributed() {
 
     let inventory_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(inventory_repo.queued().aggregate::<Inventory>()),
-        handlers::inventory::init,
-        handlers::inventory::reserve,
+        command handlers::inventory::init,
+        command handlers::inventory::reserve,
     ));
     let inventory_listen =
         microsvc::listen(inventory_svc.clone(), "inventory", queue.clone(), poll);
@@ -293,7 +293,7 @@ fn saga_distributed() {
         OutboxWorkerThread::spawn_routed(payment_repo.outbox_store(), queue.clone(), poll);
     let payment_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(payment_repo.queued().aggregate::<Payment>()),
-        handlers::payments::process,
+        command handlers::payments::process,
     ));
     let payment_listen = microsvc::listen(payment_svc.clone(), "payments", queue.clone(), poll);
 
