@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::Todo;
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable, SnapshotStore};
+use sourced_rust::{Aggregate, AggregateBuilder, HashMapRepository, Queueable, SnapshotStore};
 
 #[test]
 fn snapshot_created_at_frequency_threshold() {
@@ -27,6 +27,9 @@ fn snapshot_created_at_frequency_threshold() {
     assert!(snap.is_some());
     let snap = snap.unwrap();
     assert_eq!(snap.version, 2);
+    assert_eq!(snap.aggregate_type, Todo::aggregate_type());
+    assert!(snap.snapshot_type.ends_with("TodoSnapshot"));
+    assert_eq!(snap.payload_codec, sourced_rust::BITCODE_PAYLOAD_CODEC);
 
     // Reload and verify state
     let loaded = repo.get("t1").unwrap().unwrap();

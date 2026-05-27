@@ -1,14 +1,120 @@
-use crate::repository::RepositoryError;
+use std::collections::HashMap;
+use std::time::SystemTime;
 
-/// A stored snapshot record: aggregate ID, version at time of snapshot, and serialized data.
-#[derive(Clone, Debug)]
+use crate::entity::{BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION};
+use crate::repository::{RepositoryError, StreamIdentity};
+
+/// Stored aggregate snapshot cache record.
+///
+/// This is a repository-owned cache envelope, not an aggregate event and not
+/// the user-defined state snapshot payload itself. The payload bytes usually
+/// come from `Snapshottable::create_snapshot()`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapshotRecord {
+    pub aggregate_type: String,
     pub aggregate_id: String,
+    /// Aggregate event sequence covered by this cache record.
     pub version: u64,
-    pub data: Vec<u8>,
+    pub snapshot_type: String,
+    pub snapshot_version: u64,
+    pub payload_codec: String,
+    pub payload_codec_version: u16,
+    pub payload: Vec<u8>,
+    pub metadata: HashMap<String, String>,
+    pub recorded_at: SystemTime,
 }
 
-/// Trait for snapshot persistence. One snapshot per aggregate ID (latest wins).
+impl SnapshotRecord {
+    pub const DEFAULT_SNAPSHOT_VERSION: u64 = 1;
+
+    pub fn new(
+        aggregate_type: impl Into<String>,
+        aggregate_id: impl Into<String>,
+        version: u64,
+        snapshot_type: impl Into<String>,
+        snapshot_version: u64,
+        payload: Vec<u8>,
+    ) -> Self {
+        Self {
+            aggregate_type: aggregate_type.into(),
+            aggregate_id: aggregate_id.into(),
+            version,
+            snapshot_type: snapshot_type.into(),
+            snapshot_version,
+            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
+            payload,
+            metadata: HashMap::new(),
+            recorded_at: SystemTime::now(),
+        }
+    }
+
+    pub fn validate_for_identity(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
+        self.validate()?;
+        if self.aggregate_type != identity.aggregate_type() {
+            return Err(RepositoryError::Model(format!(
+                "snapshot aggregate type `{}` does not match stream identity `{}`",
+                self.aggregate_type, identity
+            )));
+        }
+        if self.aggregate_id != identity.aggregate_id() {
+            return Err(RepositoryError::Model(format!(
+                "snapshot aggregate id `{}` does not match stream identity `{}`",
+                self.aggregate_id, identity
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), RepositoryError> {
+        if self.aggregate_type.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "snapshot aggregate type must not be empty".into(),
+            ));
+        }
+        if self.aggregate_id.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "snapshot aggregate id must not be empty".into(),
+            ));
+        }
+        if self.version == 0 {
+            return Err(RepositoryError::Model(
+                "snapshot version must be greater than zero".into(),
+            ));
+        }
+        if self.snapshot_type.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "snapshot type must not be empty".into(),
+            ));
+        }
+        if self.snapshot_version == 0 {
+            return Err(RepositoryError::Model(
+                "snapshot payload version must be greater than zero".into(),
+            ));
+        }
+        if self.payload_codec.trim().is_empty() {
+            return Err(RepositoryError::Model(
+                "snapshot payload codec must not be empty".into(),
+            ));
+        }
+        if self.payload_codec_version == 0 {
+            return Err(RepositoryError::Model(
+                "snapshot payload codec version must be greater than zero".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn has_supported_payload_codec(&self) -> bool {
+        self.payload_codec == BITCODE_PAYLOAD_CODEC
+            && self.payload_codec_version == BITCODE_PAYLOAD_CODEC_VERSION
+    }
+}
+
+/// Trait for ID-only snapshot persistence. One snapshot per aggregate ID (latest wins).
+///
+/// Durable async repositories should prefer `AsyncSnapshotStore`, which keys
+/// cache records by full `StreamIdentity`.
 pub trait SnapshotStore: Send + Sync {
     /// Load the latest snapshot for the given aggregate ID.
     fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError>;

@@ -156,8 +156,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **HashMapRepository**: In-memory repository for tests and examples.
 - **QueuedRepository**: Wraps any repository and adds per-entity queue locking.
 - **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
-- **Snapshottable**: Opt-in trait for aggregates that support periodic snapshots for fast hydration. Use `#[derive(Snapshot)]` to auto-generate the snapshot struct and trait impl.
-- **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load snapshots.
+- **Snapshottable**: Opt-in trait for aggregates that produce state snapshot payload DTOs. Use `#[derive(Snapshot)]` to auto-generate the payload struct and trait impl.
+- **SnapshotAggregateRepository**: Wraps an `AggregateRepository` to transparently create and load rebuildable snapshot cache records.
 - **OutboxMessage**: A durable publication work item for a domain event, integration event, command, or generic transport message. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **Outbox Worker**: Publishes outbox messages to external systems. `spawn` for fan-out, `spawn_routed` for point-to-point routing.
 - **ReadModel**: Query-optimized projection state for UI/API reads. Read models may be updated atomically with a command or eventually from published messages.
@@ -1259,11 +1259,11 @@ See [`docs/read-models.md`](docs/read-models.md) for the full guide, including r
 
 ## Snapshots
 
-As aggregates accumulate events, replaying from scratch gets expensive. Snapshots let you periodically capture an aggregate's state and restore from it, replaying only the events that came after.
+As aggregates accumulate events, replaying from scratch gets expensive. Distributed keeps aggregate events as the durable source of truth and stores repository snapshots as a rebuildable hydration cache. A snapshot cache record can be deleted and rebuilt from events without changing aggregate correctness.
 
 ### Making an Aggregate Snapshottable
 
-Add `#[derive(Snapshot)]` to your aggregate struct. This generates a `TodoSnapshot` struct, a `fn snapshot()` method, and the full `impl Snapshottable` — no boilerplate needed:
+Add `#[derive(Snapshot)]` to your aggregate struct. This generates a state snapshot payload DTO such as `TodoSnapshot`, a `fn snapshot()` method, and the full `impl Snapshottable` — no boilerplate needed:
 
 ```rust
 use sourced_rust::{Entity, Snapshot};
@@ -1356,8 +1356,8 @@ let Some(todo) = repo.get("todo-1")? else {
 ### How It Works
 
 - **On commit**: If `entity.version() >= snapshot_version + frequency`, the aggregate's state is serialized via `create_snapshot()` and saved to the snapshot store.
-- **On load**: If a snapshot exists, the aggregate is restored from it and only events with `sequence > snapshot.version` are replayed. If no snapshot exists, full replay is used as a fallback.
-- **Storage**: Snapshots are stored separately from the event stream. `HashMapRepository` embeds an `InMemorySnapshotStore`; for production, implement the `SnapshotStore` trait for your backend.
+- **On load**: If a usable snapshot cache record exists, the aggregate is restored from its payload and only events with `sequence > snapshot.version` are replayed. If no snapshot exists or the cache record is incompatible, full replay is used as a fallback.
+- **Storage**: Snapshot cache records are stored separately from the event stream. They carry aggregate type, aggregate ID, covered event version, snapshot payload type/version, payload codec metadata, cache metadata, and timestamp. `HashMapRepository` embeds an `InMemorySnapshotStore`; durable async backends implement `AsyncSnapshotStore`.
 
 ## Event Upcasting / Versioning
 

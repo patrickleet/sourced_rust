@@ -28,12 +28,22 @@ CREATE TABLE IF NOT EXISTS aggregate_snapshots (
   aggregate_type text NOT NULL,
   aggregate_id text NOT NULL,
   version bigint NOT NULL,
-  data bytea NOT NULL,
+  snapshot_type text NOT NULL,
+  snapshot_version integer NOT NULL,
+  payload bytea NOT NULL,
+  payload_codec text NOT NULL,
+  payload_codec_version integer NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  recorded_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (aggregate_type, aggregate_id),
   CHECK (aggregate_type <> ''),
   CHECK (aggregate_id <> ''),
-  CHECK (version > 0)
+  CHECK (version > 0),
+  CHECK (snapshot_type <> ''),
+  CHECK (snapshot_version > 0),
+  CHECK (payload_codec <> ''),
+  CHECK (payload_codec_version > 0)
 );
 
 CREATE TABLE IF NOT EXISTS outbox_messages (

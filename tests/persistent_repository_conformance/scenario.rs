@@ -187,11 +187,14 @@ where
             read_model_plans: Vec::new(),
             snapshots: vec![AsyncSnapshotWrite::Save {
                 identity: checkout_identity.clone(),
-                record: SnapshotRecord {
-                    aggregate_id: checkout_id,
-                    version: 1,
-                    data: vec![7],
-                },
+                record: SnapshotRecord::new(
+                    CheckoutSaga::aggregate_type(),
+                    checkout_id,
+                    1,
+                    "CheckoutSnapshot",
+                    1,
+                    vec![7],
+                ),
             }],
         })
         .await
@@ -327,21 +330,27 @@ where
 
     repo.save_snapshot_async(
         &seat_identity,
-        SnapshotRecord {
-            aggregate_id: id.clone(),
-            version: 1,
-            data: vec![1],
-        },
+        SnapshotRecord::new(
+            Seat::aggregate_type(),
+            id.clone(),
+            1,
+            "SeatSnapshot",
+            1,
+            vec![1],
+        ),
     )
     .await
     .expect("seat snapshot should save");
     repo.save_snapshot_async(
         &checkout_identity,
-        SnapshotRecord {
-            aggregate_id: id,
-            version: 2,
-            data: vec![2],
-        },
+        SnapshotRecord::new(
+            CheckoutSaga::aggregate_type(),
+            id,
+            2,
+            "CheckoutSnapshot",
+            1,
+            vec![2],
+        ),
     )
     .await
     .expect("checkout snapshot should save");
@@ -358,9 +367,16 @@ where
         .expect("checkout snapshot should exist");
 
     assert_eq!(loaded_seat.version, 1);
-    assert_eq!(loaded_seat.data, vec![1]);
+    assert_eq!(loaded_seat.aggregate_type, Seat::aggregate_type());
+    assert_eq!(loaded_seat.snapshot_type, "SeatSnapshot");
+    assert_eq!(loaded_seat.payload, vec![1]);
     assert_eq!(loaded_checkout.version, 2);
-    assert_eq!(loaded_checkout.data, vec![2]);
+    assert_eq!(
+        loaded_checkout.aggregate_type,
+        CheckoutSaga::aggregate_type()
+    );
+    assert_eq!(loaded_checkout.snapshot_type, "CheckoutSnapshot");
+    assert_eq!(loaded_checkout.payload, vec![2]);
 }
 
 async fn add_seat<R>(

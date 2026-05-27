@@ -852,7 +852,9 @@ impl AsyncSnapshotStore for SqliteRepository {
         async move {
             let row = sqlx::query(
                 r#"
-                SELECT aggregate_id, version, data
+                SELECT aggregate_type, aggregate_id, version, snapshot_type,
+                       snapshot_version, payload, payload_codec,
+                       payload_codec_version, metadata, recorded_at
                 FROM aggregate_snapshots
                 WHERE aggregate_type = ? AND aggregate_id = ?
                 "#,
@@ -1551,11 +1553,28 @@ async fn save_snapshot_in_tx(
 
     sqlx::query(
         r#"
-        INSERT INTO aggregate_snapshots (aggregate_type, aggregate_id, version, data)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO aggregate_snapshots (
+          aggregate_type,
+          aggregate_id,
+          version,
+          snapshot_type,
+          snapshot_version,
+          payload,
+          payload_codec,
+          payload_codec_version,
+          metadata,
+          recorded_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET
           version = excluded.version,
-          data = excluded.data,
+          snapshot_type = excluded.snapshot_type,
+          snapshot_version = excluded.snapshot_version,
+          payload = excluded.payload,
+          payload_codec = excluded.payload_codec,
+          payload_codec_version = excluded.payload_codec_version,
+          metadata = excluded.metadata,
+          recorded_at = excluded.recorded_at,
           updated_at = CURRENT_TIMESTAMP
         "#,
     )
@@ -1567,7 +1586,18 @@ async fn save_snapshot_in_tx(
         "snapshot version",
         SIGNED_INTEGER_STORAGE,
     )?)
-    .bind(record.data)
+    .bind(&record.snapshot_type)
+    .bind(sqlx_repository_i64_from_u64(
+        SQLITE_BACKEND,
+        record.snapshot_version,
+        "snapshot payload version",
+        SIGNED_INTEGER_STORAGE,
+    )?)
+    .bind(&record.payload)
+    .bind(&record.payload_codec)
+    .bind(i64::from(record.payload_codec_version))
+    .bind(serialize_event_metadata(&record.metadata)?)
+    .bind(system_time_to_storage(record.recorded_at)?)
     .execute(&mut **tx)
     .await
     .map_err(|err| repository_storage_error("save snapshot", err))?;
@@ -1576,7 +1606,13 @@ async fn save_snapshot_in_tx(
 }
 
 fn snapshot_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SnapshotRecord, RepositoryError> {
+    let metadata_json: String = row
+        .try_get("metadata")
+        .map_err(|err| repository_storage_error("decode snapshot metadata row", err))?;
     Ok(SnapshotRecord {
+        aggregate_type: row
+            .try_get("aggregate_type")
+            .map_err(|err| repository_storage_error("decode snapshot aggregate type row", err))?,
         aggregate_id: row
             .try_get("aggregate_id")
             .map_err(|err| repository_storage_error("decode snapshot aggregate id row", err))?,
@@ -1586,9 +1622,35 @@ fn snapshot_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SnapshotRecord, Rep
                 .map_err(|err| repository_storage_error("decode snapshot version row", err))?,
             "snapshot version",
         )?,
-        data: row
-            .try_get("data")
-            .map_err(|err| repository_storage_error("decode snapshot data row", err))?,
+        snapshot_type: row
+            .try_get("snapshot_type")
+            .map_err(|err| repository_storage_error("decode snapshot type row", err))?,
+        snapshot_version: sqlx_repository_u64_from_i64(
+            SQLITE_BACKEND,
+            row.try_get("snapshot_version").map_err(|err| {
+                repository_storage_error("decode snapshot payload version row", err)
+            })?,
+            "snapshot payload version",
+        )?,
+        payload_codec: row
+            .try_get("payload_codec")
+            .map_err(|err| repository_storage_error("decode snapshot payload codec row", err))?,
+        payload_codec_version: sqlx_repository_u16_from_i64(
+            SQLITE_BACKEND,
+            row.try_get("payload_codec_version").map_err(|err| {
+                repository_storage_error("decode snapshot payload codec version row", err)
+            })?,
+            "snapshot payload codec version",
+        )?,
+        payload: row
+            .try_get("payload")
+            .map_err(|err| repository_storage_error("decode snapshot payload row", err))?,
+        metadata: deserialize_event_metadata(&metadata_json)?,
+        recorded_at: system_time_from_storage(
+            row.try_get::<String, _>("recorded_at")
+                .map_err(|err| repository_storage_error("decode snapshot recorded_at row", err))?
+                .as_str(),
+        ),
     })
 }
 

@@ -142,42 +142,46 @@ Recommended table name: `aggregate_snapshots`.
 | `aggregate_type` | `text` | Same stable aggregate type as events; `NOT NULL`. |
 | `aggregate_id` | `text` | Same aggregate ID as events; `NOT NULL`. |
 | `version` | `bigint` | Stream sequence covered by this snapshot; `NOT NULL`. |
-| `payload` | `bytea` | Encoded snapshot payload bytes; `NOT NULL`. |
+| `snapshot_type` | `text` | State snapshot payload type; `NOT NULL`. |
+| `snapshot_version` | `integer` | State snapshot payload version; `NOT NULL`. |
+| `payload` | `bytea` | Encoded state snapshot payload bytes; `NOT NULL`. |
 | `payload_codec` | `text` | Codec label; `NOT NULL`. |
 | `payload_codec_version` | `integer` | Codec metadata; `NOT NULL`. |
+| `metadata` | `jsonb` | Cache metadata; `NOT NULL`, default `{}`. |
 | `recorded_at` | `timestamptz` | UTC instant for the snapshot; `NOT NULL`. |
 
 The DDL must declare `aggregate_type` and `aggregate_id` as `NOT NULL`; the
-checks below also reject empty strings. `version`, `payload`, `payload_codec`,
-`payload_codec_version`, and `recorded_at` must also be `NOT NULL`.
+checks below also reject empty strings. `version`, `snapshot_type`,
+`snapshot_version`, `payload`, `payload_codec`, `payload_codec_version`,
+`metadata`, and `recorded_at` must also be `NOT NULL`.
 
 Required constraints and indexes:
 
 ```sql
-PRIMARY KEY (aggregate_type, aggregate_id, version);
+PRIMARY KEY (aggregate_type, aggregate_id);
 CHECK (aggregate_type <> '');
 CHECK (aggregate_id <> '');
 CHECK (version > 0);
+CHECK (snapshot_type <> '');
+CHECK (snapshot_version > 0);
 CHECK (payload_codec <> '');
 CHECK (payload_codec_version > 0);
-CREATE INDEX aggregate_snapshots_latest
-  ON aggregate_snapshots (aggregate_type, aggregate_id, version DESC);
 ```
 
-Hydration should load the newest snapshot for the stream, then replay event rows
-where `sequence > snapshot.version` ordered ascending. If no snapshot exists,
-hydrate from sequence `1`.
+The first implementation is latest-only: writing a snapshot cache record
+upserts the `(aggregate_type, aggregate_id)` row. Hydration should load that
+record, then replay event rows where `sequence > snapshot.version` ordered
+ascending. If no usable snapshot exists, hydrate from sequence `1`.
 
 If the newest snapshot version exceeds the current maximum event sequence for
 the stream, the implementation should reject the load with
 `RepositoryError::Model`. That fail-fast behavior is preferred over continuing
 from an impossible snapshot tail because it surfaces data corruption early.
 
-Snapshot retention is implementation-specific but must be explicit. The
-contract permits multiple snapshots per stream. A Postgres implementation must
-document whether it retains all snapshots, only the latest snapshot, last `N`
-snapshots, or a time-based retention window. The first implementation should
-prefer retaining all snapshots until a pruning policy and tests exist.
+Snapshot retention is implementation-specific but must be explicit. The current
+SQL adapters retain only the latest cache record per stream. Future adapters may
+retain last `N` or time-based cache records, but they must never prune aggregate
+events.
 
 ## Commit Semantics
 

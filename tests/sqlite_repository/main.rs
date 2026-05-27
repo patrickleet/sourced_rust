@@ -259,21 +259,27 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     repo.save_snapshot_async(
         &counter,
-        SnapshotRecord {
-            aggregate_id: "same-id".into(),
-            version: 1,
-            data: vec![1],
-        },
+        SnapshotRecord::new(
+            "sqlite.counter",
+            "same-id",
+            1,
+            "CounterSnapshot",
+            1,
+            vec![1],
+        ),
     )
     .await
     .unwrap();
     repo.save_snapshot_async(
         &projection,
-        SnapshotRecord {
-            aggregate_id: "same-id".into(),
-            version: 2,
-            data: vec![2],
-        },
+        SnapshotRecord::new(
+            "sqlite.counter_projection",
+            "same-id",
+            2,
+            "ProjectionSnapshot",
+            1,
+            vec![2],
+        ),
     )
     .await
     .unwrap();
@@ -282,9 +288,16 @@ async fn snapshots_persist_by_full_stream_identity() {
     let loaded_projection = repo.get_snapshot_async(&projection).await.unwrap().unwrap();
 
     assert_eq!(loaded_counter.version, 1);
-    assert_eq!(loaded_counter.data, vec![1]);
+    assert_eq!(loaded_counter.aggregate_type, "sqlite.counter");
+    assert_eq!(loaded_counter.snapshot_type, "CounterSnapshot");
+    assert_eq!(loaded_counter.payload, vec![1]);
     assert_eq!(loaded_projection.version, 2);
-    assert_eq!(loaded_projection.data, vec![2]);
+    assert_eq!(
+        loaded_projection.aggregate_type,
+        "sqlite.counter_projection"
+    );
+    assert_eq!(loaded_projection.snapshot_type, "ProjectionSnapshot");
+    assert_eq!(loaded_projection.payload, vec![2]);
 }
 
 #[tokio::test]

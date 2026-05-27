@@ -1,16 +1,38 @@
-use crate::aggregate::{hydrate, AggregateRepository};
+use crate::aggregate::{hydrate, AggregateRepository, AsyncAggregateRepository};
 use crate::entity::{upcast_events, Entity};
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
-use crate::repository::{CommitBatch, Get, RepositoryError, SnapshotWrite, TransactionalCommit};
+use crate::repository::{
+    AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
+    AsyncTransactionalCommit, CommitBatch, Get, RepositoryError, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
+};
 
 use super::snapshottable::Snapshottable;
 use super::store::{SnapshotRecord, SnapshotStore};
 
-/// Hydrate an aggregate from a snapshot, replaying only events after the snapshot version.
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotHydrationError {
+    Cache(String),
+    Replay(String),
+}
+
+/// Hydrate an aggregate from a snapshot cache record, replaying only events
+/// after the snapshot version.
 pub fn hydrate_from_snapshot<A: Snapshottable>(
     entity: Entity,
     snapshot: SnapshotRecord,
 ) -> Result<A, RepositoryError> {
+    try_hydrate_from_snapshot::<A>(entity, snapshot).map_err(|err| match err {
+        SnapshotHydrationError::Cache(message) | SnapshotHydrationError::Replay(message) => {
+            RepositoryError::Replay(message)
+        }
+    })
+}
+
+fn try_hydrate_from_snapshot<A: Snapshottable>(
+    entity: Entity,
+    snapshot: SnapshotRecord,
+) -> Result<A, SnapshotHydrationError> {
     let mut agg = A::new_empty();
     *agg.entity_mut() = entity;
 
@@ -18,8 +40,15 @@ pub fn hydrate_from_snapshot<A: Snapshottable>(
     agg.entity_mut().set_snapshot_version(snapshot.version);
 
     // Restore aggregate state from snapshot
-    let snap: A::Snapshot = bitcode::deserialize(&snapshot.data)
-        .map_err(|e| RepositoryError::Replay(format!("snapshot deserialize: {e}")))?;
+    if !snapshot.has_supported_payload_codec() {
+        return Err(SnapshotHydrationError::Cache(format!(
+            "unsupported snapshot payload codec `{}` version {}",
+            snapshot.payload_codec, snapshot.payload_codec_version
+        )));
+    }
+
+    let snap: A::Snapshot = bitcode::deserialize(&snapshot.payload)
+        .map_err(|e| SnapshotHydrationError::Cache(format!("snapshot deserialize: {e}")))?;
     agg.restore_from_snapshot(snap);
 
     // Replay only events AFTER the snapshot
@@ -37,18 +66,65 @@ pub fn hydrate_from_snapshot<A: Snapshottable>(
         post_snapshot
     } else {
         upcast_events(post_snapshot, upcasters)
-            .map_err(|err| RepositoryError::Replay(err.to_string()))?
+            .map_err(|err| SnapshotHydrationError::Replay(err.to_string()))?
     };
 
     agg.entity_mut().set_replaying(true);
     for event in &events {
         if let Err(err) = agg.replay_event(event) {
             agg.entity_mut().set_replaying(false);
-            return Err(RepositoryError::Replay(err.to_string()));
+            return Err(SnapshotHydrationError::Replay(err.to_string()));
         }
     }
     agg.entity_mut().set_replaying(false);
     Ok(agg)
+}
+
+fn snapshot_type_name<A: Snapshottable>() -> String {
+    std::any::type_name::<A::Snapshot>().to_string()
+}
+
+fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord, RepositoryError> {
+    let payload = bitcode::serialize(&aggregate.create_snapshot())
+        .map_err(|e| RepositoryError::Replay(format!("snapshot serialize: {e}")))?;
+
+    Ok(SnapshotRecord::new(
+        A::aggregate_type(),
+        aggregate.entity().id(),
+        aggregate.entity().version(),
+        snapshot_type_name::<A>(),
+        SnapshotRecord::DEFAULT_SNAPSHOT_VERSION,
+        payload,
+    ))
+}
+
+fn hydrate_with_optional_snapshot<A: Snapshottable>(
+    entity: Entity,
+    snapshot: Option<SnapshotRecord>,
+) -> Result<A, RepositoryError> {
+    let Some(snapshot) = snapshot else {
+        return hydrate::<A>(entity);
+    };
+
+    if snapshot.aggregate_id != entity.id() || snapshot.aggregate_type != A::aggregate_type() {
+        return hydrate::<A>(entity);
+    }
+
+    if snapshot.version > entity.version() {
+        return Err(RepositoryError::Model(format!(
+            "snapshot cache version {} exceeds stream version {} for {}:{}",
+            snapshot.version,
+            entity.version(),
+            snapshot.aggregate_type,
+            snapshot.aggregate_id
+        )));
+    }
+
+    match try_hydrate_from_snapshot::<A>(entity.clone(), snapshot) {
+        Ok(aggregate) => Ok(aggregate),
+        Err(SnapshotHydrationError::Cache(_)) => hydrate::<A>(entity),
+        Err(SnapshotHydrationError::Replay(message)) => Err(RepositoryError::Replay(message)),
+    }
 }
 
 /// A repository wrapper that provides snapshot-aware get and commit for a specific aggregate type.
@@ -65,6 +141,147 @@ impl<R, A> SnapshotAggregateRepository<R, A> {
     /// Access the inner AggregateRepository.
     pub fn repo(&self) -> &AggregateRepository<R, A> {
         &self.inner
+    }
+}
+
+/// Async repository wrapper that treats aggregate snapshots as rebuildable
+/// hydration cache records.
+pub struct AsyncSnapshotAggregateRepository<R, A> {
+    inner: AsyncAggregateRepository<R, A>,
+    frequency: u64,
+}
+
+impl<R, A> AsyncSnapshotAggregateRepository<R, A> {
+    pub fn new(inner: AsyncAggregateRepository<R, A>, frequency: u64) -> Self {
+        Self { inner, frequency }
+    }
+
+    pub fn repo(&self) -> &AsyncAggregateRepository<R, A> {
+        &self.inner
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A> {
+    /// Wrap this async repository with snapshot cache support at the given event
+    /// frequency.
+    pub fn with_snapshots(self, frequency: u64) -> AsyncSnapshotAggregateRepository<R, A> {
+        AsyncSnapshotAggregateRepository::new(self, frequency)
+    }
+}
+
+impl<R, A> AsyncSnapshotAggregateRepository<R, A>
+where
+    R: AsyncGetStream + AsyncSnapshotStore,
+    A: Snapshottable + Send,
+{
+    pub async fn get(&self, id: &str) -> Result<Option<A>, RepositoryError> {
+        let identity = StreamIdentity::new(A::aggregate_type(), id)?;
+        let entity = self.inner.repo().get_stream(&identity).await?;
+        let Some(entity) = entity else {
+            return Ok(None);
+        };
+        let snapshot = self.inner.repo().get_snapshot_async(&identity).await?;
+        Ok(Some(hydrate_with_optional_snapshot::<A>(entity, snapshot)?))
+    }
+
+    pub async fn get_all(&self, ids: &[&str]) -> Result<Vec<A>, RepositoryError> {
+        let identities = ids
+            .iter()
+            .map(|id| StreamIdentity::new(A::aggregate_type(), *id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let entities = self.inner.repo().get_streams(&identities).await?;
+        let mut aggregates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            let identity = StreamIdentity::new(A::aggregate_type(), entity.id())?;
+            let snapshot = self.inner.repo().get_snapshot_async(&identity).await?;
+            aggregates.push(hydrate_with_optional_snapshot::<A>(entity, snapshot)?);
+        }
+        Ok(aggregates)
+    }
+}
+
+impl<R, A> AsyncSnapshotAggregateRepository<R, A>
+where
+    R: AsyncTransactionalCommit,
+    A: Snapshottable + Send,
+{
+    pub async fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
+        let snapshot = self.snapshot_record(aggregate)?;
+        let snapshot_version = snapshot.as_ref().map(|record| record.version);
+        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
+        let snapshots = snapshot
+            .into_iter()
+            .map(|record| AsyncSnapshotWrite::Save {
+                identity: identity.clone(),
+                record,
+            })
+            .collect();
+
+        self.inner
+            .repo()
+            .commit_batch_async(AsyncCommitBatch {
+                streams: vec![AsyncStreamWrite::new(identity, aggregate.entity_mut())],
+                outbox_messages: Vec::new(),
+                read_model_plans: Vec::new(),
+                snapshots,
+            })
+            .await?;
+
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
+        Ok(())
+    }
+
+    pub async fn commit_all(&self, aggregates: &mut [&mut A]) -> Result<(), RepositoryError> {
+        let mut snapshot_versions = Vec::with_capacity(aggregates.len());
+        let mut snapshots = Vec::new();
+        for aggregate in aggregates.iter() {
+            let snapshot = self.snapshot_record(*aggregate)?;
+            snapshot_versions.push(snapshot.as_ref().map(|record| record.version));
+            if let Some(record) = snapshot {
+                snapshots.push(AsyncSnapshotWrite::Save {
+                    identity: StreamIdentity::new(
+                        A::aggregate_type(),
+                        record.aggregate_id.as_str(),
+                    )?,
+                    record,
+                });
+            }
+        }
+
+        let mut streams = Vec::with_capacity(aggregates.len());
+        for aggregate in aggregates.iter_mut() {
+            let identity = StreamIdentity::new(A::aggregate_type(), (*aggregate).entity().id())?;
+            streams.push(AsyncStreamWrite::new(identity, (*aggregate).entity_mut()));
+        }
+
+        self.inner
+            .repo()
+            .commit_batch_async(AsyncCommitBatch {
+                streams,
+                outbox_messages: Vec::new(),
+                read_model_plans: Vec::new(),
+                snapshots,
+            })
+            .await?;
+
+        for (aggregate, snapshot_version) in aggregates.iter_mut().zip(snapshot_versions) {
+            if let Some(version) = snapshot_version {
+                aggregate.entity_mut().set_snapshot_version(version);
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot_record(&self, aggregate: &A) -> Result<Option<SnapshotRecord>, RepositoryError> {
+        let version = aggregate.entity().version();
+        let snap_version = aggregate.entity().snapshot_version();
+
+        if version >= snap_version + self.frequency {
+            return snapshot_record_for(aggregate).map(Some);
+        }
+        Ok(None)
     }
 }
 
@@ -103,12 +320,7 @@ where
         entity: Entity,
         snapshot: Option<SnapshotRecord>,
     ) -> Result<A, RepositoryError> {
-        match snapshot {
-            Some(snap) if snap.version <= entity.version() => {
-                hydrate_from_snapshot::<A>(entity, snap)
-            }
-            _ => hydrate::<A>(entity),
-        }
+        hydrate_with_optional_snapshot::<A>(entity, snapshot)
     }
 }
 
@@ -176,15 +388,7 @@ where
         let snap_version = aggregate.entity().snapshot_version();
 
         if version >= snap_version + self.frequency {
-            let snap = aggregate.create_snapshot();
-            let data = bitcode::serialize(&snap)
-                .map_err(|e| RepositoryError::Replay(format!("snapshot serialize: {e}")))?;
-
-            return Ok(Some(SnapshotRecord {
-                aggregate_id: aggregate.entity().id().to_string(),
-                version,
-                data,
-            }));
+            return snapshot_record_for(aggregate).map(Some);
         }
         Ok(None)
     }
@@ -216,12 +420,7 @@ where
             return Ok(None);
         };
         let snapshot = self.inner.repo().get_snapshot(id)?;
-        match snapshot {
-            Some(snap) if snap.version <= entity.version() => {
-                Ok(Some(hydrate_from_snapshot::<A>(entity, snap)?))
-            }
-            _ => Ok(Some(hydrate::<A>(entity)?)),
-        }
+        Ok(Some(hydrate_with_optional_snapshot::<A>(entity, snapshot)?))
     }
 }
 
@@ -236,13 +435,7 @@ where
         let mut aggregates = Vec::with_capacity(entities.len());
         for entity in entities {
             let snapshot = self.inner.repo().get_snapshot(entity.id())?;
-            let agg = match snapshot {
-                Some(snap) if snap.version <= entity.version() => {
-                    hydrate_from_snapshot::<A>(entity, snap)?
-                }
-                _ => hydrate::<A>(entity)?,
-            };
-            aggregates.push(agg);
+            aggregates.push(hydrate_with_optional_snapshot::<A>(entity, snapshot)?);
         }
         Ok(aggregates)
     }
