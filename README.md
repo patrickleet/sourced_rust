@@ -1259,7 +1259,7 @@ See [`docs/read-models.md`](docs/read-models.md) for the full guide, including r
 
 ## Snapshots
 
-As aggregates accumulate events, replaying from scratch gets expensive. Distributed keeps aggregate events as the durable source of truth and stores repository snapshots as a rebuildable hydration cache. A snapshot cache record can be deleted and rebuilt from events without changing aggregate correctness.
+As aggregates accumulate events, replaying from scratch gets expensive. The framework keeps aggregate events as the durable source of truth and stores repository snapshots as a rebuildable hydration cache. A snapshot cache record can be deleted and rebuilt from events without changing aggregate correctness.
 
 ### Making an Aggregate Snapshottable
 
@@ -1355,7 +1355,7 @@ let Some(todo) = repo.get("todo-1")? else {
 
 ### How It Works
 
-- **On commit**: If `entity.version() >= snapshot_version + frequency`, the aggregate's state is serialized via `create_snapshot()` and saved to the snapshot store.
+- **On commit**: If `entity.version().saturating_sub(snapshot_version) >= frequency`, the aggregate's state is serialized via `create_snapshot()` and saved to the snapshot store.
 - **On load**: If a usable snapshot cache record exists, the aggregate is restored from its payload and only events with `sequence > snapshot.version` are replayed. If no snapshot exists or the cache record is incompatible, full replay is used as a fallback.
 - **Storage**: Snapshot cache records are stored separately from the event stream. They carry aggregate type, aggregate ID, covered event version, snapshot payload type/version, payload codec metadata, cache metadata, and timestamp. `HashMapRepository` embeds an `InMemorySnapshotStore`; durable async backends implement `AsyncSnapshotStore`.
 

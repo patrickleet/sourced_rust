@@ -301,7 +301,7 @@ async fn async_snapshot_repository_ignores_invalid_cache_and_replays_events() {
 }
 
 #[tokio::test]
-async fn async_snapshot_repository_rejects_cache_past_stream_version() {
+async fn async_snapshot_repository_ignores_cache_past_stream_version_and_replays_events() {
     let repo = HashMapRepository::new();
     let aggregate_repo = repo.clone().async_aggregate::<SnapshotCounter>();
     let snapshot_repo = repo
@@ -321,17 +321,14 @@ async fn async_snapshot_repository_rejects_cache_past_stream_version() {
         2,
         std::any::type_name::<i32>(),
         1,
-        bitcode::serialize(&4_i32).unwrap(),
+        bitcode::serialize(&999_i32).unwrap(),
     );
     repo.save_snapshot_async(&identity, record).await.unwrap();
 
-    let err = match snapshot_repo.get(id).await {
-        Err(err) => err,
-        Ok(_) => panic!("snapshot cache past stream version should fail"),
-    };
-    assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("exceeds stream version"))
-    );
+    let loaded = snapshot_repo.get(id).await.unwrap().unwrap();
+    assert_eq!(loaded.value, 4);
+    assert_eq!(loaded.entity().version(), 1);
+    assert_eq!(loaded.entity().snapshot_version(), 0);
 }
 
 #[tokio::test]
