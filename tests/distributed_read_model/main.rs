@@ -54,8 +54,8 @@ use sourced_rust::microsvc::{self, Service, Session};
 use sourced_rust::SqliteRepository;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sourced_rust::{
-    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
+    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream,
+    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, Entity, EventRecord,
     OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
     RelationalReadModelIncludes, StreamIdentity,
@@ -300,7 +300,7 @@ where
     let outbox = json_outbox_event(seat_id, seat_event::ADDED, &event)
         .expect("seat added outbox should encode");
 
-    sourced_rust::AsyncCommitBuilderExt::outbox(repo, outbox.clone())
+    repo.outbox_async(outbox.clone())
         .commit(&mut seat)
         .await
         .expect("seat add should commit");
@@ -332,7 +332,7 @@ where
     let outbox = json_outbox_event(checkout_id, checkout_event::STARTED, &event)
         .expect("checkout started outbox should encode");
 
-    sourced_rust::AsyncCommitBuilderExt::outbox(repo, outbox.clone())
+    repo.outbox_async(outbox.clone())
         .commit(&mut saga)
         .await
         .expect("checkout start should commit");
@@ -369,7 +369,7 @@ where
     let outbox = json_outbox_event(&msg.checkout_id, seat_event::RESERVED, &event)
         .expect("seat reserved outbox should encode");
 
-    sourced_rust::AsyncCommitBuilderExt::outbox(repo, outbox.clone())
+    repo.outbox_async(outbox.clone())
         .commit(&mut seat)
         .await
         .expect("seat reservation should commit");
@@ -406,7 +406,7 @@ where
     )
     .expect("seat reservation completed outbox should encode");
 
-    sourced_rust::AsyncCommitBuilderExt::outbox(repo, outbox.clone())
+    repo.outbox_async(outbox.clone())
         .commit(&mut saga)
         .await
         .expect("checkout saga update should commit");
@@ -519,7 +519,7 @@ where
         .unwrap_or_default();
     checkpoint.mark_projected(message.id());
 
-    AsyncReadModelWritePlanCommitExt::read_models(repo, read_models)
+    repo.read_models_async(read_models)
         .commit(&mut checkpoint)
         .await
         .expect("projection read models should commit with checkpoint");

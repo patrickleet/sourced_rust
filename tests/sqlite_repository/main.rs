@@ -241,7 +241,7 @@ async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() 
     let identity =
         StreamIdentity::new(CounterProjection::aggregate_type(), "relational-batch-1").unwrap();
 
-    repo.read_models(session)
+    repo.read_models_async(session)
         .commit(&mut projection)
         .await
         .unwrap();
