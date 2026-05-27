@@ -16,22 +16,84 @@ enum SnapshotHydrationError {
     Replay(String),
 }
 
+fn snapshot_hydration_error_to_repository_error(err: SnapshotHydrationError) -> RepositoryError {
+    match err {
+        SnapshotHydrationError::Cache(message) | SnapshotHydrationError::Replay(message) => {
+            RepositoryError::Replay(message)
+        }
+    }
+}
+
+fn snapshot_due(version: u64, snapshot_version: u64, frequency: u64) -> bool {
+    version.saturating_sub(snapshot_version) >= frequency
+}
+
 /// Hydrate an aggregate from a snapshot cache record, replaying only events
 /// after the snapshot version.
 pub fn hydrate_from_snapshot<A: Snapshottable>(
     entity: Entity,
     snapshot: SnapshotRecord,
 ) -> Result<A, RepositoryError> {
-    try_hydrate_from_snapshot::<A>(entity, snapshot).map_err(|err| match err {
-        SnapshotHydrationError::Cache(message) | SnapshotHydrationError::Replay(message) => {
-            RepositoryError::Replay(message)
-        }
-    })
+    let snapshot_payload = prepare_snapshot::<A>(&entity, &snapshot)
+        .map_err(snapshot_hydration_error_to_repository_error)?;
+    hydrate_prepared_snapshot::<A>(entity, &snapshot, snapshot_payload)
+        .map_err(snapshot_hydration_error_to_repository_error)
 }
 
-fn try_hydrate_from_snapshot<A: Snapshottable>(
+fn entity_stream_version(entity: &Entity) -> u64 {
+    entity
+        .events()
+        .iter()
+        .map(|event| event.sequence)
+        .max()
+        .unwrap_or_else(|| entity.version())
+}
+
+fn validate_snapshot_for_entity<A: Snapshottable>(
+    entity: &Entity,
+    snapshot: &SnapshotRecord,
+) -> Result<(), SnapshotHydrationError> {
+    if snapshot.aggregate_id != entity.id() || snapshot.aggregate_type != A::aggregate_type() {
+        return Err(SnapshotHydrationError::Cache(format!(
+            "snapshot cache identity {}:{} does not match aggregate {}:{}",
+            snapshot.aggregate_type,
+            snapshot.aggregate_id,
+            A::aggregate_type(),
+            entity.id()
+        )));
+    }
+
+    let stream_version = entity_stream_version(entity);
+    if snapshot.version > stream_version {
+        return Err(SnapshotHydrationError::Cache(format!(
+            "snapshot cache version {} exceeds stream version {} for {}:{}",
+            snapshot.version, stream_version, snapshot.aggregate_type, snapshot.aggregate_id
+        )));
+    }
+
+    Ok(())
+}
+
+fn prepare_snapshot<A: Snapshottable>(
+    entity: &Entity,
+    snapshot: &SnapshotRecord,
+) -> Result<A::Snapshot, SnapshotHydrationError> {
+    validate_snapshot_for_entity::<A>(entity, snapshot)?;
+    if !snapshot.has_supported_payload_codec() {
+        return Err(SnapshotHydrationError::Cache(format!(
+            "unsupported snapshot payload codec `{}` version {}",
+            snapshot.payload_codec, snapshot.payload_codec_version
+        )));
+    }
+
+    bitcode::deserialize(&snapshot.payload)
+        .map_err(|e| SnapshotHydrationError::Cache(format!("snapshot deserialize: {e}")))
+}
+
+fn hydrate_prepared_snapshot<A: Snapshottable>(
     entity: Entity,
-    snapshot: SnapshotRecord,
+    snapshot: &SnapshotRecord,
+    snapshot_payload: A::Snapshot,
 ) -> Result<A, SnapshotHydrationError> {
     let mut agg = A::new_empty();
     *agg.entity_mut() = entity;
@@ -40,16 +102,7 @@ fn try_hydrate_from_snapshot<A: Snapshottable>(
     agg.entity_mut().set_snapshot_version(snapshot.version);
 
     // Restore aggregate state from snapshot
-    if !snapshot.has_supported_payload_codec() {
-        return Err(SnapshotHydrationError::Cache(format!(
-            "unsupported snapshot payload codec `{}` version {}",
-            snapshot.payload_codec, snapshot.payload_codec_version
-        )));
-    }
-
-    let snap: A::Snapshot = bitcode::deserialize(&snapshot.payload)
-        .map_err(|e| SnapshotHydrationError::Cache(format!("snapshot deserialize: {e}")))?;
-    agg.restore_from_snapshot(snap);
+    agg.restore_from_snapshot(snapshot_payload);
 
     // Replay only events AFTER the snapshot
     let post_snapshot: Vec<crate::entity::EventRecord> = agg
@@ -106,25 +159,16 @@ fn hydrate_with_optional_snapshot<A: Snapshottable>(
         return hydrate::<A>(entity);
     };
 
-    if snapshot.aggregate_id != entity.id() || snapshot.aggregate_type != A::aggregate_type() {
-        return hydrate::<A>(entity);
-    }
+    let snapshot_payload = match prepare_snapshot::<A>(&entity, &snapshot) {
+        Ok(snapshot_payload) => snapshot_payload,
+        Err(SnapshotHydrationError::Cache(_)) => return hydrate::<A>(entity),
+        Err(SnapshotHydrationError::Replay(message)) => {
+            return Err(RepositoryError::Replay(message))
+        }
+    };
 
-    if snapshot.version > entity.version() {
-        return Err(RepositoryError::Model(format!(
-            "snapshot cache version {} exceeds stream version {} for {}:{}",
-            snapshot.version,
-            entity.version(),
-            snapshot.aggregate_type,
-            snapshot.aggregate_id
-        )));
-    }
-
-    match try_hydrate_from_snapshot::<A>(entity.clone(), snapshot) {
-        Ok(aggregate) => Ok(aggregate),
-        Err(SnapshotHydrationError::Cache(_)) => hydrate::<A>(entity),
-        Err(SnapshotHydrationError::Replay(message)) => Err(RepositoryError::Replay(message)),
-    }
+    hydrate_prepared_snapshot::<A>(entity, &snapshot, snapshot_payload)
+        .map_err(snapshot_hydration_error_to_repository_error)
 }
 
 /// A repository wrapper that provides snapshot-aware get and commit for a specific aggregate type.
@@ -278,7 +322,7 @@ where
         let version = aggregate.entity().version();
         let snap_version = aggregate.entity().snapshot_version();
 
-        if version >= snap_version + self.frequency {
+        if snapshot_due(version, snap_version, self.frequency) {
             return snapshot_record_for(aggregate).map(Some);
         }
         Ok(None)
@@ -387,7 +431,7 @@ where
         let version = aggregate.entity().version();
         let snap_version = aggregate.entity().snapshot_version();
 
-        if version >= snap_version + self.frequency {
+        if snapshot_due(version, snap_version, self.frequency) {
             return snapshot_record_for(aggregate).map(Some);
         }
         Ok(None)
@@ -498,7 +542,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, AggregateRepository, Entity, EventRecord};
+    use crate::{impl_aggregate, Aggregate, AggregateRepository, Entity, EventRecord};
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -570,5 +614,59 @@ mod tests {
         assert_eq!(aggregate.entity.committed_version(), 0);
         assert_eq!(aggregate.entity.snapshot_version(), 0);
         assert_eq!(aggregate.entity.new_events().len(), 1);
+    }
+
+    #[test]
+    fn snapshot_due_uses_saturating_version_distance() {
+        assert!(snapshot_due(5, 2, 3));
+        assert!(!snapshot_due(5, 3, 3));
+        assert!(!snapshot_due(0, u64::MAX, 1));
+        assert!(snapshot_due(u64::MAX, u64::MAX - 1, 1));
+    }
+
+    #[test]
+    fn hydrate_from_snapshot_rejects_identity_mismatch() {
+        let mut entity = Entity::with_id("snap-1");
+        entity.load_from_history(vec![EventRecord::new("Touched", vec![], 1)]);
+        let snapshot = SnapshotRecord::new(
+            TestAggregate::aggregate_type(),
+            "other",
+            1,
+            std::any::type_name::<u32>(),
+            1,
+            bitcode::serialize(&1_u32).unwrap(),
+        );
+
+        let err = match hydrate_from_snapshot::<TestAggregate>(entity, snapshot) {
+            Err(err) => err,
+            Ok(_) => panic!("expected identity mismatch error"),
+        };
+
+        assert!(
+            matches!(err, RepositoryError::Replay(message) if message.contains("does not match"))
+        );
+    }
+
+    #[test]
+    fn hydrate_from_snapshot_rejects_snapshot_ahead_of_stream() {
+        let mut entity = Entity::with_id("snap-1");
+        entity.load_from_history(vec![EventRecord::new("Touched", vec![], 1)]);
+        let snapshot = SnapshotRecord::new(
+            TestAggregate::aggregate_type(),
+            "snap-1",
+            2,
+            std::any::type_name::<u32>(),
+            1,
+            bitcode::serialize(&1_u32).unwrap(),
+        );
+
+        let err = match hydrate_from_snapshot::<TestAggregate>(entity, snapshot) {
+            Err(err) => err,
+            Ok(_) => panic!("expected future snapshot error"),
+        };
+
+        assert!(
+            matches!(err, RepositoryError::Replay(message) if message.contains("exceeds stream version"))
+        );
     }
 }

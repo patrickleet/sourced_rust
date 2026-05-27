@@ -174,9 +174,9 @@ record, then replay event rows where `sequence > snapshot.version` ordered
 ascending. If no usable snapshot exists, hydrate from sequence `1`.
 
 If the newest snapshot version exceeds the current maximum event sequence for
-the stream, the implementation should reject the load with
-`RepositoryError::Model`. That fail-fast behavior is preferred over continuing
-from an impossible snapshot tail because it surfaces data corruption early.
+the stream, the implementation should ignore that cache record and hydrate from
+sequence `1`. Snapshot cache fallback should be observable when tracing exists,
+but it should not turn a recoverable cache miss into command failure.
 
 Snapshot retention is implementation-specific but must be explicit. The current
 SQL adapters retain only the latest cache record per stream. Future adapters may
