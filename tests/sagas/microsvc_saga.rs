@@ -59,7 +59,7 @@ fn saga_orchestrated() {
                 .aggregate::<OrderFulfillmentSaga>()
         ),
         handlers::saga::start,
-        handlers::saga::on_order_created,
+        event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
         event handlers::saga::on_order_completed,
@@ -125,11 +125,10 @@ fn saga_orchestrated() {
 
     // 4. Saga: order created → outbox(ReserveInventory)
     saga_svc
-        .dispatch(
+        .dispatch_message(&event_message(
             "OrderCreated",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
-            s(),
-        )
+        ))
         .unwrap();
 
     // 5. Reserve inventory → outbox(InventoryReserved)
@@ -250,7 +249,7 @@ fn saga_distributed() {
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         handlers::saga::start,
-        handlers::saga::on_order_created,
+        event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
         event handlers::saga::on_order_completed,
