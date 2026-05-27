@@ -19,9 +19,9 @@ use crate::models::counter::Counter;
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
-        handlers::counter_increment,
-        handlers::whoami,
+        command handlers::counter_create,
+        command handlers::counter_increment,
+        command handlers::whoami,
     ))
 }
 
@@ -155,12 +155,12 @@ fn multiple_services_on_different_queues() {
 
     let service_a = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(store.clone().queued().aggregate::<Counter>()),
-        handlers::counter_create,
+        command handlers::counter_create,
     ));
 
     let service_b = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(store.queued().aggregate::<Counter>()),
-        handlers::counter_increment,
+        command handlers::counter_increment,
     ));
 
     let handle_a = microsvc::listen(

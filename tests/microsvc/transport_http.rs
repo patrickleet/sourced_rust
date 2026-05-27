@@ -15,9 +15,9 @@ use crate::models::counter::Counter;
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
-        handlers::counter_create,
-        handlers::counter_increment,
-        handlers::whoami,
+        command handlers::counter_create,
+        command handlers::counter_increment,
+        command handlers::whoami,
     ))
 }
 

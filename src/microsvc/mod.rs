@@ -89,6 +89,8 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 
 /// Register handler modules with a service using the convention pattern.
 ///
+/// Each handler entry must be prefixed with `command`, `event`, or `events`.
+///
 /// Command handler modules must export:
 /// - `COMMAND: &str` — the command name
 /// - `guard(ctx) -> bool` — input validation
@@ -103,8 +105,8 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 /// ```ignore
 /// let service = sourced_rust::register_handlers!(
 ///     microsvc::Service::with_repo(HashMapRepository::new()),
-///     handlers::counter_create,
-///     handlers::counter_increment,
+///     command handlers::counter_create,
+///     command handlers::counter_increment,
 ///     event handlers::counter_rebuilt,
 ///     events handlers::counter_projection,
 /// );
@@ -150,12 +152,8 @@ macro_rules! __register_handlers {
         )
     };
     ($service:expr, $($seg:ident)::+ $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.command($($seg)::+::COMMAND).guarded(
-                $($seg)::+::guard,
-                $($seg)::+::handle,
-            )
-            $(, $($rest)*)?
+        compile_error!(
+            "register_handlers! entries must be prefixed with `command`, `event`, or `events`"
         )
     };
 }

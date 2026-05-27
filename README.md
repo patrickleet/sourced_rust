@@ -131,8 +131,8 @@ use sourced_rust::{microsvc, HashMapRepository, Queueable};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(sourced_rust::register_handlers!(
         microsvc::Service::with_repo(HashMapRepository::new().queued()),
-        handlers::todo_create,
-        handlers::todo_complete,
+        command handlers::todo_create,
+        command handlers::todo_complete,
     ));
 
     // Direct dispatch
@@ -1031,8 +1031,8 @@ Register them with the `register_handlers!` macro:
 ```rust
 let service = sourced_rust::register_handlers!(
     microsvc::Service::with_repo(HashMapRepository::new().queued()),
-    handlers::counter_create,
-    handlers::counter_increment,
+    command handlers::counter_create,
+    command handlers::counter_increment,
 );
 ```
 

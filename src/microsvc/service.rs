@@ -640,7 +640,7 @@ impl Drop for TransportHandle {
 /// let service = Arc::new(
 ///     sourced_rust::register_handlers!(
 ///         microsvc::Service::with_repo(repo),
-///         handlers::counter_create,
+///         command handlers::counter_create,
 ///     )
 /// );
 ///
