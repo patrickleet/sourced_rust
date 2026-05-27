@@ -218,6 +218,32 @@ fn sync_persists_loaded_scalar_field_without_manual_patch() {
 }
 
 #[test]
+fn sync_refreshes_loaded_root_baseline_between_calls() {
+    let store = store_with_player_and_weapons([]);
+    let mut read_models = store.workspace();
+    let mut loaded = read_models
+        .load::<Player>(player_key("player-1"))
+        .one()
+        .unwrap()
+        .unwrap()
+        .data;
+
+    loaded.display_name = "Ada Lovelace".into();
+    read_models.sync(loaded.clone()).unwrap();
+    loaded.display_name = "Countess Lovelace".into();
+    read_models.sync(loaded).unwrap();
+    read_models.commit().unwrap();
+
+    let mut check = store.workspace();
+    let reloaded = check
+        .load::<Player>(player_key("player-1"))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.data.display_name, "Countess Lovelace");
+}
+
+#[test]
 fn sync_persists_added_and_modified_related_rows() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
     let mut read_models = store.workspace();
@@ -248,6 +274,35 @@ fn sync_persists_added_and_modified_related_rows() {
     assert_eq!(reloaded.weapons[0].player_id, "player-1");
     assert_eq!(reloaded.weapons[0].weapon_id, "shield");
     assert_eq!(reloaded.weapons[1].acquired_at, "2026-05-24");
+}
+
+#[test]
+fn sync_refreshes_loaded_include_baseline_between_calls() {
+    let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
+    let mut read_models = store.workspace();
+    let mut loaded = read_models
+        .load::<Player>(player_key("player-1"))
+        .include("weapons")
+        .one()
+        .unwrap()
+        .unwrap()
+        .data;
+
+    loaded.weapons[0].acquired_at = "2026-05-24".into();
+    read_models.sync(loaded.clone()).unwrap();
+    loaded.weapons[0].acquired_at = "2026-05-25".into();
+    read_models.sync(loaded).unwrap();
+    read_models.commit().unwrap();
+
+    let mut check = store.workspace();
+    let reloaded = check
+        .load::<Player>(player_key("player-1"))
+        .include("weapons")
+        .one()
+        .unwrap()
+        .unwrap()
+        .data;
+    assert_eq!(reloaded.weapons[0].acquired_at, "2026-05-25");
 }
 
 #[test]
