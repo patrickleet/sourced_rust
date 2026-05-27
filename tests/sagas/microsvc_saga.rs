@@ -25,6 +25,14 @@ use sourced_rust::{
 use super::handlers;
 use super::order::{Inventory, Order, OrderFulfillmentSaga, OrderStatus, Payment, SagaStatus};
 
+fn event_message(name: &str, input: serde_json::Value) -> microsvc::Message {
+    microsvc::Message::new(
+        name,
+        microsvc::MessageKind::Event,
+        serde_json::to_vec(&input).unwrap(),
+    )
+}
+
 // ============================================================================
 // Test 1: Orchestrated — test runner dispatches to each service in sequence
 // ============================================================================
@@ -52,7 +60,7 @@ fn saga_orchestrated() {
         ),
         handlers::saga::start,
         handlers::saga::on_order_created,
-        handlers::saga::on_inventory_reserved,
+        event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
         handlers::saga::on_order_completed,
     );
@@ -140,11 +148,10 @@ fn saga_orchestrated() {
 
     // 6. Saga: inventory reserved → outbox(ProcessPayment)
     saga_svc
-        .dispatch(
+        .dispatch_message(&event_message(
             "InventoryReserved",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
-            s(),
-        )
+        ))
         .unwrap();
 
     // 7. Process payment → outbox(PaymentSucceeded)
@@ -245,7 +252,7 @@ fn saga_distributed() {
         Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         handlers::saga::start,
         handlers::saga::on_order_created,
-        handlers::saga::on_inventory_reserved,
+        event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
         handlers::saga::on_order_completed,
     ));
