@@ -3,42 +3,11 @@
 
 pub mod board;
 
-use serde::{Deserialize, Serialize};
 use sourced_rust::bus::Event;
-use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::microsvc::{Context, HandlerError, MessageEnvelope};
 
 use crate::projections_service::ProjectionDependencies;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectionMessage {
-    pub id: String,
-    pub event_type: String,
-    pub payload: Vec<u8>,
-    pub metadata: Option<Vec<(String, String)>>,
-}
-
-impl From<&Event> for ProjectionMessage {
-    fn from(event: &Event) -> Self {
-        Self {
-            id: event.id.clone(),
-            event_type: event.event_type.clone(),
-            payload: event.payload.clone(),
-            metadata: event.metadata.clone(),
-        }
-    }
-}
-
-impl From<ProjectionMessage> for Event {
-    fn from(message: ProjectionMessage) -> Self {
-        Self {
-            id: message.id,
-            event_type: message.event_type,
-            payload: message.payload,
-            metadata: message.metadata,
-        }
-    }
-}
-
 pub fn event(ctx: &Context<ProjectionDependencies>) -> Result<Event, HandlerError> {
-    Ok(ctx.input::<ProjectionMessage>()?.into())
+    Ok(ctx.input::<MessageEnvelope>()?.into())
 }

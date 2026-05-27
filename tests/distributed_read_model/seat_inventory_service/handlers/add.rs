@@ -6,6 +6,8 @@ use crate::checkout::{json_outbox_event, seat_command, seat_event, AddSeat, Seat
 use crate::seat_inventory_service::{Seat, SeatRepo};
 
 pub const COMMAND: &str = seat_command::ADD;
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 pub fn guard(ctx: &Context<SeatRepo>) -> bool {
     ctx.has_fields(&["seat_id", "category"])

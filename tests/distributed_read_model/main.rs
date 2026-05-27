@@ -28,9 +28,7 @@ use checkout::{
     SEAT_RESERVED_MESSAGE,
 };
 use checkout_saga_service::CheckoutSaga;
-use projection_service::{
-    service as projection_service, subscriber as projection_subscriber, CHECKOUT_SCREEN_CONSUMER,
-};
+use projection_service::{service as projection_service, CHECKOUT_SCREEN_CONSUMER};
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};
 use seat_inventory_service::Seat;
@@ -101,11 +99,7 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
     let projection_svc = projection_service(read_store.clone());
-    let projection_sub = microsvc::subscribe(
-        projection_svc.clone(),
-        projection_subscriber(queue.new_subscriber()),
-        poll,
-    );
+    let projection_sub = microsvc::subscribe(projection_svc.clone(), queue.new_subscriber(), poll);
     let query_service = CheckoutQueryService::new(read_store.clone());
 
     dispatch(
