@@ -1,7 +1,9 @@
 #![cfg(feature = "postgres")]
 
+#[path = "../support/postgres.rs"]
+mod postgres;
+
 use std::collections::HashMap;
-use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -73,17 +75,14 @@ struct RelationalCounterView {
     counts: HashMap<String, i64>,
 }
 
-async fn repository() -> Option<PostgresRepository> {
-    let Ok(database_url) = env::var("DATABASE_URL") else {
-        eprintln!("skipping Postgres integration test: DATABASE_URL is not set");
-        return None;
-    };
-
-    Some(
-        PostgresRepository::connect_and_migrate(&database_url)
-            .await
-            .unwrap(),
+async fn repository() -> Option<(postgres::PostgresTestSchema, PostgresRepository)> {
+    let schema = postgres::PostgresTestSchema::create_from_env(
+        "postgres_repo",
+        "skipping Postgres integration test",
     )
+    .await?;
+    let repo = schema.repository().await;
+    Some((schema, repo))
 }
 
 fn unique_id(prefix: &str) -> String {
@@ -109,7 +108,7 @@ fn relational_counter_key(id: &str) -> RowKey {
 
 #[tokio::test]
 async fn migration_is_idempotent_and_uses_postgres_column_types() {
-    let Some(repo) = repository().await else {
+    let Some((schema, repo)) = repository().await else {
         return;
     };
     repo.migrate().await.unwrap();
@@ -118,10 +117,12 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
         r#"
         SELECT column_name, udt_name
         FROM information_schema.columns
-        WHERE table_name = 'aggregate_events'
+        WHERE table_schema = $1
+          AND table_name = 'aggregate_events'
           AND column_name IN ('payload', 'metadata', 'recorded_at')
         "#,
     )
+    .bind(schema.schema_name())
     .fetch_all(repo.pool())
     .await
     .unwrap();
@@ -146,18 +147,32 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
         ]
     );
 
-    let document_table: Option<String> =
-        sqlx::query_scalar("SELECT to_regclass('public.transactional_read_models')::text")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
+    let document_table: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_name = 'transactional_read_models'
+        "#,
+    )
+    .bind(schema.schema_name())
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap();
     assert!(document_table.is_none());
 
-    let processed_messages_table: Option<String> =
-        sqlx::query_scalar("SELECT to_regclass('public.read_model_processed_messages')::text")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
+    let processed_messages_table: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_name = 'read_model_processed_messages'
+        "#,
+    )
+    .bind(schema.schema_name())
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap();
     assert_eq!(
         processed_messages_table.as_deref(),
         Some("read_model_processed_messages")
@@ -166,7 +181,7 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
 
 #[tokio::test]
 async fn aggregate_stream_round_trips_with_metadata() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let counter_repo = repo.clone().async_aggregate::<Counter>();
@@ -192,7 +207,7 @@ async fn aggregate_stream_round_trips_with_metadata() {
 
 #[tokio::test]
 async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let counter_repo = repo.clone().async_aggregate::<Counter>();
@@ -251,7 +266,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
 
 #[tokio::test]
 async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let id = unique_id("duplicate");
@@ -280,7 +295,7 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
 
 #[tokio::test]
 async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     bootstrap_relational_counter_table(&repo).await;
@@ -329,7 +344,7 @@ async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() 
 
 #[tokio::test]
 async fn read_model_session_patches_and_deletes_relational_rows() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     bootstrap_relational_counter_table(&repo).await;
@@ -401,7 +416,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
 
 #[tokio::test]
 async fn read_model_session_persists_relational_rows_and_processed_marks() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     bootstrap_relational_counter_table(&repo).await;
@@ -475,7 +490,7 @@ async fn read_model_session_persists_relational_rows_and_processed_marks() {
 
 #[tokio::test]
 async fn snapshots_persist_by_full_stream_identity() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let id = unique_id("snapshot");
@@ -527,7 +542,7 @@ async fn snapshots_persist_by_full_stream_identity() {
 
 #[tokio::test]
 async fn unsupported_codec_rows_fail_on_read() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let id = unique_id("bad-codec");
@@ -565,7 +580,7 @@ async fn unsupported_codec_rows_fail_on_read() {
 
 #[tokio::test]
 async fn outbox_metadata_columns_round_trip_into_message_metadata() {
-    let Some(repo) = repository().await else {
+    let Some((_schema, repo)) = repository().await else {
         return;
     };
     let message_id = unique_id("outbox-column-metadata");

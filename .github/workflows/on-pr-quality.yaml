@@ -10,3 +10,32 @@ jobs:
       cargo_build_args: "--verbose"
       cargo_test_args: "--verbose"
       cargo_incremental: true
+
+  postgres:
+    name: Postgres Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sourced_rust_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sourced_rust_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sourced_rust_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Postgres integration tests
+        run: |
+          cargo test --test postgres_repository --all-features --verbose
+          cargo test --test postgres_repository_conformance --all-features --verbose
+          cargo test --test distributed_read_model --all-features --verbose

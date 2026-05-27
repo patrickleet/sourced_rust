@@ -2,22 +2,18 @@
 
 #[path = "../persistent_repository_conformance/mod.rs"]
 mod conformance;
-
-use std::env;
+#[path = "../support/postgres.rs"]
+mod postgres;
 
 use sourced_rust::PostgresRepository;
 
 async fn repository() -> Option<PostgresRepository> {
-    let Ok(database_url) = env::var("DATABASE_URL") else {
-        eprintln!("skipping Postgres conformance test: DATABASE_URL is not set");
-        return None;
-    };
-
-    Some(
-        PostgresRepository::connect_and_migrate(&database_url)
-            .await
-            .expect("postgres conformance repository should migrate"),
+    let schema = postgres::PostgresTestSchema::create_from_env(
+        "pg_conformance",
+        "skipping Postgres conformance test",
     )
+    .await?;
+    Some(schema.repository().await)
 }
 
 #[tokio::test]
