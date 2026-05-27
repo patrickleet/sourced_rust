@@ -36,7 +36,7 @@ type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFn<D> = dyn Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync;
 
 /// The kind of message a handler consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum MessageKind {
     /// A command addressed to one handler.
     Command,
@@ -136,14 +136,7 @@ pub struct Message {
 #[cfg(feature = "bus")]
 impl From<&Event> for Message {
     fn from(event: &Event) -> Self {
-        Self {
-            id: Some(event.id.clone()),
-            name: event.event_type.clone(),
-            kind: MessageKind::Event,
-            payload: event.payload.clone(),
-            content_type: "application/json".to_string(),
-            metadata: event.metadata.clone().unwrap_or_default(),
-        }
+        Self::from_bus_event(event, MessageKind::Event)
     }
 }
 
@@ -172,6 +165,19 @@ impl TryFrom<&Message> for Event {
 }
 
 impl Message {
+    /// Create a transport message from a bus event using an explicit message kind.
+    #[cfg(feature = "bus")]
+    pub fn from_bus_event(event: &Event, kind: MessageKind) -> Self {
+        Self {
+            id: Some(event.id.clone()),
+            name: event.event_type.clone(),
+            kind,
+            payload: event.payload.clone(),
+            content_type: "application/json".to_string(),
+            metadata: event.metadata.clone().unwrap_or_default(),
+        }
+    }
+
     /// Create a transport message.
     pub fn new(name: impl Into<String>, kind: MessageKind, payload: Vec<u8>) -> Self {
         Self {
@@ -252,7 +258,6 @@ impl Message {
 
 /// A registered handler with optional guard.
 struct RegisteredHandler<D> {
-    kind: MessageKind,
     guard: Option<Arc<GuardFn<D>>>,
     handle: Arc<HandlerFn<D>>,
 }
@@ -292,7 +297,7 @@ impl<D: Send + Sync + 'static> HandlerBuilder<D> {
 /// [`Service::with_repo_and_read_model_store`] for common dependency shapes.
 pub struct Service<D> {
     dependencies: D,
-    handlers: HashMap<String, RegisteredHandler<D>>,
+    handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
 }
 
@@ -354,9 +359,8 @@ impl<D: Send + Sync + 'static> Service<D> {
     ) -> Self {
         for name in spec.names() {
             self.handlers.insert(
-                name.to_string(),
+                handler_key(spec.kind, name),
                 RegisteredHandler {
-                    kind: spec.kind,
                     guard: guard.clone(),
                     handle: handle.clone(),
                 },
@@ -376,11 +380,10 @@ impl<D: Send + Sync + 'static> Service<D> {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
-        let kind = self
-            .handlers
-            .get(command)
-            .ok_or_else(|| HandlerError::UnknownCommand(command.to_string()))?
-            .kind;
+        if !self.handles_message(MessageKind::Command, command) {
+            return Err(HandlerError::UnknownCommand(command.to_string()));
+        }
+
         let payload = serde_json::to_vec(&input).map_err(|e| {
             HandlerError::DecodeFailed(format!("invalid JSON input for command '{command}': {e}"))
         })?;
@@ -392,7 +395,7 @@ impl<D: Send + Sync + 'static> Service<D> {
         let message = Message {
             id: None,
             name: command.to_string(),
-            kind,
+            kind: MessageKind::Command,
             payload,
             content_type: "application/json".to_string(),
             metadata,
@@ -418,7 +421,7 @@ impl<D: Send + Sync + 'static> Service<D> {
 
     /// Dispatch a transport message.
     pub fn dispatch_message(&self, message: &Message) -> Result<Value, HandlerError> {
-        if !self.handlers.contains_key(&message.name) {
+        if !self.handles_message(message.kind, &message.name) {
             return Err(HandlerError::UnknownCommand(message.name.clone()));
         }
 
@@ -436,6 +439,19 @@ impl<D: Send + Sync + 'static> Service<D> {
         self.dispatch_message(&Message::from(event))
     }
 
+    #[cfg(feature = "bus")]
+    fn dispatch_listened_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
+        let kind = if self.handles_message(MessageKind::Command, &event.event_type) {
+            MessageKind::Command
+        } else if self.handles_message(MessageKind::Event, &event.event_type) {
+            MessageKind::Event
+        } else {
+            return Err(HandlerError::UnknownCommand(event.event_type.clone()));
+        };
+
+        self.dispatch_message(&Message::from_bus_event(event, kind))
+    }
+
     fn invoke(
         &self,
         message: Message,
@@ -444,7 +460,7 @@ impl<D: Send + Sync + 'static> Service<D> {
     ) -> Result<Value, HandlerError> {
         let handler = self
             .handlers
-            .get(&message.name)
+            .get(&handler_key(message.kind, &message.name))
             .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
         let name = message.name.clone();
         let ctx = Context::new(message, input, session, &self.dependencies);
@@ -495,7 +511,19 @@ impl<D: Send + Sync + 'static> Service<D> {
 
     /// Return whether this service has a handler for the message name.
     pub fn handles(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
+        self.handlers
+            .keys()
+            .any(|(_, registered_name)| registered_name == name)
+    }
+
+    /// Return whether this service has a handler for this message kind and name.
+    pub fn handles_message(&self, kind: MessageKind, name: &str) -> bool {
+        self.handlers.contains_key(&handler_key(kind, name))
+    }
+
+    /// Return whether this service has an event handler for the message name.
+    pub fn handles_event(&self, name: &str) -> bool {
+        self.handles_message(MessageKind::Event, name)
     }
 
     /// Get a reference to the service dependencies.
@@ -658,7 +686,7 @@ where
             stats.polls += 1;
 
             match listener.listen(&queue_name, poll_interval.as_millis() as u64) {
-                Ok(Some(event)) => match service.dispatch_event(&event) {
+                Ok(Some(event)) => match service.dispatch_listened_event(&event) {
                     Ok(_) => stats.handled += 1,
                     Err(_) => stats.failed += 1,
                 },
@@ -734,7 +762,7 @@ where
             stats.polls += 1;
 
             match subscriber.poll(poll_interval.as_millis() as u64) {
-                Ok(Some(event)) if !service.handles(&event.event_type) => {
+                Ok(Some(event)) if !service.handles_event(&event.event_type) => {
                     let _ = subscriber.ack(&event.id);
                 }
                 Ok(Some(event)) => match service.dispatch_event(&event) {
@@ -777,6 +805,10 @@ fn names_by_kind(specs: &[HandlerSpec], kind: MessageKind) -> Vec<&str> {
     }
 
     names
+}
+
+fn handler_key(kind: MessageKind, name: &str) -> (MessageKind, String) {
+    (kind, name.to_string())
 }
 
 fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
@@ -889,6 +921,27 @@ mod tests {
             events,
             vec!["checkout.started", "seat.added", "seat.reserved"]
         );
+    }
+
+    #[test]
+    fn command_and_event_handlers_can_share_a_name() {
+        let service = test_service()
+            .command("shared")
+            .handle(|ctx| Ok(json!({ "kind": format!("{:?}", ctx.message().kind) })))
+            .event("shared")
+            .handle(|ctx| Ok(json!({ "event_id": ctx.message().id() })));
+        let event_message =
+            Message::new("shared", MessageKind::Event, br#"{}"#.to_vec()).with_id("evt-1");
+
+        let command_result = service
+            .dispatch("shared", json!({}), Session::new())
+            .unwrap();
+        let event_result = service.dispatch_message(&event_message).unwrap();
+
+        assert_eq!(command_result, json!({ "kind": "Command" }));
+        assert_eq!(event_result, json!({ "event_id": "evt-1" }));
+        assert!(service.handles_message(MessageKind::Command, "shared"));
+        assert!(service.handles_message(MessageKind::Event, "shared"));
     }
 
     #[test]
@@ -1077,7 +1130,7 @@ mod tests {
     #[cfg(feature = "bus")]
     #[test]
     fn dispatch_event_exposes_raw_payload_without_requiring_json() {
-        let service = test_service().command("ping").handle(|ctx| {
+        let service = test_service().event("ping").handle(|ctx| {
             let payload = std::str::from_utf8(ctx.message().payload())
                 .map_err(|err| HandlerError::DecodeFailed(err.to_string()))?;
             Ok(json!({
