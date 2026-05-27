@@ -39,12 +39,12 @@ use sourced_rust::bus::Subscribable;
 use sourced_rust::microsvc::{self, Service, Session};
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable, ReadModelSessionStore,
+    Queueable, ReadModelWritePlanStore,
 };
 
-fn dispatch<R, C>(service: &Service<R>, command: &str, input: C)
+fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where
-    R: Send + Sync + 'static,
+    D: Send + Sync + 'static,
     C: Serialize,
 {
     service

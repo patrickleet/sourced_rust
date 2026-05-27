@@ -1,7 +1,7 @@
 //! Service — command handler registry and dispatch for microsvc.
 //!
-//! `Service<R>` holds a repository and a set of named command handlers.
-//! Each handler receives a `Context<R>` and returns `Result<Value, HandlerError>`.
+//! `Service<D>` holds service dependencies and a set of named command handlers.
+//! Each handler receives a `Context<D>` and returns `Result<Value, HandlerError>`.
 //!
 //! ## Example
 //!
@@ -24,34 +24,52 @@ use std::{error::Error, fmt};
 use serde_json::Value;
 
 use super::context::Context;
+use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
 use super::error::HandlerError;
 use super::session::Session;
 
-type GuardFn<R> = dyn Fn(&Context<R>) -> bool + Send + Sync;
-type HandlerFn<R> = dyn Fn(&Context<R>) -> Result<Value, HandlerError> + Send + Sync;
+type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
+type HandlerFn<D> = dyn Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync;
 
 /// A registered command handler with optional guard.
-struct CommandHandler<R> {
-    guard: Option<Box<GuardFn<R>>>,
-    handle: Box<HandlerFn<R>>,
+struct CommandHandler<D> {
+    guard: Option<Box<GuardFn<D>>>,
+    handle: Box<HandlerFn<D>>,
 }
 
 /// A microservice that routes commands to handler functions.
 ///
-/// Generic over `R`, the repository type. Handlers receive a `Context<R>`
-/// and can access the repo via `ctx.repo()`.
-pub struct Service<R> {
-    repo: R,
-    handlers: HashMap<String, CommandHandler<R>>,
+/// Generic over `D`, the service dependency type. Prefer
+/// [`Service::with_repo`], [`Service::with_read_model_store`], or
+/// [`Service::with_repo_and_read_model_store`] for common dependency shapes.
+pub struct Service<D> {
+    dependencies: D,
+    handlers: HashMap<String, CommandHandler<D>>,
 }
 
-impl<R: Send + Sync + 'static> Service<R> {
-    /// Create a new service with the given repository.
-    pub fn new(repo: R) -> Self {
+impl<D: Send + Sync + 'static> Service<D> {
+    /// Create a new service with custom dependencies.
+    pub fn new(dependencies: D) -> Self {
         Self {
-            repo,
+            dependencies,
             handlers: HashMap::new(),
         }
+    }
+
+    /// Create a service whose dependency type is an aggregate repository.
+    pub fn with_repo(repo: D) -> Self
+    where
+        D: HasRepo,
+    {
+        Self::new(repo)
+    }
+
+    /// Create a service whose dependency type is a read-model store.
+    pub fn with_read_model_store(read_model_store: D) -> Self
+    where
+        D: HasReadModelStore,
+    {
+        Self::new(read_model_store)
     }
 
     /// Register a command handler.
@@ -59,7 +77,7 @@ impl<R: Send + Sync + 'static> Service<R> {
     /// Uses builder pattern — returns `self` for chaining.
     pub fn command<F>(mut self, name: &str, handler: F) -> Self
     where
-        F: Fn(&Context<R>) -> Result<Value, HandlerError> + Send + Sync + 'static,
+        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
     {
         self.handlers.insert(
             name.to_string(),
@@ -77,8 +95,8 @@ impl<R: Send + Sync + 'static> Service<R> {
     /// the command is rejected with `HandlerError::GuardRejected`.
     pub fn command_guarded<G, F>(mut self, name: &str, guard: G, handler: F) -> Self
     where
-        G: Fn(&Context<R>) -> bool + Send + Sync + 'static,
-        F: Fn(&Context<R>) -> Result<Value, HandlerError> + Send + Sync + 'static,
+        G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
+        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
     {
         self.handlers.insert(
             name.to_string(),
@@ -105,7 +123,7 @@ impl<R: Send + Sync + 'static> Service<R> {
             .get(command)
             .ok_or_else(|| HandlerError::UnknownCommand(command.to_string()))?;
 
-        let ctx = Context::new(command.to_string(), input, session, &self.repo);
+        let ctx = Context::new(command.to_string(), input, session, &self.dependencies);
 
         // Run guard if present
         if let Some(guard) = &handler.guard {
@@ -150,9 +168,33 @@ impl<R: Send + Sync + 'static> Service<R> {
         self.handlers.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Get a reference to the repository.
-    pub fn repo(&self) -> &R {
-        &self.repo
+    /// Get a reference to the service dependencies.
+    pub fn dependencies(&self) -> &D {
+        &self.dependencies
+    }
+
+    /// Get the aggregate repository for services whose dependencies expose one.
+    pub fn repo(&self) -> &D::Repo
+    where
+        D: HasRepo,
+    {
+        self.dependencies.repo()
+    }
+
+    /// Get the read-model store for services whose dependencies expose one.
+    pub fn read_model_store(&self) -> &D::ReadModelStore
+    where
+        D: HasReadModelStore,
+    {
+        self.dependencies.read_model_store()
+    }
+}
+
+impl<R: Send + Sync + 'static, S: Send + Sync + 'static> Service<RepoReadModelDependencies<R, S>> {
+    /// Create a service whose handlers need both an aggregate repository and a
+    /// read-model store.
+    pub fn with_repo_and_read_model_store(repo: R, read_model_store: S) -> Self {
+        Self::new(RepoReadModelDependencies::new(repo, read_model_store))
     }
 }
 
@@ -259,14 +301,14 @@ impl Drop for TransportHandle {
 /// let stats = handle.stop()?;
 /// ```
 #[cfg(feature = "bus")]
-pub fn listen<R, L>(
-    service: std::sync::Arc<Service<R>>,
+pub fn listen<D, L>(
+    service: std::sync::Arc<Service<D>>,
     queue_name: &str,
     listener: L,
     poll_interval: std::time::Duration,
 ) -> TransportHandle
 where
-    R: Send + Sync + 'static,
+    D: Send + Sync + 'static,
     L: crate::bus::Listener + 'static,
 {
     let queue_name = queue_name.to_string();
@@ -332,13 +374,13 @@ where
 /// let stats = handle.stop()?;
 /// ```
 #[cfg(feature = "bus")]
-pub fn subscribe<R, S>(
-    service: std::sync::Arc<Service<R>>,
+pub fn subscribe<D, S>(
+    service: std::sync::Arc<Service<D>>,
     subscriber: S,
     poll_interval: std::time::Duration,
 ) -> TransportHandle
 where
-    R: Send + Sync + 'static,
+    D: Send + Sync + 'static,
     S: crate::bus::Subscriber + 'static,
 {
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();

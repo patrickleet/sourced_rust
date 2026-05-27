@@ -39,7 +39,7 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
     Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite, StreamIdentity,
@@ -120,12 +120,11 @@ pub use read_model::{
     ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
     ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
     ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
-    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,
-    ReadModelSession, ReadModelSessionStore, ReadModelSessionUnitOfWork, ReadModelStore,
-    ReadModelUnitOfWorkExt, ReadModelWritePlan, ReadModelsExt, RelationalReadModel,
-    RelationalReadModelIncludes, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind,
-    RowKey, RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
-    DEFAULT_READ_MODEL_VERSION_COLUMN,
+    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification, ReadModelStore,
+    ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder,
+    ReadModelWritePlanStore, ReadModelsExt, RelationalReadModel, RelationalReadModelIncludes,
+    RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowMutation,
+    RowPatch, RowValue, RowValues, RowWriteMode, Versioned, DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 
 // Neutral table/row primitives shared by read models and operational tables.
@@ -141,7 +140,7 @@ pub use table::{
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates
 pub use commit_builder::{
-    CommitBuilder, CommitBuilderExt, ReadModelSessionCommitExt, StagedCommitBuilder,
+    CommitBuilder, CommitBuilderExt, ReadModelWritePlanCommitExt, StagedCommitBuilder,
 };
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration

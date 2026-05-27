@@ -14,7 +14,7 @@ use crate::repository::{Commit, CommitBatch, RepositoryError, TransactionalCommi
 use super::session::document_key;
 use super::{
     ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
-    ReadModelSessionStore, ReadModelStore, ReadModelWritePlan, Versioned,
+    ReadModelStore, ReadModelWritePlan, ReadModelWritePlanStore, Versioned,
 };
 
 /// A `ReadModelStore` wrapper that provides per-instance locking.
@@ -259,7 +259,7 @@ impl<S: TransactionalCommit, L: LockManager> TransactionalCommit for QueuedReadM
     }
 }
 
-impl<S: ReadModelSessionStore, L: LockManager> ReadModelSessionStore
+impl<S: ReadModelWritePlanStore, L: LockManager> ReadModelWritePlanStore
     for QueuedReadModelStore<S, L>
 {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {

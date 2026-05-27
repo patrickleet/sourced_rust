@@ -11,7 +11,7 @@ use std::time::Duration;
 use aggregate::Counter;
 use sourced_rust::{
     AggregateBuilder, CommitBuilderExt, HashMapRepository, OutboxMessage, QueuedReadModelStore,
-    ReadModelSession, ReadModelStore, ReadModelsExt, ReadOpts,
+    ReadModelStore, ReadModelWritePlanBuilder, ReadModelsExt, ReadOpts,
 };
 use views::{CounterView, UserCountersIndexView};
 
@@ -243,7 +243,7 @@ fn commit_all_without_aggregate() {
 fn standalone_session_commit_and_primary_key_read() {
     let repo = HashMapRepository::new();
     let view = CounterView::new("session-standalone", "Session", "user-session");
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session.document(&view).unwrap();
 
     let outcome = session.commit(&repo).unwrap();
@@ -271,10 +271,10 @@ fn read_models_session_commits_with_aggregate() {
 
     let mut view = CounterView::new("counter-session", "Session Commit", "user-session");
     view.set_value(counter.value());
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session.document(&view).unwrap();
 
-    sourced_rust::ReadModelSessionCommitExt::read_models(&repo, session)
+    sourced_rust::ReadModelWritePlanCommitExt::read_models(&repo, session)
         .commit(&mut counter)
         .unwrap();
 

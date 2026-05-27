@@ -146,7 +146,7 @@ pub trait AsyncReadModelStore: Send + Sync {
 }
 
 /// Async adapter contract for committing read-model write plans.
-pub trait AsyncReadModelSessionStore: Send + Sync {
+pub trait AsyncReadModelWritePlanStore: Send + Sync {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities;
 
     fn commit_write_plan_async(

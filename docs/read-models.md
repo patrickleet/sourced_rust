@@ -8,9 +8,9 @@ The current implementation keeps these paths explicit:
 
 | Path | API | Use when |
 |---|---|---|
-| Document rows | `ReadModelStore`, `.readmodel(&view)`, `ReadModelSession::document` | Whole-view JSON documents backed by a document payload column |
-| Relational write mapping | `RelationalReadModel`, `ReadModelSession`, `ReadModelWritePlan` | Normalized tables, composite keys, foreign keys, JSONB columns |
-| Explicit relationship includes | `store.session().load(...).include(...).one()`, `save_changes` | Internal primary-key reads with declared one-level relationships |
+| Document rows | `ReadModelStore`, `.readmodel(&view)`, `ReadModelWritePlanBuilder::document` | Whole-view JSON documents backed by a document payload column |
+| Relational write mapping | `RelationalReadModel`, `ReadModelWritePlanBuilder`, `ReadModelWritePlan` | Normalized tables, composite keys, foreign keys, JSONB columns |
+| Explicit relationship includes | `store.workspace().load(...).include(...).one()`, `sync` | Internal primary-key reads with declared one-level relationships |
 | Schema lifecycle | `ReadModelSchemaRegistry`, `ReadModelSchemaAdapter` | Migration artifact generation, startup verification, explicit dev/test bootstrap |
 
 ## Document Read Models
@@ -100,7 +100,7 @@ pub struct PlayerWeaponView {
 
 The derive emits `RelationalReadModel` metadata, row conversion, primary-key
 metadata, JSONB column metadata, indexes, and an adapter-owned version column.
-Composite and delegated keys are represented in the schema and in session row
+Composite and delegated keys are represented in the schema and in write-plan row
 mutations.
 
 Use `#[index]` or `#[index("index_name")]` for a secondary field index. Use
@@ -113,17 +113,17 @@ For compound indexes, put `#[index(columns = ["field_a", "field_b"])]` or
 
 Relationship includes are primary-key anchored and opt-in. Register the
 relational schemas with an adapter, load one root row, ask for each relationship
-explicitly, mutate the hydrated struct, then save the tracked changes:
+explicitly, mutate the hydrated struct, then sync the tracked workspace:
 
 ```rust
-use sourced_rust::{InMemoryReadModelStore, ReadModelUnitOfWorkExt, RowKey, RowValue};
+use sourced_rust::{InMemoryReadModelStore, ReadModelWorkspaceExt, RowKey, RowValue};
 
 let store = InMemoryReadModelStore::new();
 store.register_schema::<PlayerView>()?;
 store.register_schema::<PlayerWeaponView>()?;
 
-let mut read_models = store.session();
-let mut player = read_models
+let mut workspace = store.workspace();
+let mut player = workspace
     .load::<PlayerView>(RowKey::new([("player_id", RowValue::String("player-1".into()))]))
     .include("weapons")
     .one()?
@@ -137,14 +137,14 @@ player.weapons.push(PlayerWeaponView {
     acquired_at: "2026-05-23".into(),
 });
 
-read_models.save_changes(player)?;
-read_models.commit()?;
+workspace.sync(player)?;
+workspace.commit()?;
 ```
 
 `has_many` relationships hydrate `Vec<T>` fields. `belongs_to` relationships
 hydrate `Option<T>` fields.
 
-`save_changes` makes storage match the struct: added items are inserted, changed
+`sync` makes storage match the struct: added items are inserted, changed
 items updated, and **removed items deleted**. For an included `has_many`
 collection, dropping a child from the `Vec<T>` deletes that child row (the loaded
 collection is the complete owned set, so the struct is the source of truth).
@@ -163,15 +163,16 @@ for normalized Postgres read models.
 
 ## Command-Side Atomic Writes
 
-Use `ReadModelSession` when a command or projector stages multiple document or
-normalized row mutations. The current repository APIs are synchronous:
+Use `ReadModelWritePlanBuilder` when a command or projector stages multiple
+document or normalized row mutations. The current repository APIs are
+synchronous:
 
 ```rust
-use sourced_rust::{ReadModelSession, ReadModelSessionCommitExt};
+use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 
-let mut read_models = ReadModelSession::new();
-read_models.save(&player)?;
-read_models.save_related(&player, "weapons", &weapon)?;
+let mut read_models = ReadModelWritePlanBuilder::new();
+read_models.upsert(&player)?;
+read_models.upsert_related(&player, "weapons", &weapon)?;
 
 repo.read_models(read_models).commit(&mut aggregate)?;
 ```
@@ -207,18 +208,18 @@ repo.readmodel(&board_view).commit(&mut game)?;
 
 ## Standalone Distributed Projectors
 
-A read-model service can commit a session without owning an aggregate
+A read-model service can commit a write plan without owning an aggregate
 repository:
 
 ```rust
-use sourced_rust::{ReadModelError, ReadModelSession, ReadModelSessionStore};
+use sourced_rust::{ReadModelError, ReadModelWritePlanBuilder, ReadModelWritePlanStore};
 
 fn project_message(
-    store: &impl ReadModelSessionStore,
+    store: &impl ReadModelWritePlanStore,
     event_id: &str,
     view: &GameView,
 ) -> Result<(), ReadModelError> {
-    let mut read_models = ReadModelSession::new();
+    let mut read_models = ReadModelWritePlanBuilder::new();
     read_models
         .document(view)?
         .mark_processed("game-view-projector", event_id);

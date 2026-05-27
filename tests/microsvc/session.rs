@@ -2,12 +2,11 @@
 
 use serde_json::json;
 use sourced_rust::microsvc::{HandlerError, Service, Session};
-use sourced_rust::HashMapRepository;
 use std::collections::HashMap;
 
 #[test]
 fn handler_accesses_user_id() {
-    let service = Service::new(HashMapRepository::new()).command("whoami", |ctx| {
+    let service = Service::new(()).command("whoami", |ctx| {
         let user_id = ctx.user_id()?;
         Ok(json!({ "user_id": user_id }))
     });
@@ -22,7 +21,7 @@ fn handler_accesses_user_id() {
 
 #[test]
 fn missing_user_id_returns_unauthorized() {
-    let service = Service::new(HashMapRepository::new()).command("whoami", |ctx| {
+    let service = Service::new(()).command("whoami", |ctx| {
         let _user_id = ctx.user_id()?;
         Ok(json!({}))
     });

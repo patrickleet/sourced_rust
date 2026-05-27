@@ -7,8 +7,10 @@ use sourced_rust::InMemoryReadModelStore;
 
 use super::handlers::{self, ProjectionMessage};
 
-type ProjectionGuard = fn(&Context<InMemoryReadModelStore>) -> bool;
-type ProjectionHandler = fn(&Context<InMemoryReadModelStore>) -> Result<Value, HandlerError>;
+pub type ProjectionDependencies = InMemoryReadModelStore;
+
+type ProjectionGuard = fn(&Context<ProjectionDependencies>) -> bool;
+type ProjectionHandler = fn(&Context<ProjectionDependencies>) -> Result<Value, HandlerError>;
 
 pub struct ProjectionSubscriber<S> {
     inner: S,
@@ -41,8 +43,8 @@ where
     }
 }
 
-pub fn service(store: InMemoryReadModelStore) -> Arc<Service<InMemoryReadModelStore>> {
-    let service = Service::new(store);
+pub fn service(store: InMemoryReadModelStore) -> Arc<Service<ProjectionDependencies>> {
+    let service = Service::with_read_model_store(store);
     let service = register_handler_events(
         service,
         handlers::checkout::EVENTS,
@@ -71,11 +73,11 @@ pub fn projects(event_type: &str) -> bool {
 }
 
 fn register_handler_events(
-    mut service: Service<InMemoryReadModelStore>,
+    mut service: Service<ProjectionDependencies>,
     events: &[&str],
     guard: ProjectionGuard,
     handle: ProjectionHandler,
-) -> Service<InMemoryReadModelStore> {
+) -> Service<ProjectionDependencies> {
     for event in events {
         service = service.command_guarded(event, guard, handle);
     }
