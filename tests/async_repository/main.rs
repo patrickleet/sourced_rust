@@ -3,10 +3,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelSessionStore, AsyncReadModelStore, AsyncSnapshotStore,
+    AsyncOutboxStore, AsyncReadModelStore, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
     AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, EventRecord,
     HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel,
-    ReadModelSession, ReadModelWritePlan, RepositoryError, SnapshotRecord, Snapshottable,
+    ReadModelWritePlan, ReadModelWritePlanBuilder, RepositoryError, SnapshotRecord, Snapshottable,
     StreamIdentity,
 };
 
@@ -189,7 +189,7 @@ async fn read_model_session_can_commit_against_async_store() {
         id: "view-1".into(),
         value: 42,
     };
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     session
         .document(&view)
         .unwrap()

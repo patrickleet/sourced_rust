@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelError, ReadModelMutation, ReadModelSession, ReadModelUnitOfWorkExt, RowKey, RowPatch,
-    RowValue, RowWriteMode, Versioned,
+    ReadModelError, ReadModelMutation, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey,
+    RowPatch, RowValue, RowWriteMode, Versioned,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -61,7 +61,7 @@ fn account_key(account_id: &str) -> RowKey {
 
 #[test]
 fn session_stages_multiple_read_model_types_in_deterministic_plan() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let weapon = PlayerWeapon {
         player_id: "player-1".into(),
         weapon_id: "sword".into(),
@@ -69,7 +69,7 @@ fn session_stages_multiple_read_model_types_in_deterministic_plan() {
     };
     let account = AccountSummary::new("acct-1");
 
-    session.save(&weapon).unwrap().save(&account).unwrap();
+    session.upsert(&weapon).unwrap().upsert(&account).unwrap();
 
     let plan = session.into_write_plan().unwrap();
 
@@ -80,13 +80,13 @@ fn session_stages_multiple_read_model_types_in_deterministic_plan() {
 
 #[test]
 fn write_plan_contains_document_and_relational_rows_only() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let account = AccountSummary::new("acct-1");
 
     session
         .document(&account)
         .unwrap()
-        .save(&account)
+        .upsert(&account)
         .unwrap()
         .delete::<AccountSummary>(account_key("acct-2"))
         .unwrap();
@@ -100,11 +100,11 @@ fn write_plan_contains_document_and_relational_rows_only() {
 
 #[test]
 fn sparse_patches_and_full_replacements_are_distinct() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let account = AccountSummary::new("acct-1");
     let patch = RowPatch::new().set("owner", RowValue::Null);
 
-    session.save(&account).unwrap();
+    session.upsert(&account).unwrap();
     session
         .patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
@@ -128,7 +128,7 @@ fn sparse_patches_and_full_replacements_are_distinct() {
 
 #[test]
 fn insert_and_upsert_patch_carry_explicit_missing_row_behavior() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let account = AccountSummary::new("acct-1");
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
 
@@ -164,14 +164,14 @@ fn insert_missing_patch_builds_full_row_from_key_before_insert() {
             "counters_by_game",
             RowValue::Json(serde_json::json!({"deposits": 1})),
         );
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
     session.commit(&store).unwrap();
 
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let loaded = read_models
         .load::<AccountSummary>(account_key("acct-1"))
         .one()
@@ -192,7 +192,7 @@ fn insert_missing_patch_rejects_primary_key_mismatch() {
         .set("balance_cents", RowValue::I64(250))
         .set("deposit_count", RowValue::U64(2))
         .set("counters_by_game", RowValue::Json(serde_json::json!({})));
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
@@ -209,7 +209,7 @@ fn insert_missing_patch_rejects_partial_new_row() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<AccountSummary>().unwrap();
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
@@ -220,7 +220,7 @@ fn insert_missing_patch_rejects_partial_new_row() {
         matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
     );
 
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let loaded = read_models
         .load::<AccountSummary>(account_key("acct-1"))
         .one()
@@ -231,13 +231,13 @@ fn insert_missing_patch_rejects_partial_new_row() {
 #[test]
 fn existing_patch_rejects_primary_key_mismatch() {
     let store = InMemoryReadModelStore::new();
-    let mut setup = ReadModelSession::new();
-    setup.save(&AccountSummary::new("acct-1")).unwrap();
+    let mut setup = ReadModelWritePlanBuilder::new();
+    setup.upsert(&AccountSummary::new("acct-1")).unwrap();
     setup.commit(&store).unwrap();
     let patch = RowPatch::new()
         .set("account_id", RowValue::String("acct-2".into()))
         .set("owner", RowValue::String("Grace".into()));
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
     session
         .patch::<AccountSummary>(account_key("acct-1"), patch)
@@ -261,9 +261,9 @@ fn relationship_operation_populates_child_foreign_key_in_explicit_row_mutation()
         weapon_id: "sword".into(),
         acquired_at: "2026-05-23T00:00:00Z".into(),
     };
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
-    session.save_related(&player, "weapons", &weapon).unwrap();
+    session.upsert_related(&player, "weapons", &weapon).unwrap();
 
     let plan = session.into_write_plan().unwrap();
 
@@ -289,12 +289,12 @@ fn expected_versions_and_processed_messages_are_carried_into_plan() {
         version: 7,
     };
     account.balance_cents = 250;
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
 
     session
         .track_loaded(&loaded)
         .unwrap()
-        .save(&account)
+        .upsert(&account)
         .unwrap()
         .mark_processed("account-projection", "message-1");
 
@@ -313,7 +313,7 @@ fn expected_versions_and_processed_messages_are_carried_into_plan() {
 
 #[test]
 fn load_requests_validate_primary_keys_and_explicit_relationship_includes() {
-    let session = ReadModelSession::new();
+    let session = ReadModelWritePlanBuilder::new();
 
     let request = session
         .load_with::<Player, _, _>(
@@ -336,7 +336,7 @@ fn load_requests_validate_primary_keys_and_explicit_relationship_includes() {
 
 #[test]
 fn validation_failures_happen_before_storage_writes() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let patch = RowPatch::new().set("balance_cents", RowValue::Null);
 
     session
@@ -350,7 +350,7 @@ fn validation_failures_happen_before_storage_writes() {
 
 #[test]
 fn write_plan_validation_reports_unsupported_adapter_capabilities() {
-    let mut session = ReadModelSession::new();
+    let mut session = ReadModelWritePlanBuilder::new();
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
     session
         .patch::<AccountSummary>(account_key("acct-1"), patch)

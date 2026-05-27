@@ -16,12 +16,12 @@ use super::{
     ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities,
     ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
     ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelSchemaRegistry, ReadModelSessionStore, ReadModelStore, ReadModelWritePlan,
+    ReadModelSchemaRegistry, ReadModelStore, ReadModelWritePlan, ReadModelWritePlanStore,
     RelationalReadModel, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey,
     RowValue, RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
-    AsyncReadModelSessionStore, AsyncReadModelStore, AsyncRelationalReadModelQueryStore,
+    AsyncReadModelStore, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
 };
 
 /// Internal stored representation of a read model.
@@ -420,7 +420,7 @@ impl InMemoryReadModelStore {
     }
 }
 
-impl ReadModelSessionStore for InMemoryReadModelStore {
+impl ReadModelWritePlanStore for InMemoryReadModelStore {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         relational_capabilities()
     }
@@ -470,16 +470,16 @@ impl ReadModelSessionStore for InMemoryReadModelStore {
     }
 }
 
-impl AsyncReadModelSessionStore for InMemoryReadModelStore {
+impl AsyncReadModelWritePlanStore for InMemoryReadModelStore {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        ReadModelSessionStore::read_model_capabilities(self)
+        ReadModelWritePlanStore::read_model_capabilities(self)
     }
 
     fn commit_write_plan_async(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move { ReadModelSessionStore::commit_write_plan(self, plan) }
+        async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
     }
 
     fn is_processed_async<'a>(
@@ -487,7 +487,7 @@ impl AsyncReadModelSessionStore for InMemoryReadModelStore {
         consumer_name: &'a str,
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
-        async move { ReadModelSessionStore::is_processed(self, consumer_name, message_id) }
+        async move { ReadModelWritePlanStore::is_processed(self, consumer_name, message_id) }
     }
 }
 

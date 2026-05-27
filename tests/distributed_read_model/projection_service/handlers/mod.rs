@@ -7,7 +7,9 @@ pub mod seat;
 use serde::{Deserialize, Serialize};
 use sourced_rust::bus::Event;
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{InMemoryReadModelStore, ReadModelError};
+use sourced_rust::ReadModelError;
+
+use crate::projection_service::ProjectionDependencies;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectionMessage {
@@ -39,7 +41,7 @@ impl From<ProjectionMessage> for Event {
     }
 }
 
-pub fn event(ctx: &Context<InMemoryReadModelStore>) -> Result<Event, HandlerError> {
+pub fn event(ctx: &Context<ProjectionDependencies>) -> Result<Event, HandlerError> {
     Ok(ctx.input::<ProjectionMessage>()?.into())
 }
 

@@ -1,8 +1,8 @@
 //! microsvc — Convention-based microservice command handler framework.
 //!
 //! Build microservices by registering command handlers on a `Service`.
-//! Each handler receives a `Context<R>` with access to the input payload,
-//! session variables, and the repository.
+//! Each handler receives a `Context<D>` with access to the input payload,
+//! session variables, and the service dependencies.
 //!
 //! ## Quick Start
 //!
@@ -12,7 +12,7 @@
 //! use serde_json::json;
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::new(HashMapRepository::new())
+//!     microsvc::Service::with_repo(HashMapRepository::new())
 //!         .command("order.create", |ctx| {
 //!             let input = ctx.input::<CreateOrderInput>()?;
 //!             Ok(json!({ "id": input.id }))
@@ -35,13 +35,15 @@
 //!
 //! pub const COMMAND: &str = "order.create";
 //!
-//! pub fn guard<R>(ctx: &microsvc::Context<R>) -> bool {
+//! pub fn guard<D>(ctx: &microsvc::Context<D>) -> bool {
 //!     ctx.has_fields(&["id", "product_id"])
 //! }
 //!
-//! pub fn handle<R: GetAggregate + CommitAggregate>(
-//!     ctx: &microsvc::Context<R>,
-//! ) -> Result<Value, microsvc::HandlerError> {
+//! pub fn handle<D>(ctx: &microsvc::Context<D>) -> Result<Value, microsvc::HandlerError>
+//! where
+//!     D: microsvc::HasRepo,
+//!     D::Repo: CommitAggregate,
+//! {
 //!     let input = ctx.input::<CreateOrderInput>()?;
 //!     let mut order = Order::default();
 //!     order.create(input.id);
@@ -51,11 +53,16 @@
 //! ```
 
 mod context;
+mod dependencies;
 mod error;
 mod service;
 mod session;
 
 pub use context::Context;
+pub use dependencies::{
+    HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
+    RepoReadModelDependencies,
+};
 pub use error::HandlerError;
 pub use service::{CommandRequest, CommandResponse, Service};
 pub use session::Session;
@@ -86,7 +93,7 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 /// # Example
 /// ```ignore
 /// let service = sourced_rust::register_handlers!(
-///     microsvc::Service::new(HashMapRepository::new()),
+///     microsvc::Service::with_repo(HashMapRepository::new()),
 ///     handlers::counter_create,
 ///     handlers::counter_increment,
 /// );

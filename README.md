@@ -90,7 +90,7 @@ Each handler is a module with `COMMAND`, `guard`, and `handle`:
 // handlers/todo_create.rs
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
+use sourced_rust::microsvc::{Context, HandlerError, HasRepo};
 use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
 
 pub const COMMAND: &str = "todo.create";
@@ -98,11 +98,15 @@ pub const COMMAND: &str = "todo.create";
 #[derive(Deserialize)]
 struct Input { id: String, user_id: String, task: String }
 
-pub fn guard<R>(ctx: &Context<R>) -> bool {
+pub fn guard<D>(ctx: &Context<D>) -> bool {
     ctx.has_fields(&["id", "user_id", "task"])
 }
 
-pub fn handle<R: Repository + Clone>(ctx: &Context<R>) -> Result<Value, HandlerError> {
+pub fn handle<D>(ctx: &Context<D>) -> Result<Value, HandlerError>
+where
+    D: HasRepo,
+    D::Repo: Repository + Clone,
+{
     let input = ctx.input::<Input>()?;
     let repo = ctx.repo().clone().aggregate::<Todo>();
 
@@ -126,7 +130,7 @@ use sourced_rust::{microsvc, HashMapRepository, Queueable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(sourced_rust::register_handlers!(
-        microsvc::Service::new(HashMapRepository::new().queued()),
+        microsvc::Service::with_repo(HashMapRepository::new().queued()),
         handlers::todo_create,
         handlers::todo_complete,
     ));
@@ -929,11 +933,11 @@ let _stats = worker.stop()?;
 
 ## Microservice Framework (`microsvc`)
 
-The `microsvc` module provides a convention-based command handler framework for building microservices. Register command handlers on a `Service<R>`, then expose them over HTTP, bus transports, or direct dispatch.
+The `microsvc` module provides a convention-based command handler framework for building microservices. Register command handlers on a `Service<D>`, then expose them over HTTP, bus transports, or direct dispatch.
 
 ### Defining a Service
 
-A `Service<R>` is generic over a repository type. Register commands with closures or handler modules:
+A `Service<D>` is generic over a dependency type. Use `Service::with_repo` for aggregate command handlers, `Service::with_read_model_store` for projection handlers, and `Service::with_repo_and_read_model_store` when a handler genuinely needs both:
 
 ```rust
 use std::sync::Arc;
@@ -941,7 +945,7 @@ use sourced_rust::{microsvc, HashMapRepository, AggregateBuilder, Queueable};
 use serde_json::json;
 
 let service = Arc::new(
-    microsvc::Service::new(HashMapRepository::new().queued())
+    microsvc::Service::with_repo(HashMapRepository::new().queued())
         .command("counter.create", |ctx| {
             let input = ctx.input::<CreateCounter>()?;
             let counter_repo = ctx.repo().clone().aggregate::<Counter>();
@@ -978,7 +982,7 @@ Add input validation with `command_guarded`. The guard runs before the handler �
 use serde_json::json;
 use sourced_rust::{microsvc, HashMapRepository, Queueable};
 
-let service = microsvc::Service::new(HashMapRepository::new().queued())
+let service = microsvc::Service::with_repo(HashMapRepository::new().queued())
     .command_guarded(
         "admin.reset",
         |ctx| ctx.role() == Some("admin"),
@@ -994,6 +998,7 @@ For larger services, organize handlers into separate files following a conventio
 // src/handlers/counter_create.rs
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sourced_rust::microsvc::HasRepo;
 use sourced_rust::{microsvc, AggregateBuilder, Repository};
 
 pub const COMMAND: &str = "counter.create";
@@ -1003,13 +1008,15 @@ struct Input {
     id: String,
 }
 
-pub fn guard<R>(ctx: &microsvc::Context<R>) -> bool {
+pub fn guard<D>(ctx: &microsvc::Context<D>) -> bool {
     ctx.has_fields(&["id"])
 }
 
-pub fn handle<R: Repository + Clone>(
-    ctx: &microsvc::Context<R>,
-) -> Result<Value, microsvc::HandlerError> {
+pub fn handle<D>(ctx: &microsvc::Context<D>) -> Result<Value, microsvc::HandlerError>
+where
+    D: HasRepo,
+    D::Repo: Repository + Clone,
+{
     let input = ctx.input::<Input>()?;
     let counter_repo = ctx.repo().clone().aggregate::<Counter>();
     let mut counter = Counter::default();
@@ -1023,7 +1030,7 @@ Register them with the `register_handlers!` macro:
 
 ```rust
 let service = sourced_rust::register_handlers!(
-    microsvc::Service::new(HashMapRepository::new().queued()),
+    microsvc::Service::with_repo(HashMapRepository::new().queued()),
     handlers::counter_create,
     handlers::counter_increment,
 );
@@ -1039,7 +1046,7 @@ use serde_json::json;
 use sourced_rust::{microsvc, HashMapRepository, Queueable};
 
 let service = Arc::new(
-    microsvc::Service::new(HashMapRepository::new().queued())
+    microsvc::Service::with_repo(HashMapRepository::new().queued())
         .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
 );
 
@@ -1083,7 +1090,7 @@ use serde_json::json;
 use sourced_rust::{microsvc, HashMapRepository, Queueable};
 
 let service = Arc::new(
-    microsvc::Service::new(HashMapRepository::new().queued())
+    microsvc::Service::with_repo(HashMapRepository::new().queued())
         .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
 );
 
@@ -1132,7 +1139,7 @@ use sourced_rust::{microsvc, bus::{InMemoryQueue, Sender, Event}, HashMapReposit
 
 let queue = InMemoryQueue::new();
 let service = Arc::new(
-    microsvc::Service::new(HashMapRepository::new().queued())
+    microsvc::Service::with_repo(HashMapRepository::new().queued())
         .command("counter.create", |ctx| { /* ... */ Ok(json!({ "id": "c1" })) })
 );
 
@@ -1163,7 +1170,7 @@ A single service can handle commands from multiple transports simultaneously —
 
 ```rust
 let service = Arc::new(
-    microsvc::Service::new(HashMapRepository::new().queued())
+    microsvc::Service::with_repo(HashMapRepository::new().queued())
         .command("counter.create", |ctx| { /* ... */ Ok(json!({})) })
 );
 
@@ -1194,7 +1201,7 @@ microsvc::serve(service.clone(), "0.0.0.0:3000").await?;
 
 ## Read Models
 
-Read models are query-optimized projections derived from aggregates, event records, or published messages. Document read models store a whole view in a document payload column; normalized relational read models use table metadata plus `ReadModelSession` write plans.
+Read models are query-optimized projections derived from aggregates, event records, or published messages. Document read models store a whole view in a document payload column; normalized relational read models use table metadata plus `ReadModelWritePlanBuilder` write plans.
 
 ### Defining a Read Model
 
@@ -1231,22 +1238,22 @@ repo.readmodel(&view).commit(&mut game)?;
 // Return `view` to the client — it reflects the committed state
 ```
 
-For relational read models, stage structured row mutations in a session:
+For relational read models, build a structured read-model write plan:
 
 ```rust
-use sourced_rust::{ReadModelSession, ReadModelSessionCommitExt};
+use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 
-let mut read_models = ReadModelSession::new();
-read_models.save(&player_view)?;
-read_models.save_related(&player_view, "weapons", &weapon_view)?;
+let mut read_models = ReadModelWritePlanBuilder::new();
+read_models.upsert(&player_view)?;
+read_models.upsert_related(&player_view, "weapons", &weapon_view)?;
 
 repo.read_models(read_models).commit(&mut game)?;
 ```
 
-Distributed projectors can commit the same session shape directly against a read-model adapter and mark messages processed in the same adapter transaction:
+Distributed projectors can commit the same write-plan shape directly against a read-model adapter and mark messages processed in the same adapter transaction:
 
 ```rust
-let mut read_models = ReadModelSession::new();
+let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.document(&view)?.mark_processed("game-view-projector", event_id);
 let outcome = read_models.commit(&read_store)?;
 ```
@@ -1255,7 +1262,7 @@ This is a deliberate consistency tradeoff. The read model is in sync with the ag
 
 Bomberman `BoardView` remains a document-row example backed by a whole-view payload, not a normalized relational ORM example.
 
-See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, document rows, session commits, schema bootstrap, distributed idempotency, and non-goals.
+See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, document rows, workspace commits, schema bootstrap, distributed idempotency, and non-goals.
 
 ## Snapshots
 

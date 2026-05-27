@@ -4,7 +4,7 @@
 //!
 //! - document rows through [`ReadModelStore`] and collection/id JSON payloads;
 //! - normalized relational rows through [`RelationalReadModel`],
-//!   [`ReadModelSession`], [`ReadModelWritePlan`], and schema metadata.
+//!   [`ReadModelWritePlanBuilder`], [`ReadModelWritePlan`], and schema metadata.
 //!
 //! Document views can use typed key/value CRUD:
 //!
@@ -27,19 +27,19 @@
 //! Relational models stage explicit row mutations:
 //!
 //! ```ignore
-//! use sourced_rust::{ReadModelSession, ReadModelSessionCommitExt};
+//! use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 //!
-//! let mut read_models = ReadModelSession::new();
-//! read_models.save(&player)?;
-//! read_models.save_related(&player, "weapons", &weapon)?;
+//! let mut read_models = ReadModelWritePlanBuilder::new();
+//! read_models.upsert(&player)?;
+//! read_models.upsert_related(&player, "weapons", &weapon)?;
 //! repo.read_models(read_models).commit(&mut aggregate)?;
 //! ```
 //!
-//! Distributed projectors can commit a session directly against a read-model
+//! Distributed projectors can commit a write plan directly against a read-model
 //! adapter and mark messages processed in the same adapter transaction:
 //!
 //! ```ignore
-//! let mut read_models = ReadModelSession::new();
+//! let mut read_models = ReadModelWritePlanBuilder::new();
 //! read_models.document(&view)?.mark_processed("projection", event_id);
 //! let outcome = read_models.commit(&read_store)?;
 //! ```
@@ -143,8 +143,8 @@ pub use session::{
     DeleteRowMutation, DocumentMutation, ExpectedVersion, PatchMode, PatchRowMutation,
     ProcessedMessageMark, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation,
-    ReadModelQueryCapabilities, ReadModelSession, ReadModelSessionStore,
-    ReadModelSessionUnitOfWork, ReadModelUnitOfWorkExt, ReadModelWritePlan,
-    RelationalReadModelQueryStore, RowMutation, RowPatch, RowWriteMode,
+    ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan,
+    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModelQueryStore, RowMutation,
+    RowPatch, RowWriteMode,
 };
 pub use store::ReadModelStore;

@@ -8,7 +8,7 @@ use crate::models::counter::{Counter, CreateCounter, DecrementCounter, Increment
 
 #[test]
 fn full_lifecycle() {
-    let service = Service::new(HashMapRepository::new())
+    let service = Service::with_repo(HashMapRepository::new())
         .command("counter.create", |ctx| {
             let input = ctx.input::<CreateCounter>()?;
             let counter_repo = ctx.repo().clone().aggregate::<Counter>();

@@ -1,49 +1,56 @@
 //! Context passed to command handlers.
 //!
-//! Carries the parsed input, session variables, and a reference to the
-//! repository. Handlers access everything they need through the context.
+//! Carries the parsed input, session variables, and a reference to the service
+//! dependencies. Handlers access everything they need through the context.
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use super::dependencies::{HasReadModelStore, HasRepo};
 use super::error::HandlerError;
 use super::session::Session;
 
 /// The context passed to every command handler.
 ///
-/// Generic over `R` (the repository type) so handlers can access
-/// whatever repository implementation the service is configured with.
+/// Generic over `D` (the service dependency type) so handlers can access the
+/// repository, read-model store, or custom dependencies the service is
+/// configured with.
 ///
 /// ## Example
 ///
 /// ```ignore
-/// pub fn handle<R: GetAggregate + CommitAggregate>(
-///     ctx: &Context<R>,
+/// pub fn handle<D: HasRepo>(
+///     ctx: &Context<D>,
 /// ) -> Result<Value, HandlerError> {
 ///     let user_id = ctx.user_id()?;
 ///     let input = ctx.input::<CreateOrderInput>()?;
-///     // ...
+///     let repo = ctx.repo();
 /// }
 /// ```
-pub struct Context<'a, R> {
+pub struct Context<'a, D> {
     /// The command name being handled.
     command_name: String,
     /// Raw JSON input from the request.
     input: Value,
     /// Session variables (user ID, role, etc.).
     session: Session,
-    /// Reference to the repository.
-    repo: &'a R,
+    /// Reference to the service dependencies.
+    dependencies: &'a D,
 }
 
-impl<'a, R> Context<'a, R> {
+impl<'a, D> Context<'a, D> {
     /// Create a new context.
-    pub(crate) fn new(command_name: String, input: Value, session: Session, repo: &'a R) -> Self {
+    pub(crate) fn new(
+        command_name: String,
+        input: Value,
+        session: Session,
+        dependencies: &'a D,
+    ) -> Self {
         Self {
             command_name,
             input,
             session,
-            repo,
+            dependencies,
         }
     }
 
@@ -80,9 +87,25 @@ impl<'a, R> Context<'a, R> {
         self.session.role()
     }
 
-    /// Get a reference to the repository.
-    pub fn repo(&self) -> &R {
-        self.repo
+    /// Get a reference to the service dependencies.
+    pub fn dependencies(&self) -> &D {
+        self.dependencies
+    }
+
+    /// Get the aggregate repository for handlers whose dependencies expose one.
+    pub fn repo(&self) -> &D::Repo
+    where
+        D: HasRepo,
+    {
+        self.dependencies.repo()
+    }
+
+    /// Get the read-model store for handlers whose dependencies expose one.
+    pub fn read_model_store(&self) -> &D::ReadModelStore
+    where
+        D: HasReadModelStore,
+    {
+        self.dependencies.read_model_store()
     }
 
     /// Check if the raw input contains a field.

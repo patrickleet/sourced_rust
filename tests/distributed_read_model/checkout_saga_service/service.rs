@@ -5,7 +5,7 @@ use sourced_rust::microsvc::Service;
 use super::{handlers, CheckoutRepo};
 
 pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
-    let service = sourced_rust::register_handlers!(Service::new(repo), handlers::start);
+    let service = sourced_rust::register_handlers!(Service::with_repo(repo), handlers::start);
     Arc::new(service.command_guarded(
         handlers::record_seat_reserved::EVENT,
         handlers::record_seat_reserved::guard,

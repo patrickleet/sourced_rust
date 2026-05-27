@@ -4,7 +4,7 @@
 //! organized by service domain under `handlers/`.
 //!
 //! Each service is typed to a specific aggregate via
-//! `Service::new(repo.queued().aggregate::<T>())`, so handlers access
+//! `Service::with_repo(repo.queued().aggregate::<T>())`, so handlers access
 //! `ctx.repo().get()`, `ctx.repo().commit()`, etc. directly.
 //!
 //! Two tests:
@@ -45,7 +45,7 @@ use super::order::{Inventory, Order, OrderFulfillmentSaga, OrderStatus, Payment,
 #[test]
 fn saga_orchestrated() {
     let saga_svc = sourced_rust::register_handlers!(
-        Service::new(
+        Service::with_repo(
             HashMapRepository::new()
                 .queued()
                 .aggregate::<OrderFulfillmentSaga>()
@@ -58,19 +58,19 @@ fn saga_orchestrated() {
     );
 
     let order_svc = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued().aggregate::<Order>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Order>()),
         handlers::orders::create,
         handlers::orders::complete,
     );
 
     let inventory_svc = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued().aggregate::<Inventory>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Inventory>()),
         handlers::inventory::init,
         handlers::inventory::reserve,
     );
 
     let payment_svc = sourced_rust::register_handlers!(
-        Service::new(HashMapRepository::new().queued().aggregate::<Payment>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Payment>()),
         handlers::payments::process,
     );
 
@@ -242,7 +242,7 @@ fn saga_distributed() {
     let saga_worker =
         OutboxWorkerThread::spawn_routed(saga_repo.outbox_store(), queue.clone(), poll);
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::new(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
+        Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         handlers::saga::start,
         handlers::saga::on_order_created,
         handlers::saga::on_inventory_reserved,
@@ -256,7 +256,7 @@ fn saga_distributed() {
     let order_worker =
         OutboxWorkerThread::spawn_routed(order_repo.outbox_store(), queue.clone(), poll);
     let order_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::new(order_repo.queued().aggregate::<Order>()),
+        Service::with_repo(order_repo.queued().aggregate::<Order>()),
         handlers::orders::create,
         handlers::orders::complete,
     ));
@@ -276,7 +276,7 @@ fn saga_distributed() {
     }
 
     let inventory_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::new(inventory_repo.queued().aggregate::<Inventory>()),
+        Service::with_repo(inventory_repo.queued().aggregate::<Inventory>()),
         handlers::inventory::init,
         handlers::inventory::reserve,
     ));
@@ -288,7 +288,7 @@ fn saga_distributed() {
     let payment_worker =
         OutboxWorkerThread::spawn_routed(payment_repo.outbox_store(), queue.clone(), poll);
     let payment_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::new(payment_repo.queued().aggregate::<Payment>()),
+        Service::with_repo(payment_repo.queued().aggregate::<Payment>()),
         handlers::payments::process,
     ));
     let payment_listen = microsvc::listen(payment_svc.clone(), "payments", queue.clone(), poll);

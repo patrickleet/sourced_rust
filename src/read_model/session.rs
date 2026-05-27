@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use serde::Serialize;
 
-use crate::repository::AsyncReadModelSessionStore;
+use crate::repository::AsyncReadModelWritePlanStore;
 
 use super::{
     ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
@@ -93,8 +93,8 @@ impl ReadModelCommitOutcome {
     }
 }
 
-/// Adapter contract for committing read-model sessions without an aggregate repository.
-pub trait ReadModelSessionStore: Send + Sync {
+/// Adapter contract for committing read-model write plans without an aggregate repository.
+pub trait ReadModelWritePlanStore: Send + Sync {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities;
 
     fn commit_write_plan(
@@ -417,16 +417,16 @@ struct StagedMutation {
     mutation: ReadModelMutation,
 }
 
-/// Short-lived unit of work that stages read-model mutations before commit.
+/// Detached builder for read-model write plans that are applied at commit.
 #[derive(Clone, Debug, Default)]
-pub struct ReadModelSession {
+pub struct ReadModelWritePlanBuilder {
     mutations: Vec<StagedMutation>,
     processed_messages: Vec<ProcessedMessageMark>,
     expected_versions: BTreeMap<RowIdentity, u64>,
     next_sequence: u64,
 }
 
-impl ReadModelSession {
+impl ReadModelWritePlanBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -514,18 +514,11 @@ impl ReadModelSession {
         )
     }
 
-    pub fn save<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
-    where
-        M: RelationalReadModel,
-    {
-        self.stage_full_row(model, RowWriteMode::Upsert, None)
-    }
-
     pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
     where
         M: RelationalReadModel,
     {
-        self.save(model)
+        self.stage_full_row(model, RowWriteMode::Upsert, None)
     }
 
     pub fn insert_related<P, C>(
@@ -541,7 +534,7 @@ impl ReadModelSession {
         self.stage_related_row(parent, relationship_field, child, RowWriteMode::Insert)
     }
 
-    pub fn save_related<P, C>(
+    pub fn upsert_related<P, C>(
         &mut self,
         parent: &P,
         relationship_field: &str,
@@ -640,14 +633,14 @@ impl ReadModelSession {
 
     pub fn commit<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
     where
-        S: ReadModelSessionStore + ?Sized,
+        S: ReadModelWritePlanStore + ?Sized,
     {
         store.commit_write_plan(self.into_write_plan()?)
     }
 
     pub async fn commit_async<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
     where
-        S: AsyncReadModelSessionStore + ?Sized,
+        S: AsyncReadModelWritePlanStore + ?Sized,
     {
         store.commit_write_plan_async(self.into_write_plan()?).await
     }
@@ -797,21 +790,21 @@ struct TrackedModelBaseline {
     includes: BTreeMap<String, TrackedIncludeBaseline>,
 }
 
-/// Store-bound read-model unit of work for load, mutate, save-changes, commit workflows.
-pub struct ReadModelSessionUnitOfWork<'a, S> {
+/// Store-bound read-model workspace for load, mutate, sync, commit workflows.
+pub struct ReadModelWorkspace<'a, S> {
     store: &'a S,
-    writes: ReadModelSession,
+    writes: ReadModelWritePlanBuilder,
     baselines: Vec<TrackedModelBaseline>,
 }
 
-impl<'a, S> ReadModelSessionUnitOfWork<'a, S>
+impl<'a, S> ReadModelWorkspace<'a, S>
 where
-    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     pub fn new(store: &'a S) -> Self {
         Self {
             store,
-            writes: ReadModelSession::new(),
+            writes: ReadModelWritePlanBuilder::new(),
             baselines: Vec::new(),
         }
     }
@@ -832,7 +825,7 @@ where
         }
     }
 
-    pub fn save_changes<M>(&mut self, model: M) -> Result<&mut Self, ReadModelError>
+    pub fn sync<M>(&mut self, model: M) -> Result<&mut Self, ReadModelError>
     where
         M: RelationalReadModel + RelationalReadModelIncludes,
     {
@@ -853,7 +846,7 @@ where
             .cloned()
             .ok_or_else(|| {
                 ReadModelError::Metadata(format!(
-                    "read model `{}` has no tracked baseline for save_changes",
+                    "read model `{}` has no tracked baseline for sync",
                     schema.model_name
                 ))
             })?;
@@ -875,11 +868,11 @@ where
         Ok(self)
     }
 
-    pub fn save<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
     where
         M: RelationalReadModel,
     {
-        self.writes.save(model)?;
+        self.writes.upsert(model)?;
         Ok(self)
     }
 
@@ -891,6 +884,36 @@ where
         Ok(self)
     }
 
+    pub fn upsert_related<P, C>(
+        &mut self,
+        parent: &P,
+        relationship_field: &str,
+        child: &C,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        self.writes
+            .upsert_related(parent, relationship_field, child)?;
+        Ok(self)
+    }
+
+    pub fn insert_related<P, C>(
+        &mut self,
+        parent: &P,
+        relationship_field: &str,
+        child: &C,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        P: RelationalReadModel,
+        C: RelationalReadModel,
+    {
+        self.writes
+            .insert_related(parent, relationship_field, child)?;
+        Ok(self)
+    }
+
     pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, ReadModelError>
     where
         M: RelationalReadModel,
@@ -899,11 +922,39 @@ where
         Ok(self)
     }
 
+    pub fn upsert_patch<M>(
+        &mut self,
+        key: RowKey,
+        patch: RowPatch,
+    ) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.upsert_patch::<M>(key, patch)?;
+        Ok(self)
+    }
+
     pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, ReadModelError>
     where
         M: RelationalReadModel,
     {
         self.writes.delete::<M>(key)?;
+        Ok(self)
+    }
+
+    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: RelationalReadModel,
+    {
+        self.writes.delete_model(model)?;
+        Ok(self)
+    }
+
+    pub fn document<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    where
+        M: ReadModel,
+    {
+        self.writes.document(model)?;
         Ok(self)
     }
 
@@ -989,7 +1040,7 @@ where
             && current_rows.len() > 1
         {
             return Err(ReadModelError::Metadata(format!(
-                "belongs_to relationship `{}` can save at most one related row",
+                "belongs_to relationship `{}` can sync at most one related row",
                 baseline.relationship.field_name
             )));
         }
@@ -1029,7 +1080,7 @@ where
             }
         }
 
-        // `save_changes` makes storage match the struct: an owned `has_many` child
+        // `sync` makes storage match the struct: an owned `has_many` child
         // dropped from the loaded collection is deleted. `belongs_to` clears never
         // delete the target, which is the owner that other rows may reference.
         if matches!(baseline.relationship.kind, RelationshipKind::HasMany) {
@@ -1108,19 +1159,19 @@ where
 }
 
 /// Builder for one explicit primary-key read-model load.
-pub struct ReadModelLoadBuilder<'session, 'store, S, M>
+pub struct ReadModelLoadBuilder<'workspace, 'store, S, M>
 where
-    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
-    unit: &'session mut ReadModelSessionUnitOfWork<'store, S>,
+    unit: &'workspace mut ReadModelWorkspace<'store, S>,
     key: RowKey,
     includes: Vec<String>,
     _marker: PhantomData<M>,
 }
 
-impl<'session, 'store, S, M> ReadModelLoadBuilder<'session, 'store, S, M>
+impl<'workspace, 'store, S, M> ReadModelLoadBuilder<'workspace, 'store, S, M>
 where
-    S: ReadModelSessionStore + RelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
     M: RelationalReadModel + RelationalReadModelIncludes,
 {
     pub fn include(mut self, relationship: impl Into<String>) -> Self {
@@ -1157,16 +1208,16 @@ where
     }
 }
 
-/// Extension trait that starts a friendly tracked read-model session from a store.
-pub trait ReadModelUnitOfWorkExt:
-    ReadModelSessionStore + RelationalReadModelQueryStore + Sized
+/// Extension trait that starts a tracked read-model workspace from a store.
+pub trait ReadModelWorkspaceExt:
+    ReadModelWritePlanStore + RelationalReadModelQueryStore + Sized
 {
-    fn session(&self) -> ReadModelSessionUnitOfWork<'_, Self> {
-        ReadModelSessionUnitOfWork::new(self)
+    fn workspace(&self) -> ReadModelWorkspace<'_, Self> {
+        ReadModelWorkspace::new(self)
     }
 }
 
-impl<S> ReadModelUnitOfWorkExt for S where S: ReadModelSessionStore + RelationalReadModelQueryStore {}
+impl<S> ReadModelWorkspaceExt for S where S: ReadModelWritePlanStore + RelationalReadModelQueryStore {}
 
 fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
     let mut patch = RowPatch::new();

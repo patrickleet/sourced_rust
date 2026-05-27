@@ -141,7 +141,7 @@ impl IndexDef {
     }
 }
 
-/// Relationship category for later session/write-plan lowering.
+/// Relationship category for later workspace/write-plan lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelationshipKind {
     HasMany,

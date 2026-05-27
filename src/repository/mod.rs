@@ -6,7 +6,7 @@ mod identity;
 mod repository;
 
 pub use async_repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelSessionStore, AsyncReadModelStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, PreparedEventAppend,
 };

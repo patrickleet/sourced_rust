@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::{
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
-    ReadModelSessionStore, ReadModelUnitOfWorkExt, ReadModelWritePlan,
+    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanStore,
     RelationalReadModelQueryStore, RowKey, RowValue,
 };
 
@@ -75,7 +75,7 @@ impl NoIncludeStore {
     }
 }
 
-impl ReadModelSessionStore for NoIncludeStore {
+impl ReadModelWritePlanStore for NoIncludeStore {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         self.inner.read_model_capabilities()
     }
@@ -141,10 +141,10 @@ fn store_with_player_and_weapons(
     store.register_schema::<Player>().unwrap();
     store.register_schema::<PlayerWeapon>().unwrap();
 
-    let mut session = sourced_rust::ReadModelSession::new();
-    session.save(&player("player-1", "Ada")).unwrap();
+    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    session.upsert(&player("player-1", "Ada")).unwrap();
     for weapon in weapons {
-        session.save(&weapon).unwrap();
+        session.upsert(&weapon).unwrap();
     }
     session.commit(&store).unwrap();
     store
@@ -153,7 +153,7 @@ fn store_with_player_and_weapons(
 #[test]
 fn friendly_session_loads_one_root_by_primary_key_without_includes() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let loaded = read_models
         .load::<Player>(player_key("player-1"))
@@ -166,7 +166,7 @@ fn friendly_session_loads_one_root_by_primary_key_without_includes() {
 #[test]
 fn friendly_session_hydrates_has_many_include() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let loaded = read_models
         .load::<Player>(player_key("player-1"))
@@ -181,7 +181,7 @@ fn friendly_session_hydrates_has_many_include() {
 #[test]
 fn friendly_session_hydrates_belongs_to_include() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let loaded = read_models
         .load::<PlayerWeapon>(weapon_key("player-1", "sword"))
@@ -194,9 +194,9 @@ fn friendly_session_hydrates_belongs_to_include() {
 }
 
 #[test]
-fn save_changes_persists_loaded_scalar_field_without_manual_patch() {
+fn sync_persists_loaded_scalar_field_without_manual_patch() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let mut loaded = read_models
         .load::<Player>(player_key("player-1"))
         .one()
@@ -205,10 +205,10 @@ fn save_changes_persists_loaded_scalar_field_without_manual_patch() {
         .data;
     loaded.display_name = "Ada Lovelace".into();
 
-    read_models.save_changes(loaded).unwrap();
+    read_models.sync(loaded).unwrap();
     read_models.commit().unwrap();
 
-    let mut check = store.session();
+    let mut check = store.workspace();
     let reloaded = check
         .load::<Player>(player_key("player-1"))
         .one()
@@ -218,9 +218,9 @@ fn save_changes_persists_loaded_scalar_field_without_manual_patch() {
 }
 
 #[test]
-fn save_changes_persists_added_and_modified_related_rows() {
+fn sync_persists_added_and_modified_related_rows() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let mut loaded = read_models
         .load::<Player>(player_key("player-1"))
         .include("weapons")
@@ -231,10 +231,10 @@ fn save_changes_persists_added_and_modified_related_rows() {
     loaded.weapons[0].acquired_at = "2026-05-24".into();
     loaded.weapons.push(weapon("", "shield", "2026-05-25"));
 
-    read_models.save_changes(loaded).unwrap();
+    read_models.sync(loaded).unwrap();
     read_models.commit().unwrap();
 
-    let mut check = store.session();
+    let mut check = store.workspace();
     let mut reloaded = check
         .load::<Player>(player_key("player-1"))
         .include("weapons")
@@ -251,12 +251,12 @@ fn save_changes_persists_added_and_modified_related_rows() {
 }
 
 #[test]
-fn save_changes_deletes_removed_related_rows() {
+fn sync_deletes_removed_related_rows() {
     let store = store_with_player_and_weapons([
         weapon("player-1", "shield", "2026-05-24"),
         weapon("player-1", "sword", "2026-05-23"),
     ]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let mut loaded = read_models
         .load::<Player>(player_key("player-1"))
         .include("weapons")
@@ -266,10 +266,10 @@ fn save_changes_deletes_removed_related_rows() {
         .data;
     loaded.weapons.retain(|weapon| weapon.weapon_id == "sword");
 
-    read_models.save_changes(loaded).unwrap();
+    read_models.sync(loaded).unwrap();
     read_models.commit().unwrap();
 
-    let mut check = store.session();
+    let mut check = store.workspace();
     let reloaded = check
         .load::<Player>(player_key("player-1"))
         .include("weapons")
@@ -281,9 +281,9 @@ fn save_changes_deletes_removed_related_rows() {
 }
 
 #[test]
-fn save_changes_clearing_belongs_to_does_not_delete_target() {
+fn sync_clearing_belongs_to_does_not_delete_target() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
     let mut loaded = read_models
         .load::<PlayerWeapon>(weapon_key("player-1", "sword"))
         .include("player")
@@ -294,10 +294,10 @@ fn save_changes_clearing_belongs_to_does_not_delete_target() {
     assert!(loaded.player.is_some());
     loaded.player = None;
 
-    read_models.save_changes(loaded).unwrap();
+    read_models.sync(loaded).unwrap();
     read_models.commit().unwrap();
 
-    let mut check = store.session();
+    let mut check = store.workspace();
     let player = check.load::<Player>(player_key("player-1")).one().unwrap();
     assert_eq!(player.unwrap().data.display_name, "Ada");
 }
@@ -305,7 +305,7 @@ fn save_changes_clearing_belongs_to_does_not_delete_target() {
 #[test]
 fn missing_root_returns_none_without_include_loading() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let loaded = read_models
         .load::<Player>(player_key("missing"))
@@ -320,10 +320,10 @@ fn missing_root_returns_none_without_include_loading() {
 fn unregistered_relationship_target_fails_before_loading() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<Player>().unwrap();
-    let mut session = sourced_rust::ReadModelSession::new();
-    session.save(&player("player-1", "Ada")).unwrap();
+    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    session.upsert(&player("player-1", "Ada")).unwrap();
     session.commit(&store).unwrap();
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<Player>(player_key("player-1"))
@@ -339,7 +339,7 @@ fn unregistered_relationship_target_fails_before_loading() {
 #[test]
 fn unregistered_root_schema_fails_before_loading() {
     let store = InMemoryReadModelStore::new();
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<Player>(player_key("player-1"))
@@ -355,7 +355,7 @@ fn unregistered_root_schema_fails_before_loading() {
 fn adapter_without_include_capability_rejects_includes() {
     let inner = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
     let store = NoIncludeStore::new(inner);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<Player>(player_key("player-1"))
@@ -371,7 +371,7 @@ fn adapter_without_include_capability_rejects_includes() {
 #[test]
 fn nested_query_style_include_paths_are_not_a_public_query_dsl() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<Player>(player_key("player-1"))
@@ -388,7 +388,7 @@ fn nested_query_style_include_paths_are_not_a_public_query_dsl() {
 fn many_to_many_include_fails_until_join_metadata_is_rich_enough() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<PlayerWithMany>().unwrap();
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<PlayerWithMany>(player_key("player-1"))
@@ -406,22 +406,22 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<WeaponLabelRef>().unwrap();
     store.register_schema::<CompositeWeaponLabel>().unwrap();
-    let mut session = sourced_rust::ReadModelSession::new();
+    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
     session
-        .save(&WeaponLabelRef {
+        .upsert(&WeaponLabelRef {
             ref_id: "ref-1".into(),
             player_id: "player-1".into(),
             label: None,
         })
         .unwrap()
-        .save(&CompositeWeaponLabel {
+        .upsert(&CompositeWeaponLabel {
             player_id: "player-1".into(),
             weapon_id: "sword".into(),
             label: "Sword".into(),
         })
         .unwrap();
     session.commit(&store).unwrap();
-    let mut read_models = store.session();
+    let mut read_models = store.workspace();
 
     let err = read_models
         .load::<WeaponLabelRef>(RowKey::new([("ref_id", RowValue::String("ref-1".into()))]))
