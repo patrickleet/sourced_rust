@@ -1,15 +1,19 @@
 //! Session integration tests — exercises session variables through dispatch.
 
 use serde_json::json;
-use sourced_rust::microsvc::{HandlerError, Service, Session};
+use sourced_rust::microsvc::{HandlerError, HandlerSpec, Service, Session};
 use std::collections::HashMap;
 
 #[test]
 fn handler_accesses_user_id() {
-    let service = Service::new(()).command("whoami", |ctx| {
-        let user_id = ctx.user_id()?;
-        Ok(json!({ "user_id": user_id }))
-    });
+    let service = Service::new(()).handler(
+        HandlerSpec::command("whoami"),
+        |_| true,
+        |ctx| {
+            let user_id = ctx.user_id()?;
+            Ok(json!({ "user_id": user_id }))
+        },
+    );
 
     let mut vars = HashMap::new();
     vars.insert("x-hasura-user-id".to_string(), "user-42".to_string());
@@ -21,10 +25,14 @@ fn handler_accesses_user_id() {
 
 #[test]
 fn missing_user_id_returns_unauthorized() {
-    let service = Service::new(()).command("whoami", |ctx| {
-        let _user_id = ctx.user_id()?;
-        Ok(json!({}))
-    });
+    let service = Service::new(()).handler(
+        HandlerSpec::command("whoami"),
+        |_| true,
+        |ctx| {
+            let _user_id = ctx.user_id()?;
+            Ok(json!({}))
+        },
+    );
 
     let result = service.dispatch("whoami", json!({}), Session::new());
     assert!(matches!(result, Err(HandlerError::Unauthorized(_))));

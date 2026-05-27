@@ -14,8 +14,10 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::with_repo(HashMapRepository::new())
-//!         .command("counter.create", |ctx| { /* ... */ })
+//!     sourced_rust::register_handlers!(
+//!         microsvc::Service::with_repo(HashMapRepository::new()),
+//!         handlers::counter_create,
+//!     )
 //! );
 //!
 //! // Get the router to compose with other axum routes
@@ -60,7 +62,7 @@ pub async fn serve<D: Send + Sync + 'static>(
 async fn health_handler<D: Send + Sync + 'static>(
     State(service): State<Arc<Service<D>>>,
 ) -> impl IntoResponse {
-    let commands: Vec<&str> = service.commands();
+    let commands: Vec<&str> = service.command_names();
     Json(json!({ "ok": true, "commands": commands }))
 }
 
