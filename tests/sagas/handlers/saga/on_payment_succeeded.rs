@@ -1,6 +1,6 @@
 use super::*;
 
-pub const COMMAND: &str = "PaymentSucceeded";
+pub const EVENT: &str = "PaymentSucceeded";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id"])
