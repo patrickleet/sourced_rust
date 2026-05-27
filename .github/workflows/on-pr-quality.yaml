@@ -2,8 +2,6 @@ name: Rust Quality Pipeline for PRs
 
 on:
   pull_request:
-    branches:
-      - main
 
 jobs:
   quality:
