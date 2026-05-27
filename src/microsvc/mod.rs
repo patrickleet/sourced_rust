@@ -34,7 +34,6 @@
 //! // src/handlers/order_create.rs
 //!
 //! pub const COMMAND: &str = "order.create";
-//! pub const SPEC: microsvc::HandlerSpec = microsvc::HandlerSpec::command(COMMAND);
 //!
 //! pub fn guard<D>(ctx: &microsvc::Context<D>) -> bool {
 //!     ctx.has_fields(&["id", "product_id"])
@@ -89,8 +88,13 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 
 /// Register handler modules with a service using the convention pattern.
 ///
-/// Each handler module must export:
-/// - `SPEC: HandlerSpec` — the command or event metadata
+/// Command handler modules must export:
+/// - `COMMAND: &str` — the command name
+/// - `guard(ctx) -> bool` — input validation
+/// - `handle(ctx) -> Result<Value, HandlerError>` — the handler
+///
+/// Event handler modules must export:
+/// - `EVENT: &str` or `EVENTS: &[&str]` — event names
 /// - `guard(ctx) -> bool` — input validation
 /// - `handle(ctx) -> Result<Value, HandlerError>` — the handler
 ///
@@ -100,18 +104,95 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 ///     microsvc::Service::with_repo(HashMapRepository::new()),
 ///     handlers::counter_create,
 ///     handlers::counter_increment,
+///     event handlers::counter_rebuilt,
+///     events handlers::counter_projection => envelope,
 /// );
 /// ```
 #[macro_export]
 macro_rules! register_handlers {
-    ($service:expr, $( $($seg:ident)::+ ),+ $(,)?) => {
+    ($service:expr $(,)?) => {
         $service
-        $(
-            .handler(
-                $($seg)::+::SPEC,
+    };
+    ($service:expr, $($rest:tt)+) => {
+        $crate::__register_handlers!($service, $($rest)+)
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __register_handlers {
+    ($service:expr, command $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::command($($seg)::+::COMMAND),
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
-        )+
+            $(, $($rest)*)?
+        )
+    };
+    ($service:expr, event $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::event($($seg)::+::EVENT).envelope(),
+                $($seg)::+::guard,
+                $($seg)::+::handle,
+            )
+            $(, $($rest)*)?
+        )
+    };
+    ($service:expr, events $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::events($($seg)::+::EVENTS).envelope(),
+                $($seg)::+::guard,
+                $($seg)::+::handle,
+            )
+            $(, $($rest)*)?
+        )
+    };
+    ($service:expr, event $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::event($($seg)::+::EVENT),
+                $($seg)::+::guard,
+                $($seg)::+::handle,
+            )
+            $(, $($rest)*)?
+        )
+    };
+    ($service:expr, events $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::events($($seg)::+::EVENTS),
+                $($seg)::+::guard,
+                $($seg)::+::handle,
+            )
+            $(, $($rest)*)?
+        )
+    };
+    ($service:expr, $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__register_handlers_continue!(
+            $service.handler(
+                $crate::microsvc::HandlerSpec::command($($seg)::+::COMMAND),
+                $($seg)::+::guard,
+                $($seg)::+::handle,
+            )
+            $(, $($rest)*)?
+        )
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __register_handlers_continue {
+    ($service:expr) => {
+        $service
+    };
+    ($service:expr,) => {
+        $service
+    };
+    ($service:expr, $($rest:tt)+) => {
+        $crate::__register_handlers!($service, $($rest)+)
     };
 }

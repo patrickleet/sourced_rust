@@ -5,8 +5,6 @@ use sourced_rust::{OutboxCommitExt, OutboxMessage};
 use crate::board_service::{AddCard, Board, BoardRepo};
 
 pub const COMMAND: &str = "board.add_card";
-pub const SPEC: sourced_rust::microsvc::HandlerSpec =
-    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 pub fn guard(ctx: &Context<BoardRepo>) -> bool {
     ctx.has_fields(&["id", "card_id", "column", "title"])

@@ -8,19 +8,11 @@ use super::handlers;
 pub type ProjectionDependencies = InMemoryReadModelStore;
 
 pub fn service(store: InMemoryReadModelStore) -> Arc<Service<ProjectionDependencies>> {
-    Arc::new(
-        Service::with_read_model_store(store)
-            .handler(
-                handlers::checkout::SPEC,
-                handlers::checkout::guard,
-                handlers::checkout::handle,
-            )
-            .handler(
-                handlers::seat::SPEC,
-                handlers::seat::guard,
-                handlers::seat::handle,
-            ),
-    )
+    Arc::new(sourced_rust::register_handlers!(
+        Service::with_read_model_store(store),
+        events handlers::checkout => envelope,
+        events handlers::seat => envelope,
+    ))
 }
 
 pub fn projects(event_type: &str) -> bool {
