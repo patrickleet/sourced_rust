@@ -1,4 +1,4 @@
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 #[derive(Default, Clone)]
 pub struct Bomb {
@@ -11,8 +11,9 @@ pub struct Bomb {
     pub exploded: bool,
 }
 
+#[sourced(entity)]
 impl Bomb {
-    #[digest("BombCreated")]
+    #[event("BombCreated")]
     pub fn create(&mut self, id: String, owner_id: String, x: i32, y: i32, blast_radius: u8) {
         self.entity.set_id(&id);
         self.owner_id = owner_id;
@@ -23,12 +24,12 @@ impl Bomb {
         self.exploded = false;
     }
 
-    #[digest("BombTicked", when = !self.exploded && self.ticks_remaining > 0)]
+    #[event("BombTicked", when = !self.exploded && self.ticks_remaining > 0)]
     pub fn tick(&mut self) {
         self.ticks_remaining -= 1;
     }
 
-    #[digest("BombExploded", when = !self.exploded)]
+    #[event("BombExploded", when = !self.exploded)]
     pub fn explode(&mut self) {
         self.exploded = true;
     }
@@ -37,9 +38,3 @@ impl Bomb {
         !self.exploded && self.ticks_remaining == 0
     }
 }
-
-sourced_rust::aggregate!(Bomb, entity {
-    "BombCreated"(id, owner_id, x, y, blast_radius) => create,
-    "BombTicked"() => tick,
-    "BombExploded"() => explode,
-});

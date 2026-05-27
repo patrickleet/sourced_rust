@@ -10,9 +10,9 @@
 //! - Outbox events ("PlayerKilled" on death)
 //! - Guard conditions (can't move when dead, can't bomb at max)
 
-mod commands;
 mod domain;
 mod error;
+mod handlers;
 mod sim;
 mod views;
 
@@ -283,9 +283,10 @@ fn chain_reaction() {
 /// Helper to move a player step by step to a target position via simple pathfinding.
 fn bob_move_to_position<
     R: sourced_rust::Commit
-        + sourced_rust::read_model::ReadModelStore
         + sourced_rust::TransactionalCommit
-        + sourced_rust::Get,
+        + sourced_rust::Get
+        + sourced_rust::ReadModelWritePlanStore
+        + sourced_rust::RelationalReadModelQueryStore,
 >(
     game: &Game<'_, R>,
     id: &str,
@@ -327,7 +328,7 @@ fn bob_move_to_position<
 
 #[test]
 fn concurrent_bomb_placement() {
-    use sourced_rust::ReadModelsExt;
+    use sourced_rust::{ReadModelWorkspaceExt, RowKey, RowValue};
     use std::sync::Arc;
     use std::thread;
 
@@ -341,20 +342,20 @@ fn concurrent_bomb_placement() {
 #######";
 
     // Create game and join players on main thread
-    commands::create_game(&*repo, "game-5", open_map).unwrap();
-    commands::join_game(&*repo, "p1", "Alice", "game-5", 0).unwrap();
-    commands::join_game(&*repo, "p2", "Bob", "game-5", 1).unwrap();
+    handlers::create_game(&*repo, "game-5", open_map).unwrap();
+    handlers::join_game(&*repo, "p1", "Alice", "game-5", 0).unwrap();
+    handlers::join_game(&*repo, "p2", "Bob", "game-5", 1).unwrap();
 
     let repo2 = repo.clone();
     let repo3 = repo.clone();
 
     // Two threads place bombs concurrently
     let t1 = thread::spawn(move || {
-        commands::place_bomb(&*repo2, "p1", "game-5").unwrap();
+        handlers::place_bomb(&*repo2, "p1", "game-5").unwrap();
     });
 
     let t2 = thread::spawn(move || {
-        commands::place_bomb(&*repo3, "p2", "game-5").unwrap();
+        handlers::place_bomb(&*repo3, "p2", "game-5").unwrap();
     });
 
     t1.join().unwrap();
@@ -362,8 +363,12 @@ fn concurrent_bomb_placement() {
 
     // Verify both bombs placed
     let _board = repo
-        .read_models::<views::BoardView>()
-        .get_by_primary_key("game-5")
+        .workspace()
+        .load::<views::BoardView>(RowKey::new([(
+            "game_id",
+            RowValue::String("game-5".into()),
+        )]))
+        .one()
         .unwrap()
         .unwrap();
     // Board may show 1 or 2 bombs depending on which thread's board view won the race,

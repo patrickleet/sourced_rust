@@ -187,7 +187,7 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: a **tra
 |---|---|---|---|
 | Storage | `Repository` (`Get + Commit`) | `HashMapRepository` | Postgres, DynamoDB, etc. |
 | Messaging | `Publisher` + `Subscriber` | `InMemoryQueue` | Kafka, Redis Streams, SQS, etc. |
-| Read model store | `ReadModelStore` | `InMemoryReadModelStore` | Postgres, MongoDB, etc. |
+| Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite, etc. |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, S3, etc. |
 | Outbox publishing | `OutboxPublisher` | `LogPublisher` | Any `Publisher` impl |
 | Locking | `Lock` + `LockManager` | `InMemoryLockManager` | Redis, Postgres advisory, etc. |
@@ -1201,7 +1201,7 @@ microsvc::serve(service.clone(), "0.0.0.0:3000").await?;
 
 ## Read Models
 
-Read models are query-optimized projections derived from aggregates, event records, or published messages. Document read models store a whole view in a document payload column; normalized relational read models use table metadata plus `ReadModelWritePlanBuilder` write plans.
+Read models are query-optimized projections derived from aggregates, event records, or published messages. They are written as declared relational rows using table metadata plus `ReadModelWritePlanBuilder` write plans. Use JSON/JSONB columns for whole-view or semistructured fields.
 
 ### Defining a Read Model
 
@@ -1210,12 +1210,14 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::ReadModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[collection("game_views")]
+#[readmodel(table = "game_views")]
 pub struct GameView {
-    #[id]
+    #[readmodel(id)]
     pub id: String,
     pub player_name: String,
     pub score: i32,
+    #[readmodel(jsonb)]
+    pub metadata: serde_json::Value,
 }
 ```
 
@@ -1224,7 +1226,7 @@ pub struct GameView {
 When the response to a command must include the fully consistent, updated view, you can commit the aggregate and read model together:
 
 ```rust
-use sourced_rust::CommitBuilderExt;
+use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 
 // Player submits a move
 game.make_move(player_move)?;
@@ -1233,12 +1235,14 @@ game.make_move(player_move)?;
 let view = GameView::from(&game);
 
 // Commit aggregate + view in one transactional batch
-repo.readmodel(&view).commit(&mut game)?;
+let mut read_models = ReadModelWritePlanBuilder::new();
+read_models.upsert(&view)?;
+repo.read_models(read_models).commit(&mut game)?;
 
 // Return `view` to the client — it reflects the committed state
 ```
 
-For relational read models, build a structured read-model write plan:
+For related rows, build the same structured write plan:
 
 ```rust
 use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
@@ -1254,15 +1258,15 @@ Distributed projectors can commit the same write-plan shape directly against a r
 
 ```rust
 let mut read_models = ReadModelWritePlanBuilder::new();
-read_models.document(&view)?.mark_processed("game-view-projector", event_id);
+read_models.upsert(&view)?.mark_processed("game-view-projector", event_id);
 let outcome = read_models.commit(&read_store)?;
 ```
 
 This is a deliberate consistency tradeoff. The read model is in sync with the aggregate only when the repository implements `TransactionalCommit` and can write both in the same transaction boundary. For cross-service or cross-database views, use the eventually consistent outbox/projector pattern instead.
 
-Bomberman `BoardView` remains a document-row example backed by a whole-view payload, not a normalized relational ORM example.
+Bomberman `BoardView` is modeled as a read-model table row with JSON/JSONB columns for nested board state.
 
-See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, document rows, workspace commits, schema bootstrap, distributed idempotency, and non-goals.
+See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, workspace commits, schema bootstrap, distributed idempotency, and non-goals.
 
 ## Snapshots
 

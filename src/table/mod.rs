@@ -8,8 +8,8 @@ mod sql;
 
 pub use crate::read_model::{
     ColumnDef as TableColumn, ColumnType, DeleteRowMutation as DeleteTableRowMutation,
-    DocumentMutation as TableDocumentMutation, ExpectedVersion, ForeignKey, IndexDef as TableIndex,
-    PatchMode, PatchRowMutation as PatchTableRowMutation, PrimaryKey,
+    ExpectedVersion, ForeignKey, IndexDef as TableIndex, PatchMode,
+    PatchRowMutation as PatchTableRowMutation, PrimaryKey,
     ReadModelAdapterCapabilities as TableAdapterCapabilities,
     ReadModelCommitOutcome as TableCommitOutcome, ReadModelError as TableStoreError,
     ReadModelMigrationArtifact as TableMigrationArtifact, ReadModelMutation as TableMutation,

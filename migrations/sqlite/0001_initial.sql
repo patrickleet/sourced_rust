@@ -24,18 +24,6 @@ CREATE INDEX IF NOT EXISTS aggregate_events_event_version_idx
 CREATE INDEX IF NOT EXISTS aggregate_events_recorded_at_idx
   ON aggregate_events (recorded_at);
 
-CREATE TABLE IF NOT EXISTS transactional_read_models (
-  collection TEXT NOT NULL,
-  id TEXT NOT NULL,
-  version INTEGER NOT NULL,
-  payload BLOB NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (collection, id),
-  CHECK (collection <> ''),
-  CHECK (id <> ''),
-  CHECK (version > 0)
-);
-
 CREATE TABLE IF NOT EXISTS read_model_processed_messages (
   consumer_name TEXT NOT NULL,
   message_id TEXT NOT NULL,

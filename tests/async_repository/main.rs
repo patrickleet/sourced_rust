@@ -3,11 +3,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelStore, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, EventRecord,
-    HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel,
-    ReadModelWritePlan, ReadModelWritePlanBuilder, RepositoryError, SnapshotRecord, Snapshottable,
-    StreamIdentity,
+    AsyncOutboxStore, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
+    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity,
+    EventRecord, HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark,
+    ReadModel, ReadModelWritePlan, ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError,
+    RowKey, RowValue, SnapshotRecord, Snapshottable, StreamIdentity, Versioned,
 };
 
 #[derive(Default)]
@@ -91,18 +91,27 @@ impl Snapshottable for SnapshotCounter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "async_test_views")]
 struct TestView {
+    #[readmodel(id)]
     id: String,
     value: i32,
 }
 
-impl ReadModel for TestView {
-    const COLLECTION: &'static str = "async_test_views";
+fn test_view_key(id: &str) -> RowKey {
+    RowKey::new([("id", RowValue::String(id.into()))])
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
+async fn load_test_view(repo: &HashMapRepository, id: &str) -> Option<Versioned<TestView>> {
+    let request = ReadModelWritePlanBuilder::new()
+        .load::<TestView>(test_view_key(id))
+        .unwrap();
+    let graph = repo.load_graph_async(request).await.unwrap();
+    graph.root.map(|root| Versioned {
+        data: TestView::from_row(root.data).unwrap(),
+        version: root.version,
+    })
 }
 
 #[tokio::test]
@@ -191,16 +200,12 @@ async fn read_model_session_can_commit_against_async_store() {
     };
     let mut session = ReadModelWritePlanBuilder::new();
     session
-        .document(&view)
+        .upsert(&view)
         .unwrap()
         .mark_processed("projection", "event-1");
 
     let outcome = session.commit_async(&repo).await.unwrap();
-    let loaded = repo
-        .get_model_async::<TestView>("view-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = load_test_view(&repo, "view-1").await.unwrap();
     let processed = repo
         .is_processed_async("projection", "event-1")
         .await

@@ -1,65 +1,17 @@
 # Read Models
 
-Read models are query-optimized projection state. They can be stored as
-document rows with a JSON/JSONB payload column, or as normalized relational
-rows with table, column, key, index, relationship, and schema metadata.
+Read models are query-optimized projection state stored as relational rows with
+table, column, key, index, relationship, and schema metadata. Whole-view state
+belongs in a declared table too: use an `id` column and JSON/JSONB columns for
+semistructured fields.
 
 The current implementation keeps these paths explicit:
 
 | Path | API | Use when |
 |---|---|---|
-| Document rows | `ReadModelStore`, `.readmodel(&view)`, `ReadModelWritePlanBuilder::document` | Whole-view JSON documents backed by a document payload column |
 | Relational write mapping | `RelationalReadModel`, `ReadModelWritePlanBuilder`, `ReadModelWritePlan` | Normalized tables, composite keys, foreign keys, JSONB columns |
 | Explicit relationship includes | `store.workspace().load(...).include(...).one()`, `sync` | Internal primary-key reads with declared one-level relationships |
 | Schema lifecycle | `ReadModelSchemaRegistry`, `ReadModelSchemaAdapter` | Migration artifact generation, startup verification, explicit dev/test bootstrap |
-
-## Document Read Models
-
-Derive `ReadModel` on any serializable document view:
-
-```rust
-use serde::{Deserialize, Serialize};
-use sourced_rust::ReadModel;
-
-#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[readmodel(collection = "game_views")]
-pub struct GameView {
-    #[id]
-    pub id: String,
-    pub player_name: String,
-    pub score: i32,
-}
-```
-
-The same collection mapping can be written with the higher-level helper:
-
-```rust
-#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[collection("game_views")]
-pub struct GameView {
-    #[id]
-    pub id: String,
-    pub player_name: String,
-    pub score: i32,
-}
-```
-
-Use `ReadModelsExt` for typed key/value CRUD:
-
-```rust
-use sourced_rust::ReadModelsExt;
-
-let view = repo.read_models::<GameView>().get("game-42")?;
-repo.read_models::<GameView>().upsert(&updated_view)?;
-let read_only = repo
-    .read_models::<GameView>()
-    .get_by_primary_key("game-42")?;
-```
-
-This path stores one serialized model at `collection:id`. A SQL adapter can
-back it with a table such as `(collection, id, version, payload jsonb)`.
-Predicate helpers such as `find` and `find_one` are in-memory/document-store
-helpers; SQL adapters are not required to translate Rust closures into queries.
 
 ## Relational Models
 
@@ -164,8 +116,7 @@ for normalized Postgres read models.
 ## Command-Side Atomic Writes
 
 Use `ReadModelWritePlanBuilder` when a command or projector stages multiple
-document or normalized row mutations. The current repository APIs are
-synchronous:
+row mutations. The current repository APIs are synchronous:
 
 ```rust
 use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
@@ -200,12 +151,6 @@ repo.aggregate(&mut aggregate)
     .commit()?;
 ```
 
-Document views use the same commit-builder spelling:
-
-```rust
-repo.readmodel(&board_view).commit(&mut game)?;
-```
-
 ## Standalone Distributed Projectors
 
 A read-model service can commit a write plan without owning an aggregate
@@ -217,11 +162,11 @@ use sourced_rust::{ReadModelError, ReadModelWritePlanBuilder, ReadModelWritePlan
 fn project_message(
     store: &impl ReadModelWritePlanStore,
     event_id: &str,
-    view: &GameView,
+    view: &PlayerView,
 ) -> Result<(), ReadModelError> {
     let mut read_models = ReadModelWritePlanBuilder::new();
     read_models
-        .document(view)?
+        .upsert(view)?
         .mark_processed("game-view-projector", event_id);
 
     let outcome = read_models.commit(store)?;
@@ -272,32 +217,34 @@ let bootstrap = repo.bootstrap_table_schema_for_dev(&registry).await?;
 Use generated artifacts as migration input for production tooling such as Atlas.
 Reserve `bootstrap_table_schema_for_dev` for tests and local development.
 
-## Bomberman And Document Views
+## Whole-View Rows
 
-Bomberman `BoardView` is intentionally a document-row read model. It stores a
-whole game board view with nested players, bombs, explosions, tiles, turn state,
-and counters. Do not treat it as a normalized relational ORM example.
+Bomberman `BoardView` is a read-model table row. It stores a whole game board
+view with nested players, bombs, explosions, tiles, turn state, and counters in
+declared columns, using JSON/JSONB for nested state.
 
-A Postgres adapter can back this path with a JSONB payload column while
-normalized relational models use real columns, primary keys, foreign keys,
-indexes, and JSONB columns for selected semistructured fields.
-
-## Queued Document Reads
-
-`QueuedReadModelStore` preserves key/value lock behavior for document stores.
-Use explicit spellings for lock intent:
+If a command projection needs this shape, define a table with an `id` column and
+JSON/JSONB columns for the board state:
 
 ```rust
-let locked = store.load_for_update::<GameView>("game-42")?;
-let peek = store.load_no_lock::<GameView>("game-42")?;
-store.abort::<GameView>("game-42")?;
+#[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "boards")]
+pub struct BoardView {
+    #[readmodel(id)]
+    pub game_id: String,
+    #[readmodel(jsonb)]
+    pub players: Vec<PlayerState>,
+    #[readmodel(jsonb)]
+    pub bombs: Vec<BombState>,
+}
 ```
 
-`get_by_primary_key` is a read helper and does not imply command-side ownership.
+It is still a relational row write. There is no generic document table hidden
+behind the SQL repositories.
 
 ## Non-Goals
 
 The relational ORM slice is a persistence mapper, not a business layer. It does
 not own business logic, authorization policy, aggregate invariants, domain event
-selection, public query APIs, lifecycle hooks, hidden cascades, document-store
-mutation APIs, or broad SQL query DSLs.
+selection, public query APIs, lifecycle hooks, hidden cascades, generic
+document-table mutation APIs, or broad SQL query DSLs.

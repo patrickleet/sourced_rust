@@ -1,4 +1,4 @@
-use sourced_rust::{digest, Entity, SourcedResult};
+use sourced_rust::{sourced, Entity, SourcedResult};
 
 use super::types::{PowerUp, Tile};
 
@@ -14,8 +14,9 @@ pub struct GameMap {
     pub power_ups: Vec<((i32, i32), PowerUp)>,
 }
 
+#[sourced(entity)]
 impl GameMap {
-    #[digest("MapCreated")]
+    #[event("MapCreated")]
     pub fn create(
         &mut self,
         id: String,
@@ -32,7 +33,7 @@ impl GameMap {
         self.power_ups = vec![];
     }
 
-    #[digest("BlockDestroyed", when = self.tile_at(x, y) == &Tile::Block)]
+    #[event("BlockDestroyed", when = self.tile_at(x, y) == &Tile::Block)]
     pub fn destroy_block(&mut self, x: i32, y: i32) {
         self.tiles[y as usize][x as usize] = Tile::Floor;
         // 50% chance to reveal a power-up based on position parity
@@ -57,7 +58,7 @@ impl GameMap {
         Ok(Some(power_up))
     }
 
-    #[digest("PowerUpCollected")]
+    #[event("PowerUpCollected")]
     fn record_power_up_collected(&mut self, x: i32, y: i32, power_up: PowerUp) {
         if let Some(idx) = self
             .power_ups
@@ -137,12 +138,6 @@ impl GameMap {
         (width, height, tiles, spawns)
     }
 }
-
-sourced_rust::aggregate!(GameMap, entity {
-    "MapCreated"(id, width, height, tiles, spawn_points) => create,
-    "BlockDestroyed"(x, y) => destroy_block,
-    "PowerUpCollected"(x, y, power_up) => record_power_up_collected,
-});
 
 #[cfg(test)]
 mod tests {

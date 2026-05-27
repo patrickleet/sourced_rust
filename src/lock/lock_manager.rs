@@ -4,7 +4,7 @@ use super::{Lock, LockError};
 
 /// Factory trait for obtaining per-entity (or per-key) locks.
 ///
-/// `QueuedRepository` and `QueuedReadModelStore` use a `LockManager` to
+/// `QueuedRepository` uses a `LockManager` to
 /// obtain a lock for each entity or read model instance. The default
 /// `InMemoryLockManager` stores locks in a `HashMap`; distributed
 /// implementations might talk to Redis, Postgres, etc.

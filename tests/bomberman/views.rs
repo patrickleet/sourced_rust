@@ -28,17 +28,21 @@ pub struct ExplosionState {
     pub cells: Vec<(i32, i32)>,
 }
 
-/// Whole-board document view stored as a single read-model document row.
+/// Whole-board view stored in the `boards` read-model table.
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[readmodel(collection = "boards")]
+#[readmodel(table = "boards")]
 pub struct BoardView {
     #[readmodel(id)]
     pub game_id: String,
     pub width: usize,
     pub height: usize,
+    #[readmodel(jsonb)]
     pub tiles: Vec<Vec<Tile>>,
+    #[readmodel(jsonb)]
     pub players: Vec<PlayerState>,
+    #[readmodel(jsonb)]
     pub bombs: Vec<BombState>,
+    #[readmodel(jsonb)]
     pub explosions: Vec<ExplosionState>,
     pub turn: u32,
     #[serde(default)]

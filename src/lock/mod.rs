@@ -1,7 +1,7 @@
 //! Lock - Pluggable locking abstractions
 //!
 //! This module provides traits and implementations for per-entity locking,
-//! used by `QueuedRepository` and `QueuedReadModelStore` to serialize access.
+//! used by `QueuedRepository` to serialize aggregate access.
 //!
 //! ## Architecture
 //!

@@ -1,5 +1,6 @@
 #![cfg(feature = "postgres")]
 
+use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,9 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
-    EventRecord, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
-    RepositoryError, SnapshotRecord, StreamIdentity,
+    AsyncOutboxStore, AsyncReadModelWritePlanStore, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, EventRecord, OutboxMessageStatus, PostgresRepository,
+    ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue,
+    SnapshotRecord, StreamIdentity, TableSchemaRegistry,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -61,18 +63,14 @@ impl_aggregate!(
     aggregate_type = "postgres.counter_projection"
 );
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct CounterView {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "postgres_relational_counter_views")]
+struct RelationalCounterView {
+    #[readmodel(id)]
     id: String,
-    value: i32,
-}
-
-impl ReadModel for CounterView {
-    const COLLECTION: &'static str = "postgres_counter_views";
-
-    fn id(&self) -> &str {
-        &self.id
-    }
+    value: i64,
+    #[readmodel(jsonb)]
+    counts: HashMap<String, i64>,
 }
 
 async fn repository() -> Option<PostgresRepository> {
@@ -95,6 +93,18 @@ fn unique_id(prefix: &str) -> String {
         .as_nanos();
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{nanos}-{id}")
+}
+
+async fn bootstrap_relational_counter_table(repo: &PostgresRepository) {
+    let mut registry = TableSchemaRegistry::new();
+    registry.register::<RelationalCounterView>().unwrap();
+    repo.bootstrap_table_schema_for_dev(&registry)
+        .await
+        .unwrap();
+}
+
+fn relational_counter_key(id: &str) -> RowKey {
+    RowKey::new([("id", RowValue::String(id.into()))])
 }
 
 #[tokio::test]
@@ -136,12 +146,22 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
         ]
     );
 
-    let read_model_table: Option<String> =
+    let document_table: Option<String> =
         sqlx::query_scalar("SELECT to_regclass('public.transactional_read_models')::text")
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert!(read_model_table.is_none());
+    assert!(document_table.is_none());
+
+    let processed_messages_table: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.read_model_processed_messages')::text")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        processed_messages_table.as_deref(),
+        Some("read_model_processed_messages")
+    );
 }
 
 #[tokio::test]
@@ -259,31 +279,202 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
 }
 
 #[tokio::test]
-async fn read_model_plans_are_rejected_in_first_pass() {
+async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() {
     let Some(repo) = repository().await else {
         return;
     };
-    let id = unique_id("read-model");
+    bootstrap_relational_counter_table(&repo).await;
+    let id = unique_id("relational-batch");
+    let mut counts = HashMap::new();
+    counts.insert("wins".to_string(), 2);
+    let view = RelationalCounterView {
+        id: id.clone(),
+        value: 7,
+        counts,
+    };
+    let mut session = ReadModelWritePlanBuilder::new();
+    session.upsert(&view).unwrap();
     let mut entity = Entity::with_id(&id);
     entity.digest_empty("Touched").unwrap();
-    let identity = StreamIdentity::new(Counter::aggregate_type(), &id).unwrap();
-    let mut session = ReadModelWritePlanBuilder::new();
-    session.document(&CounterView { id, value: 1 }).unwrap();
+    let identity = StreamIdentity::new(CounterProjection::aggregate_type(), &id).unwrap();
 
-    let err = repo
-        .commit_batch_async(AsyncCommitBatch {
-            streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
-            outbox_messages: Vec::new(),
-            read_model_plans: vec![session.into_write_plan().unwrap()],
-            snapshots: Vec::new(),
-        })
-        .await
-        .unwrap_err();
+    repo.commit_batch_async(AsyncCommitBatch {
+        streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
+        outbox_messages: Vec::new(),
+        read_model_plans: vec![session.into_write_plan().unwrap()],
+        snapshots: Vec::new(),
+    })
+    .await
+    .unwrap();
 
-    assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("does not persist read-model write plans"))
+    assert!(repo.get_stream(&identity).await.unwrap().is_some());
+    let row = sqlx::query(
+        r#"
+        SELECT "id", "value", "counts"::text AS counts, "_sourced_version"
+        FROM "postgres_relational_counter_views"
+        WHERE "id" = $1
+        "#,
+    )
+    .bind(&id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let stored_counts: String = sqlx::Row::try_get(&row, "counts").unwrap();
+    let stored_counts: serde_json::Value = serde_json::from_str(&stored_counts).unwrap();
+
+    assert_eq!(sqlx::Row::try_get::<String, _>(&row, "id").unwrap(), id);
+    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 7);
+    assert_eq!(stored_counts["wins"].as_i64(), Some(2));
+    assert_eq!(
+        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
+        1
     );
-    assert!(repo.get_stream(&identity).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn read_model_session_patches_and_deletes_relational_rows() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    bootstrap_relational_counter_table(&repo).await;
+    let id = unique_id("relational-session");
+    let mut counts = HashMap::new();
+    counts.insert("wins".to_string(), 2);
+    let view = RelationalCounterView {
+        id: id.clone(),
+        value: 7,
+        counts,
+    };
+    let mut setup = ReadModelWritePlanBuilder::new();
+    setup.upsert(&view).unwrap();
+    setup.commit_async(&repo).await.unwrap();
+
+    let mut patched_counts = HashMap::new();
+    patched_counts.insert("wins".to_string(), 3);
+    patched_counts.insert("losses".to_string(), 1);
+    let patch = RowPatch::new()
+        .set("value", RowValue::I64(11))
+        .set_serde("counts", &patched_counts)
+        .unwrap();
+    let mut patch_session = ReadModelWritePlanBuilder::new();
+    patch_session
+        .patch::<RelationalCounterView>(relational_counter_key(&id), patch)
+        .unwrap();
+    patch_session.commit_async(&repo).await.unwrap();
+
+    let row = sqlx::query(
+        r#"
+        SELECT "value", "counts"::text AS counts, "_sourced_version"
+        FROM "postgres_relational_counter_views"
+        WHERE "id" = $1
+        "#,
+    )
+    .bind(&id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let stored_counts: String = sqlx::Row::try_get(&row, "counts").unwrap();
+    let stored_counts: serde_json::Value = serde_json::from_str(&stored_counts).unwrap();
+    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 11);
+    assert_eq!(stored_counts["wins"].as_i64(), Some(3));
+    assert_eq!(stored_counts["losses"].as_i64(), Some(1));
+    assert_eq!(
+        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
+        2
+    );
+
+    let mut delete_session = ReadModelWritePlanBuilder::new();
+    delete_session
+        .delete::<RelationalCounterView>(relational_counter_key(&id))
+        .unwrap();
+    delete_session.commit_async(&repo).await.unwrap();
+
+    let remaining: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM "postgres_relational_counter_views"
+        WHERE "id" = $1
+        "#,
+    )
+    .bind(&id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn read_model_session_persists_relational_rows_and_processed_marks() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    bootstrap_relational_counter_table(&repo).await;
+    let id = unique_id("view");
+    let message_id = unique_id("event");
+    let view = RelationalCounterView {
+        id: id.clone(),
+        value: 42,
+        counts: HashMap::new(),
+    };
+    let mut session = ReadModelWritePlanBuilder::new();
+    session
+        .upsert(&view)
+        .unwrap()
+        .mark_processed("projection", &message_id);
+
+    let outcome = session.commit_async(&repo).await.unwrap();
+    let processed = repo
+        .is_processed_async("projection", &message_id)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        r#"
+        SELECT "value", "_sourced_version"
+        FROM "postgres_relational_counter_views"
+        WHERE "id" = $1
+        "#,
+    )
+    .bind(&id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+
+    assert!(outcome.was_applied());
+    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
+    assert_eq!(
+        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
+        1
+    );
+    assert!(processed);
+
+    let mut duplicate = ReadModelWritePlanBuilder::new();
+    duplicate
+        .upsert(&RelationalCounterView {
+            id: id.clone(),
+            value: 100,
+            counts: HashMap::new(),
+        })
+        .unwrap()
+        .mark_processed("projection", &message_id);
+    let duplicate_outcome = duplicate.commit_async(&repo).await.unwrap();
+    let row = sqlx::query(
+        r#"
+        SELECT "value", "_sourced_version"
+        FROM "postgres_relational_counter_views"
+        WHERE "id" = $1
+        "#,
+    )
+    .bind(&view.id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+
+    assert!(duplicate_outcome.was_skipped());
+    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
+    assert_eq!(
+        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
+        1
+    );
 }
 
 #[tokio::test]

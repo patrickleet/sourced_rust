@@ -1,19 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::bus::{Event, Publisher, Subscriber};
 use sourced_rust::{
-    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelStore,
+    InMemoryQueue, InMemoryReadModelStore, ReadModel, ReadModelError, ReadModelWorkspaceExt,
     ReadModelWritePlanBuilder, ReadModelWritePlanStore, RowKey, RowValue,
 };
 
 const CONSUMER: &str = "counter-projection";
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[collection("counter_views")]
-struct CounterView {
-    #[id]
-    id: String,
-    value: i32,
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
 #[table("relational_counters")]
@@ -23,10 +15,10 @@ struct RelationalCounter {
     value: i32,
 }
 
-fn counter_session(view: &CounterView, message_id: &str) -> ReadModelWritePlanBuilder {
+fn counter_session(view: &RelationalCounter, message_id: &str) -> ReadModelWritePlanBuilder {
     let mut session = ReadModelWritePlanBuilder::new();
     session
-        .document(view)
+        .upsert(view)
         .unwrap()
         .mark_processed(CONSUMER, message_id);
     session
@@ -36,11 +28,23 @@ fn relational_counter_key(id: &str) -> RowKey {
     RowKey::new([("id", RowValue::String(id.into()))])
 }
 
+fn load_counter(
+    store: &InMemoryReadModelStore,
+    id: &str,
+) -> Option<sourced_rust::Versioned<RelationalCounter>> {
+    store.register_schema::<RelationalCounter>().unwrap();
+    store
+        .workspace()
+        .load::<RelationalCounter>(relational_counter_key(id))
+        .one()
+        .unwrap()
+}
+
 #[test]
-fn standalone_session_commit_applies_document_and_marks_processed() {
+fn standalone_session_commit_applies_row_and_marks_processed() {
     let store = InMemoryReadModelStore::new();
     assert!(store.read_model_capabilities().processed_messages);
-    let view = CounterView {
+    let view = RelationalCounter {
         id: "counter-1".into(),
         value: 1,
     };
@@ -49,10 +53,7 @@ fn standalone_session_commit_applies_document_and_marks_processed() {
 
     assert!(outcome.was_applied());
     assert!(store.is_processed(CONSUMER, "message-1").unwrap());
-    let loaded = store
-        .get_by_primary_key::<CounterView>("counter-1")
-        .unwrap()
-        .unwrap();
+    let loaded = load_counter(&store, "counter-1").unwrap();
     assert_eq!(loaded.data, view);
     assert_eq!(loaded.version, 1);
 }
@@ -60,7 +61,7 @@ fn standalone_session_commit_applies_document_and_marks_processed() {
 #[test]
 fn duplicate_processed_message_skips_mutations_idempotently() {
     let store = InMemoryReadModelStore::new();
-    let original = CounterView {
+    let original = RelationalCounter {
         id: "counter-1".into(),
         value: 1,
     };
@@ -68,7 +69,7 @@ fn duplicate_processed_message_skips_mutations_idempotently() {
         .commit(&store)
         .unwrap();
 
-    let duplicate_update = CounterView {
+    let duplicate_update = RelationalCounter {
         id: "counter-1".into(),
         value: 99,
     };
@@ -83,10 +84,7 @@ fn duplicate_processed_message_skips_mutations_idempotently() {
             .map(|mark| mark.message_id.as_str()),
         Some("message-1")
     );
-    let loaded = store
-        .get_by_primary_key::<CounterView>("counter-1")
-        .unwrap()
-        .unwrap();
+    let loaded = load_counter(&store, "counter-1").unwrap();
     assert_eq!(loaded.data, original);
     assert_eq!(loaded.version, 1);
 }
@@ -94,18 +92,12 @@ fn duplicate_processed_message_skips_mutations_idempotently() {
 #[test]
 fn read_model_write_and_processed_mark_are_atomic() {
     let store = InMemoryReadModelStore::new();
-    let view = CounterView {
-        id: "counter-1".into(),
-        value: 1,
-    };
     let row = RelationalCounter {
         id: "counter-1".into(),
         value: 1,
     };
     let mut session = ReadModelWritePlanBuilder::new();
     session
-        .document(&view)
-        .unwrap()
         .mark_processed(CONSUMER, "message-1")
         .expect_version::<RelationalCounter>(relational_counter_key("counter-1"), 99)
         .unwrap()
@@ -116,10 +108,7 @@ fn read_model_write_and_processed_mark_are_atomic() {
 
     assert!(matches!(err, ReadModelError::NotFound { .. }));
     assert!(!store.is_processed(CONSUMER, "message-1").unwrap());
-    assert!(store
-        .get_by_primary_key::<CounterView>("counter-1")
-        .unwrap()
-        .is_none());
+    assert!(load_counter(&store, "counter-1").is_none());
 }
 
 #[test]
@@ -161,7 +150,7 @@ fn ack_happens_only_after_successful_standalone_commit() {
         ))
         .unwrap();
     let succeeded = queue.poll(0).unwrap().unwrap();
-    let view = CounterView {
+    let view = RelationalCounter {
         id: "counter-1".into(),
         value: 2,
     };

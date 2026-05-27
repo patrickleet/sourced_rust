@@ -1,4 +1,4 @@
-//! SQLite-backed async repository and transactional document stores.
+//! SQLite-backed async repository and transactional relational read-model writes.
 //!
 //! This adapter is a local SQL persistence backend for the async repository
 //! boundary. It is feature-gated behind `sqlite` and is intentionally async-only.
@@ -13,7 +13,7 @@ use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
@@ -22,13 +22,15 @@ use crate::outbox_worker::{
     OutboxPublishFailureAction,
 };
 use crate::read_model::{
-    ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelMutation, ReadModelWritePlan, Versioned,
+    key_fingerprint, validate_key, validate_row_values, ColumnDef, ColumnType, DeleteRowMutation,
+    ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
+    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelMutation,
+    ReadModelSchema, ReadModelWritePlan, RowKey, RowMutation, RowValue, RowValues, RowWriteMode,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
-    AsyncSnapshotStore, AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend,
-    RepositoryError, StreamIdentity,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
+    AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend, RepositoryError,
+    StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -254,7 +256,7 @@ impl AsyncTransactionalCommit for SqliteRepository {
             validate_prepared_appends(&prepared)?;
 
             for plan in &batch.read_model_plans {
-                validate_document_write_plan(plan)?;
+                validate_sql_write_plan(plan)?;
             }
 
             let mut tx = self
@@ -286,7 +288,7 @@ impl AsyncTransactionalCommit for SqliteRepository {
             }
 
             for plan in batch.read_model_plans {
-                let outcome = apply_document_write_plan_in_tx(&mut tx, plan).await?;
+                let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
                 if let Some(mark) = outcome.duplicate_message() {
                     return Err(RepositoryError::Model(format!(
                         "processed message already handled by consumer `{}`: `{}`",
@@ -316,197 +318,9 @@ impl AsyncTransactionalCommit for SqliteRepository {
     }
 }
 
-impl AsyncReadModelStore for SqliteRepository {
-    fn get_model_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { self.load_document_model::<M>(id).await }
-    }
-
-    fn get_by_primary_key_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { self.load_document_model::<M>(id).await }
-    }
-
-    fn upsert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move {
-            let bytes =
-                serde_json::to_vec(model).map_err(|err| ReadModelError::Serde(err.to_string()))?;
-            let mut tx = begin_read_model_tx(&self.pool).await?;
-            let version = upsert_document_in_tx(&mut tx, M::COLLECTION, model.id(), bytes).await?;
-            commit_read_model_tx(tx).await?;
-            Ok(Versioned {
-                data: model.clone(),
-                version,
-            })
-        }
-    }
-
-    fn insert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move {
-            let bytes =
-                serde_json::to_vec(model).map_err(|err| ReadModelError::Serde(err.to_string()))?;
-            let mut tx = begin_read_model_tx(&self.pool).await?;
-            let existing = document_version_in_tx(&mut tx, M::COLLECTION, model.id()).await?;
-            if let Some(actual) = existing {
-                return Err(ReadModelError::ConcurrencyConflict {
-                    collection: M::COLLECTION.to_string(),
-                    id: model.id().to_string(),
-                    expected: 0,
-                    actual,
-                });
-            }
-            insert_document_in_tx(&mut tx, M::COLLECTION, model.id(), bytes, 1).await?;
-            commit_read_model_tx(tx).await?;
-            Ok(Versioned {
-                data: model.clone(),
-                version: 1,
-            })
-        }
-    }
-
-    fn update_async<'a, M>(
-        &'a self,
-        model: &'a M,
-        expected_version: u64,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move {
-            let bytes =
-                serde_json::to_vec(model).map_err(|err| ReadModelError::Serde(err.to_string()))?;
-            let mut tx = begin_read_model_tx(&self.pool).await?;
-            let actual = document_version_in_tx(&mut tx, M::COLLECTION, model.id())
-                .await?
-                .ok_or_else(|| ReadModelError::NotFound {
-                    collection: M::COLLECTION.to_string(),
-                    id: model.id().to_string(),
-                })?;
-            if actual != expected_version {
-                return Err(ReadModelError::ConcurrencyConflict {
-                    collection: M::COLLECTION.to_string(),
-                    id: model.id().to_string(),
-                    expected: expected_version,
-                    actual,
-                });
-            }
-            let new_version = next_document_version(M::COLLECTION, model.id(), Some(actual))?;
-            let rows_affected = update_document_in_tx(
-                &mut tx,
-                M::COLLECTION,
-                model.id(),
-                bytes,
-                actual,
-                new_version,
-            )
-            .await?;
-            if rows_affected == 0 {
-                let current = document_version_in_tx(&mut tx, M::COLLECTION, model.id())
-                    .await?
-                    .unwrap_or(actual);
-                return Err(ReadModelError::ConcurrencyConflict {
-                    collection: M::COLLECTION.to_string(),
-                    id: model.id().to_string(),
-                    expected: expected_version,
-                    actual: current,
-                });
-            }
-            commit_read_model_tx(tx).await?;
-            Ok(Versioned {
-                data: model.clone(),
-                version: new_version,
-            })
-        }
-    }
-
-    fn delete_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move {
-            let result = sqlx::query(
-                r#"
-                DELETE FROM transactional_read_models
-                WHERE collection = ? AND id = ?
-                "#,
-            )
-            .bind(M::COLLECTION)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| read_model_storage_error("delete document", err))?;
-
-            Ok(result.rows_affected() > 0)
-        }
-    }
-}
-
-impl SqliteRepository {
-    async fn load_document_model<M: ReadModel>(
-        &self,
-        id: &str,
-    ) -> Result<Option<Versioned<M>>, ReadModelError> {
-        let row = sqlx::query(
-            r#"
-            SELECT payload, version
-            FROM transactional_read_models
-            WHERE collection = ? AND id = ?
-            "#,
-        )
-        .bind(M::COLLECTION)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|err| read_model_storage_error("load document", err))?;
-
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let payload: Vec<u8> = row
-            .try_get("payload")
-            .map_err(|err| read_model_storage_error("decode document payload row", err))?;
-        let version = sqlx_read_model_u64_from_i64(
-            SQLITE_BACKEND,
-            row.try_get("version")
-                .map_err(|err| read_model_storage_error("decode document version row", err))?,
-            "version",
-        )?;
-        let data = serde_json::from_slice(&payload)
-            .map_err(|err| ReadModelError::Serde(err.to_string()))?;
-
-        Ok(Some(Versioned { data, version }))
-    }
-}
-
 impl AsyncReadModelWritePlanStore for SqliteRepository {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        document_capabilities()
+        sql_read_model_capabilities()
     }
 
     fn commit_write_plan_async(
@@ -514,9 +328,9 @@ impl AsyncReadModelWritePlanStore for SqliteRepository {
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
         async move {
-            validate_document_write_plan(&plan)?;
+            validate_sql_write_plan(&plan)?;
             let mut tx = begin_read_model_tx(&self.pool).await?;
-            let outcome = apply_document_write_plan_in_tx(&mut tx, plan).await?;
+            let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
             if outcome.was_applied() {
                 commit_read_model_tx(tx).await?;
             }
@@ -1285,25 +1099,17 @@ fn event_from_row(row: sqlx::sqlite::SqliteRow) -> Result<EventRecord, Repositor
     Ok(event)
 }
 
-fn document_capabilities() -> ReadModelAdapterCapabilities {
+fn sql_read_model_capabilities() -> ReadModelAdapterCapabilities {
     ReadModelAdapterCapabilities {
-        relational_rows: false,
-        document_rows: true,
-        sparse_patches: false,
-        deletes: false,
+        relational_rows: true,
+        sparse_patches: true,
+        deletes: true,
         processed_messages: true,
     }
 }
 
-fn validate_document_write_plan(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
-    for mutation in &plan.mutations {
-        if !matches!(mutation, ReadModelMutation::Document(_)) {
-            return Err(ReadModelError::Metadata(
-                "SqliteRepository currently supports only document read-model mutations".into(),
-            ));
-        }
-    }
-    plan.validate_for(&document_capabilities())
+fn validate_sql_write_plan(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
+    plan.validate_for(&sql_read_model_capabilities())
 }
 
 async fn begin_read_model_tx(pool: &SqlitePool) -> Result<Transaction<'_, Sqlite>, ReadModelError> {
@@ -1318,11 +1124,11 @@ async fn commit_read_model_tx(tx: Transaction<'_, Sqlite>) -> Result<(), ReadMod
         .map_err(|err| read_model_storage_error("commit transaction", err))
 }
 
-async fn apply_document_write_plan_in_tx(
+async fn apply_read_model_write_plan_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     plan: ReadModelWritePlan,
 ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-    validate_document_write_plan(&plan)?;
+    validate_sql_write_plan(&plan)?;
 
     let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
     for mark in &plan.processed_messages {
@@ -1334,14 +1140,14 @@ async fn apply_document_write_plan_in_tx(
 
     for mutation in plan.mutations {
         match mutation {
-            ReadModelMutation::Document(mutation) => {
-                upsert_document_in_tx(tx, &mutation.collection, &mutation.id, mutation.bytes)
-                    .await?;
+            ReadModelMutation::UpsertRow(mutation) => {
+                upsert_relational_row_in_tx(tx, mutation).await?;
             }
-            _ => {
-                return Err(ReadModelError::Metadata(
-                    "SqliteRepository currently supports only document read-model mutations".into(),
-                ));
+            ReadModelMutation::PatchRow(mutation) => {
+                patch_relational_row_in_tx(tx, mutation).await?;
+            }
+            ReadModelMutation::DeleteRow(mutation) => {
+                delete_relational_row_in_tx(tx, mutation).await?;
             }
         }
     }
@@ -1359,128 +1165,343 @@ async fn apply_document_write_plan_in_tx(
     Ok(ReadModelCommitOutcome::applied())
 }
 
-async fn upsert_document_in_tx(
+async fn upsert_relational_row_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    collection: &str,
-    id: &str,
-    bytes: Vec<u8>,
-) -> Result<u64, ReadModelError> {
-    let current = document_version_in_tx(tx, collection, id).await?;
-    let new_version = next_document_version(collection, id, current)?;
-    match current {
+    mutation: RowMutation,
+) -> Result<(), ReadModelError> {
+    validate_key(&mutation.schema, &mutation.key)?;
+    validate_row_values(&mutation.schema, &mutation.values, true)?;
+    validate_values_match_key(&mutation.schema, &mutation.key, &mutation.values)?;
+
+    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+    validate_row_expected_version(
+        &mutation.schema,
+        &mutation.key,
+        &mutation.expected_version,
+        current_version,
+    )?;
+    if matches!(mutation.mode, RowWriteMode::Insert) && current_version.is_some() {
+        return Err(row_concurrency_conflict(
+            &mutation.schema,
+            &mutation.key,
+            0,
+            current_version.unwrap_or_default(),
+        ));
+    }
+
+    match current_version {
         Some(expected_version) => {
-            let rows_affected =
-                update_document_in_tx(tx, collection, id, bytes, expected_version, new_version)
-                    .await?;
+            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
+            let rows_affected = update_relational_row_values_in_tx(
+                tx,
+                &mutation.schema,
+                &mutation.key,
+                &mutation.values,
+                expected_version,
+                new_version,
+            )
+            .await?;
             if rows_affected == 0 {
-                let actual = document_version_in_tx(tx, collection, id)
+                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
                     .await?
                     .unwrap_or(expected_version);
-                return Err(ReadModelError::ConcurrencyConflict {
-                    collection: collection.to_string(),
-                    id: id.to_string(),
-                    expected: expected_version,
+                return Err(row_concurrency_conflict(
+                    &mutation.schema,
+                    &mutation.key,
+                    expected_version,
                     actual,
-                });
+                ));
             }
         }
-        None => insert_document_in_tx(tx, collection, id, bytes, new_version).await?,
+        None => {
+            insert_relational_row_in_tx(
+                tx,
+                &mutation.schema,
+                &mutation.values,
+                initial_row_version(),
+            )
+            .await?;
+        }
     }
-    Ok(new_version)
+
+    Ok(())
 }
 
-async fn document_version_in_tx(
+async fn patch_relational_row_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    collection: &str,
-    id: &str,
-) -> Result<Option<u64>, ReadModelError> {
-    let row = sqlx::query(
-        r#"
-        SELECT version
-        FROM transactional_read_models
-        WHERE collection = ? AND id = ?
-        "#,
+    mutation: PatchRowMutation,
+) -> Result<(), ReadModelError> {
+    validate_key(&mutation.schema, &mutation.key)?;
+
+    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+    validate_row_expected_version(
+        &mutation.schema,
+        &mutation.key,
+        &mutation.expected_version,
+        current_version,
+    )?;
+
+    match current_version {
+        Some(expected_version) => {
+            let patch_values =
+                patch_values_preserving_key(&mutation.schema, &mutation.key, mutation.patch)?;
+            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
+            let rows_affected = update_relational_patch_in_tx(
+                tx,
+                &mutation.schema,
+                &mutation.key,
+                patch_values,
+                expected_version,
+                new_version,
+            )
+            .await?;
+            if rows_affected == 0 {
+                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
+                    .await?
+                    .unwrap_or(expected_version);
+                return Err(row_concurrency_conflict(
+                    &mutation.schema,
+                    &mutation.key,
+                    expected_version,
+                    actual,
+                ));
+            }
+        }
+        None if matches!(mutation.mode, PatchMode::InsertMissing) => {
+            let values =
+                row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
+            insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
+                .await?;
+        }
+        None => {
+            return Err(ReadModelError::NotFound {
+                collection: mutation.schema.table_name,
+                id: key_fingerprint(&mutation.key),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+async fn delete_relational_row_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    mutation: DeleteRowMutation,
+) -> Result<(), ReadModelError> {
+    validate_key(&mutation.schema, &mutation.key)?;
+    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+    validate_row_expected_version(
+        &mutation.schema,
+        &mutation.key,
+        &mutation.expected_version,
+        current_version,
+    )?;
+
+    let rows_affected = delete_relational_row_where_current_in_tx(
+        tx,
+        &mutation.schema,
+        &mutation.key,
+        current_version,
     )
-    .bind(collection)
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|err| read_model_storage_error("load document version", err))?;
+    .await?;
+    if rows_affected == 0 {
+        if let Some(expected_version) = current_version {
+            let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
+                .await?
+                .unwrap_or(expected_version);
+            return Err(row_concurrency_conflict(
+                &mutation.schema,
+                &mutation.key,
+                expected_version,
+                actual,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn row_version_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+) -> Result<Option<u64>, ReadModelError> {
+    let version_column = version_column(schema)?;
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
+    builder.push(quote_identifier(version_column));
+    builder.push(" FROM ");
+    builder.push(quote_identifier(&schema.table_name));
+    push_sqlite_key_predicates(&mut builder, schema, key)?;
+
+    let row = builder
+        .build()
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|err| read_model_storage_error("load relational row version", err))?;
 
     row.map(|row| {
         sqlx_read_model_u64_from_i64(
             SQLITE_BACKEND,
-            row.try_get("version")
-                .map_err(|err| read_model_storage_error("decode document version row", err))?,
-            "version",
+            row.try_get::<i64, _>(version_column)
+                .map_err(|err| read_model_storage_error("decode relational row version", err))?,
+            version_column,
         )
     })
     .transpose()
 }
 
-async fn insert_document_in_tx(
+async fn insert_relational_row_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    collection: &str,
-    id: &str,
-    bytes: Vec<u8>,
+    schema: &ReadModelSchema,
+    values: &RowValues,
     version: u64,
 ) -> Result<(), ReadModelError> {
-    sqlx::query(
-        r#"
-        INSERT INTO transactional_read_models (collection, id, version, payload)
-        VALUES (?, ?, ?, ?)
-        "#,
-    )
-    .bind(collection)
-    .bind(id)
-    .bind(sqlx_read_model_i64_from_u64(
+    let version_column = version_column(schema)?;
+    let write_values = row_write_values(schema, values)?;
+    let has_write_values = !write_values.is_empty();
+    let mut builder = QueryBuilder::<Sqlite>::new("INSERT INTO ");
+    builder.push(quote_identifier(&schema.table_name));
+    builder.push(" (");
+    for (index, (column, _)) in write_values.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push(quote_identifier(&column.column_name));
+    }
+    if has_write_values {
+        builder.push(", ");
+    }
+    builder.push(quote_identifier(version_column));
+    builder.push(") VALUES (");
+    for (index, (column, value)) in write_values.into_iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        push_sqlite_row_value_bind(&mut builder, value, column)?;
+    }
+    if has_write_values {
+        builder.push(", ");
+    }
+    builder.push_bind(sqlx_read_model_i64_from_u64(
         SQLITE_BACKEND,
         version,
-        "version",
+        version_column,
         SIGNED_INTEGER_STORAGE,
-    )?)
-    .bind(bytes)
-    .execute(&mut **tx)
-    .await
-    .map_err(|err| read_model_storage_error("insert document", err))?;
+    )?);
+    builder.push(")");
+
+    builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| read_model_storage_error("insert relational row", err))?;
 
     Ok(())
 }
 
-async fn update_document_in_tx(
+async fn update_relational_row_values_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    collection: &str,
-    id: &str,
-    bytes: Vec<u8>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    values: &RowValues,
     expected_version: u64,
     version: u64,
 ) -> Result<u64, ReadModelError> {
-    let result = sqlx::query(
-        r#"
-        UPDATE transactional_read_models
-        SET version = ?, payload = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE collection = ? AND id = ? AND version = ?
-        "#,
-    )
-    .bind(sqlx_read_model_i64_from_u64(
+    let mut write_values = row_write_values(schema, values)?;
+    write_values.retain(|(column, _)| !column.primary_key);
+    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
+}
+
+async fn update_relational_patch_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    write_values: Vec<(&ColumnDef, RowValue)>,
+    expected_version: u64,
+    version: u64,
+) -> Result<u64, ReadModelError> {
+    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
+}
+
+async fn update_relational_columns_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    write_values: Vec<(&ColumnDef, RowValue)>,
+    expected_version: u64,
+    version: u64,
+) -> Result<u64, ReadModelError> {
+    let version_column = version_column(schema)?;
+    let mut builder = QueryBuilder::<Sqlite>::new("UPDATE ");
+    builder.push(quote_identifier(&schema.table_name));
+    builder.push(" SET ");
+    let mut wrote_set = false;
+    for (column, value) in write_values {
+        if wrote_set {
+            builder.push(", ");
+        }
+        builder.push(quote_identifier(&column.column_name));
+        builder.push(" = ");
+        push_sqlite_row_value_bind(&mut builder, value, column)?;
+        wrote_set = true;
+    }
+    if wrote_set {
+        builder.push(", ");
+    }
+    builder.push(quote_identifier(version_column));
+    builder.push(" = ");
+    builder.push_bind(sqlx_read_model_i64_from_u64(
         SQLITE_BACKEND,
         version,
-        "version",
+        version_column,
         SIGNED_INTEGER_STORAGE,
-    )?)
-    .bind(bytes)
-    .bind(collection)
-    .bind(id)
-    .bind(sqlx_read_model_i64_from_u64(
+    )?);
+    push_sqlite_key_predicates(&mut builder, schema, key)?;
+    builder.push(" AND ");
+    builder.push(quote_identifier(version_column));
+    builder.push(" = ");
+    builder.push_bind(sqlx_read_model_i64_from_u64(
         SQLITE_BACKEND,
         expected_version,
         "expected version",
         SIGNED_INTEGER_STORAGE,
-    )?)
-    .execute(&mut **tx)
-    .await
-    .map_err(|err| read_model_storage_error("update document", err))?;
+    )?);
 
+    let result = builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| read_model_storage_error("update relational row", err))?;
+    Ok(result.rows_affected())
+}
+
+async fn delete_relational_row_where_current_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    current_version: Option<u64>,
+) -> Result<u64, ReadModelError> {
+    let mut builder = QueryBuilder::<Sqlite>::new("DELETE FROM ");
+    builder.push(quote_identifier(&schema.table_name));
+    push_sqlite_key_predicates(&mut builder, schema, key)?;
+    if let Some(version) = current_version {
+        let version_column = version_column(schema)?;
+        builder.push(" AND ");
+        builder.push(quote_identifier(version_column));
+        builder.push(" = ");
+        builder.push_bind(sqlx_read_model_i64_from_u64(
+            SQLITE_BACKEND,
+            version,
+            "expected version",
+            SIGNED_INTEGER_STORAGE,
+        )?);
+    }
+
+    let result = builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| read_model_storage_error("delete relational row", err))?;
     Ok(result.rows_affected())
 }
 
@@ -1542,6 +1563,285 @@ async fn insert_processed_message_in_tx(
 
 fn processed_message_key(mark: &ProcessedMessageMark) -> (String, String) {
     (mark.consumer_name.clone(), mark.message_id.clone())
+}
+
+fn initial_row_version() -> u64 {
+    1
+}
+
+fn next_row_version(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    current_version: Option<u64>,
+) -> Result<u64, ReadModelError> {
+    match current_version {
+        Some(version) => version.checked_add(1).ok_or_else(|| {
+            ReadModelError::Storage(format!(
+                "read model version overflow for {}:{}",
+                schema.table_name,
+                key_fingerprint(key)
+            ))
+        }),
+        None => Ok(initial_row_version()),
+    }
+}
+
+fn validate_row_expected_version(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    expected_version: &ExpectedVersion,
+    current_version: Option<u64>,
+) -> Result<(), ReadModelError> {
+    match (expected_version, current_version) {
+        (ExpectedVersion::Any, _) => Ok(()),
+        (ExpectedVersion::Exact(expected), Some(actual)) if expected == &actual => Ok(()),
+        (ExpectedVersion::Exact(expected), Some(actual)) => {
+            Err(row_concurrency_conflict(schema, key, *expected, actual))
+        }
+        (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
+            collection: schema.table_name.clone(),
+            id: key_fingerprint(key),
+        }),
+        (ExpectedVersion::NotExists, None) => Ok(()),
+        (ExpectedVersion::NotExists, Some(actual)) => {
+            Err(row_concurrency_conflict(schema, key, 0, actual))
+        }
+    }
+}
+
+fn row_concurrency_conflict(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    expected: u64,
+    actual: u64,
+) -> ReadModelError {
+    ReadModelError::ConcurrencyConflict {
+        collection: schema.table_name.clone(),
+        id: key_fingerprint(key),
+        expected,
+        actual,
+    }
+}
+
+fn row_values_from_key_and_patch(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    patch: crate::read_model::RowPatch,
+) -> Result<RowValues, ReadModelError> {
+    let mut values = RowValues::new();
+    for (column, value) in key.iter() {
+        values.insert(column.to_string(), value.clone());
+    }
+    for (column, value) in patch.into_values() {
+        if schema
+            .primary_key
+            .columns
+            .iter()
+            .any(|primary_key| primary_key == &column)
+        {
+            let key_value = key.get(&column).ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` row key is missing primary-key column `{}`",
+                    schema.model_name, column
+                ))
+            })?;
+            if key_value != &value {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` patch cannot change primary-key column `{}`",
+                    schema.model_name, column
+                )));
+            }
+        }
+        values.insert(column, value);
+    }
+    validate_row_values(schema, &values, true)?;
+    validate_values_match_key(schema, key, &values)?;
+    Ok(values)
+}
+
+fn patch_values_preserving_key<'schema>(
+    schema: &'schema ReadModelSchema,
+    key: &RowKey,
+    patch: crate::read_model::RowPatch,
+) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
+    let mut values = Vec::new();
+    for (column_name, value) in patch.into_values() {
+        let column = column_by_name(schema, &column_name)?;
+        if column.primary_key {
+            let key_value = key.get(&column_name).ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` row key is missing primary-key column `{}`",
+                    schema.model_name, column_name
+                ))
+            })?;
+            if key_value != &value {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` patch cannot change primary-key column `{}`",
+                    schema.model_name, column_name
+                )));
+            }
+            continue;
+        }
+        values.push((column, value));
+    }
+    Ok(values)
+}
+
+fn validate_values_match_key(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    values: &RowValues,
+) -> Result<(), ReadModelError> {
+    for column in &schema.primary_key.columns {
+        let key_value = key.get(column).ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` row key is missing primary-key column `{}`",
+                schema.model_name, column
+            ))
+        })?;
+        let row_value = values.get(column).ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` row is missing primary-key column `{}`",
+                schema.model_name, column
+            ))
+        })?;
+        if row_value != key_value {
+            return Err(ReadModelError::Metadata(format!(
+                "read model `{}` row values cannot change primary-key column `{}`",
+                schema.model_name, column
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn row_write_values<'schema>(
+    schema: &'schema ReadModelSchema,
+    values: &RowValues,
+) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
+    values
+        .iter()
+        .map(|(column_name, value)| Ok((column_by_name(schema, column_name)?, value.clone())))
+        .collect()
+}
+
+fn column_by_name<'schema>(
+    schema: &'schema ReadModelSchema,
+    column_name: &str,
+) -> Result<&'schema ColumnDef, ReadModelError> {
+    schema
+        .columns
+        .iter()
+        .find(|column| column.column_name == column_name)
+        .ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` write references missing column `{}`",
+                schema.model_name, column_name
+            ))
+        })
+}
+
+fn version_column(schema: &ReadModelSchema) -> Result<&str, ReadModelError> {
+    schema.version_column.as_deref().ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "read model `{}` requires a version column for SQL write-plan persistence",
+            schema.model_name
+        ))
+    })
+}
+
+fn push_sqlite_key_predicates<'args>(
+    builder: &mut QueryBuilder<'args, Sqlite>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+) -> Result<(), ReadModelError> {
+    builder.push(" WHERE ");
+    for (index, column_name) in schema.primary_key.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(" AND ");
+        }
+        let column = column_by_name(schema, column_name)?;
+        let value = key.get(column_name).cloned().ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` row key is missing primary-key column `{}`",
+                schema.model_name, column_name
+            ))
+        })?;
+        builder.push(quote_identifier(column_name));
+        builder.push(" = ");
+        push_sqlite_row_value_bind(builder, value, column)?;
+    }
+    Ok(())
+}
+
+fn push_sqlite_row_value_bind<'args>(
+    builder: &mut QueryBuilder<'args, Sqlite>,
+    value: RowValue,
+    column: &ColumnDef,
+) -> Result<(), ReadModelError> {
+    match value {
+        RowValue::Null => push_sqlite_null_bind(builder, column)?,
+        RowValue::Bool(value) => {
+            builder.push_bind(i64::from(value));
+        }
+        RowValue::I64(value) => {
+            builder.push_bind(value);
+        }
+        RowValue::U64(value) => {
+            builder.push_bind(sqlx_read_model_i64_from_u64(
+                SQLITE_BACKEND,
+                value,
+                &column.column_name,
+                SIGNED_INTEGER_STORAGE,
+            )?);
+        }
+        RowValue::F64(value) => {
+            builder.push_bind(value);
+        }
+        RowValue::String(value) => {
+            builder.push_bind(value);
+        }
+        RowValue::Bytes(value) => {
+            builder.push_bind(value);
+        }
+        RowValue::Json(value) => {
+            let payload = serde_json::to_string(&value)
+                .map_err(|err| ReadModelError::Serde(err.to_string()))?;
+            builder.push_bind(payload);
+        }
+    }
+    Ok(())
+}
+
+fn push_sqlite_null_bind<'args>(
+    builder: &mut QueryBuilder<'args, Sqlite>,
+    column: &ColumnDef,
+) -> Result<(), ReadModelError> {
+    match &column.column_type {
+        ColumnType::Text | ColumnType::Json | ColumnType::Timestamp => {
+            builder.push_bind(Option::<String>::None);
+        }
+        ColumnType::Boolean | ColumnType::Integer | ColumnType::UnsignedInteger => {
+            builder.push_bind(Option::<i64>::None);
+        }
+        ColumnType::Float => {
+            builder.push_bind(Option::<f64>::None);
+        }
+        ColumnType::Bytes => {
+            builder.push_bind(Option::<Vec<u8>>::None);
+        }
+        ColumnType::Unsupported(type_name) => {
+            return Err(ReadModelError::Metadata(format!(
+                "read model column `{}` has unsupported type `{}`",
+                column.column_name, type_name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 async fn save_snapshot_in_tx(
@@ -1652,19 +1952,6 @@ fn snapshot_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SnapshotRecord, Rep
                 .as_str(),
         ),
     })
-}
-
-fn next_document_version(
-    collection: &str,
-    id: &str,
-    current_version: Option<u64>,
-) -> Result<u64, ReadModelError> {
-    match current_version {
-        Some(version) => version.checked_add(1).ok_or_else(|| {
-            ReadModelError::Storage(format!("read model version overflow for {collection}:{id}"))
-        }),
-        None => Ok(1),
-    }
 }
 
 fn system_time_to_storage(timestamp: SystemTime) -> Result<String, RepositoryError> {

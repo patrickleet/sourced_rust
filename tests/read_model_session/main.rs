@@ -74,18 +74,16 @@ fn session_stages_multiple_read_model_types_in_deterministic_plan() {
     let plan = session.into_write_plan().unwrap();
 
     assert_eq!(plan.mutations.len(), 2);
-    assert_eq!(plan.mutations[0].table_name(), Some("account_summaries"));
-    assert_eq!(plan.mutations[1].table_name(), Some("player_weapons"));
+    assert_eq!(plan.mutations[0].table_name(), "account_summaries");
+    assert_eq!(plan.mutations[1].table_name(), "player_weapons");
 }
 
 #[test]
-fn write_plan_contains_document_and_relational_rows_only() {
+fn write_plan_contains_relational_rows_only() {
     let mut session = ReadModelWritePlanBuilder::new();
     let account = AccountSummary::new("acct-1");
 
     session
-        .document(&account)
-        .unwrap()
         .upsert(&account)
         .unwrap()
         .delete::<AccountSummary>(account_key("acct-2"))
@@ -93,9 +91,8 @@ fn write_plan_contains_document_and_relational_rows_only() {
 
     let plan = session.into_write_plan().unwrap();
 
-    assert!(matches!(plan.mutations[0], ReadModelMutation::Document(_)));
-    assert!(matches!(plan.mutations[1], ReadModelMutation::UpsertRow(_)));
-    assert!(matches!(plan.mutations[2], ReadModelMutation::DeleteRow(_)));
+    assert!(matches!(plan.mutations[0], ReadModelMutation::UpsertRow(_)));
+    assert!(matches!(plan.mutations[1], ReadModelMutation::DeleteRow(_)));
 }
 
 #[test]

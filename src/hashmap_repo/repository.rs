@@ -12,16 +12,17 @@ use crate::entity::{
     BITCODE_PAYLOAD_CODEC_VERSION,
 };
 use crate::outbox::OutboxMessage;
-use crate::read_model::in_memory::apply_document_write_plan;
+use crate::read_model::in_memory::apply_read_model_write_plan;
 use crate::read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelStore, ReadModelWritePlan, ReadModelWritePlanStore, Versioned,
+    InMemoryReadModelStore, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
+    ReadModelWritePlanStore, RelationalReadModelQueryStore,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
-    AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Commit,
-    CommitBatch, GetMany, GetOne, PreparedEventAppend, RepositoryError, SnapshotWrite,
-    StreamIdentity, TransactionalCommit,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
+    AsyncTransactionalCommit, Commit, CommitBatch, GetMany, GetOne, PreparedEventAppend,
+    RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
 
@@ -182,9 +183,9 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 .event_store
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async stream write"))?;
-            let mut model_storage = self
+            let mut relational_rows = self
                 .model_store
-                .storage
+                .relational_rows
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async read model write"))?;
             let mut processed_messages = self
@@ -203,7 +204,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
 
             let mut staged_events = storage.clone();
-            let mut staged_models = model_storage.clone();
+            let mut staged_rows = relational_rows.clone();
             let mut staged_processed_messages = processed_messages.clone();
             let mut staged_snapshots = snapshot_storage.clone();
             let mut staged_outbox = outbox_storage.clone();
@@ -228,9 +229,9 @@ impl AsyncTransactionalCommit for HashMapRepository {
             }
 
             for plan in batch.read_model_plans {
-                let outcome = apply_document_write_plan(
+                let outcome = apply_read_model_write_plan(
                     plan,
-                    &mut staged_models,
+                    &mut staged_rows,
                     &mut staged_processed_messages,
                 )?;
                 if let Some(mark) = outcome.duplicate_message() {
@@ -258,7 +259,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
             }
 
             *storage = staged_events;
-            *model_storage = staged_models;
+            *relational_rows = staged_rows;
             *processed_messages = staged_processed_messages;
             *snapshot_storage = staged_snapshots;
             *outbox_storage = staged_outbox;
@@ -281,9 +282,9 @@ impl TransactionalCommit for HashMapRepository {
             .event_store
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("write"))?;
-        let mut model_storage = self
+        let mut relational_rows = self
             .model_store
-            .storage
+            .relational_rows
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("read model write"))?;
         let mut processed_messages = self
@@ -302,7 +303,7 @@ impl TransactionalCommit for HashMapRepository {
             .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
 
         let mut staged_events = storage.clone();
-        let mut staged_models = model_storage.clone();
+        let mut staged_rows = relational_rows.clone();
         let mut staged_processed_messages = processed_messages.clone();
         let mut staged_snapshots = snapshot_storage.clone();
         let mut staged_outbox = outbox_storage.clone();
@@ -329,9 +330,9 @@ impl TransactionalCommit for HashMapRepository {
         }
 
         for plan in batch.read_model_plans {
-            let outcome = apply_document_write_plan(
+            let outcome = apply_read_model_write_plan(
                 plan,
-                &mut staged_models,
+                &mut staged_rows,
                 &mut staged_processed_messages,
             )?;
             if let Some(mark) = outcome.duplicate_message() {
@@ -361,7 +362,7 @@ impl TransactionalCommit for HashMapRepository {
 
         // Phase 3: Publish staged state only after all validation and staging succeeds.
         *storage = staged_events;
-        *model_storage = staged_models;
+        *relational_rows = staged_rows;
         *processed_messages = staged_processed_messages;
         *snapshot_storage = staged_snapshots;
         *outbox_storage = staged_outbox;
@@ -486,116 +487,6 @@ fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
     events.map_or(0, |events| events.len() as u64)
 }
 
-impl ReadModelStore for HashMapRepository {
-    fn get_model<M: ReadModel>(&self, id: &str) -> Result<Option<Versioned<M>>, ReadModelError> {
-        ReadModelStore::get_model(&self.model_store, id)
-    }
-
-    fn get_by_primary_key<M: ReadModel>(
-        &self,
-        id: &str,
-    ) -> Result<Option<Versioned<M>>, ReadModelError> {
-        ReadModelStore::get_by_primary_key(&self.model_store, id)
-    }
-
-    fn upsert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
-        ReadModelStore::upsert(&self.model_store, model)
-    }
-
-    fn insert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
-        ReadModelStore::insert(&self.model_store, model)
-    }
-
-    fn update<M: ReadModel>(
-        &self,
-        model: &M,
-        expected_version: u64,
-    ) -> Result<Versioned<M>, ReadModelError> {
-        ReadModelStore::update(&self.model_store, model, expected_version)
-    }
-
-    fn delete<M: ReadModel>(&self, id: &str) -> Result<bool, ReadModelError> {
-        ReadModelStore::delete::<M>(&self.model_store, id)
-    }
-
-    fn find_models<M: ReadModel>(
-        &self,
-        predicate: &dyn Fn(&M) -> bool,
-    ) -> Result<Vec<Versioned<M>>, ReadModelError> {
-        ReadModelStore::find_models(&self.model_store, predicate)
-    }
-
-    fn find_one_model<M: ReadModel>(
-        &self,
-        predicate: &dyn Fn(&M) -> bool,
-    ) -> Result<Option<Versioned<M>>, ReadModelError> {
-        ReadModelStore::find_one_model(&self.model_store, predicate)
-    }
-}
-
-impl AsyncReadModelStore for HashMapRepository {
-    fn get_model_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::get_model(self, id) }
-    }
-
-    fn get_by_primary_key_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::get_by_primary_key(self, id) }
-    }
-
-    fn upsert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::upsert(self, model) }
-    }
-
-    fn insert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::insert(self, model) }
-    }
-
-    fn update_async<'a, M>(
-        &'a self,
-        model: &'a M,
-        expected_version: u64,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::update(self, model, expected_version) }
-    }
-
-    fn delete_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::delete::<M>(self, id) }
-    }
-}
-
 impl ReadModelWritePlanStore for HashMapRepository {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         ReadModelWritePlanStore::read_model_capabilities(&self.model_store)
@@ -631,6 +522,32 @@ impl AsyncReadModelWritePlanStore for HashMapRepository {
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
         async move { ReadModelWritePlanStore::is_processed(self, consumer_name, message_id) }
+    }
+}
+
+impl RelationalReadModelQueryStore for HashMapRepository {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
+        RelationalReadModelQueryStore::read_model_query_capabilities(&self.model_store)
+    }
+
+    fn load_graph(
+        &self,
+        request: ReadModelLoadRequest,
+    ) -> Result<ReadModelLoadGraph, ReadModelError> {
+        RelationalReadModelQueryStore::load_graph(&self.model_store, request)
+    }
+}
+
+impl AsyncRelationalReadModelQueryStore for HashMapRepository {
+    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+        RelationalReadModelQueryStore::read_model_query_capabilities(self)
+    }
+
+    fn load_graph_async(
+        &self,
+        request: ReadModelLoadRequest,
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+        async move { RelationalReadModelQueryStore::load_graph(self, request) }
     }
 }
 
@@ -698,8 +615,6 @@ impl AsyncSnapshotStore for HashMapRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read_model::in_memory::StoredModel;
-    use crate::read_model::{DocumentMutation, ReadModelMutation};
     use crate::repository::Get;
 
     #[test]
@@ -763,43 +678,5 @@ mod tests {
         assert_eq!(entity2.committed_version(), 0);
         assert_eq!(entity1.new_events().len(), 1);
         assert_eq!(entity2.new_events().len(), 1);
-    }
-
-    #[test]
-    fn document_plan_rejects_version_overflow_without_writing() {
-        let repo = HashMapRepository::new();
-        let mutation = DocumentMutation {
-            collection: "test_models".into(),
-            id: "plan-overflow".into(),
-            bytes: b"new".to_vec(),
-        };
-        let key = mutation.key();
-        let original_bytes = b"old".to_vec();
-        repo.model_store.storage.write().unwrap().insert(
-            key.clone(),
-            StoredModel {
-                bytes: original_bytes.clone(),
-                version: u64::MAX,
-            },
-        );
-        let plan = ReadModelWritePlan::new(vec![ReadModelMutation::Document(mutation)], Vec::new());
-
-        let err = repo
-            .commit_batch(CommitBatch {
-                entities: Vec::new(),
-                outbox_messages: Vec::new(),
-                read_model_plans: vec![plan],
-                snapshots: Vec::new(),
-            })
-            .unwrap_err();
-
-        assert!(
-            matches!(err, RepositoryError::Model(message) if message.contains("version overflow"))
-        );
-
-        let storage = repo.model_store.storage.read().unwrap();
-        let stored = storage.get(&key).unwrap();
-        assert_eq!(stored.version, u64::MAX);
-        assert_eq!(stored.bytes, original_bytes);
     }
 }

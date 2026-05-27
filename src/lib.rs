@@ -39,7 +39,7 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelStore, AsyncReadModelWritePlanStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
     Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite, StreamIdentity,
@@ -113,16 +113,15 @@ pub use queued_repo::{
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    ColumnDef, ColumnType, DeleteRowMutation, DocumentMutation, ExpectedVersion, ForeignKey,
-    InMemoryReadModelStore, IndexDef, PatchMode, PatchRowMutation, PrimaryKey,
-    ProcessedMessageMark, QueuedReadModelStore, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
+    ColumnDef, ColumnType, DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore,
+    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ProcessedMessageMark, ReadModel,
+    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
     ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
     ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
-    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification, ReadModelStore,
+    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,
     ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder,
-    ReadModelWritePlanStore, ReadModelsExt, RelationalReadModel, RelationalReadModelIncludes,
+    ReadModelWritePlanStore, RelationalReadModel, RelationalReadModelIncludes,
     RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowMutation,
     RowPatch, RowValue, RowValues, RowWriteMode, Versioned, DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
@@ -131,11 +130,11 @@ pub use read_model::{
 pub use table::{
     generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
     DeleteTableRowMutation, PatchTableRowMutation, TableAdapterCapabilities, TableColumn,
-    TableCommitOutcome, TableDocumentMutation, TableIndex, TableMigrationArtifact, TableModel,
-    TableMutation, TableRowMutation, TableSchema, TableSchemaAdapter,
-    TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind,
-    TableSchemaRegistry, TableSchemaRegistryExt, TableSchemaVerification, TableSqlDialect,
-    TableSqlSchemaAdapter, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
+    TableCommitOutcome, TableIndex, TableMigrationArtifact, TableModel, TableMutation,
+    TableRowMutation, TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities,
+    TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry,
+    TableSchemaRegistryExt, TableSchemaVerification, TableSqlDialect, TableSqlSchemaAdapter,
+    TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates

@@ -44,6 +44,24 @@ async fn snapshots_use_full_stream_identity() {
 }
 
 #[tokio::test]
+async fn standalone_relational_write_plan_persists_and_marks_processed() {
+    conformance::read_models::standalone_relational_write_plan_persists_and_marks_processed(
+        repository(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn aggregate_commit_persists_read_model_plan() {
+    conformance::read_models::aggregate_commit_persists_read_model_plan(repository()).await;
+}
+
+#[tokio::test]
+async fn aggregate_conflict_rolls_back_read_model_plan() {
+    conformance::read_models::aggregate_conflict_rolls_back_read_model_plan(repository()).await;
+}
+
+#[tokio::test]
 async fn high_level_outbox_commit_persists_row_without_stream() {
     let repo = repository();
     conformance::outbox::high_level_outbox_commit_persists_row_without_stream(

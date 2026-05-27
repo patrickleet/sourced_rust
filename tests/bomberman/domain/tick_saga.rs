@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Detonation {
     pub bomb_id: String,
     pub owner: String,
@@ -22,20 +22,21 @@ pub struct TickSaga {
     pub winner: Option<String>,
 }
 
+#[sourced(entity)]
 impl TickSaga {
-    #[digest("TickStarted")]
+    #[event("TickStarted")]
     pub fn start(&mut self, saga_id: String, game_id: String, bombs_ticked: usize) {
         self.entity.set_id(&saga_id);
         self.game_id = game_id;
         self.bombs_ticked = bombs_ticked;
     }
 
-    #[digest("DetonationRecorded")]
+    #[event("DetonationRecorded")]
     pub fn record_detonation(&mut self, detonation: Detonation) {
         self.detonations.push(detonation);
     }
 
-    #[digest("DamageRecorded")]
+    #[event("DamageRecorded")]
     pub fn record_damage(
         &mut self,
         blocks_destroyed: Vec<(i32, i32)>,
@@ -47,22 +48,14 @@ impl TickSaga {
         self.chain_detonations.extend(chain_detonations);
     }
 
-    #[digest("DissipationRecorded")]
+    #[event("DissipationRecorded")]
     pub fn record_dissipation(&mut self, explosion_id: String) {
         self.explosions_dissipated.push(explosion_id);
     }
 
-    #[digest("TickCompleted")]
+    #[event("TickCompleted")]
     pub fn complete(&mut self, game_over: bool, winner: Option<String>) {
         self.game_over = game_over;
         self.winner = winner;
     }
 }
-
-sourced_rust::aggregate!(TickSaga, entity {
-    "TickStarted"(saga_id, game_id, bombs_ticked) => start,
-    "DetonationRecorded"(detonation) => record_detonation,
-    "DamageRecorded"(blocks_destroyed, players_killed, chain_detonations) => record_damage,
-    "DissipationRecorded"(explosion_id) => record_dissipation,
-    "TickCompleted"(game_over, winner) => complete,
-});
