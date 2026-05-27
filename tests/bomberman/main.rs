@@ -73,6 +73,20 @@ fn game_setup_and_movement() {
     assert!(bob.alive);
 }
 
+#[test]
+fn invalid_spawn_index_returns_error() {
+    let repo = HashMapRepository::new();
+    let game = Game::new(&repo, "game-invalid-spawn", SMALL_MAP).unwrap();
+    let player = game.sim("p1", "Alice");
+
+    let result = player.join(99);
+
+    assert!(matches!(
+        result,
+        Err(error::GameError::InvalidSpawnIndex(99))
+    ));
+}
+
 // ============================================================================
 // Test 2: Bomb destroys blocks
 // Pattern: Aggregate lifecycle (bomb created -> ticked -> exploded -> expansion)
