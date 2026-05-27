@@ -25,7 +25,11 @@ where
         .get_aggregate(game_id)?
         .ok_or(GameError::GameNotFound)?;
 
-    let (sx, sy) = map.spawn_points[spawn_index];
+    let (sx, sy) = map
+        .spawn_points
+        .get(spawn_index)
+        .copied()
+        .ok_or(GameError::InvalidSpawnIndex(spawn_index))?;
 
     let mut player = Player::default();
     player.join(format!("player:{}", player_id), name.into(), sx, sy)?;
