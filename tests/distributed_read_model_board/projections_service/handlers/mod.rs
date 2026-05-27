@@ -4,10 +4,10 @@
 pub mod board;
 
 use sourced_rust::bus::Event;
-use sourced_rust::microsvc::{Context, HandlerError, MessageEnvelope};
+use sourced_rust::microsvc::{Context, HandlerError};
 
 use crate::projections_service::ProjectionDependencies;
 
 pub fn event(ctx: &Context<ProjectionDependencies>) -> Result<Event, HandlerError> {
-    Ok(ctx.input::<MessageEnvelope>()?.into())
+    Event::try_from(ctx.message())
 }

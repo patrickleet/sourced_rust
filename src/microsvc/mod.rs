@@ -66,8 +66,8 @@ pub use dependencies::{
 };
 pub use error::HandlerError;
 pub use service::{
-    CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerInput, HandlerNames,
-    HandlerSpec, MessageEnvelope, MessageKind, Service, SubscriptionPlan,
+    CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
+    Message, MessageKind, Service, SubscriptionPlan,
 };
 pub use session::Session;
 
@@ -106,7 +106,7 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 ///     handlers::counter_create,
 ///     handlers::counter_increment,
 ///     event handlers::counter_rebuilt,
-///     events handlers::counter_projection => envelope,
+///     events handlers::counter_projection,
 /// );
 /// ```
 #[macro_export]
@@ -125,24 +125,6 @@ macro_rules! __register_handlers {
     ($service:expr, command $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
             $service.command($($seg)::+::COMMAND).guarded(
-                $($seg)::+::guard,
-                $($seg)::+::handle,
-            )
-            $(, $($rest)*)?
-        )
-    };
-    ($service:expr, event $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.event($($seg)::+::EVENT).envelope().guarded(
-                $($seg)::+::guard,
-                $($seg)::+::handle,
-            )
-            $(, $($rest)*)?
-        )
-    };
-    ($service:expr, events $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.events($($seg)::+::EVENTS).envelope().guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )

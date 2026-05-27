@@ -5,13 +5,13 @@ pub mod checkout;
 pub mod seat;
 
 use sourced_rust::bus::Event;
-use sourced_rust::microsvc::{Context, HandlerError, MessageEnvelope};
+use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::ReadModelError;
 
 use crate::projection_service::ProjectionDependencies;
 
 pub fn event(ctx: &Context<ProjectionDependencies>) -> Result<Event, HandlerError> {
-    Ok(ctx.input::<MessageEnvelope>()?.into())
+    Event::try_from(ctx.message())
 }
 
 pub fn read_model_error(err: ReadModelError) -> HandlerError {

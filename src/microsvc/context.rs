@@ -1,16 +1,18 @@
-//! Context passed to command handlers.
+//! Context passed to handlers.
 //!
-//! Carries the parsed input, session variables, and a reference to the service
-//! dependencies. Handlers access everything they need through the context.
+//! Carries the message, parsed JSON payload when available, session variables,
+//! and a reference to the service dependencies. Handlers access everything they
+//! need through the context.
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::dependencies::{HasReadModelStore, HasRepo};
 use super::error::HandlerError;
+use super::service::Message;
 use super::session::Session;
 
-/// The context passed to every command handler.
+/// The context passed to every handler.
 ///
 /// Generic over `D` (the service dependency type) so handlers can access the
 /// repository, read-model store, or custom dependencies the service is
@@ -28,9 +30,9 @@ use super::session::Session;
 /// }
 /// ```
 pub struct Context<'a, D> {
-    /// The command name being handled.
-    command_name: String,
-    /// Raw JSON input from the request.
+    /// Message being handled.
+    message: Message,
+    /// Raw JSON payload input, when the payload is JSON.
     input: Value,
     /// Session variables (user ID, role, etc.).
     session: Session,
@@ -41,13 +43,13 @@ pub struct Context<'a, D> {
 impl<'a, D> Context<'a, D> {
     /// Create a new context.
     pub(crate) fn new(
-        command_name: String,
+        message: Message,
         input: Value,
         session: Session,
         dependencies: &'a D,
     ) -> Self {
         Self {
-            command_name,
+            message,
             input,
             session,
             dependencies,
@@ -56,8 +58,7 @@ impl<'a, D> Context<'a, D> {
 
     /// Deserialize the input payload into a typed struct.
     pub fn input<T: DeserializeOwned>(&self) -> Result<T, HandlerError> {
-        serde_json::from_value(self.input.clone())
-            .map_err(|e| HandlerError::DecodeFailed(e.to_string()))
+        self.message.payload_json()
     }
 
     /// Get the raw JSON input.
@@ -67,7 +68,17 @@ impl<'a, D> Context<'a, D> {
 
     /// Get the command name.
     pub fn command_name(&self) -> &str {
-        &self.command_name
+        self.message.name()
+    }
+
+    /// Get the message name.
+    pub fn message_name(&self) -> &str {
+        self.message.name()
+    }
+
+    /// Get the full message, including id, raw payload bytes, and metadata.
+    pub fn message(&self) -> &Message {
+        &self.message
     }
 
     /// Get the session.
