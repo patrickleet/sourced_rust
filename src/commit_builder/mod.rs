@@ -19,10 +19,18 @@
 //!     .commit(&mut game)?;
 //!
 //! // Ordering is semantic staging only.
+//! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
+//! read_models.upsert(&player)?;
+//! read_models.upsert_related(&player, "weapons", &weapon)?;
+//!
 //! repo
 //!     .outbox(message)
 //!     .read_models(read_models)
 //!     .commit(&mut game)?;
+//!
+//! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
+//! read_models.upsert(&player)?;
+//! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
 //!     .aggregate(&mut game)
