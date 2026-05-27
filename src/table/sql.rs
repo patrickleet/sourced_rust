@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::table::{
     ColumnType, TableMigrationArtifact, TableSchema, TableSchemaAdapter,
     TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaRegistry, TableStoreError,
@@ -67,12 +69,71 @@ pub fn table_schema_statements(
 ) -> Result<Vec<String>, TableStoreError> {
     registry.validate()?;
 
+    let schemas = table_schemas_in_dependency_order(registry)?;
     let mut statements = Vec::new();
-    for schema in registry.schemas() {
+    for schema in &schemas {
         statements.push(create_table_statement(schema, dialect)?);
+    }
+    for schema in schemas {
         statements.extend(index_statements(schema));
     }
     Ok(statements)
+}
+
+fn table_schemas_in_dependency_order(
+    registry: &TableSchemaRegistry,
+) -> Result<Vec<&TableSchema>, TableStoreError> {
+    let schemas_by_table = registry
+        .schemas()
+        .map(|schema| (schema.table_name.as_str(), schema))
+        .collect::<BTreeMap<_, _>>();
+    let mut remaining = schemas_by_table.keys().copied().collect::<BTreeSet<_>>();
+    let mut ordered = Vec::with_capacity(remaining.len());
+
+    while !remaining.is_empty() {
+        let ready = remaining
+            .iter()
+            .copied()
+            .filter(|table_name| {
+                let schema = schemas_by_table
+                    .get(table_name)
+                    .expect("remaining table should have schema");
+                schema_dependency_tables(schema)
+                    .all(|dependency| dependency == *table_name || !remaining.contains(dependency))
+            })
+            .collect::<Vec<_>>();
+
+        if ready.is_empty() {
+            let cycle = remaining.into_iter().collect::<Vec<_>>().join(", ");
+            return Err(TableStoreError::Metadata(format!(
+                "table schema foreign-key cycle cannot be bootstrapped inline: {cycle}"
+            )));
+        }
+
+        for table_name in ready {
+            remaining.remove(table_name);
+            ordered.push(
+                *schemas_by_table
+                    .get(table_name)
+                    .expect("ready table should have schema"),
+            );
+        }
+    }
+
+    Ok(ordered)
+}
+
+fn schema_dependency_tables(schema: &TableSchema) -> impl Iterator<Item = &str> {
+    let column_foreign_keys = schema
+        .columns
+        .iter()
+        .filter_map(|column| column.foreign_key.as_ref())
+        .map(|foreign_key| foreign_key.table.as_str());
+    let schema_foreign_keys = schema
+        .foreign_keys
+        .iter()
+        .map(|foreign_key| foreign_key.table.as_str());
+    column_foreign_keys.chain(schema_foreign_keys)
 }
 
 fn create_table_statement(
@@ -224,6 +285,7 @@ pub fn bootstrap_result(registry: &TableSchemaRegistry) -> TableSchemaBootstrap 
 mod tests {
     use super::*;
     use crate::outbox::{outbox_message_schema, OUTBOX_MESSAGES_TABLE};
+    use crate::table::{ForeignKey, PrimaryKey, TableColumn, TableSchema};
 
     #[test]
     fn renders_outbox_table_schema_for_sqlite() {
@@ -277,6 +339,52 @@ mod tests {
             .any(|statement| statement.contains("\"claimed_until\" timestamptz")));
         assert!(artifact.statements.iter().any(|statement| statement
             .contains("\"updated_at\" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP")));
+    }
+
+    #[test]
+    fn orders_parent_tables_before_foreign_key_dependents() {
+        let parent = TableSchema {
+            model_name: "Parent".into(),
+            table_name: "parents".into(),
+            columns: vec![TableColumn::new("parent_id", "parent_id", ColumnType::Text)],
+            primary_key: PrimaryKey::new(["parent_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+        };
+        let child = TableSchema {
+            model_name: "Child".into(),
+            table_name: "children".into(),
+            columns: vec![
+                TableColumn::new("child_id", "child_id", ColumnType::Text),
+                TableColumn {
+                    foreign_key: Some(ForeignKey::new("parents", "parent_id")),
+                    ..TableColumn::new("parent_id", "parent_id", ColumnType::Text)
+                },
+            ],
+            primary_key: PrimaryKey::new(["child_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+        };
+        let mut registry = TableSchemaRegistry::new();
+        registry.register_schema(child).expect("child registers");
+        registry.register_schema(parent).expect("parent registers");
+
+        let statements = table_schema_statements(&registry, TableSqlDialect::Postgres)
+            .expect("statements should render");
+        let parent_position = statements
+            .iter()
+            .position(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"parents\""))
+            .expect("parent statement should exist");
+        let child_position = statements
+            .iter()
+            .position(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"children\""))
+            .expect("child statement should exist");
+
+        assert!(parent_position < child_position);
     }
 
     #[test]

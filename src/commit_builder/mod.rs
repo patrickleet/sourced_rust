@@ -572,6 +572,8 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::Mutex;
 
+    type OutboxSourceRecord = (String, Option<String>, Option<String>, Option<u64>);
+
     #[derive(Default)]
     struct TestAggregate {
         entity: Entity,
@@ -605,7 +607,7 @@ mod tests {
         fail: bool,
         entity_ids: RefCell<Vec<String>>,
         outbox_ids: RefCell<Vec<String>>,
-        outbox_sources: RefCell<Vec<(String, Option<String>, Option<String>, Option<u64>)>>,
+        outbox_sources: RefCell<Vec<OutboxSourceRecord>>,
         read_model_keys: RefCell<Vec<String>>,
     }
 
@@ -660,65 +662,63 @@ mod tests {
         fail: bool,
         stream_ids: Mutex<Vec<(String, String)>>,
         outbox_ids: Mutex<Vec<String>>,
-        outbox_sources: Mutex<Vec<(String, Option<String>, Option<String>, Option<u64>)>>,
+        outbox_sources: Mutex<Vec<OutboxSourceRecord>>,
         read_model_keys: Mutex<Vec<String>>,
     }
 
     impl AsyncTransactionalCommit for RecordingAsyncBatchRepo {
-        fn commit_batch_async<'a>(
+        async fn commit_batch_async<'a>(
             &'a self,
             batch: AsyncCommitBatch<'a>,
-        ) -> impl std::future::Future<Output = Result<(), RepositoryError>> + Send + 'a {
-            async move {
-                *self.stream_ids.lock().unwrap() = batch
-                    .streams
-                    .iter()
-                    .map(|stream| {
-                        (
-                            stream.identity.aggregate_type().to_string(),
-                            stream.identity.aggregate_id().to_string(),
-                        )
-                    })
-                    .collect();
-                *self.outbox_ids.lock().unwrap() = batch
-                    .outbox_messages
-                    .iter()
-                    .map(|message| message.id().to_string())
-                    .collect();
-                *self.outbox_sources.lock().unwrap() = batch
-                    .outbox_messages
-                    .iter()
-                    .map(|message| {
-                        (
-                            message.id().to_string(),
-                            message.source_aggregate_type.clone(),
-                            message.source_aggregate_id.clone(),
-                            message.source_sequence,
-                        )
-                    })
-                    .collect();
-                *self.read_model_keys.lock().unwrap() = batch
-                    .read_model_plans
-                    .iter()
-                    .flat_map(|plan| {
-                        plan.mutations
-                            .iter()
-                            .map(|mutation| mutation.lock_key())
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
+        ) -> Result<(), RepositoryError> {
+            *self.stream_ids.lock().unwrap() = batch
+                .streams
+                .iter()
+                .map(|stream| {
+                    (
+                        stream.identity.aggregate_type().to_string(),
+                        stream.identity.aggregate_id().to_string(),
+                    )
+                })
+                .collect();
+            *self.outbox_ids.lock().unwrap() = batch
+                .outbox_messages
+                .iter()
+                .map(|message| message.id().to_string())
+                .collect();
+            *self.outbox_sources.lock().unwrap() = batch
+                .outbox_messages
+                .iter()
+                .map(|message| {
+                    (
+                        message.id().to_string(),
+                        message.source_aggregate_type.clone(),
+                        message.source_aggregate_id.clone(),
+                        message.source_sequence,
+                    )
+                })
+                .collect();
+            *self.read_model_keys.lock().unwrap() = batch
+                .read_model_plans
+                .iter()
+                .flat_map(|plan| {
+                    plan.mutations
+                        .iter()
+                        .map(|mutation| mutation.lock_key())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
 
-                if self.fail {
-                    return Err(RepositoryError::Model(
-                        "injected async batch failure".into(),
-                    ));
-                }
-
-                for stream in batch.streams {
-                    stream.entity.mark_committed();
-                }
-                Ok(())
+            if self.fail {
+                return Err(RepositoryError::Model(
+                    "injected async batch failure".into(),
+                ));
             }
+
+            for stream in batch.streams {
+                stream.entity.mark_committed();
+            }
+            Ok(())
         }
     }
 

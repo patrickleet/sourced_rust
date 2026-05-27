@@ -15,6 +15,9 @@
 
 mod checkout;
 mod checkout_saga_service;
+#[cfg(feature = "postgres")]
+#[path = "../support/postgres.rs"]
+mod postgres;
 mod projection_service;
 mod query_service;
 mod read_models;
@@ -47,8 +50,6 @@ use seat_inventory_service::Seat;
 use serde::Serialize;
 use sourced_rust::bus::Subscribable;
 use sourced_rust::microsvc::{self, Service, Session};
-#[cfg(feature = "postgres")]
-use sourced_rust::PostgresRepository;
 #[cfg(feature = "sqlite")]
 use sourced_rust::SqliteRepository;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -739,22 +740,20 @@ async fn async_sqlite_checkout_flow_projects_relational_read_models() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn async_postgres_checkout_flow_projects_relational_read_models() {
-    let Ok(database_url) = std::env::var("DATABASE_URL") else {
-        eprintln!("skipping Postgres distributed read-model test: DATABASE_URL is not set");
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env(
+        "distributed_read",
+        "skipping Postgres distributed read-model test",
+    )
+    .await
+    else {
         return;
     };
 
-    let checkout_repo = PostgresRepository::connect_and_migrate(&database_url)
-        .await
-        .expect("checkout repository should migrate");
+    let checkout_repo = schema.repository().await;
     let checkout_outbox = checkout_repo.outbox_store();
-    let seat_repo = PostgresRepository::connect_and_migrate(&database_url)
-        .await
-        .expect("seat repository should migrate");
+    let seat_repo = schema.repository().await;
     let seat_outbox = seat_repo.outbox_store();
-    let read_repo = PostgresRepository::connect_and_migrate(&database_url)
-        .await
-        .expect("read repository should migrate");
+    let read_repo = schema.repository().await;
     let registry = read_models::table_schema_registry().expect("schemas should build");
     read_repo
         .bootstrap_table_schema_for_dev(&registry)
