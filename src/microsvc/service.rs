@@ -221,7 +221,7 @@ impl Message {
     pub fn metadata(&self, key: &str) -> Option<&str> {
         self.metadata
             .iter()
-            .find(|(existing, _)| existing == key)
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(key))
             .map(|(_, value)| value.as_str())
     }
 
@@ -821,7 +821,11 @@ fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
 }
 
 fn message_to_session(message: &Message) -> Session {
-    let vars: HashMap<String, String> = message.metadata.iter().cloned().collect();
+    let vars: HashMap<String, String> = message
+        .metadata
+        .iter()
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.clone()))
+        .collect();
     Session::from_map(vars)
 }
 
@@ -963,7 +967,7 @@ mod tests {
             kind: MessageKind::Event,
             payload: br#"{"checkout_id":"checkout-1"}"#.to_vec(),
             content_type: "application/json".to_string(),
-            metadata: vec![("x-hasura-user-id".to_string(), "user-1".to_string())],
+            metadata: vec![("X-Hasura-User-Id".to_string(), "user-1".to_string())],
         };
 
         let result = service.dispatch_message(&message).unwrap();
@@ -995,7 +999,7 @@ mod tests {
             kind: MessageKind::Event,
             payload: br#"{"seat_id":"A-7"}"#.to_vec(),
             content_type: "application/json".to_string(),
-            metadata: vec![("correlation_id".to_string(), "checkout-1".to_string())],
+            metadata: vec![("Correlation_ID".to_string(), "checkout-1".to_string())],
         };
 
         let result = service.dispatch_message(&message).unwrap();
