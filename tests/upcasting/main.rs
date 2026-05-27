@@ -399,7 +399,7 @@ fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode
     let mut invalid_event = EventRecord::new("Initialized", vec![0xff], 2);
     invalid_event.sequence = 2;
 
-    let mut entity = Entity::new();
+    let mut entity = Entity::with_id("t1");
     entity.load_from_history(vec![invalid_event]);
 
     match hydrate_from_snapshot::<TodoV2>(entity, snapshot) {
