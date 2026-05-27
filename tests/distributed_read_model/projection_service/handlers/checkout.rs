@@ -15,7 +15,7 @@ pub const EVENTS: &[&str] = &[
 ];
 
 pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
-    ctx.has_fields(&["id", "name", "payload"])
+    ctx.message().id().is_some()
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {

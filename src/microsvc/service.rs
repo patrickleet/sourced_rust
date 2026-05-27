@@ -53,16 +53,6 @@ pub enum DeliveryKind {
     FanOut,
 }
 
-/// The input shape delivered to a handler after a message is received.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandlerInput {
-    /// Decode the message payload bytes as JSON and pass that JSON value to
-    /// the handler. This is the default command-style input.
-    PayloadJson,
-    /// Pass the full [`MessageEnvelope`] to the handler as JSON.
-    MessageEnvelope,
-}
-
 /// Static message names attached to a handler spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandlerNames {
@@ -87,7 +77,6 @@ pub struct HandlerSpec {
     names: HandlerNames,
     pub kind: MessageKind,
     pub delivery: DeliveryKind,
-    pub input: HandlerInput,
 }
 
 impl HandlerSpec {
@@ -97,7 +86,6 @@ impl HandlerSpec {
             names: HandlerNames::One(name),
             kind: MessageKind::Command,
             delivery: DeliveryKind::PointToPoint,
-            input: HandlerInput::PayloadJson,
         }
     }
 
@@ -107,7 +95,6 @@ impl HandlerSpec {
             names: HandlerNames::One(name),
             kind: MessageKind::Event,
             delivery: DeliveryKind::FanOut,
-            input: HandlerInput::PayloadJson,
         }
     }
 
@@ -117,20 +104,7 @@ impl HandlerSpec {
             names: HandlerNames::Many(names),
             kind: MessageKind::Event,
             delivery: DeliveryKind::FanOut,
-            input: HandlerInput::PayloadJson,
         }
-    }
-
-    /// Deliver the full message envelope to the handler.
-    pub const fn envelope(mut self) -> Self {
-        self.input = HandlerInput::MessageEnvelope;
-        self
-    }
-
-    /// Deliver only the message JSON payload to the handler.
-    pub const fn payload_json(mut self) -> Self {
-        self.input = HandlerInput::PayloadJson;
-        self
     }
 
     /// Message names consumed by this handler.
@@ -148,11 +122,10 @@ pub struct SubscriptionPlan {
     pub events: Vec<String>,
 }
 
-/// Serializable transport message envelope used by projection-style handlers
-/// that need message ids, names, payload bytes, and metadata.
+/// Serializable transport message used by handlers.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct MessageEnvelope {
-    pub id: String,
+pub struct Message {
+    pub id: Option<String>,
     pub name: String,
     pub kind: MessageKind,
     pub payload: Vec<u8>,
@@ -161,10 +134,10 @@ pub struct MessageEnvelope {
 }
 
 #[cfg(feature = "bus")]
-impl From<&Event> for MessageEnvelope {
+impl From<&Event> for Message {
     fn from(event: &Event) -> Self {
         Self {
-            id: event.id.clone(),
+            id: Some(event.id.clone()),
             name: event.event_type.clone(),
             kind: MessageKind::Event,
             payload: event.payload.clone(),
@@ -175,26 +148,111 @@ impl From<&Event> for MessageEnvelope {
 }
 
 #[cfg(feature = "bus")]
-impl From<MessageEnvelope> for Event {
-    fn from(envelope: MessageEnvelope) -> Self {
-        let metadata = if envelope.metadata.is_empty() {
+impl TryFrom<&Message> for Event {
+    type Error = HandlerError;
+
+    fn try_from(message: &Message) -> Result<Self, Self::Error> {
+        let id = message
+            .id
+            .clone()
+            .ok_or_else(|| HandlerError::Rejected("message id is required".into()))?;
+        let metadata = if message.metadata.is_empty() {
             None
         } else {
-            Some(envelope.metadata)
+            Some(message.metadata.clone())
         };
 
-        Self {
-            id: envelope.id,
-            event_type: envelope.name,
-            payload: envelope.payload,
+        Ok(Self {
+            id,
+            event_type: message.name.clone(),
+            payload: message.payload.clone(),
             metadata,
+        })
+    }
+}
+
+impl Message {
+    /// Create a transport message.
+    pub fn new(name: impl Into<String>, kind: MessageKind, payload: Vec<u8>) -> Self {
+        Self {
+            id: None,
+            name: name.into(),
+            kind,
+            payload,
+            content_type: "application/json".to_string(),
+            metadata: Vec::new(),
         }
+    }
+
+    /// Add a durable message id.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Add metadata.
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+
+    /// Get the durable message id, if this message has one.
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Get the message name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the raw payload bytes.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Get a metadata value by key.
+    pub fn metadata(&self, key: &str) -> Option<&str> {
+        self.metadata
+            .iter()
+            .find(|(existing, _)| existing == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Get the correlation id, if present.
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.metadata("correlation_id")
+    }
+
+    /// Get the causation id, if present.
+    pub fn causation_id(&self) -> Option<&str> {
+        self.metadata("causation_id")
+    }
+
+    /// Decode the raw payload as JSON.
+    pub fn payload_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, HandlerError> {
+        serde_json::from_slice(&self.payload).map_err(|e| {
+            HandlerError::DecodeFailed(format!(
+                "invalid JSON payload for message '{}': {}",
+                self.name, e
+            ))
+        })
+    }
+
+    /// Decode the raw payload as bitcode.
+    pub fn payload_bitcode<T: serde::de::DeserializeOwned>(&self) -> Result<T, HandlerError> {
+        bitcode::deserialize(&self.payload).map_err(|e| {
+            HandlerError::DecodeFailed(format!(
+                "invalid bitcode payload for message '{}': {}",
+                self.name, e
+            ))
+        })
     }
 }
 
 /// A registered handler with optional guard.
 struct RegisteredHandler<D> {
-    input: HandlerInput,
+    kind: MessageKind,
     guard: Option<Arc<GuardFn<D>>>,
     handle: Arc<HandlerFn<D>>,
 }
@@ -207,18 +265,6 @@ pub struct HandlerBuilder<D> {
 }
 
 impl<D: Send + Sync + 'static> HandlerBuilder<D> {
-    /// Deliver the full message envelope to the handler.
-    pub fn envelope(mut self) -> Self {
-        self.spec = self.spec.envelope();
-        self
-    }
-
-    /// Deliver only the message JSON payload to the handler.
-    pub fn payload_json(mut self) -> Self {
-        self.spec = self.spec.payload_json();
-        self
-    }
-
     /// Register a handler without a guard.
     pub fn handle<F>(self, handler: F) -> Service<D>
     where
@@ -310,7 +356,7 @@ impl<D: Send + Sync + 'static> Service<D> {
             self.handlers.insert(
                 name.to_string(),
                 RegisteredHandler {
-                    input: spec.input,
+                    kind: spec.kind,
                     guard: guard.clone(),
                     handle: handle.clone(),
                 },
@@ -330,21 +376,29 @@ impl<D: Send + Sync + 'static> Service<D> {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
-        let handler = self
+        let kind = self
             .handlers
             .get(command)
-            .ok_or_else(|| HandlerError::UnknownCommand(command.to_string()))?;
+            .ok_or_else(|| HandlerError::UnknownCommand(command.to_string()))?
+            .kind;
+        let payload = serde_json::to_vec(&input).map_err(|e| {
+            HandlerError::DecodeFailed(format!("invalid JSON input for command '{command}': {e}"))
+        })?;
+        let metadata = session
+            .variables()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let message = Message {
+            id: None,
+            name: command.to_string(),
+            kind,
+            payload,
+            content_type: "application/json".to_string(),
+            metadata,
+        };
 
-        let ctx = Context::new(command.to_string(), input, session, &self.dependencies);
-
-        // Run guard if present
-        if let Some(guard) = &handler.guard {
-            if !guard(&ctx) {
-                return Err(HandlerError::GuardRejected(command.to_string()));
-            }
-        }
-
-        (handler.handle.as_ref())(&ctx)
+        self.invoke(message, input, session)
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -363,20 +417,46 @@ impl<D: Send + Sync + 'static> Service<D> {
     }
 
     /// Dispatch a transport message.
-    pub fn dispatch_message(&self, message: &MessageEnvelope) -> Result<Value, HandlerError> {
-        let handler = self
-            .handlers
-            .get(&message.name)
-            .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
-        let input = message_to_handler_input(message, handler.input)?;
+    pub fn dispatch_message(&self, message: &Message) -> Result<Value, HandlerError> {
+        if !self.handlers.contains_key(&message.name) {
+            return Err(HandlerError::UnknownCommand(message.name.clone()));
+        }
+
+        let input = match message_to_json_input(message) {
+            Ok(input) => input,
+            Err(_) => Value::Null,
+        };
         let session = message_to_session(message);
-        self.dispatch(&message.name, input, session)
+        self.invoke(message.clone(), input, session)
     }
 
     /// Dispatch a bus `Event` as a message.
     #[cfg(feature = "bus")]
     pub fn dispatch_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
-        self.dispatch_message(&MessageEnvelope::from(event))
+        self.dispatch_message(&Message::from(event))
+    }
+
+    fn invoke(
+        &self,
+        message: Message,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
+        let handler = self
+            .handlers
+            .get(&message.name)
+            .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
+        let name = message.name.clone();
+        let ctx = Context::new(message, input, session, &self.dependencies);
+
+        // Run guard if present
+        if let Some(guard) = &handler.guard {
+            if !guard(&ctx) {
+                return Err(HandlerError::GuardRejected(name));
+            }
+        }
+
+        (handler.handle.as_ref())(&ctx)
     }
 
     /// List registered command names.
@@ -699,18 +779,7 @@ fn names_by_kind(specs: &[HandlerSpec], kind: MessageKind) -> Vec<&str> {
     names
 }
 
-fn message_to_handler_input(
-    message: &MessageEnvelope,
-    input: HandlerInput,
-) -> Result<Value, HandlerError> {
-    match input {
-        HandlerInput::PayloadJson => message_to_json_input(message),
-        HandlerInput::MessageEnvelope => serde_json::to_value(message)
-            .map_err(|e| HandlerError::DecodeFailed(format!("invalid message envelope: {e}"))),
-    }
-}
-
-fn message_to_json_input(message: &MessageEnvelope) -> Result<Value, HandlerError> {
+fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
     serde_json::from_slice::<Value>(&message.payload).map_err(|e| {
         HandlerError::DecodeFailed(format!(
             "invalid JSON payload for message '{}': {}",
@@ -719,7 +788,7 @@ fn message_to_json_input(message: &MessageEnvelope) -> Result<Value, HandlerErro
     })
 }
 
-fn message_to_session(message: &MessageEnvelope) -> Session {
+fn message_to_session(message: &Message) -> Session {
     let vars: HashMap<String, String> = message.metadata.iter().cloned().collect();
     Session::from_map(vars)
 }
@@ -792,7 +861,7 @@ mod tests {
         let service = test_service()
             .command("checkout.start")
             .handle(|_| Ok(json!({})))
-            .handler(HandlerSpec::events(EVENTS).envelope())
+            .events(EVENTS)
             .guarded(|_| true, |_| Ok(json!({})));
 
         assert_eq!(
@@ -830,12 +899,13 @@ mod tests {
             }
 
             Ok(json!({
+                "event_id": ctx.message().id(),
                 "checkout_id": ctx.raw_input()["checkout_id"].as_str().unwrap(),
                 "user_id": ctx.user_id()?,
             }))
         });
-        let message = MessageEnvelope {
-            id: "evt-1".to_string(),
+        let message = Message {
+            id: Some("evt-1".to_string()),
             name: "checkout.started".to_string(),
             kind: MessageKind::Event,
             payload: br#"{"checkout_id":"checkout-1"}"#.to_vec(),
@@ -847,25 +917,27 @@ mod tests {
 
         assert_eq!(
             result,
-            json!({ "checkout_id": "checkout-1", "user_id": "user-1" })
+            json!({ "event_id": "evt-1", "checkout_id": "checkout-1", "user_id": "user-1" })
         );
     }
 
     #[test]
-    fn dispatch_message_can_deliver_full_envelope() {
-        let service = test_service().event("seat.reserved").envelope().guarded(
-            |ctx| ctx.has_fields(&["id", "name", "payload"]),
+    fn dispatch_message_always_exposes_message_metadata() {
+        let service = test_service().event("seat.reserved").guarded(
+            |ctx| ctx.message().id().is_some(),
             |ctx| {
-                let envelope = ctx.input::<MessageEnvelope>()?;
+                let input: Value = ctx.input()?;
+                let message = ctx.message();
                 Ok(json!({
-                    "event_id": envelope.id,
-                    "name": envelope.name,
-                    "metadata": envelope.metadata,
+                    "event_id": message.id(),
+                    "name": message.name(),
+                    "correlation_id": message.correlation_id(),
+                    "seat_id": input["seat_id"].as_str().unwrap(),
                 }))
             },
         );
-        let message = MessageEnvelope {
-            id: "evt-2".to_string(),
+        let message = Message {
+            id: Some("evt-2".to_string()),
             name: "seat.reserved".to_string(),
             kind: MessageKind::Event,
             payload: br#"{"seat_id":"A-7"}"#.to_vec(),
@@ -880,7 +952,8 @@ mod tests {
             json!({
                 "event_id": "evt-2",
                 "name": "seat.reserved",
-                "metadata": [["correlation_id", "checkout-1"]],
+                "correlation_id": "checkout-1",
+                "seat_id": "A-7",
             })
         );
     }
@@ -1003,13 +1076,21 @@ mod tests {
 
     #[cfg(feature = "bus")]
     #[test]
-    fn dispatch_event_rejects_non_json_payload() {
-        let service = test_service()
-            .command("ping")
-            .handle(|_ctx| Ok(json!({ "ok": true })));
+    fn dispatch_event_exposes_raw_payload_without_requiring_json() {
+        let service = test_service().command("ping").handle(|ctx| {
+            let payload = std::str::from_utf8(ctx.message().payload())
+                .map_err(|err| HandlerError::DecodeFailed(err.to_string()))?;
+            Ok(json!({
+                "event_id": ctx.message().id(),
+                "payload": payload,
+            }))
+        });
         let event = crate::bus::Event::with_string_payload("evt-1", "ping", "not-json");
         let result = service.dispatch_event(&event);
-        assert!(matches!(result, Err(HandlerError::DecodeFailed(_))));
+        assert_eq!(
+            result.unwrap(),
+            json!({ "event_id": "evt-1", "payload": "not-json" })
+        );
     }
 
     #[cfg(feature = "bus")]

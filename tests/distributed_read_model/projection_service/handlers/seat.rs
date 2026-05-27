@@ -9,7 +9,7 @@ use crate::read_models::{CheckoutStepView, SeatView};
 pub const EVENTS: &[&str] = &[seat_event::ADDED, seat_event::RESERVED];
 
 pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
-    ctx.has_fields(&["id", "name", "payload"])
+    ctx.message().id().is_some()
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
