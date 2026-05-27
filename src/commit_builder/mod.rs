@@ -32,6 +32,10 @@
 //!     .commit()?;
 //!
 //! // Async repositories use the same staging shape.
+//! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
+//! read_models.upsert(&player)?;
+//! read_models.upsert_related(&player, "weapons", &weapon)?;
+//!
 //! repo
 //!     .read_models(read_models)
 //!     .commit(&mut game)
