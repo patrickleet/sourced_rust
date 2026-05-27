@@ -2,7 +2,6 @@
 //!
 //! Each handler lives in its own file under `handlers/` and exports:
 //! - `COMMAND: &str` — the command name
-//! - `SPEC: HandlerSpec` — the handler's command/event metadata
 //! - `guard(ctx) -> bool` — input validation
 //! - `handle(ctx) -> Result<Value, HandlerError>` — the handler
 //!

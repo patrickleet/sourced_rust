@@ -7,8 +7,6 @@ use crate::projection_service::{ProjectionDependencies, CHECKOUT_SCREEN_CONSUMER
 use crate::read_models::{CheckoutStepView, SeatView};
 
 pub const EVENTS: &[&str] = &[seat_event::ADDED, seat_event::RESERVED];
-pub const SPEC: sourced_rust::microsvc::HandlerSpec =
-    sourced_rust::microsvc::HandlerSpec::events(EVENTS).envelope();
 
 pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
     ctx.has_fields(&["id", "name", "payload"])

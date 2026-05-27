@@ -29,10 +29,9 @@ pub fn start_board_projection_service(
 }
 
 pub fn service(store: InMemoryReadModelStore) -> Arc<Service<ProjectionDependencies>> {
-    Arc::new(Service::with_read_model_store(store).handler(
-        handlers::board::SPEC,
-        handlers::board::guard,
-        handlers::board::handle,
+    Arc::new(sourced_rust::register_handlers!(
+        Service::with_read_model_store(store),
+        events handlers::board => envelope,
     ))
 }
 
