@@ -1254,6 +1254,16 @@ read_models.upsert_related(&player_view, "weapons", &weapon_view)?;
 repo.read_models(read_models).commit(&mut game)?;
 ```
 
+Async persistent repositories use the same staging shape at the SQL boundary:
+
+```rust,ignore
+use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
+
+let mut read_models = ReadModelWritePlanBuilder::new();
+read_models.upsert(&view)?;
+repo.read_models(read_models).commit(&mut game).await?;
+```
+
 Distributed projectors can commit the same write-plan shape directly against a read-model adapter and mark messages processed in the same adapter transaction:
 
 ```rust

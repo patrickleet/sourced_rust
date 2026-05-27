@@ -139,7 +139,9 @@ pub use table::{
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates
 pub use commit_builder::{
-    CommitBuilder, CommitBuilderExt, ReadModelWritePlanCommitExt, StagedCommitBuilder,
+    AsyncCommitBuilder, AsyncCommitBuilderExt, AsyncReadModelWritePlanCommitExt,
+    AsyncStagedCommitBuilder, CommitBuilder, CommitBuilderExt, ReadModelWritePlanCommitExt,
+    StagedCommitBuilder,
 };
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration
