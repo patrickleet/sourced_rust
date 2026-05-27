@@ -10,13 +10,21 @@ pub use checkout_step_view::CheckoutStepView;
 pub use checkout_view::CheckoutView;
 pub use seat_view::SeatView;
 
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
+use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue, TableSchemaRegistry};
 
 pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
     store.register_schema::<SeatView>()?;
     store.register_schema::<CheckoutView>()?;
     store.register_schema::<CheckoutStepView>()?;
     Ok(())
+}
+
+pub fn table_schema_registry() -> Result<TableSchemaRegistry, ReadModelError> {
+    let mut registry = TableSchemaRegistry::new();
+    registry.register::<SeatView>()?;
+    registry.register::<CheckoutView>()?;
+    registry.register::<CheckoutStepView>()?;
+    Ok(registry)
 }
 
 pub fn checkout_key(checkout_id: &str) -> RowKey {

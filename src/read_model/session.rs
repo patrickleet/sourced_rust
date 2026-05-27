@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
@@ -269,6 +270,53 @@ impl ReadModelMutation {
                 mutation.schema.table_name,
                 key_fingerprint(&mutation.key)
             ),
+        }
+    }
+
+    fn operation_rank(&self) -> u8 {
+        match self {
+            ReadModelMutation::UpsertRow(_) => 1,
+            ReadModelMutation::PatchRow(_) => 2,
+            ReadModelMutation::DeleteRow(_) => 3,
+        }
+    }
+
+    fn schema(&self) -> &ReadModelSchema {
+        match self {
+            ReadModelMutation::UpsertRow(mutation) => &mutation.schema,
+            ReadModelMutation::PatchRow(mutation) => &mutation.schema,
+            ReadModelMutation::DeleteRow(mutation) => &mutation.schema,
+        }
+    }
+
+    fn depends_on_table(&self, table_name: &str) -> bool {
+        let schema = self.schema();
+        schema
+            .foreign_keys
+            .iter()
+            .any(|foreign_key| foreign_key.table == table_name)
+            || schema.columns.iter().any(|column| {
+                column
+                    .foreign_key
+                    .as_ref()
+                    .is_some_and(|foreign_key| foreign_key.table == table_name)
+            })
+    }
+
+    fn dependency_order(&self, other: &Self) -> Option<Ordering> {
+        let self_depends_on_other = self.depends_on_table(other.table_name());
+        let other_depends_on_self = other.depends_on_table(self.table_name());
+
+        match (self_depends_on_other, other_depends_on_self) {
+            (true, false) if self.operation_rank() == 3 && other.operation_rank() == 3 => {
+                Some(Ordering::Less)
+            }
+            (true, false) => Some(Ordering::Greater),
+            (false, true) if self.operation_rank() == 3 && other.operation_rank() == 3 => {
+                Some(Ordering::Greater)
+            }
+            (false, true) => Some(Ordering::Less),
+            _ => None,
         }
     }
 
@@ -576,8 +624,14 @@ impl ReadModelWritePlanBuilder {
         let mut mutations = self.mutations;
         mutations.sort_by(|left, right| {
             left.mutation
-                .sort_key()
-                .cmp(&right.mutation.sort_key())
+                .operation_rank()
+                .cmp(&right.mutation.operation_rank())
+                .then_with(|| {
+                    left.mutation
+                        .dependency_order(&right.mutation)
+                        .unwrap_or(Ordering::Equal)
+                })
+                .then_with(|| left.mutation.sort_key().cmp(&right.mutation.sort_key()))
                 .then(left.sequence.cmp(&right.sequence))
         });
         let mutations = mutations

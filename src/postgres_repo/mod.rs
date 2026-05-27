@@ -8,8 +8,9 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -23,15 +24,17 @@ use crate::outbox_worker::{
     OutboxPublishFailureAction,
 };
 use crate::read_model::{
-    key_fingerprint, validate_key, validate_row_values, ColumnDef, ColumnType, DeleteRowMutation,
-    ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelMutation,
-    ReadModelSchema, ReadModelWritePlan, RowKey, RowMutation, RowValue, RowValues, RowWriteMode,
+    column_name_for, key_fingerprint, validate_key, validate_row_values, ColumnDef, ColumnType,
+    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
+    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities,
+    ReadModelSchema, ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation,
+    RowValue, RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
-    AsyncSnapshotWrite, AsyncTransactionalCommit, PreparedEventAppend, RepositoryError,
-    StreamIdentity,
+    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite,
+    AsyncTransactionalCommit, PreparedEventAppend, RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -61,6 +64,7 @@ const INTEGER_STORAGE: &str = "integer storage";
 #[derive(Clone)]
 pub struct PostgresRepository {
     pool: PgPool,
+    read_model_schemas: Arc<RwLock<TableSchemaRegistry>>,
 }
 
 /// Postgres-backed outbox table store.
@@ -72,7 +76,10 @@ pub struct PostgresOutboxStore {
 impl PostgresRepository {
     /// Create a repository from an existing migrated pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_model_schemas: Arc::new(RwLock::new(TableSchemaRegistry::new())),
+        }
     }
 
     /// Open a Postgres pool without applying migrations.
@@ -141,6 +148,7 @@ impl PostgresRepository {
                 .await
                 .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
         }
+        remember_read_model_schemas(&self.read_model_schemas, registry)?;
         Ok(table_schema_bootstrap_result(registry))
     }
 
@@ -360,6 +368,51 @@ impl AsyncReadModelWritePlanStore for PostgresRepository {
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
         async move { processed_message_exists_pool(&self.pool, consumer_name, message_id).await }
+    }
+}
+
+impl AsyncRelationalReadModelQueryStore for PostgresRepository {
+    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+        ReadModelQueryCapabilities::relationship_includes()
+    }
+
+    fn load_graph_async(
+        &self,
+        request: ReadModelLoadRequest,
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+        async move {
+            request.validate_for_query_capabilities(&self.read_model_query_capabilities_async())?;
+
+            let (root_schema, include_specs) =
+                resolve_registered_read_model_schemas(&self.read_model_schemas, &request)?;
+            validate_key(&root_schema, &request.key)?;
+
+            let Some(root) =
+                load_postgres_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
+            else {
+                return Ok(ReadModelLoadGraph::default());
+            };
+
+            let mut includes = BTreeMap::new();
+            for spec in include_specs {
+                let loaded_rows =
+                    load_postgres_relationship_rows(&self.pool, &root_schema, &root.data, &spec)
+                        .await?;
+                includes.insert(
+                    spec.name,
+                    ReadModelIncludeRows {
+                        relationship: spec.relationship,
+                        target_schema: spec.target_schema,
+                        rows: loaded_rows,
+                    },
+                );
+            }
+
+            Ok(ReadModelLoadGraph {
+                root: Some(root),
+                includes,
+            })
+        }
     }
 }
 
@@ -721,6 +774,101 @@ impl AsyncSnapshotStore for PostgresRepository {
             Ok(result.rows_affected() > 0)
         }
     }
+}
+
+#[derive(Clone)]
+struct IncludeSpec {
+    name: String,
+    relationship: RelationshipDef,
+    target_schema: ReadModelSchema,
+}
+
+fn remember_read_model_schemas(
+    stored: &RwLock<TableSchemaRegistry>,
+    registry: &TableSchemaRegistry,
+) -> Result<(), ReadModelError> {
+    let mut stored = stored
+        .write()
+        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
+
+    for schema in registry.schemas() {
+        if let Some(existing) = stored.schema_for_table(&schema.table_name) {
+            if existing != schema {
+                return Err(ReadModelError::Metadata(format!(
+                    "read-model schema registry already contains table `{}` with different metadata",
+                    schema.table_name
+                )));
+            }
+            continue;
+        }
+        stored.register_schema(schema.clone())?;
+    }
+
+    Ok(())
+}
+
+fn resolve_registered_read_model_schemas(
+    registry: &RwLock<TableSchemaRegistry>,
+    request: &ReadModelLoadRequest,
+) -> Result<(ReadModelSchema, Vec<IncludeSpec>), ReadModelError> {
+    if request.includes.is_empty() {
+        return Ok((request.schema.clone(), Vec::new()));
+    }
+
+    let registry = registry
+        .read()
+        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
+    let root_schema = registry
+        .schema_for_model(&request.schema.model_name)
+        .cloned()
+        .ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "read model `{}` is not registered for relationship includes",
+                request.schema.model_name
+            ))
+        })?;
+    if root_schema != request.schema {
+        return Err(ReadModelError::Metadata(format!(
+            "read model `{}` load request does not match registered schema",
+            request.schema.model_name
+        )));
+    }
+
+    let mut include_specs = Vec::with_capacity(request.includes.len());
+    for include_name in &request.includes {
+        let relationship = root_schema
+            .relationships
+            .iter()
+            .find(|relationship| relationship.field_name == *include_name)
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` has no relationship `{}`",
+                    root_schema.model_name, include_name
+                ))
+            })?;
+        if matches!(relationship.kind, RelationshipKind::ManyToMany) {
+            return Err(ReadModelError::Metadata(format!(
+                "many-to-many relationship `{}` includes are not supported until join metadata declares source and target keys",
+                relationship.field_name
+            )));
+        }
+        let target_schema = registry
+            .schema_for_model(&relationship.target_model)
+            .ok_or_else(|| {
+                ReadModelError::Metadata(format!(
+                    "read model `{}` relationship `{}` targets unregistered model `{}`",
+                    root_schema.model_name, relationship.field_name, relationship.target_model
+                ))
+            })?;
+
+        include_specs.push(IncludeSpec {
+            name: include_name.clone(),
+            relationship: relationship.clone(),
+            target_schema: target_schema.clone(),
+        });
+    }
+
+    Ok((root_schema, include_specs))
 }
 
 fn sql_read_model_capabilities() -> ReadModelAdapterCapabilities {
@@ -1127,6 +1275,271 @@ async fn delete_relational_row_where_current_in_tx(
         .await
         .map_err(|err| read_model_storage_error("delete relational row", err))?;
     Ok(result.rows_affected())
+}
+
+async fn load_postgres_relational_row_by_key(
+    pool: &PgPool,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+) -> Result<Option<Versioned<RowValues>>, ReadModelError> {
+    validate_key(schema, key)?;
+    let mut builder = postgres_relational_row_select(schema)?;
+    push_postgres_key_predicates(&mut builder, schema, key)?;
+    let row = builder
+        .build()
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| read_model_storage_error("load relational row", err))?;
+    row.map(|row| postgres_row_to_versioned_values(schema, &row))
+        .transpose()
+}
+
+async fn load_postgres_relationship_rows(
+    pool: &PgPool,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+    match spec.relationship.kind {
+        RelationshipKind::HasMany => {
+            load_postgres_has_many_rows(pool, root_schema, root_row, spec).await
+        }
+        RelationshipKind::BelongsTo => {
+            load_postgres_belongs_to_rows(pool, root_schema, root_row, spec).await
+        }
+        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
+            "many-to-many relationship `{}` includes are not supported yet",
+            spec.relationship.field_name
+        ))),
+    }
+}
+
+async fn load_postgres_has_many_rows(
+    pool: &PgPool,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` must declare a foreign key",
+            spec.relationship.field_name
+        ))
+    })?;
+    let target_column = column_name_for(&spec.target_schema, foreign_key).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` foreign key `{}` is not a target column",
+            spec.relationship.field_name, foreign_key
+        ))
+    })?;
+    let root_column = column_name_for(root_schema, foreign_key)
+        .or_else(|| root_schema.primary_key.columns.first().cloned())
+        .ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "relationship `{}` has no root key column",
+                spec.relationship.field_name
+            ))
+        })?;
+    let root_value = root_row.get(&root_column).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "read model `{}` root row is missing relationship key `{}`",
+            root_schema.model_name, root_column
+        ))
+    })?;
+
+    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, root_value).await
+}
+
+async fn load_postgres_belongs_to_rows(
+    pool: &PgPool,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` must declare a foreign key",
+            spec.relationship.field_name
+        ))
+    })?;
+    let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` foreign key `{}` is not a source column",
+            spec.relationship.field_name, foreign_key
+        ))
+    })?;
+    let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
+    let source_value = root_row.get(&source_column).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "read model `{}` root row is missing relationship key `{}`",
+            root_schema.model_name, source_column
+        ))
+    })?;
+
+    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, source_value)
+        .await
+}
+
+async fn load_postgres_rows_matching_column(
+    pool: &PgPool,
+    schema: &ReadModelSchema,
+    column_name: &str,
+    value: &RowValue,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+    let column = column_by_name(schema, column_name)?;
+    let mut builder = postgres_relational_row_select(schema)?;
+    builder.push(" WHERE ");
+    builder.push(quote_identifier(column_name));
+    builder.push(" = ");
+    push_postgres_row_value_bind(&mut builder, value.clone(), column)?;
+    push_postgres_order_by_primary_key(&mut builder, schema);
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| read_model_storage_error("load relationship rows", err))?;
+
+    rows.iter()
+        .map(|row| postgres_row_to_versioned_values(schema, row))
+        .collect()
+}
+
+fn postgres_relational_row_select<'args>(
+    schema: &ReadModelSchema,
+) -> Result<QueryBuilder<'args, Postgres>, ReadModelError> {
+    let version_column = version_column(schema)?;
+    let mut builder = QueryBuilder::<Postgres>::new("SELECT ");
+    for (index, column) in schema.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        push_postgres_select_column(&mut builder, column);
+    }
+    if !schema.columns.is_empty() {
+        builder.push(", ");
+    }
+    builder.push(quote_identifier(version_column));
+    builder.push(" FROM ");
+    builder.push(quote_identifier(&schema.table_name));
+    Ok(builder)
+}
+
+fn push_postgres_select_column(builder: &mut QueryBuilder<'_, Postgres>, column: &ColumnDef) {
+    builder.push(quote_identifier(&column.column_name));
+    if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
+        builder.push("::text");
+    }
+    builder.push(" AS ");
+    builder.push(quote_identifier(&column.column_name));
+}
+
+fn push_postgres_order_by_primary_key(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    schema: &ReadModelSchema,
+) {
+    if schema.primary_key.columns.is_empty() {
+        return;
+    }
+    builder.push(" ORDER BY ");
+    for (index, column) in schema.primary_key.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push(quote_identifier(column));
+    }
+}
+
+fn postgres_row_to_versioned_values(
+    schema: &ReadModelSchema,
+    row: &PgRow,
+) -> Result<Versioned<RowValues>, ReadModelError> {
+    let mut values = RowValues::new();
+    for column in &schema.columns {
+        values.insert(column.column_name.clone(), postgres_row_value(row, column)?);
+    }
+    let version_column = version_column(schema)?;
+    let version = sqlx_read_model_u64_from_i64(
+        POSTGRES_BACKEND,
+        row.try_get::<i64, _>(version_column)
+            .map_err(|err| read_model_storage_error("decode relational row version", err))?,
+        version_column,
+    )?;
+    Ok(Versioned {
+        data: values,
+        version,
+    })
+}
+
+fn postgres_row_value(row: &PgRow, column: &ColumnDef) -> Result<RowValue, ReadModelError> {
+    Ok(match column.column_type {
+        ColumnType::Text | ColumnType::Timestamp => row
+            .try_get::<Option<String>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational text column", err))?
+            .map(RowValue::String)
+            .unwrap_or(RowValue::Null),
+        ColumnType::Boolean => row
+            .try_get::<Option<bool>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational boolean column", err))?
+            .map(RowValue::Bool)
+            .unwrap_or(RowValue::Null),
+        ColumnType::Integer => row
+            .try_get::<Option<i64>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational integer column", err))?
+            .map(RowValue::I64)
+            .unwrap_or(RowValue::Null),
+        ColumnType::UnsignedInteger => row
+            .try_get::<Option<i64>, _>(column.column_name.as_str())
+            .map_err(|err| {
+                read_model_storage_error("decode relational unsigned integer column", err)
+            })?
+            .map(|value| {
+                sqlx_read_model_u64_from_i64(POSTGRES_BACKEND, value, column.column_name.as_str())
+                    .map(RowValue::U64)
+            })
+            .transpose()?
+            .unwrap_or(RowValue::Null),
+        ColumnType::Float => row
+            .try_get::<Option<f64>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational float column", err))?
+            .map(RowValue::F64)
+            .unwrap_or(RowValue::Null),
+        ColumnType::Bytes => row
+            .try_get::<Option<Vec<u8>>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational bytes column", err))?
+            .map(RowValue::Bytes)
+            .unwrap_or(RowValue::Null),
+        ColumnType::Json => row
+            .try_get::<Option<String>, _>(column.column_name.as_str())
+            .map_err(|err| read_model_storage_error("decode relational json column", err))?
+            .map(|payload| {
+                serde_json::from_str(&payload)
+                    .map(RowValue::Json)
+                    .map_err(|err| ReadModelError::Serde(err.to_string()))
+            })
+            .transpose()?
+            .unwrap_or(RowValue::Null),
+        ColumnType::Unsupported(ref type_name) => {
+            return Err(ReadModelError::Metadata(format!(
+                "read model `{}` column `{}` has unsupported type `{}`",
+                column.field_name, column.column_name, type_name
+            )));
+        }
+    })
+}
+
+fn belongs_to_target_column(
+    target_schema: &ReadModelSchema,
+    source_column: &str,
+) -> Result<String, ReadModelError> {
+    if target_schema.primary_key.columns.len() != 1 {
+        return Err(ReadModelError::Metadata(format!(
+            "belongs_to target `{}` must have a single-column primary key to load from `{}`",
+            target_schema.model_name, source_column
+        )));
+    }
+
+    Ok(target_schema.primary_key.columns[0].clone())
 }
 
 async fn processed_message_exists_pool(

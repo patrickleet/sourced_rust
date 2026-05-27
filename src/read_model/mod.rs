@@ -113,7 +113,7 @@ pub use schema::{
     ReadModelSchemaRegistry, ReadModelSchemaVerification,
 };
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub(crate) use session::{key_fingerprint, validate_key, validate_row_values};
+pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 pub use session::{
     DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
     ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadGraph,

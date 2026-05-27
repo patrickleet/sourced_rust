@@ -79,6 +79,28 @@ fn session_stages_multiple_read_model_types_in_deterministic_plan() {
 }
 
 #[test]
+fn write_plan_orders_parent_rows_before_dependent_children() {
+    let mut session = ReadModelWritePlanBuilder::new();
+    let player = Player {
+        player_id: "player-1".into(),
+        display_name: "Ada".into(),
+        weapons: Vec::new(),
+    };
+    let weapon = PlayerWeapon {
+        player_id: "player-1".into(),
+        weapon_id: "sword".into(),
+        acquired_at: "2026-05-23T00:00:00Z".into(),
+    };
+
+    session.upsert(&weapon).unwrap().upsert(&player).unwrap();
+
+    let plan = session.into_write_plan().unwrap();
+
+    assert_eq!(plan.mutations[0].table_name(), "players");
+    assert_eq!(plan.mutations[1].table_name(), "player_weapons");
+}
+
+#[test]
 fn write_plan_contains_relational_rows_only() {
     let mut session = ReadModelWritePlanBuilder::new();
     let account = AccountSummary::new("acct-1");
