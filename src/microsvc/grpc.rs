@@ -15,10 +15,9 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     sourced_rust::register_handlers!(
-//!         microsvc::Service::with_repo(HashMapRepository::new()),
-//!         handlers::counter_create,
-//!     )
+//!     microsvc::Service::with_repo(HashMapRepository::new())
+//!         .command("counter.create")
+//!         .handle(|ctx| { /* ... */ })
 //! );
 //!
 //! // Get the server to compose with other tonic routes

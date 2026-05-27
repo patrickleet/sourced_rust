@@ -1,6 +1,6 @@
 //! microsvc — Convention-based microservice command handler framework.
 //!
-//! Build microservices by registering command handlers on a `Service`.
+//! Build microservices by registering command and event handlers on a `Service`.
 //! Each handler receives a `Context<D>` with access to the input payload,
 //! session variables, and the service dependencies.
 //!
@@ -12,10 +12,12 @@
 //! use serde_json::json;
 //!
 //! let service = Arc::new(
-//!     sourced_rust::register_handlers!(
-//!         microsvc::Service::with_repo(HashMapRepository::new()),
-//!         handlers::order_create,
-//!     )
+//!     microsvc::Service::with_repo(HashMapRepository::new())
+//!         .command("order.create")
+//!         .handle(|ctx| {
+//!             let input = ctx.input::<CreateOrderInput>()?;
+//!             Ok(json!({ "id": input.id }))
+//!         })
 //! );
 //!
 //! // Direct dispatch
@@ -64,8 +66,8 @@ pub use dependencies::{
 };
 pub use error::HandlerError;
 pub use service::{
-    CommandRequest, CommandResponse, DeliveryKind, HandlerInput, HandlerNames, HandlerSpec,
-    MessageEnvelope, MessageKind, Service, SubscriptionPlan,
+    CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerInput, HandlerNames,
+    HandlerSpec, MessageEnvelope, MessageKind, Service, SubscriptionPlan,
 };
 pub use session::Session;
 
@@ -122,8 +124,7 @@ macro_rules! register_handlers {
 macro_rules! __register_handlers {
     ($service:expr, command $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::command($($seg)::+::COMMAND),
+            $service.command($($seg)::+::COMMAND).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
@@ -132,8 +133,7 @@ macro_rules! __register_handlers {
     };
     ($service:expr, event $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::event($($seg)::+::EVENT).envelope(),
+            $service.event($($seg)::+::EVENT).envelope().guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
@@ -142,8 +142,7 @@ macro_rules! __register_handlers {
     };
     ($service:expr, events $($seg:ident)::+ => envelope $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::events($($seg)::+::EVENTS).envelope(),
+            $service.events($($seg)::+::EVENTS).envelope().guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
@@ -152,8 +151,7 @@ macro_rules! __register_handlers {
     };
     ($service:expr, event $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::event($($seg)::+::EVENT),
+            $service.event($($seg)::+::EVENT).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
@@ -162,8 +160,7 @@ macro_rules! __register_handlers {
     };
     ($service:expr, events $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::events($($seg)::+::EVENTS),
+            $service.events($($seg)::+::EVENTS).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
@@ -172,8 +169,7 @@ macro_rules! __register_handlers {
     };
     ($service:expr, $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         $crate::__register_handlers_continue!(
-            $service.handler(
-                $crate::microsvc::HandlerSpec::command($($seg)::+::COMMAND),
+            $service.command($($seg)::+::COMMAND).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )

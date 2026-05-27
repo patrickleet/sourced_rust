@@ -14,10 +14,9 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     sourced_rust::register_handlers!(
-//!         microsvc::Service::with_repo(HashMapRepository::new()),
-//!         handlers::counter_create,
-//!     )
+//!     microsvc::Service::with_repo(HashMapRepository::new())
+//!         .command("counter.create")
+//!         .handle(|ctx| { /* ... */ })
 //! );
 //!
 //! // Get the router to compose with other axum routes
