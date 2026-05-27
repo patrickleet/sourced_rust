@@ -1,4 +1,5 @@
-//! CommitBuilder - chain read models, write plans, outbox, and aggregates into one transactional batch.
+//! SyncCommitBuilder and AsyncCommitBuilder chain read models, write plans,
+//! outbox, and aggregates into one transactional batch.
 //!
 //! ## Example
 //!
@@ -8,8 +9,8 @@
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
-//!     .read_models(read_models)
-//!     .commit(&mut game)?;
+//!     .read_models_sync(read_models)
+//!     .commit_sync(&mut game)?;
 //!
 //! // Ordering is semantic staging only.
 //! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
@@ -17,19 +18,19 @@
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
-//!     .outbox(message)
-//!     .read_models(read_models)
-//!     .commit(&mut game)?;
+//!     .outbox_sync(message)
+//!     .read_models_sync(read_models)
+//!     .commit_sync(&mut game)?;
 //!
 //! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
 //! read_models.upsert(&player)?;
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
-//!     .aggregate(&mut game)
-//!     .read_models(read_models)
-//!     .outbox(message)
-//!     .commit()?;
+//!     .aggregate_sync(&mut game)
+//!     .read_models_sync(read_models)
+//!     .outbox_sync(message)
+//!     .commit_sync()?;
 //!
 //! // Async repositories use the same staging shape.
 //! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
@@ -37,7 +38,7 @@
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
-//!     .read_models_async(read_models)
+//!     .read_models(read_models)
 //!     .commit(&mut game)
 //!     .await?;
 //! ```
@@ -52,7 +53,7 @@ use crate::repository::{
 };
 
 /// Builder for chaining multiple items into a single transactional commit batch.
-pub struct CommitBuilder<'a, R> {
+pub struct SyncCommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
     outbox_messages: Vec<OutboxMessage>,
@@ -112,7 +113,7 @@ impl StagedOutboxSource {
     }
 }
 
-impl<'a, R> CommitBuilder<'a, R> {
+impl<'a, R> SyncCommitBuilder<'a, R> {
     pub fn new(repo: &'a R) -> Self {
         Self {
             repo,
@@ -124,7 +125,7 @@ impl<'a, R> CommitBuilder<'a, R> {
     }
 
     /// Add a read-model write plan builder to the commit.
-    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
+    pub fn read_models_sync(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
         if self.error.is_some() {
             return self;
         }
@@ -137,22 +138,25 @@ impl<'a, R> CommitBuilder<'a, R> {
     }
 
     /// Add an outbox message to the commit (takes ownership).
-    pub fn outbox(mut self, msg: OutboxMessage) -> Self {
+    pub fn outbox_sync(mut self, msg: OutboxMessage) -> Self {
         self.outbox_messages.push(msg);
         self
     }
 
     /// Stage an aggregate and switch to a no-argument staged commit builder.
-    pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
+    pub fn aggregate_sync<A: Aggregate>(
+        self,
+        aggregate: &'a mut A,
+    ) -> SyncStagedCommitBuilder<'a, R> {
         let source = OutboxSource::from_aggregate(aggregate);
-        let mut builder = StagedCommitBuilder::from_builder(self);
+        let mut builder = SyncStagedCommitBuilder::from_builder(self);
         builder.outbox_source.record(source);
         builder.staged_entities.push(aggregate.entity_mut());
         builder
     }
 
     /// Commit all items plus the primary aggregate.
-    pub fn commit<A: Aggregate>(mut self, aggregate: &mut A) -> Result<(), RepositoryError>
+    pub fn commit_sync<A: Aggregate>(mut self, aggregate: &mut A) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
@@ -175,10 +179,10 @@ impl<'a, R> CommitBuilder<'a, R> {
     ///
     /// Use `entity_mut()` on each aggregate to get the entity references:
     /// ```ignore
-    /// repo.read_models(read_models)
-    ///     .commit_many(&mut [player.entity_mut(), monster.entity_mut()])?;
+    /// repo.read_models_sync(read_models)
+    ///     .commit_many_sync(&mut [player.entity_mut(), monster.entity_mut()])?;
     /// ```
-    pub fn commit_many(mut self, entities: &mut [&mut Entity]) -> Result<(), RepositoryError>
+    pub fn commit_many_sync(mut self, entities: &mut [&mut Entity]) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
@@ -197,7 +201,7 @@ impl<'a, R> CommitBuilder<'a, R> {
     }
 
     /// Commit without a primary aggregate.
-    pub fn commit_all(mut self) -> Result<(), RepositoryError>
+    pub fn commit_all_sync(mut self) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
@@ -221,7 +225,7 @@ impl<'a, R> CommitBuilder<'a, R> {
 }
 
 /// Builder returned after one or more aggregates are staged explicitly.
-pub struct StagedCommitBuilder<'a, R> {
+pub struct SyncStagedCommitBuilder<'a, R> {
     repo: &'a R,
     entities: Vec<Entity>,
     outbox_messages: Vec<OutboxMessage>,
@@ -231,8 +235,8 @@ pub struct StagedCommitBuilder<'a, R> {
     error: Option<RepositoryError>,
 }
 
-impl<'a, R> StagedCommitBuilder<'a, R> {
-    fn from_builder(builder: CommitBuilder<'a, R>) -> Self {
+impl<'a, R> SyncStagedCommitBuilder<'a, R> {
+    fn from_builder(builder: SyncCommitBuilder<'a, R>) -> Self {
         Self {
             repo: builder.repo,
             entities: builder.entities,
@@ -244,7 +248,7 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         }
     }
 
-    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
+    pub fn read_models_sync(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
         if self.error.is_some() {
             return self;
         }
@@ -256,24 +260,24 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
         self
     }
 
-    pub fn outbox(mut self, msg: OutboxMessage) -> Self {
+    pub fn outbox_sync(mut self, msg: OutboxMessage) -> Self {
         self.outbox_messages.push(msg);
         self
     }
 
-    pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
+    pub fn aggregate_sync<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
         self.outbox_source
             .record(OutboxSource::from_aggregate(aggregate));
         self.staged_entities.push(aggregate.entity_mut());
         self
     }
 
-    pub fn entity(mut self, entity: &'a mut Entity) -> Self {
+    pub fn entity_sync(mut self, entity: &'a mut Entity) -> Self {
         self.staged_entities.push(entity);
         self
     }
 
-    pub fn commit(mut self) -> Result<(), RepositoryError>
+    pub fn commit_sync(mut self) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
@@ -299,35 +303,38 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
 }
 
 /// Extension trait to start a commit builder chain from an outbox message.
-pub trait CommitBuilderExt: TransactionalCommit + Sized {
+pub trait SyncCommitBuilderExt: TransactionalCommit + Sized {
     /// Start a commit builder chain with an outbox message.
-    fn outbox(&self, msg: OutboxMessage) -> CommitBuilder<'_, Self> {
-        CommitBuilder::new(self).outbox(msg)
+    fn outbox_sync(&self, msg: OutboxMessage) -> SyncCommitBuilder<'_, Self> {
+        SyncCommitBuilder::new(self).outbox_sync(msg)
     }
 }
 
-impl<R: TransactionalCommit> CommitBuilderExt for R {}
+impl<R: TransactionalCommit> SyncCommitBuilderExt for R {}
 
 /// Extension trait for relational read-model write-plan commit entrypoints.
 ///
-/// Kept separate from `CommitBuilderExt` so callers explicitly opt into the
+/// Kept separate from `SyncCommitBuilderExt` so callers explicitly opt into the
 /// write-plan starter.
-pub trait ReadModelWritePlanCommitExt: TransactionalCommit + Sized {
+pub trait SyncReadModelWritePlanCommitExt: TransactionalCommit + Sized {
     /// Start a commit builder chain with a relational read-model write plan.
-    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> CommitBuilder<'_, Self> {
-        CommitBuilder::new(self).read_models(read_models)
+    fn read_models_sync(
+        &self,
+        read_models: ReadModelWritePlanBuilder,
+    ) -> SyncCommitBuilder<'_, Self> {
+        SyncCommitBuilder::new(self).read_models_sync(read_models)
     }
 
     /// Start a staged commit builder with an aggregate.
-    fn aggregate<'a, A: Aggregate>(
+    fn aggregate_sync<'a, A: Aggregate>(
         &'a self,
         aggregate: &'a mut A,
-    ) -> StagedCommitBuilder<'a, Self> {
-        CommitBuilder::new(self).aggregate(aggregate)
+    ) -> SyncStagedCommitBuilder<'a, Self> {
+        SyncCommitBuilder::new(self).aggregate_sync(aggregate)
     }
 }
 
-impl<R: TransactionalCommit> ReadModelWritePlanCommitExt for R {}
+impl<R: TransactionalCommit> SyncReadModelWritePlanCommitExt for R {}
 
 /// Async builder for chaining multiple items into one transactional commit batch.
 pub struct AsyncCommitBuilder<'a, R> {
@@ -540,7 +547,7 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
 /// Extension trait to start an async commit builder chain from an outbox message.
 pub trait AsyncCommitBuilderExt: AsyncTransactionalCommit + Sized {
     /// Start an async commit builder chain with an outbox message.
-    fn outbox_async(&self, msg: OutboxMessage) -> AsyncCommitBuilder<'_, Self> {
+    fn outbox(&self, msg: OutboxMessage) -> AsyncCommitBuilder<'_, Self> {
         AsyncCommitBuilder::new(self).outbox(msg)
     }
 }
@@ -550,15 +557,12 @@ impl<R: AsyncTransactionalCommit> AsyncCommitBuilderExt for R {}
 /// Extension trait for async relational read-model write-plan commit entrypoints.
 pub trait AsyncReadModelWritePlanCommitExt: AsyncTransactionalCommit + Sized {
     /// Start an async commit builder chain with a relational read-model write plan.
-    fn read_models_async(
-        &self,
-        read_models: ReadModelWritePlanBuilder,
-    ) -> AsyncCommitBuilder<'_, Self> {
+    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> AsyncCommitBuilder<'_, Self> {
         AsyncCommitBuilder::new(self).read_models(read_models)
     }
 
     /// Start a staged async commit builder with an aggregate.
-    fn aggregate_async<'a, A: Aggregate>(
+    fn aggregate<'a, A: Aggregate>(
         &'a self,
         aggregate: &'a mut A,
     ) -> AsyncStagedCommitBuilder<'a, Self> {
@@ -771,8 +775,8 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-            .commit(&mut agg)
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+            .commit_sync(&mut agg)
             .unwrap();
 
         let loaded = loaded_view(&repo, "1").unwrap();
@@ -799,8 +803,8 @@ mod tests {
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.upsert(&view1).unwrap().upsert(&view2).unwrap();
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models)
-            .commit(&mut agg)
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models)
+            .commit_sync(&mut agg)
             .unwrap();
 
         assert_eq!(loaded_view(&repo, "1").unwrap().counter, 10);
@@ -821,9 +825,9 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-            .outbox(outbox)
-            .commit(&mut agg)
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+            .outbox_sync(outbox)
+            .commit_sync(&mut agg)
             .unwrap();
 
         assert_eq!(loaded_view(&repo, "1").unwrap().counter, 42);
@@ -843,9 +847,9 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        CommitBuilderExt::outbox(&repo, outbox)
-            .read_models(read_models(&view))
-            .commit(&mut agg)
+        SyncCommitBuilderExt::outbox_sync(&repo, outbox)
+            .read_models_sync(read_models(&view))
+            .commit_sync(&mut agg)
             .unwrap();
 
         assert_eq!(loaded_view(&repo, "1").unwrap().counter, 99);
@@ -867,8 +871,8 @@ mod tests {
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.upsert(&view1).unwrap().upsert(&view2).unwrap();
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models)
-            .commit_all()
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models)
+            .commit_all_sync()
             .unwrap();
 
         assert_eq!(
@@ -898,8 +902,8 @@ mod tests {
         agg2.touch();
         agg2.entity.set_id("agg-2");
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-            .commit_many(&mut [agg1.entity_mut(), agg2.entity_mut()])
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+            .commit_many_sync(&mut [agg1.entity_mut(), agg2.entity_mut()])
             .unwrap();
 
         assert_eq!(loaded_view(&repo, "multi").unwrap().counter, 77);
@@ -923,21 +927,21 @@ mod tests {
             agg.touch();
 
             match order {
-                0 => ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-                    .outbox(outbox)
-                    .aggregate(&mut agg)
-                    .commit()
+                0 => SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+                    .outbox_sync(outbox)
+                    .aggregate_sync(&mut agg)
+                    .commit_sync()
                     .unwrap(),
                 1 => repo
-                    .outbox(outbox)
-                    .read_models(read_models(&view))
-                    .aggregate(&mut agg)
-                    .commit()
+                    .outbox_sync(outbox)
+                    .read_models_sync(read_models(&view))
+                    .aggregate_sync(&mut agg)
+                    .commit_sync()
                     .unwrap(),
-                _ => ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
-                    .read_models(read_models(&view))
-                    .outbox(outbox)
-                    .commit()
+                _ => SyncReadModelWritePlanCommitExt::aggregate_sync(&repo, &mut agg)
+                    .read_models_sync(read_models(&view))
+                    .outbox_sync(outbox)
+                    .commit_sync()
                     .unwrap(),
             }
 
@@ -960,9 +964,9 @@ mod tests {
         agg.touch();
         let outbox = OutboxMessage::create("sourced-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
-        ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
-            .outbox(outbox)
-            .commit()
+        SyncReadModelWritePlanCommitExt::aggregate_sync(&repo, &mut agg)
+            .outbox_sync(outbox)
+            .commit_sync()
             .unwrap();
 
         assert_eq!(
@@ -990,10 +994,10 @@ mod tests {
         agg2.touch();
         agg2.entity.set_id("agg-2");
 
-        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-            .aggregate(&mut agg1)
-            .aggregate(&mut agg2)
-            .commit()
+        SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+            .aggregate_sync(&mut agg1)
+            .aggregate_sync(&mut agg2)
+            .commit_sync()
             .unwrap();
 
         assert_eq!(
@@ -1014,8 +1018,8 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        let err = ReadModelWritePlanCommitExt::read_models(&repo, session)
-            .commit(&mut agg)
+        let err = SyncReadModelWritePlanCommitExt::read_models_sync(&repo, session)
+            .commit_sync(&mut agg)
             .unwrap_err();
 
         assert!(
@@ -1040,9 +1044,9 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        let err = ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
-            .outbox(outbox)
-            .commit(&mut agg)
+        let err = SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
+            .outbox_sync(outbox)
+            .commit_sync(&mut agg)
             .unwrap_err();
 
         assert_eq!(err, RepositoryError::Model("injected batch failure".into()));
@@ -1064,7 +1068,7 @@ mod tests {
     fn commit_builder_empty_batch_succeeds() {
         let repo = RecordingBatchRepo::default();
 
-        CommitBuilder::new(&repo).commit_all().unwrap();
+        SyncCommitBuilder::new(&repo).commit_all_sync().unwrap();
 
         assert!(repo.entity_ids.borrow().is_empty());
         assert!(repo.read_model_keys.borrow().is_empty());
@@ -1080,7 +1084,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        repo.read_models_async(read_models(&view))
+        repo.read_models(read_models(&view))
             .commit(&mut agg)
             .await
             .unwrap();
@@ -1110,7 +1114,7 @@ mod tests {
         agg.touch();
         let outbox = OutboxMessage::create("async-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
-        repo.read_models_async(read_models(&view))
+        repo.read_models(read_models(&view))
             .outbox(outbox)
             .aggregate(&mut agg)
             .commit()
@@ -1171,7 +1175,7 @@ mod tests {
         agg.touch();
 
         let err = repo
-            .read_models_async(read_models)
+            .read_models(read_models)
             .commit(&mut agg)
             .await
             .unwrap_err();

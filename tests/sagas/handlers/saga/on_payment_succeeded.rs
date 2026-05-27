@@ -25,6 +25,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(msg).commit(&mut saga)?;
+    ctx.repo().outbox_sync(msg).commit_sync(&mut saga)?;
     Ok(json!({ "next": "CompleteOrder" }))
 }

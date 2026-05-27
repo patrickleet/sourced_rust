@@ -5,20 +5,20 @@ use crate::repository::{
     StreamIdentity, TransactionalCommit,
 };
 
-/// Helper returned by [`OutboxCommitExt::outbox`] to commit an aggregate and outbox
+/// Helper returned by [`SyncOutboxCommitExt::outbox_sync`] to commit an aggregate and outbox
 /// message in the same transactional commit batch.
-pub struct OutboxCommit<'a, R, A> {
+pub struct SyncOutboxCommit<'a, R, A> {
     repo: &'a AggregateRepository<R, A>,
     message: OutboxMessage,
 }
 
-impl<'a, R, A> OutboxCommit<'a, R, A>
+impl<'a, R, A> SyncOutboxCommit<'a, R, A>
 where
     R: TransactionalCommit,
     A: Aggregate,
 {
     /// Commit the aggregate and outbox message together.
-    pub fn commit(mut self, aggregate: &mut A) -> Result<(), RepositoryError> {
+    pub fn commit_sync(mut self, aggregate: &mut A) -> Result<(), RepositoryError> {
         self.message.set_source(aggregate);
         let mut batch = CommitBatch::new(vec![aggregate.entity_mut()]);
         batch.outbox_messages.push(self.message);
@@ -27,22 +27,22 @@ where
 }
 
 /// Extension trait for aggregate repositories to commit outbox messages alongside aggregates.
-pub trait OutboxCommitExt<R, A>
+pub trait SyncOutboxCommitExt<R, A>
 where
     R: TransactionalCommit,
     A: Aggregate,
 {
     /// Attach an outbox message to be committed with the aggregate.
-    fn outbox<'a>(&'a self, message: OutboxMessage) -> OutboxCommit<'a, R, A>;
+    fn outbox_sync<'a>(&'a self, message: OutboxMessage) -> SyncOutboxCommit<'a, R, A>;
 }
 
-impl<R, A> OutboxCommitExt<R, A> for AggregateRepository<R, A>
+impl<R, A> SyncOutboxCommitExt<R, A> for AggregateRepository<R, A>
 where
     R: TransactionalCommit,
     A: Aggregate,
 {
-    fn outbox<'a>(&'a self, message: OutboxMessage) -> OutboxCommit<'a, R, A> {
-        OutboxCommit {
+    fn outbox_sync<'a>(&'a self, message: OutboxMessage) -> SyncOutboxCommit<'a, R, A> {
+        SyncOutboxCommit {
             repo: self,
             message,
         }
@@ -143,7 +143,7 @@ mod tests {
 
         let event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
 
-        repo.outbox(event).commit(&mut aggregate).unwrap();
+        repo.outbox_sync(event).commit_sync(&mut aggregate).unwrap();
 
         let pending = repo.repo().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
@@ -159,7 +159,10 @@ mod tests {
 
         let event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec()).unwrap();
 
-        let err = repo.outbox(event).commit(&mut aggregate).unwrap_err();
+        let err = repo
+            .outbox_sync(event)
+            .commit_sync(&mut aggregate)
+            .unwrap_err();
 
         assert_eq!(err, RepositoryError::Model("outbox write failed".into()));
         assert_eq!(aggregate.entity.committed_version(), 0);

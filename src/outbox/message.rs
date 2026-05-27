@@ -215,7 +215,7 @@ impl OutboxMessage {
     ///
     /// ```ignore
     /// let outbox = OutboxMessage::domain_event("TodoInitialized", &todo)?;
-    /// repo.outbox(outbox).commit(&mut todo)?;
+    /// repo.outbox_sync(outbox).commit_sync(&mut todo)?;
     /// ```
     pub fn domain_event<A: crate::Snapshottable>(
         event_type: impl Into<String>,

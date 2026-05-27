@@ -29,6 +29,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(msg).commit(&mut inv)?;
+    ctx.repo().outbox_sync(msg).commit_sync(&mut inv)?;
     Ok(json!({ "reserved": input.quantity }))
 }

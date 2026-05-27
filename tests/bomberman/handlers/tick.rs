@@ -1,6 +1,7 @@
 use sourced_rust::{
-    Aggregate, Commit, Get, GetAggregate, OutboxMessage, ReadModelWritePlanCommitExt,
-    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, TransactionalCommit,
+    Aggregate, Commit, Get, GetAggregate, OutboxMessage, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RepositoryError, SyncReadModelWritePlanCommitExt,
+    TransactionalCommit,
 };
 
 use super::shared::{
@@ -180,7 +181,7 @@ where
         explosion_counter,
     );
 
-    let mut builder = repo.read_models(board_write_plan(&board)?);
+    let mut builder = repo.read_models_sync(board_write_plan(&board)?);
     for killed_id in &saga.players_killed {
         let attribution = kill_attributions
             .iter()
@@ -203,7 +204,7 @@ where
                 )))
             })?,
         )?;
-        builder = builder.outbox(outbox);
+        builder = builder.outbox_sync(outbox);
     }
 
     let mut entities: Vec<&mut sourced_rust::Entity> = Vec::new();
@@ -218,7 +219,7 @@ where
         entities.push(explosion.entity_mut());
     }
     entities.push(saga.entity_mut());
-    builder.commit_many(&mut entities)?;
+    builder.commit_many_sync(&mut entities)?;
 
     Ok(saga)
 }

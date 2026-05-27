@@ -27,8 +27,8 @@ use super::order::{
     OrderItem, Payment, PaymentSucceededPayload,
 };
 use sourced_rust::{
-    bus::Bus, AggregateBuilder, CommitBuilderExt, HashMapRepository, InMemoryQueue,
-    OutboxCommitExt, OutboxMessage, OutboxWorkerThread, Queueable,
+    bus::Bus, AggregateBuilder, HashMapRepository, InMemoryQueue, OutboxMessage,
+    OutboxWorkerThread, Queueable, SyncCommitBuilderExt, SyncOutboxCommitExt,
 };
 use std::sync::mpsc::channel;
 use std::thread;
@@ -92,8 +92,8 @@ fn distributed_saga_with_threads() {
         )
         .unwrap();
         order_fulfillment_saga_repo
-            .outbox(outbox)
-            .commit(&mut order_fulfillment_saga)
+            .outbox_sync(outbox)
+            .commit_sync(&mut order_fulfillment_saga)
             .unwrap();
 
         println!(
@@ -161,8 +161,8 @@ fn distributed_saga_with_threads() {
                             )
                             .unwrap();
                             order_fulfillment_saga_repo
-                                .outbox(outbox)
-                                .commit(&mut order_fulfillment_saga)
+                                .outbox_sync(outbox)
+                                .commit_sync(&mut order_fulfillment_saga)
                                 .unwrap();
 
                             // Wait for outbox worker to publish
@@ -238,7 +238,10 @@ fn distributed_saga_with_threads() {
                             },
                         )
                         .unwrap();
-                        order_repo.outbox(outbox).commit(&mut order).unwrap();
+                        order_repo
+                            .outbox_sync(outbox)
+                            .commit_sync(&mut order)
+                            .unwrap();
 
                         println!("[Order Service] Created order {}", data.order_id);
                         order_id = Some(data.order_id);
@@ -263,7 +266,10 @@ fn distributed_saga_with_threads() {
                                 &data,
                             )
                             .unwrap();
-                            order_repo.outbox(outbox).commit(&mut order).unwrap();
+                            order_repo
+                                .outbox_sync(outbox)
+                                .commit_sync(&mut order)
+                                .unwrap();
 
                             println!("[Order Service] Order completed!");
                             thread::sleep(Duration::from_millis(50));
@@ -328,7 +334,10 @@ fn distributed_saga_with_threads() {
                         },
                     )
                     .unwrap();
-                    inventory_repo.outbox(outbox).commit(&mut inv).unwrap();
+                    inventory_repo
+                        .outbox_sync(outbox)
+                        .commit_sync(&mut inv)
+                        .unwrap();
 
                     println!("[Inventory Service] Reserved {} units", item.quantity);
                     thread::sleep(Duration::from_millis(50));
@@ -384,7 +393,10 @@ fn distributed_saga_with_threads() {
                     },
                 )
                 .unwrap();
-                payment_repo.outbox(outbox).commit(&mut payment).unwrap();
+                payment_repo
+                    .outbox_sync(outbox)
+                    .commit_sync(&mut payment)
+                    .unwrap();
 
                 println!("[Payment Service] Payment succeeded!");
                 thread::sleep(Duration::from_millis(50));
@@ -505,8 +517,8 @@ fn distributed_saga_with_send_listen() {
         )
         .unwrap();
         order_fulfillment_saga_repo
-            .outbox(outbox)
-            .commit(&mut order_fulfillment_saga)
+            .outbox_sync(outbox)
+            .commit_sync(&mut order_fulfillment_saga)
             .unwrap();
 
         println!(
@@ -571,8 +583,8 @@ fn distributed_saga_with_send_listen() {
                             )
                             .unwrap();
                             order_fulfillment_saga_repo
-                                .outbox(outbox)
-                                .commit(&mut order_fulfillment_saga)
+                                .outbox_sync(outbox)
+                                .commit_sync(&mut order_fulfillment_saga)
                                 .unwrap();
 
                             thread::sleep(Duration::from_millis(50));
@@ -659,9 +671,9 @@ fn distributed_saga_with_send_listen() {
                         )
                         .unwrap();
 
-                        repo.outbox(outbox_saga)
-                            .outbox(outbox_inventory)
-                            .commit(&mut order)
+                        repo.outbox_sync(outbox_saga)
+                            .outbox_sync(outbox_inventory)
+                            .commit_sync(&mut order)
                             .unwrap();
 
                         println!("[Order/SendListen] Created order {}", data.order_id);
@@ -688,7 +700,10 @@ fn distributed_saga_with_send_listen() {
                                 &data,
                             )
                             .unwrap();
-                            order_repo.outbox(outbox).commit(&mut order).unwrap();
+                            order_repo
+                                .outbox_sync(outbox)
+                                .commit_sync(&mut order)
+                                .unwrap();
 
                             println!("[Order/SendListen] Order completed!");
                             thread::sleep(Duration::from_millis(50));
@@ -765,9 +780,9 @@ fn distributed_saga_with_send_listen() {
                     )
                     .unwrap();
 
-                    repo.outbox(outbox_saga)
-                        .outbox(outbox_payments)
-                        .commit(&mut inv)
+                    repo.outbox_sync(outbox_saga)
+                        .outbox_sync(outbox_payments)
+                        .commit_sync(&mut inv)
                         .unwrap();
 
                     println!("[Inventory/SendListen] Reserved {} units", item.quantity);
@@ -834,9 +849,9 @@ fn distributed_saga_with_send_listen() {
                 )
                 .unwrap();
 
-                repo.outbox(outbox_saga)
-                    .outbox(outbox_orders)
-                    .commit(&mut payment)
+                repo.outbox_sync(outbox_saga)
+                    .outbox_sync(outbox_orders)
+                    .commit_sync(&mut payment)
                     .unwrap();
 
                 println!("[Payment/SendListen] Payment succeeded!");
@@ -956,7 +971,10 @@ fn metadata_propagates_across_bus_to_subscriber() {
         )
         .unwrap();
 
-        order_repo.outbox(outbox).commit(&mut order).unwrap();
+        order_repo
+            .outbox_sync(outbox)
+            .commit_sync(&mut order)
+            .unwrap();
 
         // Give the outbox worker time to publish
         thread::sleep(Duration::from_millis(200));

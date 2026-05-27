@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{OutboxCommitExt, OutboxMessage};
+use sourced_rust::{OutboxMessage, SyncOutboxCommitExt};
 
 use super::Repo;
 use crate::models::counter::Counter;
@@ -32,7 +32,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
 
     let message = OutboxMessage::domain_event("CounterIncremented", &counter)?;
 
-    ctx.repo().outbox(message).commit(&mut counter)?;
+    ctx.repo().outbox_sync(message).commit_sync(&mut counter)?;
 
     Ok(json!({ "id": input.id, "value": counter.value }))
 }

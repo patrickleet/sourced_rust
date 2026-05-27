@@ -91,7 +91,7 @@ Each handler is a module with `COMMAND`, `guard`, and `handle`:
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError, HasRepo};
-use sourced_rust::{AggregateBuilder, OutboxCommitExt, OutboxMessage, Repository};
+use sourced_rust::{AggregateBuilder, SyncOutboxCommitExt, OutboxMessage, Repository};
 
 pub const COMMAND: &str = "todo.create";
 
@@ -116,7 +116,7 @@ where
     // Outbox message derives id, snapshot payload, and metadata automatically
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo)
         .map_err(|e| HandlerError::Other(Box::new(e)))?;
-    repo.outbox(outbox).commit(&mut todo)?;
+    repo.outbox_sync(outbox).commit_sync(&mut todo)?;
 
     Ok(json!({ "id": input.id }))
 }
@@ -486,7 +486,7 @@ let outbox = OutboxMessage::encode_for_entity(
     &order.entity,  // metadata propagates automatically
 )?;
 
-repo.outbox(outbox).commit(&mut order)?;
+repo.outbox_sync(outbox).commit_sync(&mut order)?;
 ```
 
 The metadata flows through the full chain:
@@ -650,7 +650,7 @@ commands, or transport messages only when application code creates an
 `OutboxMessage` for that purpose.
 
 ```rust
-use sourced_rust::{OutboxCommitExt, OutboxMessage};
+use sourced_rust::{SyncOutboxCommitExt, OutboxMessage};
 
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
@@ -660,7 +660,7 @@ todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into())?;
 let message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
 
 // Commit both in one repository batch
-repo.outbox(message).commit(&mut todo)?;
+repo.outbox_sync(message).commit_sync(&mut todo)?;
 ```
 
 For custom payloads or IDs, use `encode_for_entity` instead:
@@ -848,7 +848,7 @@ Combine the outbox pattern with the service bus for reliable event publishing:
 ```rust
 use sourced_rust::{
     bus::Bus, HashMapRepository, InMemoryQueue, OutboxWorkerThread,
-    OutboxCommitExt, OutboxMessage, AggregateBuilder, Queueable,
+    SyncOutboxCommitExt, OutboxMessage, AggregateBuilder, Queueable,
 };
 use std::time::Duration;
 
@@ -877,7 +877,7 @@ let outbox = OutboxMessage::encode_for_entity(
     &OrderCreatedPayload { order_id: "order-1".into() },
     &order.entity,  // metadata propagates automatically
 )?;
-order_repo.outbox(outbox).commit(&mut order)?;
+order_repo.outbox_sync(outbox).commit_sync(&mut order)?;
 
 // Other services receive the event via their subscriptions
 let events = bus.subscribe(&["OrderCreated"]);
@@ -892,7 +892,7 @@ Use `OutboxMessage::encode_to()` to set a destination queue, and `spawn_routed` 
 
 ```rust
 use sourced_rust::{
-    CommitBuilderExt, HashMapRepository, InMemoryQueue, OutboxWorkerThread,
+    SyncCommitBuilderExt, HashMapRepository, InMemoryQueue, OutboxWorkerThread,
     OutboxMessage,
 };
 use std::time::Duration;
@@ -923,9 +923,9 @@ let outbox_inventory = OutboxMessage::encode_to(
 )?;
 
 // Commit aggregate + multiple outbox messages in one transactional batch
-repo.outbox(outbox_saga)
-    .outbox(outbox_inventory)
-    .commit(&mut order)?;
+repo.outbox_sync(outbox_saga)
+    .outbox_sync(outbox_inventory)
+    .commit_sync(&mut order)?;
 
 // Worker drains outbox and sends each message to its destination queue
 let _stats = worker.stop()?;
@@ -1226,7 +1226,7 @@ pub struct GameView {
 When the response to a command must include the fully consistent, updated view, you can commit the aggregate and read model together:
 
 ```rust
-use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
+use sourced_rust::{ReadModelWritePlanBuilder, SyncReadModelWritePlanCommitExt};
 
 // Player submits a move
 game.make_move(player_move)?;
@@ -1237,7 +1237,7 @@ let view = GameView::from(&game);
 // Commit aggregate + view in one transactional batch
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&view)?;
-repo.read_models(read_models).commit(&mut game)?;
+repo.read_models_sync(read_models).commit_sync(&mut game)?;
 
 // Return `view` to the client — it reflects the committed state
 ```
@@ -1245,13 +1245,13 @@ repo.read_models(read_models).commit(&mut game)?;
 For related rows, build the same structured write plan:
 
 ```rust
-use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
+use sourced_rust::{ReadModelWritePlanBuilder, SyncReadModelWritePlanCommitExt};
 
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player_view)?;
 read_models.upsert_related(&player_view, "weapons", &weapon_view)?;
 
-repo.read_models(read_models).commit(&mut game)?;
+repo.read_models_sync(read_models).commit_sync(&mut game)?;
 ```
 
 Async persistent repositories use the same staging shape at the SQL boundary:
@@ -1261,7 +1261,7 @@ use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&view)?;
-repo.read_models_async(read_models).commit(&mut game).await?;
+repo.read_models(read_models).commit(&mut game).await?;
 ```
 
 Distributed projectors can commit the same write-plan shape directly against a read-model adapter and mark messages processed in the same adapter transaction:

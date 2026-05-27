@@ -1,6 +1,6 @@
 use sourced_rust::{
-    Commit, ReadModelWritePlanCommitExt, ReadModelWritePlanStore, RelationalReadModelQueryStore,
-    TransactionalCommit,
+    Commit, ReadModelWritePlanStore, RelationalReadModelQueryStore,
+    SyncReadModelWritePlanCommitExt, TransactionalCommit,
 };
 
 use super::shared::board_write_plan;
@@ -18,8 +18,8 @@ where
     map.create(game_id.into(), width, height, tiles.clone(), spawn_points)?;
 
     let board = BoardView::new(game_id, width, height, tiles);
-    repo.read_models(board_write_plan(&board)?)
-        .commit(&mut map)?;
+    repo.read_models_sync(board_write_plan(&board)?)
+        .commit_sync(&mut map)?;
 
     Ok(map)
 }
