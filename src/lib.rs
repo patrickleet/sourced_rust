@@ -64,8 +64,8 @@ pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, AsyncOutboxCommit, OutboxCommit, OutboxCommitExt, OutboxMessage,
-    OutboxMessageStatus, OUTBOX_MESSAGES_TABLE,
+    outbox_message_schema, AsyncOutboxCommit, OutboxMessage, OutboxMessageStatus, SyncOutboxCommit,
+    SyncOutboxCommitExt, OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
@@ -137,11 +137,11 @@ pub use table::{
     TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
-// CommitBuilder: transactional batches of read models, outbox, and aggregates
+// SyncCommitBuilder: transactional batches of read models, outbox, and aggregates
 pub use commit_builder::{
     AsyncCommitBuilder, AsyncCommitBuilderExt, AsyncReadModelWritePlanCommitExt,
-    AsyncStagedCommitBuilder, CommitBuilder, CommitBuilderExt, ReadModelWritePlanCommitExt,
-    StagedCommitBuilder,
+    AsyncStagedCommitBuilder, SyncCommitBuilder, SyncCommitBuilderExt,
+    SyncReadModelWritePlanCommitExt, SyncStagedCommitBuilder,
 };
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration

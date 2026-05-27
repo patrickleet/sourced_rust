@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{OutboxCommitExt, OutboxMessage};
+use sourced_rust::{OutboxMessage, SyncOutboxCommitExt};
 
 use crate::board_service::{AddCard, Board, BoardRepo};
 
@@ -26,7 +26,7 @@ pub fn handle(ctx: &Context<BoardRepo>) -> Result<Value, HandlerError> {
     )?;
 
     let outbox = OutboxMessage::domain_event("board.card_added", &board)?;
-    ctx.repo().outbox(outbox).commit(&mut board)?;
+    ctx.repo().outbox_sync(outbox).commit_sync(&mut board)?;
 
     Ok(json!({ "id": input.id, "card_id": input.card_id }))
 }

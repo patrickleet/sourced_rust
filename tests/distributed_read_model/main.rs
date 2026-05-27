@@ -300,7 +300,7 @@ where
     let outbox = json_outbox_event(seat_id, seat_event::ADDED, &event)
         .expect("seat added outbox should encode");
 
-    repo.outbox_async(outbox.clone())
+    repo.outbox(outbox.clone())
         .commit(&mut seat)
         .await
         .expect("seat add should commit");
@@ -332,7 +332,7 @@ where
     let outbox = json_outbox_event(checkout_id, checkout_event::STARTED, &event)
         .expect("checkout started outbox should encode");
 
-    repo.outbox_async(outbox.clone())
+    repo.outbox(outbox.clone())
         .commit(&mut saga)
         .await
         .expect("checkout start should commit");
@@ -369,7 +369,7 @@ where
     let outbox = json_outbox_event(&msg.checkout_id, seat_event::RESERVED, &event)
         .expect("seat reserved outbox should encode");
 
-    repo.outbox_async(outbox.clone())
+    repo.outbox(outbox.clone())
         .commit(&mut seat)
         .await
         .expect("seat reservation should commit");
@@ -406,7 +406,7 @@ where
     )
     .expect("seat reservation completed outbox should encode");
 
-    repo.outbox_async(outbox.clone())
+    repo.outbox(outbox.clone())
         .commit(&mut saga)
         .await
         .expect("checkout saga update should commit");
@@ -519,7 +519,7 @@ where
         .unwrap_or_default();
     checkpoint.mark_projected(message.id());
 
-    repo.read_models_async(read_models)
+    repo.read_models(read_models)
         .commit(&mut checkpoint)
         .await
         .expect("projection read models should commit with checkpoint");

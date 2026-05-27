@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::OutboxCommitExt;
+use sourced_rust::SyncOutboxCommitExt;
 
 use crate::checkout::{json_outbox_event, seat_command, seat_event, AddSeat, SeatAdded};
 use crate::seat_inventory_service::{Seat, SeatRepo};
@@ -21,7 +21,7 @@ pub fn handle(ctx: &Context<SeatRepo>) -> Result<Value, HandlerError> {
         category: msg.category.clone(),
     };
     let out = json_outbox_event(&msg.seat_id, seat_event::ADDED, &event)?;
-    ctx.repo().outbox(out).commit(&mut seat)?;
+    ctx.repo().outbox_sync(out).commit_sync(&mut seat)?;
 
     Ok(json!({ "seat_id": msg.seat_id }))
 }

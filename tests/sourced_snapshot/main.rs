@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, OutboxCommitExt, OutboxMessage, OutboxStore,
-    SnapshotStore, Snapshottable,
+    AggregateBuilder, HashMapRepository, OutboxMessage, OutboxStore, SnapshotStore, Snapshottable,
+    SyncOutboxCommitExt,
 };
 
 // ============================================================================
@@ -255,7 +255,7 @@ fn domain_event_commits_with_outbox() {
         .unwrap();
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    repo.outbox(outbox).commit(&mut todo).unwrap();
+    repo.outbox_sync(outbox).commit_sync(&mut todo).unwrap();
 
     let loaded = repo.get("t1").unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");

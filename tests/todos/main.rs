@@ -2,10 +2,10 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use sourced_rust::{
-    AggregateBuilder, ClaimOutboxMessages, Commit, CommitBuilderExt, EventEmitter, GetAggregate,
-    HashMapRepository, LocalEmitterPublisher, LockError, LogPublisher, OutboxClaimRef,
-    OutboxCommitExt, OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable,
-    RepositoryError,
+    AggregateBuilder, ClaimOutboxMessages, Commit, EventEmitter, GetAggregate, HashMapRepository,
+    LocalEmitterPublisher, LockError, LogPublisher, OutboxClaimRef, OutboxMessage,
+    OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,
+    SyncCommitBuilderExt, SyncOutboxCommitExt,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -72,8 +72,8 @@ fn todos() {
             .unwrap();
 
     // Commit the Todo + Outbox message to the repository
-    repo.outbox(init_message)
-        .commit(&mut todo)
+    repo.outbox_sync(init_message)
+        .commit_sync(&mut todo)
         .expect("initial todo outbox commit should succeed");
 
     // Verify the outbox event was captured
@@ -95,8 +95,8 @@ fn todos() {
         )
         .unwrap();
 
-        repo.outbox(complete_message)
-            .commit(&mut retrieved_todo)
+        repo.outbox_sync(complete_message)
+            .commit_sync(&mut retrieved_todo)
             .expect("completed todo outbox commit should succeed");
 
         // Verify we now have 2 outbox events
@@ -222,7 +222,7 @@ fn outbox_records_persisted() {
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
 
-    repo.outbox(message).commit(&mut todo).unwrap();
+    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
 
     // Check pending outbox messages
     let pending = repo.outbox_store().pending().unwrap();
@@ -251,7 +251,7 @@ fn outbox_worker_log_publisher() {
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
     let message_id = message.id().to_string();
-    repo.outbox(message).commit(&mut todo).unwrap();
+    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
 
     // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -302,7 +302,7 @@ fn outbox_worker_local_emitter_publisher() {
     let snapshot = todo.snapshot();
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
-    repo.outbox(message).commit(&mut todo).unwrap();
+    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
 
     let mut emitter = EventEmitter::new();
     let (tx, rx) = mpsc::channel::<String>();
@@ -591,10 +591,10 @@ fn outbox_worker_process_next_with_commit() {
         message3.id().to_string(),
     ];
 
-    repo.outbox(message1)
-        .outbox(message2)
-        .outbox(message3)
-        .commit(&mut todo)
+    repo.outbox_sync(message1)
+        .outbox_sync(message2)
+        .outbox_sync(message3)
+        .commit_sync(&mut todo)
         .unwrap();
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -674,7 +674,7 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
 
     // 4. Commit both using outbox commit builder
     let repo = repo.aggregate::<Todo>();
-    repo.outbox(message).commit(&mut todo).unwrap();
+    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
 
     // 5. Process through outbox worker, verify metadata reaches publisher
     let buffer = Arc::new(Mutex::new(Vec::new()));

@@ -27,6 +27,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(msg).commit(&mut order)?;
+    ctx.repo().outbox_sync(msg).commit_sync(&mut order)?;
     Ok(json!({ "order_id": input.order_id }))
 }

@@ -119,13 +119,15 @@ Use `ReadModelWritePlanBuilder` when a command or projector stages multiple
 row mutations. The current repository APIs are synchronous:
 
 ```rust
-use sourced_rust::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
+use sourced_rust::{
+    ReadModelWritePlanBuilder, SyncCommitBuilderExt, SyncReadModelWritePlanCommitExt,
+};
 
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player)?;
 read_models.upsert_related(&player, "weapons", &weapon)?;
 
-repo.read_models(read_models).commit(&mut aggregate)?;
+repo.read_models_sync(read_models).commit_sync(&mut aggregate)?;
 ```
 
 Async adapters can expose the same shape at their boundary:
@@ -136,7 +138,7 @@ use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player)?;
 
-repo.read_models_async(read_models)
+repo.read_models(read_models)
     .commit(&mut aggregate)
     .await?;
 ```
@@ -144,18 +146,18 @@ repo.read_models_async(read_models)
 Builder ordering is semantic staging only. These forms are equivalent:
 
 ```rust
-repo.read_models(read_models)
-    .outbox(message)
-    .commit(&mut aggregate)?;
+repo.read_models_sync(read_models)
+    .outbox_sync(message)
+    .commit_sync(&mut aggregate)?;
 
-repo.outbox(message)
-    .read_models(read_models)
-    .commit(&mut aggregate)?;
+repo.outbox_sync(message)
+    .read_models_sync(read_models)
+    .commit_sync(&mut aggregate)?;
 
-repo.aggregate(&mut aggregate)
-    .read_models(read_models)
-    .outbox(message)
-    .commit()?;
+repo.aggregate_sync(&mut aggregate)
+    .read_models_sync(read_models)
+    .outbox_sync(message)
+    .commit_sync()?;
 ```
 
 ## Standalone Distributed Projectors

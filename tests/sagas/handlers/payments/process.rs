@@ -29,6 +29,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox(msg).commit(&mut payment)?;
+    ctx.repo().outbox_sync(msg).commit_sync(&mut payment)?;
     Ok(json!({ "payment_id": payment_id }))
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Entity, EventRecord, HashMapRepository, ReadModel, ReadModelWorkspaceExt,
-    ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt, RowKey, RowValue,
+    ReadModelWritePlanBuilder, RowKey, RowValue, SyncReadModelWritePlanCommitExt,
 };
 
 #[derive(Default)]
@@ -44,7 +44,9 @@ fn repo_first_read_models_session_commit_form_is_available() {
     let mut aggregate = TestAggregate::default();
     aggregate.touch();
 
-    repo.read_models(session).commit(&mut aggregate).unwrap();
+    repo.read_models_sync(session)
+        .commit_sync(&mut aggregate)
+        .unwrap();
 
     let loaded = repo
         .workspace()

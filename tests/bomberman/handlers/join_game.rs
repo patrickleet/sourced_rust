@@ -1,6 +1,6 @@
 use sourced_rust::{
-    Commit, Get, GetAggregate, ReadModelWritePlanCommitExt, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, TransactionalCommit,
+    Commit, Get, GetAggregate, ReadModelWritePlanStore, RelationalReadModelQueryStore,
+    SyncReadModelWritePlanCommitExt, TransactionalCommit,
 };
 
 use super::shared::{
@@ -50,8 +50,8 @@ where
         current_board.explosions_created,
     );
 
-    repo.read_models(board_write_plan(&board)?)
-        .commit(&mut player)?;
+    repo.read_models_sync(board_write_plan(&board)?)
+        .commit_sync(&mut player)?;
 
     Ok(())
 }
