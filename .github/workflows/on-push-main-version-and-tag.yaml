@@ -38,8 +38,12 @@ jobs:
       CARGO_TERM_COLOR: always
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/sourced_rust_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
       - name: Run Postgres integration tests
         run: |
           cargo test --test postgres_repository --all-features --verbose
