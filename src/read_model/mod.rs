@@ -12,7 +12,8 @@
 //! ```
 //!
 //! Async persistent repositories expose the same staging shape through
-//! `AsyncReadModelWritePlanCommitExt`, returning a future from `commit`.
+//! `AsyncReadModelWritePlanCommitExt::read_models_async`, returning a future
+//! from `commit`.
 //!
 //! Distributed projectors can commit a write plan directly against a read-model
 //! adapter and mark messages processed in the same adapter transaction:

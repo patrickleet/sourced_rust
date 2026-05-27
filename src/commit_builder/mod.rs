@@ -37,7 +37,7 @@
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!
 //! repo
-//!     .read_models(read_models)
+//!     .read_models_async(read_models)
 //!     .commit(&mut game)
 //!     .await?;
 //! ```
@@ -540,7 +540,7 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
 /// Extension trait to start an async commit builder chain from an outbox message.
 pub trait AsyncCommitBuilderExt: AsyncTransactionalCommit + Sized {
     /// Start an async commit builder chain with an outbox message.
-    fn outbox(&self, msg: OutboxMessage) -> AsyncCommitBuilder<'_, Self> {
+    fn outbox_async(&self, msg: OutboxMessage) -> AsyncCommitBuilder<'_, Self> {
         AsyncCommitBuilder::new(self).outbox(msg)
     }
 }
@@ -550,12 +550,15 @@ impl<R: AsyncTransactionalCommit> AsyncCommitBuilderExt for R {}
 /// Extension trait for async relational read-model write-plan commit entrypoints.
 pub trait AsyncReadModelWritePlanCommitExt: AsyncTransactionalCommit + Sized {
     /// Start an async commit builder chain with a relational read-model write plan.
-    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> AsyncCommitBuilder<'_, Self> {
+    fn read_models_async(
+        &self,
+        read_models: ReadModelWritePlanBuilder,
+    ) -> AsyncCommitBuilder<'_, Self> {
         AsyncCommitBuilder::new(self).read_models(read_models)
     }
 
     /// Start a staged async commit builder with an aggregate.
-    fn aggregate<'a, A: Aggregate>(
+    fn aggregate_async<'a, A: Aggregate>(
         &'a self,
         aggregate: &'a mut A,
     ) -> AsyncStagedCommitBuilder<'a, Self> {
@@ -1077,7 +1080,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        repo.read_models_async(read_models(&view))
             .commit(&mut agg)
             .await
             .unwrap();
@@ -1107,7 +1110,7 @@ mod tests {
         agg.touch();
         let outbox = OutboxMessage::create("async-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        repo.read_models_async(read_models(&view))
             .outbox(outbox)
             .aggregate(&mut agg)
             .commit()
@@ -1167,7 +1170,8 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch();
 
-        let err = AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models)
+        let err = repo
+            .read_models_async(read_models)
             .commit(&mut agg)
             .await
             .unwrap_err();

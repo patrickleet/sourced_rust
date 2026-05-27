@@ -117,7 +117,7 @@ where
         .upsert(&view)
         .expect("row mutation should serialize");
 
-    AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models)
+    repo.read_models_async(read_models)
         .commit(&mut seat)
         .await
         .expect("aggregate and read model should commit");

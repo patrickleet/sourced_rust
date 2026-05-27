@@ -136,7 +136,9 @@ use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player)?;
 
-repo.read_models(read_models).commit(&mut aggregate).await?;
+repo.read_models_async(read_models)
+    .commit(&mut aggregate)
+    .await?;
 ```
 
 Builder ordering is semantic staging only. These forms are equivalent:
