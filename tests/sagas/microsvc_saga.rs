@@ -62,7 +62,7 @@ fn saga_orchestrated() {
         handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
-        handlers::saga::on_order_completed,
+        event handlers::saga::on_order_completed,
     );
 
     let order_svc = sourced_rust::register_handlers!(
@@ -187,11 +187,10 @@ fn saga_orchestrated() {
 
     // 10. Saga: order completed → saga done
     saga_svc
-        .dispatch(
+        .dispatch_message(&event_message(
             "OrderCompleted",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
-            s(),
-        )
+        ))
         .unwrap();
 
     // === Verify final state — typed repos return aggregates directly ===
@@ -254,7 +253,7 @@ fn saga_distributed() {
         handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
         handlers::saga::on_payment_succeeded,
-        handlers::saga::on_order_completed,
+        event handlers::saga::on_order_completed,
     ));
     let saga_listen = microsvc::listen(saga_svc.clone(), "saga", queue.clone(), poll);
 
