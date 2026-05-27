@@ -345,6 +345,7 @@ impl TransactionalCommit for HashMapRepository {
         for write in batch.snapshots {
             match write {
                 SnapshotWrite::Save(record) => {
+                    record.validate()?;
                     staged_snapshots.insert(record.aggregate_id.clone(), record);
                 }
             }
@@ -465,13 +466,7 @@ fn validate_snapshot_identity(
     identity: &StreamIdentity,
     record: &SnapshotRecord,
 ) -> Result<(), RepositoryError> {
-    if record.aggregate_id != identity.aggregate_id() {
-        return Err(RepositoryError::Model(format!(
-            "snapshot aggregate id `{}` does not match stream identity `{}`",
-            record.aggregate_id, identity
-        )));
-    }
-    Ok(())
+    record.validate_for_identity(identity)
 }
 
 fn reject_duplicate_streams(entities: &[&mut Entity]) -> Result<(), RepositoryError> {
