@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, ReadModel, ReadModelWritePlanBuilder, RelationalReadModel,
-    RepositoryError, RowKey, RowValue, StreamIdentity, Versioned,
+    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncStreamWrite, AsyncTransactionalCommit, ReadModel,
+    ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError, RowKey, RowValue,
+    StreamIdentity, Versioned,
 };
 
 use super::scenario::unique_id;
@@ -116,19 +117,13 @@ where
         .upsert(&view)
         .expect("row mutation should serialize");
 
+    AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models)
+        .commit(&mut seat)
+        .await
+        .expect("aggregate and read model should commit");
+
     let identity =
         StreamIdentity::new(Seat::aggregate_type(), &seat_id).expect("identity should be valid");
-    repo.commit_batch_async(AsyncCommitBatch {
-        streams: vec![AsyncStreamWrite::new(identity.clone(), seat.entity_mut())],
-        outbox_messages: Vec::new(),
-        read_model_plans: vec![read_models
-            .into_write_plan()
-            .expect("write plan should validate")],
-        snapshots: Vec::new(),
-    })
-    .await
-    .expect("aggregate and read model should commit");
-
     assert!(repo
         .get_stream(&identity)
         .await

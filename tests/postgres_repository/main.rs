@@ -8,10 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelWritePlanStore, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, EventRecord, OutboxMessageStatus, PostgresRepository,
-    ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue,
-    SnapshotRecord, StreamIdentity, TableSchemaRegistry,
+    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
+    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord,
+    OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder, RepositoryError,
+    RowKey, RowPatch, RowValue, SnapshotRecord, StreamIdentity, TableSchemaRegistry,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -294,18 +294,14 @@ async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() 
     };
     let mut session = ReadModelWritePlanBuilder::new();
     session.upsert(&view).unwrap();
-    let mut entity = Entity::with_id(&id);
-    entity.digest_empty("Touched").unwrap();
+    let mut projection = CounterProjection::default();
+    projection.touch(&id);
     let identity = StreamIdentity::new(CounterProjection::aggregate_type(), &id).unwrap();
 
-    repo.commit_batch_async(AsyncCommitBatch {
-        streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
-        outbox_messages: Vec::new(),
-        read_model_plans: vec![session.into_write_plan().unwrap()],
-        snapshots: Vec::new(),
-    })
-    .await
-    .unwrap();
+    repo.read_models(session)
+        .commit(&mut projection)
+        .await
+        .unwrap();
 
     assert!(repo.get_stream(&identity).await.unwrap().is_some());
     let row = sqlx::query(

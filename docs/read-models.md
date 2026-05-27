@@ -131,6 +131,11 @@ repo.read_models(read_models).commit(&mut aggregate)?;
 Async adapters can expose the same shape at their boundary:
 
 ```rust,ignore
+use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
+
+let mut read_models = ReadModelWritePlanBuilder::new();
+read_models.upsert(&player)?;
+
 repo.read_models(read_models).commit(&mut aggregate).await?;
 ```
 
