@@ -790,6 +790,8 @@ struct TrackedModelBaseline {
     includes: BTreeMap<String, TrackedIncludeBaseline>,
 }
 
+const INITIAL_TRACKED_ROW_VERSION: u64 = 1;
+
 /// Store-bound read-model workspace for load, mutate, sync, commit workflows.
 pub struct ReadModelWorkspace<'a, S> {
     store: &'a S,
@@ -836,34 +838,48 @@ where
             table_name: schema.table_name.clone(),
             key: key_fingerprint(&key),
         };
-        let baseline = self
+        let baseline_index = self
             .baselines
             .iter()
-            .find(|baseline| {
+            .position(|baseline| {
                 baseline.root_schema.table_name == identity.table_name
                     && key_fingerprint(&baseline.root_key) == identity.key
             })
-            .cloned()
             .ok_or_else(|| {
                 ReadModelError::Metadata(format!(
                     "read model `{}` has no tracked baseline for sync",
                     schema.model_name
                 ))
             })?;
+        let baseline = self.baselines[baseline_index].clone();
         let current_row = model.to_row()?;
 
-        self.stage_row_diff(
-            schema,
-            key,
-            &baseline.root_row,
-            &current_row,
-            baseline.root_version,
-        )?;
+        let root_version = self
+            .stage_row_diff(
+                schema.clone(),
+                key.clone(),
+                &baseline.root_row,
+                &current_row,
+                baseline.root_version,
+            )?
+            .unwrap_or(baseline.root_version);
 
+        let mut refreshed_includes = BTreeMap::new();
         for (include_name, include) in &baseline.includes {
             let current_rows = model.include_rows(include_name)?;
-            self.stage_include_changes(&baseline.root_schema, &current_row, include, current_rows)?;
+            let refreshed_include =
+                self.stage_include_changes(&schema, &current_row, include, current_rows)?;
+            refreshed_includes.insert(include_name.clone(), refreshed_include);
         }
+
+        self.writes.expected_versions.insert(identity, root_version);
+        self.baselines[baseline_index] = TrackedModelBaseline {
+            root_schema: schema,
+            root_key: key,
+            root_row: current_row,
+            root_version,
+            includes: refreshed_includes,
+        };
 
         Ok(self)
     }
@@ -1035,7 +1051,7 @@ where
         root_row: &RowValues,
         baseline: &TrackedIncludeBaseline,
         current_rows: Vec<RowValues>,
-    ) -> Result<(), ReadModelError> {
+    ) -> Result<TrackedIncludeBaseline, ReadModelError> {
         if matches!(baseline.relationship.kind, RelationshipKind::BelongsTo)
             && current_rows.len() > 1
         {
@@ -1046,6 +1062,7 @@ where
         }
 
         let mut current_fingerprints = BTreeSet::new();
+        let mut refreshed_rows = BTreeMap::new();
         for mut current_row in current_rows {
             match baseline.relationship.kind {
                 RelationshipKind::HasMany => populate_delegated_relationship_values(
@@ -1068,15 +1085,37 @@ where
             let fingerprint = key_fingerprint(&key);
             current_fingerprints.insert(fingerprint.clone());
             if let Some(loaded) = baseline.rows.get(&fingerprint) {
-                self.stage_row_diff(
-                    baseline.target_schema.clone(),
-                    loaded.key.clone(),
-                    &loaded.row,
-                    &current_row,
-                    loaded.version,
-                )?;
+                let version = self
+                    .stage_row_diff(
+                        baseline.target_schema.clone(),
+                        loaded.key.clone(),
+                        &loaded.row,
+                        &current_row,
+                        loaded.version,
+                    )?
+                    .unwrap_or(loaded.version);
+                refreshed_rows.insert(
+                    fingerprint,
+                    TrackedRowBaseline {
+                        key,
+                        row: current_row,
+                        version,
+                    },
+                );
             } else {
-                self.stage_upsert_row(baseline.target_schema.clone(), key, current_row)?;
+                self.stage_upsert_row(
+                    baseline.target_schema.clone(),
+                    key.clone(),
+                    current_row.clone(),
+                )?;
+                refreshed_rows.insert(
+                    fingerprint,
+                    TrackedRowBaseline {
+                        key,
+                        row: current_row,
+                        version: INITIAL_TRACKED_ROW_VERSION,
+                    },
+                );
             }
         }
 
@@ -1093,9 +1132,19 @@ where
                     )?;
                 }
             }
+        } else {
+            for (fingerprint, loaded) in &baseline.rows {
+                if !current_fingerprints.contains(fingerprint) {
+                    refreshed_rows.insert(fingerprint.clone(), loaded.clone());
+                }
+            }
         }
 
-        Ok(())
+        Ok(TrackedIncludeBaseline {
+            relationship: baseline.relationship.clone(),
+            target_schema: baseline.target_schema.clone(),
+            rows: refreshed_rows,
+        })
     }
 
     fn stage_row_diff(
@@ -1105,11 +1154,12 @@ where
         before: &RowValues,
         after: &RowValues,
         expected_version: u64,
-    ) -> Result<(), ReadModelError> {
+    ) -> Result<Option<u64>, ReadModelError> {
         let patch = diff_rows(before, after);
         if patch.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
+        let next_version = next_tracked_version(&schema, &key, expected_version)?;
 
         let mutation = PatchRowMutation {
             schema,
@@ -1120,7 +1170,7 @@ where
         };
         validate_patch_mutation(&mutation)?;
         self.writes.push(ReadModelMutation::PatchRow(mutation));
-        Ok(())
+        Ok(Some(next_version))
     }
 
     fn stage_upsert_row(
@@ -1227,6 +1277,20 @@ fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
         }
     }
     patch
+}
+
+fn next_tracked_version(
+    schema: &ReadModelSchema,
+    key: &RowKey,
+    current_version: u64,
+) -> Result<u64, ReadModelError> {
+    current_version.checked_add(1).ok_or_else(|| {
+        ReadModelError::Storage(format!(
+            "read model version overflow for {}:{}",
+            schema.table_name,
+            key_fingerprint(key)
+        ))
+    })
 }
 
 fn validated_schema<M>() -> Result<ReadModelSchema, ReadModelError>
