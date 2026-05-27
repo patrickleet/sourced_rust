@@ -24,6 +24,15 @@ CREATE INDEX IF NOT EXISTS aggregate_events_event_version_idx
 CREATE INDEX IF NOT EXISTS aggregate_events_recorded_at_idx
   ON aggregate_events (recorded_at);
 
+CREATE TABLE IF NOT EXISTS read_model_processed_messages (
+  consumer_name text NOT NULL,
+  message_id text NOT NULL,
+  processed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (consumer_name, message_id),
+  CHECK (consumer_name <> ''),
+  CHECK (message_id <> '')
+);
+
 CREATE TABLE IF NOT EXISTS aggregate_snapshots (
   aggregate_type text NOT NULL,
   aggregate_id text NOT NULL,

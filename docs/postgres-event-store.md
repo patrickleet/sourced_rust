@@ -183,6 +183,38 @@ SQL adapters retain only the latest cache record per stream. Future adapters may
 retain last `N` or time-based cache records, but they must never prune aggregate
 events.
 
+## Transactional Read Models
+
+Postgres read-model write plans write relational table rows inside the same
+repository transaction as aggregate events. Mutations are written to the
+registered read-model tables generated from schema metadata
+(`bootstrap_table_schema_for_dev` for tests/local development, migration
+artifacts for managed environments). Those writes use the model's declared
+columns directly, including `jsonb` columns for collection fields and
+`_sourced_version` for optimistic row versions.
+
+There is no generic SQL document table in this repository contract. If a
+command-side view needs whole-view state in SQL, define a read-model table with
+an `id` column and one or more `jsonb` columns for the semistructured data.
+Generic document mutations require a dedicated document adapter rather than the
+Postgres event-store repository.
+
+`read_model_processed_messages` stores idempotency marks for distributed
+projectors that commit a read-model write plan and mark a message processed in
+one transaction:
+
+```sql
+PRIMARY KEY (consumer_name, message_id);
+CHECK (consumer_name <> '');
+CHECK (message_id <> '');
+```
+
+`read_model_processed_messages` is shared by relational write-plan commits so
+projectors can atomically write rows and record consumed messages.
+
+Relationship include loading is a separate query concern; the transactional
+write path persists the row mutations staged by `ReadModelWritePlan`.
+
 ## Commit Semantics
 
 `Commit::commit` and `TransactionalCommit::commit_batch` establish the behavior

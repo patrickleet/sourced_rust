@@ -17,9 +17,9 @@ persistence should override it with an explicit durable name through
 - `AsyncGetStream` loads one or more event streams by full identity.
 - `AsyncTransactionalCommit` commits `AsyncCommitBatch` values with stream
   writes, read-model write plans, and snapshots under one backend transaction.
-- `AsyncReadModelStore`, `AsyncReadModelWritePlanStore`, and
-  `AsyncRelationalReadModelQueryStore` mirror the current document and
-  relational read-model surfaces for async adapters.
+- `AsyncReadModelWritePlanStore` and `AsyncRelationalReadModelQueryStore`
+  mirror the relational read-model write and primary-key load surfaces for
+  async adapters.
 - `AsyncSnapshotStore` keys rebuildable snapshot cache records by full stream
   identity. The record envelope carries stream identity, covered event version,
   snapshot payload type/version, payload codec metadata, cache metadata, and
@@ -30,8 +30,8 @@ persistence should override it with an explicit durable name through
 
 Async methods use an `_async` suffix where a synchronous method with the same
 name already exists. This keeps `HashMapRepository`, `InMemoryReadModelStore`,
-and `InMemorySnapshotStore` source-compatible when both sync and async traits
-are imported.
+and `InMemorySnapshotStore` unambiguous when both sync and async traits are
+imported.
 
 ## In-Memory Reference
 
@@ -58,8 +58,8 @@ let repo = sourced_rust::SqliteRepository::connect_and_migrate("sqlite::memory:"
 `migrations/sqlite`. Plain construction from an existing pool does not create
 tables implicitly, so applications can control bootstrap order.
 
-The first SQLite pass persists aggregate events, transactional document read
-models, processed-message marks, and snapshots in one SQL transaction when they
+The SQLite adapter persists aggregate events, relational read-model write
+plans, processed-message marks, and snapshots in one SQL transaction when they
 are staged through `AsyncCommitBatch`. It intentionally does not claim Postgres
 production readiness: Postgres-specific column types, isolation behavior, error
 mapping, deployment, and migration validation still belong to the Postgres
@@ -83,7 +83,12 @@ DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
   cargo test --features postgres --test postgres_repository
 ```
 
-The first Postgres pass persists aggregate event streams and snapshots through
-explicit migrations in `migrations/postgres`. It rejects non-empty read-model
-write plans instead of creating generic read-model tables implicitly; durable
-read-model persistence remains a separate adapter track.
+The SQLite and Postgres adapters persist aggregate event streams, read-model
+write plans, processed-message marks, snapshots, and outbox rows through
+explicit migrations plus registered table schemas. Relational read-model
+mutations (`upsert`, sparse `patch`, and `delete`) are lowered into SQL writes
+against the tables generated from `#[derive(ReadModel)]` / `RelationalReadModel`
+schema metadata, including JSON/JSONB columns and `_sourced_version` optimistic
+versions. SQL repositories do not persist generic document rows; whole-view
+state that belongs in SQL should be modeled as a declared read-model table with
+an `id` column and JSON/JSONB columns for semistructured fields.

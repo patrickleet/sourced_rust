@@ -392,18 +392,20 @@ fn unregistered_relationship_target_fails_before_loading() {
 }
 
 #[test]
-fn unregistered_root_schema_fails_before_loading() {
+fn unregistered_root_schema_can_load_primary_key_without_includes() {
     let store = InMemoryReadModelStore::new();
+    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    session.upsert(&player("player-1", "Ada")).unwrap();
+    session.commit(&store).unwrap();
     let mut read_models = store.workspace();
 
-    let err = read_models
+    let loaded = read_models
         .load::<Player>(player_key("player-1"))
         .one()
-        .unwrap_err();
+        .unwrap()
+        .unwrap();
 
-    assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("is not registered"))
-    );
+    assert_eq!(loaded.data.display_name, "Ada");
 }
 
 #[test]

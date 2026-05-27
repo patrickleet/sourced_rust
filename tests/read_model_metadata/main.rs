@@ -76,7 +76,7 @@ struct BinaryAsset {
 }
 
 #[test]
-fn derive_allows_table_models_with_string_ids_to_use_document_rows() {
+fn derive_preserves_read_model_identity_for_table_models() {
     let summary = AccountSummary {
         account_id: "acct-1".into(),
         owner: Some("Ada".into()),

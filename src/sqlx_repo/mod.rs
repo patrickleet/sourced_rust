@@ -4,7 +4,7 @@ use crate::entity::{
     EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
 };
 use crate::outbox::{validate_outbox_message_table_write, OutboxMessage};
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 use crate::read_model::ReadModelError;
 use crate::repository::{AsyncStreamWrite, PreparedEventAppend, RepositoryError, StreamIdentity};
 use crate::snapshot::SnapshotRecord;
@@ -178,7 +178,7 @@ pub(crate) fn repository_u16_from_i32(
         .map_err(|_| RepositoryError::Model(format!("{backend} {field} value {value} is invalid")))
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn read_model_i64_from_u64(
     backend: &str,
     value: u64,
@@ -190,7 +190,7 @@ pub(crate) fn read_model_i64_from_u64(
     })
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn read_model_u64_from_i64(
     backend: &str,
     value: i64,
@@ -231,7 +231,7 @@ pub(crate) fn repository_storage_error(
     RepositoryError::Model(format!("{backend} {operation} failed: {err}"))
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn read_model_storage_error(
     backend: &str,
     operation: &str,

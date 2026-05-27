@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::repository::AsyncReadModelWritePlanStore;
 
 use super::{
-    ReadModel, ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
+    ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
     RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues, Versioned,
 };
 
@@ -40,7 +40,6 @@ pub enum PatchMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadModelAdapterCapabilities {
     pub relational_rows: bool,
-    pub document_rows: bool,
     pub sparse_patches: bool,
     pub deletes: bool,
     pub processed_messages: bool,
@@ -50,7 +49,6 @@ impl Default for ReadModelAdapterCapabilities {
     fn default() -> Self {
         Self {
             relational_rows: true,
-            document_rows: true,
             sparse_patches: true,
             deletes: true,
             processed_messages: true,
@@ -209,20 +207,6 @@ impl RowPatch {
     }
 }
 
-/// Whole-document read-model write backed by a document column such as JSONB.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DocumentMutation {
-    pub collection: String,
-    pub id: String,
-    pub bytes: Vec<u8>,
-}
-
-impl DocumentMutation {
-    pub fn key(&self) -> String {
-        document_key(&self.collection, &self.id)
-    }
-}
-
 /// Full relational row insert/upsert mutation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowMutation {
@@ -254,25 +238,22 @@ pub struct DeleteRowMutation {
 /// First-pass read-model write-plan mutation surface.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReadModelMutation {
-    Document(DocumentMutation),
     UpsertRow(RowMutation),
     PatchRow(PatchRowMutation),
     DeleteRow(DeleteRowMutation),
 }
 
 impl ReadModelMutation {
-    pub fn table_name(&self) -> Option<&str> {
+    pub fn table_name(&self) -> &str {
         match self {
-            ReadModelMutation::Document(mutation) => Some(mutation.collection.as_str()),
-            ReadModelMutation::UpsertRow(mutation) => Some(mutation.schema.table_name.as_str()),
-            ReadModelMutation::PatchRow(mutation) => Some(mutation.schema.table_name.as_str()),
-            ReadModelMutation::DeleteRow(mutation) => Some(mutation.schema.table_name.as_str()),
+            ReadModelMutation::UpsertRow(mutation) => mutation.schema.table_name.as_str(),
+            ReadModelMutation::PatchRow(mutation) => mutation.schema.table_name.as_str(),
+            ReadModelMutation::DeleteRow(mutation) => mutation.schema.table_name.as_str(),
         }
     }
 
     pub fn lock_key(&self) -> String {
         match self {
-            ReadModelMutation::Document(mutation) => mutation.key(),
             ReadModelMutation::UpsertRow(mutation) => format!(
                 "{}:{}",
                 mutation.schema.table_name,
@@ -293,7 +274,6 @@ impl ReadModelMutation {
 
     fn sort_key(&self) -> String {
         match self {
-            ReadModelMutation::Document(mutation) => format!("0|{}", mutation.key()),
             ReadModelMutation::UpsertRow(mutation) => format!(
                 "1|{}|{}",
                 mutation.schema.table_name,
@@ -352,14 +332,6 @@ impl ReadModelWritePlan {
     ) -> Result<(), ReadModelError> {
         for mutation in &self.mutations {
             match mutation {
-                ReadModelMutation::Document(mutation) => {
-                    if !capabilities.document_rows {
-                        return Err(ReadModelError::Metadata(
-                            "read-model adapter does not support document row writes".into(),
-                        ));
-                    }
-                    validate_document_mutation(mutation)?;
-                }
                 ReadModelMutation::UpsertRow(mutation) => {
                     if !capabilities.relational_rows {
                         return Err(ReadModelError::Metadata(
@@ -586,20 +558,6 @@ impl ReadModelWritePlanBuilder {
         M: RelationalReadModel,
     {
         self.delete::<M>(model.primary_key()?)
-    }
-
-    pub fn document<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
-    where
-        M: ReadModel,
-    {
-        let bytes =
-            serde_json::to_vec(model).map_err(|err| ReadModelError::Serde(err.to_string()))?;
-        self.push(ReadModelMutation::Document(DocumentMutation {
-            collection: M::COLLECTION.to_string(),
-            id: model.id().to_string(),
-            bytes,
-        }));
-        Ok(self)
     }
 
     pub fn mark_processed(
@@ -966,14 +924,6 @@ where
         Ok(self)
     }
 
-    pub fn document<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
-    where
-        M: ReadModel,
-    {
-        self.writes.document(model)?;
-        Ok(self)
-    }
-
     pub fn mark_processed(
         &mut self,
         consumer_name: impl Into<String>,
@@ -1302,15 +1252,6 @@ where
     Ok(schema)
 }
 
-fn validate_document_mutation(mutation: &DocumentMutation) -> Result<(), ReadModelError> {
-    if mutation.collection.is_empty() || mutation.id.is_empty() {
-        return Err(ReadModelError::Metadata(
-            "document read-model writes require collection and id".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_row_mutation(mutation: &RowMutation) -> Result<(), ReadModelError> {
     mutation.schema.validate()?;
     validate_key(&mutation.schema, &mutation.key)?;
@@ -1565,18 +1506,6 @@ pub(crate) fn key_fingerprint(key: &RowKey) -> String {
     fingerprint
 }
 
-pub(crate) fn document_key(collection: &str, id: &str) -> String {
-    let mut key = document_key_prefix(collection);
-    push_fingerprint_part(&mut key, id);
-    key
-}
-
-pub(crate) fn document_key_prefix(collection: &str) -> String {
-    let mut prefix = String::new();
-    push_fingerprint_part(&mut prefix, collection);
-    prefix
-}
-
 fn push_fingerprint_part(fingerprint: &mut String, part: &str) {
     fingerprint.push_str(&part.len().to_string());
     fingerprint.push(':');
@@ -1624,21 +1553,5 @@ mod tests {
         let string = RowKey::new([("id", RowValue::String("1".into()))]);
 
         assert_ne!(key_fingerprint(&integer), key_fingerprint(&string));
-    }
-
-    #[test]
-    fn document_key_distinguishes_delimiter_collisions() {
-        let left = DocumentMutation {
-            collection: "a:b".into(),
-            id: "c".into(),
-            bytes: Vec::new(),
-        };
-        let right = DocumentMutation {
-            collection: "a".into(),
-            id: "b:c".into(),
-            bytes: Vec::new(),
-        };
-
-        assert_ne!(left.key(), right.key());
     }
 }

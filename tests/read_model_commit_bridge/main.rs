@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    impl_aggregate, Entity, EventRecord, HashMapRepository, ReadModel, ReadModelStore,
-    ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt,
+    impl_aggregate, Entity, EventRecord, HashMapRepository, ReadModel, ReadModelWorkspaceExt,
+    ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt, RowKey, RowValue,
 };
 
 #[derive(Default)]
@@ -25,7 +25,7 @@ impl TestAggregate {
 impl_aggregate!(TestAggregate, entity, replay);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(collection = "bridge_views")]
+#[readmodel(table = "bridge_views")]
 struct BridgeView {
     #[readmodel(id)]
     id: String,
@@ -40,12 +40,17 @@ fn repo_first_read_models_session_commit_form_is_available() {
         value: 42,
     };
     let mut session = ReadModelWritePlanBuilder::new();
-    session.document(&view).unwrap();
+    session.upsert(&view).unwrap();
     let mut aggregate = TestAggregate::default();
     aggregate.touch();
 
     repo.read_models(session).commit(&mut aggregate).unwrap();
 
-    let loaded = repo.get_model::<BridgeView>("view-1").unwrap().unwrap();
+    let loaded = repo
+        .workspace()
+        .load::<BridgeView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
+        .one()
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.data, view);
 }

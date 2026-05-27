@@ -1,4 +1,4 @@
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 #[derive(Default, Clone)]
 pub struct Explosion {
@@ -12,8 +12,9 @@ pub struct Explosion {
     pub active: bool,
 }
 
+#[sourced(entity)]
 impl Explosion {
-    #[digest("ExplosionStarted")]
+    #[event("ExplosionStarted")]
     pub fn start(
         &mut self,
         id: String,
@@ -33,12 +34,12 @@ impl Explosion {
         self.active = true;
     }
 
-    #[digest("ExplosionExpanded", when = self.active && !self.is_fully_expanded())]
+    #[event("ExplosionExpanded", when = self.active && !self.is_fully_expanded())]
     pub fn expand(&mut self) {
         self.current_ring += 1;
     }
 
-    #[digest("ExplosionDissipated", when = self.active)]
+    #[event("ExplosionDissipated", when = self.active)]
     pub fn dissipate(&mut self) {
         self.active = false;
     }
@@ -63,9 +64,3 @@ impl Explosion {
             .collect()
     }
 }
-
-sourced_rust::aggregate!(Explosion, entity {
-    "ExplosionStarted"(id, bomb_id, owner, center, blast_radius, rings) => start,
-    "ExplosionExpanded"() => expand,
-    "ExplosionDissipated"() => dissipate,
-});

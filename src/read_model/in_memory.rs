@@ -8,28 +8,16 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use super::session::{
-    column_name_for, document_key, document_key_prefix, key_fingerprint, validate_key,
-    validate_row_values,
-};
+use super::session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 use super::{
-    ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModel, ReadModelAdapterCapabilities,
+    ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModelAdapterCapabilities,
     ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
     ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelSchemaRegistry, ReadModelStore, ReadModelWritePlan, ReadModelWritePlanStore,
-    RelationalReadModel, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey,
-    RowValue, RowValues, RowWriteMode, Versioned,
+    ReadModelSchemaRegistry, ReadModelWritePlan, ReadModelWritePlanStore, RelationalReadModel,
+    RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
+    RowWriteMode, Versioned,
 };
-use crate::repository::{
-    AsyncReadModelStore, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
-};
-
-/// Internal stored representation of a read model.
-#[derive(Clone)]
-pub(crate) struct StoredModel {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) version: u64,
-}
+use crate::repository::{AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore};
 
 #[derive(Clone)]
 pub(crate) struct StoredRow {
@@ -57,78 +45,12 @@ pub(crate) fn next_model_version(
     }
 }
 
-pub(crate) fn apply_document_write_plan(
-    plan: ReadModelWritePlan,
-    staged_models: &mut HashMap<String, StoredModel>,
-    staged_processed_messages: &mut ProcessedMessageSet,
-) -> Result<ReadModelCommitOutcome, ReadModelError> {
-    let capabilities = document_capabilities();
-    reject_non_document_mutations(&plan)?;
-    plan.validate_for(&capabilities)?;
-
-    let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
-    for mark in &plan.processed_messages {
-        let key = processed_message_key(mark);
-        if staged_processed_messages.contains(&key) || !marks_in_plan.insert(key) {
-            return Ok(ReadModelCommitOutcome::skipped_duplicate(mark.clone()));
-        }
-    }
-
-    for mutation in plan.mutations {
-        if let ReadModelMutation::Document(mutation) = mutation {
-            let key = mutation.key();
-            let new_version = next_model_version(&key, staged_models.get(&key).map(|s| s.version))?;
-            staged_models.insert(
-                key,
-                StoredModel {
-                    bytes: mutation.bytes,
-                    version: new_version,
-                },
-            );
-        }
-    }
-
-    for mark in plan.processed_messages {
-        staged_processed_messages.insert(processed_message_key(&mark));
-    }
-
-    Ok(ReadModelCommitOutcome::applied())
-}
-
-fn reject_non_document_mutations(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
-    for mutation in &plan.mutations {
-        let mutation_name = match mutation {
-            ReadModelMutation::Document(_) => continue,
-            ReadModelMutation::UpsertRow(_) => "ReadModelMutation::UpsertRow",
-            ReadModelMutation::PatchRow(_) => "ReadModelMutation::PatchRow",
-            ReadModelMutation::DeleteRow(_) => "ReadModelMutation::DeleteRow",
-        };
-
-        return Err(ReadModelError::Metadata(format!(
-            "apply_document_write_plan supports only ReadModelMutation::Document with document_capabilities; received {mutation_name}"
-        )));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn document_capabilities() -> ReadModelAdapterCapabilities {
-    ReadModelAdapterCapabilities {
-        relational_rows: false,
-        document_rows: true,
-        sparse_patches: false,
-        deletes: false,
-        processed_messages: true,
-    }
-}
-
 fn relational_capabilities() -> ReadModelAdapterCapabilities {
     ReadModelAdapterCapabilities::default()
 }
 
-fn apply_read_model_write_plan(
+pub(crate) fn apply_read_model_write_plan(
     plan: ReadModelWritePlan,
-    staged_models: &mut HashMap<String, StoredModel>,
     staged_rows: &mut HashMap<String, StoredRow>,
     staged_processed_messages: &mut ProcessedMessageSet,
 ) -> Result<ReadModelCommitOutcome, ReadModelError> {
@@ -144,18 +66,6 @@ fn apply_read_model_write_plan(
 
     for mutation in plan.mutations {
         match mutation {
-            ReadModelMutation::Document(mutation) => {
-                let key = mutation.key();
-                let new_version =
-                    next_model_version(&key, staged_models.get(&key).map(|s| s.version))?;
-                staged_models.insert(
-                    key,
-                    StoredModel {
-                        bytes: mutation.bytes,
-                        version: new_version,
-                    },
-                );
-            }
             ReadModelMutation::UpsertRow(mutation) => {
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
@@ -341,7 +251,6 @@ fn concurrency_conflict(
 /// Clone-friendly via Arc.
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
-    pub(crate) storage: Arc<RwLock<HashMap<String, StoredModel>>>,
     pub(crate) relational_rows: Arc<RwLock<HashMap<String, StoredRow>>>,
     pub(crate) processed_messages: Arc<RwLock<ProcessedMessageSet>>,
     schema_registry: Arc<RwLock<ReadModelSchemaRegistry>>,
@@ -357,15 +266,10 @@ impl InMemoryReadModelStore {
     /// Create a new empty read model store.
     pub fn new() -> Self {
         Self {
-            storage: Arc::new(RwLock::new(HashMap::new())),
             relational_rows: Arc::new(RwLock::new(HashMap::new())),
             processed_messages: Arc::new(RwLock::new(HashSet::new())),
             schema_registry: Arc::new(RwLock::new(ReadModelSchemaRegistry::new())),
         }
-    }
-
-    fn make_key(table: &str, id: &str) -> String {
-        document_key(table, id)
     }
 
     /// Register a relational read-model schema for explicit include execution.
@@ -393,31 +297,6 @@ impl InMemoryReadModelStore {
         registry.register_schema(schema)?;
         Ok(())
     }
-
-    /// Save pre-serialized document bytes by storage key for in-memory test setup.
-    #[cfg(test)]
-    pub(crate) fn save_document_bytes(
-        &self,
-        key: &str,
-        bytes: Vec<u8>,
-    ) -> Result<u64, ReadModelError> {
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let new_version = next_model_version(key, storage.get(key).map(|s| s.version))?;
-
-        storage.insert(
-            key.to_string(),
-            StoredModel {
-                bytes,
-                version: new_version,
-            },
-        );
-
-        Ok(new_version)
-    }
 }
 
 impl ReadModelWritePlanStore for InMemoryReadModelStore {
@@ -429,10 +308,6 @@ impl ReadModelWritePlanStore for InMemoryReadModelStore {
         &self,
         plan: ReadModelWritePlan,
     ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
         let mut relational_rows = self
             .relational_rows
             .write()
@@ -442,18 +317,12 @@ impl ReadModelWritePlanStore for InMemoryReadModelStore {
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
-        let mut staged_models = storage.clone();
         let mut staged_rows = relational_rows.clone();
         let mut staged_processed_messages = processed_messages.clone();
-        let outcome = apply_read_model_write_plan(
-            plan,
-            &mut staged_models,
-            &mut staged_rows,
-            &mut staged_processed_messages,
-        )?;
+        let outcome =
+            apply_read_model_write_plan(plan, &mut staged_rows, &mut staged_processed_messages)?;
 
         if outcome.was_applied() {
-            *storage = staged_models;
             *relational_rows = staged_rows;
             *processed_messages = staged_processed_messages;
         }
@@ -570,13 +439,21 @@ fn resolve_request_schemas(
 ) -> Result<(ReadModelSchema, Vec<IncludeSpec>), ReadModelError> {
     let root_schema = registry
         .schema_for_model(&request.schema.model_name)
+        .cloned()
+        .or_else(|| {
+            if request.includes.is_empty() {
+                Some(request.schema.clone())
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| {
             ReadModelError::Metadata(format!(
                 "read model `{}` is not registered for relationship includes",
                 request.schema.model_name
             ))
         })?;
-    if root_schema != &request.schema {
+    if root_schema != request.schema {
         return Err(ReadModelError::Metadata(format!(
             "read model `{}` load request does not match registered schema",
             request.schema.model_name
@@ -617,7 +494,7 @@ fn resolve_request_schemas(
         });
     }
 
-    Ok((root_schema.clone(), include_specs))
+    Ok((root_schema, include_specs))
 }
 
 fn load_relationship_rows(
@@ -752,278 +629,13 @@ fn rows_matching_column(
     matches.into_iter().map(|(_, row)| row).collect()
 }
 
-impl ReadModelStore for InMemoryReadModelStore {
-    fn get_model<M: ReadModel>(&self, id: &str) -> Result<Option<Versioned<M>>, ReadModelError> {
-        let key = Self::make_key(M::COLLECTION, id);
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        match storage.get(&key) {
-            Some(stored) => {
-                let data: M = serde_json::from_slice(&stored.bytes)
-                    .map_err(|e| ReadModelError::Serde(e.to_string()))?;
-                Ok(Some(Versioned {
-                    data,
-                    version: stored.version,
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn upsert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
-        let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
-
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let new_version = next_model_version(&key, storage.get(&key).map(|s| s.version))?;
-
-        storage.insert(
-            key,
-            StoredModel {
-                bytes,
-                version: new_version,
-            },
-        );
-
-        Ok(Versioned {
-            data: model.clone(),
-            version: new_version,
-        })
-    }
-
-    fn insert<M: ReadModel>(&self, model: &M) -> Result<Versioned<M>, ReadModelError> {
-        let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
-
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        if storage.contains_key(&key) {
-            return Err(ReadModelError::ConcurrencyConflict {
-                collection: M::COLLECTION.to_string(),
-                id: model.id().to_string(),
-                expected: 0,
-                actual: storage[&key].version,
-            });
-        }
-
-        storage.insert(
-            key,
-            StoredModel {
-                bytes,
-                version: INITIAL_MODEL_VERSION,
-            },
-        );
-
-        Ok(Versioned {
-            data: model.clone(),
-            version: INITIAL_MODEL_VERSION,
-        })
-    }
-
-    fn update<M: ReadModel>(
-        &self,
-        model: &M,
-        expected_version: u64,
-    ) -> Result<Versioned<M>, ReadModelError> {
-        let key = Self::make_key(M::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(model).map_err(|e| ReadModelError::Serde(e.to_string()))?;
-
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let actual_version =
-            storage
-                .get(&key)
-                .map(|s| s.version)
-                .ok_or_else(|| ReadModelError::NotFound {
-                    collection: M::COLLECTION.to_string(),
-                    id: model.id().to_string(),
-                })?;
-
-        if actual_version != expected_version {
-            return Err(ReadModelError::ConcurrencyConflict {
-                collection: M::COLLECTION.to_string(),
-                id: model.id().to_string(),
-                expected: expected_version,
-                actual: actual_version,
-            });
-        }
-
-        let new_version = next_model_version(&key, Some(actual_version))?;
-        storage.insert(
-            key,
-            StoredModel {
-                bytes,
-                version: new_version,
-            },
-        );
-
-        Ok(Versioned {
-            data: model.clone(),
-            version: new_version,
-        })
-    }
-
-    fn delete<M: ReadModel>(&self, id: &str) -> Result<bool, ReadModelError> {
-        let key = Self::make_key(M::COLLECTION, id);
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        Ok(storage.remove(&key).is_some())
-    }
-
-    fn find_models<M: ReadModel>(
-        &self,
-        predicate: &dyn Fn(&M) -> bool,
-    ) -> Result<Vec<Versioned<M>>, ReadModelError> {
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let prefix = document_key_prefix(M::COLLECTION);
-        let mut results = Vec::new();
-
-        for (key, stored) in storage.iter() {
-            if key.starts_with(&prefix) {
-                let data = serde_json::from_slice::<M>(&stored.bytes)
-                    .map_err(|e| ReadModelError::Serde(e.to_string()))?;
-                if predicate(&data) {
-                    results.push(Versioned {
-                        data,
-                        version: stored.version,
-                    });
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
-    fn find_one_model<M: ReadModel>(
-        &self,
-        predicate: &dyn Fn(&M) -> bool,
-    ) -> Result<Option<Versioned<M>>, ReadModelError> {
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let prefix = document_key_prefix(M::COLLECTION);
-        let mut matched = None;
-
-        for (key, stored) in storage.iter() {
-            if key.starts_with(&prefix) {
-                let data = serde_json::from_slice::<M>(&stored.bytes)
-                    .map_err(|e| ReadModelError::Serde(e.to_string()))?;
-                if matched.is_none() && predicate(&data) {
-                    matched = Some(Versioned {
-                        data,
-                        version: stored.version,
-                    });
-                }
-            }
-        }
-
-        Ok(matched)
-    }
-}
-
-impl AsyncReadModelStore for InMemoryReadModelStore {
-    fn get_model_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::get_model(self, id) }
-    }
-
-    fn get_by_primary_key_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::get_by_primary_key(self, id) }
-    }
-
-    fn upsert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::upsert(self, model) }
-    }
-
-    fn insert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::insert(self, model) }
-    }
-
-    fn update_async<'a, M>(
-        &'a self,
-        model: &'a M,
-        expected_version: u64,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::update(self, model, expected_version) }
-    }
-
-    fn delete_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a,
-    {
-        async move { ReadModelStore::delete::<M>(self, id) }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ColumnDef, ColumnType, PrimaryKey, RowMutation};
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-    struct TestModel {
-        id: String,
-        value: i32,
-    }
-
-    impl ReadModel for TestModel {
-        const COLLECTION: &'static str = "test_models";
-        fn id(&self) -> &str {
-            &self.id
-        }
-    }
+    use crate::{
+        ColumnDef, ColumnType, DeleteRowMutation, PatchRowMutation, PrimaryKey, RowMutation,
+        RowPatch,
+    };
 
     fn test_row_schema() -> ReadModelSchema {
         ReadModelSchema {
@@ -1039,331 +651,100 @@ mod tests {
     }
 
     #[test]
-    fn apply_document_write_plan_rejects_non_document_mutations() {
+    fn relational_write_plan_upserts_rows_and_marks_processed() {
+        let store = InMemoryReadModelStore::new();
+        let schema = test_row_schema();
         let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
         let mut values = RowValues::new();
         values.insert("id", RowValue::String("row-1".into()));
-        let plan = ReadModelWritePlan::new(
-            vec![ReadModelMutation::UpsertRow(RowMutation {
-                schema: test_row_schema(),
-                key,
-                values,
-                expected_version: ExpectedVersion::Any,
-                mode: RowWriteMode::Upsert,
-            })],
-            Vec::new(),
+
+        let outcome = store
+            .commit_write_plan(ReadModelWritePlan::new(
+                vec![ReadModelMutation::UpsertRow(RowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    values,
+                    expected_version: ExpectedVersion::Any,
+                    mode: RowWriteMode::Upsert,
+                })],
+                vec![ProcessedMessageMark {
+                    consumer_name: "projection".into(),
+                    message_id: "event-1".into(),
+                }],
+            ))
+            .unwrap();
+        let row = store
+            .relational_rows
+            .read()
+            .unwrap()
+            .get(&relational_storage_key(&schema.table_name, &key))
+            .cloned()
+            .unwrap();
+
+        assert!(outcome.was_applied());
+        assert_eq!(row.version, 1);
+        assert_eq!(
+            row.values.get("id"),
+            Some(&RowValue::String("row-1".into()))
         );
-        let mut staged_models = HashMap::new();
-        let mut staged_processed_messages = HashSet::new();
-
-        let err =
-            apply_document_write_plan(plan, &mut staged_models, &mut staged_processed_messages)
-                .unwrap_err();
-
-        assert!(matches!(err, ReadModelError::Metadata(message)
-                if message.contains("apply_document_write_plan")
-                    && message.contains("ReadModelMutation::UpsertRow")
-                    && message.contains("document_capabilities")));
+        assert!(store.is_processed("projection", "event-1").unwrap());
     }
 
     #[test]
-    fn upsert_and_get() {
+    fn relational_write_plan_patches_and_deletes_rows() {
         let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 42,
-        };
-
-        let saved = store.upsert(&model).unwrap();
-        assert_eq!(saved.version, 1);
-        assert_eq!(saved.data.value, 42);
-
-        let loaded = store.get_model::<TestModel>("1").unwrap().unwrap();
-        assert_eq!(loaded.version, 1);
-        assert_eq!(loaded.data.value, 42);
-    }
-
-    #[test]
-    fn upsert_increments_version() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-
-        store.upsert(&model).unwrap();
-        let updated = TestModel {
-            id: "1".into(),
-            value: 2,
-        };
-        let saved = store.upsert(&updated).unwrap();
-        assert_eq!(saved.version, 2);
-    }
-
-    #[test]
-    fn save_document_bytes_returns_error_on_version_overflow() {
-        let store = InMemoryReadModelStore::new();
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "1");
-        let bytes = serde_json::to_vec(&TestModel {
-            id: "1".into(),
-            value: 1,
-        })
-        .unwrap();
-        store.storage.write().unwrap().insert(
-            key.clone(),
-            StoredModel {
-                bytes,
-                version: u64::MAX,
-            },
-        );
-
-        let err = store.save_document_bytes(&key, b"{}".to_vec()).unwrap_err();
-
-        assert!(
-            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
-        );
-    }
-
-    #[test]
-    fn upsert_returns_error_on_version_overflow() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(&model).unwrap();
-        store.storage.write().unwrap().insert(
-            key,
-            StoredModel {
-                bytes,
-                version: u64::MAX,
-            },
-        );
-
-        let err = store.upsert(&model).unwrap_err();
-
-        assert!(
-            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
-        );
-    }
-
-    #[test]
-    fn get_missing_returns_none() {
-        let store = InMemoryReadModelStore::new();
-        let result = store.get_model::<TestModel>("missing").unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn insert_fails_on_existing() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-
-        store.insert(&model).unwrap();
-        let err = store.insert(&model).unwrap_err();
-        assert!(matches!(err, ReadModelError::ConcurrencyConflict { .. }));
-    }
-
-    #[test]
-    fn update_with_correct_version() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-
-        store.upsert(&model).unwrap();
-
-        let updated = TestModel {
-            id: "1".into(),
-            value: 2,
-        };
-        let result = store.update(&updated, 1).unwrap();
-        assert_eq!(result.version, 2);
-        assert_eq!(result.data.value, 2);
-    }
-
-    #[test]
-    fn update_returns_error_on_version_overflow() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, model.id());
-        let bytes = serde_json::to_vec(&model).unwrap();
-        store.storage.write().unwrap().insert(
-            key,
-            StoredModel {
-                bytes,
-                version: u64::MAX,
-            },
-        );
-
-        let err = store.update(&model, u64::MAX).unwrap_err();
-
-        assert!(
-            matches!(err, ReadModelError::Storage(message) if message.contains("version overflow"))
-        );
-    }
-
-    #[test]
-    fn update_with_wrong_version_fails() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-
-        store.upsert(&model).unwrap();
-
-        let updated = TestModel {
-            id: "1".into(),
-            value: 2,
-        };
-        let err = store.update(&updated, 99).unwrap_err();
-        assert!(matches!(err, ReadModelError::ConcurrencyConflict { .. }));
-    }
-
-    #[test]
-    fn delete_existing() {
-        let store = InMemoryReadModelStore::new();
-        let model = TestModel {
-            id: "1".into(),
-            value: 1,
-        };
-
-        store.upsert(&model).unwrap();
-        assert!(store.delete::<TestModel>("1").unwrap());
-        assert!(store.get_model::<TestModel>("1").unwrap().is_none());
-    }
-
-    #[test]
-    fn delete_missing_returns_false() {
-        let store = InMemoryReadModelStore::new();
-        assert!(!store.delete::<TestModel>("missing").unwrap());
-    }
-
-    #[test]
-    fn find_with_predicate() {
-        let store = InMemoryReadModelStore::new();
+        let schema = test_row_schema();
+        let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
+        let mut values = RowValues::new();
+        values.insert("id", RowValue::String("row-1".into()));
 
         store
-            .upsert(&TestModel {
-                id: "1".into(),
-                value: 10,
-            })
+            .commit_write_plan(ReadModelWritePlan::new(
+                vec![ReadModelMutation::UpsertRow(RowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    values,
+                    expected_version: ExpectedVersion::Any,
+                    mode: RowWriteMode::Upsert,
+                })],
+                Vec::new(),
+            ))
             .unwrap();
         store
-            .upsert(&TestModel {
-                id: "2".into(),
-                value: 20,
-            })
+            .commit_write_plan(ReadModelWritePlan::new(
+                vec![ReadModelMutation::PatchRow(PatchRowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
+                    expected_version: ExpectedVersion::Exact(1),
+                    mode: PatchMode::UpdateExisting,
+                })],
+                Vec::new(),
+            ))
             .unwrap();
-        store
-            .upsert(&TestModel {
-                id: "3".into(),
-                value: 5,
-            })
-            .unwrap();
-
-        let results = store.find_models::<TestModel>(&|m| m.value > 8).unwrap();
-        assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn find_one_with_predicate() {
-        let store = InMemoryReadModelStore::new();
-
-        store
-            .upsert(&TestModel {
-                id: "1".into(),
-                value: 10,
-            })
-            .unwrap();
-        store
-            .upsert(&TestModel {
-                id: "2".into(),
-                value: 20,
-            })
-            .unwrap();
-
-        let result = store
-            .find_one_model::<TestModel>(&|m| m.value > 15)
-            .unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().data.value, 20);
-
-        let none = store
-            .find_one_model::<TestModel>(&|m| m.value > 100)
-            .unwrap();
-        assert!(none.is_none());
-    }
-
-    #[test]
-    fn find_models_returns_error_for_corrupted_rows() {
-        let store = InMemoryReadModelStore::new();
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
-        store
-            .save_document_bytes(&key, b"not valid json".to_vec())
-            .unwrap();
-
-        let err = store.find_models::<TestModel>(&|_| true).unwrap_err();
-
-        assert!(matches!(err, ReadModelError::Serde(_)));
-    }
-
-    #[test]
-    fn find_one_model_returns_error_for_corrupted_rows() {
-        let store = InMemoryReadModelStore::new();
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
-        store
-            .save_document_bytes(&key, b"not valid json".to_vec())
-            .unwrap();
-
-        let err = store.find_one_model::<TestModel>(&|_| true).unwrap_err();
-
-        assert!(matches!(err, ReadModelError::Serde(_)));
-    }
-
-    #[test]
-    fn find_one_model_validates_rows_after_first_match() {
-        let store = InMemoryReadModelStore::new();
-        store
-            .upsert(&TestModel {
-                id: "1".into(),
-                value: 20,
-            })
-            .unwrap();
-        let key = InMemoryReadModelStore::make_key(TestModel::COLLECTION, "bad");
-        store
-            .save_document_bytes(&key, b"not valid json".to_vec())
-            .unwrap();
-
-        let err = store
-            .find_one_model::<TestModel>(&|m| m.value > 15)
-            .unwrap_err();
-
-        assert!(matches!(err, ReadModelError::Serde(_)));
-    }
-
-    #[test]
-    fn clone_shares_storage() {
-        let store = InMemoryReadModelStore::new();
-        let clone = store.clone();
+        let version = store
+            .relational_rows
+            .read()
+            .unwrap()
+            .get(&relational_storage_key(&schema.table_name, &key))
+            .unwrap()
+            .version;
+        assert_eq!(version, 2);
 
         store
-            .upsert(&TestModel {
-                id: "1".into(),
-                value: 42,
-            })
+            .commit_write_plan(ReadModelWritePlan::new(
+                vec![ReadModelMutation::DeleteRow(DeleteRowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    expected_version: ExpectedVersion::Exact(2),
+                })],
+                Vec::new(),
+            ))
             .unwrap();
-
-        let loaded = clone.get_model::<TestModel>("1").unwrap().unwrap();
-        assert_eq!(loaded.data.value, 42);
+        assert!(!store
+            .relational_rows
+            .read()
+            .unwrap()
+            .contains_key(&relational_storage_key(&schema.table_name, &key)));
     }
 }

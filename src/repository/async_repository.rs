@@ -3,9 +3,8 @@ use std::future::Future;
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::OutboxMessage;
 use crate::read_model::{
-    ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
-    Versioned,
+    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelLoadGraph,
+    ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
 };
 use crate::snapshot::SnapshotRecord;
 
@@ -98,52 +97,6 @@ pub trait AsyncTransactionalCommit: Send + Sync {
 pub trait AsyncRepository: AsyncGetStream + AsyncTransactionalCommit {}
 
 impl<T> AsyncRepository for T where T: AsyncGetStream + AsyncTransactionalCommit {}
-
-/// Async CRUD storage for document-style read models.
-pub trait AsyncReadModelStore: Send + Sync {
-    fn get_model_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-
-    fn get_by_primary_key_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<Option<Versioned<M>>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-
-    fn upsert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-
-    fn insert_async<'a, M>(
-        &'a self,
-        model: &'a M,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-
-    fn update_async<'a, M>(
-        &'a self,
-        model: &'a M,
-        expected_version: u64,
-    ) -> impl Future<Output = Result<Versioned<M>, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-
-    fn delete_async<'a, M>(
-        &'a self,
-        id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a
-    where
-        M: ReadModel + 'a;
-}
 
 /// Async adapter contract for committing read-model write plans.
 pub trait AsyncReadModelWritePlanStore: Send + Sync {
