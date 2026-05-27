@@ -1,7 +1,7 @@
 //! Basic microsvc integration tests — exercises dispatch with a real repository.
 
 use serde_json::json;
-use sourced_rust::microsvc::{HandlerError, HandlerSpec, Service, Session};
+use sourced_rust::microsvc::{HandlerError, Service, Session};
 use sourced_rust::{AggregateBuilder, HashMapRepository};
 
 use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
@@ -9,46 +9,37 @@ use crate::models::counter::{Counter, CreateCounter, DecrementCounter, Increment
 #[test]
 fn full_lifecycle() {
     let service = Service::with_repo(HashMapRepository::new())
-        .handler(
-            HandlerSpec::command("counter.create"),
-            |_| true,
-            |ctx| {
-                let input = ctx.input::<CreateCounter>()?;
-                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
-                let mut counter = Counter::default();
-                counter.create(input.id.clone())?;
-                counter_repo.commit(&mut counter)?;
-                Ok(json!({ "id": input.id }))
-            },
-        )
-        .handler(
-            HandlerSpec::command("counter.increment"),
-            |_| true,
-            |ctx| {
-                let input = ctx.input::<IncrementCounter>()?;
-                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
-                let mut counter: Counter = counter_repo
-                    .get(&input.id)?
-                    .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-                counter.increment(input.amount)?;
-                counter_repo.commit(&mut counter)?;
-                Ok(json!({ "value": counter.value }))
-            },
-        )
-        .handler(
-            HandlerSpec::command("counter.decrement"),
-            |_| true,
-            |ctx| {
-                let input = ctx.input::<DecrementCounter>()?;
-                let counter_repo = ctx.repo().clone().aggregate::<Counter>();
-                let mut counter: Counter = counter_repo
-                    .get(&input.id)?
-                    .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-                counter.decrement(input.amount)?;
-                counter_repo.commit(&mut counter)?;
-                Ok(json!({ "value": counter.value }))
-            },
-        );
+        .command("counter.create")
+        .handle(|ctx| {
+            let input = ctx.input::<CreateCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter = Counter::default();
+            counter.create(input.id.clone())?;
+            counter_repo.commit(&mut counter)?;
+            Ok(json!({ "id": input.id }))
+        })
+        .command("counter.increment")
+        .handle(|ctx| {
+            let input = ctx.input::<IncrementCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter: Counter = counter_repo
+                .get(&input.id)?
+                .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
+            counter.increment(input.amount)?;
+            counter_repo.commit(&mut counter)?;
+            Ok(json!({ "value": counter.value }))
+        })
+        .command("counter.decrement")
+        .handle(|ctx| {
+            let input = ctx.input::<DecrementCounter>()?;
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
+            let mut counter: Counter = counter_repo
+                .get(&input.id)?
+                .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
+            counter.decrement(input.amount)?;
+            counter_repo.commit(&mut counter)?;
+            Ok(json!({ "value": counter.value }))
+        });
 
     // Create
     let result = service

@@ -1,6 +1,6 @@
-//! Service — command handler registry and dispatch for microsvc.
+//! Service — handler registry and dispatch for microsvc.
 //!
-//! `Service<D>` holds service dependencies and a set of named command handlers.
+//! `Service<D>` holds service dependencies and a set of named command/event handlers.
 //! Each handler receives a `Context<D>` and returns `Result<Value, HandlerError>`.
 //!
 //! ## Example
@@ -10,7 +10,8 @@
 //! use serde_json::json;
 //!
 //! let service = microsvc::Service::new(())
-//!     .handler(microsvc::HandlerSpec::command("order.create"), |_| true, |ctx| {
+//!     .command("order.create")
+//!     .handle(|ctx| {
 //!         let input = ctx.input::<CreateOrderInput>()?;
 //!         Ok(json!({ "id": input.id }))
 //!     });
@@ -191,11 +192,51 @@ impl From<MessageEnvelope> for Event {
     }
 }
 
-/// A registered command handler with optional guard.
-struct CommandHandler<D> {
+/// A registered handler with optional guard.
+struct RegisteredHandler<D> {
     input: HandlerInput,
     guard: Option<Arc<GuardFn<D>>>,
     handle: Arc<HandlerFn<D>>,
+}
+
+/// Builder returned by [`Service::command`], [`Service::event`],
+/// [`Service::events`], and [`Service::handler`].
+pub struct HandlerBuilder<D> {
+    service: Service<D>,
+    spec: HandlerSpec,
+}
+
+impl<D: Send + Sync + 'static> HandlerBuilder<D> {
+    /// Deliver the full message envelope to the handler.
+    pub fn envelope(mut self) -> Self {
+        self.spec = self.spec.envelope();
+        self
+    }
+
+    /// Deliver only the message JSON payload to the handler.
+    pub fn payload_json(mut self) -> Self {
+        self.spec = self.spec.payload_json();
+        self
+    }
+
+    /// Register a handler without a guard.
+    pub fn handle<F>(self, handler: F) -> Service<D>
+    where
+        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
+    {
+        self.service
+            .register_handler(self.spec, None, Arc::new(handler))
+    }
+
+    /// Register a handler with a guard.
+    pub fn guarded<G, F>(self, guard: G, handler: F) -> Service<D>
+    where
+        G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
+        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
+    {
+        self.service
+            .register_handler(self.spec, Some(Arc::new(guard)), Arc::new(handler))
+    }
 }
 
 /// A microservice that routes commands to handler functions.
@@ -205,7 +246,7 @@ struct CommandHandler<D> {
 /// [`Service::with_repo_and_read_model_store`] for common dependency shapes.
 pub struct Service<D> {
     dependencies: D,
-    handlers: HashMap<String, CommandHandler<D>>,
+    handlers: HashMap<String, RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
 }
 
@@ -235,13 +276,28 @@ impl<D: Send + Sync + 'static> Service<D> {
         Self::new(read_model_store)
     }
 
-    /// Register a handler from a transport-visible spec.
-    pub fn handler<G, F>(self, spec: HandlerSpec, guard: G, handler: F) -> Self
-    where
-        G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
-        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
-    {
-        self.register_handler(spec, Some(Arc::new(guard)), Arc::new(handler))
+    /// Start registering a command handler that consumes JSON payload input.
+    pub fn command(self, name: &'static str) -> HandlerBuilder<D> {
+        self.handler(HandlerSpec::command(name))
+    }
+
+    /// Start registering an event handler that consumes JSON payload input.
+    pub fn event(self, name: &'static str) -> HandlerBuilder<D> {
+        self.handler(HandlerSpec::event(name))
+    }
+
+    /// Start registering an event handler for several event names that consume JSON
+    /// payload input.
+    pub fn events(self, names: &'static [&'static str]) -> HandlerBuilder<D> {
+        self.handler(HandlerSpec::events(names))
+    }
+
+    /// Start registering a handler from a transport-visible spec.
+    pub fn handler(self, spec: HandlerSpec) -> HandlerBuilder<D> {
+        HandlerBuilder {
+            service: self,
+            spec,
+        }
     }
 
     fn register_handler(
@@ -253,7 +309,7 @@ impl<D: Send + Sync + 'static> Service<D> {
         for name in spec.names() {
             self.handlers.insert(
                 name.to_string(),
-                CommandHandler {
+                RegisteredHandler {
                     input: spec.input,
                     guard: guard.clone(),
                     handle: handle.clone(),
@@ -679,30 +735,25 @@ mod tests {
 
     #[test]
     fn dispatch_returns_handler_result() {
-        let service = test_service().handler(
-            HandlerSpec::command("ping"),
-            |_| true,
-            |_ctx| Ok(json!({ "pong": true })),
-        );
+        let service = test_service()
+            .command("ping")
+            .handle(|_ctx| Ok(json!({ "pong": true })));
         let result = service.dispatch("ping", json!({}), Session::new()).unwrap();
         assert_eq!(result, json!({ "pong": true }));
     }
 
     #[test]
     fn unknown_command() {
-        let service =
-            test_service().handler(HandlerSpec::command("ping"), |_| true, |_ctx| Ok(json!({})));
+        let service = test_service().command("ping").handle(|_ctx| Ok(json!({})));
         let result = service.dispatch("unknown", json!({}), Session::new());
         assert!(matches!(result, Err(HandlerError::UnknownCommand(ref s)) if s == "unknown"));
     }
 
     #[test]
     fn handler_error_propagates() {
-        let service = test_service().handler(
-            HandlerSpec::command("fail"),
-            |_| true,
-            |_ctx| Err(HandlerError::Rejected("nope".into())),
-        );
+        let service = test_service()
+            .command("fail")
+            .handle(|_ctx| Err(HandlerError::Rejected("nope".into())));
         let result = service.dispatch("fail", json!({}), Session::new());
         assert!(matches!(result, Err(HandlerError::Rejected(ref s)) if s == "nope"));
     }
@@ -714,14 +765,10 @@ mod tests {
             _name: String,
         }
 
-        let service = test_service().handler(
-            HandlerSpec::command("typed"),
-            |_| true,
-            |ctx| {
-                let _input = ctx.input::<Input>()?;
-                Ok(json!({}))
-            },
-        );
+        let service = test_service().command("typed").handle(|ctx| {
+            let _input = ctx.input::<Input>()?;
+            Ok(json!({}))
+        });
         let result = service.dispatch("typed", json!({ "wrong": 1 }), Session::new());
         assert!(matches!(result, Err(HandlerError::DecodeFailed(_))));
     }
@@ -729,8 +776,10 @@ mod tests {
     #[test]
     fn command_names_list() {
         let service = test_service()
-            .handler(HandlerSpec::command("a"), |_| true, |_| Ok(json!({})))
-            .handler(HandlerSpec::command("b"), |_| true, |_| Ok(json!({})));
+            .command("a")
+            .handle(|_| Ok(json!({})))
+            .command("b")
+            .handle(|_| Ok(json!({})));
         let mut cmds = service.command_names();
         cmds.sort();
         assert_eq!(cmds, vec!["a", "b"]);
@@ -741,16 +790,10 @@ mod tests {
         const EVENTS: &[&str] = &["checkout.started", "seat.reserved"];
 
         let service = test_service()
-            .handler(
-                HandlerSpec::command("checkout.start"),
-                |_| true,
-                |_| Ok(json!({})),
-            )
-            .handler(
-                HandlerSpec::events(EVENTS).envelope(),
-                |_| true,
-                |_| Ok(json!({})),
-            );
+            .command("checkout.start")
+            .handle(|_| Ok(json!({})))
+            .handler(HandlerSpec::events(EVENTS).envelope())
+            .guarded(|_| true, |_| Ok(json!({})));
 
         assert_eq!(
             service.subscription_plan(),
@@ -762,17 +805,35 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_message_delivers_payload_json_by_default() {
-        let service = test_service().handler(
-            HandlerSpec::event("checkout.started"),
-            |ctx| ctx.has_fields(&["checkout_id"]),
-            |ctx| {
-                Ok(json!({
-                    "checkout_id": ctx.raw_input()["checkout_id"].as_str().unwrap(),
-                    "user_id": ctx.user_id()?,
-                }))
-            },
+    fn event_conveniences_record_event_names() {
+        const EVENTS: &[&str] = &["seat.added", "seat.reserved"];
+
+        let service = test_service()
+            .event("checkout.started")
+            .handle(|_| Ok(json!({})))
+            .events(EVENTS)
+            .handle(|_| Ok(json!({})));
+
+        let mut events = service.event_names();
+        events.sort();
+        assert_eq!(
+            events,
+            vec!["checkout.started", "seat.added", "seat.reserved"]
         );
+    }
+
+    #[test]
+    fn dispatch_message_delivers_payload_json_by_default() {
+        let service = test_service().event("checkout.started").handle(|ctx| {
+            if !ctx.has_fields(&["checkout_id"]) {
+                return Err(HandlerError::Rejected("missing checkout_id".into()));
+            }
+
+            Ok(json!({
+                "checkout_id": ctx.raw_input()["checkout_id"].as_str().unwrap(),
+                "user_id": ctx.user_id()?,
+            }))
+        });
         let message = MessageEnvelope {
             id: "evt-1".to_string(),
             name: "checkout.started".to_string(),
@@ -792,8 +853,7 @@ mod tests {
 
     #[test]
     fn dispatch_message_can_deliver_full_envelope() {
-        let service = test_service().handler(
-            HandlerSpec::event("seat.reserved").envelope(),
+        let service = test_service().event("seat.reserved").envelope().guarded(
             |ctx| ctx.has_fields(&["id", "name", "payload"]),
             |ctx| {
                 let envelope = ctx.input::<MessageEnvelope>()?;
@@ -827,8 +887,7 @@ mod tests {
 
     #[test]
     fn guard_passes() {
-        let service = test_service().handler(
-            HandlerSpec::command("greet"),
+        let service = test_service().command("greet").guarded(
             |ctx| ctx.has_fields(&["name"]),
             |ctx| {
                 let name = ctx.raw_input()["name"].as_str().unwrap();
@@ -843,8 +902,7 @@ mod tests {
 
     #[test]
     fn guard_rejects() {
-        let service = test_service().handler(
-            HandlerSpec::command("greet"),
+        let service = test_service().command("greet").guarded(
             |ctx| ctx.has_fields(&["name"]),
             |_ctx| panic!("handler should not run"),
         );
@@ -854,8 +912,7 @@ mod tests {
 
     #[test]
     fn guard_checks_session() {
-        let service = test_service().handler(
-            HandlerSpec::command("admin"),
+        let service = test_service().command("admin").guarded(
             |ctx| ctx.role() == Some("admin"),
             |_ctx| Ok(json!({ "ok": true })),
         );
@@ -873,11 +930,9 @@ mod tests {
 
     #[test]
     fn dispatch_request_success() {
-        let service = test_service().handler(
-            HandlerSpec::command("ping"),
-            |_| true,
-            |_ctx| Ok(json!({ "pong": true })),
-        );
+        let service = test_service()
+            .command("ping")
+            .handle(|_ctx| Ok(json!({ "pong": true })));
         let request = CommandRequest {
             command: "ping".to_string(),
             input: json!({}),
@@ -891,19 +946,13 @@ mod tests {
     #[test]
     fn dispatch_request_error_codes() {
         let service = test_service()
-            .handler(
-                HandlerSpec::command("reject"),
-                |_| true,
-                |_| Err(HandlerError::Rejected("no".into())),
-            )
-            .handler(
-                HandlerSpec::command("unauth"),
-                |_| true,
-                |ctx| {
-                    let _ = ctx.user_id()?;
-                    Ok(json!({}))
-                },
-            );
+            .command("reject")
+            .handle(|_| Err(HandlerError::Rejected("no".into())))
+            .command("unauth")
+            .handle(|ctx| {
+                let _ = ctx.user_id()?;
+                Ok(json!({}))
+            });
 
         let resp = service.dispatch_request(&CommandRequest {
             command: "unknown".to_string(),
@@ -929,14 +978,10 @@ mod tests {
 
     #[test]
     fn dispatch_request_passes_session() {
-        let service = test_service().handler(
-            HandlerSpec::command("whoami"),
-            |_| true,
-            |ctx| {
-                let user_id = ctx.user_id()?;
-                Ok(json!({ "user_id": user_id }))
-            },
-        );
+        let service = test_service().command("whoami").handle(|ctx| {
+            let user_id = ctx.user_id()?;
+            Ok(json!({ "user_id": user_id }))
+        });
         let mut vars = HashMap::new();
         vars.insert("x-hasura-user-id".to_string(), "user-99".to_string());
         let request = CommandRequest {
@@ -959,11 +1004,9 @@ mod tests {
     #[cfg(feature = "bus")]
     #[test]
     fn dispatch_event_rejects_non_json_payload() {
-        let service = test_service().handler(
-            HandlerSpec::command("ping"),
-            |_| true,
-            |_ctx| Ok(json!({ "ok": true })),
-        );
+        let service = test_service()
+            .command("ping")
+            .handle(|_ctx| Ok(json!({ "ok": true })));
         let event = crate::bus::Event::with_string_payload("evt-1", "ping", "not-json");
         let result = service.dispatch_event(&event);
         assert!(matches!(result, Err(HandlerError::DecodeFailed(_))));
