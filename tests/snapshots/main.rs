@@ -1,7 +1,63 @@
 mod aggregate;
 
 use aggregate::Todo;
-use sourced_rust::{Aggregate, AggregateBuilder, HashMapRepository, Queueable, SnapshotStore};
+use serde::{Deserialize, Serialize};
+use sourced_rust::{
+    impl_aggregate, Aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, Queueable,
+    SnapshotRecord, SnapshotStore, Snapshottable,
+};
+
+#[derive(Default)]
+struct ReplayCounter {
+    entity: Entity,
+    total: i32,
+}
+
+impl ReplayCounter {
+    fn add(&mut self, id: &str, amount: i32) {
+        if self.entity.id().is_empty() {
+            self.entity.set_id(id);
+        }
+        self.entity.digest("Added", &amount).unwrap();
+        self.total += amount;
+    }
+
+    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
+        if event.event_name == "Added" {
+            self.total += event.decode::<i32>().map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl_aggregate!(
+    ReplayCounter,
+    entity,
+    replay,
+    aggregate_type = "snapshot.replay_counter"
+);
+
+#[derive(Serialize, Deserialize)]
+struct ReplayCounterSnapshot {
+    id: String,
+    total: i32,
+}
+
+impl Snapshottable for ReplayCounter {
+    type Snapshot = ReplayCounterSnapshot;
+
+    fn create_snapshot(&self) -> Self::Snapshot {
+        ReplayCounterSnapshot {
+            id: self.entity.id().to_string(),
+            total: self.total,
+        }
+    }
+
+    fn restore_from_snapshot(&mut self, snapshot: Self::Snapshot) {
+        self.entity.set_id(&snapshot.id);
+        self.total = snapshot.total;
+    }
+}
 
 #[test]
 fn snapshot_created_at_frequency_threshold() {
@@ -108,6 +164,64 @@ fn snapshot_plus_newer_events() {
     assert!(loaded.snapshot().completed);
     assert_eq!(loaded.entity.version(), 2);
     assert_eq!(loaded.entity.snapshot_version(), 2);
+}
+
+#[test]
+fn snapshot_hydration_replays_every_event_after_snapshot_version() {
+    let base_repo = HashMapRepository::new();
+    let full_replay_repo = base_repo.clone().aggregate::<ReplayCounter>();
+    let snapshot_repo = base_repo
+        .clone()
+        .aggregate::<ReplayCounter>()
+        .with_snapshots(100);
+
+    let mut counter = ReplayCounter::default();
+    counter.add("counter-1", 10);
+    full_replay_repo.commit(&mut counter).unwrap();
+
+    let payload = bitcode::serialize(&ReplayCounterSnapshot {
+        id: "counter-1".into(),
+        total: 10,
+    })
+    .unwrap();
+    base_repo
+        .save_snapshot(SnapshotRecord::new(
+            ReplayCounter::aggregate_type(),
+            "counter-1",
+            1,
+            std::any::type_name::<ReplayCounterSnapshot>(),
+            1,
+            payload,
+        ))
+        .unwrap();
+
+    let mut counter = snapshot_repo.get("counter-1").unwrap().unwrap();
+    counter.add("counter-1", 5);
+    snapshot_repo.commit(&mut counter).unwrap();
+
+    let mut counter = snapshot_repo.get("counter-1").unwrap().unwrap();
+    counter.add("counter-1", 7);
+    snapshot_repo.commit(&mut counter).unwrap();
+
+    let loaded = snapshot_repo.get("counter-1").unwrap().unwrap();
+    let replayed = full_replay_repo.get("counter-1").unwrap().unwrap();
+
+    assert_eq!(loaded.total, 22);
+    assert_eq!(loaded.total, replayed.total);
+    assert_eq!(loaded.entity.version(), replayed.entity.version());
+    assert_eq!(loaded.entity.snapshot_version(), 1);
+    assert_eq!(replayed.entity.snapshot_version(), 0);
+    assert_eq!(loaded.entity.events().len(), 3);
+    assert_eq!(loaded.entity.events(), replayed.entity.events());
+    assert_eq!(
+        loaded
+            .entity
+            .events()
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
 }
 
 #[test]
