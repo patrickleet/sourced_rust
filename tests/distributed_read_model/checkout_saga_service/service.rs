@@ -6,8 +6,8 @@ use super::{handlers, CheckoutRepo};
 
 pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
     let service = sourced_rust::register_handlers!(Service::with_repo(repo), handlers::start);
-    Arc::new(service.command_guarded(
-        handlers::record_seat_reserved::EVENT,
+    Arc::new(service.handler(
+        handlers::record_seat_reserved::SPEC,
         handlers::record_seat_reserved::guard,
         handlers::record_seat_reserved::handle,
     ))

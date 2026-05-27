@@ -34,6 +34,7 @@
 //! // src/handlers/order_create.rs
 //!
 //! pub const COMMAND: &str = "order.create";
+//! pub const SPEC: microsvc::HandlerSpec = microsvc::HandlerSpec::command(COMMAND);
 //!
 //! pub fn guard<D>(ctx: &microsvc::Context<D>) -> bool {
 //!     ctx.has_fields(&["id", "product_id"])
@@ -64,7 +65,10 @@ pub use dependencies::{
     RepoReadModelDependencies,
 };
 pub use error::HandlerError;
-pub use service::{CommandRequest, CommandResponse, Service};
+pub use service::{
+    CommandRequest, CommandResponse, DeliveryKind, HandlerInput, HandlerNames, HandlerSpec,
+    MessageEnvelope, MessageKind, Service, SubscriptionPlan,
+};
 pub use session::Session;
 
 // Bus transports (requires "bus" feature)
@@ -86,7 +90,7 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 /// Register handler modules with a service using the convention pattern.
 ///
 /// Each handler module must export:
-/// - `COMMAND: &str` — the command name
+/// - `SPEC: HandlerSpec` — the command or event metadata
 /// - `guard(ctx) -> bool` — input validation
 /// - `handle(ctx) -> Result<Value, HandlerError>` — the handler
 ///
@@ -103,8 +107,8 @@ macro_rules! register_handlers {
     ($service:expr, $( $($seg:ident)::+ ),+ $(,)?) => {
         $service
         $(
-            .command_guarded(
-                $($seg)::+::COMMAND,
+            .handler(
+                $($seg)::+::SPEC,
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )

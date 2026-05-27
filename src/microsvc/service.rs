@@ -19,7 +19,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use serde_json::Value;
 
@@ -28,13 +28,174 @@ use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies}
 use super::error::HandlerError;
 use super::session::Session;
 
+#[cfg(feature = "bus")]
+use crate::bus::Event;
+
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFn<D> = dyn Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync;
 
+/// The kind of message a handler consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum MessageKind {
+    /// A command addressed to one handler.
+    Command,
+    /// A published event that may be consumed by many handlers.
+    Event,
+}
+
+/// How a handler expects the transport to deliver matching messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryKind {
+    /// Point-to-point delivery, normally used for command queues.
+    PointToPoint,
+    /// Fan-out delivery, normally used for event subscriptions.
+    FanOut,
+}
+
+/// The input shape delivered to a handler after a message is received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandlerInput {
+    /// Decode the message payload bytes as JSON and pass that JSON value to
+    /// the handler. This is the default command-style input.
+    PayloadJson,
+    /// Pass the full [`MessageEnvelope`] to the handler as JSON.
+    MessageEnvelope,
+}
+
+/// Static message names attached to a handler spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandlerNames {
+    /// A single command or event name.
+    One(&'static str),
+    /// Multiple event names handled by one projection-style handler.
+    Many(&'static [&'static str]),
+}
+
+impl HandlerNames {
+    fn to_vec(self) -> Vec<&'static str> {
+        match self {
+            Self::One(name) => vec![name],
+            Self::Many(names) => names.to_vec(),
+        }
+    }
+}
+
+/// Transport-visible metadata for a registered handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandlerSpec {
+    names: HandlerNames,
+    pub kind: MessageKind,
+    pub delivery: DeliveryKind,
+    pub input: HandlerInput,
+}
+
+impl HandlerSpec {
+    /// A command handler that consumes JSON payloads.
+    pub const fn command(name: &'static str) -> Self {
+        Self {
+            names: HandlerNames::One(name),
+            kind: MessageKind::Command,
+            delivery: DeliveryKind::PointToPoint,
+            input: HandlerInput::PayloadJson,
+        }
+    }
+
+    /// An event handler that consumes JSON payloads.
+    pub const fn event(name: &'static str) -> Self {
+        Self {
+            names: HandlerNames::One(name),
+            kind: MessageKind::Event,
+            delivery: DeliveryKind::FanOut,
+            input: HandlerInput::PayloadJson,
+        }
+    }
+
+    /// An event handler that consumes several event names.
+    pub const fn events(names: &'static [&'static str]) -> Self {
+        Self {
+            names: HandlerNames::Many(names),
+            kind: MessageKind::Event,
+            delivery: DeliveryKind::FanOut,
+            input: HandlerInput::PayloadJson,
+        }
+    }
+
+    /// Deliver the full message envelope to the handler.
+    pub const fn envelope(mut self) -> Self {
+        self.input = HandlerInput::MessageEnvelope;
+        self
+    }
+
+    /// Deliver only the message JSON payload to the handler.
+    pub const fn payload_json(mut self) -> Self {
+        self.input = HandlerInput::PayloadJson;
+        self
+    }
+
+    /// Message names consumed by this handler.
+    pub fn names(&self) -> Vec<&'static str> {
+        self.names.to_vec()
+    }
+}
+
+/// Transport subscription metadata derived from registered handlers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubscriptionPlan {
+    /// Command names consumed by point-to-point command transports.
+    pub commands: Vec<String>,
+    /// Event names consumed by fan-out event transports.
+    pub events: Vec<String>,
+}
+
+/// Serializable transport message envelope used by projection-style handlers
+/// that need message ids, names, payload bytes, and metadata.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MessageEnvelope {
+    pub id: String,
+    pub name: String,
+    pub kind: MessageKind,
+    pub payload: Vec<u8>,
+    pub content_type: String,
+    pub metadata: Vec<(String, String)>,
+}
+
+#[cfg(feature = "bus")]
+impl From<&Event> for MessageEnvelope {
+    fn from(event: &Event) -> Self {
+        Self {
+            id: event.id.clone(),
+            name: event.event_type.clone(),
+            kind: MessageKind::Event,
+            payload: event.payload.clone(),
+            content_type: "application/json".to_string(),
+            metadata: event.metadata.clone().unwrap_or_default(),
+        }
+    }
+}
+
+#[cfg(feature = "bus")]
+impl From<MessageEnvelope> for Event {
+    fn from(envelope: MessageEnvelope) -> Self {
+        let metadata = if envelope.metadata.is_empty() {
+            None
+        } else {
+            Some(envelope.metadata)
+        };
+
+        Self {
+            id: envelope.id,
+            event_type: envelope.name,
+            payload: envelope.payload,
+            metadata,
+        }
+    }
+}
+
 /// A registered command handler with optional guard.
 struct CommandHandler<D> {
-    guard: Option<Box<GuardFn<D>>>,
-    handle: Box<HandlerFn<D>>,
+    input: HandlerInput,
+    guard: Option<Arc<GuardFn<D>>>,
+    handle: Arc<HandlerFn<D>>,
 }
 
 /// A microservice that routes commands to handler functions.
@@ -45,6 +206,7 @@ struct CommandHandler<D> {
 pub struct Service<D> {
     dependencies: D,
     handlers: HashMap<String, CommandHandler<D>>,
+    handler_specs: Vec<HandlerSpec>,
 }
 
 impl<D: Send + Sync + 'static> Service<D> {
@@ -53,6 +215,7 @@ impl<D: Send + Sync + 'static> Service<D> {
         Self {
             dependencies,
             handlers: HashMap::new(),
+            handler_specs: Vec::new(),
         }
     }
 
@@ -75,36 +238,55 @@ impl<D: Send + Sync + 'static> Service<D> {
     /// Register a command handler.
     ///
     /// Uses builder pattern — returns `self` for chaining.
-    pub fn command<F>(mut self, name: &str, handler: F) -> Self
+    pub fn command<F>(self, name: &'static str, handler: F) -> Self
     where
         F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
     {
-        self.handlers.insert(
-            name.to_string(),
-            CommandHandler {
-                guard: None,
-                handle: Box::new(handler),
-            },
-        );
-        self
+        self.register_handler(HandlerSpec::command(name), None, Arc::new(handler))
     }
 
     /// Register a command handler with a guard function.
     ///
     /// The guard is called before the handler. If it returns `false`,
     /// the command is rejected with `HandlerError::GuardRejected`.
-    pub fn command_guarded<G, F>(mut self, name: &str, guard: G, handler: F) -> Self
+    pub fn command_guarded<G, F>(self, name: &'static str, guard: G, handler: F) -> Self
     where
         G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
         F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
     {
-        self.handlers.insert(
-            name.to_string(),
-            CommandHandler {
-                guard: Some(Box::new(guard)),
-                handle: Box::new(handler),
-            },
-        );
+        self.register_handler(
+            HandlerSpec::command(name),
+            Some(Arc::new(guard)),
+            Arc::new(handler),
+        )
+    }
+
+    /// Register a handler from a transport-visible spec.
+    pub fn handler<G, F>(self, spec: HandlerSpec, guard: G, handler: F) -> Self
+    where
+        G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
+        F: Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync + 'static,
+    {
+        self.register_handler(spec, Some(Arc::new(guard)), Arc::new(handler))
+    }
+
+    fn register_handler(
+        mut self,
+        spec: HandlerSpec,
+        guard: Option<Arc<GuardFn<D>>>,
+        handle: Arc<HandlerFn<D>>,
+    ) -> Self {
+        for name in spec.names() {
+            self.handlers.insert(
+                name.to_string(),
+                CommandHandler {
+                    input: spec.input,
+                    guard: guard.clone(),
+                    handle: handle.clone(),
+                },
+            );
+        }
+        self.handler_specs.push(spec);
         self
     }
 
@@ -132,7 +314,7 @@ impl<D: Send + Sync + 'static> Service<D> {
             }
         }
 
-        (handler.handle)(&ctx)
+        (handler.handle.as_ref())(&ctx)
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -150,22 +332,65 @@ impl<D: Send + Sync + 'static> Service<D> {
         }
     }
 
-    /// Dispatch a bus `Event` as a command.
-    ///
-    /// Maps the event fields to a dispatch call:
-    /// - `event.event_type` → command name
-    /// - `event.payload` → JSON input (parsed from bytes)
-    /// - `event.metadata` → session variables
+    /// Dispatch a transport message.
+    pub fn dispatch_message(&self, message: &MessageEnvelope) -> Result<Value, HandlerError> {
+        let handler = self
+            .handlers
+            .get(&message.name)
+            .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
+        let input = message_to_handler_input(message, handler.input)?;
+        let session = message_to_session(message);
+        self.dispatch(&message.name, input, session)
+    }
+
+    /// Dispatch a bus `Event` as a message.
     #[cfg(feature = "bus")]
     pub fn dispatch_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
-        let input = event_to_json_input(event)?;
-        let session = event_to_session(event);
-        self.dispatch(&event.event_type, input, session)
+        self.dispatch_message(&MessageEnvelope::from(event))
     }
 
     /// List registered command names.
     pub fn commands(&self) -> Vec<&str> {
-        self.handlers.keys().map(|s| s.as_str()).collect()
+        self.command_names()
+    }
+
+    /// List registered command names.
+    pub fn command_names(&self) -> Vec<&str> {
+        names_by_kind(&self.handler_specs, MessageKind::Command)
+    }
+
+    /// List registered event names.
+    pub fn event_names(&self) -> Vec<&str> {
+        names_by_kind(&self.handler_specs, MessageKind::Event)
+    }
+
+    /// Return transport metadata for registered handlers.
+    pub fn handler_specs(&self) -> &[HandlerSpec] {
+        &self.handler_specs
+    }
+
+    /// Return the command/event names a transport should subscribe to.
+    pub fn subscription_plan(&self) -> SubscriptionPlan {
+        let mut plan = SubscriptionPlan::default();
+
+        for spec in &self.handler_specs {
+            for name in spec.names() {
+                let bucket = match spec.kind {
+                    MessageKind::Command => &mut plan.commands,
+                    MessageKind::Event => &mut plan.events,
+                };
+                if !bucket.iter().any(|existing| existing == name) {
+                    bucket.push(name.to_string());
+                }
+            }
+        }
+
+        plan
+    }
+
+    /// Return whether this service has a handler for the message name.
+    pub fn handles(&self, name: &str) -> bool {
+        self.handlers.contains_key(name)
     }
 
     /// Get a reference to the service dependencies.
@@ -351,6 +576,9 @@ where
 /// multiple services need to react to the same events.
 ///
 /// Successfully handled events are acknowledged. Failed events are nacked.
+/// Events with no registered handler are acknowledged and ignored; production
+/// transports should use [`Service::subscription_plan`] to avoid delivering
+/// unrelated event types to the service.
 ///
 /// ## Example
 ///
@@ -397,6 +625,9 @@ where
             stats.polls += 1;
 
             match subscriber.poll(poll_interval.as_millis() as u64) {
+                Ok(Some(event)) if !service.handles(&event.event_type) => {
+                    let _ = subscriber.ack(&event.id);
+                }
                 Ok(Some(event)) => match service.dispatch_event(&event) {
                     Ok(_) => {
                         let _ = subscriber.ack(&event.id);
@@ -422,31 +653,46 @@ where
 }
 
 // =============================================================================
-// Helpers: convert bus Event to dispatch inputs
+// Helpers: convert transport messages to dispatch inputs
 // =============================================================================
 
-/// Parse a bus Event's payload as JSON.
-#[cfg(feature = "bus")]
-fn event_to_json_input(event: &crate::bus::Event) -> Result<Value, HandlerError> {
-    serde_json::from_slice::<Value>(&event.payload).map_err(|e| {
+fn names_by_kind(specs: &[HandlerSpec], kind: MessageKind) -> Vec<&str> {
+    let mut names = Vec::new();
+
+    for spec in specs.iter().filter(|spec| spec.kind == kind) {
+        for name in spec.names() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+
+    names
+}
+
+fn message_to_handler_input(
+    message: &MessageEnvelope,
+    input: HandlerInput,
+) -> Result<Value, HandlerError> {
+    match input {
+        HandlerInput::PayloadJson => message_to_json_input(message),
+        HandlerInput::MessageEnvelope => serde_json::to_value(message)
+            .map_err(|e| HandlerError::DecodeFailed(format!("invalid message envelope: {e}"))),
+    }
+}
+
+fn message_to_json_input(message: &MessageEnvelope) -> Result<Value, HandlerError> {
+    serde_json::from_slice::<Value>(&message.payload).map_err(|e| {
         HandlerError::DecodeFailed(format!(
-            "invalid JSON payload for command '{}': {}",
-            event.event_type, e
+            "invalid JSON payload for message '{}': {}",
+            message.name, e
         ))
     })
 }
 
-/// Extract session variables from a bus Event's metadata.
-#[cfg(feature = "bus")]
-fn event_to_session(event: &crate::bus::Event) -> Session {
-    match &event.metadata {
-        Some(meta) => {
-            let vars: HashMap<String, String> =
-                meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            Session::from_map(vars)
-        }
-        None => Session::new(),
-    }
+fn message_to_session(message: &MessageEnvelope) -> Session {
+    let vars: HashMap<String, String> = message.metadata.iter().cloned().collect();
+    Session::from_map(vars)
 }
 
 #[cfg(test)]
@@ -503,6 +749,91 @@ mod tests {
         let mut cmds = service.commands();
         cmds.sort();
         assert_eq!(cmds, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn subscription_plan_separates_commands_and_events() {
+        const EVENTS: &[&str] = &["checkout.started", "seat.reserved"];
+
+        let service = test_service()
+            .command("checkout.start", |_| Ok(json!({})))
+            .handler(
+                HandlerSpec::events(EVENTS).envelope(),
+                |_| true,
+                |_| Ok(json!({})),
+            );
+
+        assert_eq!(
+            service.subscription_plan(),
+            SubscriptionPlan {
+                commands: vec!["checkout.start".to_string()],
+                events: vec!["checkout.started".to_string(), "seat.reserved".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_message_delivers_payload_json_by_default() {
+        let service = test_service().handler(
+            HandlerSpec::event("checkout.started"),
+            |ctx| ctx.has_fields(&["checkout_id"]),
+            |ctx| {
+                Ok(json!({
+                    "checkout_id": ctx.raw_input()["checkout_id"].as_str().unwrap(),
+                    "user_id": ctx.user_id()?,
+                }))
+            },
+        );
+        let message = MessageEnvelope {
+            id: "evt-1".to_string(),
+            name: "checkout.started".to_string(),
+            kind: MessageKind::Event,
+            payload: br#"{"checkout_id":"checkout-1"}"#.to_vec(),
+            content_type: "application/json".to_string(),
+            metadata: vec![("x-hasura-user-id".to_string(), "user-1".to_string())],
+        };
+
+        let result = service.dispatch_message(&message).unwrap();
+
+        assert_eq!(
+            result,
+            json!({ "checkout_id": "checkout-1", "user_id": "user-1" })
+        );
+    }
+
+    #[test]
+    fn dispatch_message_can_deliver_full_envelope() {
+        let service = test_service().handler(
+            HandlerSpec::event("seat.reserved").envelope(),
+            |ctx| ctx.has_fields(&["id", "name", "payload"]),
+            |ctx| {
+                let envelope = ctx.input::<MessageEnvelope>()?;
+                Ok(json!({
+                    "event_id": envelope.id,
+                    "name": envelope.name,
+                    "metadata": envelope.metadata,
+                }))
+            },
+        );
+        let message = MessageEnvelope {
+            id: "evt-2".to_string(),
+            name: "seat.reserved".to_string(),
+            kind: MessageKind::Event,
+            payload: br#"{"seat_id":"A-7"}"#.to_vec(),
+            content_type: "application/json".to_string(),
+            metadata: vec![("correlation_id".to_string(), "checkout-1".to_string())],
+        };
+
+        let result = service.dispatch_message(&message).unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "event_id": "evt-2",
+                "name": "seat.reserved",
+                "metadata": [["correlation_id", "checkout-1"]],
+            })
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use super::*;
 
 pub const COMMAND: &str = "InitInventory";
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["sku", "stock"])

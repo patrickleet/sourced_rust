@@ -9,6 +9,8 @@ use crate::checkout::{
 use crate::seat_inventory_service::SeatRepo;
 
 pub const EVENT: &str = checkout_event::STARTED;
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::event(EVENT);
 
 pub fn guard(ctx: &Context<SeatRepo>) -> bool {
     ctx.has_fields(&["checkout_id", "seat_id", "seat_category"])

@@ -19,9 +19,11 @@ pub const EVENTS: &[&str] = &[
     "board.card_moved",
     "board.card_removed",
 ];
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::events(EVENTS).envelope();
 
 pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
-    ctx.has_fields(&["id", "event_type", "payload"])
+    ctx.has_fields(&["id", "name", "payload"])
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {

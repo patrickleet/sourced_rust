@@ -8,6 +8,8 @@ use sourced_rust::microsvc::{Context, HandlerError};
 use super::Repo;
 
 pub const COMMAND: &str = "whoami";
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 pub fn guard(_ctx: &Context<Repo>) -> bool {
     true

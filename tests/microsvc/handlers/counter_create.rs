@@ -14,6 +14,8 @@ use super::Repo;
 use crate::models::counter::Counter;
 
 pub const COMMAND: &str = "counter.create";
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 #[derive(Deserialize)]
 pub struct Input {

@@ -8,6 +8,8 @@ use crate::checkout::{
 use crate::checkout_saga_service::{CheckoutRepo, CheckoutSaga};
 
 pub const COMMAND: &str = checkout_command::START;
+pub const SPEC: sourced_rust::microsvc::HandlerSpec =
+    sourced_rust::microsvc::HandlerSpec::command(COMMAND);
 
 pub fn guard(ctx: &Context<CheckoutRepo>) -> bool {
     ctx.has_fields(&["checkout_id", "seat_id", "seat_category"])
