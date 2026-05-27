@@ -15,8 +15,10 @@
 //! use sourced_rust::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::with_repo(HashMapRepository::new())
-//!         .command("counter.create", |ctx| { /* ... */ })
+//!     sourced_rust::register_handlers!(
+//!         microsvc::Service::with_repo(HashMapRepository::new()),
+//!         handlers::counter_create,
+//!     )
 //! );
 //!
 //! // Get the server to compose with other tonic routes
@@ -180,7 +182,7 @@ impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
     ) -> Result<Response<HealthResponse>, Status> {
         let commands: Vec<String> = self
             .service
-            .commands()
+            .command_names()
             .into_iter()
             .map(|s| s.to_string())
             .collect();

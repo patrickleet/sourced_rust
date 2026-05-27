@@ -12,11 +12,10 @@
 //! use serde_json::json;
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::with_repo(HashMapRepository::new())
-//!         .command("order.create", |ctx| {
-//!             let input = ctx.input::<CreateOrderInput>()?;
-//!             Ok(json!({ "id": input.id }))
-//!         })
+//!     sourced_rust::register_handlers!(
+//!         microsvc::Service::with_repo(HashMapRepository::new()),
+//!         handlers::order_create,
+//!     )
 //! );
 //!
 //! // Direct dispatch

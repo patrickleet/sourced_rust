@@ -26,7 +26,7 @@ fn register_handlers_and_dispatch() {
         handlers::counter_increment,
     );
 
-    let mut cmds = service.commands();
+    let mut cmds = service.command_names();
     cmds.sort();
     assert_eq!(cmds, vec!["counter.create", "counter.increment"]);
 
