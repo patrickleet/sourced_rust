@@ -89,6 +89,6 @@ explicit migrations plus registered table schemas. Relational read-model
 mutations (`upsert`, sparse `patch`, and `delete`) are lowered into SQL writes
 against the tables generated from `#[derive(ReadModel)]` / `RelationalReadModel`
 schema metadata, including JSON/JSONB columns and `_sourced_version` optimistic
-versions. SQL repositories do not persist generic document rows; whole-view
-state that belongs in SQL should be modeled as a declared read-model table with
-an `id` column and JSON/JSONB columns for semistructured fields.
+versions. Whole-view state that belongs in SQL should be modeled as a declared
+read-model table with an `id` column and JSON/JSONB columns for semistructured
+fields.

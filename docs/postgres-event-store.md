@@ -190,14 +190,8 @@ repository transaction as aggregate events. Mutations are written to the
 registered read-model tables generated from schema metadata
 (`bootstrap_table_schema_for_dev` for tests/local development, migration
 artifacts for managed environments). Those writes use the model's declared
-columns directly, including `jsonb` columns for collection fields and
+columns directly, including `jsonb` columns for structured fields and
 `_sourced_version` for optimistic row versions.
-
-There is no generic SQL document table in this repository contract. If a
-command-side view needs whole-view state in SQL, define a read-model table with
-an `id` column and one or more `jsonb` columns for the semistructured data.
-Generic document mutations require a dedicated document adapter rather than the
-Postgres event-store repository.
 
 `read_model_processed_messages` stores idempotency marks for distributed
 projectors that commit a read-model write plan and mark a message processed in

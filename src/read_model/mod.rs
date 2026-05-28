@@ -34,9 +34,6 @@ use std::fmt;
 
 /// Trait implemented by the derive macro for read-model identity metadata.
 pub trait ReadModel: Serialize + DeserializeOwned + Clone + Send + Sync {
-    /// The declared storage name for this read model type.
-    const COLLECTION: &'static str;
-
     /// Returns the unique identifier for this read model instance.
     fn id(&self) -> &str;
 }
@@ -53,7 +50,7 @@ pub struct Versioned<T> {
 pub enum ReadModelError {
     /// Optimistic concurrency conflict.
     ConcurrencyConflict {
-        collection: String,
+        table: String,
         id: String,
         expected: u64,
         actual: u64,
@@ -63,7 +60,7 @@ pub enum ReadModelError {
     /// Storage-level error.
     Storage(String),
     /// Read model not found.
-    NotFound { collection: String, id: String },
+    NotFound { table: String, id: String },
     /// Lock error.
     Lock(crate::lock::LockError),
     /// Relational read-model metadata error.
@@ -74,19 +71,19 @@ impl fmt::Display for ReadModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReadModelError::ConcurrencyConflict {
-                collection,
+                table,
                 id,
                 expected,
                 actual,
             } => write!(
                 f,
                 "concurrency conflict on {}:{} (expected version {}, actual {})",
-                collection, id, expected, actual
+                table, id, expected, actual
             ),
             ReadModelError::Serde(msg) => write!(f, "read model serialization error: {}", msg),
             ReadModelError::Storage(msg) => write!(f, "read model storage error: {}", msg),
-            ReadModelError::NotFound { collection, id } => {
-                write!(f, "read model not found: {}:{}", collection, id)
+            ReadModelError::NotFound { table, id } => {
+                write!(f, "read model not found: {}:{}", table, id)
             }
             ReadModelError::Lock(err) => write!(f, "read model lock error: {}", err),
             ReadModelError::Metadata(msg) => write!(f, "read model metadata error: {}", msg),

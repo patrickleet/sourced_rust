@@ -16,8 +16,8 @@ The current implementation keeps these paths explicit:
 ## Relational Models
 
 A model opts into relational metadata with `#[readmodel(table = "...")]` and
-field attributes. Common collection, table, column, id, index, and unique
-metadata also have direct helper attributes:
+field attributes. Common table, column, id, index, and unique metadata also
+have direct helper attributes:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -98,8 +98,8 @@ hydrate `Option<T>` fields.
 
 `sync` makes storage match the struct: added items are inserted, changed
 items updated, and **removed items deleted**. For an included `has_many`
-collection, dropping a child from the `Vec<T>` deletes that child row (the loaded
-collection is the complete owned set, so the struct is the source of truth).
+relationship, dropping a child from the `Vec<T>` deletes that child row (the
+loaded child set is complete, so the struct is the source of truth).
 Added children have their delegated foreign keys filled before the write plan is
 staged. Every change — including the delete — lowers to an explicit mutation in
 the `ReadModelWritePlan`; nothing cascades to rows you did not load.
@@ -248,12 +248,11 @@ pub struct BoardView {
 }
 ```
 
-It is still a relational row write. There is no generic document table hidden
-behind the SQL repositories.
+It is still a relational row write.
 
 ## Non-Goals
 
 The relational ORM slice is a persistence mapper, not a business layer. It does
 not own business logic, authorization policy, aggregate invariants, domain event
-selection, public query APIs, lifecycle hooks, hidden cascades, generic
-document-table mutation APIs, or broad SQL query DSLs.
+selection, public query APIs, lifecycle hooks, hidden cascades, or broad SQL
+query DSLs.

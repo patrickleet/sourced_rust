@@ -42,11 +42,12 @@ struct PlayerWeapon {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[collection("direct_document_views")]
-struct DirectDocumentView {
-    #[id]
+#[table("direct_json_views")]
+struct DirectJsonView {
+    #[id("view_id")]
     id: String,
-    value: i32,
+    #[readmodel(jsonb)]
+    payload: HashMap<String, i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -86,7 +87,7 @@ fn derive_preserves_read_model_identity_for_table_models() {
         projected_event_ids: Vec::new(),
     };
 
-    assert_eq!(AccountSummary::COLLECTION, "account_summaries");
+    assert_eq!(AccountSummary::schema().table_name, "account_summaries");
     assert_eq!(summary.id(), "acct-1");
 }
 
@@ -230,16 +231,21 @@ fn metadata_validation_reports_missing_keys_before_storage_writes() {
 }
 
 #[test]
-fn direct_collection_table_column_and_index_attributes_wrap_readmodel_metadata() {
-    let direct = DirectDocumentView {
-        id: "doc-1".into(),
-        value: 7,
+fn direct_table_column_and_index_attributes_wrap_readmodel_metadata() {
+    let direct = DirectJsonView {
+        id: "view-1".into(),
+        payload: HashMap::from([("wins".to_string(), 7)]),
     };
+    let direct_schema = DirectJsonView::schema();
     let schema = DirectTableView::schema();
 
-    assert_eq!(DirectDocumentView::COLLECTION, "direct_document_views");
-    assert_eq!(direct.id(), "doc-1");
-    assert_eq!(DirectTableView::COLLECTION, "direct_table_views");
+    assert_eq!(direct.id(), "view-1");
+    assert_eq!(direct_schema.table_name, "direct_json_views");
+    assert_eq!(direct_schema.primary_key.columns, vec!["view_id"]);
+    assert!(direct_schema
+        .columns
+        .iter()
+        .any(|column| column.field_name == "payload" && column.jsonb));
     assert_eq!(schema.table_name, "direct_table_views");
     assert_eq!(schema.primary_key.columns, vec!["direct_id"]);
     assert!(schema

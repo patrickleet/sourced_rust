@@ -147,20 +147,6 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
         ]
     );
 
-    let document_table: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = $1
-          AND table_name = 'transactional_read_models'
-        "#,
-    )
-    .bind(schema.schema_name())
-    .fetch_optional(repo.pool())
-    .await
-    .unwrap();
-    assert!(document_table.is_none());
-
     let processed_messages_table: Option<String> = sqlx::query_scalar(
         r#"
         SELECT table_name
