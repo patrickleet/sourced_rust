@@ -14,7 +14,7 @@ pub struct CheckoutSaga {
     pub reserved_seat_id: String,
 }
 
-#[sourced(entity)]
+#[sourced(entity, aggregate_type = "checkout_saga")]
 impl CheckoutSaga {
     #[event("CheckoutSagaStarted", when = !checkout_id.is_empty() && !seat_id.is_empty())]
     pub fn start(&mut self, checkout_id: String, seat_id: String, seat_category: String) {

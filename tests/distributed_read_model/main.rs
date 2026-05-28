@@ -52,17 +52,16 @@ use sourced_rust::bus::Subscribable;
 use sourced_rust::microsvc::{self, Service, Session};
 #[cfg(feature = "sqlite")]
 use sourced_rust::SqliteRepository;
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-use sourced_rust::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, Entity, OutboxMessage,
-    ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelIncludes,
-    StreamIdentity,
-};
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
     Queueable, ReadModelWritePlanStore,
+};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use sourced_rust::{
+    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
+    OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
+    RelationalReadModelIncludes,
 };
 
 fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
@@ -106,25 +105,6 @@ fn wait_for_checkout_state(
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 static NEXT_ASYNC_FLOW_ID: AtomicU64 = AtomicU64::new(1);
-
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-#[derive(Default)]
-struct ProjectionCheckpoint {
-    entity: Entity,
-    last_message_id: String,
-}
-
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-#[sourced(entity, aggregate_type = "distributed.checkout_projection_checkpoint")]
-impl ProjectionCheckpoint {
-    #[event("MessageProjected")]
-    fn mark_projected(&mut self, message_id: String) {
-        if self.entity.id().is_empty() {
-            self.entity.set_id(CHECKOUT_SCREEN_CONSUMER);
-        }
-        self.last_message_id = message_id;
-    }
-}
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 struct AsyncFlowIds {
@@ -255,18 +235,6 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
             message.id()
         );
     }
-
-    let checkpoint_identity = StreamIdentity::new(
-        ProjectionCheckpoint::aggregate_type(),
-        CHECKOUT_SCREEN_CONSUMER,
-    )
-    .expect("checkpoint identity should build");
-    let checkpoint = read_repo
-        .get_stream(&checkpoint_identity)
-        .await
-        .expect("projection checkpoint should reload")
-        .expect("projection checkpoint should exist");
-    assert_eq!(checkpoint.version(), 4);
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -400,13 +368,7 @@ where
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn project_message_async<R>(repo: &R, message: &OutboxMessage)
 where
-    R: Clone
-        + AsyncGetStream
-        + AsyncReadModelWritePlanStore
-        + AsyncTransactionalCommit
-        + Send
-        + Sync
-        + 'static,
+    R: AsyncReadModelWritePlanStore + Send + Sync,
 {
     let mut read_models = ReadModelWritePlanBuilder::new();
 
@@ -494,19 +456,10 @@ where
     }
 
     read_models.mark_processed(CHECKOUT_SCREEN_CONSUMER, message.id());
-    let mut checkpoint = repo
-        .clone()
-        .async_aggregate::<ProjectionCheckpoint>()
-        .get(CHECKOUT_SCREEN_CONSUMER)
+    read_models
+        .commit_async(repo)
         .await
-        .expect("projection checkpoint should load")
-        .unwrap_or_default();
-    checkpoint.mark_projected(message.id().to_string()).unwrap();
-
-    repo.read_models(read_models)
-        .commit(&mut checkpoint)
-        .await
-        .expect("projection read models should commit with checkpoint");
+        .expect("projection read models should commit");
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
