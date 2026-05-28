@@ -1258,7 +1258,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[derive(Clone, Serialize, Deserialize, ReadModel)]
-/// #[collection("counter_views")]
+/// #[table("counter_views")]
 /// struct CounterView {
 ///     #[id]
 ///     pub id: String,
@@ -1267,11 +1267,9 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// - `#[readmodel(collection = "...")]` or `#[collection("...")]` sets the
-///   collection name.
-///   If omitted, defaults to snake_case struct name + "s".
 /// - `#[readmodel(table = "...")]` or `#[table("...")]` opts into relational
-///   table metadata.
+///   table metadata. If omitted for relational models, the table name defaults
+///   to snake_case struct name + "s".
 /// - `#[readmodel(column = "...")]` or `#[column("...")]` sets a relational
 ///   column name.
 /// - `#[readmodel(id)]`, `#[id]`, or `#[id("column_name")]` marks the field
@@ -1287,10 +1285,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `#[unique(columns = ["field_a", "field_b"])]` or
 ///   `#[unique(name = "...", columns = ["field_a", "field_b"])]` declares a
 ///   compound unique index on a struct.
-#[proc_macro_derive(
-    ReadModel,
-    attributes(readmodel, collection, table, column, id, index, unique)
-)]
+#[proc_macro_derive(ReadModel, attributes(readmodel, table, column, id, index, unique))]
 pub fn derive_read_model(input: TokenStream) -> TokenStream {
     read_model::derive_read_model(input)
 }

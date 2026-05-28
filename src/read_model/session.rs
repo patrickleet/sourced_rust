@@ -1124,7 +1124,7 @@ where
         }
 
         // `sync` makes storage match the struct: an owned `has_many` child
-        // dropped from the loaded collection is deleted. `belongs_to` clears never
+        // dropped from the loaded child set is deleted. `belongs_to` clears never
         // delete the target, which is the owner that other rows may reference.
         if matches!(baseline.relationship.kind, RelationshipKind::HasMany) {
             for (fingerprint, loaded) in &baseline.rows {

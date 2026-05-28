@@ -129,7 +129,7 @@ pub(crate) fn apply_read_model_write_plan(
                     }
                     None => {
                         return Err(ReadModelError::NotFound {
-                            collection: mutation.schema.table_name,
+                            table: mutation.schema.table_name,
                             id: key_fingerprint(&mutation.key),
                         });
                     }
@@ -222,7 +222,7 @@ fn validate_row_expected_version(
             Err(concurrency_conflict(schema, key, *expected, actual))
         }
         (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
-            collection: schema.table_name.clone(),
+            table: schema.table_name.clone(),
             id: key_fingerprint(key),
         }),
         (ExpectedVersion::NotExists, None) => Ok(()),
@@ -239,7 +239,7 @@ fn concurrency_conflict(
     actual: u64,
 ) -> ReadModelError {
     ReadModelError::ConcurrencyConflict {
-        collection: schema.table_name.clone(),
+        table: schema.table_name.clone(),
         id: key_fingerprint(key),
         expected,
         actual,

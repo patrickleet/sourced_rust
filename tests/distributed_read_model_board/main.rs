@@ -4,7 +4,7 @@
 //! - the **board service** owns the `Board` aggregate (cards are aggregate
 //!   state) and its outbox;
 //! - a **projection service** reconciles the relational rows via `sync`
-//!   collection sync, so removing a card deletes its `cards` row, and each card
+//!   included child sync, so removing a card deletes its `cards` row, and each card
 //!   carries a JSONB `payload` column;
 //! - a **query service** reads the board with cards (`has_many`) and a card with
 //!   its board (`belongs_to`).

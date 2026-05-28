@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn expand_snapshot_rejects_unknown_attribute_keys() {
         let input: DeriveInput = syn::parse_quote! {
-            #[snapshot(collection = "todos")]
+            #[snapshot(table = "todos")]
             struct Todo {
                 entity: sourced_rust::Entity,
                 task: String,

@@ -26,17 +26,9 @@ fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
         struct_attrs.is_relational() || field_attrs.iter().any(FieldAttrs::is_relational);
 
     let id_field = find_id_field(&fields.named, &field_attrs)?;
-    let collection = struct_attrs
-        .collection
-        .clone()
-        .or_else(|| struct_attrs.table.clone())
-        .unwrap_or_else(|| format!("{}s", to_snake_case(&name.to_string())));
-
     let read_model_impl = if let Some(id_field) = &id_field {
         Some(quote! {
             impl sourced_rust::ReadModel for #name {
-                const COLLECTION: &'static str = #collection;
-
                 fn id(&self) -> &str {
                     &self.#id_field
                 }
@@ -100,7 +92,6 @@ fn expand_relational_read_model(
     let table_name = struct_attrs
         .table
         .clone()
-        .or_else(|| struct_attrs.collection.clone())
         .unwrap_or_else(|| format!("{}s", to_snake_case(&model_name)));
 
     let primary_key_fields =
@@ -366,7 +357,6 @@ fn index_def_tokens(
 
 #[derive(Default)]
 struct StructAttrs {
-    collection: Option<String>,
     table: Option<String>,
     primary_key: Vec<String>,
     indexes: Vec<IndexAttr>,
@@ -382,11 +372,6 @@ impl StructAttrs {
     fn from_input(input: &DeriveInput) -> syn::Result<Self> {
         let mut attrs = Self::default();
         for attr in &input.attrs {
-            if attr.path().is_ident("collection") {
-                attrs.collection = Some(parse_direct_string_attr(attr, "collection")?);
-                continue;
-            }
-
             if attr.path().is_ident("table") {
                 attrs.table = Some(parse_direct_string_attr(attr, "table")?);
                 continue;
@@ -411,9 +396,7 @@ impl StructAttrs {
             }
 
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("collection") {
-                    attrs.collection = Some(meta.value()?.parse::<LitStr>()?.value());
-                } else if meta.path.is_ident("table") {
+                if meta.path.is_ident("table") {
                     attrs.table = Some(meta.value()?.parse::<LitStr>()?.value());
                 } else if meta.path.is_ident("primary_key") {
                     let expr = meta.value()?.parse::<Expr>()?;
@@ -1112,22 +1095,6 @@ mod tests {
     }
 
     #[test]
-    fn expand_read_model_accepts_direct_collection_attribute() {
-        let input: DeriveInput = syn::parse_quote! {
-            #[collection("counter_views")]
-            struct CounterView {
-                #[id]
-                counter_id: String,
-                value: i32,
-            }
-        };
-
-        let expanded = expand_read_model(input).unwrap().to_string();
-
-        assert!(expanded.contains("const COLLECTION : & 'static str = \"counter_views\""));
-        assert!(expanded.contains("& self . counter_id"));
-    }
-
     #[test]
     fn expand_read_model_accepts_direct_table_and_id_column_attributes() {
         let input: DeriveInput = syn::parse_quote! {
@@ -1265,24 +1232,24 @@ mod tests {
     #[test]
     fn expand_read_model_rejects_direct_attributes_without_values() {
         let input: DeriveInput = syn::parse_quote! {
-            #[collection]
+            #[table]
             struct CounterView {
                 id: String,
                 value: i32,
             }
         };
 
-        let err = expand_read_model(input).expect_err("direct collection needs a value");
+        let err = expand_read_model(input).expect_err("direct table needs a value");
 
         assert!(
             err.to_string()
-                .contains("#[collection] requires a string literal"),
+                .contains("#[table] requires a string literal"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn expand_read_model_rejects_missing_id_field_for_document_models() {
+    fn expand_read_model_rejects_missing_id_field_for_non_relational_models() {
         let input: DeriveInput = syn::parse_quote! {
             struct CounterView {
                 value: i32,

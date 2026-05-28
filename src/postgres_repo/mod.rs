@@ -1047,7 +1047,7 @@ async fn patch_relational_row_in_tx(
         }
         None => {
             return Err(ReadModelError::NotFound {
-                collection: mutation.schema.table_name,
+                table: mutation.schema.table_name,
                 id: key_fingerprint(&mutation.key),
             });
         }
@@ -1636,7 +1636,7 @@ fn validate_row_expected_version(
             Err(row_concurrency_conflict(schema, key, *expected, actual))
         }
         (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
-            collection: schema.table_name.clone(),
+            table: schema.table_name.clone(),
             id: key_fingerprint(key),
         }),
         (ExpectedVersion::NotExists, None) => Ok(()),
@@ -1653,7 +1653,7 @@ fn row_concurrency_conflict(
     actual: u64,
 ) -> ReadModelError {
     ReadModelError::ConcurrencyConflict {
-        collection: schema.table_name.clone(),
+        table: schema.table_name.clone(),
         id: key_fingerprint(key),
         expected,
         actual,
