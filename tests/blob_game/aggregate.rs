@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 /// Tile states for the game grid
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +64,7 @@ const FIVE_SECONDS_MS: u64 = 5 * 1000;
 const TIME_TO_END: u64 = FIVE_MINUTES_MS + FIVE_SECONDS_MS;
 
 #[allow(dead_code)]
+#[sourced(entity)]
 impl BlobGame {
     pub fn new() -> Self {
         Self::default()
@@ -191,8 +192,7 @@ impl BlobGame {
         }
     }
 
-    // Commands (digest events)
-    #[digest("Initialized")]
+    #[event("Initialized")]
     pub fn initialize(
         &mut self,
         id: String,
@@ -210,7 +210,7 @@ impl BlobGame {
         }
     }
 
-    #[digest("NextLevelStarted", when = self.current_level_completed && !self.player_dead)]
+    #[event("NextLevelStarted", when = self.current_level_completed && !self.player_dead)]
     pub fn start_next_level(&mut self, map: Vec<Vec<TileState>>) {
         self.current_level += 1;
         let level = Level {
@@ -222,7 +222,7 @@ impl BlobGame {
         self.current_level_completed = false;
     }
 
-    #[digest("MovedUp", when = self.can_move_up())]
+    #[event("MovedUp", when = self.can_move_up())]
     pub fn up(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -233,7 +233,7 @@ impl BlobGame {
         }
     }
 
-    #[digest("MovedDown", when = self.can_move_down())]
+    #[event("MovedDown", when = self.can_move_down())]
     pub fn down(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -244,7 +244,7 @@ impl BlobGame {
         }
     }
 
-    #[digest("MovedLeft", when = self.can_move_left())]
+    #[event("MovedLeft", when = self.can_move_left())]
     pub fn left(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -255,7 +255,7 @@ impl BlobGame {
         }
     }
 
-    #[digest("MovedRight", when = self.can_move_right())]
+    #[event("MovedRight", when = self.can_move_right())]
     pub fn right(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -323,16 +323,6 @@ impl BlobGame {
         }
     }
 }
-
-// For replay, we need to handle the map serialization
-sourced_rust::aggregate!(BlobGame, entity {
-    "Initialized"(id, address, minigame_id, timed, started_at) => initialize,
-    "NextLevelStarted"(map) => start_next_level,
-    "MovedUp"(time) => up,
-    "MovedDown"(time) => down,
-    "MovedLeft"(time) => left,
-    "MovedRight"(time) => right,
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlobGameSnapshot {

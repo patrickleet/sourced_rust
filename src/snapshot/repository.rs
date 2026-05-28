@@ -542,7 +542,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{impl_aggregate, Aggregate, AggregateRepository, Entity, EventRecord};
+    use crate::{sourced, Aggregate, AggregateRepository, Entity, EventRecord};
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -551,21 +551,16 @@ mod tests {
         value: u32,
     }
 
+    #[sourced(entity)]
     impl TestAggregate {
+        #[event("Touched")]
         fn touch(&mut self) {
             if self.entity.id().is_empty() {
                 self.entity.set_id("snap-1");
             }
             self.value += 1;
-            self.entity.digest_empty("Touched").unwrap();
-        }
-
-        fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-            Ok(())
         }
     }
-
-    impl_aggregate!(TestAggregate, entity, replay);
 
     impl Snapshottable for TestAggregate {
         type Snapshot = u32;
@@ -605,7 +600,7 @@ mod tests {
         let snapshot_repo = SnapshotAggregateRepository::new(aggregate_repo, 1);
 
         let mut aggregate = TestAggregate::default();
-        aggregate.touch();
+        aggregate.touch().unwrap();
 
         let err = snapshot_repo.commit(&mut aggregate).unwrap_err();
 

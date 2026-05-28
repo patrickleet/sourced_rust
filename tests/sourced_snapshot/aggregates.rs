@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity, Snapshot};
+use sourced_rust::{sourced, Entity, Snapshot};
 
 // ============================================================================
 // Default case: id + all fields
@@ -13,28 +13,24 @@ pub struct Todo {
     pub completed: bool,
 }
 
+#[sourced(entity)]
 impl Todo {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Initialized")]
+    #[event("Initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[event("Completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
-
-sourced_rust::aggregate!(Todo, entity {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
-});
 
 // ============================================================================
 // Custom ID key: snapshot(id = "sku")
@@ -48,28 +44,24 @@ pub struct Inventory {
     pub available: u32,
 }
 
+#[sourced(entity)]
 impl Inventory {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Created")]
+    #[event("Created")]
     pub fn create(&mut self, id: String, sku: String, available: u32) {
         self.entity.set_id(&id);
         self.sku = sku;
         self.available = available;
     }
 
-    #[digest("Restocked")]
+    #[event("Restocked")]
     pub fn restock(&mut self, qty: u32) {
         self.available += qty;
     }
 }
-
-sourced_rust::aggregate!(Inventory, entity {
-    "Created"(id, sku, available) => create,
-    "Restocked"(qty) => restock,
-});
 
 // ============================================================================
 // serde(skip) field exclusion
@@ -84,12 +76,13 @@ pub struct Order {
     pub cached_label: String,
 }
 
+#[sourced(entity)]
 impl Order {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Placed")]
+    #[event("Placed")]
     pub fn place(&mut self, id: String, customer: String, total: u64) {
         self.entity.set_id(&id);
         self.customer = customer;
@@ -97,10 +90,6 @@ impl Order {
         self.cached_label = format!("Order for {}", self.customer);
     }
 }
-
-sourced_rust::aggregate!(Order, entity {
-    "Placed"(id, customer, total) => place,
-});
 
 // ============================================================================
 // Works with #[sourced(entity)] on impl
@@ -141,22 +130,19 @@ pub struct Widget {
     pub weight: f64,
 }
 
+#[sourced(my_entity)]
 impl Widget {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest(my_entity, "Created")]
+    #[event("Created")]
     pub fn create(&mut self, id: String, name: String, weight: f64) {
         self.my_entity.set_id(&id);
         self.name = name;
         self.weight = weight;
     }
 }
-
-sourced_rust::aggregate!(Widget, my_entity {
-    "Created"(id, name, weight) => create,
-});
 
 // ============================================================================
 // serde(skip, default) field exclusion (EntityEmitter pattern)
@@ -174,18 +160,15 @@ pub struct Notifier {
     pub emitter: DummyEmitter,
 }
 
+#[sourced(entity)]
 impl Notifier {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Sent")]
+    #[event("Sent")]
     pub fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;
     }
 }
-
-sourced_rust::aggregate!(Notifier, entity {
-    "Sent"(id, message) => send,
-});

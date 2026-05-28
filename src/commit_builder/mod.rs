@@ -576,8 +576,8 @@ impl<R: AsyncTransactionalCommit> AsyncReadModelWritePlanCommitExt for R {}
 mod tests {
     use super::*;
     use crate::{
-        impl_aggregate, AsyncTransactionalCommit, Entity, EventRecord, Get, HashMapRepository,
-        ReadModelWorkspaceExt, RowKey, RowValue,
+        sourced, AsyncTransactionalCommit, Entity, Get, HashMapRepository, ReadModelWorkspaceExt,
+        RowKey, RowValue,
     };
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
@@ -590,25 +590,20 @@ mod tests {
         entity: Entity,
     }
 
+    #[sourced(entity)]
     impl TestAggregate {
+        #[event("Touched")]
         fn touch(&mut self) {
             if self.entity.id().is_empty() {
                 self.entity.set_id("agg-1");
             }
-            self.entity.digest_empty("Touched").unwrap();
-        }
-
-        fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-            Ok(())
         }
     }
 
-    impl_aggregate!(TestAggregate, entity, replay);
-
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, crate::ReadModel)]
-    #[readmodel(table = "commit_builder_views")]
+    #[table("commit_builder_views")]
     struct RelationalView {
-        #[readmodel(id)]
+        #[id]
         id: String,
         counter: i32,
     }
@@ -773,7 +768,7 @@ mod tests {
         };
 
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
             .commit_sync(&mut agg)
@@ -798,7 +793,7 @@ mod tests {
         };
 
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.upsert(&view1).unwrap().upsert(&view2).unwrap();
@@ -823,7 +818,7 @@ mod tests {
         let outbox = OutboxMessage::create("msg-1", "TestEvent", b"{}".to_vec()).unwrap();
 
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
             .outbox_sync(outbox)
@@ -845,7 +840,7 @@ mod tests {
         let outbox = OutboxMessage::create("msg-2", "TestEvent", b"{}".to_vec()).unwrap();
 
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         SyncCommitBuilderExt::outbox_sync(&repo, outbox)
             .read_models_sync(read_models(&view))
@@ -895,11 +890,11 @@ mod tests {
         };
 
         let mut agg1 = TestAggregate::default();
-        agg1.touch();
+        agg1.touch().unwrap();
         agg1.entity.set_id("agg-1");
 
         let mut agg2 = TestAggregate::default();
-        agg2.touch();
+        agg2.touch().unwrap();
         agg2.entity.set_id("agg-2");
 
         SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
@@ -924,7 +919,7 @@ mod tests {
             };
             let outbox = OutboxMessage::create("ordered-msg", "TestEvent", b"{}".to_vec()).unwrap();
             let mut agg = TestAggregate::default();
-            agg.touch();
+            agg.touch().unwrap();
 
             match order {
                 0 => SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
@@ -961,7 +956,7 @@ mod tests {
     fn staged_commit_sets_outbox_source_from_single_aggregate() {
         let repo = RecordingBatchRepo::default();
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
         let outbox = OutboxMessage::create("sourced-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
         SyncReadModelWritePlanCommitExt::aggregate_sync(&repo, &mut agg)
@@ -988,10 +983,10 @@ mod tests {
             counter: 77,
         };
         let mut agg1 = TestAggregate::default();
-        agg1.touch();
+        agg1.touch().unwrap();
         agg1.entity.set_id("agg-1");
         let mut agg2 = TestAggregate::default();
-        agg2.touch();
+        agg2.touch().unwrap();
         agg2.entity.set_id("agg-2");
 
         SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
@@ -1016,7 +1011,7 @@ mod tests {
         let mut session = crate::read_model::ReadModelWritePlanBuilder::new();
         session.mark_processed("", "message-1");
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         let err = SyncReadModelWritePlanCommitExt::read_models_sync(&repo, session)
             .commit_sync(&mut agg)
@@ -1042,7 +1037,7 @@ mod tests {
         };
         let outbox = OutboxMessage::create("msg-rollback", "TestEvent", b"{}".to_vec()).unwrap();
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         let err = SyncReadModelWritePlanCommitExt::read_models_sync(&repo, read_models(&view))
             .outbox_sync(outbox)
@@ -1082,7 +1077,7 @@ mod tests {
             counter: 42,
         };
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         repo.read_models(read_models(&view))
             .commit(&mut agg)
@@ -1111,7 +1106,7 @@ mod tests {
             counter: 7,
         };
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
         let outbox = OutboxMessage::create("async-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
         repo.read_models(read_models(&view))
@@ -1140,10 +1135,10 @@ mod tests {
     async fn async_commit_many_supports_same_type_aggregates() {
         let repo = RecordingAsyncBatchRepo::default();
         let mut agg1 = TestAggregate::default();
-        agg1.touch();
+        agg1.touch().unwrap();
         agg1.entity.set_id("async-agg-1");
         let mut agg2 = TestAggregate::default();
-        agg2.touch();
+        agg2.touch().unwrap();
         agg2.entity.set_id("async-agg-2");
 
         AsyncCommitBuilder::new(&repo)
@@ -1172,7 +1167,7 @@ mod tests {
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.mark_processed("", "message-1");
         let mut agg = TestAggregate::default();
-        agg.touch();
+        agg.touch().unwrap();
 
         let err = repo
             .read_models(read_models)

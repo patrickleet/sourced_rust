@@ -30,9 +30,9 @@ pub struct ExplosionState {
 
 /// Whole-board view stored in the `boards` read-model table.
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "boards")]
+#[table("boards")]
 pub struct BoardView {
-    #[readmodel(id)]
+    #[id]
     pub game_id: String,
     pub width: usize,
     pub height: usize,

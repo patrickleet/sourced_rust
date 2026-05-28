@@ -1,6 +1,6 @@
 use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 /// Represents a line item in an order
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Encode, Decode)]
@@ -33,6 +33,7 @@ pub struct Order {
 }
 
 #[allow(dead_code)]
+#[sourced(entity)]
 impl Order {
     pub fn new() -> Self {
         Self::default()
@@ -58,7 +59,7 @@ impl Order {
         self.failure_reason.as_deref()
     }
 
-    #[digest("OrderCreated")]
+    #[event("OrderCreated")]
     pub fn create(&mut self, id: String, customer_id: String, items: Vec<OrderItem>) {
         self.entity.set_id(&id);
         self.customer_id = customer_id;
@@ -67,22 +68,22 @@ impl Order {
         self.status = OrderStatus::Pending;
     }
 
-    #[digest("InventoryReserved", when = self.status == OrderStatus::Pending)]
+    #[event("InventoryReserved", when = self.status == OrderStatus::Pending)]
     pub fn mark_inventory_reserved(&mut self) {
         self.status = OrderStatus::InventoryReserved;
     }
 
-    #[digest("PaymentProcessed", when = self.status == OrderStatus::InventoryReserved)]
+    #[event("PaymentProcessed", when = self.status == OrderStatus::InventoryReserved)]
     pub fn mark_payment_processed(&mut self) {
         self.status = OrderStatus::PaymentProcessed;
     }
 
-    #[digest("OrderCompleted", when = self.status == OrderStatus::PaymentProcessed)]
+    #[event("OrderCompleted", when = self.status == OrderStatus::PaymentProcessed)]
     pub fn complete(&mut self) {
         self.status = OrderStatus::Completed;
     }
 
-    #[digest("OrderCancelled", when = self.status != OrderStatus::Completed && self.status != OrderStatus::Cancelled)]
+    #[event("OrderCancelled", when = self.status != OrderStatus::Completed && self.status != OrderStatus::Cancelled)]
     pub fn cancel(&mut self, reason: String) {
         self.status = OrderStatus::Cancelled;
         self.failure_reason = Some(reason);
@@ -99,14 +100,6 @@ impl Order {
         }
     }
 }
-
-sourced_rust::aggregate!(Order, entity {
-    "OrderCreated"(id, customer_id, items) => create,
-    "InventoryReserved"() => mark_inventory_reserved(),
-    "PaymentProcessed"() => mark_payment_processed(),
-    "OrderCompleted"() => complete(),
-    "OrderCancelled"(reason) => cancel,
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrderSnapshot {

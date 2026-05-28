@@ -1,4 +1,4 @@
-use sourced_rust::{digest, Entity, Snapshot};
+use sourced_rust::{sourced, Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
 pub struct Todo {
@@ -8,25 +8,21 @@ pub struct Todo {
     pub completed: bool,
 }
 
+#[sourced(entity)]
 impl Todo {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Initialized")]
+    #[event("Initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[event("Completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
-
-sourced_rust::aggregate!(Todo, entity {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
-});

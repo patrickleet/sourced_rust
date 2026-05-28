@@ -14,7 +14,8 @@ pub struct CardPayload {
 /// delegated foreign key from the board; `payload` is a JSONB column; `board`
 /// is a `belongs_to` include.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "cards", primary_key = ["board_id", "card_id"])]
+#[table("cards")]
+#[readmodel(primary_key = ["board_id", "card_id"])]
 pub struct CardView {
     #[readmodel(foreign_key = "boards.board_id", delegated_from = "BoardView.board_id")]
     pub board_id: String,

@@ -54,11 +54,11 @@ use sourced_rust::microsvc::{self, Service, Session};
 use sourced_rust::SqliteRepository;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sourced_rust::{
-    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream,
     AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, Entity, EventRecord,
-    OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
-    RelationalReadModelIncludes, StreamIdentity,
+    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, Entity, OutboxMessage,
+    ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelIncludes,
+    StreamIdentity,
 };
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
@@ -115,32 +115,16 @@ struct ProjectionCheckpoint {
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[sourced(entity, aggregate_type = "distributed.checkout_projection_checkpoint")]
 impl ProjectionCheckpoint {
-    fn mark_projected(&mut self, message_id: &str) {
+    #[event("MessageProjected")]
+    fn mark_projected(&mut self, message_id: String) {
         if self.entity.id().is_empty() {
             self.entity.set_id(CHECKOUT_SCREEN_CONSUMER);
         }
-        self.last_message_id = message_id.to_string();
-        self.entity
-            .digest("MessageProjected", &self.last_message_id)
-            .expect("projection checkpoint event should record");
-    }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        if event.event_name == "MessageProjected" {
-            self.last_message_id = event.decode::<String>().map_err(|err| err.to_string())?;
-        }
-        Ok(())
+        self.last_message_id = message_id;
     }
 }
-
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-impl_aggregate!(
-    ProjectionCheckpoint,
-    entity,
-    replay,
-    aggregate_type = "distributed.checkout_projection_checkpoint"
-);
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 struct AsyncFlowIds {
@@ -517,7 +501,7 @@ where
         .await
         .expect("projection checkpoint should load")
         .unwrap_or_default();
-    checkpoint.mark_projected(message.id());
+    checkpoint.mark_projected(message.id().to_string()).unwrap();
 
     repo.read_models(read_models)
         .commit(&mut checkpoint)

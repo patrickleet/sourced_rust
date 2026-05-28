@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 #[derive(Default)]
 pub struct Todo {
@@ -9,19 +9,20 @@ pub struct Todo {
     completed: bool,
 }
 
+#[sourced(entity)]
 impl Todo {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("Initialized")]
+    #[event("Initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[event("Completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
@@ -35,11 +36,6 @@ impl Todo {
         }
     }
 }
-
-sourced_rust::aggregate!(Todo, entity {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TodoSnapshot {

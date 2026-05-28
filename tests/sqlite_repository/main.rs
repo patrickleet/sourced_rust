@@ -4,12 +4,11 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord,
-    OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch,
-    RowValue, SnapshotRecord, SqliteRepository, StreamIdentity, TableSchemaRegistry,
-    OUTBOX_MESSAGES_TABLE,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
+    AsyncStreamWrite, AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel,
+    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
+    SqliteRepository, StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -18,51 +17,32 @@ struct Counter {
     value: i32,
 }
 
+#[sourced(entity, aggregate_type = "sqlite.counter")]
 impl Counter {
-    fn increment(&mut self, id: &str, by: i32) {
-        self.entity.set_id(id);
-        self.entity.digest("Incremented", &by).unwrap();
+    #[event("Incremented")]
+    fn increment(&mut self, id: String, by: i32) {
+        self.entity.set_id(&id);
         self.value += by;
     }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        if event.event_name == "Incremented" {
-            let by = event.decode::<i32>().map_err(|err| err.to_string())?;
-            self.value += by;
-        }
-        Ok(())
-    }
 }
-
-impl_aggregate!(Counter, entity, replay, aggregate_type = "sqlite.counter");
 
 #[derive(Default)]
 struct CounterProjection {
     entity: Entity,
 }
 
+#[sourced(entity, aggregate_type = "sqlite.counter_projection")]
 impl CounterProjection {
-    fn touch(&mut self, id: &str) {
-        self.entity.set_id(id);
-        self.entity.digest_empty("Touched").unwrap();
-    }
-
-    fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-        Ok(())
+    #[event("Touched")]
+    fn touch(&mut self, id: String) {
+        self.entity.set_id(&id);
     }
 }
 
-impl_aggregate!(
-    CounterProjection,
-    entity,
-    replay,
-    aggregate_type = "sqlite.counter_projection"
-);
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "local_relational_counter_views")]
+#[table("local_relational_counter_views")]
 struct RelationalCounterView {
-    #[readmodel(id)]
+    #[id]
     id: String,
     value: i64,
     #[readmodel(jsonb)]
@@ -95,8 +75,8 @@ async fn migration_is_idempotent_and_aggregate_stream_round_trips() {
 
     let mut counter = Counter::default();
     counter.entity.set_correlation_id("corr-1");
-    counter.increment("counter-1", 2);
-    counter.increment("counter-1", 3);
+    counter.increment("counter-1".into(), 2).unwrap();
+    counter.increment("counter-1".into(), 3).unwrap();
 
     counter_repo.commit(&mut counter).await.unwrap();
 
@@ -147,9 +127,9 @@ async fn aggregate_stream_identity_separates_same_id_across_types() {
     let projection_repo = repo.clone().async_aggregate::<CounterProjection>();
 
     let mut counter = Counter::default();
-    counter.increment("shared-id", 7);
+    counter.increment("shared-id".into(), 7).unwrap();
     let mut projection = CounterProjection::default();
-    projection.touch("shared-id");
+    projection.touch("shared-id".into()).unwrap();
 
     counter_repo.commit(&mut counter).await.unwrap();
     projection_repo.commit(&mut projection).await.unwrap();
@@ -169,17 +149,17 @@ async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
     let counter_repo = repo.clone().async_aggregate::<Counter>();
 
     let mut original = Counter::default();
-    original.increment("conflict-1", 1);
+    original.increment("conflict-1".into(), 1).unwrap();
     counter_repo.commit(&mut original).await.unwrap();
 
     let mut stale = counter_repo.get("conflict-1").await.unwrap().unwrap();
     let mut winner = counter_repo.get("conflict-1").await.unwrap().unwrap();
-    stale.increment("conflict-1", 10);
-    winner.increment("conflict-1", 20);
+    stale.increment("conflict-1".into(), 10).unwrap();
+    winner.increment("conflict-1".into(), 20).unwrap();
     counter_repo.commit(&mut winner).await.unwrap();
 
     let mut other = CounterProjection::default();
-    other.touch("should-not-commit");
+    other.touch("should-not-commit".into()).unwrap();
 
     let view = RelationalCounterView {
         id: "should-not-commit".into(),
@@ -237,7 +217,7 @@ async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() 
     let mut session = ReadModelWritePlanBuilder::new();
     session.upsert(&view).unwrap();
     let mut projection = CounterProjection::default();
-    projection.touch("relational-batch-1");
+    projection.touch("relational-batch-1".into()).unwrap();
     let identity =
         StreamIdentity::new(CounterProjection::aggregate_type(), "relational-batch-1").unwrap();
 

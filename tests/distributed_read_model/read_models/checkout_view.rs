@@ -4,9 +4,9 @@ use sourced_rust::ReadModel;
 use super::{CheckoutStepView, SeatView};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "checkouts")]
+#[table("checkouts")]
 pub struct CheckoutView {
-    #[readmodel(id, column = "checkout_id")]
+    #[id("checkout_id")]
     pub checkout_id: String,
     pub seat_id: String,
     pub seat_category: String,

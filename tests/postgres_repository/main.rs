@@ -9,11 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, Entity, EventRecord,
-    OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder, RepositoryError,
-    RowKey, RowPatch, RowValue, SnapshotRecord, StreamIdentity, TableSchemaRegistry,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
+    AsyncStreamWrite, AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository,
+    ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue,
+    SnapshotRecord, StreamIdentity, TableSchemaRegistry,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -24,51 +24,32 @@ struct Counter {
     value: i32,
 }
 
+#[sourced(entity, aggregate_type = "postgres.counter")]
 impl Counter {
-    fn increment(&mut self, id: &str, by: i32) {
-        self.entity.set_id(id);
-        self.entity.digest("Incremented", &by).unwrap();
+    #[event("Incremented")]
+    fn increment(&mut self, id: String, by: i32) {
+        self.entity.set_id(&id);
         self.value += by;
     }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        if event.event_name == "Incremented" {
-            let by = event.decode::<i32>().map_err(|err| err.to_string())?;
-            self.value += by;
-        }
-        Ok(())
-    }
 }
-
-impl_aggregate!(Counter, entity, replay, aggregate_type = "postgres.counter");
 
 #[derive(Default)]
 struct CounterProjection {
     entity: Entity,
 }
 
+#[sourced(entity, aggregate_type = "postgres.counter_projection")]
 impl CounterProjection {
-    fn touch(&mut self, id: &str) {
-        self.entity.set_id(id);
-        self.entity.digest_empty("Touched").unwrap();
-    }
-
-    fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-        Ok(())
+    #[event("Touched")]
+    fn touch(&mut self, id: String) {
+        self.entity.set_id(&id);
     }
 }
 
-impl_aggregate!(
-    CounterProjection,
-    entity,
-    replay,
-    aggregate_type = "postgres.counter_projection"
-);
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "postgres_relational_counter_views")]
+#[table("postgres_relational_counter_views")]
 struct RelationalCounterView {
-    #[readmodel(id)]
+    #[id]
     id: String,
     value: i64,
     #[readmodel(jsonb)]
@@ -189,8 +170,8 @@ async fn aggregate_stream_round_trips_with_metadata() {
 
     let mut counter = Counter::default();
     counter.entity.set_correlation_id("corr-postgres");
-    counter.increment(&id, 2);
-    counter.increment(&id, 3);
+    counter.increment(id.clone(), 2).unwrap();
+    counter.increment(id.clone(), 3).unwrap();
 
     counter_repo.commit(&mut counter).await.unwrap();
 
@@ -215,17 +196,17 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
     let other_id = unique_id("rollback");
 
     let mut original = Counter::default();
-    original.increment(&counter_id, 1);
+    original.increment(counter_id.clone(), 1).unwrap();
     counter_repo.commit(&mut original).await.unwrap();
 
     let mut stale = counter_repo.get(&counter_id).await.unwrap().unwrap();
     let mut winner = counter_repo.get(&counter_id).await.unwrap().unwrap();
-    stale.increment(&counter_id, 10);
-    winner.increment(&counter_id, 20);
+    stale.increment(counter_id.clone(), 10).unwrap();
+    winner.increment(counter_id.clone(), 20).unwrap();
     counter_repo.commit(&mut winner).await.unwrap();
 
     let mut other = CounterProjection::default();
-    other.touch(&other_id);
+    other.touch(other_id.clone()).unwrap();
 
     let stale_identity = StreamIdentity::new(Counter::aggregate_type(), &counter_id).unwrap();
     let other_identity =
@@ -310,7 +291,7 @@ async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() 
     let mut session = ReadModelWritePlanBuilder::new();
     session.upsert(&view).unwrap();
     let mut projection = CounterProjection::default();
-    projection.touch(&id);
+    projection.touch(id.clone()).unwrap();
     let identity = StreamIdentity::new(CounterProjection::aggregate_type(), &id).unwrap();
 
     repo.read_models(session)

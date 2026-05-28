@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    impl_aggregate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncOutboxStore, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
-    AsyncSnapshotStore, AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity,
-    EventRecord, HashMapRepository, InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark,
-    ReadModel, ReadModelWritePlan, ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError,
-    RowKey, RowValue, SnapshotRecord, Snapshottable, StreamIdentity, Versioned,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncSnapshotStore,
+    AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, HashMapRepository,
+    InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel, ReadModelWritePlan,
+    ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError, RowKey, RowValue,
+    SnapshotRecord, Snapshottable, StreamIdentity, Versioned,
 };
 
 #[derive(Default)]
@@ -15,41 +15,26 @@ struct AlphaAggregate {
     entity: Entity,
 }
 
+#[sourced(entity, aggregate_type = "async.alpha")]
 impl AlphaAggregate {
-    fn touch(&mut self, id: &str) {
-        self.entity.set_id(id);
-        self.entity.digest_empty("Touched").unwrap();
-    }
-
-    fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-        Ok(())
+    #[event("Touched")]
+    fn touch(&mut self, id: String) {
+        self.entity.set_id(&id);
     }
 }
-
-impl_aggregate!(
-    AlphaAggregate,
-    entity,
-    replay,
-    aggregate_type = "async.alpha"
-);
 
 #[derive(Default)]
 struct BetaAggregate {
     entity: Entity,
 }
 
+#[sourced(entity, aggregate_type = "async.beta")]
 impl BetaAggregate {
-    fn touch(&mut self, id: &str) {
-        self.entity.set_id(id);
-        self.entity.digest_empty("Touched").unwrap();
-    }
-
-    fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-        Ok(())
+    #[event("Touched")]
+    fn touch(&mut self, id: String) {
+        self.entity.set_id(&id);
     }
 }
-
-impl_aggregate!(BetaAggregate, entity, replay, aggregate_type = "async.beta");
 
 #[derive(Default)]
 struct SnapshotCounter {
@@ -57,27 +42,14 @@ struct SnapshotCounter {
     value: i32,
 }
 
+#[sourced(entity, aggregate_type = "async.snapshot_counter")]
 impl SnapshotCounter {
-    fn increment(&mut self, id: &str, by: i32) {
-        self.entity.set_id(id);
-        self.entity.digest("Incremented", &by).unwrap();
+    #[event("Incremented")]
+    fn increment(&mut self, id: String, by: i32) {
+        self.entity.set_id(&id);
         self.value += by;
     }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        if event.event_name == "Incremented" {
-            self.value += event.decode::<i32>().map_err(|err| err.to_string())?;
-        }
-        Ok(())
-    }
 }
-
-impl_aggregate!(
-    SnapshotCounter,
-    entity,
-    replay,
-    aggregate_type = "async.snapshot_counter"
-);
 
 impl Snapshottable for SnapshotCounter {
     type Snapshot = i32;
@@ -92,9 +64,9 @@ impl Snapshottable for SnapshotCounter {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "async_test_views")]
+#[table("async_test_views")]
 struct TestView {
-    #[readmodel(id)]
+    #[id]
     id: String,
     value: i32,
 }
@@ -121,9 +93,9 @@ async fn async_aggregate_repository_separates_streams_by_aggregate_type() {
     let beta_repo = repo.clone().async_aggregate::<BetaAggregate>();
 
     let mut alpha = AlphaAggregate::default();
-    alpha.touch("shared-id");
+    alpha.touch("shared-id".into()).unwrap();
     let mut beta = BetaAggregate::default();
-    beta.touch("shared-id");
+    beta.touch("shared-id".into()).unwrap();
 
     alpha_repo.commit(&mut alpha).await.unwrap();
     beta_repo.commit(&mut beta).await.unwrap();
@@ -256,9 +228,9 @@ async fn async_snapshot_repository_writes_cache_without_event_record() {
     let id = "snapshot-counter-1";
 
     let mut counter = SnapshotCounter::default();
-    counter.increment(id, 2);
+    counter.increment(id.into(), 2).unwrap();
     snapshot_repo.commit(&mut counter).await.unwrap();
-    counter.increment(id, 3);
+    counter.increment(id.into(), 3).unwrap();
     snapshot_repo.commit(&mut counter).await.unwrap();
 
     let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
@@ -284,8 +256,8 @@ async fn async_snapshot_repository_ignores_invalid_cache_and_replays_events() {
     let id = "snapshot-counter-invalid";
 
     let mut counter = SnapshotCounter::default();
-    counter.increment(id, 4);
-    counter.increment(id, 6);
+    counter.increment(id.into(), 4).unwrap();
+    counter.increment(id.into(), 6).unwrap();
     aggregate_repo.commit(&mut counter).await.unwrap();
 
     let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
@@ -316,7 +288,7 @@ async fn async_snapshot_repository_ignores_cache_past_stream_version_and_replays
     let id = "snapshot-counter-ahead";
 
     let mut counter = SnapshotCounter::default();
-    counter.increment(id, 4);
+    counter.increment(id.into(), 4).unwrap();
     aggregate_repo.commit(&mut counter).await.unwrap();
 
     let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
@@ -342,7 +314,7 @@ async fn async_outbox_repository_delegates_worker_operations() {
     let outbox = repo.outbox_store();
     let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
     let mut aggregate = AlphaAggregate::default();
-    aggregate.touch("outbox-aggregate-1");
+    aggregate.touch("outbox-aggregate-1".into()).unwrap();
     repo.clone()
         .async_aggregate::<AlphaAggregate>()
         .outbox(message)

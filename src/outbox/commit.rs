@@ -86,8 +86,8 @@ impl<R, A> AsyncAggregateRepository<R, A> {
 mod tests {
     use super::*;
     use crate::{
-        impl_aggregate, AggregateBuilder, CommitBatch, Entity, EventRecord, HashMapRepository,
-        OutboxStore, TransactionalCommit,
+        sourced, AggregateBuilder, CommitBatch, Entity, HashMapRepository, OutboxStore,
+        TransactionalCommit,
     };
     use std::cell::RefCell;
 
@@ -96,20 +96,15 @@ mod tests {
         entity: Entity,
     }
 
+    #[sourced(entity)]
     impl Dummy {
+        #[event("Touched")]
         fn touch(&mut self) {
             if self.entity.id().is_empty() {
                 self.entity.set_id("dummy-1");
             }
-            self.entity.digest_empty("Touched").unwrap();
-        }
-
-        fn replay(&mut self, _event: &EventRecord) -> Result<(), String> {
-            Ok(())
         }
     }
-
-    impl_aggregate!(Dummy, entity, replay);
 
     #[derive(Default)]
     struct FailingOutboxRepo {
@@ -139,7 +134,7 @@ mod tests {
         let repo = HashMapRepository::new().aggregate::<Dummy>();
 
         let mut aggregate = Dummy::default();
-        aggregate.touch();
+        aggregate.touch().unwrap();
 
         let event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
 
@@ -155,7 +150,7 @@ mod tests {
         let repo = AggregateRepository::<_, Dummy>::new(FailingOutboxRepo::default());
 
         let mut aggregate = Dummy::default();
-        aggregate.touch();
+        aggregate.touch().unwrap();
 
         let event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec()).unwrap();
 

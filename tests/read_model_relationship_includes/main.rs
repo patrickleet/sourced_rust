@@ -7,9 +7,9 @@ use sourced_rust::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "players")]
+#[table("players")]
 struct Player {
-    #[readmodel(id, column = "player_id")]
+    #[id("player_id")]
     player_id: String,
     display_name: String,
     #[readmodel(has_many = "PlayerWeapon", foreign_key = "player_id")]
@@ -17,7 +17,8 @@ struct Player {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "player_weapons", primary_key = ["player_id", "weapon_id"])]
+#[table("player_weapons")]
+#[readmodel(primary_key = ["player_id", "weapon_id"])]
 struct PlayerWeapon {
     #[readmodel(foreign_key = "players.player_id", delegated_from = "Player.player_id")]
     player_id: String,
@@ -28,9 +29,9 @@ struct PlayerWeapon {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "players_with_many")]
+#[table("players_with_many")]
 struct PlayerWithMany {
-    #[readmodel(id, column = "player_id")]
+    #[id("player_id")]
     player_id: String,
     #[readmodel(
         many_to_many = "Weapon",
@@ -41,16 +42,16 @@ struct PlayerWithMany {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "weapons")]
+#[table("weapons")]
 struct Weapon {
-    #[readmodel(id, column = "weapon_id")]
+    #[id("weapon_id")]
     weapon_id: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "weapon_label_refs")]
+#[table("weapon_label_refs")]
 struct WeaponLabelRef {
-    #[readmodel(id, column = "ref_id")]
+    #[id("ref_id")]
     ref_id: String,
     player_id: String,
     #[readmodel(belongs_to = "CompositeWeaponLabel", foreign_key = "player_id")]
@@ -58,7 +59,8 @@ struct WeaponLabelRef {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "weapon_labels", primary_key = ["player_id", "weapon_id"])]
+#[table("weapon_labels")]
+#[readmodel(primary_key = ["player_id", "weapon_id"])]
 struct CompositeWeaponLabel {
     player_id: String,
     weapon_id: String,
