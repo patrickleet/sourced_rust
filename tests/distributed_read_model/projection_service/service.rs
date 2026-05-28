@@ -14,7 +14,3 @@ pub fn service(store: InMemoryReadModelStore) -> Arc<Service<ProjectionDependenc
         events handlers::seat,
     ))
 }
-
-pub fn projects(event_type: &str) -> bool {
-    handlers::checkout::EVENTS.contains(&event_type) || handlers::seat::EVENTS.contains(&event_type)
-}

@@ -10,10 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository,
-    ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue,
-    SnapshotRecord, StreamIdentity, TableSchemaRegistry,
+    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository, ReadModel,
+    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
+    StreamIdentity, TableSchemaRegistry,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -154,10 +154,7 @@ async fn migration_is_idempotent_and_uses_postgres_column_types() {
     .fetch_optional(repo.pool())
     .await
     .unwrap();
-    assert_eq!(
-        processed_messages_table.as_deref(),
-        Some("read_model_processed_messages")
-    );
+    assert!(processed_messages_table.is_none());
 }
 
 #[tokio::test]
@@ -396,29 +393,21 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
 }
 
 #[tokio::test]
-async fn read_model_session_persists_relational_rows_and_processed_marks() {
+async fn read_model_session_persists_relational_rows() {
     let Some((_schema, repo)) = repository().await else {
         return;
     };
     bootstrap_relational_counter_table(&repo).await;
     let id = unique_id("view");
-    let message_id = unique_id("event");
     let view = RelationalCounterView {
         id: id.clone(),
         value: 42,
         counts: HashMap::new(),
     };
     let mut session = ReadModelWritePlanBuilder::new();
-    session
-        .upsert(&view)
-        .unwrap()
-        .mark_processed("projection", &message_id);
+    session.upsert(&view).unwrap();
 
     let outcome = session.commit_async(&repo).await.unwrap();
-    let processed = repo
-        .is_processed_async("projection", &message_id)
-        .await
-        .unwrap();
     let row = sqlx::query(
         r#"
         SELECT "value", "_sourced_version"
@@ -432,36 +421,6 @@ async fn read_model_session_persists_relational_rows_and_processed_marks() {
     .unwrap();
 
     assert!(outcome.was_applied());
-    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
-    assert_eq!(
-        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
-        1
-    );
-    assert!(processed);
-
-    let mut duplicate = ReadModelWritePlanBuilder::new();
-    duplicate
-        .upsert(&RelationalCounterView {
-            id: id.clone(),
-            value: 100,
-            counts: HashMap::new(),
-        })
-        .unwrap()
-        .mark_processed("projection", &message_id);
-    let duplicate_outcome = duplicate.commit_async(&repo).await.unwrap();
-    let row = sqlx::query(
-        r#"
-        SELECT "value", "_sourced_version"
-        FROM "postgres_relational_counter_views"
-        WHERE "id" = $1
-        "#,
-    )
-    .bind(&view.id)
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-
-    assert!(duplicate_outcome.was_skipped());
     assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
     assert_eq!(
         sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),

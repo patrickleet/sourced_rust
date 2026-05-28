@@ -3,7 +3,7 @@ use sourced_rust::microsvc::{Context, HandlerError};
 use sourced_rust::ReadModelWorkspaceExt;
 
 use crate::checkout::{seat_event, SeatAdded, SeatReserved, SEAT_AVAILABLE, SEAT_RESERVED};
-use crate::projection_service::{ProjectionDependencies, CHECKOUT_SCREEN_CONSUMER};
+use crate::projection_service::ProjectionDependencies;
 use crate::read_models::{CheckoutStepView, SeatView};
 
 pub const EVENTS: &[&str] = &[seat_event::ADDED, seat_event::RESERVED];
@@ -29,7 +29,6 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
 
             let mut workspace = ctx.read_model_store().workspace();
             workspace.upsert(&row).map_err(super::read_model_error)?;
-            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
             workspace.commit().map_err(super::read_model_error)?;
         }
         seat_event::RESERVED => {
@@ -51,7 +50,6 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
             let mut workspace = ctx.read_model_store().workspace();
             workspace.upsert(&seat).map_err(super::read_model_error)?;
             workspace.upsert(&step).map_err(super::read_model_error)?;
-            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
             workspace.commit().map_err(super::read_model_error)?;
         }
         other => return Err(HandlerError::UnknownCommand(other.to_string())),

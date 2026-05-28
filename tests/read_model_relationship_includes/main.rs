@@ -88,10 +88,6 @@ impl ReadModelWritePlanStore for NoIncludeStore {
     ) -> Result<ReadModelCommitOutcome, ReadModelError> {
         self.inner.commit_write_plan(plan)
     }
-
-    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
-        self.inner.is_processed(consumer_name, message_id)
-    }
 }
 
 impl RelationalReadModelQueryStore for NoIncludeStore {

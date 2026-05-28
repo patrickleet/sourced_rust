@@ -106,12 +106,6 @@ pub trait AsyncReadModelWritePlanStore: Send + Sync {
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_;
-
-    fn is_processed_async<'a>(
-        &'a self,
-        consumer_name: &'a str,
-        message_id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a;
 }
 
 /// Async primary-key relational read-model query contract.

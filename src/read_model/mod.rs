@@ -16,11 +16,12 @@
 //! from `commit`.
 //!
 //! Distributed projectors can commit a write plan directly against a read-model
-//! adapter and mark messages processed in the same adapter transaction:
+//! adapter. Projection handlers should make those writes idempotent so bus
+//! retries can safely replay the same message:
 //!
 //! ```ignore
 //! let mut read_models = ReadModelWritePlanBuilder::new();
-//! read_models.upsert(&view)?.mark_processed("projection", event_id);
+//! read_models.upsert(&view)?;
 //! let outcome = read_models.commit(&read_store)?;
 //! ```
 
@@ -116,9 +117,9 @@ pub use schema::{
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 pub use session::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace,
-    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder, ReadModelWritePlanStore,
+    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWorkspaceExt,
+    ReadModelWritePlan, ReadModelWritePlanBuilder, ReadModelWritePlanStore,
     RelationalReadModelQueryStore, RowMutation, RowPatch, RowWriteMode,
 };

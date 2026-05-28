@@ -3,11 +3,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, ClaimOutboxMessages, Entity, HashMapRepository,
-    InMemorySnapshotStore, OutboxMessage, ProcessedMessageMark, ReadModel, ReadModelWritePlan,
-    ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError, RowKey, RowValue,
-    SnapshotRecord, Snapshottable, StreamIdentity, Versioned,
+    AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, ClaimOutboxMessages, Entity, HashMapRepository,
+    InMemorySnapshotStore, OutboxMessage, ReadModel, ReadModelWritePlanBuilder,
+    RelationalReadModel, RepositoryError, RowKey, RowValue, SnapshotRecord, Snapshottable,
+    StreamIdentity, Versioned,
 };
 
 #[derive(Default)]
@@ -134,36 +134,6 @@ async fn async_batch_rejects_duplicate_stream_identity_before_write() {
 }
 
 #[tokio::test]
-async fn async_batch_read_model_failure_rolls_back_stream_append() {
-    let repo = HashMapRepository::new();
-    let identity = StreamIdentity::new("async.rollback", "rollback-1").unwrap();
-    let mut entity = Entity::with_id("rollback-1");
-    entity.digest_empty("Touched").unwrap();
-    let mark = ProcessedMessageMark {
-        consumer_name: "projection".into(),
-        message_id: "event-1".into(),
-    };
-    let plan = ReadModelWritePlan::new(Vec::new(), vec![mark.clone(), mark]);
-
-    let err = repo
-        .commit_batch_async(AsyncCommitBatch {
-            streams: vec![AsyncStreamWrite::new(identity.clone(), &mut entity)],
-            outbox_messages: Vec::new(),
-            read_model_plans: vec![plan],
-            snapshots: Vec::new(),
-        })
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("processed message already handled"))
-    );
-    assert!(repo.get_stream(&identity).await.unwrap().is_none());
-    assert_eq!(entity.committed_version(), 0);
-    assert_eq!(entity.new_events().len(), 1);
-}
-
-#[tokio::test]
 async fn read_model_session_can_commit_against_async_store() {
     let repo = HashMapRepository::new();
     let view = TestView {
@@ -171,21 +141,13 @@ async fn read_model_session_can_commit_against_async_store() {
         value: 42,
     };
     let mut session = ReadModelWritePlanBuilder::new();
-    session
-        .upsert(&view)
-        .unwrap()
-        .mark_processed("projection", "event-1");
+    session.upsert(&view).unwrap();
 
     let outcome = session.commit_async(&repo).await.unwrap();
     let loaded = load_test_view(&repo, "view-1").await.unwrap();
-    let processed = repo
-        .is_processed_async("projection", "event-1")
-        .await
-        .unwrap();
 
     assert!(outcome.was_applied());
     assert_eq!(loaded.data, view);
-    assert!(processed);
 }
 
 #[tokio::test]

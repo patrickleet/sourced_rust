@@ -18,14 +18,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
-use projections_service::{start_board_projection_service, wait_for_board, BOARD_CONSUMER};
+use projections_service::{start_board_projection_service, wait_for_board};
 use query_service::BoardQueryService;
 use read_models::register_schemas;
 use serde::Serialize;
 use sourced_rust::microsvc::{Service, Session};
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable, ReadModelWritePlanStore,
+    Queueable,
 };
 
 fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
@@ -163,17 +163,6 @@ fn board_service_feeds_a_normalized_card_read_model() {
         .card_with_board("board-1", "card-impl")
         .expect("query should succeed")
         .is_none());
-
-    // Idempotency: every published event marked processed before ack.
-    for event in queue.events() {
-        assert!(
-            read_store
-                .is_processed(BOARD_CONSUMER, &event.id)
-                .expect("processed lookup should succeed"),
-            "event {} should be marked processed",
-            event.id
-        );
-    }
 
     let write_side = board_service
         .repo()

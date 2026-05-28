@@ -41,7 +41,7 @@ use checkout::{
     SEAT_AVAILABLE,
 };
 use checkout_saga_service::CheckoutSaga;
-use projection_service::{service as projection_service, CHECKOUT_SCREEN_CONSUMER};
+use projection_service::service as projection_service;
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -54,7 +54,7 @@ use sourced_rust::microsvc::{self, Service, Session};
 use sourced_rust::SqliteRepository;
 use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable, ReadModelWritePlanStore,
+    Queueable,
 };
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sourced_rust::{
@@ -219,22 +219,6 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
         .expect("seat aggregate should exist");
     assert_eq!(loaded_seat.status, SEAT_RESERVED);
     assert_eq!(loaded_seat.checkout_id, ids.checkout_id);
-
-    for message in [
-        &seat_added,
-        &checkout_started,
-        &seat_reserved,
-        &reservation_completed,
-    ] {
-        assert!(
-            read_repo
-                .is_processed_async(CHECKOUT_SCREEN_CONSUMER, message.id())
-                .await
-                .expect("processed lookup should succeed"),
-            "message {} should be marked processed",
-            message.id()
-        );
-    }
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -455,7 +439,6 @@ where
         other => panic!("unexpected projected event type {other}"),
     }
 
-    read_models.mark_processed(CHECKOUT_SCREEN_CONSUMER, message.id());
     read_models
         .commit_async(repo)
         .await
@@ -619,18 +602,6 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         .unwrap();
     assert_eq!(seat.status, SEAT_RESERVED);
     assert_eq!(seat.checkout_id, "checkout-1");
-
-    for event in queue.events() {
-        if projection_service::projects(event.event_type.as_str()) {
-            assert!(
-                read_store
-                    .is_processed(CHECKOUT_SCREEN_CONSUMER, &event.id)
-                    .expect("processed lookup should succeed"),
-                "event {} should be marked processed before ack",
-                event.id
-            );
-        }
-    }
 
     let _ = checkout_sub.stop();
     let _ = seat_sub.stop();

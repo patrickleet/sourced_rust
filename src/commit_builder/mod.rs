@@ -1006,25 +1006,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_session_plan_does_not_commit_aggregate() {
-        let repo = RecordingBatchRepo::default();
-        let mut session = crate::read_model::ReadModelWritePlanBuilder::new();
-        session.mark_processed("", "message-1");
-        let mut agg = TestAggregate::default();
-        agg.touch().unwrap();
-
-        let err = SyncReadModelWritePlanCommitExt::read_models_sync(&repo, session)
-            .commit_sync(&mut agg)
-            .unwrap_err();
-
-        assert!(
-            matches!(err, RepositoryError::Model(message) if message.contains("processed-message"))
-        );
-        assert_eq!(agg.entity().committed_version(), 0);
-        assert!(repo.entity_ids.borrow().is_empty());
-    }
-
-    #[test]
     fn commit_builder_failure_does_not_mark_aggregate_committed() {
         let repo = RecordingBatchRepo {
             fail: true,
@@ -1159,26 +1140,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn async_invalid_read_model_plan_does_not_commit_aggregate() {
-        let repo = RecordingAsyncBatchRepo::default();
-        let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
-        read_models.mark_processed("", "message-1");
-        let mut agg = TestAggregate::default();
-        agg.touch().unwrap();
-
-        let err = repo
-            .read_models(read_models)
-            .commit(&mut agg)
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(err, RepositoryError::Model(message) if message.contains("processed-message"))
-        );
-        assert_eq!(agg.entity().committed_version(), 0);
-        assert!(repo.stream_ids.lock().unwrap().is_empty());
     }
 }

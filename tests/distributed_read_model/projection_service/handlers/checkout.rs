@@ -6,7 +6,7 @@ use crate::checkout::{
     checkout_event, CheckoutStarted, SeatReservationCompleted, CHECKOUT_SEAT_RESERVED,
     CHECKOUT_STARTED, RESERVING_SEAT_MESSAGE, SEAT_RESERVED_MESSAGE,
 };
-use crate::projection_service::{ProjectionDependencies, CHECKOUT_SCREEN_CONSUMER};
+use crate::projection_service::ProjectionDependencies;
 use crate::read_models::{CheckoutStepView, CheckoutView};
 
 pub const EVENTS: &[&str] = &[
@@ -42,7 +42,6 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
                 .upsert(&checkout)
                 .map_err(super::read_model_error)?;
             workspace.upsert(&step).map_err(super::read_model_error)?;
-            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
             workspace.commit().map_err(super::read_model_error)?;
         }
         checkout_event::SEAT_RESERVATION_COMPLETED => {
@@ -69,7 +68,6 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
                 .upsert(&checkout)
                 .map_err(super::read_model_error)?;
             workspace.upsert(&step).map_err(super::read_model_error)?;
-            workspace.mark_processed(CHECKOUT_SCREEN_CONSUMER, &event.id);
             workspace.commit().map_err(super::read_model_error)?;
         }
         other => return Err(HandlerError::UnknownCommand(other.to_string())),

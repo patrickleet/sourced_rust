@@ -70,7 +70,7 @@ pub fn outbox_message_insert_plan(
         expected_version: ExpectedVersion::NotExists,
         mode: RowWriteMode::Insert,
     });
-    Ok(TableWritePlan::new(vec![mutation], Vec::new()))
+    Ok(TableWritePlan::new(vec![mutation]))
 }
 
 pub(crate) fn validate_outbox_message_table_write(
@@ -211,7 +211,6 @@ mod tests {
 
         let plan = outbox_message_insert_plan(&message).unwrap();
 
-        assert!(plan.processed_messages.is_empty());
         assert_eq!(plan.mutations.len(), 1);
         let TableMutation::UpsertRow(mutation) = &plan.mutations[0] else {
             panic!("outbox insert should lower to a table row mutation");

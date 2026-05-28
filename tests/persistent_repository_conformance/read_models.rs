@@ -41,7 +41,7 @@ where
     })
 }
 
-pub async fn standalone_relational_write_plan_persists_and_marks_processed<R>(repo: R)
+pub async fn standalone_relational_write_plan_persists_row<R>(repo: R)
 where
     R: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Send + Sync,
 {
@@ -49,12 +49,10 @@ where
         id: unique_id("read-model-view"),
         status: "available".into(),
     };
-    let message_id = unique_id("read-model-message");
     let mut read_models = ReadModelWritePlanBuilder::new();
     read_models
         .upsert(&view)
-        .expect("row mutation should serialize")
-        .mark_processed("seat-projection", &message_id);
+        .expect("row mutation should serialize");
 
     let outcome = read_models
         .commit_async(&repo)
@@ -67,30 +65,6 @@ where
         .expect("read model row should exist");
     assert_eq!(loaded.version, 1);
     assert_eq!(loaded.data, view);
-    assert!(repo
-        .is_processed_async("seat-projection", &message_id)
-        .await
-        .expect("processed marker should load"));
-
-    let mut duplicate = ReadModelWritePlanBuilder::new();
-    duplicate
-        .upsert(&SeatView {
-            id: view.id.clone(),
-            status: "reserved".into(),
-        })
-        .expect("duplicate row mutation should serialize")
-        .mark_processed("seat-projection", &message_id);
-
-    let duplicate_outcome = duplicate
-        .commit_async(&repo)
-        .await
-        .expect("duplicate processed message should be handled");
-    let still_loaded = load_seat_view(&repo, &view.id)
-        .await
-        .expect("read model row should still exist");
-
-    assert!(duplicate_outcome.was_skipped());
-    assert_eq!(still_loaded.data.status, "available");
 }
 
 pub async fn aggregate_commit_persists_read_model_plan<R>(repo: R)

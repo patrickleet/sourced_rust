@@ -44,11 +44,8 @@ async fn snapshots_use_full_stream_identity() {
 }
 
 #[tokio::test]
-async fn standalone_relational_write_plan_persists_and_marks_processed() {
-    conformance::read_models::standalone_relational_write_plan_persists_and_marks_processed(
-        repository(),
-    )
-    .await;
+async fn standalone_relational_write_plan_persists_row() {
+    conformance::read_models::standalone_relational_write_plan_persists_row(repository()).await;
 }
 
 #[tokio::test]
