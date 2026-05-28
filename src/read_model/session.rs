@@ -43,7 +43,6 @@ pub struct ReadModelAdapterCapabilities {
     pub relational_rows: bool,
     pub sparse_patches: bool,
     pub deletes: bool,
-    pub processed_messages: bool,
 }
 
 impl Default for ReadModelAdapterCapabilities {
@@ -52,43 +51,21 @@ impl Default for ReadModelAdapterCapabilities {
             relational_rows: true,
             sparse_patches: true,
             deletes: true,
-            processed_messages: true,
         }
     }
 }
 
 /// Result of applying a standalone read-model write plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadModelCommitOutcome {
-    applied: bool,
-    duplicate_message: Option<ProcessedMessageMark>,
-}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReadModelCommitOutcome;
 
 impl ReadModelCommitOutcome {
     pub fn applied() -> Self {
-        Self {
-            applied: true,
-            duplicate_message: None,
-        }
-    }
-
-    pub fn skipped_duplicate(mark: ProcessedMessageMark) -> Self {
-        Self {
-            applied: false,
-            duplicate_message: Some(mark),
-        }
+        Self
     }
 
     pub fn was_applied(&self) -> bool {
-        self.applied
-    }
-
-    pub fn was_skipped(&self) -> bool {
-        !self.applied
-    }
-
-    pub fn duplicate_message(&self) -> Option<&ProcessedMessageMark> {
-        self.duplicate_message.as_ref()
+        true
     }
 }
 
@@ -100,8 +77,6 @@ pub trait ReadModelWritePlanStore: Send + Sync {
         &self,
         plan: ReadModelWritePlan,
     ) -> Result<ReadModelCommitOutcome, ReadModelError>;
-
-    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError>;
 }
 
 /// A request an adapter can satisfy with a primary-key read plus explicit includes.
@@ -341,33 +316,19 @@ impl ReadModelMutation {
     }
 }
 
-/// A processed-message marker staged with read-model writes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProcessedMessageMark {
-    pub consumer_name: String,
-    pub message_id: String,
-}
-
 /// Deterministic unit-of-work output for relational read-model adapters.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReadModelWritePlan {
     pub mutations: Vec<ReadModelMutation>,
-    pub processed_messages: Vec<ProcessedMessageMark>,
 }
 
 impl ReadModelWritePlan {
-    pub fn new(
-        mutations: Vec<ReadModelMutation>,
-        processed_messages: Vec<ProcessedMessageMark>,
-    ) -> Self {
-        Self {
-            mutations,
-            processed_messages,
-        }
+    pub fn new(mutations: Vec<ReadModelMutation>) -> Self {
+        Self { mutations }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.mutations.is_empty() && self.processed_messages.is_empty()
+        self.mutations.is_empty()
     }
 
     pub fn validate(&self) -> Result<(), ReadModelError> {
@@ -407,20 +368,6 @@ impl ReadModelWritePlan {
             }
         }
 
-        if !capabilities.processed_messages && !self.processed_messages.is_empty() {
-            return Err(ReadModelError::Metadata(
-                "read-model adapter does not support processed-message marks".into(),
-            ));
-        }
-
-        for mark in &self.processed_messages {
-            if mark.consumer_name.is_empty() || mark.message_id.is_empty() {
-                return Err(ReadModelError::Metadata(
-                    "processed-message marks require consumer name and message id".into(),
-                ));
-            }
-        }
-
         Ok(())
     }
 }
@@ -441,7 +388,6 @@ struct StagedMutation {
 #[derive(Clone, Debug, Default)]
 pub struct ReadModelWritePlanBuilder {
     mutations: Vec<StagedMutation>,
-    processed_messages: Vec<ProcessedMessageMark>,
     expected_versions: BTreeMap<RowIdentity, u64>,
     next_sequence: u64,
 }
@@ -452,7 +398,7 @@ impl ReadModelWritePlanBuilder {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.mutations.is_empty() && self.processed_messages.is_empty()
+        self.mutations.is_empty()
     }
 
     pub fn load<M>(&self, key: RowKey) -> Result<ReadModelLoadRequest, ReadModelError>
@@ -608,18 +554,6 @@ impl ReadModelWritePlanBuilder {
         self.delete::<M>(model.primary_key()?)
     }
 
-    pub fn mark_processed(
-        &mut self,
-        consumer_name: impl Into<String>,
-        message_id: impl Into<String>,
-    ) -> &mut Self {
-        self.processed_messages.push(ProcessedMessageMark {
-            consumer_name: consumer_name.into(),
-            message_id: message_id.into(),
-        });
-        self
-    }
-
     pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
         let mut mutations = self.mutations;
         mutations.sort_by(|left, right| {
@@ -638,7 +572,7 @@ impl ReadModelWritePlanBuilder {
             .into_iter()
             .map(|staged| staged.mutation)
             .collect::<Vec<_>>();
-        let plan = ReadModelWritePlan::new(mutations, self.processed_messages);
+        let plan = ReadModelWritePlan::new(mutations);
         plan.validate()?;
         Ok(plan)
     }
@@ -976,15 +910,6 @@ where
     {
         self.writes.delete_model(model)?;
         Ok(self)
-    }
-
-    pub fn mark_processed(
-        &mut self,
-        consumer_name: impl Into<String>,
-        message_id: impl Into<String>,
-    ) -> &mut Self {
-        self.writes.mark_processed(consumer_name, message_id);
-        self
     }
 
     pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {

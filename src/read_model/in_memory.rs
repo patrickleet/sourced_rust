@@ -4,16 +4,16 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use super::session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 use super::{
-    ExpectedVersion, PatchMode, ProcessedMessageMark, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelSchemaRegistry, ReadModelWritePlan, ReadModelWritePlanStore, RelationalReadModel,
+    ExpectedVersion, PatchMode, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaRegistry,
+    ReadModelWritePlan, ReadModelWritePlanStore, RelationalReadModel,
     RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
     RowWriteMode, Versioned,
 };
@@ -24,8 +24,6 @@ pub(crate) struct StoredRow {
     pub(crate) values: RowValues,
     pub(crate) version: u64,
 }
-
-pub(crate) type ProcessedMessageSet = HashSet<(String, String)>;
 
 pub(crate) const INITIAL_MODEL_VERSION: u64 = 1;
 
@@ -52,17 +50,8 @@ fn relational_capabilities() -> ReadModelAdapterCapabilities {
 pub(crate) fn apply_read_model_write_plan(
     plan: ReadModelWritePlan,
     staged_rows: &mut HashMap<String, StoredRow>,
-    staged_processed_messages: &mut ProcessedMessageSet,
 ) -> Result<ReadModelCommitOutcome, ReadModelError> {
     plan.validate_for(&relational_capabilities())?;
-
-    let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
-    for mark in &plan.processed_messages {
-        let key = processed_message_key(mark);
-        if staged_processed_messages.contains(&key) || !marks_in_plan.insert(key) {
-            return Ok(ReadModelCommitOutcome::skipped_duplicate(mark.clone()));
-        }
-    }
 
     for mutation in plan.mutations {
         match mutation {
@@ -149,15 +138,7 @@ pub(crate) fn apply_read_model_write_plan(
         }
     }
 
-    for mark in plan.processed_messages {
-        staged_processed_messages.insert(processed_message_key(&mark));
-    }
-
     Ok(ReadModelCommitOutcome::applied())
-}
-
-fn processed_message_key(mark: &ProcessedMessageMark) -> (String, String) {
-    (mark.consumer_name.clone(), mark.message_id.clone())
 }
 
 fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
@@ -252,7 +233,6 @@ fn concurrency_conflict(
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
     pub(crate) relational_rows: Arc<RwLock<HashMap<String, StoredRow>>>,
-    pub(crate) processed_messages: Arc<RwLock<ProcessedMessageSet>>,
     schema_registry: Arc<RwLock<ReadModelSchemaRegistry>>,
 }
 
@@ -267,7 +247,6 @@ impl InMemoryReadModelStore {
     pub fn new() -> Self {
         Self {
             relational_rows: Arc::new(RwLock::new(HashMap::new())),
-            processed_messages: Arc::new(RwLock::new(HashSet::new())),
             schema_registry: Arc::new(RwLock::new(ReadModelSchemaRegistry::new())),
         }
     }
@@ -312,30 +291,15 @@ impl ReadModelWritePlanStore for InMemoryReadModelStore {
             .relational_rows
             .write()
             .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-        let mut processed_messages = self
-            .processed_messages
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
 
         let mut staged_rows = relational_rows.clone();
-        let mut staged_processed_messages = processed_messages.clone();
-        let outcome =
-            apply_read_model_write_plan(plan, &mut staged_rows, &mut staged_processed_messages)?;
+        let outcome = apply_read_model_write_plan(plan, &mut staged_rows)?;
 
         if outcome.was_applied() {
             *relational_rows = staged_rows;
-            *processed_messages = staged_processed_messages;
         }
 
         Ok(outcome)
-    }
-
-    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
-        let processed_messages = self
-            .processed_messages
-            .read()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-        Ok(processed_messages.contains(&(consumer_name.to_string(), message_id.to_string())))
     }
 }
 
@@ -349,14 +313,6 @@ impl AsyncReadModelWritePlanStore for InMemoryReadModelStore {
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
         async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
-    }
-
-    fn is_processed_async<'a>(
-        &'a self,
-        consumer_name: &'a str,
-        message_id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
-        async move { ReadModelWritePlanStore::is_processed(self, consumer_name, message_id) }
     }
 }
 
@@ -651,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn relational_write_plan_upserts_rows_and_marks_processed() {
+    fn relational_write_plan_upserts_rows() {
         let store = InMemoryReadModelStore::new();
         let schema = test_row_schema();
         let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
@@ -659,19 +615,15 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         let outcome = store
-            .commit_write_plan(ReadModelWritePlan::new(
-                vec![ReadModelMutation::UpsertRow(RowMutation {
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+                RowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
                     values,
                     expected_version: ExpectedVersion::Any,
                     mode: RowWriteMode::Upsert,
-                })],
-                vec![ProcessedMessageMark {
-                    consumer_name: "projection".into(),
-                    message_id: "event-1".into(),
-                }],
-            ))
+                },
+            )]))
             .unwrap();
         let row = store
             .relational_rows
@@ -687,7 +639,6 @@ mod tests {
             row.values.get("id"),
             Some(&RowValue::String("row-1".into()))
         );
-        assert!(store.is_processed("projection", "event-1").unwrap());
     }
 
     #[test]
@@ -699,28 +650,26 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         store
-            .commit_write_plan(ReadModelWritePlan::new(
-                vec![ReadModelMutation::UpsertRow(RowMutation {
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+                RowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
                     values,
                     expected_version: ExpectedVersion::Any,
                     mode: RowWriteMode::Upsert,
-                })],
-                Vec::new(),
-            ))
+                },
+            )]))
             .unwrap();
         store
-            .commit_write_plan(ReadModelWritePlan::new(
-                vec![ReadModelMutation::PatchRow(PatchRowMutation {
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
+                PatchRowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
                     patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
                     expected_version: ExpectedVersion::Exact(1),
                     mode: PatchMode::UpdateExisting,
-                })],
-                Vec::new(),
-            ))
+                },
+            )]))
             .unwrap();
         let version = store
             .relational_rows
@@ -732,14 +681,13 @@ mod tests {
         assert_eq!(version, 2);
 
         store
-            .commit_write_plan(ReadModelWritePlan::new(
-                vec![ReadModelMutation::DeleteRow(DeleteRowMutation {
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
+                DeleteRowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
                     expected_version: ExpectedVersion::Exact(2),
-                })],
-                Vec::new(),
-            ))
+                },
+            )]))
             .unwrap();
         assert!(!store
             .relational_rows

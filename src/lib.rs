@@ -114,9 +114,9 @@ pub use queued_repo::{
 // Read models: projections and read-optimized views
 pub use read_model::{
     ColumnDef, ColumnType, DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore,
-    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ProcessedMessageMark, ReadModel,
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
+    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
+    ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
     ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
     ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
     ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,

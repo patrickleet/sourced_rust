@@ -3,8 +3,6 @@
 
 mod handlers;
 
-pub use handlers::board::CONSUMER as BOARD_CONSUMER;
-
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};

@@ -8,7 +8,7 @@
     reason = "async trait impls return impl Future + Send to preserve public Send bounds"
 )]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,11 +24,11 @@ use crate::outbox_worker::{
 };
 use crate::read_model::{
     column_name_for, key_fingerprint, validate_key, validate_row_values, ColumnDef, ColumnType,
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ProcessedMessageMark,
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities,
-    ReadModelSchema, ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation,
-    RowValue, RowValues, RowWriteMode, Versioned,
+    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
+    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
+    ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation, RowValue,
+    RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
     AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
@@ -296,13 +296,7 @@ impl AsyncTransactionalCommit for SqliteRepository {
             }
 
             for plan in batch.read_model_plans {
-                let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
-                if let Some(mark) = outcome.duplicate_message() {
-                    return Err(RepositoryError::Model(format!(
-                        "processed message already handled by consumer `{}`: `{}`",
-                        mark.consumer_name, mark.message_id
-                    )));
-                }
+                apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
             }
 
             for write in batch.snapshots {
@@ -339,19 +333,9 @@ impl AsyncReadModelWritePlanStore for SqliteRepository {
             validate_sql_write_plan(&plan)?;
             let mut tx = begin_read_model_tx(&self.pool).await?;
             let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
-            if outcome.was_applied() {
-                commit_read_model_tx(tx).await?;
-            }
+            commit_read_model_tx(tx).await?;
             Ok(outcome)
         }
-    }
-
-    fn is_processed_async<'a>(
-        &'a self,
-        consumer_name: &'a str,
-        message_id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
-        async move { processed_message_exists_pool(&self.pool, consumer_name, message_id).await }
     }
 }
 
@@ -1252,7 +1236,6 @@ fn sql_read_model_capabilities() -> ReadModelAdapterCapabilities {
         relational_rows: true,
         sparse_patches: true,
         deletes: true,
-        processed_messages: true,
     }
 }
 
@@ -1278,14 +1261,6 @@ async fn apply_read_model_write_plan_in_tx(
 ) -> Result<ReadModelCommitOutcome, ReadModelError> {
     validate_sql_write_plan(&plan)?;
 
-    let mut marks_in_plan = HashSet::with_capacity(plan.processed_messages.len());
-    for mark in &plan.processed_messages {
-        let key = processed_message_key(mark);
-        if !marks_in_plan.insert(key) || processed_message_exists_in_tx(tx, mark).await? {
-            return Ok(ReadModelCommitOutcome::skipped_duplicate(mark.clone()));
-        }
-    }
-
     for mutation in plan.mutations {
         match mutation {
             ReadModelMutation::UpsertRow(mutation) => {
@@ -1297,16 +1272,6 @@ async fn apply_read_model_write_plan_in_tx(
             ReadModelMutation::DeleteRow(mutation) => {
                 delete_relational_row_in_tx(tx, mutation).await?;
             }
-        }
-    }
-
-    for mark in plan.processed_messages {
-        let result = insert_processed_message_in_tx(tx, &mark).await;
-        if let Err(err) = result {
-            if is_sqlite_unique_constraint(&err) {
-                return Ok(ReadModelCommitOutcome::skipped_duplicate(mark));
-            }
-            return Err(read_model_storage_error("insert processed message", err));
         }
     }
 
@@ -1906,66 +1871,6 @@ fn belongs_to_target_column(
     }
 
     Ok(target_schema.primary_key.columns[0].clone())
-}
-
-async fn processed_message_exists_pool(
-    pool: &SqlitePool,
-    consumer_name: &str,
-    message_id: &str,
-) -> Result<bool, ReadModelError> {
-    let row = sqlx::query(
-        r#"
-        SELECT 1
-        FROM read_model_processed_messages
-        WHERE consumer_name = ? AND message_id = ?
-        "#,
-    )
-    .bind(consumer_name)
-    .bind(message_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| read_model_storage_error("load processed message", err))?;
-    Ok(row.is_some())
-}
-
-async fn processed_message_exists_in_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    mark: &ProcessedMessageMark,
-) -> Result<bool, ReadModelError> {
-    let row = sqlx::query(
-        r#"
-        SELECT 1
-        FROM read_model_processed_messages
-        WHERE consumer_name = ? AND message_id = ?
-        "#,
-    )
-    .bind(&mark.consumer_name)
-    .bind(&mark.message_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|err| read_model_storage_error("load processed message", err))?;
-    Ok(row.is_some())
-}
-
-async fn insert_processed_message_in_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    mark: &ProcessedMessageMark,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        INSERT INTO read_model_processed_messages (consumer_name, message_id)
-        VALUES (?, ?)
-        "#,
-    )
-    .bind(&mark.consumer_name)
-    .bind(&mark.message_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
-fn processed_message_key(mark: &ProcessedMessageMark) -> (String, String) {
-    (mark.consumer_name.clone(), mark.message_id.clone())
 }
 
 fn initial_row_version() -> u64 {

@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore, AsyncSnapshotStore,
-    AsyncStreamWrite, AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel,
-    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    SqliteRepository, StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
+    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
+    RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SqliteRepository, StreamIdentity,
+    TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -323,7 +323,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
 }
 
 #[tokio::test]
-async fn read_model_session_persists_relational_rows_and_processed_marks() {
+async fn read_model_session_persists_relational_rows() {
     let repo = repository().await;
     bootstrap_relational_counter_table(&repo).await;
     let view = RelationalCounterView {
@@ -332,16 +332,9 @@ async fn read_model_session_persists_relational_rows_and_processed_marks() {
         counts: HashMap::new(),
     };
     let mut session = ReadModelWritePlanBuilder::new();
-    session
-        .upsert(&view)
-        .unwrap()
-        .mark_processed("projection", "event-1");
+    session.upsert(&view).unwrap();
 
     let outcome = session.commit_async(&repo).await.unwrap();
-    let processed = repo
-        .is_processed_async("projection", "event-1")
-        .await
-        .unwrap();
     let row = sqlx::query(
         r#"
         SELECT "value", "_sourced_version"
@@ -355,36 +348,6 @@ async fn read_model_session_persists_relational_rows_and_processed_marks() {
     .unwrap();
 
     assert!(outcome.was_applied());
-    assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
-    assert_eq!(
-        sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),
-        1
-    );
-    assert!(processed);
-
-    let mut duplicate = ReadModelWritePlanBuilder::new();
-    duplicate
-        .upsert(&RelationalCounterView {
-            id: "view-1".into(),
-            value: 100,
-            counts: HashMap::new(),
-        })
-        .unwrap()
-        .mark_processed("projection", "event-1");
-    let duplicate_outcome = duplicate.commit_async(&repo).await.unwrap();
-    let row = sqlx::query(
-        r#"
-        SELECT "value", "_sourced_version"
-        FROM "local_relational_counter_views"
-        WHERE "id" = ?
-        "#,
-    )
-    .bind("view-1")
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-
-    assert!(duplicate_outcome.was_skipped());
     assert_eq!(sqlx::Row::try_get::<i64, _>(&row, "value").unwrap(), 42);
     assert_eq!(
         sqlx::Row::try_get::<i64, _>(&row, "_sourced_version").unwrap(),

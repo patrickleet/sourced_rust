@@ -188,11 +188,6 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 .relational_rows
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async read model write"))?;
-            let mut processed_messages = self
-                .model_store
-                .processed_messages
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async processed-message write"))?;
             let mut snapshot_storage = self
                 .snapshot_store
                 .storage
@@ -205,7 +200,6 @@ impl AsyncTransactionalCommit for HashMapRepository {
 
             let mut staged_events = storage.clone();
             let mut staged_rows = relational_rows.clone();
-            let mut staged_processed_messages = processed_messages.clone();
             let mut staged_snapshots = snapshot_storage.clone();
             let mut staged_outbox = outbox_storage.clone();
 
@@ -229,17 +223,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
             }
 
             for plan in batch.read_model_plans {
-                let outcome = apply_read_model_write_plan(
-                    plan,
-                    &mut staged_rows,
-                    &mut staged_processed_messages,
-                )?;
-                if let Some(mark) = outcome.duplicate_message() {
-                    return Err(RepositoryError::Model(format!(
-                        "processed message already handled by consumer `{}`: `{}`",
-                        mark.consumer_name, mark.message_id
-                    )));
-                }
+                apply_read_model_write_plan(plan, &mut staged_rows)?;
             }
 
             for write in batch.snapshots {
@@ -260,7 +244,6 @@ impl AsyncTransactionalCommit for HashMapRepository {
 
             *storage = staged_events;
             *relational_rows = staged_rows;
-            *processed_messages = staged_processed_messages;
             *snapshot_storage = staged_snapshots;
             *outbox_storage = staged_outbox;
 
@@ -287,11 +270,6 @@ impl TransactionalCommit for HashMapRepository {
             .relational_rows
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("read model write"))?;
-        let mut processed_messages = self
-            .model_store
-            .processed_messages
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("processed-message write"))?;
         let mut snapshot_storage = self
             .snapshot_store
             .storage
@@ -304,7 +282,6 @@ impl TransactionalCommit for HashMapRepository {
 
         let mut staged_events = storage.clone();
         let mut staged_rows = relational_rows.clone();
-        let mut staged_processed_messages = processed_messages.clone();
         let mut staged_snapshots = snapshot_storage.clone();
         let mut staged_outbox = outbox_storage.clone();
 
@@ -330,17 +307,7 @@ impl TransactionalCommit for HashMapRepository {
         }
 
         for plan in batch.read_model_plans {
-            let outcome = apply_read_model_write_plan(
-                plan,
-                &mut staged_rows,
-                &mut staged_processed_messages,
-            )?;
-            if let Some(mark) = outcome.duplicate_message() {
-                return Err(RepositoryError::Model(format!(
-                    "processed message already handled by consumer `{}`: `{}`",
-                    mark.consumer_name, mark.message_id
-                )));
-            }
+            apply_read_model_write_plan(plan, &mut staged_rows)?;
         }
 
         for write in batch.snapshots {
@@ -363,7 +330,6 @@ impl TransactionalCommit for HashMapRepository {
         // Phase 3: Publish staged state only after all validation and staging succeeds.
         *storage = staged_events;
         *relational_rows = staged_rows;
-        *processed_messages = staged_processed_messages;
         *snapshot_storage = staged_snapshots;
         *outbox_storage = staged_outbox;
 
@@ -498,10 +464,6 @@ impl ReadModelWritePlanStore for HashMapRepository {
     ) -> Result<ReadModelCommitOutcome, ReadModelError> {
         ReadModelWritePlanStore::commit_write_plan(&self.model_store, plan)
     }
-
-    fn is_processed(&self, consumer_name: &str, message_id: &str) -> Result<bool, ReadModelError> {
-        ReadModelWritePlanStore::is_processed(&self.model_store, consumer_name, message_id)
-    }
 }
 
 impl AsyncReadModelWritePlanStore for HashMapRepository {
@@ -514,14 +476,6 @@ impl AsyncReadModelWritePlanStore for HashMapRepository {
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
         async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
-    }
-
-    fn is_processed_async<'a>(
-        &'a self,
-        consumer_name: &'a str,
-        message_id: &'a str,
-    ) -> impl Future<Output = Result<bool, ReadModelError>> + Send + 'a {
-        async move { ReadModelWritePlanStore::is_processed(self, consumer_name, message_id) }
     }
 }
 

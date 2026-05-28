@@ -302,7 +302,7 @@ fn relationship_operation_populates_child_foreign_key_in_explicit_row_mutation()
 }
 
 #[test]
-fn expected_versions_and_processed_messages_are_carried_into_plan() {
+fn expected_versions_are_carried_into_plan() {
     let mut account = AccountSummary::new("acct-1");
     let loaded = Versioned {
         data: account.clone(),
@@ -315,8 +315,7 @@ fn expected_versions_and_processed_messages_are_carried_into_plan() {
         .track_loaded(&loaded)
         .unwrap()
         .upsert(&account)
-        .unwrap()
-        .mark_processed("account-projection", "message-1");
+        .unwrap();
 
     let plan = session.into_write_plan().unwrap();
 
@@ -324,11 +323,6 @@ fn expected_versions_and_processed_messages_are_carried_into_plan() {
         panic!("expected upsert row");
     };
     assert_eq!(row.expected_version, ExpectedVersion::Exact(7));
-    assert_eq!(
-        plan.processed_messages[0].consumer_name,
-        "account-projection"
-    );
-    assert_eq!(plan.processed_messages[0].message_id, "message-1");
 }
 
 #[test]

@@ -12,7 +12,6 @@ use crate::board_service::BoardSnapshot;
 use crate::projections_service::{read_model_error, ProjectionDependencies};
 use crate::read_models::{board_key, BoardView, CardPayload, CardView};
 
-pub const CONSUMER: &str = "board-detail-projection";
 pub const EVENTS: &[&str] = &[
     "board.opened",
     "board.card_added",
@@ -52,7 +51,6 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
         }
     }
 
-    workspace.mark_processed(CONSUMER, &event.id);
     workspace.commit().map_err(read_model_error)?;
 
     Ok(json!({ "event_id": event.id }))
