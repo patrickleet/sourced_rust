@@ -13,7 +13,7 @@ pub struct Seat {
     pub checkout_id: String,
 }
 
-#[sourced(entity)]
+#[sourced(entity, aggregate_type = "seat")]
 impl Seat {
     #[event("SeatAdded", when = !seat_id.is_empty() && !category.is_empty())]
     pub fn add(&mut self, seat_id: String, category: String) {

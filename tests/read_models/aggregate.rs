@@ -1,6 +1,6 @@
 //! Simple Counter aggregate for testing read models.
 
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 #[derive(Default)]
 pub struct Counter {
@@ -10,12 +10,13 @@ pub struct Counter {
     value: i32,
 }
 
+#[sourced(entity)]
 impl Counter {
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[digest("CounterCreated")]
+    #[event("CounterCreated")]
     pub fn create(&mut self, id: String, name: String, user_id: String) {
         self.entity.set_id(&id);
         self.name = name;
@@ -23,12 +24,12 @@ impl Counter {
         self.value = 0;
     }
 
-    #[digest("CounterIncremented")]
+    #[event("CounterIncremented")]
     pub fn increment(&mut self, amount: i32) {
         self.value += amount;
     }
 
-    #[digest("CounterDecremented")]
+    #[event("CounterDecremented")]
     pub fn decrement(&mut self, amount: i32) {
         self.value -= amount;
     }
@@ -37,9 +38,3 @@ impl Counter {
         self.value
     }
 }
-
-sourced_rust::aggregate!(Counter, entity {
-    "CounterCreated"(id, name, user_id) => create,
-    "CounterIncremented"(amount) => increment,
-    "CounterDecremented"(amount) => decrement,
-});

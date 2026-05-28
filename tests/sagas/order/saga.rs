@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 use super::OrderItem;
 
@@ -48,6 +48,7 @@ pub struct OrderFulfillmentSaga {
 }
 
 #[allow(dead_code)]
+#[sourced(entity)]
 impl OrderFulfillmentSaga {
     pub fn new() -> Self {
         Self::default()
@@ -95,7 +96,7 @@ impl OrderFulfillmentSaga {
 
     // === Saga Commands ===
 
-    #[digest("SagaStarted")]
+    #[event("SagaStarted")]
     pub fn start(
         &mut self,
         saga_id: String,
@@ -112,42 +113,42 @@ impl OrderFulfillmentSaga {
         self.status = SagaStatus::Started;
     }
 
-    #[digest("InventoryReservationSucceeded", when = self.status == SagaStatus::Started)]
+    #[event("InventoryReservationSucceeded", when = self.status == SagaStatus::Started)]
     pub fn inventory_reserved(&mut self) {
         self.status = SagaStatus::InventoryReserved;
         self.compensation.inventory_reserved = true;
     }
 
-    #[digest("PaymentSucceeded", when = self.status == SagaStatus::InventoryReserved)]
+    #[event("PaymentSucceeded", when = self.status == SagaStatus::InventoryReserved)]
     pub fn payment_succeeded(&mut self) {
         self.status = SagaStatus::PaymentProcessed;
         self.compensation.payment_processed = true;
     }
 
-    #[digest("SagaCompleted", when = self.status == SagaStatus::PaymentProcessed)]
+    #[event("SagaCompleted", when = self.status == SagaStatus::PaymentProcessed)]
     pub fn complete(&mut self) {
         self.status = SagaStatus::Completed;
     }
 
     // === Failure and Compensation ===
 
-    #[digest("StepFailed", when = !self.is_complete())]
+    #[event("StepFailed", when = !self.is_complete())]
     pub fn step_failed(&mut self, step: String, reason: String) {
         self.status = SagaStatus::Compensating;
         self.failure_reason = Some(format!("{}: {}", step, reason));
     }
 
-    #[digest("InventoryCompensated", when = self.needs_inventory_compensation())]
+    #[event("InventoryCompensated", when = self.needs_inventory_compensation())]
     pub fn inventory_compensated(&mut self) {
         self.compensation.inventory_reserved = false;
     }
 
-    #[digest("PaymentCompensated", when = self.needs_payment_compensation())]
+    #[event("PaymentCompensated", when = self.needs_payment_compensation())]
     pub fn payment_compensated(&mut self) {
         self.compensation.payment_processed = false;
     }
 
-    #[digest("SagaFailed", when = self.status == SagaStatus::Compensating && !self.compensation.inventory_reserved && !self.compensation.payment_processed)]
+    #[event("SagaFailed", when = self.status == SagaStatus::Compensating && !self.compensation.inventory_reserved && !self.compensation.payment_processed)]
     pub fn mark_failed(&mut self) {
         self.status = SagaStatus::Failed;
     }
@@ -165,17 +166,6 @@ impl OrderFulfillmentSaga {
         }
     }
 }
-
-sourced_rust::aggregate!(OrderFulfillmentSaga, entity {
-    "SagaStarted"(saga_id, order_id, customer_id, items, total_cents) => start,
-    "InventoryReservationSucceeded"() => inventory_reserved(),
-    "PaymentSucceeded"() => payment_succeeded(),
-    "SagaCompleted"() => complete(),
-    "StepFailed"(step, reason) => step_failed,
-    "InventoryCompensated"() => inventory_compensated(),
-    "PaymentCompensated"() => payment_compensated(),
-    "SagaFailed"() => mark_failed(),
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrderFulfillmentSagaSnapshot {

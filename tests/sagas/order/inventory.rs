@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 use std::collections::HashMap;
 
 /// Inventory aggregate - tracks stock levels and reservations
@@ -13,6 +13,7 @@ pub struct Inventory {
 }
 
 #[allow(dead_code)]
+#[sourced(entity)]
 impl Inventory {
     pub fn new() -> Self {
         Self::default()
@@ -38,21 +39,21 @@ impl Inventory {
         self.reservations.get(order_id).copied()
     }
 
-    #[digest("InventoryInitialized")]
+    #[event("InventoryInitialized")]
     pub fn initialize(&mut self, sku: String, initial_stock: u32) {
         self.entity.set_id(&sku);
         self.sku = sku;
         self.available = initial_stock;
     }
 
-    #[digest("StockReserved", when = self.can_reserve(quantity))]
+    #[event("StockReserved", when = self.can_reserve(quantity))]
     pub fn reserve(&mut self, order_id: String, quantity: u32) {
         self.available -= quantity;
         self.reserved += quantity;
         self.reservations.insert(order_id, quantity);
     }
 
-    #[digest("ReservationReleased", when = self.reservations.contains_key(&order_id))]
+    #[event("ReservationReleased", when = self.reservations.contains_key(&order_id))]
     pub fn release_reservation(&mut self, order_id: String) {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.available += quantity;
@@ -60,7 +61,7 @@ impl Inventory {
         }
     }
 
-    #[digest("ReservationCommitted", when = self.reservations.contains_key(&order_id))]
+    #[event("ReservationCommitted", when = self.reservations.contains_key(&order_id))]
     pub fn commit_reservation(&mut self, order_id: String) {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.reserved -= quantity;
@@ -77,13 +78,6 @@ impl Inventory {
         }
     }
 }
-
-sourced_rust::aggregate!(Inventory, entity {
-    "InventoryInitialized"(sku, initial_stock) => initialize,
-    "StockReserved"(order_id, quantity) => reserve,
-    "ReservationReleased"(order_id) => release_reservation,
-    "ReservationCommitted"(order_id) => commit_reservation,
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InventorySnapshot {

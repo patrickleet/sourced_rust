@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use sourced_rust::ReadModel;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "checkout_steps", primary_key = ["checkout_id", "step"])]
+#[table("checkout_steps")]
+#[readmodel(primary_key = ["checkout_id", "step"])]
 pub struct CheckoutStepView {
     #[readmodel(
         foreign_key = "checkouts.checkout_id",

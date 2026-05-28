@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity};
+use sourced_rust::{sourced, Entity};
 
 /// Payment status
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +24,7 @@ pub struct Payment {
 }
 
 #[allow(dead_code)]
+#[sourced(entity)]
 impl Payment {
     pub fn new() -> Self {
         Self::default()
@@ -52,7 +53,7 @@ impl Payment {
         self.failure_reason.as_deref()
     }
 
-    #[digest("PaymentInitiated")]
+    #[event("PaymentInitiated")]
     pub fn initiate(&mut self, id: String, order_id: String, amount_cents: u32) {
         self.entity.set_id(&id);
         self.order_id = order_id;
@@ -60,24 +61,24 @@ impl Payment {
         self.status = PaymentStatus::Pending;
     }
 
-    #[digest("PaymentAuthorized", when = self.status == PaymentStatus::Pending)]
+    #[event("PaymentAuthorized", when = self.status == PaymentStatus::Pending)]
     pub fn authorize(&mut self, transaction_id: String) {
         self.status = PaymentStatus::Authorized;
         self.transaction_id = Some(transaction_id);
     }
 
-    #[digest("PaymentCaptured", when = self.status == PaymentStatus::Authorized)]
+    #[event("PaymentCaptured", when = self.status == PaymentStatus::Authorized)]
     pub fn capture(&mut self) {
         self.status = PaymentStatus::Captured;
     }
 
-    #[digest("PaymentFailed", when = self.status == PaymentStatus::Pending || self.status == PaymentStatus::Authorized)]
+    #[event("PaymentFailed", when = self.status == PaymentStatus::Pending || self.status == PaymentStatus::Authorized)]
     pub fn fail(&mut self, reason: String) {
         self.status = PaymentStatus::Failed;
         self.failure_reason = Some(reason);
     }
 
-    #[digest("PaymentRefunded", when = self.status == PaymentStatus::Captured)]
+    #[event("PaymentRefunded", when = self.status == PaymentStatus::Captured)]
     pub fn refund(&mut self) {
         self.status = PaymentStatus::Refunded;
     }
@@ -93,14 +94,6 @@ impl Payment {
         }
     }
 }
-
-sourced_rust::aggregate!(Payment, entity {
-    "PaymentInitiated"(id, order_id, amount_cents) => initiate,
-    "PaymentAuthorized"(transaction_id) => authorize,
-    "PaymentCaptured"() => capture(),
-    "PaymentFailed"(reason) => fail,
-    "PaymentRefunded"() => refund(),
-});
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaymentSnapshot {

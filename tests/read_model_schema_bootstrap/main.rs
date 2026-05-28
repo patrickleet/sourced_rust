@@ -9,9 +9,9 @@ use sourced_rust::{
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "account_summaries")]
+#[table("account_summaries")]
 struct AccountSummary {
-    #[readmodel(id, column = "account_id")]
+    #[id("account_id")]
     account_id: String,
     #[unique]
     owner_slug: String,
@@ -23,9 +23,9 @@ struct AccountSummary {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "players")]
+#[table("players")]
 struct Player {
-    #[readmodel(id, column = "player_id")]
+    #[id("player_id")]
     player_id: String,
     display_name: String,
     #[readmodel(has_many = "PlayerWeapon", foreign_key = "player_id")]
@@ -33,7 +33,8 @@ struct Player {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "player_weapons", primary_key = ["player_id", "weapon_id"])]
+#[table("player_weapons")]
+#[readmodel(primary_key = ["player_id", "weapon_id"])]
 struct PlayerWeapon {
     #[readmodel(foreign_key = "players.player_id", delegated_from = "Player.player_id")]
     player_id: String,

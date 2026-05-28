@@ -3,8 +3,8 @@ mod aggregate;
 use aggregate::Todo;
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    impl_aggregate, Aggregate, AggregateBuilder, Entity, EventRecord, HashMapRepository, Queueable,
-    SnapshotRecord, SnapshotStore, Snapshottable,
+    sourced, Aggregate, AggregateBuilder, Entity, HashMapRepository, Queueable, SnapshotRecord,
+    SnapshotStore, Snapshottable,
 };
 
 #[derive(Default)]
@@ -13,29 +13,16 @@ struct ReplayCounter {
     total: i32,
 }
 
+#[sourced(entity, aggregate_type = "snapshot.replay_counter")]
 impl ReplayCounter {
-    fn add(&mut self, id: &str, amount: i32) {
+    #[event("Added")]
+    fn add(&mut self, id: String, amount: i32) {
         if self.entity.id().is_empty() {
-            self.entity.set_id(id);
+            self.entity.set_id(&id);
         }
-        self.entity.digest("Added", &amount).unwrap();
         self.total += amount;
     }
-
-    fn replay(&mut self, event: &EventRecord) -> Result<(), String> {
-        if event.event_name == "Added" {
-            self.total += event.decode::<i32>().map_err(|err| err.to_string())?;
-        }
-        Ok(())
-    }
 }
-
-impl_aggregate!(
-    ReplayCounter,
-    entity,
-    replay,
-    aggregate_type = "snapshot.replay_counter"
-);
 
 #[derive(Serialize, Deserialize)]
 struct ReplayCounterSnapshot {
@@ -176,7 +163,7 @@ fn snapshot_hydration_replays_every_event_after_snapshot_version() {
         .with_snapshots(100);
 
     let mut counter = ReplayCounter::default();
-    counter.add("counter-1", 10);
+    counter.add("counter-1".into(), 10).unwrap();
     full_replay_repo.commit(&mut counter).unwrap();
 
     let payload = bitcode::serialize(&ReplayCounterSnapshot {
@@ -196,11 +183,11 @@ fn snapshot_hydration_replays_every_event_after_snapshot_version() {
         .unwrap();
 
     let mut counter = snapshot_repo.get("counter-1").unwrap().unwrap();
-    counter.add("counter-1", 5);
+    counter.add("counter-1".into(), 5).unwrap();
     snapshot_repo.commit(&mut counter).unwrap();
 
     let mut counter = snapshot_repo.get("counter-1").unwrap().unwrap();
-    counter.add("counter-1", 7);
+    counter.add("counter-1".into(), 7).unwrap();
     snapshot_repo.commit(&mut counter).unwrap();
 
     let loaded = snapshot_repo.get("counter-1").unwrap().unwrap();

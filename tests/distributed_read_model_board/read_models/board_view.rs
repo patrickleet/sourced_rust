@@ -6,9 +6,9 @@ use super::CardView;
 /// Board header row. `has_many` cards and a `source_version` guard for
 /// out-of-order delivery.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "boards")]
+#[table("boards")]
 pub struct BoardView {
-    #[readmodel(id, column = "board_id")]
+    #[id("board_id")]
     pub board_id: String,
     pub name: String,
     pub source_version: i64,

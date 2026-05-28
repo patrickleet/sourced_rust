@@ -13,9 +13,9 @@ use super::scenario::unique_id;
 use super::seat::Seat;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
-#[readmodel(table = "conformance_seat_views")]
+#[table("conformance_seat_views")]
 struct SeatView {
-    #[readmodel(id)]
+    #[id]
     id: String,
     status: String,
 }
