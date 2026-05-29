@@ -1,5 +1,5 @@
 //! Distributed read-model example: a kanban board projected into normalized
-//! `boards` + `cards` tables.
+//! `boards` + `cards` tables, over the async `InMemoryBus`.
 //!
 //! - the **board service** owns the `Board` aggregate (cards are aggregate
 //!   state) and its outbox;
@@ -14,18 +14,18 @@ mod projections_service;
 mod query_service;
 mod read_models;
 
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
-use projections_service::{start_board_projection_service, wait_for_board};
+use projections_service::{load_board, service as build_projection};
 use query_service::BoardQueryService;
 use read_models::register_schemas;
 use serde::Serialize;
-use sourced_rust::microsvc::{Service, Session};
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable,
+    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    InMemoryReadModelStore, OutboxClaimRef, Queueable,
 };
 
 fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
@@ -42,37 +42,47 @@ where
         .unwrap_or_else(|err| panic!("{command} should dispatch: {err:?}"));
 }
 
-fn wait_for_published_events(queue: &InMemoryQueue, expected_count: usize) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    loop {
-        if queue.len() >= expected_count {
-            return;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for outbox worker to publish events"
-        );
-        thread::sleep(Duration::from_millis(10));
+/// Forward the board's outbox events onto the bus. Board events are fan-out
+/// (`domain_event`, no destination), so each is published as an event for the
+/// projection's `subscribe` to drain. Payload bytes are forwarded verbatim
+/// (bitcode), and the projection decodes them with `BitcodePayloadCodec`.
+async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) {
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "board-outbox-bridge",
+            64,
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("outbox claim should succeed");
+    for message in claimed {
+        bus.publish_message(
+            Message::new(
+                message.event_type.clone(),
+                MessageKind::Event,
+                message.payload.clone(),
+            )
+            .with_id(message.id().to_string()),
+        )
+        .await
+        .expect("board event should publish to the bus");
+        let claim = OutboxClaimRef::from_message(&message).expect("claimed message yields a ref");
+        outbox
+            .complete_async(&claim)
+            .await
+            .expect("forwarded event should complete");
     }
 }
 
-#[test]
-fn board_service_feeds_a_normalized_card_read_model() {
-    let queue = InMemoryQueue::new();
-
+#[tokio::test]
+async fn board_service_feeds_a_normalized_card_read_model() {
     let board_store = HashMapRepository::new();
-    let board_service = board_service::model_service(board_store.clone().queued().aggregate());
-    let worker = OutboxWorkerThread::spawn(
-        board_store.outbox_store(),
-        queue.clone(),
-        Duration::from_millis(5),
-    );
+    let board_outbox = board_store.outbox_store();
+    let board_service = board_service::model_service(board_store.queued().aggregate());
 
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
-    let projection = start_board_projection_service(queue.clone(), read_store.clone());
+    let projection = build_projection(read_store.clone());
     let query_service = BoardQueryService::new(read_store.clone());
 
     dispatch(
@@ -125,11 +135,17 @@ fn board_service_feeds_a_normalized_card_read_model() {
         },
     );
 
-    wait_for_published_events(&queue, 5);
+    // Forward the board's outbox events onto the bus, then drain them into the
+    // projection in one pass. The projection's monotonic `source_version` guard
+    // makes the per-event-type drain order-independent (the highest version
+    // wins), so the final board reflects every processed event.
+    let bus = InMemoryBus::new();
+    publish_pending_outbox(&board_outbox, &bus).await;
+    bus.subscribe(projection, RunOptions::idempotent())
+        .await
+        .expect("projection should drain the board events");
 
-    let board = wait_for_board(&read_store, "board-1", |board| {
-        board.cards.len() == 1 && board.cards[0].column == "doing"
-    });
+    let board = load_board(&read_store, "board-1").expect("board should be projected");
 
     assert_eq!(board.name, "Roadmap");
     assert_eq!(board.cards.len(), 1, "removed card should be deleted");
@@ -170,10 +186,4 @@ fn board_service_feeds_a_normalized_card_read_model() {
         .expect("write-side load should succeed")
         .expect("write-side board should exist");
     assert_eq!(write_side.cards.len(), 1);
-
-    projection
-        .stop()
-        .expect("projection service should stop cleanly");
-    let stats = worker.stop().expect("worker should stop cleanly");
-    assert!(stats.messages_published >= 5);
 }
