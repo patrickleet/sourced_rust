@@ -113,17 +113,18 @@ pub use queued_repo::{
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    ColumnDef, ColumnType, DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore,
-    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
-    ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
-    ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
-    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,
-    ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder,
-    ReadModelWritePlanStore, RelationalReadModel, RelationalReadModelIncludes,
-    RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowMutation,
-    RowPatch, RowValue, RowValues, RowWriteMode, Versioned, DEFAULT_READ_MODEL_VERSION_COLUMN,
+    AsyncReadModelLoadBuilder, AsyncReadModelWorkspaceExt, ColumnDef, ColumnType,
+    DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore, IndexDef, PatchMode,
+    PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelMigrationArtifact, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
+    ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap,
+    ReadModelSchemaIssue, ReadModelSchemaIssueKind, ReadModelSchemaRegistry,
+    ReadModelSchemaVerification, ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan,
+    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
+    RelationalReadModelIncludes, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind,
+    RowKey, RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
+    DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 
 // Neutral table/row primitives shared by read models and operational tables.
