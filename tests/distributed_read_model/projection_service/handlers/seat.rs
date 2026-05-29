@@ -13,12 +13,9 @@ pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
-    let event = super::event(ctx)?;
-
-    match event.event_type.as_str() {
+    match ctx.message().name() {
         seat_event::ADDED => {
-            let msg: SeatAdded = event
-                .json_decode()
+            let msg: SeatAdded = serde_json::from_slice(ctx.message().payload())
                 .map_err(|err| HandlerError::DecodeFailed(format!("seat added: {err}")))?;
             let row = SeatView {
                 seat_id: msg.seat_id,
@@ -32,8 +29,7 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
             workspace.commit().map_err(super::read_model_error)?;
         }
         seat_event::RESERVED => {
-            let msg: SeatReserved = event
-                .json_decode()
+            let msg: SeatReserved = serde_json::from_slice(ctx.message().payload())
                 .map_err(|err| HandlerError::DecodeFailed(format!("seat reserved: {err}")))?;
             let seat = SeatView {
                 seat_id: msg.seat_id.clone(),
@@ -55,5 +51,5 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
         other => return Err(HandlerError::UnknownCommand(other.to_string())),
     }
 
-    Ok(json!({ "event_id": event.id }))
+    Ok(json!({ "event_id": ctx.message().id() }))
 }

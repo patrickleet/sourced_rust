@@ -4,9 +4,8 @@
 //! snapshots under out-of-order delivery.
 
 use serde_json::{json, Value};
-use sourced_rust::bus::Event;
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::ReadModelWorkspaceExt;
+use sourced_rust::{BitcodePayloadCodec, PayloadCodec, ReadModelWorkspaceExt};
 
 use crate::board_service::BoardSnapshot;
 use crate::projections_service::{read_model_error, ProjectionDependencies};
@@ -24,11 +23,13 @@ pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
-    let event = super::event(ctx)?;
-    let snapshot: BoardSnapshot = event
-        .decode()
+    let message_id = ctx
+        .message()
+        .id()
+        .ok_or_else(|| HandlerError::DecodeFailed("board projection message has no id".into()))?;
+    let snapshot: BoardSnapshot = BitcodePayloadCodec::decode(ctx.message().payload())
         .map_err(|err| HandlerError::DecodeFailed(format!("board snapshot: {err}")))?;
-    let version = event_version(&event);
+    let version = event_version(message_id);
     let updated_view = updated_board_view(&snapshot, version);
 
     let mut workspace = ctx.read_model_store().workspace();
@@ -53,7 +54,7 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
 
     workspace.commit().map_err(read_model_error)?;
 
-    Ok(json!({ "event_id": event.id }))
+    Ok(json!({ "event_id": message_id }))
 }
 
 fn updated_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
@@ -83,10 +84,8 @@ fn updated_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
 
 /// The aggregate version is the trailing segment of the outbox event id
 /// (`<aggregate-id>:<event-type>:<version>`).
-fn event_version(event: &Event) -> i64 {
-    event
-        .id
-        .rsplit(':')
+fn event_version(id: &str) -> i64 {
+    id.rsplit(':')
         .next()
         .expect("board projection event id should include a version segment")
         .parse()
@@ -99,10 +98,7 @@ mod tests {
 
     #[test]
     fn event_version_parses_trailing_outbox_segment() {
-        let event =
-            Event::with_string_payload("board-1:board.card_added:42", "board.card_added", "{}");
-
-        assert_eq!(event_version(&event), 42);
+        assert_eq!(event_version("board-1:board.card_added:42"), 42);
     }
 
     #[test]
@@ -110,9 +106,6 @@ mod tests {
         expected = "board projection event id should end with a numeric aggregate version"
     )]
     fn event_version_panics_on_malformed_outbox_segment() {
-        let event =
-            Event::with_string_payload("board-1:board.card_added:bad", "board.card_added", "{}");
-
-        event_version(&event);
+        event_version("board-1:board.card_added:bad");
     }
 }
