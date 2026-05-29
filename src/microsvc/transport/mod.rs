@@ -82,6 +82,7 @@ mod capabilities;
 mod error;
 mod failure_policy;
 mod outbox_dispatch;
+mod outbox_source;
 mod publisher;
 mod run_options;
 mod runner;
@@ -92,6 +93,9 @@ pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabil
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
 pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
+pub use outbox_source::{
+    OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
+};
 pub use publisher::AsyncMessagePublisher;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;

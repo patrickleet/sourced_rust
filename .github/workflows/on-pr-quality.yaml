@@ -42,4 +42,5 @@ jobs:
         run: |
           cargo test --test postgres_repository --all-features --verbose
           cargo test --test postgres_repository_conformance --all-features --verbose
+          cargo test --test postgres_transport --all-features --verbose
           cargo test --test distributed_read_model --all-features --verbose
