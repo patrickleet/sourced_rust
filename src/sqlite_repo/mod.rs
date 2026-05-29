@@ -432,41 +432,57 @@ impl AsyncOutboxStore for SqliteOutboxStore {
                     repository_storage_error("begin outbox claim transaction", err)
                 })?;
 
-            let limit = sqlx_repository_i64_from_u64(
-                SQLITE_BACKEND,
-                request.batch_size as u64,
-                "outbox claim limit",
-                SIGNED_INTEGER_STORAGE,
-            )?;
-            let candidate_rows = sqlx::query(
-                r#"
-                SELECT message_id
-                FROM outbox_messages
-                WHERE (
-                    (status = ? AND CAST(next_available_at AS REAL) <= ?)
-                    OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
+            // Explicit ids (after-commit immediate dispatch) bypass the ordered
+            // candidate scan; the per-id conditional UPDATE below still enforces
+            // claimability and destination, so raced/unclaimable ids are skipped.
+            let candidate_ids: Vec<String> = if let Some(ids) = request.message_ids.clone() {
+                ids
+            } else {
+                let limit = sqlx_repository_i64_from_u64(
+                    SQLITE_BACKEND,
+                    request.batch_size as u64,
+                    "outbox claim limit",
+                    SIGNED_INTEGER_STORAGE,
+                )?;
+                let candidate_rows = sqlx::query(
+                    r#"
+                    SELECT message_id
+                    FROM outbox_messages
+                    WHERE (
+                        (status = ? AND CAST(next_available_at AS REAL) <= ?)
+                        OR (status = ? AND (claimed_until IS NULL OR CAST(claimed_until AS REAL) <= ?))
+                    )
+                      AND (? IS NULL OR destination = ?)
+                    ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
+                    LIMIT ?
+                    "#,
                 )
-                  AND (? IS NULL OR destination = ?)
-                ORDER BY CAST(created_at AS REAL) ASC, message_id ASC
-                LIMIT ?
-                "#,
-            )
-            .bind(OutboxMessageStatus::Pending.as_str())
-            .bind(now_epoch)
-            .bind(OutboxMessageStatus::InFlight.as_str())
-            .bind(now_epoch)
-            .bind(request.destination.as_deref())
-            .bind(request.destination.as_deref())
-            .bind(limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|err| repository_storage_error("select claimable outbox messages", err))?;
+                .bind(OutboxMessageStatus::Pending.as_str())
+                .bind(now_epoch)
+                .bind(OutboxMessageStatus::InFlight.as_str())
+                .bind(now_epoch)
+                .bind(request.destination.as_deref())
+                .bind(request.destination.as_deref())
+                .bind(limit)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|err| {
+                    repository_storage_error("select claimable outbox messages", err)
+                })?;
+                let mut ids = Vec::with_capacity(candidate_rows.len());
+                for row in candidate_rows {
+                    ids.push(row.try_get::<String, _>("message_id").map_err(|err| {
+                        repository_storage_error("decode outbox message id row", err)
+                    })?);
+                }
+                ids
+            };
 
             let mut claimed = Vec::new();
-            for row in candidate_rows {
-                let message_id: String = row
-                    .try_get("message_id")
-                    .map_err(|err| repository_storage_error("decode outbox message id row", err))?;
+            for message_id in candidate_ids {
+                if claimed.len() >= request.batch_size {
+                    break;
+                }
                 let result = sqlx::query(
                     r#"
                     UPDATE outbox_messages

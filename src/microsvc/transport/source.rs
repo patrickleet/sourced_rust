@@ -1,0 +1,82 @@
+//! Direct-transport receive traits.
+//!
+//! A direct broker client (Postgres, RabbitMQ, Kafka, NATS, or the in-memory
+//! dev/test adapter) pulls messages with [`AsyncMessageSource`] and settles each
+//! one through [`ReceivedMessage`]. The [`run_source`](super::run_source) runner
+//! drives that loop: it dispatches through `Service::dispatch_message` and only
+//! then asks the adapter to acknowledge.
+//!
+//! These are the *direct* receive shape. Knative / HTTP CloudEvents is a
+//! separate ingress shape (the platform invokes an endpoint; there is no local
+//! poll loop) and is intentionally not modeled through this trait.
+
+use std::future::Future;
+
+use super::{Message, TransportError};
+
+/// A transport a runner can pull messages from, one at a time.
+///
+/// `recv` resolves to:
+/// - `Ok(Some(received))` — a message to dispatch and then settle;
+/// - `Ok(None)` — the source is drained/closed; the runner stops **gracefully**
+///   (this is the shutdown signal — an adapter wires its own stop into `recv`);
+/// - `Err(e)` — a transport-level receive failure, surfaced by the runner rather
+///   than swallowed.
+///
+/// The future is `Send` so the runner can be driven on multi-threaded executors.
+pub trait AsyncMessageSource: Send {
+    /// The settle handle for a received message.
+    type Received: ReceivedMessage;
+
+    /// Receive the next message, if any.
+    fn recv(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<Self::Received>, TransportError>> + Send + '_;
+}
+
+/// A message received from a transport, plus the means to settle it.
+///
+/// Settlement consumes the value so a message can be settled exactly once. `ack`
+/// and `nack` are the universal primitives every transport supports; an adapter
+/// maps them to its native operation (a row completion, a delivery ack, an
+/// offset commit, a stream ack, …). `dead_letter` and `park` default to `nack`
+/// so a message is never silently dropped; adapters with native dead-letter or
+/// parking support should override them.
+pub trait ReceivedMessage: Send {
+    /// The canonical message to dispatch.
+    fn message(&self) -> &Message;
+
+    /// Acknowledge successful handling. The transport removes the message.
+    ///
+    /// The runner calls this only after consumer execution has succeeded (and,
+    /// in inbox mode, after the inbox receipt has committed).
+    fn ack(self) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Negatively acknowledge so the transport redelivers the message later.
+    fn nack(self, reason: &str) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Route the message to a dead-letter destination.
+    ///
+    /// Defaults to [`nack`](ReceivedMessage::nack): an adapter without a native
+    /// dead-letter destination keeps the message redeliverable rather than
+    /// dropping it, so a `DeadLetter` policy degrades to redelivery until the
+    /// adapter implements real dead-lettering.
+    fn dead_letter(self, reason: &str) -> impl Future<Output = Result<(), TransportError>> + Send
+    where
+        Self: Sized,
+    {
+        self.nack(reason)
+    }
+
+    /// Hold the message for manual intervention without acking or redelivering.
+    ///
+    /// Defaults to [`nack`](ReceivedMessage::nack) for adapters without native
+    /// parking; such adapters keep the message redeliverable rather than
+    /// dropping it.
+    fn park(self, reason: &str) -> impl Future<Output = Result<(), TransportError>> + Send
+    where
+        Self: Sized,
+    {
+        self.nack(reason)
+    }
+}

@@ -58,6 +58,7 @@ mod dependencies;
 mod error;
 mod service;
 mod session;
+pub mod transport;
 
 pub use context::Context;
 pub use dependencies::{

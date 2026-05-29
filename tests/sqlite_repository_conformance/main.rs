@@ -82,3 +82,13 @@ async fn worker_claim_complete_and_retry_lifecycle() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn worker_claim_by_ids_claims_only_requested() {
+    let repo = repository().await;
+    conformance::outbox::worker_claim_by_ids_claims_only_requested(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
+}
