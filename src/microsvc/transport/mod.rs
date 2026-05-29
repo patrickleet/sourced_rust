@@ -84,6 +84,8 @@ use crate::microsvc::Message;
 mod capabilities;
 mod error;
 mod failure_policy;
+#[cfg(feature = "http")]
+mod knative;
 #[cfg(feature = "nats")]
 mod nats;
 mod outbox_dispatch;
@@ -96,6 +98,8 @@ mod runner;
 mod source;
 mod stable_id;
 
+#[cfg(feature = "http")]
+pub use knative::{cloud_events_router, knative_triggers};
 #[cfg(feature = "nats")]
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "rabbitmq")]
