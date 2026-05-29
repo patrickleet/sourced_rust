@@ -72,7 +72,9 @@ pub(super) fn message_properties(message: &Message) -> BasicProperties {
             AMQPValue::LongString(value.as_str().into()),
         );
     }
-    let mut properties = BasicProperties::default().with_headers(headers);
+    let mut properties = BasicProperties::default()
+        .with_headers(headers)
+        .with_content_type(ShortString::from(message.content_type.as_str()));
     if let Some(id) = message.id() {
         properties = properties.with_message_id(ShortString::from(id));
     }
@@ -189,6 +191,11 @@ impl RabbitReceived {
         let mut message = Message::new(name, kind, payload);
         message.id = id;
         message.metadata = metadata;
+        // Preserve the publisher's content type instead of the Message::new
+        // default, so non-JSON payloads survive the round-trip.
+        if let Some(content_type) = delivery.properties.content_type().as_ref() {
+            message.content_type = content_type.to_string();
+        }
         Self { delivery, message }
     }
 }

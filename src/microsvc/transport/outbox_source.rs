@@ -59,13 +59,29 @@ where
     }
 
     /// Set the claim lease / visibility timeout.
+    ///
+    /// # Panics
+    /// Panics if `lease` is zero: a zero lease makes a claimed row immediately
+    /// re-claimable by competing workers, defeating the lease.
     pub fn with_lease(mut self, lease: Duration) -> Self {
+        assert!(
+            !lease.is_zero(),
+            "OutboxSource lease must be greater than zero"
+        );
         self.lease = lease;
         self
     }
 
     /// Set how many rows are claimed per refill.
+    ///
+    /// # Panics
+    /// Panics if `batch_size` is zero: a zero batch claims nothing, so `recv`
+    /// would return `Ok(None)` forever even when rows are pending.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        assert!(
+            batch_size > 0,
+            "OutboxSource batch_size must be greater than zero"
+        );
         self.batch_size = batch_size;
         self
     }
@@ -214,6 +230,20 @@ mod tests {
 
     fn source(repo: &HashMapRepository) -> OutboxSource<crate::HashMapOutboxStore> {
         OutboxSource::new(Arc::new(repo.outbox_store()), "pg-transport", 3)
+    }
+
+    #[test]
+    #[should_panic(expected = "lease must be greater than zero")]
+    fn with_lease_zero_panics() {
+        let repo = HashMapRepository::new();
+        let _ = source(&repo).with_lease(Duration::ZERO);
+    }
+
+    #[test]
+    #[should_panic(expected = "batch_size must be greater than zero")]
+    fn with_batch_size_zero_panics() {
+        let repo = HashMapRepository::new();
+        let _ = source(&repo).with_batch_size(0);
     }
 
     #[test]
