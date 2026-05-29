@@ -100,6 +100,8 @@ mod outbox_source;
 mod postgres_bus;
 mod publisher;
 #[cfg(feature = "rabbitmq")]
+mod rabbit_bus;
+#[cfg(feature = "rabbitmq")]
 mod rabbitmq;
 mod run_options;
 mod runner;
@@ -114,6 +116,8 @@ pub use knative::{cloud_events_router, knative_triggers};
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "nats")]
 pub use nats_bus::NatsBus;
+#[cfg(feature = "rabbitmq")]
+pub use rabbit_bus::RabbitBus;
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
