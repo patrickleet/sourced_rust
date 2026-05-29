@@ -85,3 +85,15 @@ CREATE INDEX IF NOT EXISTS outbox_messages_source_idx
 
 CREATE INDEX IF NOT EXISTS outbox_messages_destination_idx
   ON outbox_messages (destination, status, created_at);
+
+-- Consumer inbox: optional effectively-once effect fence (the consumer-side
+-- complement to the outbox). A receipt is written in the same transaction as the
+-- consumer's other writes, so a duplicate (consumer, message_id) is a no-op replay.
+CREATE TABLE IF NOT EXISTS consumer_inbox (
+  consumer TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (consumer, message_id),
+  CHECK (consumer <> ''),
+  CHECK (message_id <> '')
+);

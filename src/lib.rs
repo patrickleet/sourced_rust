@@ -39,7 +39,7 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
     Gettable, InboxOutcome, InboxReceipt, PreparedEventAppend, Repository, RepositoryError,

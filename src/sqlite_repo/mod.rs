@@ -31,9 +31,9 @@ use crate::read_model::{
     RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite,
-    AsyncTransactionalCommit, PreparedEventAppend, RepositoryError, StreamIdentity,
+    AsyncTransactionalCommit, InboxReceipt, PreparedEventAppend, RepositoryError, StreamIdentity,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -307,6 +307,10 @@ impl AsyncTransactionalCommit for SqliteRepository {
                 }
             }
 
+            for receipt in &batch.inbox_receipts {
+                insert_inbox_receipt_in_tx(&mut tx, receipt).await?;
+            }
+
             tx.commit()
                 .await
                 .map_err(|err| repository_storage_error("commit transaction", err))?;
@@ -316,6 +320,26 @@ impl AsyncTransactionalCommit for SqliteRepository {
             }
 
             Ok(())
+        }
+    }
+}
+
+impl AsyncInboxStore for SqliteRepository {
+    fn inbox_contains_async<'a>(
+        &'a self,
+        consumer: &'a str,
+        message_id: &'a str,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
+        async move {
+            let row = sqlx::query(
+                "SELECT 1 FROM consumer_inbox WHERE consumer = ? AND message_id = ? LIMIT 1",
+            )
+            .bind(consumer)
+            .bind(message_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("query consumer inbox", err))?;
+            Ok(row.is_some())
         }
     }
 }
@@ -881,6 +905,34 @@ fn empty_string_as_none(value: &str) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+/// Record a consumer inbox receipt in the commit transaction. The
+/// `(consumer, message_id)` primary key is the dedupe gate: a unique violation
+/// means the message was already processed, so the whole batch rolls back and the
+/// effects are not double-applied. `processed_at` defaults to `CURRENT_TIMESTAMP`.
+async fn insert_inbox_receipt_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    receipt: &InboxReceipt,
+) -> Result<(), RepositoryError> {
+    let result = sqlx::query("INSERT INTO consumer_inbox (consumer, message_id) VALUES (?, ?)")
+        .bind(&receipt.consumer)
+        .bind(&receipt.message_id)
+        .execute(&mut **tx)
+        .await;
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if is_sqlite_unique_constraint(&err) => {
+            Err(RepositoryError::DuplicateInboxReceipt {
+                consumer: receipt.consumer.clone(),
+                message_id: receipt.message_id.clone(),
+            })
+        }
+        Err(err) => Err(repository_storage_error(
+            "insert consumer inbox receipt",
+            err,
+        )),
     }
 }
 

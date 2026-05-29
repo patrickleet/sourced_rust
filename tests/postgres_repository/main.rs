@@ -9,11 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository, ReadModel,
-    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    StreamIdentity, TableSchemaRegistry,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncInboxStore,
+    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, InboxReceipt, OutboxMessageStatus, PostgresRepository,
+    ReadModel, ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue,
+    SnapshotRecord, StreamIdentity, TableSchemaRegistry,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -73,6 +73,45 @@ fn unique_id(prefix: &str) -> String {
         .as_nanos();
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{nanos}-{id}")
+}
+
+fn inbox_batch(receipts: Vec<InboxReceipt>) -> AsyncCommitBatch<'static> {
+    let mut batch = AsyncCommitBatch::new(Vec::new());
+    batch.inbox_receipts = receipts;
+    batch
+}
+
+#[tokio::test]
+async fn consumer_inbox_records_dedupes_and_fences_atomically() {
+    let Some((_schema, repo)) = repository().await else {
+        return;
+    };
+    let c = unique_id("consumer");
+    let m1 = unique_id("m1");
+    let m2 = unique_id("m2");
+
+    assert!(!repo.inbox_contains_async(&c, &m1).await.unwrap());
+    repo.commit_batch_async(inbox_batch(vec![InboxReceipt::new(&c, &m1)]))
+        .await
+        .unwrap();
+    assert!(repo.inbox_contains_async(&c, &m1).await.unwrap());
+
+    // Duplicate receipt (m1) alongside a fresh one (m2) rolls the whole batch back.
+    let err = repo
+        .commit_batch_async(inbox_batch(vec![
+            InboxReceipt::new(&c, &m1),
+            InboxReceipt::new(&c, &m2),
+        ]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RepositoryError::DuplicateInboxReceipt { ref message_id, .. } if *message_id == m1),
+        "duplicate receipt surfaces a typed error, got {err:?}"
+    );
+    assert!(
+        !repo.inbox_contains_async(&c, &m2).await.unwrap(),
+        "m2 must not be recorded — the duplicate rolled the whole batch back"
+    );
 }
 
 async fn bootstrap_relational_counter_table(repo: &PostgresRepository) {
@@ -210,6 +249,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
         StreamIdentity::new(CounterProjection::aggregate_type(), &other_id).unwrap();
     let err = repo
         .commit_batch_async(AsyncCommitBatch {
+            inbox_receipts: Vec::new(),
             streams: vec![
                 AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
                 AsyncStreamWrite::new(other_identity.clone(), other.entity_mut()),

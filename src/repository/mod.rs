@@ -7,7 +7,7 @@ mod inbox;
 mod repository;
 
 pub use async_repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, PreparedEventAppend,
 };
