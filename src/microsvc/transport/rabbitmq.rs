@@ -28,7 +28,7 @@ fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
     TransportError::retryable(format!("{context}: {err}"))
 }
 
-async fn connect_channel(uri: &str) -> Result<Channel, TransportError> {
+pub(super) async fn connect_channel(uri: &str) -> Result<Channel, TransportError> {
     let connection = Connection::connect(uri, ConnectionProperties::default())
         .await
         .map_err(|err| retryable("amqp connect", err))?;
@@ -60,7 +60,7 @@ impl RabbitPublisher {
     }
 }
 
-fn message_properties(message: &Message) -> BasicProperties {
+pub(super) fn message_properties(message: &Message) -> BasicProperties {
     let mut headers = FieldTable::default();
     headers.insert(
         ShortString::from(MESSAGE_KIND_HEADER),
@@ -158,6 +158,15 @@ pub struct RabbitReceived {
 
 impl RabbitReceived {
     fn from_delivery(delivery: Delivery, queue: String) -> Self {
+        // The standalone source consumes a queue named for the message, so the
+        // queue name is the routed message name.
+        Self::from_delivery_with_name(delivery, queue)
+    }
+
+    /// Build from a delivery with an explicitly resolved message name. Used by
+    /// [`RabbitBus`](super::RabbitBus), which derives the name from the routing
+    /// key (stripping its `{ns}.cmd.` prefix for commands) rather than the queue.
+    pub(super) fn from_delivery_with_name(delivery: Delivery, name: String) -> Self {
         let payload = delivery.data.clone();
         let id = delivery
             .properties
@@ -177,8 +186,7 @@ impl RabbitReceived {
                 }
             }
         }
-        // The queue name is the routed message name.
-        let mut message = Message::new(queue, kind, payload);
+        let mut message = Message::new(name, kind, payload);
         message.id = id;
         message.metadata = metadata;
         Self { delivery, message }
