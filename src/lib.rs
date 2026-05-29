@@ -59,7 +59,10 @@ pub use postgres_repo::{PostgresOutboxStore, PostgresRepository};
 pub use sqlite_repo::{SqliteOutboxStore, SqliteRepository};
 
 // Re-export lock traits and types at crate root for convenience
-pub use lock::{InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager};
+pub use lock::{
+    AsyncLock, AsyncLockManager, InMemoryAsyncLock, InMemoryAsyncLockFuture,
+    InMemoryAsyncLockManager, InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager,
+};
 
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
@@ -102,6 +105,10 @@ pub use bus::Message;
 pub use outbox_worker::LocalEmitterPublisher;
 
 pub use queued_repo::{
+    // Async WithOpts + unlock traits (async lock manager variant)
+    AsyncGetAllWithOpts,
+    AsyncGetWithOpts,
+    AsyncUnlockableRepository,
     // WithOpts traits for opting out of locking
     GetAllWithOpts,
     GetWithOpts,
@@ -109,6 +116,7 @@ pub use queued_repo::{
     Queueable,
     QueuedRepository,
     ReadOpts,
+    UnlockableRepository,
 };
 
 // Read models: projections and read-optimized views
