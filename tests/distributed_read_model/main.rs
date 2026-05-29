@@ -24,8 +24,7 @@ mod read_models;
 mod seat_inventory_service;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use checkout::{
@@ -44,14 +43,10 @@ use read_models::{register_schemas, CheckoutView};
 use read_models::{CheckoutStepView, SeatView};
 use seat_inventory_service::Seat;
 use serde::Serialize;
-use sourced_rust::bus::Subscribable;
-use sourced_rust::microsvc::{self, Service, Session};
+use sourced_rust::microsvc::{Service, Session};
 #[cfg(feature = "sqlite")]
 use sourced_rust::SqliteRepository;
-use sourced_rust::{
-    AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
-    Queueable,
-};
+use sourced_rust::{AggregateBuilder, HashMapRepository, InMemoryReadModelStore, Queueable};
 use sourced_rust::{
     AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
     AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
@@ -71,31 +66,6 @@ where
             Session::new(),
         )
         .unwrap_or_else(|err| panic!("{command} should dispatch: {err:?}"));
-}
-
-fn wait_for_checkout_state(
-    query: &CheckoutQueryService,
-    checkout_id: &str,
-    ready: impl Fn(&CheckoutView) -> bool,
-) -> CheckoutView {
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    loop {
-        if let Some(checkout) = query
-            .checkout_screen(checkout_id)
-            .expect("query should succeed")
-        {
-            if ready(&checkout) {
-                return checkout;
-            }
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for checkout {checkout_id}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
 }
 
 static NEXT_ASYNC_FLOW_ID: AtomicU64 = AtomicU64::new(1);
@@ -490,29 +460,61 @@ where
         .map(|root| SeatView::from_row(root.data).expect("seat row should hydrate")))
 }
 
-#[test]
-fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
-    let queue = InMemoryQueue::new();
-    let poll = Duration::from_millis(5);
+/// Bridge a HashMap-backed service's pending outbox onto the async bus — the
+/// new-transport equivalent of the old `OutboxWorkerThread`: claim → publish →
+/// complete, so each event is forwarded exactly once.
+async fn publish_pending_outbox(
+    outbox: &sourced_rust::HashMapOutboxStore,
+    bus: &sourced_rust::microsvc::transport::InMemoryBus,
+) {
+    let claimed = outbox
+        .claim_async(sourced_rust::ClaimOutboxMessages::new(
+            "matrix-outbox-bridge",
+            64,
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("outbox claim should succeed");
+    for message in claimed {
+        let bus_message = Message::new(
+            message.event_type.clone(),
+            MessageKind::Event,
+            message.payload.clone(),
+        )
+        .with_id(message.id().to_string());
+        bus.publish_message(bus_message)
+            .await
+            .expect("outbox event should publish to the bus");
+        let claim = sourced_rust::OutboxClaimRef::from_message(&message)
+            .expect("claimed message should yield a claim ref");
+        outbox
+            .complete_async(&claim)
+            .await
+            .expect("forwarded outbox message should complete");
+    }
+}
+
+/// The original gold-standard choreography, now driven over the async
+/// `InMemoryBus` instead of the legacy `InMemoryQueue` / `OutboxWorkerThread` /
+/// `bus::Subscribable` wiring. Same services, same projection + query, same
+/// assertions — only the transport changed.
+#[tokio::test]
+async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
+    use sourced_rust::microsvc::transport::InMemoryBus;
 
     let checkout_store = HashMapRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
-    let checkout_worker =
-        OutboxWorkerThread::spawn(checkout_store.outbox_store(), queue.clone(), poll);
-    let checkout_sub = microsvc::subscribe(checkout_service.clone(), queue.new_subscriber(), poll);
-
     let seat_store = HashMapRepository::new();
     let seat_service = seat_inventory_service::service(seat_store.clone().queued().aggregate());
-    let seat_worker = OutboxWorkerThread::spawn(seat_store.outbox_store(), queue.clone(), poll);
-    let seat_sub = microsvc::subscribe(seat_service.clone(), queue.new_subscriber(), poll);
-
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
     let projection_svc = projection_service(read_store.clone());
-    let projection_sub = microsvc::subscribe(projection_svc.clone(), queue.new_subscriber(), poll);
     let query_service = CheckoutQueryService::new(read_store.clone());
 
+    let bus = InMemoryBus::new();
+
+    // Commands: add the seat, start the checkout (each writes its own outbox).
     dispatch(
         &seat_service,
         seat_command::ADD,
@@ -521,7 +523,6 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
             category: "balcony".to_string(),
         },
     );
-
     dispatch(
         &checkout_service,
         checkout_command::START,
@@ -532,16 +533,39 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         },
     );
 
-    let checkout = wait_for_checkout_state(&query_service, "checkout-1", |checkout| {
-        checkout.status == CHECKOUT_SEAT_RESERVED
-            && checkout
-                .seat
-                .as_ref()
-                .is_some_and(|seat| seat.status == SEAT_RESERVED)
-    });
+    // Hop 1: SeatAdded + CheckoutStarted reach the bus; the projection records the
+    // opening state and the seat service reacts to the checkout by reserving.
+    publish_pending_outbox(&seat_store.outbox_store(), &bus).await;
+    publish_pending_outbox(&checkout_store.outbox_store(), &bus).await;
+    bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
+        .await
+        .expect("projection drains the opening events");
+    bus.subscribe(seat_service.clone(), RunOptions::idempotent())
+        .await
+        .expect("seat service reacts to the started checkout");
 
+    // Hop 2: SeatReserved reaches the bus; the saga records it; projection updates.
+    publish_pending_outbox(&seat_store.outbox_store(), &bus).await;
+    bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
+        .await
+        .expect("projection drains the reservation");
+    bus.subscribe(checkout_service.clone(), RunOptions::idempotent())
+        .await
+        .expect("saga records the seat reservation");
+
+    // Hop 3: SeatReservationCompleted reaches the bus; the projection finalizes.
+    publish_pending_outbox(&checkout_store.outbox_store(), &bus).await;
+    bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
+        .await
+        .expect("projection drains the completion");
+
+    let checkout = query_service
+        .checkout_screen("checkout-1")
+        .expect("checkout query should succeed")
+        .expect("checkout should be projected");
     assert_eq!(checkout.seat_id, "A-7");
     assert_eq!(checkout.seat_category, "balcony");
+    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
     assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
     assert_eq!(
         checkout
@@ -589,12 +613,6 @@ fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         .unwrap();
     assert_eq!(seat.status, SEAT_RESERVED);
     assert_eq!(seat.checkout_id, "checkout-1");
-
-    let _ = checkout_sub.stop();
-    let _ = seat_sub.stop();
-    let _ = projection_sub.stop();
-    let _ = checkout_worker.stop();
-    let _ = seat_worker.stop();
 }
 
 #[cfg(feature = "sqlite")]
@@ -930,14 +948,12 @@ fn matrix_ids(tag: &str) -> AsyncFlowIds {
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_in_memory_bus() {
     use sourced_rust::microsvc::transport::InMemoryBus;
-    let repo = HashMapRepository::new();
-    register_schemas(repo.model_store()).expect("read-model schemas should register");
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         InMemoryBus::new(),
         collector,
         collected,
-        repo,
+        inmem_matrix_repo(),
         matrix_ids("inmem-inmem"),
     )
     .await;
@@ -1269,4 +1285,133 @@ async fn matrix_postgres_persistence_over_in_memory_bus() {
         matrix_ids("pg-inmem"),
     )
     .await;
+}
+
+// ---- Remaining matrix cells: Postgres persistence + Postgres-bus pairings ----
+
+#[cfg(feature = "postgres")]
+async fn postgres_matrix_repo() -> Option<(
+    postgres::PostgresTestSchema,
+    sourced_rust::PostgresRepository,
+)> {
+    let schema = postgres::PostgresTestSchema::create_from_env(
+        "matrix_pg",
+        "skipping Postgres-persistence matrix cell",
+    )
+    .await?;
+    let repo = schema.repository().await;
+    let registry = read_models::table_schema_registry().expect("schemas should build");
+    repo.bootstrap_table_schema_for_dev(&registry)
+        .await
+        .expect("read-model schema should bootstrap");
+    Some((schema, repo))
+}
+
+#[cfg(feature = "postgres")]
+async fn postgres_matrix_bus() -> Option<sourced_rust::microsvc::transport::PostgresBus> {
+    use sourced_rust::microsvc::transport::PostgresBus;
+    let schema = postgres::PostgresTestSchema::create_from_env(
+        "matrix_pgbus",
+        "skipping Postgres-bus matrix cell",
+    )
+    .await?;
+    let bus = PostgresBus::new(schema.repository().await.pool().clone(), "matrix");
+    bus.ensure_tables().await.expect("postgres bus tables");
+    // The schema has no Drop, so the bus's tables outlive this fixture.
+    Some(bus)
+}
+
+#[cfg(all(feature = "postgres", feature = "sqlite"))]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_postgres_bus() {
+    let Some(bus) = postgres_matrix_bus().await else {
+        return;
+    };
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        bus,
+        collector,
+        collected,
+        sqlite_matrix_repo().await,
+        matrix_ids("sqlite-pgbus"),
+    )
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_postgres_bus() {
+    let (Some((_schema, repo)), Some(bus)) =
+        (postgres_matrix_repo().await, postgres_matrix_bus().await)
+    else {
+        return;
+    };
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(bus, collector, collected, repo, matrix_ids("pg-pgbus")).await;
+}
+
+#[cfg(all(feature = "postgres", feature = "nats"))]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_nats_bus() {
+    if nats_url().is_none() {
+        return;
+    }
+    let Some((_schema, repo)) = postgres_matrix_repo().await else {
+        return;
+    };
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        nats_matrix_bus(&ns).await,
+        collector,
+        collected,
+        repo,
+        matrix_ids("pg-nats"),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "postgres", feature = "rabbitmq"))]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_rabbit_bus() {
+    if amqp_url().is_none() {
+        return;
+    }
+    let Some((_schema, repo)) = postgres_matrix_repo().await else {
+        return;
+    };
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    let bus = rabbit_matrix_bus(&ns, &collector).await;
+    run_checkout_over_bus(bus, collector, collected, repo, matrix_ids("pg-rabbit")).await;
+}
+
+#[cfg(all(feature = "postgres", feature = "kafka"))]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_kafka_bus() {
+    if kafka_brokers().is_none() {
+        return;
+    }
+    let Some((_schema, repo)) = postgres_matrix_repo().await else {
+        return;
+    };
+    let ns = async_unique_id("ns");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        kafka_matrix_bus(&ns).await,
+        collector,
+        collected,
+        repo,
+        matrix_ids("pg-kafka"),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "postgres", feature = "http"))]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_knative() {
+    let Some((_schema, repo)) = postgres_matrix_repo().await else {
+        return;
+    };
+    run_checkout_over_knative(repo, matrix_ids("pg-knative")).await;
 }
