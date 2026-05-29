@@ -8,6 +8,7 @@ use crate::read_model::{
 };
 use crate::snapshot::SnapshotRecord;
 
+use super::inbox::InboxReceipt;
 use super::{RepositoryError, StreamIdentity};
 
 /// One aggregate event stream staged for an async transactional commit.
@@ -37,6 +38,9 @@ pub struct AsyncCommitBatch<'a> {
     pub outbox_messages: Vec<OutboxMessage>,
     pub read_model_plans: Vec<ReadModelWritePlan>,
     pub snapshots: Vec<AsyncSnapshotWrite>,
+    /// Consumer inbox receipts to record in the same transaction (the optional
+    /// effectively-once effect fence). Empty for the default idempotent path.
+    pub inbox_receipts: Vec<InboxReceipt>,
 }
 
 impl<'a> AsyncCommitBatch<'a> {
@@ -46,6 +50,7 @@ impl<'a> AsyncCommitBatch<'a> {
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         }
     }
 

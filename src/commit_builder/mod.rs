@@ -172,6 +172,7 @@ impl<'a, R> SyncCommitBuilder<'a, R> {
             outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         })
     }
 
@@ -197,6 +198,7 @@ impl<'a, R> SyncCommitBuilder<'a, R> {
             outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         })
     }
 
@@ -213,6 +215,7 @@ impl<'a, R> SyncCommitBuilder<'a, R> {
             outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         })
     }
 
@@ -291,6 +294,7 @@ impl<'a, R> SyncStagedCommitBuilder<'a, R> {
             outbox_messages: self.outbox_messages,
             read_model_plans: self.read_model_plans,
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         })
     }
 
@@ -445,6 +449,7 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
                 outbox_messages: self.outbox_messages,
                 read_model_plans: self.read_model_plans,
                 snapshots: Vec::new(),
+                inbox_receipts: Vec::new(),
             })
             .await
     }
@@ -512,6 +517,7 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
                 outbox_messages: self.outbox_messages,
                 read_model_plans: self.read_model_plans,
                 snapshots: Vec::new(),
+                inbox_receipts: Vec::new(),
             })
             .await
     }

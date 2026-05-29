@@ -42,8 +42,8 @@ pub use repository::{
     AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
     AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
-    Gettable, PreparedEventAppend, Repository, RepositoryError, SnapshotWrite, StreamIdentity,
-    TransactionalCommit,
+    Gettable, InboxOutcome, InboxReceipt, PreparedEventAppend, Repository, RepositoryError,
+    SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience

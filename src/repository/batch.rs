@@ -3,6 +3,7 @@ use crate::outbox::OutboxMessage;
 use crate::read_model::ReadModelWritePlan;
 use crate::snapshot::SnapshotRecord;
 
+use super::inbox::InboxReceipt;
 use super::RepositoryError;
 
 /// A snapshot write staged as part of a transactional commit.
@@ -17,6 +18,9 @@ pub struct CommitBatch<'a> {
     pub outbox_messages: Vec<OutboxMessage>,
     pub read_model_plans: Vec<ReadModelWritePlan>,
     pub snapshots: Vec<SnapshotWrite>,
+    /// Consumer inbox receipts to record in the same transaction (the optional
+    /// effectively-once effect fence). Empty for the default idempotent path.
+    pub inbox_receipts: Vec<InboxReceipt>,
 }
 
 impl<'a> CommitBatch<'a> {
@@ -26,6 +30,7 @@ impl<'a> CommitBatch<'a> {
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots: Vec::new(),
+            inbox_receipts: Vec::new(),
         }
     }
 
