@@ -92,6 +92,8 @@ mod kafka;
 mod kafka_bus;
 #[cfg(feature = "http")]
 mod knative;
+#[cfg(feature = "http")]
+mod knative_bus;
 #[cfg(feature = "nats")]
 mod nats;
 #[cfg(feature = "nats")]
@@ -116,6 +118,8 @@ pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 pub use kafka_bus::KafkaBus;
 #[cfg(feature = "http")]
 pub use knative::{cloud_events_router, knative_triggers};
+#[cfg(feature = "http")]
+pub use knative_bus::KnativeBus;
 #[cfg(feature = "nats")]
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "nats")]

@@ -30,7 +30,7 @@ path = "src/lib.rs"
 default = ["emitter", "bus"]
 emitter = ["dep:event-emitter-rs"]
 bus = []
-http = ["bus", "dep:axum", "dep:tokio"]
+http = ["bus", "dep:axum", "dep:reqwest", "dep:tokio"]
 grpc = ["bus", "dep:tonic", "dep:prost", "dep:tokio"]
 postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/runtime-tokio"]
 sqlite = ["dep:sqlx", "dep:tokio", "sqlx/runtime-tokio", "sqlx/sqlite"]
@@ -45,6 +45,7 @@ base64 = "0.22.1"
 futures = { version = "0.3", optional = true }
 lapin = { version = "2", optional = true }
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"], optional = true }
+reqwest = { version = "0.12", default-features = false, optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
 event-emitter-rs = { version = "0.1.4", optional = true }
 serde = { version = "1.0.210", features = ["derive"] }

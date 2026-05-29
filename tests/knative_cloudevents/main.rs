@@ -8,8 +8,8 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::cloud_events_router;
-use sourced_rust::microsvc::{HandlerError, Service};
+use sourced_rust::microsvc::transport::{cloud_events_router, Bus, KnativeBus};
+use sourced_rust::microsvc::{HandlerError, Message, MessageKind, Service, SubscriptionPlan};
 
 async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -138,4 +138,111 @@ async fn missing_id_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+// ---- KnativeBus: produce (POST CloudEvent) + manifest generation ----
+
+/// `KnativeBus::publish` POSTs a binary CloudEvent to the broker-ingress URL;
+/// pointed at the local router it round-trips into `Service::dispatch_message`.
+#[tokio::test]
+async fn knative_bus_publish_round_trips_through_router() {
+    let (url, handled) = spawn_server().await;
+    // ingress_base = the server (no broker/namespace) so the POST hits `POST /`.
+    let bus = KnativeBus::new(url.trim_end_matches('/'), "", "orders-svc", "", "");
+    bus.publish_message(
+        Message::new(
+            "order.created",
+            MessageKind::Event,
+            br#"{"order":"o9"}"#.to_vec(),
+        )
+        .with_id("evt-9"),
+    )
+    .await
+    .expect("publish round-trips");
+    // publish awaits the HTTP response, which the router returns only after
+    // dispatch, so the handler has already recorded by now.
+    assert_eq!(handled.lock().unwrap().clone(), vec!["evt-9".to_string()]);
+}
+
+/// A produce with no message id is rejected before any POST (CloudEvents
+/// mandates `id`).
+#[tokio::test]
+async fn knative_bus_publish_without_id_is_rejected() {
+    let bus = KnativeBus::new("http://127.0.0.1:1", "", "orders-svc", "", "");
+    let err = bus
+        .publish_message(Message::new(
+            "order.created",
+            MessageKind::Event,
+            b"{}".to_vec(),
+        ))
+        .await
+        .expect_err("missing id is rejected");
+    assert!(
+        err.to_string().contains("id"),
+        "error mentions the missing id: {err}"
+    );
+}
+
+/// `manifests` renders the role-based Brokers + per-name Triggers a service's
+/// chart needs, with `/cloudevent/<type>` subscriber URIs.
+#[test]
+fn knative_bus_manifests_render_brokers_and_triggers() {
+    let bus = KnativeBus::new(
+        "http://broker-ingress.knative-eventing.svc.cluster.local",
+        "game",
+        "model-svc",
+        "lobby-svc-commands",
+        "model-svc-events",
+    );
+    let plan = SubscriptionPlan {
+        commands: vec!["place.bet".to_string()],
+        events: vec!["seat.reserved".to_string()],
+    };
+    let yaml = bus.manifests(&plan, &[("seat.reserved", "lobby-svc-events")]);
+
+    // Own commands broker + a Trigger for the handled command.
+    assert!(yaml.contains("kind: Broker"));
+    assert!(yaml.contains("name: model-svc-commands"));
+    assert!(yaml.contains("type: place.bet"));
+    // Own events broker (this service publishes).
+    assert!(yaml.contains("name: model-svc-events"));
+    // Subscribed event → Trigger on the *producer's* broker, per-type subscriber.
+    assert!(yaml.contains("broker: lobby-svc-events"));
+    assert!(yaml.contains("type: seat.reserved"));
+    assert!(yaml.contains("uri: /cloudevent/seat.reserved"));
+    assert!(yaml.contains("namespace: game"));
+}
+
+/// A pure consumer (`publishes_events(false)`) creates no events broker; the
+/// local flag points subscribers at a kubefwd address.
+#[test]
+fn knative_bus_manifests_pure_consumer_local_variant() {
+    let bus = KnativeBus::new(
+        "http://ingress",
+        "game",
+        "projection-svc",
+        "",
+        "projection-svc-events",
+    )
+    .publishes_events(false)
+    .local("127.0.0.1:8080");
+    let plan = SubscriptionPlan {
+        commands: vec![],
+        events: vec!["seat.reserved".to_string()],
+    };
+    let yaml = bus.manifests(&plan, &[("seat.reserved", "lobby-svc-events")]);
+
+    assert!(
+        !yaml.contains("projection-svc-events"),
+        "pure consumer owns no broker"
+    );
+    assert!(
+        !yaml.contains("kind: Broker"),
+        "pure consumer creates no broker"
+    );
+    assert!(yaml.contains("kind: Trigger"));
+    assert!(
+        yaml.contains("uri: http://127.0.0.1:8080/cloudevent/seat.reserved"),
+        "local flag points the subscriber at the kubefwd address"
+    );
 }
