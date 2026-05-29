@@ -84,6 +84,8 @@ use crate::microsvc::Message;
 mod capabilities;
 mod error;
 mod failure_policy;
+#[cfg(feature = "kafka")]
+mod kafka;
 #[cfg(feature = "http")]
 mod knative;
 #[cfg(feature = "nats")]
@@ -98,6 +100,8 @@ mod runner;
 mod source;
 mod stable_id;
 
+#[cfg(feature = "kafka")]
+pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 #[cfg(feature = "http")]
 pub use knative::{cloud_events_router, knative_triggers};
 #[cfg(feature = "nats")]
