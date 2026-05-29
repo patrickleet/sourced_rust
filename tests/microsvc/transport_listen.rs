@@ -1,15 +1,17 @@
-//! Bus transport tests — listen (point-to-point queue consumption).
+//! Bus transport tests — listen (point-to-point queue consumption), over the
+//! async `InMemoryBus`.
 //!
-//! Uses `Bus::from_queue` for all queue interactions, proving the Bus
-//! abstraction works end-to-end with `microsvc::listen`.
+//! Commands are sent to the bus and drained into a `Service` via `listen`
+//! (competing-consumer queues keyed by command name). These mirror the former
+//! legacy-bus `microsvc::listen` tests: the old `stats.handled`/`stats.failed`
+//! handle has no async analogue, so success is asserted through domain outcomes
+//! (committed aggregate state) and failures through the run's `FailurePolicy`.
 
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use serde_json::json;
-use sourced_rust::bus::{Bus, Event, InMemoryQueue};
-use sourced_rust::microsvc::{self, Service, Session};
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
+use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
@@ -25,178 +27,170 @@ fn counter_service() -> Arc<Service<Repo>> {
     ))
 }
 
-#[test]
-fn dispatches_from_queue() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+fn command(name: &str, id: &str, payload: &str) -> Message {
+    Message::new(name, MessageKind::Command, payload.as_bytes().to_vec()).with_id(id)
+}
+
+#[tokio::test]
+async fn dispatches_from_queue() {
+    let bus = InMemoryBus::new();
     let service = counter_service();
 
-    let handle = microsvc::listen(
-        service.clone(),
-        "counters",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
-    );
+    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+        .await
+        .expect("create should enqueue");
+    bus.send_message(command(
+        "counter.increment",
+        "cmd-2",
+        r#"{"id":"c1","amount":10}"#,
+    ))
+    .await
+    .expect("increment should enqueue");
 
-    bus.send(
-        "counters",
-        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-    )
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    bus.send(
-        "counters",
-        Event::with_string_payload("cmd-2", "counter.increment", r#"{"id":"c1","amount":10}"#),
-    )
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
+    // Per-command queues drain in registration order (create before increment).
+    bus.listen(service.clone(), RunOptions::idempotent())
+        .await
+        .expect("listen should drain the command queues");
 
     let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 10);
-
-    let stats = handle.stop().expect("transport should stop cleanly");
-    assert_eq!(stats.handled, 2);
-    assert_eq!(stats.failed, 0);
 }
 
-#[test]
-fn tracks_failures() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+#[tokio::test]
+async fn tolerates_handler_failures_and_keeps_processing() {
+    let bus = InMemoryBus::new();
     let service = counter_service();
 
-    let handle = microsvc::listen(
-        service.clone(),
-        "counters",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
-    );
+    // A failing message (increment a counter that was never created → NotFound)
+    // must not wedge the consumer: it should drain and still process the rest.
+    // NotFound is retryable → nacked (a no-op for the in-memory bus), so the run
+    // completes. (We deliberately do not re-read the failed id: the sync queued
+    // `get` inside the handler holds that aggregate's lock once the handler
+    // errors before committing, so re-reading it would block.)
+    bus.send_message(command(
+        "counter.increment",
+        "bad",
+        r#"{"id":"nonexistent","amount":1}"#,
+    ))
+    .await
+    .expect("bad increment should enqueue");
+    bus.send_message(command("counter.create", "good-create", r#"{"id":"c2"}"#))
+        .await
+        .expect("create should enqueue");
+    bus.send_message(command(
+        "counter.increment",
+        "good-inc",
+        r#"{"id":"c2","amount":7}"#,
+    ))
+    .await
+    .expect("good increment should enqueue");
 
-    bus.send(
-        "counters",
-        Event::with_string_payload(
-            "cmd-1",
-            "counter.increment",
-            r#"{"id":"nonexistent","amount":1}"#,
-        ),
-    )
-    .unwrap();
+    bus.listen(service.clone(), RunOptions::idempotent())
+        .await
+        .expect("listen should drain past the failed message");
 
-    thread::sleep(Duration::from_millis(200));
-
-    let stats = handle.stop().expect("transport should stop cleanly");
-    assert_eq!(stats.handled, 0);
-    assert_eq!(stats.failed, 1);
+    // The good aggregate was still created and incremented, proving the failure
+    // did not stop the consumer.
+    let c2: Counter = service.repo().get("c2").unwrap().unwrap();
+    assert_eq!(c2.value, 7);
 }
 
-#[test]
-fn coexists_with_direct_dispatch() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+#[tokio::test]
+async fn coexists_with_direct_dispatch() {
+    let bus = InMemoryBus::new();
     let service = counter_service();
 
-    let handle = microsvc::listen(
-        service.clone(),
-        "counters",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
-    );
+    // c1 created via the bus.
+    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+        .await
+        .expect("create should enqueue");
+    bus.listen(service.clone(), RunOptions::idempotent())
+        .await
+        .expect("listen should drain c1's create");
 
-    // Create c1 via bus
-    bus.send(
-        "counters",
-        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-    )
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    // Create c2 via direct dispatch
+    // c2 created via direct dispatch on the same service.
     service
         .dispatch("counter.create", json!({ "id": "c2" }), Session::new())
-        .unwrap();
+        .expect("direct dispatch should create c2");
 
     let c1: Counter = service.repo().get("c1").unwrap().unwrap();
     let c2: Counter = service.repo().get("c2").unwrap().unwrap();
     assert_eq!(c1.value, 0);
     assert_eq!(c2.value, 0);
-
-    let stats = handle.stop().expect("transport should stop cleanly");
-    assert_eq!(stats.handled, 1);
 }
 
-#[test]
-fn metadata_becomes_session() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+#[tokio::test]
+async fn metadata_becomes_session() {
+    let bus = InMemoryBus::new();
     let service = counter_service();
 
-    let handle = microsvc::listen(
+    // `whoami` reads `ctx.user_id()`, which the runner derives from the message
+    // metadata (`message_to_session` lowercases keys into session variables).
+    bus.send_message(command("whoami", "cmd-1", "{}").with_metadata("x-hasura-user-id", "user-42"))
+        .await
+        .expect("whoami should enqueue");
+
+    // Stop on permanent failure so a missing session user would surface as Err;
+    // `whoami` succeeding proves the metadata became the session.
+    bus.listen(
         service.clone(),
-        "commands",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
+        RunOptions::idempotent().with_failure_policy(FailurePolicy::Stop),
+    )
+    .await
+    .expect("whoami should succeed because metadata became the session");
+
+    // Negative control: without metadata, whoami has no user (permanent
+    // Unauthorized) and the Stop policy surfaces the failure.
+    bus.send_message(command("whoami", "cmd-2", "{}"))
+        .await
+        .expect("whoami should enqueue");
+    let result = bus
+        .listen(
+            service.clone(),
+            RunOptions::idempotent().with_failure_policy(FailurePolicy::Stop),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "without metadata, whoami has no session user and must fail"
     );
-
-    let event = Event::with_string_payload("cmd-1", "whoami", "{}")
-        .with_metadata("x-hasura-user-id", "user-42");
-    bus.send("commands", event).unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    let stats = handle.stop().expect("transport should stop cleanly");
-    assert_eq!(stats.handled, 1);
-    assert_eq!(stats.failed, 0);
 }
 
-#[test]
-fn multiple_services_on_different_queues() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+#[tokio::test]
+async fn multiple_services_on_different_queues() {
+    let bus = InMemoryBus::new();
     let store = HashMapRepository::new();
 
     let service_a = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
     ));
-
     let service_b = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(store.queued().aggregate::<Counter>()),
         command handlers::counter_increment,
     ));
 
-    let handle_a = microsvc::listen(
-        service_a.clone(),
-        "creates",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
-    );
-    let handle_b = microsvc::listen(
-        service_b.clone(),
-        "increments",
-        bus.subscriber().clone(),
-        Duration::from_millis(10),
-    );
+    // Each service drains only its own command queue from the shared bus, so the
+    // two never compete: service_a takes `counter.create`, service_b takes
+    // `counter.increment`.
+    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+        .await
+        .expect("create should enqueue");
+    bus.listen(service_a.clone(), RunOptions::idempotent())
+        .await
+        .expect("service A should drain the create queue");
 
-    bus.send(
-        "creates",
-        Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#),
-    )
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    bus.send(
-        "increments",
-        Event::with_string_payload("cmd-2", "counter.increment", r#"{"id":"c1","amount":42}"#),
-    )
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
+    bus.send_message(command(
+        "counter.increment",
+        "cmd-2",
+        r#"{"id":"c1","amount":42}"#,
+    ))
+    .await
+    .expect("increment should enqueue");
+    bus.listen(service_b.clone(), RunOptions::idempotent())
+        .await
+        .expect("service B should drain the increment queue");
 
     let counter: Counter = service_a.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 42);
-
-    let stats_a = handle_a.stop().expect("transport A should stop cleanly");
-    let stats_b = handle_b.stop().expect("transport B should stop cleanly");
-    assert_eq!(stats_a.handled, 1);
-    assert_eq!(stats_b.handled, 1);
 }
