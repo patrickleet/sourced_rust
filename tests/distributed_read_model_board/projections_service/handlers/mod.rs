@@ -2,12 +2,3 @@
 //! handler that owns the matching read-model rows.
 
 pub mod board;
-
-use sourced_rust::bus::Event;
-use sourced_rust::microsvc::{Context, HandlerError};
-
-use crate::projections_service::ProjectionDependencies;
-
-pub fn event(ctx: &Context<ProjectionDependencies>) -> Result<Event, HandlerError> {
-    Event::try_from(ctx.message())
-}

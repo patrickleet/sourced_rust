@@ -19,12 +19,9 @@ pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
 }
 
 pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
-    let event = super::event(ctx)?;
-
-    match event.event_type.as_str() {
+    match ctx.message().name() {
         checkout_event::STARTED => {
-            let msg: CheckoutStarted = event
-                .json_decode()
+            let msg: CheckoutStarted = serde_json::from_slice(ctx.message().payload())
                 .map_err(|err| HandlerError::DecodeFailed(format!("checkout started: {err}")))?;
             let checkout = CheckoutView {
                 checkout_id: msg.checkout_id.clone(),
@@ -45,9 +42,10 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
             workspace.commit().map_err(super::read_model_error)?;
         }
         checkout_event::SEAT_RESERVATION_COMPLETED => {
-            let msg: SeatReservationCompleted = event.json_decode().map_err(|err| {
-                HandlerError::DecodeFailed(format!("seat reservation completed: {err}"))
-            })?;
+            let msg: SeatReservationCompleted = serde_json::from_slice(ctx.message().payload())
+                .map_err(|err| {
+                    HandlerError::DecodeFailed(format!("seat reservation completed: {err}"))
+                })?;
             let checkout = CheckoutView {
                 checkout_id: msg.checkout_id.clone(),
                 seat_id: msg.seat_id,
@@ -73,7 +71,7 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
         other => return Err(HandlerError::UnknownCommand(other.to_string())),
     }
 
-    Ok(json!({ "event_id": event.id }))
+    Ok(json!({ "event_id": ctx.message().id() }))
 }
 
 fn checkout_step(checkout_id: &str, step: &str, detail: &str) -> CheckoutStepView {
