@@ -81,6 +81,8 @@ use crate::microsvc::Message;
 mod capabilities;
 mod error;
 mod failure_policy;
+#[cfg(feature = "nats")]
+mod nats;
 mod outbox_dispatch;
 mod outbox_source;
 mod publisher;
@@ -88,6 +90,9 @@ mod run_options;
 mod runner;
 mod source;
 mod stable_id;
+
+#[cfg(feature = "nats")]
+pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
