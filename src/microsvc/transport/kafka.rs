@@ -98,6 +98,7 @@ impl AsyncMessagePublisher for KafkaPublisher {
 pub struct KafkaSource {
     consumer: Arc<StreamConsumer>,
     fetch_timeout: Duration,
+    strip_prefix: Option<String>,
 }
 
 impl KafkaSource {
@@ -106,12 +107,21 @@ impl KafkaSource {
         Self {
             consumer,
             fetch_timeout: Duration::from_secs(5),
+            strip_prefix: None,
         }
     }
 
     /// How long `recv` waits for a record before returning `Ok(None)`.
     pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
         self.fetch_timeout = timeout;
+        self
+    }
+
+    /// Strip `prefix` from each record's topic when deriving the message name, so
+    /// a topic `app.cmd.account.debit` becomes the name `account.debit`. Used by
+    /// [`KafkaBus`](super::KafkaBus); default: no stripping (the topic is the name).
+    pub fn with_strip_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.strip_prefix = Some(prefix.into());
         self
     }
 
@@ -156,6 +166,7 @@ impl AsyncMessageSource for KafkaSource {
                     return Ok(Some(KafkaReceived::from_borrowed(
                         &borrowed,
                         self.consumer.clone(),
+                        self.strip_prefix.as_deref(),
                     )));
                 }
                 Ok(Err(_transient)) => {
@@ -181,9 +192,14 @@ impl KafkaReceived {
     fn from_borrowed(
         borrowed: &rdkafka::message::BorrowedMessage<'_>,
         consumer: Arc<StreamConsumer>,
+        strip_prefix: Option<&str>,
     ) -> Self {
         let payload = borrowed.payload().map(|p| p.to_vec()).unwrap_or_default();
         let topic = borrowed.topic().to_string();
+        let name = match strip_prefix {
+            Some(prefix) => topic.strip_prefix(prefix).unwrap_or(&topic).to_string(),
+            None => topic.clone(),
+        };
         let mut id = None;
         let mut kind = MessageKind::Event;
         let mut metadata = Vec::new();
@@ -200,7 +216,7 @@ impl KafkaReceived {
                 }
             }
         }
-        let mut message = Message::new(topic.clone(), kind, payload);
+        let mut message = Message::new(name, kind, payload);
         message.id = id;
         message.metadata = metadata;
         Self {
