@@ -268,6 +268,7 @@ where
                 outbox_messages: Vec::new(),
                 read_model_plans: Vec::new(),
                 snapshots,
+                inbox_receipts: Vec::new(),
             })
             .await?;
 
@@ -307,6 +308,7 @@ where
                 outbox_messages: Vec::new(),
                 read_model_plans: Vec::new(),
                 snapshots,
+                inbox_receipts: Vec::new(),
             })
             .await?;
 
@@ -388,6 +390,7 @@ where
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
+            inbox_receipts: Vec::new(),
         })?;
 
         if let Some(version) = snapshot_version {
@@ -417,6 +420,7 @@ where
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
+            inbox_receipts: Vec::new(),
         })?;
 
         for (aggregate, snapshot_version) in aggregates.iter_mut().zip(snapshot_versions) {
@@ -528,6 +532,7 @@ where
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
             snapshots,
+            inbox_receipts: Vec::new(),
         };
         batch.outbox_messages.push(self.outbox);
         self.snap_repo.inner.repo().commit_batch(batch)?;
