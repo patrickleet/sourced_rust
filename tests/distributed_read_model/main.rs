@@ -23,18 +23,15 @@ mod query_service;
 mod read_models;
 mod seat_inventory_service;
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use checkout::{
     checkout_command, seat_command, AddSeat, StartCheckout, CHECKOUT_SEAT_RESERVED, SEAT_RESERVED,
     SEAT_RESERVED_MESSAGE,
 };
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use checkout::{
     checkout_event, json_outbox_event, seat_event, CheckoutStarted, SeatAdded,
     SeatReservationCompleted, SeatReserved, CHECKOUT_STARTED, RESERVING_SEAT_MESSAGE,
@@ -44,7 +41,6 @@ use checkout_saga_service::CheckoutSaga;
 use projection_service::service as projection_service;
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use read_models::{CheckoutStepView, SeatView};
 use seat_inventory_service::Seat;
 use serde::Serialize;
@@ -56,7 +52,6 @@ use sourced_rust::{
     AggregateBuilder, HashMapRepository, InMemoryQueue, InMemoryReadModelStore, OutboxWorkerThread,
     Queueable,
 };
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use sourced_rust::{
     AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
     AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
@@ -103,17 +98,14 @@ fn wait_for_checkout_state(
     }
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 static NEXT_ASYNC_FLOW_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 struct AsyncFlowIds {
     checkout_id: String,
     seat_id: String,
     category: String,
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn async_unique_id(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -123,7 +115,9 @@ fn async_unique_id(prefix: &str) -> String {
     format!("{prefix}-{nanos}-{sequence}")
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
+// Used by the gated sqlite/postgres flow tests; the matrix uses the per-step
+// helpers directly, so this is unused in a default (no-feature) build.
+#[allow(dead_code)]
 async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
     checkout_repo: R,
     checkout_outbox: CheckoutOutbox,
@@ -221,7 +215,6 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
     assert_eq!(loaded_seat.checkout_id, ids.checkout_id);
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn add_seat_async<R>(repo: &R, seat_id: &str, category: &str) -> OutboxMessage
 where
     R: AsyncTransactionalCommit + Send + Sync,
@@ -243,7 +236,6 @@ where
     outbox
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn start_checkout_async<R>(
     repo: &R,
     checkout_id: &str,
@@ -275,7 +267,6 @@ where
     outbox
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn reserve_started_checkout_seat_async<R>(
     repo: &R,
     checkout_started: &OutboxMessage,
@@ -312,7 +303,6 @@ where
     outbox
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn record_seat_reserved_async<R>(repo: &R, seat_reserved: &OutboxMessage) -> OutboxMessage
 where
     R: Clone + AsyncGetStream + AsyncTransactionalCommit + Send + Sync + 'static,
@@ -349,7 +339,6 @@ where
     outbox
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn project_message_async<R>(repo: &R, message: &OutboxMessage)
 where
     R: AsyncReadModelWritePlanStore + Send + Sync,
@@ -445,7 +434,7 @@ where
         .expect("projection read models should commit");
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[allow(dead_code)]
 async fn assert_pending_async<S>(store: &S, message: &OutboxMessage)
 where
     S: AsyncOutboxStore + Send + Sync,
@@ -461,7 +450,6 @@ where
     );
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn load_checkout_screen_async<R>(
     repo: &R,
     checkout_id: &str,
@@ -490,7 +478,6 @@ where
     Ok(Some(checkout))
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn load_seat_async<R>(repo: &R, seat_id: &str) -> Result<Option<SeatView>, ReadModelError>
 where
     R: AsyncRelationalReadModelQueryStore + Send + Sync,
@@ -742,4 +729,200 @@ async fn checkout_commands_can_be_grpc_service() {
         .expect("gRPC write-side load should succeed")
         .expect("gRPC write-side checkout should exist");
     assert_eq!(saga.status, checkout::CHECKOUT_STARTED);
+}
+
+// ===================================================================
+// Transport × persistence matrix
+//
+// The same seat-checkout scenario over every async bus transport and every
+// persistence backend. No sync path: the domain flow, projection, and query run
+// on the async repository `R`, and the events travel over the `Bus` facade `B`.
+// ===================================================================
+
+use std::collections::HashMap as StdHashMap;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, RunOptions};
+use sourced_rust::microsvc::{Message, MessageKind};
+
+/// The four checkout events in flow (causal) order, by CloudEvent/event type.
+const FLOW_EVENT_TYPES: [&str; 4] = [
+    seat_event::ADDED,
+    checkout_event::STARTED,
+    seat_event::RESERVED,
+    checkout_event::SEAT_RESERVATION_COMPLETED,
+];
+
+/// Messages the transport delivered to the projection sink: (name, id, payload).
+type Collected = StdArc<StdMutex<Vec<(String, String, Vec<u8>)>>>;
+
+fn record_message(collected: &Collected, message: &Message) {
+    collected.lock().unwrap().push((
+        message.name().to_string(),
+        message.id().unwrap_or_default().to_string(),
+        message.payload().to_vec(),
+    ));
+}
+
+/// A subscriber service that records every checkout event it receives — the
+/// transport sink the bus drains into. Subscribes to all four event names.
+fn build_collector() -> (StdArc<Service<()>>, Collected) {
+    let collected: Collected = StdArc::new(StdMutex::new(Vec::new()));
+    let (c1, c2, c3, c4) = (
+        collected.clone(),
+        collected.clone(),
+        collected.clone(),
+        collected.clone(),
+    );
+    let service = Service::new(())
+        .event(seat_event::ADDED)
+        .handle(move |ctx| {
+            record_message(&c1, ctx.message());
+            Ok(serde_json::Value::Null)
+        })
+        .event(checkout_event::STARTED)
+        .handle(move |ctx| {
+            record_message(&c2, ctx.message());
+            Ok(serde_json::Value::Null)
+        })
+        .event(seat_event::RESERVED)
+        .handle(move |ctx| {
+            record_message(&c3, ctx.message());
+            Ok(serde_json::Value::Null)
+        })
+        .event(checkout_event::SEAT_RESERVATION_COMPLETED)
+        .handle(move |ctx| {
+            record_message(&c4, ctx.message());
+            Ok(serde_json::Value::Null)
+        });
+    (StdArc::new(service), collected)
+}
+
+/// Generic end-to-end matrix cell: run the seat-checkout domain flow + read-model
+/// projection + query on persistence `repo`, routing the events over transport
+/// `bus`. `collector`/`collected` are the bus's projection sink (the caller binds
+/// the subscription first for transports that require it, e.g. RabbitMQ).
+async fn run_checkout_over_bus<B, R>(
+    bus: B,
+    collector: StdArc<Service<()>>,
+    collected: Collected,
+    repo: R,
+    ids: AsyncFlowIds,
+) where
+    B: Bus + BusConsumer,
+    R: Clone
+        + AsyncGetStream
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore
+        + AsyncTransactionalCommit
+        + Send
+        + Sync
+        + 'static,
+{
+    // 1. Domain flow on the persistence backend → the four causal events.
+    let seat_added = add_seat_async(&repo, &ids.seat_id, &ids.category).await;
+    let checkout_started =
+        start_checkout_async(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
+    let seat_reserved = reserve_started_checkout_seat_async(&repo, &checkout_started).await;
+    let reservation_completed = record_seat_reserved_async(&repo, &seat_reserved).await;
+    let events = [
+        seat_added,
+        checkout_started,
+        seat_reserved,
+        reservation_completed,
+    ];
+
+    // 2. Publish every event over the transport.
+    for event in &events {
+        let message = Message::new(
+            event.event_type.clone(),
+            MessageKind::Event,
+            event.payload.clone(),
+        )
+        .with_id(event.id().to_string());
+        bus.publish_message(message)
+            .await
+            .expect("event should publish over the bus");
+    }
+
+    // 3. Drain the transport into the projection sink.
+    bus.subscribe(collector, RunOptions::idempotent())
+        .await
+        .expect("subscriber should drain the bus");
+
+    // 4. Every event must have crossed the transport; project them in causal order.
+    let delivered: StdHashMap<String, (String, Vec<u8>)> = collected
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(name, id, payload)| (name.clone(), (id.clone(), payload.clone())))
+        .collect();
+    for event_type in FLOW_EVENT_TYPES {
+        let (id, payload) = delivered
+            .get(event_type)
+            .unwrap_or_else(|| panic!("event {event_type} should arrive over the bus"));
+        let message = OutboxMessage::create(id.clone(), event_type, payload.clone())
+            .expect("delivered event should rebuild");
+        project_message_async(&repo, &message).await;
+    }
+
+    // 5. Query the projected graph and assert the user-facing checkout screen.
+    let checkout = load_checkout_screen_async(&repo, &ids.checkout_id)
+        .await
+        .expect("checkout read model load should succeed")
+        .expect("checkout should be projected");
+    assert_eq!(checkout.seat_id, ids.seat_id);
+    assert_eq!(checkout.seat_category, ids.category);
+    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
+    assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
+    assert_eq!(
+        checkout
+            .seat
+            .as_ref()
+            .expect("checkout should include seat")
+            .status,
+        SEAT_RESERVED
+    );
+    let mut steps: Vec<&str> = checkout
+        .steps
+        .iter()
+        .map(|step| step.step.as_str())
+        .collect();
+    steps.sort();
+    assert_eq!(
+        steps,
+        vec!["seat_reservation_completed", "seat_reserved", "started"]
+    );
+
+    let seat = load_seat_async(&repo, &ids.seat_id)
+        .await
+        .expect("seat read model load should succeed")
+        .expect("seat should be projected");
+    assert_eq!(seat.status, SEAT_RESERVED);
+    assert_eq!(seat.checkout_id, ids.checkout_id);
+}
+
+fn matrix_ids(tag: &str) -> AsyncFlowIds {
+    AsyncFlowIds {
+        checkout_id: async_unique_id(&format!("checkout-{tag}")),
+        seat_id: async_unique_id(&format!("seat-{tag}")),
+        category: "balcony".to_string(),
+    }
+}
+
+/// In-memory persistence × in-memory transport — the always-on matrix cell.
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_in_memory_bus() {
+    use sourced_rust::microsvc::transport::InMemoryBus;
+    let repo = HashMapRepository::new();
+    register_schemas(repo.model_store()).expect("read-model schemas should register");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        InMemoryBus::new(),
+        collector,
+        collected,
+        repo,
+        matrix_ids("inmem-inmem"),
+    )
+    .await;
 }
