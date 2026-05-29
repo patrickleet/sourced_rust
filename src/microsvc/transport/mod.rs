@@ -88,6 +88,8 @@ mod failure_policy;
 mod in_memory_bus;
 #[cfg(feature = "kafka")]
 mod kafka;
+#[cfg(feature = "kafka")]
+mod kafka_bus;
 #[cfg(feature = "http")]
 mod knative;
 #[cfg(feature = "nats")]
@@ -110,6 +112,8 @@ mod stable_id;
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
+#[cfg(feature = "kafka")]
+pub use kafka_bus::KafkaBus;
 #[cfg(feature = "http")]
 pub use knative::{cloud_events_router, knative_triggers};
 #[cfg(feature = "nats")]

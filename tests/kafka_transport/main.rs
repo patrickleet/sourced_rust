@@ -11,11 +11,29 @@ use std::time::Duration;
 
 use serde_json::json;
 use sourced_rust::microsvc::transport::{
-    run_source, AsyncMessagePublisher, KafkaPublisher, KafkaSource, RunOptions,
+    run_source, AsyncMessagePublisher, Bus, BusConsumer, KafkaBus, KafkaPublisher, KafkaSource,
+    RunOptions,
 };
 use sourced_rust::microsvc::{Message, MessageKind, Service};
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Service whose single handler records the message id; `kind` picks command vs
+/// event registration.
+fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new(());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        Ok(json!({}))
+    }))
+}
 
 fn brokers() -> Option<String> {
     match std::env::var("KAFKA_BROKERS") {
@@ -125,4 +143,104 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     assert_eq!(got.0.as_deref(), Some("evt-1"));
     assert_eq!(got.1.as_deref(), Some("corr-9"));
     assert_eq!(got.2, br#"{"k":"v"}"#.to_vec());
+}
+
+// ---- KafkaBus: shared group = listen (point-to-point); group-per-service = subscribe (fan-out) ----
+
+/// `send` + `listen`: a shared consumer group consumes each command once for the
+/// group as a whole. Proven deterministically: a first listener drains every
+/// command; a second listener in the **same group** then reads nothing, because
+/// the group's offset is already committed past the end — point-to-point.
+#[tokio::test]
+async fn bus_listen_shared_group_consumes_each_command_once() {
+    let Some(brokers) = brokers() else { return };
+    let ns = unique("ns");
+
+    let producer = KafkaBus::connect(&brokers, "orders", &ns)
+        .await
+        .expect("connect producer");
+    let total = 5;
+    for i in 0..total {
+        producer
+            .send_message(
+                Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+            )
+            .await
+            .expect("send command");
+    }
+
+    // First member of group "orders" drains every command.
+    let first = Arc::new(Mutex::new(Vec::new()));
+    KafkaBus::connect(&brokers, "orders", &ns)
+        .await
+        .unwrap()
+        .with_fetch_timeout(Duration::from_secs(10))
+        .listen(
+            recording_for("work", MessageKind::Command, first.clone()),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("first listener drains");
+    let mut ids = first.lock().unwrap().clone();
+    ids.sort();
+    let expected: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
+    assert_eq!(ids, expected, "the group consumes every command");
+
+    // A second member of the SAME group sees nothing — the group already consumed
+    // and committed past these records (point-to-point, not fan-out).
+    let second = Arc::new(Mutex::new(Vec::new()));
+    KafkaBus::connect(&brokers, "orders", &ns)
+        .await
+        .unwrap()
+        .with_fetch_timeout(Duration::from_secs(6))
+        .listen(
+            recording_for("work", MessageKind::Command, second.clone()),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("second listener drains");
+    assert!(
+        second.lock().unwrap().is_empty(),
+        "a second consumer in the same group re-consumes nothing"
+    );
+}
+
+/// `publish` + `subscribe`: each `group` is a distinct Kafka consumer group, and
+/// Kafka delivers every record to every group — so each group reads every event
+/// (fan-out). A fresh group reads from earliest.
+#[tokio::test]
+async fn bus_subscribe_fans_out_across_groups() {
+    let Some(brokers) = brokers() else { return };
+    let ns = unique("ns");
+
+    let producer = KafkaBus::connect(&brokers, "producer", &ns)
+        .await
+        .expect("connect producer");
+    let total = 4;
+    for i in 0..total {
+        producer
+            .publish_message(
+                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
+    for group in ["projections", "audit"] {
+        let rec = Arc::new(Mutex::new(Vec::new()));
+        KafkaBus::connect(&brokers, group, &ns)
+            .await
+            .unwrap()
+            .with_fetch_timeout(Duration::from_secs(10))
+            .subscribe(
+                recording_for("evt", MessageKind::Event, rec.clone()),
+                RunOptions::idempotent(),
+            )
+            .await
+            .expect("subscriber drains");
+        let mut ids = rec.lock().unwrap().clone();
+        ids.sort();
+        assert_eq!(ids, expected, "group {group} sees every event");
+    }
 }
