@@ -42,6 +42,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: stable
-      # ubuntu-latest ships cmake + gcc, which rdkafka's cmake-build needs.
+      # ubuntu-latest ships cmake + gcc, which rdkafka's cmake-build needs. It
+      # also has libcurl's runtime but not its headers; librdkafka's bundled
+      # build enables curl (OAUTHBEARER OIDC) when it finds the lib and then
+      # needs curl/curl.h, so install the dev package.
+      - name: Install librdkafka build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - name: Run Kafka transport integration tests
         run: cargo test --test kafka_transport --features kafka --verbose
