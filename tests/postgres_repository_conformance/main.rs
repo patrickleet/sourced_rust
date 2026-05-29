@@ -124,3 +124,23 @@ async fn worker_claim_by_ids_claims_only_requested() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn consumer_inbox_records_dedupes_and_fences_with_real_effects() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::inbox::inbox_records_dedupes_and_fences_with_real_effects(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn consumer_inbox_rejects_empty_receipt() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::inbox::inbox_rejects_empty_receipt(repo).await;
+}

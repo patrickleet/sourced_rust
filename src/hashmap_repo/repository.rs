@@ -262,6 +262,7 @@ impl AsyncTransactionalCommit for HashMapRepository {
             // (committed or duplicated in this batch) rolls the whole batch back so
             // effects are not double-applied.
             for receipt in batch.inbox_receipts {
+                receipt.validate()?;
                 let key = (receipt.consumer.clone(), receipt.message_id.clone());
                 if !staged_inbox.insert(key) {
                     return Err(RepositoryError::DuplicateInboxReceipt {
@@ -374,6 +375,7 @@ impl TransactionalCommit for HashMapRepository {
 
         // Inbox receipts gate effectively-once (see the async impl).
         for receipt in batch.inbox_receipts {
+            receipt.validate()?;
             let key = (receipt.consumer.clone(), receipt.message_id.clone());
             if !staged_inbox.insert(key) {
                 return Err(RepositoryError::DuplicateInboxReceipt {
@@ -715,5 +717,13 @@ mod tests {
             !repo.inbox_contains("proj", "m2"),
             "the duplicate rolled the whole batch back"
         );
+
+        // An empty receipt field is rejected (parity with the SQL CHECK).
+        let mut invalid = CommitBatch::empty();
+        invalid.inbox_receipts.push(InboxReceipt::new("", "m3"));
+        assert!(matches!(
+            repo.commit_batch(invalid).unwrap_err(),
+            RepositoryError::InvalidInboxReceipt { .. }
+        ));
     }
 }
