@@ -69,3 +69,29 @@ jobs:
           done
       - name: Run NATS transport integration tests
         run: cargo test --test nats_transport --features nats --verbose
+
+  rabbitmq:
+    name: RabbitMQ Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CARGO_TERM_COLOR: always
+      AMQP_URL: amqp://guest:guest@localhost:5672/%2f
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Run RabbitMQ transport integration tests
+        run: cargo test --test rabbitmq_transport --features rabbitmq --verbose

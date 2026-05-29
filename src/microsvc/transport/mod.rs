@@ -21,8 +21,11 @@
 //!   `Message` and dispatch them, sharing one claim → publish → complete path
 //!   between background polling and after-commit immediate dispatch.
 //!
-//! The Knative/HTTP ingress shape and the concrete broker adapters are still
-//! separate slices. Everything builds on the vocabulary defined here:
+//! Concrete adapters build on these traits: the Postgres outbox-backed source
+//! ([`OutboxSource`]) is always available; the NATS JetStream and RabbitMQ
+//! adapters are behind the `nats` and `rabbitmq` features. The Knative/HTTP
+//! ingress shape and the Kafka adapter are still separate slices. Everything
+//! builds on the vocabulary defined here:
 //!
 //! - [`TransportError`] / [`TransportErrorKind`] — retryable vs permanent
 //!   classification the runner uses to decide between redelivery and the
@@ -86,6 +89,8 @@ mod nats;
 mod outbox_dispatch;
 mod outbox_source;
 mod publisher;
+#[cfg(feature = "rabbitmq")]
+mod rabbitmq;
 mod run_options;
 mod runner;
 mod source;
@@ -93,6 +98,8 @@ mod stable_id;
 
 #[cfg(feature = "nats")]
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
+#[cfg(feature = "rabbitmq")]
+pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
