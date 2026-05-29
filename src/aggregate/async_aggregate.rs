@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
 use crate::entity::Entity;
+use crate::queued_repo::{
+    AsyncGetAllWithOpts, AsyncGetWithOpts, AsyncUnlockableRepository, ReadOpts,
+};
 use crate::repository::{
     AsyncCommitBatch, AsyncGetStream, AsyncStreamWrite, AsyncTransactionalCommit, RepositoryError,
     StreamIdentity,
@@ -115,5 +118,73 @@ where
         self.repo
             .commit_batch_async(AsyncCommitBatch::new(streams))
             .await
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A>
+where
+    R: AsyncGetWithOpts,
+    A: Aggregate + Send,
+{
+    /// Load an aggregate with options (e.g. `ReadOpts::no_lock()` to skip the
+    /// queue lock when the repository is a `queued_async()` wrapper).
+    pub async fn get_with(&self, id: &str, opts: ReadOpts) -> Result<Option<A>, RepositoryError> {
+        let identity = stream_identity_for::<A>(id)?;
+        let Some(entity) = self.repo.get_stream_with(&identity, opts).await? else {
+            return Ok(None);
+        };
+        Ok(Some(hydrate::<A>(entity)?))
+    }
+
+    /// Non-locking read (alias for `get_with(ReadOpts::no_lock())`).
+    pub async fn peek(&self, id: &str) -> Result<Option<A>, RepositoryError> {
+        self.get_with(id, ReadOpts::no_lock()).await
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A>
+where
+    R: AsyncGetAllWithOpts,
+    A: Aggregate + Send,
+{
+    /// Load aggregates for the provided ids with options.
+    pub async fn get_all_with(
+        &self,
+        ids: &[&str],
+        opts: ReadOpts,
+    ) -> Result<Vec<A>, RepositoryError> {
+        let identities = ids
+            .iter()
+            .map(|id| stream_identity_for::<A>(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let entities = self.repo.get_streams_with(&identities, opts).await?;
+        let mut aggregates = Vec::with_capacity(entities.len());
+        for entity in entities {
+            aggregates.push(hydrate::<A>(entity)?);
+        }
+        Ok(aggregates)
+    }
+
+    /// Non-locking multi-read (alias for `get_all_with(ReadOpts::no_lock())`).
+    pub async fn peek_all(&self, ids: &[&str]) -> Result<Vec<A>, RepositoryError> {
+        self.get_all_with(ids, ReadOpts::no_lock()).await
+    }
+}
+
+impl<R, A> AsyncAggregateRepository<R, A>
+where
+    R: AsyncUnlockableRepository,
+    A: Aggregate,
+{
+    /// Release the lock held for an aggregate after an aborted load.
+    pub fn abort(&self, aggregate: &A) -> Result<(), RepositoryError> {
+        let identity = stream_identity_for::<A>(aggregate.entity().id())?;
+        self.repo.unlock(&identity)
+    }
+
+    /// Release the lock held for an aggregate id.
+    pub fn unlock(&self, id: &str) -> Result<(), RepositoryError> {
+        let identity = stream_identity_for::<A>(id)?;
+        self.repo.unlock(&identity)
     }
 }
