@@ -96,6 +96,8 @@ mod nats;
 mod nats_bus;
 mod outbox_dispatch;
 mod outbox_source;
+#[cfg(feature = "postgres")]
+mod postgres_bus;
 mod publisher;
 #[cfg(feature = "rabbitmq")]
 mod rabbitmq;
@@ -124,6 +126,8 @@ pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METAD
 pub use outbox_source::{
     OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
 };
+#[cfg(feature = "postgres")]
+pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::AsyncMessagePublisher;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;

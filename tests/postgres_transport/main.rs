@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use sourced_rust::microsvc::transport::{
-    run_source, AsyncMessageSource, OutboxSource, ReceivedMessage, RunOptions,
+    run_source, AsyncMessageSource, Bus, BusConsumer, OutboxSource, PostgresBus, ReceivedMessage,
+    RunOptions,
 };
-use sourced_rust::microsvc::Service;
+use sourced_rust::microsvc::{Message, MessageKind, Service};
 use sourced_rust::{
     AsyncCommitBatch, AsyncOutboxStore, AsyncTransactionalCommit, OutboxMessage,
     OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,
@@ -182,4 +183,106 @@ async fn dead_letter_marks_row_failed() {
         status(&store, "m1").await,
         Some(OutboxMessageStatus::Failed)
     );
+}
+
+// ---- PostgresBus: send/listen (work queue) + publish/subscribe (log+offsets) ----
+
+/// Service whose single handler records the message id; `kind` picks command vs
+/// event registration.
+fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new(());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        Ok(json!({}))
+    }))
+}
+
+/// `send` + `listen`: the work queue is claimed `FOR UPDATE SKIP LOCKED`, so two
+/// replicas sharing a `group` compete — each command handled exactly once.
+#[tokio::test]
+async fn bus_send_listen_is_point_to_point_across_a_group() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_pp", SKIP).await else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let bus = PostgresBus::new(repo.pool().clone(), "orders");
+    bus.ensure_tables().await.expect("ensure tables");
+
+    let total = 6;
+    for i in 0..total {
+        bus.send_message(
+            Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+        )
+        .await
+        .expect("send command");
+    }
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    let bus_a = bus.clone();
+    let bus_b = bus.clone();
+    let (ra, rb) = tokio::join!(
+        bus_a.listen(
+            recording_for("work", MessageKind::Command, rec.clone()),
+            RunOptions::idempotent()
+        ),
+        bus_b.listen(
+            recording_for("work", MessageKind::Command, rec.clone()),
+            RunOptions::idempotent()
+        ),
+    );
+    ra.expect("replica a drains");
+    rb.expect("replica b drains");
+
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    let expected: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
+    assert_eq!(
+        ids, expected,
+        "every command handled exactly once across the group"
+    );
+}
+
+/// `publish` + `subscribe`: each `group` has its own log offset, so every group
+/// reads the full log — fan-out. nacked entries do not advance the offset.
+#[tokio::test]
+async fn bus_publish_subscribe_fans_out_across_groups() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_fan", SKIP).await else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let producer = PostgresBus::new(pool.clone(), "producer");
+    producer.ensure_tables().await.expect("ensure tables");
+
+    let total = 4;
+    for i in 0..total {
+        producer
+            .publish_message(
+                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
+    for group in ["projections", "audit"] {
+        let bus = PostgresBus::new(pool.clone(), group);
+        let rec = Arc::new(Mutex::new(Vec::new()));
+        bus.subscribe(
+            recording_for("evt", MessageKind::Event, rec.clone()),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+        let mut ids = rec.lock().unwrap().clone();
+        ids.sort();
+        assert_eq!(ids, expected, "group {group} sees every event");
+    }
 }
