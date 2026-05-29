@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use serde::Serialize;
 
-use crate::repository::AsyncReadModelWritePlanStore;
+use crate::repository::{AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore};
 
 use super::{
     ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
@@ -753,16 +753,17 @@ struct TrackedModelBaseline {
 const INITIAL_TRACKED_ROW_VERSION: u64 = 1;
 
 /// Store-bound read-model workspace for load, mutate, sync, commit workflows.
+///
+/// The mutation/sync/diff surface is store-independent; `load`/`commit` are
+/// provided by sync- and async-store impl blocks below, so the same workspace
+/// drives both the sync (`commit`) and async (`commit_async`) store traits.
 pub struct ReadModelWorkspace<'a, S> {
     store: &'a S,
     writes: ReadModelWritePlanBuilder,
     baselines: Vec<TrackedModelBaseline>,
 }
 
-impl<'a, S> ReadModelWorkspace<'a, S>
-where
-    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
-{
+impl<'a, S> ReadModelWorkspace<'a, S> {
     pub fn new(store: &'a S) -> Self {
         Self {
             store,
@@ -773,18 +774,6 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.writes.is_empty()
-    }
-
-    pub fn load<M>(&mut self, key: RowKey) -> ReadModelLoadBuilder<'_, 'a, S, M>
-    where
-        M: RelationalReadModel + RelationalReadModelIncludes,
-    {
-        ReadModelLoadBuilder {
-            unit: self,
-            key,
-            includes: Vec::new(),
-            _marker: PhantomData,
-        }
     }
 
     pub fn sync<M>(&mut self, model: M) -> Result<&mut Self, ReadModelError>
@@ -928,10 +917,6 @@ where
 
     pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
         self.writes.into_write_plan()
-    }
-
-    pub fn commit(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        self.writes.commit(self.store)
     }
 
     fn track_graph(
@@ -1151,6 +1136,52 @@ where
     }
 }
 
+impl<'a, S> ReadModelWorkspace<'a, S>
+where
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
+{
+    /// Begin a tracked load against the synchronous store traits.
+    pub fn load<M>(&mut self, key: RowKey) -> ReadModelLoadBuilder<'_, 'a, S, M>
+    where
+        M: RelationalReadModel + RelationalReadModelIncludes,
+    {
+        ReadModelLoadBuilder {
+            unit: self,
+            key,
+            includes: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Commit the staged write plan through the synchronous store.
+    pub fn commit(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        self.writes.commit(self.store)
+    }
+}
+
+impl<'a, S> ReadModelWorkspace<'a, S>
+where
+    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+{
+    /// Begin a tracked load against the asynchronous store traits.
+    pub fn load_async<M>(&mut self, key: RowKey) -> AsyncReadModelLoadBuilder<'_, 'a, S, M>
+    where
+        M: RelationalReadModel + RelationalReadModelIncludes,
+    {
+        AsyncReadModelLoadBuilder {
+            unit: self,
+            key,
+            includes: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Commit the staged write plan through the asynchronous store.
+    pub async fn commit_async(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        self.writes.commit_async(self.store).await
+    }
+}
+
 /// Builder for one explicit primary-key read-model load.
 pub struct ReadModelLoadBuilder<'workspace, 'store, S, M>
 where
@@ -1211,6 +1242,70 @@ pub trait ReadModelWorkspaceExt:
 }
 
 impl<S> ReadModelWorkspaceExt for S where S: ReadModelWritePlanStore + RelationalReadModelQueryStore {}
+
+/// Builder for one explicit primary-key read-model load over the async store traits.
+pub struct AsyncReadModelLoadBuilder<'workspace, 'store, S, M>
+where
+    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+{
+    unit: &'workspace mut ReadModelWorkspace<'store, S>,
+    key: RowKey,
+    includes: Vec<String>,
+    _marker: PhantomData<M>,
+}
+
+impl<'workspace, 'store, S, M> AsyncReadModelLoadBuilder<'workspace, 'store, S, M>
+where
+    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    M: RelationalReadModel + RelationalReadModelIncludes,
+{
+    pub fn include(mut self, relationship: impl Into<String>) -> Self {
+        self.includes.push(relationship.into());
+        self
+    }
+
+    pub async fn one(self) -> Result<Option<Versioned<M>>, ReadModelError> {
+        let request = self
+            .unit
+            .writes
+            .load_with::<M, _, _>(self.key, self.includes)?;
+        let graph = self.unit.store.load_graph_async(request.clone()).await?;
+        let Some(root) = graph.root else {
+            return Ok(None);
+        };
+
+        let mut model = M::from_row(root.data.clone())?;
+        for (include_name, include_rows) in &graph.includes {
+            let rows = include_rows
+                .rows
+                .iter()
+                .map(|row| row.data.clone())
+                .collect::<Vec<_>>();
+            model.hydrate_include(include_name, rows)?;
+        }
+
+        self.unit
+            .track_graph(request.schema, root.clone(), graph.includes)?;
+        Ok(Some(Versioned {
+            data: model,
+            version: root.version,
+        }))
+    }
+}
+
+/// Extension trait that starts a tracked read-model workspace from an async store.
+pub trait AsyncReadModelWorkspaceExt:
+    AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Sized
+{
+    fn workspace_async(&self) -> ReadModelWorkspace<'_, Self> {
+        ReadModelWorkspace::new(self)
+    }
+}
+
+impl<S> AsyncReadModelWorkspaceExt for S where
+    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore
+{
+}
 
 fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
     let mut patch = RowPatch::new();

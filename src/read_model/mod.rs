@@ -117,9 +117,10 @@ pub use schema::{
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 pub use session::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
-    ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWorkspaceExt,
-    ReadModelWritePlan, ReadModelWritePlanBuilder, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RowMutation, RowPatch, RowWriteMode,
+    AsyncReadModelLoadBuilder, AsyncReadModelWorkspaceExt, DeleteRowMutation, ExpectedVersion,
+    PatchMode, PatchRowMutation, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation,
+    ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan,
+    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModelQueryStore, RowMutation,
+    RowPatch, RowWriteMode,
 };

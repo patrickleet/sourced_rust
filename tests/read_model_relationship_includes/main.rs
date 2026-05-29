@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
-    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanStore,
+    AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelQueryCapabilities, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanStore,
     RelationalReadModelQueryStore, RowKey, RowValue,
 };
 
@@ -489,4 +489,53 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
             && message.contains("player_id")
             && message.contains("single-column primary key"))
     );
+}
+
+// --- Async workspace parity -----------------------------------------------
+//
+// `InMemoryReadModelStore` implements the async store traits, so the same
+// workspace ergonomic is available over `workspace_async()` /
+// `load_async()` / `commit_async()`. These mirror the sync `include` +
+// `sync`-roundtrip tests above to prove the async path is at parity.
+
+#[tokio::test]
+async fn async_session_hydrates_has_many_include() {
+    let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
+    let mut read_models = store.workspace_async();
+
+    let loaded = read_models
+        .load_async::<Player>(player_key("player-1"))
+        .include("weapons")
+        .one()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(loaded.data.weapons[0].weapon_id, "sword");
+}
+
+#[tokio::test]
+async fn async_sync_persists_loaded_scalar_field_without_manual_patch() {
+    let store = store_with_player_and_weapons([]);
+    let mut read_models = store.workspace_async();
+    let mut loaded = read_models
+        .load_async::<Player>(player_key("player-1"))
+        .one()
+        .await
+        .unwrap()
+        .unwrap()
+        .data;
+    loaded.display_name = "Ada Lovelace".into();
+
+    read_models.sync(loaded).unwrap();
+    read_models.commit_async().await.unwrap();
+
+    let mut check = store.workspace_async();
+    let reloaded = check
+        .load_async::<Player>(player_key("player-1"))
+        .one()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.data.display_name, "Ada Lovelace");
 }
