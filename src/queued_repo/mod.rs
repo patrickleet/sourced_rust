@@ -1,5 +1,6 @@
 mod repository;
 
 pub use repository::{
-    GetAllWithOpts, GetWithOpts, Queueable, QueuedRepository, ReadOpts, UnlockableRepository,
+    AsyncGetAllWithOpts, AsyncGetWithOpts, AsyncUnlockableRepository, GetAllWithOpts, GetWithOpts,
+    Queueable, QueuedRepository, ReadOpts, UnlockableRepository,
 };
