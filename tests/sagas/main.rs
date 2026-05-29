@@ -5,7 +5,6 @@
 //! business process across multiple aggregates, with compensation
 //! (rollback) capabilities when steps fail.
 
-mod distributed;
 mod handlers;
 mod microsvc_saga;
 mod orchestration;
