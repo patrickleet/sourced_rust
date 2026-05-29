@@ -1,14 +1,12 @@
-//! Bus transport tests — subscribe (pub/sub fan-out).
+//! Bus transport tests — subscribe (pub/sub fan-out), over the async `InMemoryBus`.
 //!
-//! Uses `Bus::from_queue` for all event interactions, proving the Bus
-//! abstraction works end-to-end with `microsvc::subscribe`.
+//! Events are published to the bus and drained into a subscribed `Service`,
+//! proving the async bus facade dispatches pub/sub events end-to-end.
 
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
-use sourced_rust::bus::{Bus, Event, InMemoryQueue, Subscribable};
-use sourced_rust::microsvc::{self, Service};
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::microsvc::{Message, MessageKind, Service};
 use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
@@ -31,48 +29,35 @@ fn counter_service() -> Arc<Service<Repo>> {
     )
 }
 
-#[test]
-fn dispatches_from_pubsub() {
-    let bus = Bus::from_queue(InMemoryQueue::new());
+#[tokio::test]
+async fn dispatches_from_pubsub() {
+    let bus = InMemoryBus::new();
     let service = counter_service();
 
-    let subscriber = bus.subscriber().new_subscriber();
-    let handle = microsvc::subscribe(service.clone(), subscriber, Duration::from_millis(10));
+    for (id, name, payload) in [
+        ("evt-1", handlers::counter_create::COMMAND, r#"{"id":"c1"}"#),
+        (
+            "evt-2",
+            handlers::counter_increment::COMMAND,
+            r#"{"id":"c1","amount":10}"#,
+        ),
+        (
+            "evt-3",
+            handlers::counter_increment::COMMAND,
+            r#"{"id":"c1","amount":5}"#,
+        ),
+    ] {
+        bus.publish_message(
+            Message::new(name, MessageKind::Event, payload.as_bytes().to_vec()).with_id(id),
+        )
+        .await
+        .expect("event should publish");
+    }
 
-    // Create
-    bus.publish(Event::with_string_payload(
-        "evt-1",
-        "counter.create",
-        r#"{"id":"c1"}"#,
-    ))
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    // Increment
-    bus.publish(Event::with_string_payload(
-        "evt-2",
-        "counter.increment",
-        r#"{"id":"c1","amount":10}"#,
-    ))
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    // Increment again
-    bus.publish(Event::with_string_payload(
-        "evt-3",
-        "counter.increment",
-        r#"{"id":"c1","amount":5}"#,
-    ))
-    .unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-
-    // Stop the worker before reading to avoid lock contention
-    let stats = handle.stop().expect("transport should stop cleanly");
-    assert_eq!(stats.failed, 0);
-    assert_eq!(stats.handled, 3);
+    // Drain the published events into the subscriber (create, then the increments).
+    bus.subscribe(service.clone(), RunOptions::idempotent())
+        .await
+        .expect("subscriber should drain the bus");
 
     let counter: Counter = service.repo().get("c1").unwrap().unwrap();
     assert_eq!(counter.value, 15);
