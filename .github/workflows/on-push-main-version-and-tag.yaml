@@ -18,43 +18,22 @@ jobs:
       cargo_incremental: true
 
   postgres:
-    name: Postgres Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: sourced_rust_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d sourced_rust_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      CARGO_TERM_COLOR: always
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sourced_rust_test
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: stable
-      - name: Run Postgres integration tests
-        run: |
-          cargo test --test postgres_repository --all-features --verbose
-          cargo test --test postgres_repository_conformance --all-features --verbose
-          cargo test --test distributed_read_model --all-features --verbose
+    uses: ./.github/workflows/integration-postgres.yaml
+
+  nats:
+    uses: ./.github/workflows/integration-nats.yaml
+
+  rabbitmq:
+    uses: ./.github/workflows/integration-rabbitmq.yaml
+
+  kafka:
+    uses: ./.github/workflows/integration-kafka.yaml
 
   # This uses commit logs and tags from git to determine the next version number and create a tag for the release.
   # Some commits such as chore: will not trigger a version bump and tag; this is by design.
   version-and-tag:
     name: Version and Tag
-    needs: [quality, postgres]
+    needs: [quality, postgres, nats, rabbitmq, kafka]
     uses: unbounded-tech/workflow-vnext-tag/.github/workflows/workflow.yaml@v1.20.2
     secrets:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
