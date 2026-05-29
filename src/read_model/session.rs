@@ -56,14 +56,28 @@ impl Default for ReadModelAdapterCapabilities {
 }
 
 /// Result of applying a standalone read-model write plan.
+///
+/// This is intentionally a stub: it carries no skipped/replay state and
+/// [`was_applied`](Self::was_applied) is always `true`. The earlier
+/// `read_model_processed_messages` dedupe table and `skipped_duplicate` outcome
+/// were **deliberately removed** (see `specs/consumer-inbox-design.md`, decision
+/// 2026-05-28) because coupling delivery-level dedupe to the read-model
+/// projection contract was the wrong boundary. Replay safety is now a projection
+/// convention — handlers make their writes idempotent so a redelivered event
+/// re-converges (plus per-row `ExpectedVersion` optimistic concurrency). A
+/// first-class replay barrier returns with the consumer inbox (an operational
+/// `consumer_inbox` table committed as a `CommitBatch` participant), tracked
+/// under `tasks/build-transport-bus-facade`; the variant set will grow then.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReadModelCommitOutcome;
 
 impl ReadModelCommitOutcome {
+    /// The write plan was applied. Currently the only outcome (see the type docs).
     pub fn applied() -> Self {
         Self
     }
 
+    /// Always `true` today — see the type docs for why there is no skipped variant.
     pub fn was_applied(&self) -> bool {
         true
     }
