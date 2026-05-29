@@ -81,9 +81,11 @@
 
 use crate::microsvc::Message;
 
+mod bus;
 mod capabilities;
 mod error;
 mod failure_policy;
+mod in_memory_bus;
 #[cfg(feature = "kafka")]
 mod kafka;
 #[cfg(feature = "http")]
@@ -109,9 +111,11 @@ pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
+pub use bus::{Bus, BusConsumer};
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
+pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
 pub use outbox_source::{
     OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
