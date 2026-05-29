@@ -20,7 +20,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::{error::Error, fmt, sync::Arc};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -28,9 +28,6 @@ use super::context::Context;
 use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
 use super::error::HandlerError;
 use super::session::Session;
-
-#[cfg(feature = "bus")]
-use crate::bus::Event;
 
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFn<D> = dyn Fn(&Context<D>) -> Result<Value, HandlerError> + Send + Sync;
@@ -133,51 +130,7 @@ pub struct Message {
     pub metadata: Vec<(String, String)>,
 }
 
-#[cfg(feature = "bus")]
-impl From<&Event> for Message {
-    fn from(event: &Event) -> Self {
-        Self::from_bus_event(event, MessageKind::Event)
-    }
-}
-
-#[cfg(feature = "bus")]
-impl TryFrom<&Message> for Event {
-    type Error = HandlerError;
-
-    fn try_from(message: &Message) -> Result<Self, Self::Error> {
-        let id = message
-            .id
-            .clone()
-            .ok_or_else(|| HandlerError::Rejected("message id is required".into()))?;
-        let metadata = if message.metadata.is_empty() {
-            None
-        } else {
-            Some(message.metadata.clone())
-        };
-
-        Ok(Self {
-            id,
-            event_type: message.name.clone(),
-            payload: message.payload.clone(),
-            metadata,
-        })
-    }
-}
-
 impl Message {
-    /// Create a transport message from a bus event using an explicit message kind.
-    #[cfg(feature = "bus")]
-    pub fn from_bus_event(event: &Event, kind: MessageKind) -> Self {
-        Self {
-            id: Some(event.id.clone()),
-            name: event.event_type.clone(),
-            kind,
-            payload: event.payload.clone(),
-            content_type: "application/json".to_string(),
-            metadata: event.metadata.clone().unwrap_or_default(),
-        }
-    }
-
     /// Create a transport message.
     pub fn new(name: impl Into<String>, kind: MessageKind, payload: Vec<u8>) -> Self {
         Self {
@@ -433,25 +386,6 @@ impl<D: Send + Sync + 'static> Service<D> {
         self.invoke(message.clone(), input, session)
     }
 
-    /// Dispatch a bus `Event` as a message.
-    #[cfg(feature = "bus")]
-    pub fn dispatch_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
-        self.dispatch_message(&Message::from(event))
-    }
-
-    #[cfg(feature = "bus")]
-    fn dispatch_listened_event(&self, event: &crate::bus::Event) -> Result<Value, HandlerError> {
-        let kind = if self.handles_message(MessageKind::Command, &event.event_type) {
-            MessageKind::Command
-        } else if self.handles_message(MessageKind::Event, &event.event_type) {
-            MessageKind::Event
-        } else {
-            return Err(HandlerError::UnknownCommand(event.event_type.clone()));
-        };
-
-        self.dispatch_message(&Message::from_bus_event(event, kind))
-    }
-
     fn invoke(
         &self,
         message: Message,
@@ -553,239 +487,6 @@ impl<R: Send + Sync + 'static, S: Send + Sync + 'static> Service<RepoReadModelDe
     /// read-model store.
     pub fn with_repo_and_read_model_store(repo: R, read_model_store: S) -> Self {
         Self::new(RepoReadModelDependencies::new(repo, read_model_store))
-    }
-}
-
-// =============================================================================
-// Bus transports (requires "bus" feature)
-// =============================================================================
-
-/// Statistics from a bus transport thread.
-#[cfg(feature = "bus")]
-#[derive(Debug, Default, Clone)]
-pub struct TransportStats {
-    /// Number of commands successfully handled.
-    pub handled: usize,
-    /// Number of commands that failed handling.
-    pub failed: usize,
-    /// Number of poll cycles completed.
-    pub polls: usize,
-}
-
-/// Error returned when a bus transport thread fails during shutdown.
-#[cfg(feature = "bus")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransportJoinError;
-
-#[cfg(feature = "bus")]
-impl fmt::Display for TransportJoinError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "microsvc transport thread panicked during shutdown")
-    }
-}
-
-#[cfg(feature = "bus")]
-impl Error for TransportJoinError {}
-
-/// Handle to a background listener thread. Drop or call `stop()` to shut down.
-#[cfg(feature = "bus")]
-pub struct TransportHandle {
-    stop_tx: std::sync::mpsc::Sender<()>,
-    handle: Option<std::thread::JoinHandle<TransportStats>>,
-}
-
-#[cfg(feature = "bus")]
-impl TransportHandle {
-    /// Stop the transport and wait for it to finish. Returns stats.
-    ///
-    /// Returns [`TransportJoinError`] if the transport thread panicked before
-    /// shutdown completed.
-    pub fn stop(mut self) -> Result<TransportStats, TransportJoinError> {
-        let _ = self.stop_tx.send(());
-        if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| TransportJoinError)
-        } else {
-            Ok(TransportStats::default())
-        }
-    }
-
-    /// Signal stop without waiting.
-    pub fn signal_stop(&self) {
-        let _ = self.stop_tx.send(());
-    }
-}
-
-#[cfg(feature = "bus")]
-impl Drop for TransportHandle {
-    fn drop(&mut self) {
-        let _ = self.stop_tx.send(());
-    }
-}
-
-/// Start listening on a named queue (point-to-point) and dispatching to handlers.
-///
-/// Spawns a background thread that polls the queue. Each message is delivered
-/// to exactly one listener (competing consumers pattern).
-///
-/// The service is wrapped in `Arc` so it can be shared between the transport
-/// thread and the caller (for HTTP dispatch, etc.).
-///
-/// ## Example
-///
-/// ```ignore
-/// use std::sync::Arc;
-/// use sourced_rust::microsvc;
-/// use sourced_rust::bus::{InMemoryQueue, Sender, Event};
-///
-/// let service = Arc::new(
-///     sourced_rust::register_handlers!(
-///         microsvc::Service::with_repo(repo),
-///         command handlers::counter_create,
-///     )
-/// );
-///
-/// let queue = InMemoryQueue::new();
-/// let handle = microsvc::listen(
-///     service.clone(),
-///     "counters",
-///     queue.clone(),
-///     Duration::from_millis(50),
-/// );
-///
-/// // Send commands to the queue
-/// queue.send("counters", Event::with_string_payload("cmd-1", "counter.create", r#"{"id":"c1"}"#))?;
-///
-/// // HTTP dispatch still works on the same service
-/// service.dispatch("counter.create", json!({"id":"c2"}), Session::new())?;
-///
-/// let stats = handle.stop()?;
-/// ```
-#[cfg(feature = "bus")]
-pub fn listen<D, L>(
-    service: std::sync::Arc<Service<D>>,
-    queue_name: &str,
-    listener: L,
-    poll_interval: std::time::Duration,
-) -> TransportHandle
-where
-    D: Send + Sync + 'static,
-    L: crate::bus::Listener + 'static,
-{
-    let queue_name = queue_name.to_string();
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-
-    let handle = std::thread::spawn(move || {
-        let mut stats = TransportStats::default();
-
-        loop {
-            match stop_rx.try_recv() {
-                Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-
-            stats.polls += 1;
-
-            match listener.listen(&queue_name, poll_interval.as_millis() as u64) {
-                Ok(Some(event)) => match service.dispatch_listened_event(&event) {
-                    Ok(_) => stats.handled += 1,
-                    Err(_) => stats.failed += 1,
-                },
-                Ok(None) => {}
-                Err(_) => {}
-            }
-        }
-
-        stats
-    });
-
-    TransportHandle {
-        stop_tx,
-        handle: Some(handle),
-    }
-}
-
-/// Start subscribing to events (pub/sub fan-out) and dispatching to handlers.
-///
-/// Spawns a background thread that polls the subscriber. Unlike `listen`
-/// (point-to-point), every subscriber sees every event — use this when
-/// multiple services need to react to the same events.
-///
-/// Successfully handled events are acknowledged. Failed events are nacked.
-/// Events with no registered handler are acknowledged and ignored; production
-/// transports should use [`Service::subscription_plan`] to avoid delivering
-/// unrelated event types to the service.
-///
-/// ## Example
-///
-/// ```ignore
-/// use std::sync::Arc;
-/// use sourced_rust::microsvc;
-/// use sourced_rust::bus::InMemoryQueue;
-///
-/// let service = Arc::new(
-///     sourced_rust::register_handlers!(
-///         microsvc::Service::new(()),
-///         event handlers::on_order_created,
-///     )
-/// );
-///
-/// let queue = InMemoryQueue::new();
-/// let handle = microsvc::subscribe(
-///     service.clone(),
-///     queue.new_subscriber(),
-///     Duration::from_millis(50),
-/// );
-///
-/// let stats = handle.stop()?;
-/// ```
-#[cfg(feature = "bus")]
-pub fn subscribe<D, S>(
-    service: std::sync::Arc<Service<D>>,
-    subscriber: S,
-    poll_interval: std::time::Duration,
-) -> TransportHandle
-where
-    D: Send + Sync + 'static,
-    S: crate::bus::Subscriber + 'static,
-{
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-
-    let handle = std::thread::spawn(move || {
-        let mut stats = TransportStats::default();
-
-        loop {
-            match stop_rx.try_recv() {
-                Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-
-            stats.polls += 1;
-
-            match subscriber.poll(poll_interval.as_millis() as u64) {
-                Ok(Some(event)) if !service.handles_event(&event.event_type) => {
-                    let _ = subscriber.ack(&event.id);
-                }
-                Ok(Some(event)) => match service.dispatch_event(&event) {
-                    Ok(_) => {
-                        let _ = subscriber.ack(&event.id);
-                        stats.handled += 1;
-                    }
-                    Err(_) => {
-                        let _ = subscriber.nack(&event.id, "handler error");
-                        stats.failed += 1;
-                    }
-                },
-                Ok(None) => {}
-                Err(_) => {}
-            }
-        }
-
-        stats
-    });
-
-    TransportHandle {
-        stop_tx,
-        handle: Some(handle),
     }
 }
 
@@ -1129,68 +830,6 @@ mod tests {
         let json = r#"{"command":"ping","input":{}}"#;
         let result: Result<CommandRequest, _> = serde_json::from_str(json);
         assert!(result.is_err());
-    }
-
-    #[cfg(feature = "bus")]
-    #[test]
-    fn dispatch_event_exposes_raw_payload_without_requiring_json() {
-        let service = test_service().event("ping").handle(|ctx| {
-            let payload = std::str::from_utf8(ctx.message().payload())
-                .map_err(|err| HandlerError::DecodeFailed(err.to_string()))?;
-            Ok(json!({
-                "event_id": ctx.message().id(),
-                "payload": payload,
-            }))
-        });
-        let event = crate::bus::Event::with_string_payload("evt-1", "ping", "not-json");
-        let result = service.dispatch_event(&event);
-        assert_eq!(
-            result.unwrap(),
-            json!({ "event_id": "evt-1", "payload": "not-json" })
-        );
-    }
-
-    #[cfg(feature = "bus")]
-    #[test]
-    fn transport_stop_returns_stats_when_thread_exits_cleanly() {
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let _ = stop_rx.recv();
-            TransportStats {
-                handled: 2,
-                failed: 1,
-                polls: 3,
-            }
-        });
-        let transport = TransportHandle {
-            stop_tx,
-            handle: Some(handle),
-        };
-
-        let stats = transport.stop().unwrap();
-
-        assert_eq!(stats.handled, 2);
-        assert_eq!(stats.failed, 1);
-        assert_eq!(stats.polls, 3);
-    }
-
-    #[cfg(feature = "bus")]
-    #[test]
-    fn transport_stop_returns_error_when_thread_panics() {
-        let (stop_tx, _stop_rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(|| -> TransportStats {
-            panic!("transport panic");
-        });
-        let transport = TransportHandle {
-            stop_tx,
-            handle: Some(handle),
-        };
-
-        let err = transport
-            .stop()
-            .expect_err("transport thread panic should be returned");
-
-        assert_eq!(err, TransportJoinError);
     }
 }
 

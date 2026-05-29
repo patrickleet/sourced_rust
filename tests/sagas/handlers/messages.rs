@@ -1,7 +1,7 @@
 //! Shared message types for inter-service communication.
 //!
-//! Each message is serialized as JSON via [`json_outbox_to`] so that
-//! `microsvc::dispatch_event` can deserialize it on the receiving end.
+//! Each message is serialized as JSON via [`json_outbox_to`] so the receiving
+//! service can decode it from the bus message payload (`ctx.input`).
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::microsvc::HandlerError;
@@ -11,9 +11,9 @@ use crate::order::OrderItem;
 
 /// Create a JSON-serialized outbox message routed to a destination queue.
 ///
-/// `OutboxMessage::encode_to` uses bitcode internally, but the microsvc
-/// transport layer (`dispatch_event`) expects JSON.  This helper bridges the
-/// gap by using `serde_json::to_vec` + `OutboxMessage::create_to`.
+/// `OutboxMessage::encode_to` uses bitcode internally, but the receiving
+/// handlers decode the bus message payload as JSON (`ctx.input`). This helper
+/// bridges the gap with `serde_json::to_vec` + `OutboxMessage::create_to`.
 pub fn json_outbox_to<T: Serialize>(
     id: &str,
     event_type: &str,

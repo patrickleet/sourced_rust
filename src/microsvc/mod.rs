@@ -72,10 +72,6 @@ pub use service::{
 };
 pub use session::Session;
 
-// Bus transports (requires "bus" feature)
-#[cfg(feature = "bus")]
-pub use service::{listen, subscribe, TransportHandle, TransportJoinError, TransportStats};
-
 // HTTP transport (requires "http" feature)
 #[cfg(feature = "http")]
 mod http;
