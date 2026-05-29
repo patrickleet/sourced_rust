@@ -850,24 +850,40 @@ async fn run_checkout_over_bus<B, R>(
         .await
         .expect("subscriber should drain the bus");
 
-    // 4. Every event must have crossed the transport; project them in causal order.
-    let delivered: StdHashMap<String, (String, Vec<u8>)> = collected
+    // 4-5. Project the transport-delivered events in causal order, then assert.
+    project_and_assert_checkout(&repo, &ids, &delivered_map(&collected)).await;
+}
+
+/// Collapse the recorded deliveries into a `name -> (id, payload)` map.
+fn delivered_map(collected: &Collected) -> StdHashMap<String, (String, Vec<u8>)> {
+    collected
         .lock()
         .unwrap()
         .iter()
         .map(|(name, id, payload)| (name.clone(), (id.clone(), payload.clone())))
-        .collect();
+        .collect()
+}
+
+/// Project the events the transport delivered (in causal order) into `repo`'s
+/// read models, then query the graph and assert the user-facing checkout screen.
+/// Shared by every transport cell (pull buses and the Knative HTTP path).
+async fn project_and_assert_checkout<R>(
+    repo: &R,
+    ids: &AsyncFlowIds,
+    delivered: &StdHashMap<String, (String, Vec<u8>)>,
+) where
+    R: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Send + Sync,
+{
     for event_type in FLOW_EVENT_TYPES {
         let (id, payload) = delivered
             .get(event_type)
-            .unwrap_or_else(|| panic!("event {event_type} should arrive over the bus"));
+            .unwrap_or_else(|| panic!("event {event_type} should arrive over the transport"));
         let message = OutboxMessage::create(id.clone(), event_type, payload.clone())
             .expect("delivered event should rebuild");
-        project_message_async(&repo, &message).await;
+        project_message_async(repo, &message).await;
     }
 
-    // 5. Query the projected graph and assert the user-facing checkout screen.
-    let checkout = load_checkout_screen_async(&repo, &ids.checkout_id)
+    let checkout = load_checkout_screen_async(repo, &ids.checkout_id)
         .await
         .expect("checkout read model load should succeed")
         .expect("checkout should be projected");
@@ -894,7 +910,7 @@ async fn run_checkout_over_bus<B, R>(
         vec!["seat_reservation_completed", "seat_reserved", "started"]
     );
 
-    let seat = load_seat_async(&repo, &ids.seat_id)
+    let seat = load_seat_async(repo, &ids.seat_id)
         .await
         .expect("seat read model load should succeed")
         .expect("seat should be projected");
@@ -923,6 +939,334 @@ async fn matrix_in_memory_persistence_over_in_memory_bus() {
         collected,
         repo,
         matrix_ids("inmem-inmem"),
+    )
+    .await;
+}
+
+// ---- Persistence fixtures (read-model schemas registered/bootstrapped) ----
+
+fn inmem_matrix_repo() -> HashMapRepository {
+    let repo = HashMapRepository::new();
+    register_schemas(repo.model_store()).expect("read-model schemas should register");
+    repo
+}
+
+#[cfg(feature = "sqlite")]
+async fn sqlite_matrix_repo() -> SqliteRepository {
+    let repo = SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .expect("sqlite matrix repo should migrate");
+    let registry = read_models::table_schema_registry().expect("schemas should build");
+    repo.bootstrap_table_schema_for_dev(&registry)
+        .await
+        .expect("read-model schema should bootstrap");
+    repo
+}
+
+// ---- Knative (HTTP / CloudEvents) transport cell ----
+//
+// Knative produce = POST CloudEvents to a broker-ingress; consume = the platform
+// delivers them over HTTP to `cloud_events_router`. Here a local router serves the
+// projection sink, so the same scenario runs over the Knative transport with no
+// broker. (HTTP/gRPC command ingress is this same Knative surface.)
+#[cfg(feature = "http")]
+async fn run_checkout_over_knative<R>(repo: R, ids: AsyncFlowIds)
+where
+    R: Clone
+        + AsyncGetStream
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore
+        + AsyncTransactionalCommit
+        + Send
+        + Sync
+        + 'static,
+{
+    use sourced_rust::microsvc::transport::{cloud_events_router, KnativeBus};
+
+    let (collector, collected) = build_collector();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("knative ingress should bind");
+    let addr = listener.local_addr().expect("ingress addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, cloud_events_router(collector))
+            .await
+            .expect("knative ingress should serve");
+    });
+
+    // events_broker "" + namespace "" => POST to the router root ("/").
+    let bus = KnativeBus::new(format!("http://{addr}"), "", "matrix-source", "", "");
+
+    let seat_added = add_seat_async(&repo, &ids.seat_id, &ids.category).await;
+    let checkout_started =
+        start_checkout_async(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
+    let seat_reserved = reserve_started_checkout_seat_async(&repo, &checkout_started).await;
+    let reservation_completed = record_seat_reserved_async(&repo, &seat_reserved).await;
+    for event in [
+        &seat_added,
+        &checkout_started,
+        &seat_reserved,
+        &reservation_completed,
+    ] {
+        let message = Message::new(
+            event.event_type.clone(),
+            MessageKind::Event,
+            event.payload.clone(),
+        )
+        .with_id(event.id().to_string());
+        bus.publish_message(message)
+            .await
+            .expect("CloudEvent should POST to the Knative ingress");
+    }
+
+    project_and_assert_checkout(&repo, &ids, &delivered_map(&collected)).await;
+    server.abort();
+}
+
+// =================== Matrix cells ===================
+//
+// Transport axis: InMemoryBus, NatsBus, RabbitBus, KafkaBus, PostgresBus, Knative.
+// Persistence axis: HashMapRepository, SqliteRepository, PostgresRepository.
+// Broker/DB cells skip when their env var is unset.
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_in_memory_bus() {
+    use sourced_rust::microsvc::transport::InMemoryBus;
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        InMemoryBus::new(),
+        collector,
+        collected,
+        sqlite_matrix_repo().await,
+        matrix_ids("sqlite-inmem"),
+    )
+    .await;
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_knative() {
+    run_checkout_over_knative(inmem_matrix_repo(), matrix_ids("inmem-knative")).await;
+}
+
+#[cfg(all(feature = "http", feature = "sqlite"))]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_knative() {
+    run_checkout_over_knative(sqlite_matrix_repo().await, matrix_ids("sqlite-knative")).await;
+}
+
+#[cfg(feature = "nats")]
+fn nats_url() -> Option<String> {
+    std::env::var("NATS_URL").ok()
+}
+
+#[cfg(feature = "nats")]
+async fn nats_matrix_bus(ns: &str) -> sourced_rust::microsvc::transport::NatsBus {
+    let url = nats_url().expect("NATS_URL set");
+    let bus = sourced_rust::microsvc::transport::NatsBus::connect(&url, "matrix", ns)
+        .await
+        .expect("nats connect")
+        .with_fetch_timeout(Duration::from_millis(800));
+    bus.ensure_stream().await.expect("nats stream");
+    bus
+}
+
+#[cfg(feature = "nats")]
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_nats_bus() {
+    if nats_url().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        nats_matrix_bus(&ns).await,
+        collector,
+        collected,
+        inmem_matrix_repo(),
+        matrix_ids("inmem-nats"),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "nats", feature = "sqlite"))]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_nats_bus() {
+    if nats_url().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        nats_matrix_bus(&ns).await,
+        collector,
+        collected,
+        sqlite_matrix_repo().await,
+        matrix_ids("sqlite-nats"),
+    )
+    .await;
+}
+
+#[cfg(feature = "rabbitmq")]
+fn amqp_url() -> Option<String> {
+    std::env::var("AMQP_URL").ok()
+}
+
+#[cfg(feature = "rabbitmq")]
+async fn rabbit_matrix_bus(
+    ns: &str,
+    collector: &StdArc<Service<()>>,
+) -> sourced_rust::microsvc::transport::RabbitBus {
+    let url = amqp_url().expect("AMQP_URL set");
+    let bus = sourced_rust::microsvc::transport::RabbitBus::connect(&url, "matrix", ns)
+        .await
+        .expect("rabbit connect");
+    // Topic exchange drops events with no bound queue, so bind before publishing.
+    bus.ensure_subscription(collector.as_ref())
+        .await
+        .expect("rabbit subscription bind");
+    bus
+}
+
+#[cfg(feature = "rabbitmq")]
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_rabbit_bus() {
+    if amqp_url().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    let bus = rabbit_matrix_bus(&ns, &collector).await;
+    run_checkout_over_bus(
+        bus,
+        collector,
+        collected,
+        inmem_matrix_repo(),
+        matrix_ids("inmem-rabbit"),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "rabbitmq", feature = "sqlite"))]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_rabbit_bus() {
+    if amqp_url().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns").to_lowercase();
+    let (collector, collected) = build_collector();
+    let bus = rabbit_matrix_bus(&ns, &collector).await;
+    run_checkout_over_bus(
+        bus,
+        collector,
+        collected,
+        sqlite_matrix_repo().await,
+        matrix_ids("sqlite-rabbit"),
+    )
+    .await;
+}
+
+#[cfg(feature = "kafka")]
+fn kafka_brokers() -> Option<String> {
+    std::env::var("KAFKA_BROKERS").ok()
+}
+
+#[cfg(feature = "kafka")]
+async fn kafka_matrix_bus(ns: &str) -> sourced_rust::microsvc::transport::KafkaBus {
+    let brokers = kafka_brokers().expect("KAFKA_BROKERS set");
+    sourced_rust::microsvc::transport::KafkaBus::connect(&brokers, "matrix", ns)
+        .await
+        .expect("kafka connect")
+        .with_fetch_timeout(Duration::from_secs(10))
+}
+
+#[cfg(feature = "kafka")]
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_kafka_bus() {
+    if kafka_brokers().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        kafka_matrix_bus(&ns).await,
+        collector,
+        collected,
+        inmem_matrix_repo(),
+        matrix_ids("inmem-kafka"),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "kafka", feature = "sqlite"))]
+#[tokio::test]
+async fn matrix_sqlite_persistence_over_kafka_bus() {
+    if kafka_brokers().is_none() {
+        return;
+    }
+    let ns = async_unique_id("ns");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        kafka_matrix_bus(&ns).await,
+        collector,
+        collected,
+        sqlite_matrix_repo().await,
+        matrix_ids("sqlite-kafka"),
+    )
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn matrix_in_memory_persistence_over_postgres_bus() {
+    use sourced_rust::microsvc::transport::PostgresBus;
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env(
+        "matrix_pgbus",
+        "skipping Postgres-bus matrix cell",
+    )
+    .await
+    else {
+        return;
+    };
+    let bus_pool = schema.repository().await.pool().clone();
+    let bus = PostgresBus::new(bus_pool, "matrix");
+    bus.ensure_tables().await.expect("postgres bus tables");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        bus,
+        collector,
+        collected,
+        inmem_matrix_repo(),
+        matrix_ids("inmem-pgbus"),
+    )
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn matrix_postgres_persistence_over_in_memory_bus() {
+    use sourced_rust::microsvc::transport::InMemoryBus;
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env(
+        "matrix_pg",
+        "skipping Postgres-persistence matrix cell",
+    )
+    .await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let registry = read_models::table_schema_registry().expect("schemas should build");
+    repo.bootstrap_table_schema_for_dev(&registry)
+        .await
+        .expect("read-model schema should bootstrap");
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(
+        InMemoryBus::new(),
+        collector,
+        collected,
+        repo,
+        matrix_ids("pg-inmem"),
     )
     .await;
 }
