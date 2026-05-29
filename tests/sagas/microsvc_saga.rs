@@ -9,26 +9,27 @@
 //!
 //! Two tests:
 //! 1. **Orchestrated** — test runner dispatches commands to each service
-//! 2. **Distributed** — services communicate via bus with `microsvc::listen`
+//! 2. **Distributed** — services communicate over the async `InMemoryBus`
 
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 
-use sourced_rust::microsvc::{self, Service, Session};
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, InMemoryQueue, OutboxWorkerThread, Queueable,
+    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    OutboxClaimRef, Queueable,
 };
 
 use super::handlers;
 use super::order::{Inventory, Order, OrderFulfillmentSaga, OrderStatus, Payment, SagaStatus};
 
-fn event_message(name: &str, input: serde_json::Value) -> microsvc::Message {
-    microsvc::Message::new(
+fn event_message(name: &str, input: serde_json::Value) -> Message {
+    Message::new(
         name,
-        microsvc::MessageKind::Event,
+        MessageKind::Event,
         serde_json::to_vec(&input).unwrap(),
     )
 }
@@ -208,43 +209,67 @@ fn saga_orchestrated() {
 }
 
 // ============================================================================
-// Test 2: Distributed — services communicate via bus transport
+// Test 2: Distributed — services communicate over the async InMemoryBus
 // ============================================================================
 
-/// Each service runs on its own named queue with an outbox worker routing
-/// messages.  The test dispatches `StartSaga` and then polls for completion.
+/// Drain a service's outbox onto the bus, routing by destination: messages
+/// addressed to a worker service (`destination != "saga"`) are point-to-point
+/// commands (consumed via `listen`); messages addressed to the saga
+/// (`destination == "saga"`) are events (consumed via `subscribe`). Returns how
+/// many messages were forwarded.
+async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) -> usize {
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::new(
+            "saga-outbox-bridge",
+            64,
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("outbox claim should succeed");
+    let count = claimed.len();
+    for message in claimed {
+        let is_event = message.destination.as_deref() == Some("saga");
+        let kind = if is_event {
+            MessageKind::Event
+        } else {
+            MessageKind::Command
+        };
+        let bus_message = Message::new(message.event_type.clone(), kind, message.payload.clone())
+            .with_id(message.id().to_string());
+        if is_event {
+            bus.publish_message(bus_message)
+                .await
+                .expect("saga event should publish");
+        } else {
+            bus.send_message(bus_message)
+                .await
+                .expect("service command should enqueue");
+        }
+        let claim = OutboxClaimRef::from_message(&message).expect("claimed message yields a ref");
+        outbox
+            .complete_async(&claim)
+            .await
+            .expect("forwarded message should complete");
+    }
+    count
+}
+
+/// Each service owns its aggregate + outbox; the choreography flows entirely
+/// over the bus. Instead of threaded outbox workers + long-poll listeners, the
+/// test drives the flow deterministically: each round forwards every pending
+/// outbox message onto a fresh bus, then drains the consumers (the saga
+/// `subscribe`s to events, the worker services `listen` for commands). The loop
+/// ends when no service has pending outbox work — i.e. the saga is complete.
 ///
 /// ```text
-///  ┌──────────────────────────────────────────────────────────────┐
-///  │              Shared Queue (InMemoryQueue)                     │
-///  │  "saga"         "orders"       "inventory"     "payments"    │
-///  └──────────────────────────────────────────────────────────────┘
-///      ↑↓              ↑↓              ↑↓              ↑↓
-///  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐
-///  │  Saga    │  │  Order   │  │  Inventory   │  │  Payment │
-///  │  Service │  │  Service │  │  Service     │  │  Service │
-///  └──────────┘  └──────────┘  └──────────────┘  └──────────┘
+/// StartSaga ─▶ CreateOrder ─▶ OrderCreated ─▶ ReserveInventory ─▶ InventoryReserved
+///   ─▶ ProcessPayment ─▶ PaymentSucceeded ─▶ CompleteOrder ─▶ OrderCompleted ─▶ done
 /// ```
-///
-/// Flow:
-/// 1. Saga starts → sends CreateOrder to "orders"
-/// 2. Order creates → sends OrderCreated to "saga"
-/// 3. Saga → sends ReserveInventory to "inventory"
-/// 4. Inventory reserves → sends InventoryReserved to "saga"
-/// 5. Saga → sends ProcessPayment to "payments"
-/// 6. Payment captures → sends PaymentSucceeded to "saga"
-/// 7. Saga → sends CompleteOrder to "orders"
-/// 8. Order completes → sends OrderCompleted to "saga"
-/// 9. Saga completes
-#[test]
-fn saga_distributed() {
-    let queue = InMemoryQueue::new();
-    let poll = Duration::from_millis(10);
-
+#[tokio::test]
+async fn saga_distributed() {
     // === SAGA SERVICE ===
     let saga_repo = HashMapRepository::new();
-    let saga_worker =
-        OutboxWorkerThread::spawn_routed(saga_repo.outbox_store(), queue.clone(), poll);
+    let saga_outbox = saga_repo.outbox_store();
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         command handlers::saga::start,
@@ -253,49 +278,38 @@ fn saga_distributed() {
         event handlers::saga::on_payment_succeeded,
         event handlers::saga::on_order_completed,
     ));
-    let saga_listen = microsvc::listen(saga_svc.clone(), "saga", queue.clone(), poll);
 
     // === ORDER SERVICE ===
     let order_repo = HashMapRepository::new();
-    let order_worker =
-        OutboxWorkerThread::spawn_routed(order_repo.outbox_store(), queue.clone(), poll);
+    let order_outbox = order_repo.outbox_store();
     let order_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(order_repo.queued().aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     ));
-    let order_listen = microsvc::listen(order_svc.clone(), "orders", queue.clone(), poll);
 
-    // === INVENTORY SERVICE ===
+    // === INVENTORY SERVICE (pre-seeded) ===
     let inventory_repo = HashMapRepository::new();
-    let inventory_worker =
-        OutboxWorkerThread::spawn_routed(inventory_repo.outbox_store(), queue.clone(), poll);
-
-    // Pre-seed inventory before starting the service
+    let inventory_outbox = inventory_repo.outbox_store();
     {
         let tmp = inventory_repo.clone().aggregate::<Inventory>();
         let mut inv = Inventory::new();
         inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         tmp.commit(&mut inv).unwrap();
     }
-
     let inventory_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(inventory_repo.queued().aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     ));
-    let inventory_listen =
-        microsvc::listen(inventory_svc.clone(), "inventory", queue.clone(), poll);
 
     // === PAYMENT SERVICE ===
     let payment_repo = HashMapRepository::new();
-    let payment_worker =
-        OutboxWorkerThread::spawn_routed(payment_repo.outbox_store(), queue.clone(), poll);
+    let payment_outbox = payment_repo.outbox_store();
     let payment_svc = Arc::new(sourced_rust::register_handlers!(
         Service::with_repo(payment_repo.queued().aggregate::<Payment>()),
         command handlers::payments::process,
     ));
-    let payment_listen = microsvc::listen(payment_svc.clone(), "payments", queue.clone(), poll);
 
     // === START THE SAGA ===
     saga_svc
@@ -312,47 +326,39 @@ fn saga_distributed() {
         )
         .unwrap();
 
-    // === POLL FOR COMPLETION ===
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(saga) = saga_svc.repo().peek("saga-001").unwrap() {
-            if saga.is_complete() {
-                break;
-            }
+    // === DRIVE THE CHOREOGRAPHY OVER THE BUS UNTIL QUIESCENT ===
+    let mut reached_quiescence = false;
+    for _ in 0..30 {
+        // A fresh bus per round bounds delivery to this hop's messages (the
+        // in-memory topic log is retained across reads, so reusing one bus would
+        // re-deliver every prior event to the saga).
+        let bus = InMemoryBus::new();
+        let published = publish_pending_outbox(&saga_outbox, &bus).await
+            + publish_pending_outbox(&order_outbox, &bus).await
+            + publish_pending_outbox(&inventory_outbox, &bus).await
+            + publish_pending_outbox(&payment_outbox, &bus).await;
+        if published == 0 {
+            reached_quiescence = true;
+            break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "Saga should complete within 10 seconds"
-        );
-        thread::sleep(Duration::from_millis(50));
+
+        bus.subscribe(saga_svc.clone(), RunOptions::idempotent())
+            .await
+            .expect("saga should drain its events");
+        bus.listen(order_svc.clone(), RunOptions::idempotent())
+            .await
+            .expect("order service should drain its commands");
+        bus.listen(inventory_svc.clone(), RunOptions::idempotent())
+            .await
+            .expect("inventory service should drain its commands");
+        bus.listen(payment_svc.clone(), RunOptions::idempotent())
+            .await
+            .expect("payment service should drain its commands");
     }
-
-    // === STOP TRANSPORTS AND WORKERS ===
-    let saga_stats = saga_listen
-        .stop()
-        .expect("saga listener should stop cleanly");
-    let order_stats = order_listen
-        .stop()
-        .expect("order listener should stop cleanly");
-    let _inventory_stats = inventory_listen
-        .stop()
-        .expect("inventory listener should stop cleanly");
-    let _payment_stats = payment_listen
-        .stop()
-        .expect("payment listener should stop cleanly");
-
-    saga_worker
-        .stop()
-        .expect("outbox worker should stop cleanly");
-    order_worker
-        .stop()
-        .expect("outbox worker should stop cleanly");
-    inventory_worker
-        .stop()
-        .expect("outbox worker should stop cleanly");
-    payment_worker
-        .stop()
-        .expect("outbox worker should stop cleanly");
+    assert!(
+        reached_quiescence,
+        "the saga choreography should reach quiescence within the round budget"
+    );
 
     // === VERIFY FINAL STATE — typed repos return aggregates directly ===
 
@@ -369,8 +375,4 @@ fn saga_distributed() {
 
     let payment = payment_svc.repo().peek("pay-order-001").unwrap().unwrap();
     assert!(payment.is_successful());
-
-    // Transport stats: saga handled 4 events, orders handled 2
-    assert_eq!(saga_stats.handled, 4);
-    assert_eq!(order_stats.handled, 2);
 }
