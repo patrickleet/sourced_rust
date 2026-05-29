@@ -164,6 +164,16 @@ where
         }
     }
 
+    /// The publisher this dispatcher sends through.
+    pub fn publisher(&self) -> &P {
+        &self.publisher
+    }
+
+    /// The outbox store this dispatcher claims from.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     /// Immediate after-commit dispatch of the explicit outbox ids a commit just
     /// inserted. Claims those ids (raced/unclaimable ids are skipped, not an
     /// error) before publishing, so it never races the polling worker.
