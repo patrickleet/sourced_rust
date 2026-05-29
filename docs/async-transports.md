@@ -93,6 +93,66 @@ Retry/backoff/dead-lettering ownership differs: with Knative it is
 **platform-managed** (Delivery/Trigger config); with direct transports the
 adapter and this crate own it via the `FailurePolicy` and the outbox lease.
 
+## Bus facade: `send`/`listen` + `publish`/`subscribe`
+
+The adapters above are the low-level boundary. The **bus facade** is the
+ergonomic surface on top: a produce trait [`Bus`] (`send` a command, `publish` an
+event) and a consume trait [`BusConsumer`] (`listen` for commands, `subscribe` to
+events), implemented by a per-transport `*Bus` type. `listen`/`subscribe` derive
+the message names from the service's registered handlers
+(`command_names()`/`event_names()`), build the transport's source with the right
+topology, and run it through the shared `run_source` — handler code and
+`dispatch_message` never change.
+
+The app surface is identical across transports; only the constructor changes:
+
+```rust
+use std::sync::Arc;
+use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+
+// Built once — handlers are transport-agnostic.
+let service = Arc::new(build_service());
+
+// Dev/test: in-memory.
+let bus = InMemoryBus::new();
+bus.send("place.bet", payload).await?;          // point-to-point command (1:1)
+bus.publish("seat.reserved", payload).await?;   // fan-out event (1:N)
+bus.listen(service.clone(), RunOptions::idempotent()).await?;     // competing
+bus.subscribe(service.clone(), RunOptions::idempotent()).await?;  // fan-out
+
+// Production: swap the one constructor line — send/listen/publish/subscribe
+// and the handlers are unchanged.
+//   let bus = NatsBus::connect("nats://localhost:4222", "orders", "app").await?;
+//   let bus = PostgresBus::new(pool, "orders");
+//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f", "orders", "app").await?;
+//   let bus = KafkaBus::connect("localhost:9092", "orders", "app").await?;
+```
+
+Point-to-point vs fan-out is consistently a **consumer-group/identity** choice in
+each transport's native topology — same `group` competes, different `group`s
+fan out:
+
+| `*Bus` | Feature | `send` / `listen` (competing) | `publish` / `subscribe` (fan-out) |
+| --- | --- | --- | --- |
+| `InMemoryBus` | (always) | named queue, popped once | retained log + per-subscriber cursor |
+| `NatsBus` | `nats` | shared durable `{group}_cmd` on the stream | durable `{group}_evt` per group |
+| `PostgresBus` | `postgres` | `bus_queue`, `FOR UPDATE SKIP LOCKED` | `bus_log` + `bus_offset` per `group` (Kafka-style) |
+| `RabbitBus` | `rabbitmq` | default exchange → durable queue `{ns}.cmd.{name}` | topic exchange → queue `{ns}.evt.{group}` per group |
+| `KafkaBus` | `kafka` | shared consumer group `{ns}.{group}.cmd` | consumer group per service `{ns}.{group}.evt` |
+| `KnativeBus` | `http` | POST CloudEvent → `{target}-commands` broker-ingress | POST → own `{source}-events` broker; consume via generated Triggers |
+
+`KnativeBus` implements only [`Bus`] (produce → broker-ingress POST). It has no
+in-process consume loop: `KnativeBus::manifests(&plan, &subscriptions)` renders
+the role-based `Broker` + per-name `Trigger` YAML (subscriber URIs
+`/cloudevent/<type>`, with a `.local(addr)` kubefwd variant), and the service
+mounts `cloud_events_router` so those Triggers reach `dispatch_message`.
+
+`PostgresBus` uses the claim-lease work queue (not `sqlxmq`) for the same reason
+the low-level adapter does — sqlxmq's always-on push runner doesn't compose with
+the uniform drain-to-idle `run_source` model the facade shares; its `bus_log` +
+`bus_offset` fan-out gives single-DB transactional effectively-once (the offset
+advances with the effects). See `specs/transport-bus-facade`.
+
 ## Testing
 
 The reusable conformance harness (`tests/transport_conformance/`) proves the
@@ -111,14 +171,19 @@ AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
 KAFKA_BROKERS=localhost:9092     cargo test --test kafka_transport --features kafka
 ```
 
-Each broker has a matching GitHub Actions job (reusable
-`.github/workflows/integration-*.yaml`) that runs on PRs and on push to `main`.
+Each transport's integration binary also covers its `*Bus`: a competing-consumer
+case (one delivery across a shared group) and a fan-out case (every group sees
+every event), verified against the real broker. Each broker has a matching GitHub
+Actions job (reusable `.github/workflows/integration-*.yaml`) that runs on PRs and
+on push to `main`.
 
 ## Status
 
 Implemented and verified: the core contracts, the source runner, the publisher /
 outbox dispatcher, the conformance harness, the Postgres / NATS / RabbitMQ /
-Kafka adapters, and the Knative ingress. Still open: migrating the in-repo
-examples to showcase these APIs and removing the legacy synchronous bus paths
-(a breaking change), and a long-running poll/notify consumer daemon for the
-Postgres source. See `tasks/transport-docs-examples-cutover`.
+Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
+`BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `RabbitBus` /
+`KafkaBus` / `KnativeBus`, each with real-broker competing-vs-fan-out tests).
+Still open: migrating the in-repo examples to showcase these APIs and removing the
+legacy synchronous bus paths (a breaking change). See
+`tasks/transport-docs-examples-cutover`.
