@@ -98,6 +98,22 @@ pub trait AsyncTransactionalCommit: Send + Sync {
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 }
 
+/// Consumer inbox read capability: check whether a `(consumer, message_id)`
+/// receipt has already been recorded.
+///
+/// The pre-check lets a consumer skip re-running a handler for an already-processed
+/// message (and ack the redelivery) before opening a transaction. The
+/// authoritative dedupe is still the receipt's `(consumer, message_id)` primary
+/// key written in [`commit_batch_async`](AsyncTransactionalCommit::commit_batch_async),
+/// which fences the race where two deliveries both pass the pre-check.
+pub trait AsyncInboxStore: Send + Sync {
+    fn inbox_contains_async<'a>(
+        &'a self,
+        consumer: &'a str,
+        message_id: &'a str,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a;
+}
+
 /// Repository trait for types that implement async stream reads and commits.
 pub trait AsyncRepository: AsyncGetStream + AsyncTransactionalCommit {}
 

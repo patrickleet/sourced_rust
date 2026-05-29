@@ -168,6 +168,7 @@ where
         StreamIdentity::new(Seat::aggregate_type(), &seat_id).expect("identity should be valid");
     let err = repo
         .commit_batch_async(AsyncCommitBatch {
+            inbox_receipts: Vec::new(),
             streams: vec![AsyncStreamWrite::new(identity, stale.entity_mut())],
             outbox_messages: Vec::new(),
             read_model_plans: vec![read_models

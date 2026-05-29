@@ -179,6 +179,7 @@ where
         .expect("checkout identity should be valid");
     let err = repo
         .commit_batch_async(AsyncCommitBatch {
+            inbox_receipts: Vec::new(),
             streams: vec![
                 AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
                 AsyncStreamWrite::new(checkout_identity.clone(), checkout.entity_mut()),

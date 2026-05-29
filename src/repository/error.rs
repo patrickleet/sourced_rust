@@ -19,6 +19,13 @@ pub enum RepositoryError {
     DuplicateOutboxMessageInBatch {
         id: String,
     },
+    /// A consumer inbox receipt `(consumer, message_id)` was already recorded.
+    /// The commit is rolled back so the consumer's effects are not double-applied;
+    /// the message has already been processed (an at-least-once replay).
+    DuplicateInboxReceipt {
+        consumer: String,
+        message_id: String,
+    },
     InvalidStreamIdentity {
         aggregate_type: String,
         aggregate_id: String,
@@ -58,6 +65,14 @@ impl fmt::Display for RepositoryError {
             RepositoryError::DuplicateOutboxMessageInBatch { id } => {
                 write!(f, "duplicate outbox message id in commit batch: {}", id)
             }
+            RepositoryError::DuplicateInboxReceipt {
+                consumer,
+                message_id,
+            } => write!(
+                f,
+                "consumer inbox receipt already recorded for consumer `{}`, message `{}`",
+                consumer, message_id
+            ),
             RepositoryError::InvalidStreamIdentity {
                 aggregate_type,
                 aggregate_id,

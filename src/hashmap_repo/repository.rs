@@ -19,7 +19,7 @@ use crate::read_model::{
     ReadModelWritePlanStore, RelationalReadModelQueryStore,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
     AsyncTransactionalCommit, Commit, CommitBatch, GetMany, GetOne, PreparedEventAppend,
     RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
@@ -37,6 +37,8 @@ pub struct HashMapRepository {
     outbox_store: Arc<RwLock<HashMap<String, OutboxMessage>>>,
     model_store: InMemoryReadModelStore,
     snapshot_store: InMemorySnapshotStore,
+    /// Consumer inbox: the set of recorded `(consumer, message_id)` receipts.
+    inbox_store: Arc<RwLock<HashSet<(String, String)>>>,
 }
 
 /// In-memory outbox table handle.
@@ -59,6 +61,7 @@ impl HashMapRepository {
             outbox_store: Arc::new(RwLock::new(HashMap::new())),
             model_store: InMemoryReadModelStore::new(),
             snapshot_store: InMemorySnapshotStore::new(),
+            inbox_store: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -82,6 +85,14 @@ impl HashMapRepository {
     /// Access the embedded snapshot store directly.
     pub fn snapshot_store(&self) -> &InMemorySnapshotStore {
         &self.snapshot_store
+    }
+
+    /// Whether a consumer inbox receipt for `(consumer, message_id)` is recorded.
+    pub fn inbox_contains(&self, consumer: &str, message_id: &str) -> bool {
+        self.inbox_store
+            .read()
+            .map(|set| set.contains(&(consumer.to_string(), message_id.to_string())))
+            .unwrap_or(false)
     }
 }
 
@@ -197,11 +208,16 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 .outbox_store
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
+            let mut inbox_storage = self
+                .inbox_store
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("async inbox write"))?;
 
             let mut staged_events = storage.clone();
             let mut staged_rows = relational_rows.clone();
             let mut staged_snapshots = snapshot_storage.clone();
             let mut staged_outbox = outbox_storage.clone();
+            let mut staged_inbox = inbox_storage.clone();
 
             for append in &prepared {
                 let stored_len =
@@ -242,10 +258,24 @@ impl AsyncTransactionalCommit for HashMapRepository {
                 staged_outbox.insert(id, message);
             }
 
+            // Inbox receipts gate effectively-once: a receipt that already exists
+            // (committed or duplicated in this batch) rolls the whole batch back so
+            // effects are not double-applied.
+            for receipt in batch.inbox_receipts {
+                let key = (receipt.consumer.clone(), receipt.message_id.clone());
+                if !staged_inbox.insert(key) {
+                    return Err(RepositoryError::DuplicateInboxReceipt {
+                        consumer: receipt.consumer,
+                        message_id: receipt.message_id,
+                    });
+                }
+            }
+
             *storage = staged_events;
             *relational_rows = staged_rows;
             *snapshot_storage = staged_snapshots;
             *outbox_storage = staged_outbox;
+            *inbox_storage = staged_inbox;
 
             for stream in batch.streams {
                 stream.entity.mark_committed();
@@ -253,6 +283,16 @@ impl AsyncTransactionalCommit for HashMapRepository {
 
             Ok(())
         }
+    }
+}
+
+impl AsyncInboxStore for HashMapRepository {
+    fn inbox_contains_async<'a>(
+        &'a self,
+        consumer: &'a str,
+        message_id: &'a str,
+    ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
+        async move { Ok(self.inbox_contains(consumer, message_id)) }
     }
 }
 
@@ -279,11 +319,16 @@ impl TransactionalCommit for HashMapRepository {
             .outbox_store
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
+        let mut inbox_storage = self
+            .inbox_store
+            .write()
+            .map_err(|_| RepositoryError::LockPoisoned("inbox write"))?;
 
         let mut staged_events = storage.clone();
         let mut staged_rows = relational_rows.clone();
         let mut staged_snapshots = snapshot_storage.clone();
         let mut staged_outbox = outbox_storage.clone();
+        let mut staged_inbox = inbox_storage.clone();
 
         // Phase 1: Validate all stream versions before staging any writes.
         for entity in &batch.entities {
@@ -327,11 +372,23 @@ impl TransactionalCommit for HashMapRepository {
             staged_outbox.insert(id, message);
         }
 
+        // Inbox receipts gate effectively-once (see the async impl).
+        for receipt in batch.inbox_receipts {
+            let key = (receipt.consumer.clone(), receipt.message_id.clone());
+            if !staged_inbox.insert(key) {
+                return Err(RepositoryError::DuplicateInboxReceipt {
+                    consumer: receipt.consumer,
+                    message_id: receipt.message_id,
+                });
+            }
+        }
+
         // Phase 3: Publish staged state only after all validation and staging succeeds.
         *storage = staged_events;
         *relational_rows = staged_rows;
         *snapshot_storage = staged_snapshots;
         *outbox_storage = staged_outbox;
+        *inbox_storage = staged_inbox;
 
         for entity in batch.entities {
             entity.mark_committed();
@@ -632,5 +689,31 @@ mod tests {
         assert_eq!(entity2.committed_version(), 0);
         assert_eq!(entity1.new_events().len(), 1);
         assert_eq!(entity2.new_events().len(), 1);
+    }
+
+    #[test]
+    fn inbox_receipts_record_dedupe_and_roll_back_atomically() {
+        use crate::repository::InboxReceipt;
+        let repo = HashMapRepository::new();
+
+        let mut batch = CommitBatch::empty();
+        batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
+        repo.commit_batch(batch).unwrap();
+        assert!(repo.inbox_contains("proj", "m1"));
+        assert!(!repo.inbox_contains("proj", "m2"));
+
+        // A batch with a duplicate (m1) and a fresh receipt (m2) rolls back whole.
+        let mut dup = CommitBatch::empty();
+        dup.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
+        dup.inbox_receipts.push(InboxReceipt::new("proj", "m2"));
+        let err = repo.commit_batch(dup).unwrap_err();
+        assert!(
+            matches!(err, RepositoryError::DuplicateInboxReceipt { ref message_id, .. } if message_id == "m1"),
+            "got {err:?}"
+        );
+        assert!(
+            !repo.inbox_contains("proj", "m2"),
+            "the duplicate rolled the whole batch back"
+        );
     }
 }
