@@ -7,8 +7,6 @@ pub mod aggregate;
 pub mod entity;
 pub mod repository;
 
-#[cfg(feature = "bus")]
-pub mod bus;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
@@ -87,18 +85,6 @@ pub use outbox_worker::{
     OutboxWorker,
     ProcessOneResult,
 };
-
-// Threaded outbox worker (requires bus feature)
-#[cfg(feature = "bus")]
-pub use outbox_worker::{OutboxWorkerJoinError, OutboxWorkerThread, WorkerStats};
-
-// In-memory queue for testing and development (requires bus feature)
-#[cfg(feature = "bus")]
-pub use bus::InMemoryQueue;
-
-// Message alias for command contexts (requires bus feature)
-#[cfg(feature = "bus")]
-pub use bus::Message;
 
 // LocalEmitterPublisher requires the emitter feature
 #[cfg(feature = "emitter")]

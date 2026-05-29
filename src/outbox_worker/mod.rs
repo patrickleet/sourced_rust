@@ -39,8 +39,6 @@
 
 mod publisher;
 mod store;
-#[cfg(feature = "bus")]
-mod thread;
 mod worker;
 
 // Publishers
@@ -57,7 +55,3 @@ pub use store::{
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
-
-// Threaded worker (requires bus feature)
-#[cfg(feature = "bus")]
-pub use thread::{OutboxWorkerJoinError, OutboxWorkerThread, WorkerStats};
