@@ -35,12 +35,14 @@ grpc = ["bus", "dep:tonic", "dep:prost", "dep:tokio"]
 postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/runtime-tokio"]
 sqlite = ["dep:sqlx", "dep:tokio", "sqlx/runtime-tokio", "sqlx/sqlite"]
 nats = ["dep:async-nats", "dep:futures", "dep:tokio"]
+rabbitmq = ["dep:lapin", "dep:futures", "dep:tokio"]
 
 [dependencies]
 async-nats = { version = "0.38", optional = true }
 axum = { version = "0.7", optional = true }
 base64 = "0.22.1"
 futures = { version = "0.3", optional = true }
+lapin = { version = "2", optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
 event-emitter-rs = { version = "0.1.4", optional = true }
 serde = { version = "1.0.210", features = ["derive"] }
