@@ -22,6 +22,11 @@ pub struct ClaimOutboxMessages {
     pub batch_size: usize,
     pub lease: Duration,
     pub destination: Option<String>,
+    /// Restrict the claim to this explicit set of message ids. `None` claims the
+    /// next claimable batch in created-at order (normal worker polling); `Some`
+    /// claims only the listed ids (after-commit immediate dispatch). Ids that are
+    /// not currently claimable are simply skipped — a raced id is not an error.
+    pub message_ids: Option<Vec<String>>,
 }
 
 impl ClaimOutboxMessages {
@@ -31,12 +36,33 @@ impl ClaimOutboxMessages {
             batch_size,
             lease,
             destination: None,
+            message_ids: None,
         }
     }
 
     pub fn to_destination(mut self, destination: impl Into<String>) -> Self {
         self.destination = Some(destination.into());
         self
+    }
+
+    /// Restrict this claim to an explicit list of message ids (after-commit
+    /// immediate dispatch). The batch size is bounded by the id count.
+    pub fn for_ids(worker_id: impl Into<String>, ids: Vec<String>, lease: Duration) -> Self {
+        Self {
+            worker_id: worker_id.into(),
+            batch_size: ids.len(),
+            lease,
+            destination: None,
+            message_ids: Some(ids),
+        }
+    }
+
+    /// Whether `id` is selectable under this request's id filter.
+    fn selects(&self, id: &str) -> bool {
+        match &self.message_ids {
+            Some(ids) => ids.iter().any(|wanted| wanted == id),
+            None => true,
+        }
     }
 }
 
@@ -269,6 +295,10 @@ impl OutboxStore for HashMapOutboxStore {
         let ids = claim_order_ids(storage.values());
         let mut claimed = Vec::new();
         for id in ids {
+            if !request.selects(&id) {
+                continue;
+            }
+
             let Some(message) = storage.get_mut(&id) else {
                 continue;
             };
@@ -372,6 +402,10 @@ impl AsyncOutboxStore for HashMapOutboxStore {
 
             let mut claimed = Vec::new();
             for id in ids {
+                if !request.selects(&id) {
+                    continue;
+                }
+
                 let Some(message) = storage.get_mut(&id) else {
                     continue;
                 };
@@ -588,6 +622,64 @@ mod tests {
             .unwrap();
 
         assert_eq!(claimed[0].id(), "msg-z");
+    }
+
+    #[test]
+    fn claim_by_explicit_ids_claims_only_requested() {
+        let repo = HashMapRepository::new();
+        store_message(
+            &repo,
+            OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap(),
+        );
+        store_message(
+            &repo,
+            OutboxMessage::create("msg-b", "Event", b"{}".to_vec()).unwrap(),
+        );
+        store_message(
+            &repo,
+            OutboxMessage::create("msg-c", "Event", b"{}".to_vec()).unwrap(),
+        );
+
+        let claimed = repo
+            .outbox_store()
+            .claim(ClaimOutboxMessages::for_ids(
+                "worker-1",
+                vec!["msg-b".to_string(), "msg-c".to_string()],
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+
+        let mut claimed_ids = claimed
+            .iter()
+            .map(|m| m.id().to_string())
+            .collect::<Vec<_>>();
+        claimed_ids.sort();
+        assert_eq!(claimed_ids, vec!["msg-b".to_string(), "msg-c".to_string()]);
+        // The unrequested row stays pending.
+        assert!(load_message(&repo, "msg-a").is_pending());
+    }
+
+    #[test]
+    fn claim_by_ids_skips_unclaimable_without_error() {
+        let repo = HashMapRepository::new();
+        let mut leased = OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap();
+        leased
+            .claim_for("other-worker", Duration::from_secs(60))
+            .unwrap();
+        store_message(&repo, leased);
+
+        // Requesting a currently-leased id (and a missing id) yields no claim,
+        // not an error.
+        let claimed = repo
+            .outbox_store()
+            .claim(ClaimOutboxMessages::for_ids(
+                "worker-1",
+                vec!["msg-a".to_string(), "missing".to_string()],
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+
+        assert!(claimed.is_empty());
     }
 
     #[test]

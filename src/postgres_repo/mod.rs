@@ -453,6 +453,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
                     OR (status = $3 AND (claimed_until IS NULL OR claimed_until <= to_timestamp($2)))
                   )
                     AND ($4::text IS NULL OR destination = $4)
+                    AND ($9::text[] IS NULL OR message_id = ANY($9::text[]))
                   ORDER BY created_at ASC, message_id ASC
                   LIMIT $5
                   FOR UPDATE SKIP LOCKED
@@ -493,6 +494,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
             .bind(OutboxMessageStatus::InFlight.as_str())
             .bind(&request.worker_id)
             .bind(claimed_until_epoch)
+            .bind(request.message_ids.as_deref())
             .fetch_all(&mut *tx)
             .await
             .map_err(|err| repository_storage_error("claim outbox messages", err))?;

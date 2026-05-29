@@ -262,6 +262,77 @@ where
     assert_eq!(failed.last_error.as_deref(), Some("second failure"));
 }
 
+pub async fn worker_claim_by_ids_claims_only_requested<R, S>(repo: R, outbox: S)
+where
+    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    S: AsyncOutboxStore + Send + Sync,
+{
+    let wanted_id = unique_id("wanted-outbox");
+    let other_id = unique_id("other-outbox");
+    for (message_id, seat_id) in [(&wanted_id, "wanted-seat"), (&other_id, "other-seat")] {
+        let mut seat = added_seat(&unique_id(seat_id));
+        let message = OutboxMessage::create(message_id, "SeatAdded", b"{}".to_vec())
+            .expect("outbox message should be valid");
+        repo.clone()
+            .async_aggregate::<Seat>()
+            .outbox(message)
+            .commit(&mut seat)
+            .await
+            .expect("message should be stored");
+    }
+
+    // Claiming by explicit id claims only the requested row (claim order among
+    // an explicit id set is unspecified across backends).
+    let claimed = outbox
+        .claim_async(ClaimOutboxMessages::for_ids(
+            "immediate-worker",
+            vec![wanted_id.clone()],
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("claim by id should succeed");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id(), wanted_id);
+
+    // The unrequested row remains claimable by a normal poll.
+    let other = find_outbox_by_id(&outbox, &other_id)
+        .await
+        .expect("other message should exist");
+    assert_eq!(other.status, OutboxMessageStatus::Pending);
+
+    // A raced/missing id yields an empty claim, not an error.
+    let empty = outbox
+        .claim_async(ClaimOutboxMessages::for_ids(
+            "immediate-worker",
+            vec![unique_id("never-stored")],
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("claiming a missing id should not error");
+    assert!(empty.is_empty());
+
+    // A requested id that is leased by another worker must be skipped, not
+    // stolen: this is the claim-safety property of the by-id path (it exercises
+    // the SQLite per-id conditional UPDATE and the Postgres claimability CTE).
+    let leased = outbox
+        .claim_async(ClaimOutboxMessages::for_ids(
+            "worker-b",
+            vec![wanted_id.clone()],
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("claiming a live-leased id should not error");
+    assert!(
+        leased.is_empty(),
+        "by-id claim must not steal a row already leased by another worker"
+    );
+    let still_owned = find_outbox_by_id(&outbox, &wanted_id)
+        .await
+        .expect("leased message should exist");
+    assert_eq!(still_owned.status, OutboxMessageStatus::InFlight);
+    assert_eq!(still_owned.worker_id.as_deref(), Some("immediate-worker"));
+}
+
 fn added_seat(id: &str) -> Seat {
     let mut seat = Seat::default();
     seat.add(id.to_string(), "floor".to_string())
