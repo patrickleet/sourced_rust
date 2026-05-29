@@ -116,14 +116,13 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     let publisher = RabbitPublisher::connect(&url)
         .await
         .expect("connect publisher");
-    publisher
-        .publish(
-            Message::new(&queue, MessageKind::Event, br#"{"k":"v"}"#.to_vec())
-                .with_id("evt-1")
-                .with_metadata("correlation_id", "corr-9"),
-        )
-        .await
-        .expect("publish");
+    // Use a non-default content type to prove it survives the AMQP round-trip
+    // (Message::new defaults to application/json).
+    let mut message = Message::new(&queue, MessageKind::Event, br#"{"k":"v"}"#.to_vec())
+        .with_id("evt-1")
+        .with_metadata("correlation_id", "corr-9");
+    message.content_type = "application/cloudevents+json".to_string();
+    publisher.publish(message).await.expect("publish");
 
     let observed = Arc::new(Mutex::new(None));
     let o = observed.clone();
@@ -136,6 +135,7 @@ async fn message_id_and_metadata_survive_the_round_trip() {
                     m.id().map(str::to_string),
                     m.correlation_id().map(str::to_string),
                     m.payload().to_vec(),
+                    m.content_type.clone(),
                 ));
                 Ok(json!({}))
             }),
@@ -148,6 +148,10 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     assert_eq!(got.0.as_deref(), Some("evt-1"));
     assert_eq!(got.1.as_deref(), Some("corr-9"));
     assert_eq!(got.2, br#"{"k":"v"}"#.to_vec());
+    assert_eq!(
+        got.3, "application/cloudevents+json",
+        "content_type round-trips"
+    );
 }
 
 // ---- RabbitBus: send/listen (default exchange) + publish/subscribe (topic exchange) ----

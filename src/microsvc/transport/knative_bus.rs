@@ -20,6 +20,7 @@
 
 use std::time::Duration;
 
+use super::knative::sanitize_k8s_name;
 use super::{Bus, TransportError};
 use crate::microsvc::{Message, MessageKind, SubscriptionPlan};
 
@@ -187,7 +188,7 @@ impl KnativeBus {
     }
 
     fn trigger_yaml(&self, broker: &str, event: &str) -> String {
-        let trigger_name = format!("{}-{}", self.source, event.replace('.', "-"));
+        let trigger_name = sanitize_k8s_name(&format!("{}-{}", self.source, event));
         let subscriber = match &self.local {
             Some(addr) => format!(
                 "\x20 subscriber:\n\
