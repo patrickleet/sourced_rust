@@ -21,6 +21,8 @@
 
 use std::time::SystemTime;
 
+use super::RepositoryError;
+
 /// A single consumer/message processing receipt.
 ///
 /// Identified by `(consumer, message_id)`; committed atomically with the
@@ -31,7 +33,9 @@ pub struct InboxReceipt {
     pub consumer: String,
     /// The transport message's stable id.
     pub message_id: String,
-    /// When the receipt was created.
+    /// When the receipt was created (advisory). The relational backends stamp the
+    /// stored `processed_at` server-side, so this value is not currently persisted;
+    /// it exists for in-process use and forward compatibility with retention/prune.
     pub processed_at: SystemTime,
 }
 
@@ -48,6 +52,18 @@ impl InboxReceipt {
     /// The `(consumer, message_id)` dedupe key.
     pub fn key(&self) -> (&str, &str) {
         (&self.consumer, &self.message_id)
+    }
+
+    /// Reject an empty `consumer` or `message_id` so every backend behaves
+    /// identically (the relational `CHECK` constraints are a backstop).
+    pub fn validate(&self) -> Result<(), RepositoryError> {
+        if self.consumer.is_empty() || self.message_id.is_empty() {
+            return Err(RepositoryError::InvalidInboxReceipt {
+                consumer: self.consumer.clone(),
+                message_id: self.message_id.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -93,5 +109,18 @@ mod tests {
         assert!(!InboxOutcome::Processed.is_duplicate());
         assert!(InboxOutcome::Duplicate.is_duplicate());
         assert!(!InboxOutcome::Duplicate.is_processed());
+    }
+
+    #[test]
+    fn validate_rejects_empty_fields() {
+        assert!(InboxReceipt::new("c", "m").validate().is_ok());
+        assert!(matches!(
+            InboxReceipt::new("", "m").validate(),
+            Err(RepositoryError::InvalidInboxReceipt { .. })
+        ));
+        assert!(matches!(
+            InboxReceipt::new("c", "").validate(),
+            Err(RepositoryError::InvalidInboxReceipt { .. })
+        ));
     }
 }

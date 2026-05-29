@@ -916,6 +916,7 @@ async fn insert_inbox_receipt_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     receipt: &InboxReceipt,
 ) -> Result<(), RepositoryError> {
+    receipt.validate()?;
     let result = sqlx::query("INSERT INTO consumer_inbox (consumer, message_id) VALUES (?, ?)")
         .bind(&receipt.consumer)
         .bind(&receipt.message_id)

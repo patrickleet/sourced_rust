@@ -26,6 +26,13 @@ pub enum RepositoryError {
         consumer: String,
         message_id: String,
     },
+    /// A consumer inbox receipt had an empty `consumer` or `message_id`. Rejected
+    /// uniformly across backends before any write (the relational `CHECK`
+    /// constraints are a defense-in-depth backstop).
+    InvalidInboxReceipt {
+        consumer: String,
+        message_id: String,
+    },
     InvalidStreamIdentity {
         aggregate_type: String,
         aggregate_id: String,
@@ -71,6 +78,14 @@ impl fmt::Display for RepositoryError {
             } => write!(
                 f,
                 "consumer inbox receipt already recorded for consumer `{}`, message `{}`",
+                consumer, message_id
+            ),
+            RepositoryError::InvalidInboxReceipt {
+                consumer,
+                message_id,
+            } => write!(
+                f,
+                "invalid consumer inbox receipt (consumer `{}`, message `{}`): consumer and message id must be non-empty",
                 consumer, message_id
             ),
             RepositoryError::InvalidStreamIdentity {

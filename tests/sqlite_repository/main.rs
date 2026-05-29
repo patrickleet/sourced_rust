@@ -4,11 +4,11 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncInboxStore,
-    AsyncOutboxStore, AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, InboxReceipt, OutboxMessageStatus, ReadModel,
-    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    SqliteRepository, StreamIdentity, TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
+    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
+    RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SqliteRepository, StreamIdentity,
+    TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
 
 #[derive(Default)]
@@ -55,43 +55,8 @@ async fn repository() -> SqliteRepository {
         .unwrap()
 }
 
-fn inbox_batch(receipts: Vec<InboxReceipt>) -> AsyncCommitBatch<'static> {
-    let mut batch = AsyncCommitBatch::new(Vec::new());
-    batch.inbox_receipts = receipts;
-    batch
-}
-
-#[tokio::test]
-async fn consumer_inbox_records_dedupes_and_fences_atomically() {
-    let repo = repository().await;
-
-    // First receipt commits and is then visible to the pre-check.
-    assert!(!repo.inbox_contains_async("proj", "m1").await.unwrap());
-    repo.commit_batch_async(inbox_batch(vec![InboxReceipt::new("proj", "m1")]))
-        .await
-        .unwrap();
-    assert!(repo.inbox_contains_async("proj", "m1").await.unwrap());
-    // The dedupe scope is the consumer: a different consumer is independent.
-    assert!(!repo.inbox_contains_async("other", "m1").await.unwrap());
-
-    // A batch carrying a duplicate receipt (m1) plus a fresh one (m2) must roll
-    // back entirely — the receipt is the effect fence.
-    let err = repo
-        .commit_batch_async(inbox_batch(vec![
-            InboxReceipt::new("proj", "m1"),
-            InboxReceipt::new("proj", "m2"),
-        ]))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, RepositoryError::DuplicateInboxReceipt { ref message_id, .. } if message_id == "m1"),
-        "duplicate receipt surfaces a typed error, got {err:?}"
-    );
-    assert!(
-        !repo.inbox_contains_async("proj", "m2").await.unwrap(),
-        "m2 must not be recorded — the duplicate rolled the whole batch back"
-    );
-}
+// Consumer inbox semantics are covered for all backends by the shared
+// `persistent_repository_conformance::inbox` scenarios.
 
 async fn bootstrap_relational_counter_table(repo: &SqliteRepository) {
     let mut registry = TableSchemaRegistry::new();
