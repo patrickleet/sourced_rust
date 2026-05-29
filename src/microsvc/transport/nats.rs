@@ -102,6 +102,7 @@ impl AsyncMessagePublisher for NatsPublisher {
 pub struct NatsJetStreamSource {
     consumer: Consumer<PullConfig>,
     fetch_timeout: Duration,
+    strip_prefix: Option<String>,
 }
 
 impl NatsJetStreamSource {
@@ -110,12 +111,24 @@ impl NatsJetStreamSource {
         Self {
             consumer,
             fetch_timeout: Duration::from_millis(500),
+            strip_prefix: None,
         }
     }
 
     /// How long `recv` waits for a message before returning `Ok(None)`.
     pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
         self.fetch_timeout = timeout;
+        self
+    }
+
+    /// Strip `prefix` from each delivered subject when deriving the message name,
+    /// so a subject like `app.cmd.account.debit` becomes the name `account.debit`.
+    ///
+    /// Used by [`NatsBus`](super::NatsBus), which namespaces commands and events
+    /// under `{ns}.cmd.` / `{ns}.evt.` subjects. Default: no stripping (the full
+    /// subject is the name).
+    pub fn with_strip_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.strip_prefix = Some(prefix.into());
         self
     }
 
@@ -179,7 +192,10 @@ impl AsyncMessageSource for NatsJetStreamSource {
             .map_err(|err| retryable("nats fetch", err))?;
 
         match batch.next().await {
-            Some(Ok(message)) => Ok(Some(NatsReceived::from_jetstream(message))),
+            Some(Ok(message)) => Ok(Some(NatsReceived::from_jetstream(
+                message,
+                self.strip_prefix.as_deref(),
+            ))),
             Some(Err(err)) => Err(retryable("nats batch message", err)),
             None => Ok(None),
         }
@@ -193,8 +209,15 @@ pub struct NatsReceived {
 }
 
 impl NatsReceived {
-    fn from_jetstream(raw: jetstream::Message) -> Self {
-        let name = raw.subject.to_string();
+    fn from_jetstream(raw: jetstream::Message, strip_prefix: Option<&str>) -> Self {
+        let subject = raw.subject.to_string();
+        let name = match strip_prefix {
+            Some(prefix) => subject
+                .strip_prefix(prefix)
+                .map(str::to_string)
+                .unwrap_or(subject),
+            None => subject,
+        };
         let payload = raw.payload.to_vec();
         let mut id = None;
         let mut kind = MessageKind::Event;

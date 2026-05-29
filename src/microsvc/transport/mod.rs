@@ -92,6 +92,8 @@ mod kafka;
 mod knative;
 #[cfg(feature = "nats")]
 mod nats;
+#[cfg(feature = "nats")]
+mod nats_bus;
 mod outbox_dispatch;
 mod outbox_source;
 mod publisher;
@@ -108,6 +110,8 @@ pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 pub use knative::{cloud_events_router, knative_triggers};
 #[cfg(feature = "nats")]
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
+#[cfg(feature = "nats")]
+pub use nats_bus::NatsBus;
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
