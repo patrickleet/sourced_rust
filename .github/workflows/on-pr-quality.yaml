@@ -12,126 +12,13 @@ jobs:
       cargo_incremental: true
 
   postgres:
-    name: Postgres Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: sourced_rust_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d sourced_rust_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      CARGO_TERM_COLOR: always
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sourced_rust_test
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: stable
-      - name: Run Postgres integration tests
-        run: |
-          cargo test --test postgres_repository --all-features --verbose
-          cargo test --test postgres_repository_conformance --all-features --verbose
-          cargo test --test postgres_transport --all-features --verbose
-          cargo test --test distributed_read_model --all-features --verbose
+    uses: ./.github/workflows/integration-postgres.yaml
 
   nats:
-    name: NATS JetStream Integration Tests
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      NATS_URL: nats://localhost:4222
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: stable
-      # NATS service containers can't override the entrypoint to enable
-      # JetStream, so start it as a step instead.
-      - name: Start NATS (JetStream)
-        run: |
-          docker run -d --name nats -p 4222:4222 nats:2.10-alpine -js
-          for i in $(seq 1 30); do
-            if nc -z localhost 4222; then echo "nats up"; break; fi
-            sleep 1
-          done
-      - name: Run NATS transport integration tests
-        run: cargo test --test nats_transport --features nats --verbose
+    uses: ./.github/workflows/integration-nats.yaml
 
   rabbitmq:
-    name: RabbitMQ Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      rabbitmq:
-        image: rabbitmq:3.13-management-alpine
-        ports:
-          - 5672:5672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      CARGO_TERM_COLOR: always
-      AMQP_URL: amqp://guest:guest@localhost:5672/%2f
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: stable
-      - name: Run RabbitMQ transport integration tests
-        run: cargo test --test rabbitmq_transport --features rabbitmq --verbose
+    uses: ./.github/workflows/integration-rabbitmq.yaml
 
   kafka:
-    name: Kafka Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      kafka:
-        image: apache/kafka:3.8.0
-        ports:
-          - 9092:9092
-        env:
-          KAFKA_NODE_ID: 1
-          KAFKA_PROCESS_ROLES: broker,controller
-          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-        options: >-
-          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 20
-          --health-start-period 20s
-    env:
-      CARGO_TERM_COLOR: always
-      KAFKA_BROKERS: localhost:9092
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: stable
-      # ubuntu-latest ships cmake + gcc, which rdkafka's cmake-build needs.
-      - name: Run Kafka transport integration tests
-        run: cargo test --test kafka_transport --features kafka --verbose
+    uses: ./.github/workflows/integration-kafka.yaml
