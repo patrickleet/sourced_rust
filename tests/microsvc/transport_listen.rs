@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde_json::json;
 use sourced_rust::microsvc::transport::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
 use crate::handlers::Repo;
@@ -20,7 +20,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
@@ -52,7 +52,7 @@ async fn dispatches_from_queue() {
         .await
         .expect("listen should drain the command queues");
 
-    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
+    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
     assert_eq!(counter.value, 10);
 }
 
@@ -91,7 +91,7 @@ async fn tolerates_handler_failures_and_keeps_processing() {
 
     // The good aggregate was still created and incremented, proving the failure
     // did not stop the consumer.
-    let c2: Counter = service.repo().get("c2").unwrap().unwrap();
+    let c2: Counter = service.repo().get("c2").await.unwrap().unwrap();
     assert_eq!(c2.value, 7);
 }
 
@@ -111,10 +111,11 @@ async fn coexists_with_direct_dispatch() {
     // c2 created via direct dispatch on the same service.
     service
         .dispatch("counter.create", json!({ "id": "c2" }), Session::new())
+        .await
         .expect("direct dispatch should create c2");
 
-    let c1: Counter = service.repo().get("c1").unwrap().unwrap();
-    let c2: Counter = service.repo().get("c2").unwrap().unwrap();
+    let c1: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let c2: Counter = service.repo().get("c2").await.unwrap().unwrap();
     assert_eq!(c1.value, 0);
     assert_eq!(c2.value, 0);
 }
@@ -162,11 +163,11 @@ async fn multiple_services_on_different_queues() {
     let store = HashMapRepository::new();
 
     let service_a = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(store.clone().queued().aggregate::<Counter>()),
+        Service::with_repo(store.clone().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
     ));
     let service_b = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(store.queued().aggregate::<Counter>()),
+        Service::with_repo(store.queued_async().async_aggregate::<Counter>()),
         command handlers::counter_increment,
     ));
 
@@ -191,6 +192,6 @@ async fn multiple_services_on_different_queues() {
         .await
         .expect("service B should drain the increment queue");
 
-    let counter: Counter = service_a.repo().get("c1").unwrap().unwrap();
+    let counter: Counter = service_a.repo().get("c1").await.unwrap().unwrap();
     assert_eq!(counter.value, 42);
 }

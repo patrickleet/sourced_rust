@@ -1,6 +1,6 @@
 mod aggregate;
 
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -211,9 +211,11 @@ fn digest_and_enqueue_guards_stay_in_sync() {
 // #[enqueue] with repository commit + replay
 // =============================================================================
 
-#[test]
-fn enqueue_events_survive_commit_and_emit_after() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+#[tokio::test]
+async fn enqueue_events_survive_commit_and_emit_after() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();
@@ -222,7 +224,7 @@ fn enqueue_events_survive_commit_and_emit_after() {
     // Events queued before commit
     assert_eq!(order.emitter.queued_len(), 2);
 
-    repo.commit(&mut order).unwrap();
+    repo.commit(&mut order).await.unwrap();
 
     // Events still queued after commit — emit is explicit
     assert_eq!(order.emitter.queued_len(), 2);
@@ -239,19 +241,21 @@ fn enqueue_events_survive_commit_and_emit_after() {
     assert_eq!(order.emitter.queued_len(), 0);
 }
 
-#[test]
-fn replay_does_not_enqueue_events() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+#[tokio::test]
+async fn replay_does_not_enqueue_events() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();
     order.confirm().unwrap();
     order.emitter.emit_queued();
 
-    repo.commit(&mut order).unwrap();
+    repo.commit(&mut order).await.unwrap();
 
     // Load from repo — replays digest events but should NOT re-enqueue
-    let loaded = repo.get("order-1").unwrap().unwrap();
+    let loaded = repo.get("order-1").await.unwrap().unwrap();
     assert_eq!(loaded.emitter.queued_len(), 0);
     assert_eq!(loaded.status, "confirmed");
     assert_eq!(loaded.entity.version(), 2);

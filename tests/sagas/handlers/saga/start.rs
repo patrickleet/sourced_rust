@@ -6,7 +6,7 @@ pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id", "customer_id", "items", "total_cents"])
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<StartSagaInput>()?;
 
     let mut saga = OrderFulfillmentSaga::new();
@@ -31,6 +31,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox_sync(msg).commit_sync(&mut saga)?;
+    ctx.repo().outbox(msg).commit(&mut saga).await?;
     Ok(json!({ "saga_id": input.saga_id }))
 }

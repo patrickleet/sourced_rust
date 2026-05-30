@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use sourced_rust::{
-    AggregateBuilder, HashMapRepository, OutboxMessage, OutboxStore, SnapshotStore, Snapshottable,
-    SyncOutboxCommitExt,
+    Aggregate, AsyncAggregateBuilder, AsyncSnapshotStore, HashMapRepository, OutboxMessage,
+    OutboxStore, Snapshottable, StreamIdentity,
 };
 
 // ============================================================================
@@ -24,18 +24,18 @@ fn default_snapshot_has_id_and_all_fields() {
     assert!(snap.completed);
 }
 
-#[test]
-fn default_snapshot_roundtrip_via_snapshottable() {
+#[tokio::test]
+async fn default_snapshot_roundtrip_via_snapshottable() {
     let repo = HashMapRepository::new()
-        .aggregate::<Todo>()
+        .async_aggregate::<Todo>()
         .with_snapshots(1);
 
     let mut todo = Todo::new();
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
         .unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let loaded = repo.get("t1").unwrap().unwrap();
+    let loaded = repo.get("t1").await.unwrap().unwrap();
     let snap = loaded.snapshot();
     assert_eq!(snap.id, "t1");
     assert_eq!(snap.user_id, "alice");
@@ -87,17 +87,17 @@ fn custom_id_restore_sets_entity_id_from_field() {
     assert_eq!(inv.available, 50);
 }
 
-#[test]
-fn custom_id_roundtrip_via_repo() {
+#[tokio::test]
+async fn custom_id_roundtrip_via_repo() {
     let repo = HashMapRepository::new()
-        .aggregate::<Inventory>()
+        .async_aggregate::<Inventory>()
         .with_snapshots(1);
 
     let mut inv = Inventory::new();
     inv.create("inv-1".into(), "SKU-A".into(), 10).unwrap();
-    repo.commit(&mut inv).unwrap();
+    repo.commit(&mut inv).await.unwrap();
 
-    let loaded = repo.get("inv-1").unwrap().unwrap();
+    let loaded = repo.get("inv-1").await.unwrap().unwrap();
     let snap = loaded.snapshot();
     assert_eq!(snap.sku, "SKU-A");
     assert_eq!(snap.available, 10);
@@ -130,17 +130,17 @@ fn serde_skip_default_excluded_from_snapshot() {
     // emitter is not in NotifierSnapshot - verified by compilation
 }
 
-#[test]
-fn serde_skip_restore_roundtrip() {
+#[tokio::test]
+async fn serde_skip_restore_roundtrip() {
     let repo = HashMapRepository::new()
-        .aggregate::<Order>()
+        .async_aggregate::<Order>()
         .with_snapshots(1);
 
     let mut order = Order::new();
     order.place("o1".into(), "alice".into(), 500).unwrap();
-    repo.commit(&mut order).unwrap();
+    repo.commit(&mut order).await.unwrap();
 
-    let loaded = repo.get("o1").unwrap().unwrap();
+    let loaded = repo.get("o1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().customer, "alice");
     assert_eq!(loaded.snapshot().total, 500);
     // cached_label will be default (empty) after restore, which is correct
@@ -163,22 +163,28 @@ fn sourced_attr_with_snapshot_derive() {
     assert_eq!(snap.count, 8);
 }
 
-#[test]
-fn sourced_attr_snapshot_roundtrip_via_repo() {
+#[tokio::test]
+async fn sourced_attr_snapshot_roundtrip_via_repo() {
     let repo = HashMapRepository::new()
-        .aggregate::<Counter>()
+        .async_aggregate::<Counter>()
         .with_snapshots(2);
 
     let mut counter = Counter::new();
     counter.initialize("c1".into()).unwrap();
     counter.increment(10).unwrap();
-    repo.commit(&mut counter).unwrap();
+    repo.commit(&mut counter).await.unwrap();
 
     // At version 2, should have a snapshot
-    let snap_record = repo.repo().repo().get_snapshot("c1").unwrap();
+    let identity = StreamIdentity::new(Counter::aggregate_type(), "c1").unwrap();
+    let snap_record = repo
+        .repo()
+        .repo()
+        .get_snapshot_async(&identity)
+        .await
+        .unwrap();
     assert!(snap_record.is_some());
 
-    let loaded = repo.get("c1").unwrap().unwrap();
+    let loaded = repo.get("c1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().count, 10);
 }
 
@@ -246,18 +252,18 @@ fn domain_event_propagates_metadata() {
     assert_eq!(outbox.meta("user_id"), Some("u-42"));
 }
 
-#[test]
-fn domain_event_commits_with_outbox() {
-    let repo = HashMapRepository::new().aggregate::<Todo>();
+#[tokio::test]
+async fn domain_event_commits_with_outbox() {
+    let repo = HashMapRepository::new().async_aggregate::<Todo>();
 
     let mut todo = Todo::new();
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())
         .unwrap();
 
     let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    repo.outbox_sync(outbox).commit_sync(&mut todo).unwrap();
+    repo.outbox(outbox).commit(&mut todo).await.unwrap();
 
-    let loaded = repo.get("t1").unwrap().unwrap();
+    let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");
     let pending = repo.repo().outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);

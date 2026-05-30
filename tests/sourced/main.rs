@@ -4,7 +4,7 @@ use aggregate::{Todo, TodoEvent};
 use serde::ser::Error as _;
 use serde::Serialize;
 use sourced_rust::{
-    Aggregate, AggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
+    Aggregate, AsyncAggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
     Queueable,
 };
 
@@ -196,18 +196,20 @@ fn try_from_unknown_event_returns_error() {
     assert!(result.unwrap_err().contains("Unknown event"));
 }
 
-#[test]
-fn aggregate_hydration_roundtrip() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+#[tokio::test]
+async fn aggregate_hydration_roundtrip() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Todo>();
 
     let mut todo = Todo::default();
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
         .unwrap();
     todo.complete().unwrap();
 
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let loaded = repo.get("t1").unwrap().unwrap();
+    let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().id, "t1");
     assert_eq!(loaded.snapshot().user_id, "alice");
     assert_eq!(loaded.snapshot().task, "Buy milk");

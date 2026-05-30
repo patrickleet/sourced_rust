@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::ReadModelWorkspaceExt;
+use sourced_rust::AsyncReadModelWorkspaceExt;
 
 use crate::checkout::{seat_event, SeatAdded, SeatReserved, SEAT_AVAILABLE, SEAT_RESERVED};
 use crate::projection_service::ProjectionDependencies;
@@ -12,7 +12,7 @@ pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
     ctx.message().id().is_some()
 }
 
-pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, HandlerError> {
     match ctx.message().name() {
         seat_event::ADDED => {
             let msg: SeatAdded = serde_json::from_slice(ctx.message().payload())
@@ -24,9 +24,12 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
                 checkout_id: String::new(),
             };
 
-            let mut workspace = ctx.read_model_store().workspace();
+            let mut workspace = ctx.read_model_store().workspace_async();
             workspace.upsert(&row).map_err(super::read_model_error)?;
-            workspace.commit().map_err(super::read_model_error)?;
+            workspace
+                .commit_async()
+                .await
+                .map_err(super::read_model_error)?;
         }
         seat_event::RESERVED => {
             let msg: SeatReserved = serde_json::from_slice(ctx.message().payload())
@@ -43,10 +46,13 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
                 detail: "seat reserved".to_string(),
             };
 
-            let mut workspace = ctx.read_model_store().workspace();
+            let mut workspace = ctx.read_model_store().workspace_async();
             workspace.upsert(&seat).map_err(super::read_model_error)?;
             workspace.upsert(&step).map_err(super::read_model_error)?;
-            workspace.commit().map_err(super::read_model_error)?;
+            workspace
+                .commit_async()
+                .await
+                .map_err(super::read_model_error)?;
         }
         other => return Err(HandlerError::UnknownCommand(other.to_string())),
     }

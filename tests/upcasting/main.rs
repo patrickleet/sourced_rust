@@ -2,9 +2,9 @@ mod aggregate;
 
 use aggregate::{TodoV1, TodoV2, TodoV3};
 use sourced_rust::{
-    hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AggregateBuilder, Commit, Entity,
-    EventRecord, EventUpcaster, HashMapRepository, RepositoryError, SnapshotRecord, SnapshotStore,
-    UpcastError,
+    hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AsyncAggregateBuilder,
+    AsyncSnapshotStore, Entity, EventRecord, EventUpcaster, HashMapRepository, RepositoryError,
+    SnapshotRecord, StreamIdentity, UpcastError,
 };
 
 fn identity_payload(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
@@ -260,18 +260,23 @@ fn mixed_events_v1_init_and_v1_complete() {
 // Repository round-trip with upcasting
 // =============================================================================
 
-#[test]
-fn repo_roundtrip_v1_to_v2() {
+#[tokio::test]
+async fn repo_roundtrip_v1_to_v2() {
     // Store using v1
-    let v1_repo = HashMapRepository::new();
+    let base_repo = HashMapRepository::new();
     let mut v1 = TodoV1::default();
     v1.initialize("t1".into(), "frank".into(), "Shop".into())
         .unwrap();
-    v1_repo.commit(&mut v1.entity).unwrap();
+    base_repo
+        .clone()
+        .async_aggregate::<TodoV1>()
+        .commit(&mut v1)
+        .await
+        .unwrap();
 
     // Load using v2 (same storage)
-    let v2_repo = v1_repo.aggregate::<TodoV2>();
-    let loaded = v2_repo.get("t1").unwrap().unwrap();
+    let v2_repo = base_repo.async_aggregate::<TodoV2>();
+    let loaded = v2_repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.user_id, "frank");
     assert_eq!(loaded.task, "Shop");
     assert_eq!(loaded.priority, 0);
@@ -331,34 +336,41 @@ fn hydrate_returns_replay_error_when_typed_upcaster_decode_fails() {
 // Snapshot + upcasting
 // =============================================================================
 
-#[test]
-fn snapshot_plus_upcasting_post_snapshot_events() {
+#[tokio::test]
+async fn snapshot_plus_upcasting_post_snapshot_events() {
     // TodoV2 implements Snapshottable in aggregate.rs
     let repo = HashMapRepository::new()
-        .aggregate::<TodoV2>()
+        .async_aggregate::<TodoV2>()
         .with_snapshots(1);
 
     // Create using native v2 with a specific priority
     let mut todo = TodoV2::default();
     todo.initialize("t1".into(), "grace".into(), "Run".into(), 7)
         .unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
     // Snapshot should now exist at version 1
-    assert!(repo.repo().repo().get_snapshot("t1").unwrap().is_some());
+    let snapshot_identity = StreamIdentity::new(TodoV2::aggregate_type(), "t1").unwrap();
+    assert!(repo
+        .repo()
+        .repo()
+        .get_snapshot_async(&snapshot_identity)
+        .await
+        .unwrap()
+        .is_some());
 
     // Add another event; this triggers snapshot + partial replay path
-    let mut todo = repo.get("t1").unwrap().unwrap();
+    let mut todo = repo.get("t1").await.unwrap().unwrap();
     todo.complete().unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let loaded = repo.get("t1").unwrap().unwrap();
+    let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.priority, 7);
     assert!(loaded.completed);
 }
 
-#[test]
-fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
+#[tokio::test]
+async fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     // Store v1 events, then load with v2 snapshot repo
     let base_repo = HashMapRepository::new();
 
@@ -367,12 +379,17 @@ fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     v1.initialize("t1".into(), "hank".into(), "Sweep".into())
         .unwrap();
     v1.complete().unwrap();
-    base_repo.commit(&mut v1.entity).unwrap();
+    base_repo
+        .clone()
+        .async_aggregate::<TodoV1>()
+        .commit(&mut v1)
+        .await
+        .unwrap();
 
     // Load via a v2 snapshot-aware repo (no snapshot exists, so full replay with upcasting)
-    let repo = base_repo.aggregate::<TodoV2>().with_snapshots(5);
+    let repo = base_repo.async_aggregate::<TodoV2>().with_snapshots(5);
 
-    let loaded = repo.get("t1").unwrap().unwrap();
+    let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.user_id, "hank");
     assert_eq!(loaded.task, "Sweep");
     assert_eq!(loaded.priority, 0); // upcasted default

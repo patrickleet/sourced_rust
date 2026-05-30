@@ -2,7 +2,7 @@
 //! projected relational tables through primary-key loads plus explicit
 //! relationship includes.
 
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
+use sourced_rust::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
 
 use crate::read_models::{checkout_key, seat_key, CheckoutView, SeatView};
 
@@ -17,24 +17,26 @@ impl CheckoutQueryService {
     }
 
     /// Load the checkout screen with its audit steps and current seat row.
-    pub fn checkout_screen(
+    pub async fn checkout_screen(
         &self,
         checkout_id: &str,
     ) -> Result<Option<CheckoutView>, ReadModelError> {
-        let mut session = self.store.workspace();
+        let mut session = self.store.workspace_async();
         Ok(session
-            .load::<CheckoutView>(checkout_key(checkout_id))
+            .load_async::<CheckoutView>(checkout_key(checkout_id))
             .include("steps")
             .include("seat")
-            .one()?
+            .one()
+            .await?
             .map(|view| view.data))
     }
 
-    pub fn seat(&self, seat_id: &str) -> Result<Option<SeatView>, ReadModelError> {
-        let mut session = self.store.workspace();
+    pub async fn seat(&self, seat_id: &str) -> Result<Option<SeatView>, ReadModelError> {
+        let mut session = self.store.workspace_async();
         Ok(session
-            .load::<SeatView>(seat_key(seat_id))
-            .one()?
+            .load_async::<SeatView>(seat_key(seat_id))
+            .one()
+            .await?
             .map(|view| view.data))
     }
 }

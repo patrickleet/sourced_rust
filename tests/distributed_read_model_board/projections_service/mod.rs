@@ -6,7 +6,7 @@ mod handlers;
 use std::sync::Arc;
 
 use sourced_rust::microsvc::{HandlerError, Service};
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
+use sourced_rust::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
 
 use crate::read_models::{board_key, BoardView};
 
@@ -26,12 +26,13 @@ fn read_model_error(err: ReadModelError) -> HandlerError {
 /// Load the projected board (with its cards) from the read store. After the
 /// bus has been drained into the projection service, the board reflects every
 /// processed event.
-pub fn load_board(store: &InMemoryReadModelStore, board_id: &str) -> Option<BoardView> {
+pub async fn load_board(store: &InMemoryReadModelStore, board_id: &str) -> Option<BoardView> {
     store
-        .workspace()
-        .load::<BoardView>(board_key(board_id))
+        .workspace_async()
+        .load_async::<BoardView>(board_key(board_id))
         .include("cards")
         .one()
+        .await
         .expect("board load should succeed")
         .map(|view| view.data)
 }

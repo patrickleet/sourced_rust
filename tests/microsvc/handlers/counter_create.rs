@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{OutboxMessage, SyncOutboxCommitExt};
+use sourced_rust::OutboxMessage;
 
 use super::Repo;
 use crate::models::counter::Counter;
@@ -24,10 +24,10 @@ pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["id"])
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<Input>()?;
 
-    if ctx.repo().get(&input.id)?.is_some() {
+    if ctx.repo().get(&input.id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "counter {} already exists",
             input.id
@@ -39,7 +39,7 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
 
     let message = OutboxMessage::domain_event("CounterCreated", &counter)?;
 
-    ctx.repo().outbox_sync(message).commit_sync(&mut counter)?;
+    ctx.repo().outbox(message).commit(&mut counter).await?;
 
     Ok(json!({ "id": input.id }))
 }

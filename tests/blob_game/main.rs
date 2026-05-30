@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{BlobGame, TileState};
-use sourced_rust::{AggregateBuilder, HashMapRepository};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository};
 
 // Tile state shortcuts
 const P: TileState = TileState::Player;
@@ -342,9 +342,9 @@ fn should_work_with_timer_mode() {
     assert_eq!(game.score(), 4); // Score unchanged from timeout death
 }
 
-#[test]
-fn replay_restores_game_state() {
-    let repo = HashMapRepository::new().aggregate::<BlobGame>();
+#[tokio::test]
+async fn replay_restores_game_state() {
+    let repo = HashMapRepository::new().async_aggregate::<BlobGame>();
 
     // Create and play a game
     let mut game = BlobGame::new();
@@ -364,10 +364,10 @@ fn replay_restores_game_state() {
     game.right(None).unwrap();
 
     // Commit to repository
-    repo.commit(&mut game).unwrap();
+    repo.commit(&mut game).await.unwrap();
 
     // Retrieve and verify state is restored
-    let restored = repo.get("game-replay").unwrap().unwrap();
+    let restored = repo.get("game-replay").await.unwrap().unwrap();
     assert_eq!(restored.score(), 3);
     assert!(!restored.is_current_level_completed());
     assert!(!restored.is_player_dead());
