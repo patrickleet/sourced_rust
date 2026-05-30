@@ -212,19 +212,31 @@ mod tests {
     }
 
     fn command_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-        Arc::new(Service::new(()).command("work").handle(move |ctx| {
-            rec.lock().unwrap().push(ctx.message().name().to_string());
-            Ok(json!({}))
-        }))
+        Arc::new(Service::new(()).command("work").handle(
+            move |ctx: &crate::microsvc::Context<()>| {
+                let rec = rec.clone();
+                let name = ctx.message().name().to_string();
+                async move {
+                    rec.lock().unwrap().push(name);
+                    Ok(json!({}))
+                }
+            },
+        ))
     }
 
     fn event_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-        Arc::new(Service::new(()).event("evt").handle(move |ctx| {
-            rec.lock()
-                .unwrap()
-                .push(ctx.message().id().unwrap_or("?").to_string());
-            Ok(json!({}))
-        }))
+        Arc::new(
+            Service::new(())
+                .event("evt")
+                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                    let rec = rec.clone();
+                    let id = ctx.message().id().unwrap_or("?").to_string();
+                    async move {
+                        rec.lock().unwrap().push(id);
+                        Ok(json!({}))
+                    }
+                }),
+        )
     }
 
     #[test]
@@ -318,11 +330,12 @@ mod tests {
     fn handler_error_does_not_panic_the_loop() {
         let bus = InMemoryBus::new();
         block_on(bus.send("work", b"{}".to_vec())).unwrap();
-        let service: Arc<Service<()>> = Arc::new(
-            Service::new(())
-                .command("work")
-                .handle(|_| Err(HandlerError::Rejected("no".into()))),
-        );
+        let service: Arc<Service<()>> =
+            Arc::new(Service::new(()).command("work").handle(
+                |_: &crate::microsvc::Context<()>| async move {
+                    Err(HandlerError::Rejected("no".into()))
+                },
+            ));
         // Default failure policy dead-letters the permanent failure; in-memory
         // dead_letter is a no-op nack, so the run completes cleanly.
         block_on(bus.listen(service, RunOptions::idempotent())).unwrap();
