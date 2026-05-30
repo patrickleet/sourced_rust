@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{BitcodePayloadCodec, PayloadCodec, ReadModelWorkspaceExt};
+use sourced_rust::{AsyncReadModelWorkspaceExt, BitcodePayloadCodec, PayloadCodec};
 
 use crate::board_service::BoardSnapshot;
 use crate::projections_service::{read_model_error, ProjectionDependencies};
@@ -22,7 +22,7 @@ pub fn guard(ctx: &Context<ProjectionDependencies>) -> bool {
     ctx.message().id().is_some()
 }
 
-pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, HandlerError> {
     let message_id = ctx
         .message()
         .id()
@@ -32,11 +32,12 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
     let version = event_version(message_id);
     let updated_view = updated_board_view(&snapshot, version);
 
-    let mut workspace = ctx.read_model_store().workspace();
+    let mut workspace = ctx.read_model_store().workspace_async();
     let existing = workspace
-        .load::<BoardView>(board_key(&updated_view.board_id))
+        .load_async::<BoardView>(board_key(&updated_view.board_id))
         .include("cards")
         .one()
+        .await
         .map_err(read_model_error)?;
 
     match existing {
@@ -52,7 +53,7 @@ pub fn handle(ctx: &Context<ProjectionDependencies>) -> Result<Value, HandlerErr
         }
     }
 
-    workspace.commit().map_err(read_model_error)?;
+    workspace.commit_async().await.map_err(read_model_error)?;
 
     Ok(json!({ "event_id": message_id }))
 }

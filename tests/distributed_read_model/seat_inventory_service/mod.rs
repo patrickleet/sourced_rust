@@ -6,6 +6,9 @@ pub mod models;
 pub use models::Seat;
 pub use service::service;
 
-use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
+use sourced_rust::{
+    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+};
 
-pub type SeatRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Seat>;
+pub type SeatRepo =
+    AsyncAggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Seat>;

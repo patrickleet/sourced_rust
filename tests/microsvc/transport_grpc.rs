@@ -9,7 +9,7 @@ use sourced_rust::microsvc::grpc::{
     CommandServiceClient, GrpcRequest, GrpcServeError, HealthRequest,
 };
 use sourced_rust::microsvc::Service;
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 
@@ -19,7 +19,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,

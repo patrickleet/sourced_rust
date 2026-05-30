@@ -2,10 +2,9 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use sourced_rust::{
-    AggregateBuilder, ClaimOutboxMessages, Commit, EventEmitter, GetAggregate, HashMapRepository,
-    LocalEmitterPublisher, LockError, LogPublisher, OutboxClaimRef, OutboxMessage,
-    OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,
-    SyncCommitBuilderExt, SyncOutboxCommitExt,
+    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncLock, AsyncLockManager, ClaimOutboxMessages,
+    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxClaimRef,
+    OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -52,9 +51,11 @@ fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
     panic!("outbox message `{id}` should exist")
 }
 
-#[test]
-fn todos() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+#[tokio::test]
+async fn todos() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Todo>();
 
     // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
@@ -72,8 +73,9 @@ fn todos() {
             .unwrap();
 
     // Commit the Todo + Outbox message to the repository
-    repo.outbox_sync(init_message)
-        .commit_sync(&mut todo)
+    repo.outbox(init_message)
+        .commit(&mut todo)
+        .await
         .expect("initial todo outbox commit should succeed");
 
     // Verify the outbox event was captured
@@ -84,7 +86,7 @@ fn todos() {
     }
 
     // Retrieve the Todo from the repository and complete it, then commit again
-    if let Some(mut retrieved_todo) = repo.get(&id1).unwrap() {
+    if let Some(mut retrieved_todo) = repo.get(&id1).await.unwrap() {
         retrieved_todo.complete().unwrap();
 
         // Add an outbox event for the completion
@@ -95,8 +97,9 @@ fn todos() {
         )
         .unwrap();
 
-        repo.outbox_sync(complete_message)
-            .commit_sync(&mut retrieved_todo)
+        repo.outbox(complete_message)
+            .commit(&mut retrieved_todo)
+            .await
             .expect("completed todo outbox commit should succeed");
 
         // Verify we now have 2 outbox events
@@ -109,7 +112,7 @@ fn todos() {
             assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));
         }
 
-        if let Some(completed_todo) = repo.get(&id1).unwrap() {
+        if let Some(completed_todo) = repo.get(&id1).await.unwrap() {
             assert!(completed_todo.snapshot().id == id1);
             assert!(completed_todo.snapshot().user_id == "user1");
             assert!(completed_todo.snapshot().task == "Buy groceries");
@@ -140,10 +143,10 @@ fn todos() {
         .unwrap();
 
     // Commit multiple Todos to the repository
-    let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]);
+    let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]).await;
 
     // get all the todos from the repository
-    let all_todos = repo.peek_all(&[&id1, &id2, &id3]).unwrap();
+    let all_todos = repo.peek_all(&[&id1, &id2, &id3]).await.unwrap();
     if !all_todos.is_empty() {
         assert!(all_todos.len() == 3);
     } else {
@@ -151,26 +154,30 @@ fn todos() {
     }
 }
 
-#[test]
-fn get_commit_roundtrip() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+#[tokio::test]
+async fn get_commit_roundtrip() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Todo>();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string())
         .unwrap();
 
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let retrieved = repo.peek(&id).unwrap().expect("Todo not found");
+    let retrieved = repo.peek(&id).await.unwrap().expect("Todo not found");
     assert_eq!(retrieved.snapshot().id, id);
     assert_eq!(retrieved.snapshot().user_id, "user1");
     assert_eq!(retrieved.snapshot().task, "Roundtrip");
     assert!(!retrieved.snapshot().completed);
 }
 
-#[test]
-fn get_all_commit_all_roundtrip() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+#[tokio::test]
+async fn get_all_commit_all_roundtrip() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
@@ -184,9 +191,11 @@ fn get_all_commit_all_roundtrip() {
         .initialize(id2.clone(), "user2".to_string(), "Second".to_string())
         .unwrap();
 
-    repo.commit_all(&mut [&mut todo1, &mut todo2]).unwrap();
+    repo.commit_all(&mut [&mut todo1, &mut todo2])
+        .await
+        .unwrap();
 
-    let todos = repo.get_all(&[&id1, &id2]).unwrap();
+    let todos = repo.get_all(&[&id1, &id2]).await.unwrap();
     assert_eq!(todos.len(), 2);
     assert_eq!(todos[0].snapshot().id, id1);
     assert!(!todos[0].snapshot().completed);
@@ -200,9 +209,11 @@ fn get_all_commit_all_roundtrip() {
     todo1v2.complete().unwrap();
     todo2v2.complete().unwrap();
 
-    repo.commit_all(&mut [&mut todo1v2, &mut todo2v2]).unwrap();
+    repo.commit_all(&mut [&mut todo1v2, &mut todo2v2])
+        .await
+        .unwrap();
 
-    let v2_todos = repo.peek_all(&[&id1, &id2]).unwrap();
+    let v2_todos = repo.peek_all(&[&id1, &id2]).await.unwrap();
 
     assert_eq!(v2_todos.len(), 2);
     assert_eq!(v2_todos[0].snapshot().id, id1);
@@ -211,8 +222,8 @@ fn get_all_commit_all_roundtrip() {
     assert!(v2_todos[1].snapshot().completed);
 }
 
-#[test]
-fn outbox_records_persisted() {
+#[tokio::test]
+async fn outbox_records_persisted() {
     let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
@@ -222,7 +233,7 @@ fn outbox_records_persisted() {
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
 
-    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
+    repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Check pending outbox messages
     let pending = repo.outbox_store().pending().unwrap();
@@ -236,8 +247,8 @@ fn outbox_records_persisted() {
     assert_eq!(published.completed, snapshot.completed);
 }
 
-#[test]
-fn outbox_worker_log_publisher() {
+#[tokio::test]
+async fn outbox_worker_log_publisher() {
     let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
@@ -251,7 +262,7 @@ fn outbox_worker_log_publisher() {
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
     let message_id = message.id().to_string();
-    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
+    repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -288,8 +299,8 @@ fn outbox_worker_log_publisher() {
     assert!(published.is_published());
 }
 
-#[test]
-fn outbox_worker_local_emitter_publisher() {
+#[tokio::test]
+async fn outbox_worker_local_emitter_publisher() {
     let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
@@ -302,7 +313,7 @@ fn outbox_worker_local_emitter_publisher() {
     let snapshot = todo.snapshot();
     let message =
         OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
-    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
+    repo.outbox(message).commit(&mut todo).await.unwrap();
 
     let mut emitter = EventEmitter::new();
     let (tx, rx) = mpsc::channel::<String>();
@@ -339,16 +350,20 @@ fn outbox_worker_local_emitter_publisher() {
     assert!(!payload.is_empty());
 }
 
-#[test]
-fn abort_releases_lock_after_get() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+#[tokio::test]
+async fn abort_releases_lock_after_get() {
+    let repo = Arc::new(
+        HashMapRepository::new()
+            .queued_async()
+            .async_aggregate::<Todo>(),
+    );
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string())
         .unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let locked = repo.get(&id).unwrap().unwrap();
+    let locked = repo.get(&id).await.unwrap().unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
     let (tx_got, rx_got) = mpsc::channel();
@@ -356,7 +371,8 @@ fn abort_releases_lock_after_get() {
     let id_other = id.clone();
     thread::spawn(move || {
         tx_started.send(()).unwrap();
-        let _ = repo_other.get(&id_other).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(repo_other.get(&id_other)).unwrap();
         tx_got.send(()).unwrap();
     });
 
@@ -367,9 +383,13 @@ fn abort_releases_lock_after_get() {
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
-#[test]
-fn abort_releases_lock_after_get_all() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+#[tokio::test]
+async fn abort_releases_lock_after_get_all() {
+    let repo = Arc::new(
+        HashMapRepository::new()
+            .queued_async()
+            .async_aggregate::<Todo>(),
+    );
     let mut todo1 = Todo::new();
     let id1 = next_id();
     todo1
@@ -379,7 +399,7 @@ fn abort_releases_lock_after_get_all() {
             "Abort get_all 1".to_string(),
         )
         .unwrap();
-    repo.commit(&mut todo1).unwrap();
+    repo.commit(&mut todo1).await.unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
@@ -390,9 +410,9 @@ fn abort_releases_lock_after_get_all() {
             "Abort get_all 2".to_string(),
         )
         .unwrap();
-    repo.commit(&mut todo2).unwrap();
+    repo.commit(&mut todo2).await.unwrap();
 
-    let locked = repo.get_all(&[&id1, &id2]).unwrap();
+    let locked = repo.get_all(&[&id1, &id2]).await.unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
     let (tx_got, rx_got) = mpsc::channel();
@@ -400,7 +420,8 @@ fn abort_releases_lock_after_get_all() {
     let id_other = id1.clone();
     thread::spawn(move || {
         tx_started.send(()).unwrap();
-        let _ = repo_other.get(&id_other).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(repo_other.get(&id_other)).unwrap();
         tx_got.send(()).unwrap();
     });
 
@@ -414,14 +435,18 @@ fn abort_releases_lock_after_get_all() {
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
-#[test]
-fn queued_repo_blocks_get_until_commit() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+#[tokio::test]
+async fn queued_repo_blocks_get_until_commit() {
+    let repo = Arc::new(
+        HashMapRepository::new()
+            .queued_async()
+            .async_aggregate::<Todo>(),
+    );
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string())
         .unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
     let mut other_todo = Todo::new();
     let other_id = next_id();
@@ -432,7 +457,7 @@ fn queued_repo_blocks_get_until_commit() {
             "Independent queue".to_string(),
         )
         .unwrap();
-    repo.commit(&mut other_todo).unwrap();
+    repo.commit(&mut other_todo).await.unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
     let (tx_release, rx_release) = mpsc::channel();
@@ -441,10 +466,11 @@ fn queued_repo_blocks_get_until_commit() {
     let repo_a = Arc::clone(&repo);
     let id_a = id.clone();
     thread::spawn(move || {
-        let mut todo = repo_a.get(&id_a).unwrap().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut todo = rt.block_on(repo_a.get(&id_a)).unwrap().unwrap();
         tx_started.send(()).unwrap();
         rx_release.recv().unwrap();
-        let _ = repo_a.commit(&mut todo);
+        let _ = rt.block_on(repo_a.commit(&mut todo));
         tx_committed.send(()).unwrap();
     });
 
@@ -454,7 +480,11 @@ fn queued_repo_blocks_get_until_commit() {
     let repo_other = Arc::clone(&repo);
     let other_id_clone = other_id.clone();
     thread::spawn(move || {
-        let todo = repo_other.get(&other_id_clone).unwrap().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let todo = rt
+            .block_on(repo_other.get(&other_id_clone))
+            .unwrap()
+            .unwrap();
         repo_other.abort(&todo).unwrap();
         tx_other_done.send(()).unwrap();
     });
@@ -463,7 +493,8 @@ fn queued_repo_blocks_get_until_commit() {
     let repo_peek = Arc::clone(&repo);
     let id_peek = id.clone();
     thread::spawn(move || {
-        let _ = repo_peek.peek(&id_peek).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(repo_peek.peek(&id_peek)).unwrap();
         tx_peek_done.send(()).unwrap();
     });
 
@@ -471,8 +502,9 @@ fn queued_repo_blocks_get_until_commit() {
     let repo_peek_all = Arc::clone(&repo);
     let id_peek_all = id.clone();
     thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let ids = [id_peek_all.as_str()];
-        let _ = repo_peek_all.peek_all(&ids).unwrap();
+        let _ = rt.block_on(repo_peek_all.peek_all(&ids)).unwrap();
         tx_peek_all_done.send(()).unwrap();
     });
 
@@ -490,8 +522,9 @@ fn queued_repo_blocks_get_until_commit() {
     let repo_b = Arc::clone(&repo);
     let id_b = id.clone();
     thread::spawn(move || {
-        let mut todo = repo_b.get(&id_b).unwrap().unwrap();
-        let _ = repo_b.commit(&mut todo);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut todo = rt.block_on(repo_b.get(&id_b)).unwrap().unwrap();
+        let _ = rt.block_on(repo_b.commit(&mut todo));
         tx_done.send(()).unwrap();
     });
 
@@ -503,23 +536,34 @@ fn queued_repo_blocks_get_until_commit() {
 
 #[test]
 fn manual_lock_reports_failure_when_already_held() {
-    let repo = HashMapRepository::new().queued();
+    let repo = HashMapRepository::new().queued_async();
     let id = next_id();
 
-    repo.lock(&id).unwrap();
-    let err = repo.lock(&id).expect_err("second manual lock should fail");
-    let is_lock_failure = matches!(
-        &err,
-        RepositoryError::Lock(LockError::AcquireFailed(message)) if message.contains(&id)
+    let lock = repo.lock_manager().get_lock(&id).unwrap();
+
+    // First acquisition succeeds.
+    assert!(
+        lock.try_lock().unwrap(),
+        "first manual lock should be acquired"
     );
 
-    assert!(is_lock_failure, "unexpected error: {err}");
-    repo.unlock(&id).unwrap();
+    // Second acquisition reports the lock is already held.
+    let second = repo.lock_manager().get_lock(&id).unwrap();
+    assert!(
+        !second.try_lock().unwrap(),
+        "second manual lock should report already held"
+    );
+
+    lock.unlock().unwrap();
 }
 
-#[test]
-fn commit_failure_keeps_lock_until_abort() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+#[tokio::test]
+async fn commit_failure_keeps_lock_until_abort() {
+    let repo = Arc::new(
+        HashMapRepository::new()
+            .queued_async()
+            .async_aggregate::<Todo>(),
+    );
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -528,21 +572,24 @@ fn commit_failure_keeps_lock_until_abort() {
         "Commit failure lock".to_string(),
     )
     .unwrap();
-    repo.commit(&mut todo).unwrap();
+    repo.commit(&mut todo).await.unwrap();
 
-    let mut locked = repo.get(&id).unwrap().unwrap();
-    let mut concurrent = repo
-        .repo()
-        .inner()
-        .get_aggregate::<Todo>(&id)
-        .unwrap()
-        .unwrap();
+    let mut locked = repo.get(&id).await.unwrap().unwrap();
+
+    // Simulate a concurrent writer that bumps the version out from under the
+    // locked aggregate. The inner repository is unlocked (the queue lock lives in
+    // the `QueuedRepository` wrapper held by the main thread), and a cheap clone
+    // shares the same `Arc`-backed store, so this writes to the same namespaced
+    // stream without contending on the lock.
+    let inner = repo.repo().inner().clone().async_aggregate::<Todo>();
+    let mut concurrent = inner.get(&id).await.unwrap().unwrap();
     concurrent.complete().unwrap();
-    repo.repo().inner().commit(&mut concurrent.entity).unwrap();
+    inner.commit(&mut concurrent).await.unwrap();
 
     locked.complete().unwrap();
     let err = repo
         .commit(&mut locked)
+        .await
         .expect_err("stale locked aggregate should fail optimistic commit");
     assert!(
         matches!(err, RepositoryError::ConcurrentWrite { .. }),
@@ -555,7 +602,8 @@ fn commit_failure_keeps_lock_until_abort() {
     let id_other = id.clone();
     thread::spawn(move || {
         tx_started.send(()).unwrap();
-        let todo = repo_other.get(&id_other).unwrap().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let todo = rt.block_on(repo_other.get(&id_other)).unwrap().unwrap();
         repo_other.abort(&todo).unwrap();
         tx_got.send(()).unwrap();
     });
@@ -567,8 +615,8 @@ fn commit_failure_keeps_lock_until_abort() {
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
-#[test]
-fn outbox_worker_process_next_with_commit() {
+#[tokio::test]
+async fn outbox_worker_process_next_with_commit() {
     let repo = HashMapRepository::new();
     let mut todo = Todo::new();
     let id = next_id();
@@ -591,10 +639,11 @@ fn outbox_worker_process_next_with_commit() {
         message3.id().to_string(),
     ];
 
-    repo.outbox_sync(message1)
-        .outbox_sync(message2)
-        .outbox_sync(message3)
-        .commit_sync(&mut todo)
+    repo.outbox(message1)
+        .outbox(message2)
+        .outbox(message3)
+        .commit(&mut todo)
+        .await
         .unwrap();
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -641,8 +690,8 @@ fn outbox_worker_process_next_with_commit() {
 }
 
 /// Full metadata chain: Entity → EventRecord → OutboxMessage → OutboxWorker → publisher
-#[test]
-fn metadata_flows_from_entity_through_outbox_to_publisher() {
+#[tokio::test]
+async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     let repo = HashMapRepository::new();
 
     // 1. Create a todo with metadata on the entity
@@ -673,8 +722,8 @@ fn metadata_flows_from_entity_through_outbox_to_publisher() {
     assert_eq!(message.causation_id(), Some("cmd-create-todo"));
 
     // 4. Commit both using outbox commit builder
-    let repo = repo.aggregate::<Todo>();
-    repo.outbox_sync(message).commit_sync(&mut todo).unwrap();
+    let repo = repo.async_aggregate::<Todo>();
+    repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // 5. Process through outbox worker, verify metadata reaches publisher
     let buffer = Arc::new(Mutex::new(Vec::new()));

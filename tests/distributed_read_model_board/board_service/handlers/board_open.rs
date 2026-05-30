@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{OutboxMessage, SyncOutboxCommitExt};
+use sourced_rust::OutboxMessage;
 
 use crate::board_service::{Board, BoardRepo, OpenBoard};
 
@@ -10,9 +10,9 @@ pub fn guard(ctx: &Context<BoardRepo>) -> bool {
     ctx.has_fields(&["id", "name"])
 }
 
-pub fn handle(ctx: &Context<BoardRepo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, BoardRepo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<OpenBoard>()?;
-    if ctx.repo().peek(&input.id)?.is_some() {
+    if ctx.repo().peek(&input.id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "board {} already exists",
             input.id
@@ -23,7 +23,7 @@ pub fn handle(ctx: &Context<BoardRepo>) -> Result<Value, HandlerError> {
     board.open(input.id.clone(), input.name.clone())?;
 
     let outbox = OutboxMessage::domain_event("board.opened", &board)?;
-    ctx.repo().outbox_sync(outbox).commit_sync(&mut board)?;
+    ctx.repo().outbox(outbox).commit(&mut board).await?;
 
     Ok(json!({ "id": input.id }))
 }

@@ -6,7 +6,7 @@ pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id", "amount_cents"])
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<ProcessPaymentMsg>()?;
 
     let payment_id = format!("pay-{}", input.order_id);
@@ -29,6 +29,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox_sync(msg).commit_sync(&mut payment)?;
+    ctx.repo().outbox(msg).commit(&mut payment).await?;
     Ok(json!({ "payment_id": payment_id }))
 }

@@ -16,7 +16,7 @@ use sourced_rust::microsvc::transport::{
     run_source, AsyncMessageSource, Bus, BusConsumer, OutboxSource, PostgresBus, ReceivedMessage,
     RunOptions,
 };
-use sourced_rust::microsvc::{Message, MessageKind, Service};
+use sourced_rust::microsvc::{Context, Message, MessageKind, Service};
 use sourced_rust::{
     AsyncCommitBatch, AsyncOutboxStore, AsyncTransactionalCommit, OutboxMessage,
     OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,
@@ -55,13 +55,17 @@ async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageSt
 }
 
 fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-    Arc::new(Service::new(()).event("evt").handle(move |ctx| {
-        handled
-            .lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        Ok(json!({}))
-    }))
+    Arc::new(
+        Service::new(())
+            .event("evt")
+            .handle(move |ctx: &Context<()>| {
+                handled
+                    .lock()
+                    .unwrap()
+                    .push(ctx.message().id().unwrap_or_default().to_string());
+                async move { Ok(json!({})) }
+            }),
+    )
 }
 
 #[tokio::test]
@@ -196,11 +200,11 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
         MessageKind::Command => builder.command(leaked),
         MessageKind::Event => builder.event(leaked),
     };
-    Arc::new(registered.handle(move |ctx| {
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
         rec.lock()
             .unwrap()
             .push(ctx.message().id().unwrap_or_default().to_string());
-        Ok(json!({}))
+        async move { Ok(json!({})) }
     }))
 }
 

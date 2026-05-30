@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use sourced_rust::microsvc::transport::{cloud_events_router, Bus, KnativeBus};
-use sourced_rust::microsvc::{HandlerError, Message, MessageKind, Service, SubscriptionPlan};
+use sourced_rust::microsvc::{
+    Context, HandlerError, Message, MessageKind, Service, SubscriptionPlan,
+};
 
 async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -17,20 +19,22 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let service = Arc::new(
         Service::new(())
             .event("order.created")
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 h.lock()
                     .unwrap()
                     .push(ctx.message().id().unwrap_or_default().to_string());
-                Ok(json!({"ok": true}))
+                async move { Ok(json!({"ok": true})) }
             })
             .event("flaky")
-            .handle(|_| {
+            .handle(|_ctx: &Context<()>| async move {
                 Err(HandlerError::Repository(
                     sourced_rust::RepositoryError::Model("transient".into()),
                 ))
             })
             .event("bad")
-            .handle(|_| Err(HandlerError::Rejected("permanent".into()))),
+            .handle(
+                |_ctx: &Context<()>| async move { Err(HandlerError::Rejected("permanent".into())) },
+            ),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
