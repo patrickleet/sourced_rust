@@ -163,7 +163,7 @@ impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
         // Build session: start with metadata headers, then overlay payload values
         let session = build_session(&metadata, req.session_variables);
 
-        match self.service.dispatch(&req.command, input, session) {
+        match self.service.dispatch(&req.command, input, session).await {
             Ok(value) => Ok(Response::new(GrpcResponse {
                 status: 200,
                 body: value.to_string(),
