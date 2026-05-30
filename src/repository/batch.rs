@@ -4,7 +4,6 @@ use crate::read_model::ReadModelWritePlan;
 use crate::snapshot::SnapshotRecord;
 
 use super::inbox::InboxReceipt;
-use super::RepositoryError;
 
 /// A snapshot write staged as part of a transactional commit.
 #[derive(Clone, Debug)]
@@ -37,9 +36,4 @@ impl<'a> CommitBatch<'a> {
     pub fn empty() -> Self {
         Self::new(Vec::new())
     }
-}
-
-/// Repository capability for writes that must commit or roll back together.
-pub trait TransactionalCommit {
-    fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError>;
 }

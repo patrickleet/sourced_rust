@@ -22,8 +22,8 @@ use sourced_rust::microsvc::transport::{
 };
 use sourced_rust::microsvc::{Context, HandlerError, Message, MessageKind, Service};
 use sourced_rust::{
-    CommitBatch, HashMapOutboxStore, HashMapRepository, OutboxMessage, OutboxMessageStatus,
-    TransactionalCommit,
+    AsyncCommitBatch, AsyncTransactionalCommit, HashMapOutboxStore, HashMapRepository,
+    OutboxMessage, OutboxMessageStatus,
 };
 
 /// One observable transport effect, recorded in order.
@@ -348,11 +348,11 @@ pub async fn source_propagates_settle_errors() {
 // Publisher / outbox dispatcher contract
 // =============================================================================
 
-fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
+async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
     let message = OutboxMessage::create(id, "OrderCreated", b"\x01".to_vec()).unwrap();
-    let mut batch = CommitBatch::empty();
+    let mut batch = AsyncCommitBatch::empty();
     batch.outbox_messages.push(message);
-    repo.commit_batch(batch).unwrap();
+    repo.commit_batch_async(batch).await.unwrap();
     id.to_string()
 }
 
@@ -391,7 +391,7 @@ fn dispatcher(
 
 pub async fn dispatcher_completes_only_after_publish_success() {
     let repo = HashMapRepository::new();
-    let id = store_outbox(&repo, "evt-1");
+    let id = store_outbox(&repo, "evt-1").await;
     let dispatcher = dispatcher(&repo, PublishMode::Succeed, 3);
 
     let outcome = dispatcher
@@ -411,7 +411,7 @@ pub async fn dispatcher_completes_only_after_publish_success() {
 
 pub async fn dispatcher_unknown_outcome_stays_retryable() {
     let repo = HashMapRepository::new();
-    let id = store_outbox(&repo, "evt-1");
+    let id = store_outbox(&repo, "evt-1").await;
     let dispatcher = dispatcher(&repo, PublishMode::FailUnknown, 3);
 
     let outcome = dispatcher
@@ -429,8 +429,8 @@ pub async fn dispatcher_unknown_outcome_stays_retryable() {
 
 pub async fn dispatcher_claims_explicit_ids_before_publish() {
     let repo = HashMapRepository::new();
-    let wanted = store_outbox(&repo, "evt-1");
-    let other = store_outbox(&repo, "evt-2");
+    let wanted = store_outbox(&repo, "evt-1").await;
+    let other = store_outbox(&repo, "evt-2").await;
     let dispatcher = dispatcher(&repo, PublishMode::Succeed, 3);
 
     let outcome = dispatcher
