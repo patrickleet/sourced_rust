@@ -2,10 +2,9 @@
 //!
 //! A 4-player Bomberman demonstrates:
 //! - Single aggregate + atomic read model commit (player join/move)
-//! - Multi-aggregate atomic commit via `commit_many` (bomb placement, explosion)
+//! - Multi-aggregate atomic commit via the staged commit builder (bomb placement)
 //! - Aggregate lifecycle: bomb created -> ticked -> exploded -> explosion expands
 //! - In-process orchestration saga (tick resolves explosions across aggregates)
-//! - Contested resources via QueuedRepository (concurrent bomb placement)
 //! - Composite read model (BoardView from map + players + bombs + explosions)
 //! - Outbox events ("PlayerKilled" on death)
 //! - Guard conditions (can't move when dead, can't bomb at max)
@@ -35,26 +34,26 @@ const SMALL_MAP: &str = "\
 // Pattern: Single aggregate + read model commit, terrain validation
 // ============================================================================
 
-#[test]
-fn game_setup_and_movement() {
+#[tokio::test]
+async fn game_setup_and_movement() {
     let repo = HashMapRepository::new();
-    let game = Game::new(&repo, "game-1", SMALL_MAP).unwrap();
+    let game = Game::new(&repo, "game-1", SMALL_MAP).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
     let p2 = game.sim("p2", "Bob");
 
-    p1.join(0).unwrap();
-    p2.join(1).unwrap();
+    p1.join(0).await.unwrap();
+    p2.join(1).await.unwrap();
 
     // P1 starts at spawn 0 (1,1), move south
-    p1.move_dir(Direction::South).unwrap();
+    p1.move_dir(Direction::South).await.unwrap();
 
     // Try to move into a wall — should fail
-    let result = p1.move_dir(Direction::West);
+    let result = p1.move_dir(Direction::West).await;
     assert!(result.is_err());
 
     // Verify board view
-    let board = game.board().unwrap();
+    let board = game.board().await.unwrap();
     assert_eq!(board.data.players.len(), 2);
 
     let alice = board
@@ -73,13 +72,15 @@ fn game_setup_and_movement() {
     assert!(bob.alive);
 }
 
-#[test]
-fn invalid_spawn_index_returns_error() {
+#[tokio::test]
+async fn invalid_spawn_index_returns_error() {
     let repo = HashMapRepository::new();
-    let game = Game::new(&repo, "game-invalid-spawn", SMALL_MAP).unwrap();
+    let game = Game::new(&repo, "game-invalid-spawn", SMALL_MAP)
+        .await
+        .unwrap();
     let player = game.sim("p1", "Alice");
 
-    let result = player.join(99);
+    let result = player.join(99).await;
 
     assert!(matches!(
         result,
@@ -92,48 +93,48 @@ fn invalid_spawn_index_returns_error() {
 // Pattern: Aggregate lifecycle (bomb created -> ticked -> exploded -> expansion)
 // ============================================================================
 
-#[test]
-fn bomb_destroys_blocks() {
+#[tokio::test]
+async fn bomb_destroys_blocks() {
     let repo = HashMapRepository::new();
-    let game = Game::new(&repo, "game-2", SMALL_MAP).unwrap();
+    let game = Game::new(&repo, "game-2", SMALL_MAP).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
-    p1.join(0).unwrap();
+    p1.join(0).await.unwrap();
 
     // Alice at (1,1). Move to (2,1) to be near block at (3,1).
-    p1.move_dir(Direction::East).unwrap();
+    p1.move_dir(Direction::East).await.unwrap();
 
     // Place bomb at (2,1) — blast radius 2 east reaches block at (3,1) at ring 1
-    p1.place_bomb().unwrap();
+    p1.place_bomb().await.unwrap();
 
     // Escape: go west to (1,1) then south to (1,2)
-    p1.move_dir(Direction::West).unwrap(); // (1,1)
-    p1.move_dir(Direction::South).unwrap(); // (1,2) — safe from bomb at (2,1)
+    p1.move_dir(Direction::West).await.unwrap(); // (1,1)
+    p1.move_dir(Direction::South).await.unwrap(); // (1,2) — safe from bomb at (2,1)
 
     // Verify bomb is on the board
-    let board = game.board().unwrap();
+    let board = game.board().await.unwrap();
     assert_eq!(board.data.bombs.len(), 1);
 
     // Tick 3 times: bomb timer 3 -> 2 -> 1 -> 0, detonates, center (2,1) active
-    game.tick().unwrap();
-    game.tick().unwrap();
-    game.tick().unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
 
     // Tick 4: explosion expands to ring 1 → (3,1) block destroyed
-    let tick_result = game.tick().unwrap();
+    let tick_result = game.tick().await.unwrap();
 
     // Block should be destroyed this tick
     assert!(!tick_result.blocks_destroyed.is_empty());
 
     // Verify bomb gone from board
-    let board = game.board().unwrap();
+    let board = game.board().await.unwrap();
     assert_eq!(board.data.bombs.len(), 0);
 
     // Alice should still be alive (moved away)
-    assert!(p1.is_alive().unwrap());
+    assert!(p1.is_alive().await.unwrap());
 
     // Verify bomb returned to player
-    let player = p1.player().unwrap();
+    let player = p1.player().await.unwrap();
     assert_eq!(player.active_bombs, 0);
 }
 
@@ -142,8 +143,8 @@ fn bomb_destroys_blocks() {
 // Pattern: Multi-aggregate coordination + outbox event
 // ============================================================================
 
-#[test]
-fn player_killed_by_bomb() {
+#[tokio::test]
+async fn player_killed_by_bomb() {
     // Use a tall open map so players can retreat far from blast
     let repo2 = HashMapRepository::new();
     let open_map = "\
@@ -155,51 +156,51 @@ fn player_killed_by_bomb() {
 #         #
 #        2#
 ###########";
-    let game2 = Game::new(&repo2, "game-3b", open_map).unwrap();
+    let game2 = Game::new(&repo2, "game-3b", open_map).await.unwrap();
 
     let alice = game2.sim("p1", "Alice");
     let bob = game2.sim("p2", "Bob");
 
-    alice.join(0).unwrap(); // (1,1)
-    bob.join(1).unwrap(); // (9,6)
+    alice.join(0).await.unwrap(); // (1,1)
+    bob.join(1).await.unwrap(); // (9,6)
 
     // Move Bob to (5,1) via north then west
-    bob.move_dir(Direction::North).unwrap(); // (9,5)
-    bob.move_dir(Direction::North).unwrap(); // (9,4)
-    bob.move_dir(Direction::North).unwrap(); // (9,3)
-    bob.move_dir(Direction::North).unwrap(); // (9,2)
-    bob.move_dir(Direction::North).unwrap(); // (9,1)
-    bob.move_dir(Direction::West).unwrap(); // (8,1)
-    bob.move_dir(Direction::West).unwrap(); // (7,1)
-    bob.move_dir(Direction::West).unwrap(); // (6,1)
-    bob.move_dir(Direction::West).unwrap(); // (5,1)
+    bob.move_dir(Direction::North).await.unwrap(); // (9,5)
+    bob.move_dir(Direction::North).await.unwrap(); // (9,4)
+    bob.move_dir(Direction::North).await.unwrap(); // (9,3)
+    bob.move_dir(Direction::North).await.unwrap(); // (9,2)
+    bob.move_dir(Direction::North).await.unwrap(); // (9,1)
+    bob.move_dir(Direction::West).await.unwrap(); // (8,1)
+    bob.move_dir(Direction::West).await.unwrap(); // (7,1)
+    bob.move_dir(Direction::West).await.unwrap(); // (6,1)
+    bob.move_dir(Direction::West).await.unwrap(); // (5,1)
 
     // Alice moves east to (3,1)
-    alice.move_dir(Direction::East).unwrap(); // (2,1)
-    alice.move_dir(Direction::East).unwrap(); // (3,1)
+    alice.move_dir(Direction::East).await.unwrap(); // (2,1)
+    alice.move_dir(Direction::East).await.unwrap(); // (3,1)
 
     // Alice places bomb at (3,1), blast radius 2 east: ring 1=(4,1), ring 2=(5,1)
-    alice.place_bomb().unwrap();
+    alice.place_bomb().await.unwrap();
 
     // Alice retreats south 3 cells (blast south goes (3,2),(3,3), so (3,4) is safe)
-    alice.move_dir(Direction::South).unwrap(); // (3,2)
-    alice.move_dir(Direction::South).unwrap(); // (3,3)
-    alice.move_dir(Direction::South).unwrap(); // (3,4)
+    alice.move_dir(Direction::South).await.unwrap(); // (3,2)
+    alice.move_dir(Direction::South).await.unwrap(); // (3,3)
+    alice.move_dir(Direction::South).await.unwrap(); // (3,4)
 
     // Tick 3 times to detonate: timer 3→2→1→0, bomb detonates, center (3,1) active
-    game2.tick().unwrap();
-    game2.tick().unwrap();
-    game2.tick().unwrap();
+    game2.tick().await.unwrap();
+    game2.tick().await.unwrap();
+    game2.tick().await.unwrap();
 
     // Tick 4: expand to ring 1 → (4,1) — Bob not here
-    game2.tick().unwrap();
+    game2.tick().await.unwrap();
 
     // Tick 5: expand to ring 2 → (5,1) — Bob killed!
-    let tick_result = game2.tick().unwrap();
+    let tick_result = game2.tick().await.unwrap();
 
     // Verify Bob was killed
-    assert!(!bob.is_alive().unwrap());
-    assert!(alice.is_alive().unwrap());
+    assert!(!bob.is_alive().await.unwrap());
+    assert!(alice.is_alive().await.unwrap());
 
     // Verify kill recorded on saga
     assert!(tick_result
@@ -221,8 +222,8 @@ fn player_killed_by_bomb() {
 // Pattern: In-process orchestration saga (expanding explosion triggers chain)
 // ============================================================================
 
-#[test]
-fn chain_reaction() {
+#[tokio::test]
+async fn chain_reaction() {
     let repo = HashMapRepository::new();
     // Tall map so players can retreat far enough from blast radius 2
     let tall_map = "\
@@ -235,50 +236,50 @@ fn chain_reaction() {
 #         #
 #        2#
 ###########";
-    let game = Game::new(&repo, "game-4", tall_map).unwrap();
+    let game = Game::new(&repo, "game-4", tall_map).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
     let p2 = game.sim("p2", "Bob");
 
-    p1.join(0).unwrap(); // (1,1)
-    p2.join(1).unwrap(); // (9,7)
+    p1.join(0).await.unwrap(); // (1,1)
+    p2.join(1).await.unwrap(); // (9,7)
 
     // Alice moves to (3,1), places bomb, then retreats south far enough
-    p1.move_dir(Direction::East).unwrap(); // (2,1)
-    p1.move_dir(Direction::East).unwrap(); // (3,1)
-    p1.place_bomb().unwrap(); // bomb at (3,1), radius 2
+    p1.move_dir(Direction::East).await.unwrap(); // (2,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (3,1)
+    p1.place_bomb().await.unwrap(); // bomb at (3,1), radius 2
 
     // Alice retreats south 3 cells (blast goes south only 2)
-    p1.move_dir(Direction::South).unwrap(); // (3,2)
-    p1.move_dir(Direction::South).unwrap(); // (3,3)
-    p1.move_dir(Direction::South).unwrap(); // (3,4)
+    p1.move_dir(Direction::South).await.unwrap(); // (3,2)
+    p1.move_dir(Direction::South).await.unwrap(); // (3,3)
+    p1.move_dir(Direction::South).await.unwrap(); // (3,4)
 
     // Tick twice so Alice's bomb timer goes from 3→2→1
-    game.tick().unwrap();
-    game.tick().unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
 
     // Now Bob places bomb at (5,1) — 2 cells east of Alice's bomb
     // Bob's bomb will have timer=3, Alice's bomb has timer=1
     // Alice's bomb detonates next tick, expanding blast reaches (5,1) at ring 2
-    bob_move_to_position(&game, "p2", "Bob", 9, 7, 5, 1);
-    p2.place_bomb().unwrap(); // bomb at (5,1), radius 2
-    p2.move_dir(Direction::South).unwrap(); // (5,2)
-    p2.move_dir(Direction::South).unwrap(); // (5,3)
-    p2.move_dir(Direction::South).unwrap(); // (5,4)
+    bob_move_to_position(&game, "p2", "Bob", 9, 7, 5, 1).await;
+    p2.place_bomb().await.unwrap(); // bomb at (5,1), radius 2
+    p2.move_dir(Direction::South).await.unwrap(); // (5,2)
+    p2.move_dir(Direction::South).await.unwrap(); // (5,3)
+    p2.move_dir(Direction::South).await.unwrap(); // (5,4)
 
     // Tick 3: Alice's bomb timer 1→0 → detonates. Bob's bomb timer 3→2.
     //         Alice's explosion: center (3,1) active.
-    game.tick().unwrap();
+    game.tick().await.unwrap();
 
     // Tick 4: Alice's explosion expands to ring 1: (2,1),(4,1),(3,0)=wall blocked,(3,2).
     //         Bob's bomb timer 2→1. No chain yet.
-    game.tick().unwrap();
+    game.tick().await.unwrap();
 
     // Tick 5: Alice's explosion expands to ring 2: (1,1),(5,1),(3,3).
     //         (5,1) hits Bob's bomb → chain detonation! Bob's bomb marked ticks_remaining=0.
     //         Bob's bomb timer was 1→0 from ticking, BUT the chain mark also sets it to 0.
     //         Either way, Bob's bomb detonates in Phase B. Bob's explosion center (5,1) active.
-    let tick_result = game.tick().unwrap();
+    let tick_result = game.tick().await.unwrap();
 
     // Both bombs should have detonated — at least 2 detonations total across all ticks
     // The chain detonation should be recorded
@@ -290,18 +291,12 @@ fn chain_reaction() {
     );
 
     // Both players should be alive (they retreated far enough)
-    assert!(p1.is_alive().unwrap());
-    assert!(p2.is_alive().unwrap());
+    assert!(p1.is_alive().await.unwrap());
+    assert!(p2.is_alive().await.unwrap());
 }
 
 /// Helper to move a player step by step to a target position via simple pathfinding.
-fn bob_move_to_position<
-    R: sourced_rust::Commit
-        + sourced_rust::TransactionalCommit
-        + sourced_rust::Get
-        + sourced_rust::ReadModelWritePlanStore
-        + sourced_rust::RelationalReadModelQueryStore,
->(
+async fn bob_move_to_position<R>(
     game: &Game<'_, R>,
     id: &str,
     _name: &str,
@@ -309,7 +304,12 @@ fn bob_move_to_position<
     from_y: i32,
     to_x: i32,
     to_y: i32,
-) {
+) where
+    R: sourced_rust::AsyncGetStream
+        + sourced_rust::AsyncTransactionalCommit
+        + sourced_rust::AsyncReadModelWritePlanStore
+        + sourced_rust::AsyncRelationalReadModelQueryStore,
+{
     let sim = game.sim(id, _name);
     let mut cx = from_x;
     let mut cy = from_y;
@@ -317,19 +317,19 @@ fn bob_move_to_position<
     // Move north/south first, then east/west
     while cy != to_y {
         if cy > to_y {
-            sim.move_dir(Direction::North).unwrap();
+            sim.move_dir(Direction::North).await.unwrap();
             cy -= 1;
         } else {
-            sim.move_dir(Direction::South).unwrap();
+            sim.move_dir(Direction::South).await.unwrap();
             cy += 1;
         }
     }
     while cx != to_x {
         if cx > to_x {
-            sim.move_dir(Direction::West).unwrap();
+            sim.move_dir(Direction::West).await.unwrap();
             cx -= 1;
         } else {
-            sim.move_dir(Direction::East).unwrap();
+            sim.move_dir(Direction::East).await.unwrap();
             cx += 1;
         }
     }
@@ -340,13 +340,12 @@ fn bob_move_to_position<
 // Pattern: Contested resource — both players place bombs, verify atomic commits
 // ============================================================================
 
-#[test]
-fn concurrent_bomb_placement() {
-    use sourced_rust::{ReadModelWorkspaceExt, RowKey, RowValue};
+#[tokio::test]
+async fn concurrent_bomb_placement() {
+    use sourced_rust::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
     use std::sync::Arc;
-    use std::thread;
 
-    // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across threads
+    // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across tasks
     let repo = Arc::new(HashMapRepository::new());
     let open_map = "\
 #######
@@ -355,48 +354,64 @@ fn concurrent_bomb_placement() {
 #3   4#
 #######";
 
-    // Create game and join players on main thread
-    handlers::create_game(&*repo, "game-5", open_map).unwrap();
-    handlers::join_game(&*repo, "p1", "Alice", "game-5", 0).unwrap();
-    handlers::join_game(&*repo, "p2", "Bob", "game-5", 1).unwrap();
+    // Create game and join players first
+    handlers::create_game(&*repo, "game-5", open_map)
+        .await
+        .unwrap();
+    handlers::join_game(&*repo, "p1", "Alice", "game-5", 0)
+        .await
+        .unwrap();
+    handlers::join_game(&*repo, "p2", "Bob", "game-5", 1)
+        .await
+        .unwrap();
 
     let repo2 = repo.clone();
     let repo3 = repo.clone();
 
-    // Two threads place bombs concurrently
-    let t1 = thread::spawn(move || {
-        handlers::place_bomb(&*repo2, "p1", "game-5").unwrap();
-    });
-
-    let t2 = thread::spawn(move || {
-        handlers::place_bomb(&*repo3, "p2", "game-5").unwrap();
-    });
-
-    t1.join().unwrap();
-    t2.join().unwrap();
+    // Two futures place bombs concurrently against the shared repository.
+    let (r1, r2) = tokio::join!(
+        handlers::place_bomb(&*repo2, "p1", "game-5"),
+        handlers::place_bomb(&*repo3, "p2", "game-5"),
+    );
+    r1.unwrap();
+    r2.unwrap();
 
     // Verify both bombs placed
     let _board = repo
-        .workspace()
-        .load::<views::BoardView>(RowKey::new([(
+        .workspace_async()
+        .load_async::<views::BoardView>(RowKey::new([(
             "game_id",
             RowValue::String("game-5".into()),
         )]))
         .one()
+        .await
         .unwrap()
         .unwrap();
-    // Board may show 1 or 2 bombs depending on which thread's board view won the race,
+    // Board may show 1 or 2 bombs depending on which task's board view won the race,
     // but both bomb aggregates should exist in the repo.
-    use sourced_rust::GetAggregate;
-    let alice: domain::player::Player = repo.get_aggregate("player:p1").unwrap().unwrap();
+    let alice: domain::player::Player =
+        handlers::get_aggregate::<_, domain::player::Player>(&*repo, "player:p1")
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(alice.active_bombs, 1);
 
-    let bob: domain::player::Player = repo.get_aggregate("player:p2").unwrap().unwrap();
+    let bob: domain::player::Player =
+        handlers::get_aggregate::<_, domain::player::Player>(&*repo, "player:p2")
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(bob.active_bombs, 1);
 
     // Both bomb entities should be in the repo
-    let bomb1: Option<domain::bomb::Bomb> = repo.get_aggregate("bomb:p1:1").unwrap();
-    let bomb2: Option<domain::bomb::Bomb> = repo.get_aggregate("bomb:p2:1").unwrap();
+    let bomb1: Option<domain::bomb::Bomb> =
+        handlers::get_aggregate::<_, domain::bomb::Bomb>(&*repo, "bomb:p1:1")
+            .await
+            .unwrap();
+    let bomb2: Option<domain::bomb::Bomb> =
+        handlers::get_aggregate::<_, domain::bomb::Bomb>(&*repo, "bomb:p2:1")
+            .await
+            .unwrap();
     assert!(bomb1.is_some(), "Alice's bomb should exist");
     assert!(bomb2.is_some(), "Bob's bomb should exist");
 }
@@ -406,8 +421,8 @@ fn concurrent_bomb_placement() {
 // Pattern: End-to-end composition, game lifecycle
 // ============================================================================
 
-#[test]
-fn full_game_to_winner() {
+#[tokio::test]
+async fn full_game_to_winner() {
     let repo = HashMapRepository::new();
     // Larger arena to allow proper retreat from blast radius 2
     let arena = "\
@@ -425,7 +440,7 @@ fn full_game_to_winner() {
 #3         4#
 #############";
 
-    let game = Game::new(&repo, "game-6", arena).unwrap();
+    let game = Game::new(&repo, "game-6", arena).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
     let p2 = game.sim("p2", "Bob");
@@ -433,101 +448,101 @@ fn full_game_to_winner() {
     let p4 = game.sim("p4", "Diana");
 
     // All players join
-    p1.join(0).unwrap(); // (1,1)
-    p2.join(1).unwrap(); // (11,1)
-    p3.join(2).unwrap(); // (1,11)
-    p4.join(3).unwrap(); // (11,11)
+    p1.join(0).await.unwrap(); // (1,1)
+    p2.join(1).await.unwrap(); // (11,1)
+    p3.join(2).await.unwrap(); // (1,11)
+    p4.join(3).await.unwrap(); // (11,11)
 
     // Verify initial board
-    let board = game.board().unwrap();
+    let board = game.board().await.unwrap();
     assert_eq!(board.data.players.len(), 4);
     assert!(board.data.players.iter().all(|p| p.alive));
 
     // --- Round 1: Alice traps Bob ---
     // Alice moves east to (9,1), places bomb. Blast east: ring 1=(10,1), ring 2=(11,1) hits Bob.
-    p1.move_dir(Direction::East).unwrap(); // (2,1)
-    p1.move_dir(Direction::East).unwrap(); // (3,1)
-    p1.move_dir(Direction::East).unwrap(); // (4,1)
-    p1.move_dir(Direction::East).unwrap(); // (5,1)
-    p1.move_dir(Direction::East).unwrap(); // (6,1)
-    p1.move_dir(Direction::East).unwrap(); // (7,1)
-    p1.move_dir(Direction::East).unwrap(); // (8,1)
-    p1.move_dir(Direction::East).unwrap(); // (9,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (2,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (3,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (4,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (5,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (6,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (7,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (8,1)
+    p1.move_dir(Direction::East).await.unwrap(); // (9,1)
 
-    p1.place_bomb().unwrap(); // bomb at (9,1)
+    p1.place_bomb().await.unwrap(); // bomb at (9,1)
 
     // Alice retreats south 3 cells (blast south goes (9,2),(9,3))
-    p1.move_dir(Direction::South).unwrap(); // (9,2)
-    p1.move_dir(Direction::South).unwrap(); // (9,3)
-    p1.move_dir(Direction::South).unwrap(); // (9,4) — safe
+    p1.move_dir(Direction::South).await.unwrap(); // (9,2)
+    p1.move_dir(Direction::South).await.unwrap(); // (9,3)
+    p1.move_dir(Direction::South).await.unwrap(); // (9,4) — safe
 
     // 3 ticks to detonate + 2 ticks for ring 2 expansion = 5 ticks
-    game.tick().unwrap();
-    game.tick().unwrap();
-    game.tick().unwrap(); // detonates, center active
-    game.tick().unwrap(); // ring 1
-    let r1 = game.tick().unwrap(); // ring 2 → Bob killed
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap(); // detonates, center active
+    game.tick().await.unwrap(); // ring 1
+    let r1 = game.tick().await.unwrap(); // ring 2 → Bob killed
 
     assert!(
-        !p2.is_alive().unwrap(),
+        !p2.is_alive().await.unwrap(),
         "Bob should be dead from Alice's bomb"
     );
     assert!(r1.players_killed.contains(&"player:p2".to_string()));
 
     // --- Round 2: Charlie traps Diana ---
     // Charlie at (1,11), Diana at (11,11)
-    p3.move_dir(Direction::East).unwrap(); // (2,11)
-    p3.move_dir(Direction::East).unwrap(); // (3,11)
-    p3.move_dir(Direction::East).unwrap(); // (4,11)
-    p3.move_dir(Direction::East).unwrap(); // (5,11)
-    p3.move_dir(Direction::East).unwrap(); // (6,11)
-    p3.move_dir(Direction::East).unwrap(); // (7,11)
-    p3.move_dir(Direction::East).unwrap(); // (8,11)
-    p3.move_dir(Direction::East).unwrap(); // (9,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (2,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (3,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (4,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (5,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (6,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (7,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (8,11)
+    p3.move_dir(Direction::East).await.unwrap(); // (9,11)
 
-    p3.place_bomb().unwrap(); // bomb at (9,11), blast east: ring 2=(11,11) hits Diana
+    p3.place_bomb().await.unwrap(); // bomb at (9,11), blast east: ring 2=(11,11) hits Diana
 
     // Charlie retreats north 3 cells
-    p3.move_dir(Direction::North).unwrap(); // (9,10)
-    p3.move_dir(Direction::North).unwrap(); // (9,9)
-    p3.move_dir(Direction::North).unwrap(); // (9,8) — safe
+    p3.move_dir(Direction::North).await.unwrap(); // (9,10)
+    p3.move_dir(Direction::North).await.unwrap(); // (9,9)
+    p3.move_dir(Direction::North).await.unwrap(); // (9,8) — safe
 
     // 5 ticks for detonation + expansion to ring 2
-    game.tick().unwrap();
-    game.tick().unwrap();
-    game.tick().unwrap(); // detonates
-    game.tick().unwrap(); // ring 1
-    let r2 = game.tick().unwrap(); // ring 2 → Diana killed
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap(); // detonates
+    game.tick().await.unwrap(); // ring 1
+    let r2 = game.tick().await.unwrap(); // ring 2 → Diana killed
 
-    assert!(!p4.is_alive().unwrap(), "Diana should be dead");
+    assert!(!p4.is_alive().await.unwrap(), "Diana should be dead");
     assert!(r2.players_killed.contains(&"player:p4".to_string()));
 
     // --- Round 3: Alice finishes Charlie ---
     // Alice at (9,4), Charlie at (9,8)
-    p1.move_dir(Direction::South).unwrap(); // (9,5)
-    p1.move_dir(Direction::South).unwrap(); // (9,6)
+    p1.move_dir(Direction::South).await.unwrap(); // (9,5)
+    p1.move_dir(Direction::South).await.unwrap(); // (9,6)
 
     // Place bomb at (9,6), blast south: ring 1=(9,7), ring 2=(9,8) hits Charlie
-    p1.place_bomb().unwrap();
+    p1.place_bomb().await.unwrap();
 
     // Alice retreats north 3 cells
-    p1.move_dir(Direction::North).unwrap(); // (9,5)
-    p1.move_dir(Direction::North).unwrap(); // (9,4)
-    p1.move_dir(Direction::North).unwrap(); // (9,3) — safe
+    p1.move_dir(Direction::North).await.unwrap(); // (9,5)
+    p1.move_dir(Direction::North).await.unwrap(); // (9,4)
+    p1.move_dir(Direction::North).await.unwrap(); // (9,3) — safe
 
     // 5 ticks for detonation + expansion to ring 2
-    game.tick().unwrap();
-    game.tick().unwrap();
-    game.tick().unwrap(); // detonates
-    game.tick().unwrap(); // ring 1
-    let r3 = game.tick().unwrap(); // ring 2 → Charlie killed
+    game.tick().await.unwrap();
+    game.tick().await.unwrap();
+    game.tick().await.unwrap(); // detonates
+    game.tick().await.unwrap(); // ring 1
+    let r3 = game.tick().await.unwrap(); // ring 2 → Charlie killed
 
-    assert!(!p3.is_alive().unwrap(), "Charlie should be dead");
+    assert!(!p3.is_alive().await.unwrap(), "Charlie should be dead");
     assert!(r3.game_over, "Game should be over with only Alice alive");
     assert_eq!(r3.winner.as_deref(), Some("Alice"));
 
     // Verify final board
-    let board = game.board().unwrap();
+    let board = game.board().await.unwrap();
     let alive_count = board.data.players.iter().filter(|p| p.alive).count();
     assert_eq!(alive_count, 1);
     let winner_state = board.data.players.iter().find(|p| p.alive).unwrap();

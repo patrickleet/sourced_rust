@@ -1,7 +1,10 @@
 mod aggregate;
 
 use aggregate::{TodoV1, TodoV1Event, TodoV2, TodoV2Event, TodoV3};
-use sourced_rust::{hydrate, Aggregate, AggregateBuilder, Commit, Entity, HashMapRepository};
+use sourced_rust::{
+    hydrate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncStreamWrite,
+    AsyncTransactionalCommit, Entity, HashMapRepository, StreamIdentity,
+};
 
 #[test]
 fn v1_has_no_upcasters() {
@@ -92,16 +95,24 @@ fn hydrate_v3_native_no_upcasting() {
     assert_eq!(loaded.due_date, "2025-12-31");
 }
 
-#[test]
-fn repo_roundtrip_v1_to_v2() {
+#[tokio::test]
+async fn repo_roundtrip_v1_to_v2() {
     let repo = HashMapRepository::new();
     let mut v1 = TodoV1::default();
     v1.initialize("t1".into(), "frank".into(), "Shop".into())
         .unwrap();
-    repo.commit(&mut v1.entity).unwrap();
+    // Store the v1 events under the v2 aggregate type so the v2 repository (which
+    // upcasts on load) reads the same stream.
+    let identity = StreamIdentity::new(TodoV2::aggregate_type(), "t1").unwrap();
+    repo.commit_batch_async(AsyncCommitBatch::new(vec![AsyncStreamWrite::new(
+        identity,
+        &mut v1.entity,
+    )]))
+    .await
+    .unwrap();
 
-    let v2_repo = repo.aggregate::<TodoV2>();
-    let loaded = v2_repo.get("t1").unwrap().unwrap();
+    let v2_repo = repo.async_aggregate::<TodoV2>();
+    let loaded = v2_repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.user_id, "frank");
     assert_eq!(loaded.priority, 0);
 }

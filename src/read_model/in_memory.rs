@@ -13,9 +13,8 @@ use super::{
     ExpectedVersion, PatchMode, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
     ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaRegistry,
-    ReadModelWritePlan, ReadModelWritePlanStore, RelationalReadModel,
-    RelationalReadModelQueryStore, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
-    RowWriteMode, Versioned,
+    ReadModelWritePlan, RelationalReadModel, RelationshipDef, RelationshipKind, RowKey, RowValue,
+    RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore};
 
@@ -278,41 +277,30 @@ impl InMemoryReadModelStore {
     }
 }
 
-impl ReadModelWritePlanStore for InMemoryReadModelStore {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
-        relational_capabilities()
-    }
-
-    fn commit_write_plan(
-        &self,
-        plan: ReadModelWritePlan,
-    ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        let mut relational_rows = self
-            .relational_rows
-            .write()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-
-        let mut staged_rows = relational_rows.clone();
-        let outcome = apply_read_model_write_plan(plan, &mut staged_rows)?;
-
-        if outcome.was_applied() {
-            *relational_rows = staged_rows;
-        }
-
-        Ok(outcome)
-    }
-}
-
 impl AsyncReadModelWritePlanStore for InMemoryReadModelStore {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        ReadModelWritePlanStore::read_model_capabilities(self)
+        relational_capabilities()
     }
 
     fn commit_write_plan_async(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
+        async move {
+            let mut relational_rows = self
+                .relational_rows
+                .write()
+                .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+
+            let mut staged_rows = relational_rows.clone();
+            let outcome = apply_read_model_write_plan(plan, &mut staged_rows)?;
+
+            if outcome.was_applied() {
+                *relational_rows = staged_rows;
+            }
+
+            Ok(outcome)
+        }
     }
 }
 
@@ -323,69 +311,58 @@ struct IncludeSpec {
     target_schema: ReadModelSchema,
 }
 
-impl RelationalReadModelQueryStore for InMemoryReadModelStore {
-    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
-        ReadModelQueryCapabilities::relationship_includes()
-    }
-
-    fn load_graph(
-        &self,
-        request: ReadModelLoadRequest,
-    ) -> Result<ReadModelLoadGraph, ReadModelError> {
-        request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
-
-        let (root_schema, include_specs) = {
-            let registry = self
-                .schema_registry
-                .read()
-                .map_err(|_| ReadModelError::Storage("schema registry lock poisoned".into()))?;
-            resolve_request_schemas(&registry, &request)?
-        };
-        validate_key(&root_schema, &request.key)?;
-
-        let rows = self
-            .relational_rows
-            .read()
-            .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
-        let root_storage_key = relational_storage_key(&root_schema.table_name, &request.key);
-        let Some(root_row) = rows.get(&root_storage_key) else {
-            return Ok(ReadModelLoadGraph::default());
-        };
-        let root = Versioned {
-            data: root_row.values.clone(),
-            version: root_row.version,
-        };
-
-        let mut includes = BTreeMap::new();
-        for spec in include_specs {
-            let loaded_rows = load_relationship_rows(&rows, &root_schema, &root.data, &spec)?;
-            includes.insert(
-                spec.name,
-                ReadModelIncludeRows {
-                    relationship: spec.relationship,
-                    target_schema: spec.target_schema,
-                    rows: loaded_rows,
-                },
-            );
-        }
-
-        Ok(ReadModelLoadGraph {
-            root: Some(root),
-            includes,
-        })
-    }
-}
-
 impl AsyncRelationalReadModelQueryStore for InMemoryReadModelStore {
     fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
-        RelationalReadModelQueryStore::read_model_query_capabilities(self)
+        ReadModelQueryCapabilities::relationship_includes()
     }
 
     fn load_graph_async(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
-        async move { RelationalReadModelQueryStore::load_graph(self, request) }
+        async move {
+            request.validate_for_query_capabilities(&self.read_model_query_capabilities_async())?;
+
+            let (root_schema, include_specs) = {
+                let registry = self
+                    .schema_registry
+                    .read()
+                    .map_err(|_| ReadModelError::Storage("schema registry lock poisoned".into()))?;
+                resolve_request_schemas(&registry, &request)?
+            };
+            validate_key(&root_schema, &request.key)?;
+
+            let rows = self
+                .relational_rows
+                .read()
+                .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+            let root_storage_key = relational_storage_key(&root_schema.table_name, &request.key);
+            let Some(root_row) = rows.get(&root_storage_key) else {
+                return Ok(ReadModelLoadGraph::default());
+            };
+            let root = Versioned {
+                data: root_row.values.clone(),
+                version: root_row.version,
+            };
+
+            let mut includes = BTreeMap::new();
+            for spec in include_specs {
+                let loaded_rows = load_relationship_rows(&rows, &root_schema, &root.data, &spec)?;
+                includes.insert(
+                    spec.name,
+                    ReadModelIncludeRows {
+                        relationship: spec.relationship,
+                        target_schema: spec.target_schema,
+                        rows: loaded_rows,
+                    },
+                );
+            }
+
+            Ok(ReadModelLoadGraph {
+                root: Some(root),
+                includes,
+            })
+        }
     }
 }
 
@@ -593,6 +570,25 @@ mod tests {
         RowPatch,
     };
 
+    fn block_on<F: Future>(future: F) -> F::Output {
+        use std::ptr;
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(ptr::null(), &VTABLE),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
+        let mut cx = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+                return output;
+            }
+        }
+    }
+
     fn test_row_schema() -> ReadModelSchema {
         ReadModelSchema {
             model_name: "TestRow".into(),
@@ -614,17 +610,16 @@ mod tests {
         let mut values = RowValues::new();
         values.insert("id", RowValue::String("row-1".into()));
 
-        let outcome = store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
-                RowMutation {
-                    schema: schema.clone(),
-                    key: key.clone(),
-                    values,
-                    expected_version: ExpectedVersion::Any,
-                    mode: RowWriteMode::Upsert,
-                },
-            )]))
-            .unwrap();
+        let outcome = block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
+            ReadModelMutation::UpsertRow(RowMutation {
+                schema: schema.clone(),
+                key: key.clone(),
+                values,
+                expected_version: ExpectedVersion::Any,
+                mode: RowWriteMode::Upsert,
+            }),
+        ])))
+        .unwrap();
         let row = store
             .relational_rows
             .read()
@@ -649,28 +644,26 @@ mod tests {
         let mut values = RowValues::new();
         values.insert("id", RowValue::String("row-1".into()));
 
-        store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
-                RowMutation {
-                    schema: schema.clone(),
-                    key: key.clone(),
-                    values,
-                    expected_version: ExpectedVersion::Any,
-                    mode: RowWriteMode::Upsert,
-                },
-            )]))
-            .unwrap();
-        store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
-                PatchRowMutation {
-                    schema: schema.clone(),
-                    key: key.clone(),
-                    patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
-                    expected_version: ExpectedVersion::Exact(1),
-                    mode: PatchMode::UpdateExisting,
-                },
-            )]))
-            .unwrap();
+        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
+            ReadModelMutation::UpsertRow(RowMutation {
+                schema: schema.clone(),
+                key: key.clone(),
+                values,
+                expected_version: ExpectedVersion::Any,
+                mode: RowWriteMode::Upsert,
+            }),
+        ])))
+        .unwrap();
+        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
+            ReadModelMutation::PatchRow(PatchRowMutation {
+                schema: schema.clone(),
+                key: key.clone(),
+                patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
+                expected_version: ExpectedVersion::Exact(1),
+                mode: PatchMode::UpdateExisting,
+            }),
+        ])))
+        .unwrap();
         let version = store
             .relational_rows
             .read()
@@ -680,15 +673,14 @@ mod tests {
             .version;
         assert_eq!(version, 2);
 
-        store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
-                DeleteRowMutation {
-                    schema: schema.clone(),
-                    key: key.clone(),
-                    expected_version: ExpectedVersion::Exact(2),
-                },
-            )]))
-            .unwrap();
+        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
+            ReadModelMutation::DeleteRow(DeleteRowMutation {
+                schema: schema.clone(),
+                key: key.clone(),
+                expected_version: ExpectedVersion::Exact(2),
+            }),
+        ])))
+        .unwrap();
         assert!(!store
             .relational_rows
             .read()

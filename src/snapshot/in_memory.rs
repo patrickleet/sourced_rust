@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::repository::{AsyncSnapshotStore, RepositoryError, StreamIdentity};
 
-use super::store::{SnapshotRecord, SnapshotStore};
+use super::store::SnapshotRecord;
 
 /// In-memory snapshot store backed by `Arc<RwLock<HashMap>>`.
 ///
@@ -31,34 +31,6 @@ impl InMemorySnapshotStore {
         Self {
             storage: Arc::new(RwLock::new(HashMap::new())),
         }
-    }
-}
-
-impl SnapshotStore for InMemorySnapshotStore {
-    fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError> {
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| RepositoryError::LockPoisoned("snapshot read"))?;
-        Ok(storage.get(id).cloned())
-    }
-
-    fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError> {
-        record.validate()?;
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
-        storage.insert(record.aggregate_id.clone(), record);
-        Ok(())
-    }
-
-    fn delete_snapshot(&self, id: &str) -> Result<bool, RepositoryError> {
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
-        Ok(storage.remove(id).is_some())
     }
 }
 
@@ -110,6 +82,29 @@ impl AsyncSnapshotStore for InMemorySnapshotStore {
 mod tests {
     use super::*;
 
+    fn block_on<F: Future>(future: F) -> F::Output {
+        use std::ptr;
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(ptr::null(), &VTABLE),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
+        let mut cx = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+                return output;
+            }
+        }
+    }
+
+    fn identity(id: &str) -> StreamIdentity {
+        StreamIdentity::new("test.aggregate", id).unwrap()
+    }
+
     #[test]
     fn save_and_get() {
         let store = InMemorySnapshotStore::new();
@@ -121,9 +116,11 @@ mod tests {
             1,
             vec![1, 2, 3],
         );
-        store.save_snapshot(record).unwrap();
+        block_on(store.save_snapshot_async(&identity("agg-1"), record)).unwrap();
 
-        let loaded = store.get_snapshot("agg-1").unwrap().unwrap();
+        let loaded = block_on(store.get_snapshot_async(&identity("agg-1")))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.version, 5);
         assert_eq!(loaded.payload, vec![1, 2, 3]);
         assert_eq!(loaded.snapshot_type, "TestSnapshot");
@@ -132,34 +129,28 @@ mod tests {
     #[test]
     fn get_missing_returns_none() {
         let store = InMemorySnapshotStore::new();
-        assert!(store.get_snapshot("missing").unwrap().is_none());
+        assert!(block_on(store.get_snapshot_async(&identity("missing")))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn save_overwrites() {
         let store = InMemorySnapshotStore::new();
-        store
-            .save_snapshot(SnapshotRecord::new(
-                "test.aggregate",
-                "agg-1",
-                1,
-                "TestSnapshot",
-                1,
-                vec![1],
-            ))
-            .unwrap();
-        store
-            .save_snapshot(SnapshotRecord::new(
-                "test.aggregate",
-                "agg-1",
-                5,
-                "TestSnapshot",
-                1,
-                vec![5],
-            ))
-            .unwrap();
+        block_on(store.save_snapshot_async(
+            &identity("agg-1"),
+            SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+        ))
+        .unwrap();
+        block_on(store.save_snapshot_async(
+            &identity("agg-1"),
+            SnapshotRecord::new("test.aggregate", "agg-1", 5, "TestSnapshot", 1, vec![5]),
+        ))
+        .unwrap();
 
-        let loaded = store.get_snapshot("agg-1").unwrap().unwrap();
+        let loaded = block_on(store.get_snapshot_async(&identity("agg-1")))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.version, 5);
         assert_eq!(loaded.payload, vec![5]);
     }
@@ -167,42 +158,36 @@ mod tests {
     #[test]
     fn delete_existing() {
         let store = InMemorySnapshotStore::new();
-        store
-            .save_snapshot(SnapshotRecord::new(
-                "test.aggregate",
-                "agg-1",
-                1,
-                "TestSnapshot",
-                1,
-                vec![1],
-            ))
-            .unwrap();
-        assert!(store.delete_snapshot("agg-1").unwrap());
-        assert!(store.get_snapshot("agg-1").unwrap().is_none());
+        block_on(store.save_snapshot_async(
+            &identity("agg-1"),
+            SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+        ))
+        .unwrap();
+        assert!(block_on(store.delete_snapshot_async(&identity("agg-1"))).unwrap());
+        assert!(block_on(store.get_snapshot_async(&identity("agg-1")))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn delete_missing_returns_false() {
         let store = InMemorySnapshotStore::new();
-        assert!(!store.delete_snapshot("missing").unwrap());
+        assert!(!block_on(store.delete_snapshot_async(&identity("missing"))).unwrap());
     }
 
     #[test]
     fn clone_shares_storage() {
         let store = InMemorySnapshotStore::new();
         let clone = store.clone();
-        store
-            .save_snapshot(SnapshotRecord::new(
-                "test.aggregate",
-                "agg-1",
-                3,
-                "TestSnapshot",
-                1,
-                vec![3],
-            ))
-            .unwrap();
+        block_on(store.save_snapshot_async(
+            &identity("agg-1"),
+            SnapshotRecord::new("test.aggregate", "agg-1", 3, "TestSnapshot", 1, vec![3]),
+        ))
+        .unwrap();
 
-        let loaded = clone.get_snapshot("agg-1").unwrap().unwrap();
+        let loaded = block_on(clone.get_snapshot_async(&identity("agg-1")))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.version, 3);
     }
 }

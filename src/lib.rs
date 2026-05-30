@@ -39,16 +39,12 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 pub use repository::{
     AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
-    AsyncStreamWrite, AsyncTransactionalCommit, Commit, CommitBatch, Get, GetMany, GetOne,
-    Gettable, InboxOutcome, InboxReceipt, PreparedEventAppend, Repository, RepositoryError,
-    SnapshotWrite, StreamIdentity, TransactionalCommit,
+    AsyncStreamWrite, AsyncTransactionalCommit, CommitBatch, InboxOutcome, InboxReceipt,
+    PreparedEventAppend, RepositoryError, SnapshotWrite, StreamIdentity,
 };
 
 // Re-export aggregate types at crate root for convenience
-pub use aggregate::{
-    hydrate, Aggregate, AggregateBuilder, AggregateRepository, AsyncAggregateBuilder,
-    AsyncAggregateRepository, CommitAggregate, GetAggregate, GetAllAggregates, RepositoryExt,
-};
+pub use aggregate::{hydrate, Aggregate, AsyncAggregateBuilder, AsyncAggregateRepository};
 
 pub use hashmap_repo::{HashMapOutboxStore, HashMapRepository};
 #[cfg(feature = "postgres")]
@@ -59,14 +55,14 @@ pub use sqlite_repo::{SqliteOutboxStore, SqliteRepository};
 // Re-export lock traits and types at crate root for convenience
 pub use lock::{
     AsyncLock, AsyncLockManager, InMemoryAsyncLock, InMemoryAsyncLockFuture,
-    InMemoryAsyncLockManager, InMemoryLock, InMemoryLockManager, Lock, LockError, LockManager,
+    InMemoryAsyncLockManager, LockError,
 };
 
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, AsyncOutboxCommit, OutboxMessage, OutboxMessageStatus, SyncOutboxCommit,
-    SyncOutboxCommitExt, OUTBOX_MESSAGES_TABLE,
+    outbox_message_schema, AsyncOutboxCommit, OutboxMessage, OutboxMessageStatus,
+    OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
@@ -95,14 +91,10 @@ pub use queued_repo::{
     AsyncGetAllWithOpts,
     AsyncGetWithOpts,
     AsyncUnlockableRepository,
-    // WithOpts traits for opting out of locking
-    GetAllWithOpts,
-    GetWithOpts,
     // Queued repository
     Queueable,
     QueuedRepository,
     ReadOpts,
-    UnlockableRepository,
 };
 
 // Read models: projections and read-optimized views
@@ -114,10 +106,9 @@ pub use read_model::{
     ReadModelMigrationArtifact, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
     ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap,
     ReadModelSchemaIssue, ReadModelSchemaIssueKind, ReadModelSchemaRegistry,
-    ReadModelSchemaVerification, ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan,
-    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
-    RelationalReadModelIncludes, RelationalReadModelQueryStore, RelationshipDef, RelationshipKind,
-    RowKey, RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
+    ReadModelSchemaVerification, ReadModelWorkspace, ReadModelWritePlan, ReadModelWritePlanBuilder,
+    RelationalReadModel, RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey,
+    RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
     DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 
@@ -132,17 +123,16 @@ pub use table::{
     TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
-// SyncCommitBuilder: transactional batches of read models, outbox, and aggregates
+// AsyncCommitBuilder: transactional batches of read models, outbox, and aggregates
 pub use commit_builder::{
     AsyncCommitBuilder, AsyncCommitBuilderExt, AsyncReadModelWritePlanCommitExt,
-    AsyncStagedCommitBuilder, SyncCommitBuilder, SyncCommitBuilderExt,
-    SyncReadModelWritePlanCommitExt, SyncStagedCommitBuilder,
+    AsyncStagedCommitBuilder,
 };
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration
 pub use snapshot::{
-    hydrate_from_snapshot, AsyncSnapshotAggregateRepository, InMemorySnapshotStore,
-    SnapshotAggregateRepository, SnapshotRecord, SnapshotStore, Snapshottable,
+    hydrate_from_snapshot, AsyncSnapshotAggregateRepository, InMemorySnapshotStore, SnapshotRecord,
+    Snapshottable,
 };
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)

@@ -3,15 +3,15 @@
 //! Relational models stage explicit row mutations:
 //!
 //! ```ignore
-//! use sourced_rust::{ReadModelWritePlanBuilder, SyncReadModelWritePlanCommitExt};
+//! use sourced_rust::{ReadModelWritePlanBuilder, AsyncReadModelWritePlanCommitExt};
 //!
 //! let mut read_models = ReadModelWritePlanBuilder::new();
 //! read_models.upsert(&player)?;
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
-//! repo.read_models_sync(read_models).commit_sync(&mut aggregate)?;
+//! repo.read_models(read_models).commit(&mut aggregate).await?;
 //! ```
 //!
-//! Async persistent repositories expose the same staging shape through
+//! Async persistent repositories expose the staging shape through
 //! `AsyncReadModelWritePlanCommitExt::read_models`, returning a future
 //! from `commit`.
 //!
@@ -120,7 +120,6 @@ pub use session::{
     AsyncReadModelLoadBuilder, AsyncReadModelWorkspaceExt, DeleteRowMutation, ExpectedVersion,
     PatchMode, PatchRowMutation, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation,
-    ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan,
-    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModelQueryStore, RowMutation,
-    RowPatch, RowWriteMode,
+    ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWritePlan, ReadModelWritePlanBuilder,
+    RowMutation, RowPatch, RowWriteMode,
 };

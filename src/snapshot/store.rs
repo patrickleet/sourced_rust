@@ -110,18 +110,3 @@ impl SnapshotRecord {
             && self.payload_codec_version == BITCODE_PAYLOAD_CODEC_VERSION
     }
 }
-
-/// Trait for ID-only snapshot persistence. One snapshot per aggregate ID (latest wins).
-///
-/// Durable async repositories should prefer `AsyncSnapshotStore`, which keys
-/// cache records by full `StreamIdentity`.
-pub trait SnapshotStore: Send + Sync {
-    /// Load the latest snapshot for the given aggregate ID.
-    fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError>;
-
-    /// Save (or overwrite) the snapshot for the given aggregate ID.
-    fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError>;
-
-    /// Delete the snapshot for the given aggregate ID. Returns true if one existed.
-    fn delete_snapshot(&self, id: &str) -> Result<bool, RepositoryError>;
-}
