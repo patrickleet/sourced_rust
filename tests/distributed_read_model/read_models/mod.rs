@@ -10,7 +10,9 @@ pub use checkout_step_view::CheckoutStepView;
 pub use checkout_view::CheckoutView;
 pub use seat_view::SeatView;
 
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue, TableSchemaRegistry};
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+use sourced_rust::TableSchemaRegistry;
+use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
 
 pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
     store.register_schema::<SeatView>()?;
@@ -19,6 +21,7 @@ pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelE
     Ok(())
 }
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub fn table_schema_registry() -> Result<TableSchemaRegistry, ReadModelError> {
     let mut registry = TableSchemaRegistry::new();
     registry.register::<SeatView>()?;
