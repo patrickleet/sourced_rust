@@ -73,7 +73,7 @@ async fn command_handler<D: Send + Sync + 'static>(
     Json(input): Json<Value>,
 ) -> impl IntoResponse {
     let session = session_from_headers(&headers);
-    match service.dispatch(&command, input, session) {
+    match service.dispatch(&command, input, session).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(err) => {
             let status = status_for_error(&err);

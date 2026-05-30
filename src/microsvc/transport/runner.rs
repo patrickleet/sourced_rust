@@ -60,7 +60,7 @@ where
             received.ack().await?;
             continue;
         }
-        match dispatch(&service, &options, received.message()) {
+        match dispatch(&service, &options, received.message()).await {
             Ok(()) => received.ack().await?,
             Err(error) => match options.failure_policy.resolve(&error) {
                 FailureAction::Nack => received.nack(&error.to_string()).await?,
@@ -85,7 +85,7 @@ where
 /// Enforces the inbox stable-id contract first (idempotent mode yields no key
 /// and skips it), then dispatches. A failed stable-id check is a permanent
 /// failure — redelivery cannot supply a missing or malformed id.
-fn dispatch<D, I>(
+async fn dispatch<D, I>(
     service: &Service<D>,
     options: &RunOptions<I>,
     message: &Message,
@@ -98,6 +98,7 @@ where
         .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
     service
         .dispatch_message(message)
+        .await
         .map(|_| ())
         .map_err(TransportError::from)
 }
@@ -237,19 +238,31 @@ mod tests {
         Arc::new(
             Service::new(())
                 .event("ok")
-                .handle(move |ctx| {
-                    ok.push(Event::Handled(ctx.message().name().to_string()));
-                    Ok(json!({}))
+                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                    let ok = ok.clone();
+                    let name = ctx.message().name().to_string();
+                    async move {
+                        ok.push(Event::Handled(name));
+                        Ok(json!({}))
+                    }
                 })
                 .event("retryable")
-                .handle(move |ctx| {
-                    retryable.push(Event::Handled(ctx.message().name().to_string()));
-                    Err(HandlerError::Other("infra".into()))
+                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                    let retryable = retryable.clone();
+                    let name = ctx.message().name().to_string();
+                    async move {
+                        retryable.push(Event::Handled(name));
+                        Err(HandlerError::Other("infra".into()))
+                    }
                 })
                 .event("permanent")
-                .handle(move |ctx| {
-                    permanent.push(Event::Handled(ctx.message().name().to_string()));
-                    Err(HandlerError::Rejected("nope".into()))
+                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                    let permanent = permanent.clone();
+                    let name = ctx.message().name().to_string();
+                    async move {
+                        permanent.push(Event::Handled(name));
+                        Err(HandlerError::Rejected("nope".into()))
+                    }
                 }),
         )
     }

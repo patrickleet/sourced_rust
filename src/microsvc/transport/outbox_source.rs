@@ -305,12 +305,16 @@ mod tests {
 
         let handled = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let h = handled.clone();
-        let service = Arc::new(Service::new(()).event("evt").handle(move |ctx| {
-            h.lock()
-                .unwrap()
-                .push(ctx.message().id().unwrap_or_default().to_string());
-            Ok(json!({}))
-        }));
+        let service = Arc::new(Service::new(()).event("evt").handle(
+            move |ctx: &crate::microsvc::Context<()>| {
+                let h = h.clone();
+                let id = ctx.message().id().unwrap_or_default().to_string();
+                async move {
+                    h.lock().unwrap().push(id);
+                    Ok(json!({}))
+                }
+            },
+        ));
 
         block_on(run_source(service, source(&repo), RunOptions::idempotent())).unwrap();
 
@@ -327,8 +331,11 @@ mod tests {
         store_row(&repo, "m1", "unrelated");
         // Service handles a different event; the unrelated row is acked-ignored,
         // i.e. completed, so it does not loop forever.
-        let service: Arc<Service<()>> =
-            Arc::new(Service::new(()).event("evt").handle(|_| Ok(json!({}))));
+        let service: Arc<Service<()>> = Arc::new(
+            Service::new(())
+                .event("evt")
+                .handle(|_: &crate::microsvc::Context<()>| async move { Ok(json!({})) }),
+        );
         block_on(run_source(service, source(&repo), RunOptions::idempotent())).unwrap();
         assert_eq!(status(&repo, "m1"), Some(OutboxMessageStatus::Published));
     }

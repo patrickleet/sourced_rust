@@ -58,7 +58,7 @@ async fn ingress_handler<D: Send + Sync + 'static>(
         Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
 
-    match service.dispatch_message(&message) {
+    match service.dispatch_message(&message).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(err) => {
             // Map our retryable/permanent classification onto HTTP so Knative's
