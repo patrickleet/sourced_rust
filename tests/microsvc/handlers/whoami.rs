@@ -13,7 +13,7 @@ pub fn guard(_ctx: &Context<Repo>) -> bool {
     true
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let user_id = ctx.user_id()?;
     Ok(json!({ "user_id": user_id }))
 }

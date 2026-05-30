@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelError, ReadModelMutation, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey,
-    RowPatch, RowValue, RowWriteMode, Versioned,
+    AsyncReadModelWorkspaceExt, ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel,
+    ReadModelAdapterCapabilities, ReadModelError, ReadModelMutation, ReadModelWritePlanBuilder,
+    RowKey, RowPatch, RowValue, RowWriteMode, Versioned,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -171,8 +171,8 @@ fn insert_and_upsert_patch_carry_explicit_missing_row_behavior() {
     assert_eq!(upsert_patch.mode, PatchMode::InsertMissing);
 }
 
-#[test]
-fn insert_missing_patch_builds_full_row_from_key_before_insert() {
+#[tokio::test]
+async fn insert_missing_patch_builds_full_row_from_key_before_insert() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<AccountSummary>().unwrap();
     let patch = RowPatch::new()
@@ -189,12 +189,13 @@ fn insert_missing_patch_builds_full_row_from_key_before_insert() {
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
-    session.commit(&store).unwrap();
+    session.commit_async(&store).await.unwrap();
 
-    let mut read_models = store.workspace();
+    let mut read_models = store.workspace_async();
     let loaded = read_models
-        .load::<AccountSummary>(account_key("acct-1"))
+        .load_async::<AccountSummary>(account_key("acct-1"))
         .one()
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(loaded.data.account_id, "acct-1");
@@ -203,8 +204,8 @@ fn insert_missing_patch_builds_full_row_from_key_before_insert() {
     assert_eq!(loaded.data.deposit_count, 2);
 }
 
-#[test]
-fn insert_missing_patch_rejects_primary_key_mismatch() {
+#[tokio::test]
+async fn insert_missing_patch_rejects_primary_key_mismatch() {
     let store = InMemoryReadModelStore::new();
     let patch = RowPatch::new()
         .set("account_id", RowValue::String("acct-2".into()))
@@ -217,15 +218,15 @@ fn insert_missing_patch_rejects_primary_key_mismatch() {
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
-    let err = session.commit(&store).unwrap_err();
+    let err = session.commit_async(&store).await.unwrap_err();
 
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))
     );
 }
 
-#[test]
-fn insert_missing_patch_rejects_partial_new_row() {
+#[tokio::test]
+async fn insert_missing_patch_rejects_partial_new_row() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<AccountSummary>().unwrap();
     let patch = RowPatch::new().set("owner", RowValue::String("Grace".into()));
@@ -234,26 +235,27 @@ fn insert_missing_patch_rejects_partial_new_row() {
     session
         .upsert_patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
-    let err = session.commit(&store).unwrap_err();
+    let err = session.commit_async(&store).await.unwrap_err();
 
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
     );
 
-    let mut read_models = store.workspace();
+    let mut read_models = store.workspace_async();
     let loaded = read_models
-        .load::<AccountSummary>(account_key("acct-1"))
+        .load_async::<AccountSummary>(account_key("acct-1"))
         .one()
+        .await
         .unwrap();
     assert!(loaded.is_none());
 }
 
-#[test]
-fn existing_patch_rejects_primary_key_mismatch() {
+#[tokio::test]
+async fn existing_patch_rejects_primary_key_mismatch() {
     let store = InMemoryReadModelStore::new();
     let mut setup = ReadModelWritePlanBuilder::new();
     setup.upsert(&AccountSummary::new("acct-1")).unwrap();
-    setup.commit(&store).unwrap();
+    setup.commit_async(&store).await.unwrap();
     let patch = RowPatch::new()
         .set("account_id", RowValue::String("acct-2".into()))
         .set("owner", RowValue::String("Grace".into()));
@@ -262,7 +264,7 @@ fn existing_patch_rejects_primary_key_mismatch() {
     session
         .patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
-    let err = session.commit(&store).unwrap_err();
+    let err = session.commit_async(&store).await.unwrap_err();
 
     assert!(
         matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))

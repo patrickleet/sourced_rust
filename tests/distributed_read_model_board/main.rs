@@ -24,11 +24,11 @@ use serde::Serialize;
 use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
-    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
-    InMemoryReadModelStore, OutboxClaimRef, Queueable,
+    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
+    HashMapRepository, InMemoryReadModelStore, OutboxClaimRef, Queueable,
 };
 
-fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
+async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where
     D: Send + Sync + 'static,
     C: Serialize,
@@ -39,6 +39,7 @@ where
             serde_json::to_value(input).expect("command should encode"),
             Session::new(),
         )
+        .await
         .unwrap_or_else(|err| panic!("{command} should dispatch: {err:?}"));
 }
 
@@ -78,7 +79,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 async fn board_service_feeds_a_normalized_card_read_model() {
     let board_store = HashMapRepository::new();
     let board_outbox = board_store.outbox_store();
-    let board_service = board_service::model_service(board_store.queued().aggregate());
+    let board_service = board_service::model_service(board_store.queued_async().async_aggregate());
 
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
@@ -92,7 +93,8 @@ async fn board_service_feeds_a_normalized_card_read_model() {
             id: "board-1".to_string(),
             name: "Roadmap".to_string(),
         },
-    );
+    )
+    .await;
     dispatch(
         &board_service,
         "board.add_card",
@@ -104,7 +106,8 @@ async fn board_service_feeds_a_normalized_card_read_model() {
             labels: vec!["design".to_string()],
             assignee: Some("ada".to_string()),
         },
-    );
+    )
+    .await;
     dispatch(
         &board_service,
         "board.add_card",
@@ -116,7 +119,8 @@ async fn board_service_feeds_a_normalized_card_read_model() {
             labels: vec!["code".to_string()],
             assignee: None,
         },
-    );
+    )
+    .await;
     dispatch(
         &board_service,
         "board.move_card",
@@ -125,7 +129,8 @@ async fn board_service_feeds_a_normalized_card_read_model() {
             card_id: "card-spec".to_string(),
             column: "doing".to_string(),
         },
-    );
+    )
+    .await;
     dispatch(
         &board_service,
         "board.remove_card",
@@ -133,7 +138,8 @@ async fn board_service_feeds_a_normalized_card_read_model() {
             id: "board-1".to_string(),
             card_id: "card-impl".to_string(),
         },
-    );
+    )
+    .await;
 
     // Forward the board's outbox events onto the bus, then drain them into the
     // projection in one pass. The projection's monotonic `source_version` guard
@@ -145,7 +151,9 @@ async fn board_service_feeds_a_normalized_card_read_model() {
         .await
         .expect("projection should drain the board events");
 
-    let board = load_board(&read_store, "board-1").expect("board should be projected");
+    let board = load_board(&read_store, "board-1")
+        .await
+        .expect("board should be projected");
 
     assert_eq!(board.name, "Roadmap");
     assert_eq!(board.cards.len(), 1, "removed card should be deleted");
@@ -159,6 +167,7 @@ async fn board_service_feeds_a_normalized_card_read_model() {
     // belongs_to include resolves the card's board.
     let card_with_board = query_service
         .card_with_board("board-1", "card-spec")
+        .await
         .expect("query should succeed")
         .expect("card should exist");
     let parent = card_with_board
@@ -170,6 +179,7 @@ async fn board_service_feeds_a_normalized_card_read_model() {
     // The removed card's row is gone.
     assert!(query_service
         .board_with_cards("board-1")
+        .await
         .expect("query should succeed")
         .expect("board should exist")
         .cards
@@ -177,12 +187,14 @@ async fn board_service_feeds_a_normalized_card_read_model() {
         .all(|card| card.card_id != "card-impl"));
     assert!(query_service
         .card_with_board("board-1", "card-impl")
+        .await
         .expect("query should succeed")
         .is_none());
 
     let write_side = board_service
         .repo()
         .peek("board-1")
+        .await
         .expect("write-side load should succeed")
         .expect("write-side board should exist");
     assert_eq!(write_side.cards.len(), 1);

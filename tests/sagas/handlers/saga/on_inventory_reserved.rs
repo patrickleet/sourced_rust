@@ -6,12 +6,13 @@ pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id"])
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<InventoryReservedMsg>()?;
 
     let mut saga = ctx
         .repo()
-        .get(&input.saga_id)?
+        .get(&input.saga_id)
+        .await?
         .ok_or_else(|| HandlerError::NotFound(input.saga_id.clone()))?;
     saga.inventory_reserved()?;
 
@@ -26,6 +27,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox_sync(msg).commit_sync(&mut saga)?;
+    ctx.repo().outbox(msg).commit(&mut saga).await?;
     Ok(json!({ "next": "ProcessPayment" }))
 }

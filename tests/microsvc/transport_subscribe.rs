@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service};
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
 use crate::handlers::Repo;
@@ -15,17 +15,21 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
-            .event(handlers::counter_create::COMMAND)
-            .guarded(
-                handlers::counter_create::guard,
-                handlers::counter_create::handle,
-            )
-            .event(handlers::counter_increment::COMMAND)
-            .guarded(
-                handlers::counter_increment::guard,
-                handlers::counter_increment::handle,
-            ),
+        Service::with_repo(
+            HashMapRepository::new()
+                .queued_async()
+                .async_aggregate::<Counter>(),
+        )
+        .event(handlers::counter_create::COMMAND)
+        .guarded(
+            handlers::counter_create::guard,
+            handlers::counter_create::handle,
+        )
+        .event(handlers::counter_increment::COMMAND)
+        .guarded(
+            handlers::counter_increment::guard,
+            handlers::counter_increment::handle,
+        ),
     )
 }
 
@@ -59,6 +63,6 @@ async fn dispatches_from_pubsub() {
         .await
         .expect("subscriber should drain the bus");
 
-    let counter: Counter = service.repo().get("c1").unwrap().unwrap();
+    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
     assert_eq!(counter.value, 15);
 }

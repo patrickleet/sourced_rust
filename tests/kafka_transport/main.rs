@@ -14,7 +14,7 @@ use sourced_rust::microsvc::transport::{
     run_source, AsyncMessagePublisher, Bus, BusConsumer, KafkaBus, KafkaPublisher, KafkaSource,
     RunOptions,
 };
-use sourced_rust::microsvc::{Message, MessageKind, Service};
+use sourced_rust::microsvc::{Context, Message, MessageKind, Service};
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -27,11 +27,11 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
         MessageKind::Command => builder.command(leaked),
         MessageKind::Event => builder.event(leaked),
     };
-    Arc::new(registered.handle(move |ctx| {
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
         rec.lock()
             .unwrap()
             .push(ctx.message().id().unwrap_or_default().to_string());
-        Ok(json!({}))
+        async move { Ok(json!({})) }
     }))
 }
 
@@ -80,11 +80,11 @@ async fn publish_then_consume_round_trips_through_kafka() {
     let service = Arc::new(
         Service::new(())
             .event(Box::leak(topic.clone().into_boxed_str()))
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 h.lock()
                     .unwrap()
                     .push(ctx.message().id().unwrap_or_default().to_string());
-                Ok(json!({}))
+                async move { Ok(json!({})) }
             }),
     );
     run_source(service, source, RunOptions::idempotent())
@@ -125,14 +125,15 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     let service = Arc::new(
         Service::new(())
             .event(Box::leak(topic.clone().into_boxed_str()))
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 let m = ctx.message();
-                *o.lock().unwrap() = Some((
+                let recorded = Some((
                     m.id().map(str::to_string),
                     m.correlation_id().map(str::to_string),
                     m.payload().to_vec(),
                 ));
-                Ok(json!({}))
+                *o.lock().unwrap() = recorded;
+                async move { Ok(json!({})) }
             }),
     );
     run_source(service, source, RunOptions::idempotent())

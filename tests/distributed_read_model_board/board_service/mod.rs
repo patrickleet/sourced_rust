@@ -6,9 +6,12 @@ pub mod models;
 mod handlers;
 mod service;
 
-use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
+use sourced_rust::{
+    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+};
 
 pub use models::{AddCard, Board, BoardSnapshot, MoveCard, OpenBoard, RemoveCard};
 pub use service::model_service;
 
-pub type BoardRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Board>;
+pub type BoardRepo =
+    AsyncAggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Board>;

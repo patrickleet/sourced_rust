@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{Notifier, NotifierEvent, Order, OrderEvent};
-use sourced_rust::{Aggregate, AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{Aggregate, AsyncAggregateBuilder, HashMapRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -34,18 +34,20 @@ fn full_lifecycle_digest_and_enqueue() {
 // Replay does not re-enqueue
 // =============================================================================
 
-#[test]
-fn replay_does_not_re_enqueue() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+#[tokio::test]
+async fn replay_does_not_re_enqueue() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();
     order.confirm().unwrap();
     order.emitter.emit_queued();
 
-    repo.commit(&mut order).unwrap();
+    repo.commit(&mut order).await.unwrap();
 
-    let loaded = repo.get("order-1").unwrap().unwrap();
+    let loaded = repo.get("order-1").await.unwrap().unwrap();
     assert_eq!(loaded.emitter.queued_len(), 0);
     assert_eq!(loaded.status, "confirmed");
     assert_eq!(loaded.entity.version(), 2);
@@ -132,16 +134,18 @@ fn custom_emitter_field_emits() {
         .expect("NotificationSent callback never fired");
 }
 
-#[test]
-fn custom_emitter_replay_does_not_enqueue() {
-    let repo = HashMapRepository::new().queued().aggregate::<Notifier>();
+#[tokio::test]
+async fn custom_emitter_replay_does_not_enqueue() {
+    let repo = HashMapRepository::new()
+        .queued_async()
+        .async_aggregate::<Notifier>();
 
     let mut notifier = Notifier::default();
     notifier.send("n-1".into(), "Hello".into()).unwrap();
     notifier.my_emitter.emit_queued();
-    repo.commit(&mut notifier).unwrap();
+    repo.commit(&mut notifier).await.unwrap();
 
-    let loaded = repo.get("n-1").unwrap().unwrap();
+    let loaded = repo.get("n-1").await.unwrap().unwrap();
     assert_eq!(loaded.my_emitter.queued_len(), 0);
     assert_eq!(loaded.message, "Hello");
 }
