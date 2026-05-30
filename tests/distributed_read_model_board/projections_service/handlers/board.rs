@@ -29,7 +29,7 @@ pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, 
         .ok_or_else(|| HandlerError::DecodeFailed("board projection message has no id".into()))?;
     let snapshot: BoardSnapshot = BitcodePayloadCodec::decode(ctx.message().payload())
         .map_err(|err| HandlerError::DecodeFailed(format!("board snapshot: {err}")))?;
-    let version = event_version(message_id);
+    let version = event_version(message_id)?;
     let updated_view = updated_board_view(&snapshot, version);
 
     let mut workspace = ctx.read_model_store().workspace_async();
@@ -85,12 +85,17 @@ fn updated_board_view(snapshot: &BoardSnapshot, version: i64) -> BoardView {
 
 /// The aggregate version is the trailing segment of the outbox event id
 /// (`<aggregate-id>:<event-type>:<version>`).
-fn event_version(id: &str) -> i64 {
-    id.rsplit(':')
-        .next()
-        .expect("board projection event id should include a version segment")
-        .parse()
-        .expect("board projection event id should end with a numeric aggregate version")
+fn event_version(id: &str) -> Result<i64, HandlerError> {
+    let segment = id.rsplit(':').next().ok_or_else(|| {
+        HandlerError::DecodeFailed(
+            "board projection event id should include a version segment".into(),
+        )
+    })?;
+    segment.parse().map_err(|_| {
+        HandlerError::DecodeFailed(
+            "board projection event id should end with a numeric aggregate version".into(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -99,14 +104,12 @@ mod tests {
 
     #[test]
     fn event_version_parses_trailing_outbox_segment() {
-        assert_eq!(event_version("board-1:board.card_added:42"), 42);
+        assert_eq!(event_version("board-1:board.card_added:42").unwrap(), 42);
     }
 
     #[test]
-    #[should_panic(
-        expected = "board projection event id should end with a numeric aggregate version"
-    )]
-    fn event_version_panics_on_malformed_outbox_segment() {
-        event_version("board-1:board.card_added:bad");
+    fn event_version_rejects_malformed_outbox_segment() {
+        let err = event_version("board-1:board.card_added:bad").unwrap_err();
+        assert!(matches!(err, HandlerError::DecodeFailed(_)));
     }
 }

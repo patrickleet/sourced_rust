@@ -371,27 +371,8 @@ mod tests {
         }
     }
 
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
-    #[test]
-    fn snapshot_batch_failure_leaves_aggregate_uncommitted() {
+    #[tokio::test]
+    async fn snapshot_batch_failure_leaves_aggregate_uncommitted() {
         let repo = FailingSnapshotRepo::default();
         let aggregate_repo = AsyncAggregateRepository::new(repo);
         let snapshot_repo = AsyncSnapshotAggregateRepository::new(aggregate_repo, 1);
@@ -399,7 +380,7 @@ mod tests {
         let mut aggregate = TestAggregate::default();
         aggregate.touch().unwrap();
 
-        let err = block_on(snapshot_repo.commit(&mut aggregate)).unwrap_err();
+        let err = snapshot_repo.commit(&mut aggregate).await.unwrap_err();
 
         assert_eq!(err, RepositoryError::Model("snapshot write failed".into()));
         assert!(snapshot_repo

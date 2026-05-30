@@ -46,25 +46,6 @@ mod tests {
     use crate::{sourced, AsyncAggregateBuilder, Entity, HashMapRepository, OutboxStore};
     use std::sync::Mutex;
 
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
     #[derive(Default)]
     struct Dummy {
         entity: Entity,
@@ -108,8 +89,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn outbox_helper_commits_both_entities() {
+    #[tokio::test]
+    async fn outbox_helper_commits_both_entities() {
         let repo = HashMapRepository::new().async_aggregate::<Dummy>();
 
         let mut aggregate = Dummy::default();
@@ -117,15 +98,15 @@ mod tests {
 
         let event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
 
-        block_on(repo.outbox(event).commit(&mut aggregate)).unwrap();
+        repo.outbox(event).commit(&mut aggregate).await.unwrap();
 
         let pending = repo.repo().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "msg-1");
     }
 
-    #[test]
-    fn outbox_helper_failure_leaves_entities_uncommitted() {
+    #[tokio::test]
+    async fn outbox_helper_failure_leaves_entities_uncommitted() {
         let repo = AsyncAggregateRepository::<_, Dummy>::new(FailingOutboxRepo::default());
 
         let mut aggregate = Dummy::default();
@@ -133,7 +114,7 @@ mod tests {
 
         let event = OutboxMessage::create("msg-fail", "DummyTouched", b"{}".to_vec()).unwrap();
 
-        let err = block_on(repo.outbox(event).commit(&mut aggregate)).unwrap_err();
+        let err = repo.outbox(event).commit(&mut aggregate).await.unwrap_err();
 
         assert_eq!(err, RepositoryError::Model("outbox write failed".into()));
         assert_eq!(aggregate.entity.committed_version(), 0);
