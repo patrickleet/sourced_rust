@@ -570,25 +570,6 @@ mod tests {
         RowPatch,
     };
 
-    fn block_on<F: Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
     fn test_row_schema() -> ReadModelSchema {
         ReadModelSchema {
             model_name: "TestRow".into(),
@@ -602,24 +583,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn relational_write_plan_upserts_rows() {
+    #[tokio::test]
+    async fn relational_write_plan_upserts_rows() {
         let store = InMemoryReadModelStore::new();
         let schema = test_row_schema();
         let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
         let mut values = RowValues::new();
         values.insert("id", RowValue::String("row-1".into()));
 
-        let outcome = block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
-            ReadModelMutation::UpsertRow(RowMutation {
-                schema: schema.clone(),
-                key: key.clone(),
-                values,
-                expected_version: ExpectedVersion::Any,
-                mode: RowWriteMode::Upsert,
-            }),
-        ])))
-        .unwrap();
+        let outcome = store
+            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+                RowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    values,
+                    expected_version: ExpectedVersion::Any,
+                    mode: RowWriteMode::Upsert,
+                },
+            )]))
+            .await
+            .unwrap();
         let row = store
             .relational_rows
             .read()
@@ -636,34 +619,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn relational_write_plan_patches_and_deletes_rows() {
+    #[tokio::test]
+    async fn relational_write_plan_patches_and_deletes_rows() {
         let store = InMemoryReadModelStore::new();
         let schema = test_row_schema();
         let key = RowKey::new([("id", RowValue::String("row-1".into()))]);
         let mut values = RowValues::new();
         values.insert("id", RowValue::String("row-1".into()));
 
-        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
-            ReadModelMutation::UpsertRow(RowMutation {
-                schema: schema.clone(),
-                key: key.clone(),
-                values,
-                expected_version: ExpectedVersion::Any,
-                mode: RowWriteMode::Upsert,
-            }),
-        ])))
-        .unwrap();
-        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
-            ReadModelMutation::PatchRow(PatchRowMutation {
-                schema: schema.clone(),
-                key: key.clone(),
-                patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
-                expected_version: ExpectedVersion::Exact(1),
-                mode: PatchMode::UpdateExisting,
-            }),
-        ])))
-        .unwrap();
+        store
+            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+                RowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    values,
+                    expected_version: ExpectedVersion::Any,
+                    mode: RowWriteMode::Upsert,
+                },
+            )]))
+            .await
+            .unwrap();
+        store
+            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
+                PatchRowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
+                    expected_version: ExpectedVersion::Exact(1),
+                    mode: PatchMode::UpdateExisting,
+                },
+            )]))
+            .await
+            .unwrap();
         let version = store
             .relational_rows
             .read()
@@ -673,14 +660,16 @@ mod tests {
             .version;
         assert_eq!(version, 2);
 
-        block_on(store.commit_write_plan_async(ReadModelWritePlan::new(vec![
-            ReadModelMutation::DeleteRow(DeleteRowMutation {
-                schema: schema.clone(),
-                key: key.clone(),
-                expected_version: ExpectedVersion::Exact(2),
-            }),
-        ])))
-        .unwrap();
+        store
+            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
+                DeleteRowMutation {
+                    schema: schema.clone(),
+                    key: key.clone(),
+                    expected_version: ExpectedVersion::Exact(2),
+                },
+            )]))
+            .await
+            .unwrap();
         assert!(!store
             .relational_rows
             .read()

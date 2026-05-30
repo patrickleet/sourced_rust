@@ -530,34 +530,14 @@ impl AsyncOutboxStore for HashMapOutboxStore {
 mod tests {
     use super::*;
     use crate::{AsyncCommitBatch, AsyncTransactionalCommit, HashMapRepository};
-    use std::future::Future;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    fn block_on<F: Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
-    fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
+    async fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
         let id = message.id().to_string();
         let mut batch = AsyncCommitBatch::empty();
         batch.outbox_messages.push(message);
-        block_on(repo.commit_batch_async(batch)).unwrap();
+        repo.commit_batch_async(batch).await.unwrap();
         id
     }
 
@@ -570,14 +550,14 @@ mod tests {
             .clone()
     }
 
-    #[test]
-    fn claim_includes_expired_in_flight_messages() {
+    #[tokio::test]
+    async fn claim_includes_expired_in_flight_messages() {
         let repo = HashMapRepository::new();
         let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
         message
             .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
             .unwrap();
-        let id = store_message(&repo, message);
+        let id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
@@ -598,14 +578,14 @@ mod tests {
         assert!(stored.is_in_flight());
     }
 
-    #[test]
-    fn claim_skips_unexpired_in_flight_messages() {
+    #[tokio::test]
+    async fn claim_skips_unexpired_in_flight_messages() {
         let repo = HashMapRepository::new();
         let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
         message
             .claim_for("worker-1", Duration::from_secs(60))
             .unwrap();
-        let id = store_message(&repo, message);
+        let id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
@@ -622,15 +602,15 @@ mod tests {
         assert_eq!(stored.attempts, 1);
     }
 
-    #[test]
-    fn claim_uses_created_at_before_message_id_order() {
+    #[tokio::test]
+    async fn claim_uses_created_at_before_message_id_order() {
         let repo = HashMapRepository::new();
         let mut newer = OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap();
         newer.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
         let mut older = OutboxMessage::create("msg-z", "Event", b"{}".to_vec()).unwrap();
         older.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-        store_message(&repo, newer);
-        store_message(&repo, older);
+        store_message(&repo, newer).await;
+        store_message(&repo, older).await;
 
         let claimed = repo
             .outbox_store()
@@ -644,21 +624,24 @@ mod tests {
         assert_eq!(claimed[0].id(), "msg-z");
     }
 
-    #[test]
-    fn claim_by_explicit_ids_claims_only_requested() {
+    #[tokio::test]
+    async fn claim_by_explicit_ids_claims_only_requested() {
         let repo = HashMapRepository::new();
         store_message(
             &repo,
             OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap(),
-        );
+        )
+        .await;
         store_message(
             &repo,
             OutboxMessage::create("msg-b", "Event", b"{}".to_vec()).unwrap(),
-        );
+        )
+        .await;
         store_message(
             &repo,
             OutboxMessage::create("msg-c", "Event", b"{}".to_vec()).unwrap(),
-        );
+        )
+        .await;
 
         let claimed = repo
             .outbox_store()
@@ -679,14 +662,14 @@ mod tests {
         assert!(load_message(&repo, "msg-a").is_pending());
     }
 
-    #[test]
-    fn claim_by_ids_skips_unclaimable_without_error() {
+    #[tokio::test]
+    async fn claim_by_ids_skips_unclaimable_without_error() {
         let repo = HashMapRepository::new();
         let mut leased = OutboxMessage::create("msg-a", "Event", b"{}".to_vec()).unwrap();
         leased
             .claim_for("other-worker", Duration::from_secs(60))
             .unwrap();
-        store_message(&repo, leased);
+        store_message(&repo, leased).await;
 
         // Requesting a currently-leased id (and a missing id) yields no claim,
         // not an error.
@@ -723,11 +706,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn competing_workers_only_claim_message_once() {
+    #[tokio::test]
+    async fn competing_workers_only_claim_message_once() {
         let repo = HashMapRepository::new();
         let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let id = store_message(&repo, message);
+        let id = store_message(&repo, message).await;
 
         let barrier = Arc::new(Barrier::new(3));
         let store_a = repo.outbox_store();
@@ -767,11 +750,11 @@ mod tests {
         assert_eq!(stored.attempts, 1);
     }
 
-    #[test]
-    fn publish_failure_releases_until_retry_ceiling_then_fails() {
+    #[tokio::test]
+    async fn publish_failure_releases_until_retry_ceiling_then_fails() {
         let repo = HashMapRepository::new();
         let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let id = store_message(&repo, message);
+        let id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
@@ -827,11 +810,11 @@ mod tests {
         assert_eq!(store.fail(&claim, "error").unwrap_err(), expected);
     }
 
-    #[test]
-    fn stale_or_mismatched_claims_cannot_be_completed() {
+    #[tokio::test]
+    async fn stale_or_mismatched_claims_cannot_be_completed() {
         let repo = HashMapRepository::new();
         let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let _id = store_message(&repo, message);
+        let _id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
@@ -850,18 +833,18 @@ mod tests {
         expired
             .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
             .unwrap();
-        let expired_id = store_message(&repo, expired);
+        let expired_id = store_message(&repo, expired).await;
         let expired = load_message(&repo, &expired_id);
         let claim = OutboxClaimRef::from_message(&expired).unwrap();
         let err = store.complete(&claim).unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
     }
 
-    #[test]
-    fn stale_attempt_claims_cannot_complete_later_claims() {
+    #[tokio::test]
+    async fn stale_attempt_claims_cannot_complete_later_claims() {
         let repo = HashMapRepository::new();
         let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let _id = store_message(&repo, message);
+        let _id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
@@ -888,11 +871,11 @@ mod tests {
         store.complete(&current_claim).unwrap();
     }
 
-    #[test]
-    fn already_published_message_is_not_completed_again() {
+    #[tokio::test]
+    async fn already_published_message_is_not_completed_again() {
         let repo = HashMapRepository::new();
         let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        let _id = store_message(&repo, message);
+        let _id = store_message(&repo, message).await;
 
         let store = repo.outbox_store();
         let claimed = store
