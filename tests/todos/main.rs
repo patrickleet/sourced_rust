@@ -143,15 +143,17 @@ async fn todos() {
         .unwrap();
 
     // Commit multiple Todos to the repository
-    let _ = repo.commit_all(&mut [&mut todo2, &mut todo3]).await;
+    repo.commit_all(&mut [&mut todo2, &mut todo3])
+        .await
+        .expect("bulk commit should succeed");
 
     // get all the todos from the repository
     let all_todos = repo.peek_all(&[&id1, &id2, &id3]).await.unwrap();
-    if !all_todos.is_empty() {
-        assert!(all_todos.len() == 3);
-    } else {
-        println!("No Todos found");
-    }
+    assert_eq!(
+        all_todos.len(),
+        3,
+        "expected all committed todos to be present"
+    );
 }
 
 #[tokio::test]

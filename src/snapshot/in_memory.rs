@@ -82,31 +82,12 @@ impl AsyncSnapshotStore for InMemorySnapshotStore {
 mod tests {
     use super::*;
 
-    fn block_on<F: Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
     fn identity(id: &str) -> StreamIdentity {
         StreamIdentity::new("test.aggregate", id).unwrap()
     }
 
-    #[test]
-    fn save_and_get() {
+    #[tokio::test]
+    async fn save_and_get() {
         let store = InMemorySnapshotStore::new();
         let record = SnapshotRecord::new(
             "test.aggregate",
@@ -116,9 +97,14 @@ mod tests {
             1,
             vec![1, 2, 3],
         );
-        block_on(store.save_snapshot_async(&identity("agg-1"), record)).unwrap();
+        store
+            .save_snapshot_async(&identity("agg-1"), record)
+            .await
+            .unwrap();
 
-        let loaded = block_on(store.get_snapshot_async(&identity("agg-1")))
+        let loaded = store
+            .get_snapshot_async(&identity("agg-1"))
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(loaded.version, 5);
@@ -126,66 +112,88 @@ mod tests {
         assert_eq!(loaded.snapshot_type, "TestSnapshot");
     }
 
-    #[test]
-    fn get_missing_returns_none() {
+    #[tokio::test]
+    async fn get_missing_returns_none() {
         let store = InMemorySnapshotStore::new();
-        assert!(block_on(store.get_snapshot_async(&identity("missing")))
+        assert!(store
+            .get_snapshot_async(&identity("missing"))
+            .await
             .unwrap()
             .is_none());
     }
 
-    #[test]
-    fn save_overwrites() {
+    #[tokio::test]
+    async fn save_overwrites() {
         let store = InMemorySnapshotStore::new();
-        block_on(store.save_snapshot_async(
-            &identity("agg-1"),
-            SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
-        ))
-        .unwrap();
-        block_on(store.save_snapshot_async(
-            &identity("agg-1"),
-            SnapshotRecord::new("test.aggregate", "agg-1", 5, "TestSnapshot", 1, vec![5]),
-        ))
-        .unwrap();
+        store
+            .save_snapshot_async(
+                &identity("agg-1"),
+                SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+            )
+            .await
+            .unwrap();
+        store
+            .save_snapshot_async(
+                &identity("agg-1"),
+                SnapshotRecord::new("test.aggregate", "agg-1", 5, "TestSnapshot", 1, vec![5]),
+            )
+            .await
+            .unwrap();
 
-        let loaded = block_on(store.get_snapshot_async(&identity("agg-1")))
+        let loaded = store
+            .get_snapshot_async(&identity("agg-1"))
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(loaded.version, 5);
         assert_eq!(loaded.payload, vec![5]);
     }
 
-    #[test]
-    fn delete_existing() {
+    #[tokio::test]
+    async fn delete_existing() {
         let store = InMemorySnapshotStore::new();
-        block_on(store.save_snapshot_async(
-            &identity("agg-1"),
-            SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
-        ))
-        .unwrap();
-        assert!(block_on(store.delete_snapshot_async(&identity("agg-1"))).unwrap());
-        assert!(block_on(store.get_snapshot_async(&identity("agg-1")))
+        store
+            .save_snapshot_async(
+                &identity("agg-1"),
+                SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .delete_snapshot_async(&identity("agg-1"))
+            .await
+            .unwrap());
+        assert!(store
+            .get_snapshot_async(&identity("agg-1"))
+            .await
             .unwrap()
             .is_none());
     }
 
-    #[test]
-    fn delete_missing_returns_false() {
+    #[tokio::test]
+    async fn delete_missing_returns_false() {
         let store = InMemorySnapshotStore::new();
-        assert!(!block_on(store.delete_snapshot_async(&identity("missing"))).unwrap());
+        assert!(!store
+            .delete_snapshot_async(&identity("missing"))
+            .await
+            .unwrap());
     }
 
-    #[test]
-    fn clone_shares_storage() {
+    #[tokio::test]
+    async fn clone_shares_storage() {
         let store = InMemorySnapshotStore::new();
         let clone = store.clone();
-        block_on(store.save_snapshot_async(
-            &identity("agg-1"),
-            SnapshotRecord::new("test.aggregate", "agg-1", 3, "TestSnapshot", 1, vec![3]),
-        ))
-        .unwrap();
+        store
+            .save_snapshot_async(
+                &identity("agg-1"),
+                SnapshotRecord::new("test.aggregate", "agg-1", 3, "TestSnapshot", 1, vec![3]),
+            )
+            .await
+            .unwrap();
 
-        let loaded = block_on(clone.get_snapshot_async(&identity("agg-1")))
+        let loaded = clone
+            .get_snapshot_async(&identity("agg-1"))
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(loaded.version, 3);

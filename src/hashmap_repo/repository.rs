@@ -435,37 +435,20 @@ impl AsyncSnapshotStore for HashMapRepository {
 mod tests {
     use super::*;
 
-    fn block_on<F: Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
-
     fn identity(id: &str) -> StreamIdentity {
         StreamIdentity::new("test.aggregate", id).unwrap()
     }
 
-    fn commit_one(repo: &HashMapRepository, entity: &mut Entity) -> Result<(), RepositoryError> {
+    async fn commit_one(
+        repo: &HashMapRepository,
+        entity: &mut Entity,
+    ) -> Result<(), RepositoryError> {
         let id = entity.id().to_string();
-        block_on(
-            repo.commit_batch_async(AsyncCommitBatch::new(vec![AsyncStreamWrite::new(
-                identity(&id),
-                entity,
-            )])),
-        )
+        repo.commit_batch_async(AsyncCommitBatch::new(vec![AsyncStreamWrite::new(
+            identity(&id),
+            entity,
+        )]))
+        .await
     }
 
     #[test]
@@ -474,23 +457,23 @@ mod tests {
         assert!(repo.event_store.read().unwrap().is_empty());
     }
 
-    #[test]
-    fn single_entity_commit() {
+    #[tokio::test]
+    async fn single_entity_commit() {
         let repo = HashMapRepository::new();
         let id = "test_id";
         let mut entity = Entity::with_id(id);
 
         entity.digest("test_event", &("arg1", "arg2")).unwrap();
 
-        commit_one(&repo, &mut entity).unwrap();
+        commit_one(&repo, &mut entity).await.unwrap();
 
-        let fetched_entity = block_on(repo.get_stream(&identity(id))).unwrap().unwrap();
+        let fetched_entity = repo.get_stream(&identity(id)).await.unwrap().unwrap();
         assert_eq!(fetched_entity.id(), id);
         assert_eq!(fetched_entity.events(), entity.events());
     }
 
-    #[test]
-    fn multiple_entity_commit() {
+    #[tokio::test]
+    async fn multiple_entity_commit() {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("id_1");
@@ -499,19 +482,22 @@ mod tests {
         let mut entity2 = Entity::with_id("id_2");
         entity2.digest("event2", &"arg2").unwrap();
 
-        block_on(repo.commit_batch_async(AsyncCommitBatch::new(vec![
+        repo.commit_batch_async(AsyncCommitBatch::new(vec![
             AsyncStreamWrite::new(identity("id_1"), &mut entity1),
             AsyncStreamWrite::new(identity("id_2"), &mut entity2),
-        ])))
+        ]))
+        .await
         .unwrap();
 
-        let all_entities: Vec<Entity> =
-            block_on(repo.get_streams(&[identity("id_1"), identity("id_2")])).unwrap();
+        let all_entities: Vec<Entity> = repo
+            .get_streams(&[identity("id_1"), identity("id_2")])
+            .await
+            .unwrap();
         assert_eq!(all_entities.len(), 2);
     }
 
-    #[test]
-    fn duplicate_stream_ids_rejected_before_write() {
+    #[tokio::test]
+    async fn duplicate_stream_ids_rejected_before_write() {
         let repo = HashMapRepository::new();
 
         let mut entity1 = Entity::with_id("same-id");
@@ -520,11 +506,13 @@ mod tests {
         let mut entity2 = Entity::with_id("same-id");
         entity2.digest("event2", &"arg2").unwrap();
 
-        let err = block_on(repo.commit_batch_async(AsyncCommitBatch::new(vec![
-            AsyncStreamWrite::new(identity("same-id"), &mut entity1),
-            AsyncStreamWrite::new(identity("same-id"), &mut entity2),
-        ])))
-        .unwrap_err();
+        let err = repo
+            .commit_batch_async(AsyncCommitBatch::new(vec![
+                AsyncStreamWrite::new(identity("same-id"), &mut entity1),
+                AsyncStreamWrite::new(identity("same-id"), &mut entity2),
+            ]))
+            .await
+            .unwrap_err();
         assert_eq!(
             err,
             RepositoryError::DuplicateStreamInBatch {
@@ -532,7 +520,9 @@ mod tests {
             }
         );
 
-        assert!(block_on(repo.get_stream(&identity("same-id")))
+        assert!(repo
+            .get_stream(&identity("same-id"))
+            .await
             .unwrap()
             .is_none());
         assert_eq!(entity1.committed_version(), 0);
@@ -541,14 +531,14 @@ mod tests {
         assert_eq!(entity2.new_events().len(), 1);
     }
 
-    #[test]
-    fn inbox_receipts_record_dedupe_and_roll_back_atomically() {
+    #[tokio::test]
+    async fn inbox_receipts_record_dedupe_and_roll_back_atomically() {
         use crate::repository::InboxReceipt;
         let repo = HashMapRepository::new();
 
         let mut batch = AsyncCommitBatch::empty();
         batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
-        block_on(repo.commit_batch_async(batch)).unwrap();
+        repo.commit_batch_async(batch).await.unwrap();
         assert!(repo.inbox_contains("proj", "m1"));
         assert!(!repo.inbox_contains("proj", "m2"));
 
@@ -556,7 +546,7 @@ mod tests {
         let mut dup = AsyncCommitBatch::empty();
         dup.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
         dup.inbox_receipts.push(InboxReceipt::new("proj", "m2"));
-        let err = block_on(repo.commit_batch_async(dup)).unwrap_err();
+        let err = repo.commit_batch_async(dup).await.unwrap_err();
         assert!(
             matches!(err, RepositoryError::DuplicateInboxReceipt { ref message_id, .. } if message_id == "m1"),
             "got {err:?}"
@@ -570,7 +560,7 @@ mod tests {
         let mut invalid = AsyncCommitBatch::empty();
         invalid.inbox_receipts.push(InboxReceipt::new("", "m3"));
         assert!(matches!(
-            block_on(repo.commit_batch_async(invalid)).unwrap_err(),
+            repo.commit_batch_async(invalid).await.unwrap_err(),
             RepositoryError::InvalidInboxReceipt { .. }
         ));
     }
