@@ -1,4 +1,50 @@
-use sourced_rust::{Commit, Entity, GetOne, HashMapRepository};
+use sourced_rust::{
+    AsyncCommitBatch, AsyncGetStream, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
+    HashMapRepository, StreamIdentity,
+};
+
+/// Fixed aggregate type used to key every event stream in this crate.
+///
+/// The synchronous, id-only repository API (`Commit`/`GetOne`) is being removed,
+/// so these event-store semantics tests now run on the async stream API
+/// (`get_stream`/`commit_batch_async`). The async path keys streams by full
+/// `StreamIdentity` (aggregate type + id), so every entity is committed and
+/// loaded under this single aggregate type to mirror the old id-only behavior.
+const AGGREGATE_TYPE: &str = "event_store_test";
+
+fn identity(id: &str) -> StreamIdentity {
+    StreamIdentity::new(AGGREGATE_TYPE, id).unwrap()
+}
+
+/// Async equivalent of the old `repo.get_one(id)`.
+async fn get_one(repo: &HashMapRepository, id: &str) -> Option<Entity> {
+    repo.get_stream(&identity(id)).await.unwrap()
+}
+
+/// Async equivalent of the old `repo.commit(&mut entity)` for a single entity.
+async fn commit_one(
+    repo: &HashMapRepository,
+    entity: &mut Entity,
+) -> Result<(), sourced_rust::RepositoryError> {
+    let id = entity.id().to_string();
+    let stream = AsyncStreamWrite::new(identity(&id), entity);
+    repo.commit_batch_async(AsyncCommitBatch::new(vec![stream]))
+        .await
+}
+
+/// Async equivalent of the old `repo.commit(&mut [&mut a, &mut b])` for many entities.
+async fn commit_many(
+    repo: &HashMapRepository,
+    entities: &mut [&mut Entity],
+) -> Result<(), sourced_rust::RepositoryError> {
+    let mut streams = Vec::with_capacity(entities.len());
+    for entity in entities.iter_mut() {
+        let id = entity.id().to_string();
+        streams.push(AsyncStreamWrite::new(identity(&id), entity));
+    }
+    repo.commit_batch_async(AsyncCommitBatch::new(streams))
+        .await
+}
 
 // --- Event Accumulation ---
 
@@ -15,29 +61,29 @@ fn digest_adds_events_with_correct_sequences() {
     assert_eq!(entity.events()[2].sequence, 3);
 }
 
-#[test]
-fn multiple_load_modify_commit_cycles_accumulate_all_events() {
+#[tokio::test]
+async fn multiple_load_modify_commit_cycles_accumulate_all_events() {
     let repo = HashMapRepository::new();
 
     // Cycle 1: create and commit
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Cycle 2: load, modify, commit
-    let mut entity = repo.get_one("e1").unwrap().unwrap();
+    let mut entity = get_one(&repo, "e1").await.unwrap();
     assert_eq!(entity.events().len(), 1);
     entity.digest("Updated", &"v2").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Cycle 3: load, modify, commit
-    let mut entity = repo.get_one("e1").unwrap().unwrap();
+    let mut entity = get_one(&repo, "e1").await.unwrap();
     assert_eq!(entity.events().len(), 2);
     entity.digest("Updated", &"v3").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Verify all events accumulated
-    let entity = repo.get_one("e1").unwrap().unwrap();
+    let entity = get_one(&repo, "e1").await.unwrap();
     assert_eq!(entity.events().len(), 3);
     assert_eq!(entity.events()[0].event_name, "Created");
     assert_eq!(entity.events()[1].event_name, "Updated");
@@ -47,77 +93,77 @@ fn multiple_load_modify_commit_cycles_accumulate_all_events() {
 
 // --- Append Semantics ---
 
-#[test]
-fn commit_appends_only_new_events() {
+#[tokio::test]
+async fn commit_appends_only_new_events() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Reload and add one more event
-    let mut entity = repo.get_one("e1").unwrap().unwrap();
+    let mut entity = get_one(&repo, "e1").await.unwrap();
     entity.digest("Updated", &"v2").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Verify via get_one: exactly 2 events
-    let loaded = repo.get_one("e1").unwrap().unwrap();
+    let loaded = get_one(&repo, "e1").await.unwrap();
     assert_eq!(loaded.events().len(), 2);
     assert_eq!(loaded.events()[0].event_name, "Created");
     assert_eq!(loaded.events()[1].event_name, "Updated");
 }
 
-#[test]
-fn empty_commit_is_idempotent() {
+#[tokio::test]
+async fn empty_commit_is_idempotent() {
     let repo = HashMapRepository::new();
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Load and commit without changes
-    let mut entity = repo.get_one("e1").unwrap().unwrap();
+    let mut entity = get_one(&repo, "e1").await.unwrap();
     assert!(entity.new_events().is_empty());
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Storage unchanged
-    let loaded = repo.get_one("e1").unwrap().unwrap();
+    let loaded = get_one(&repo, "e1").await.unwrap();
     assert_eq!(loaded.events().len(), 1);
 }
 
-#[test]
-fn events_grow_monotonically() {
+#[tokio::test]
+async fn events_grow_monotonically() {
     let repo = HashMapRepository::new();
 
     for i in 0..5 {
         let mut entity = if i == 0 {
             Entity::with_id("e1")
         } else {
-            repo.get_one("e1").unwrap().unwrap()
+            get_one(&repo, "e1").await.unwrap()
         };
         entity.digest("Event", &format!("v{}", i)).unwrap();
-        repo.commit(&mut entity).unwrap();
+        commit_one(&repo, &mut entity).await.unwrap();
 
-        let loaded = repo.get_one("e1").unwrap().unwrap();
+        let loaded = get_one(&repo, "e1").await.unwrap();
         assert_eq!(loaded.events().len(), i + 1);
     }
 }
 
 // --- Optimistic Concurrency ---
 
-#[test]
-fn concurrent_writes_detected() {
+#[tokio::test]
+async fn concurrent_writes_detected() {
     let repo = HashMapRepository::new();
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
     // Two readers load the same version
-    let mut reader1 = repo.get_one("e1").unwrap().unwrap();
-    let mut reader2 = repo.get_one("e1").unwrap().unwrap();
+    let mut reader1 = get_one(&repo, "e1").await.unwrap();
+    let mut reader2 = get_one(&repo, "e1").await.unwrap();
 
     assert_eq!(reader1.committed_version(), 1);
     assert_eq!(reader2.committed_version(), 1);
@@ -127,17 +173,19 @@ fn concurrent_writes_detected() {
     reader2.digest("UpdatedByR2", &"r2").unwrap();
 
     // First commit succeeds
-    repo.commit(&mut reader1).unwrap();
+    commit_one(&repo, &mut reader1).await.unwrap();
 
     // Second commit fails with ConcurrentWrite
-    let err = repo.commit(&mut reader2).unwrap_err();
+    let err = commit_one(&repo, &mut reader2).await.unwrap_err();
     match err {
         sourced_rust::RepositoryError::ConcurrentWrite {
             id,
             expected,
             actual,
         } => {
-            assert_eq!(id, "e1");
+            // Async stream commits key by full stream identity, so the
+            // conflict id is reported as "<aggregate_type>:<id>".
+            assert_eq!(id, format!("{}:e1", AGGREGATE_TYPE));
             assert_eq!(expected, 1); // reader2 loaded at version 1
             assert_eq!(actual, 2); // storage now has 2 events
         }
@@ -145,8 +193,8 @@ fn concurrent_writes_detected() {
     }
 }
 
-#[test]
-fn partial_conflict_rolls_back_entire_commit() {
+#[tokio::test]
+async fn partial_conflict_rolls_back_entire_commit() {
     let repo = HashMapRepository::new();
 
     // Create two entities
@@ -154,33 +202,36 @@ fn partial_conflict_rolls_back_entire_commit() {
     e1.digest("Created", &"v1").unwrap();
     let mut e2 = Entity::with_id("e2");
     e2.digest("Created", &"v1").unwrap();
-    repo.commit(&mut [&mut e1, &mut e2]).unwrap();
+    commit_many(&repo, &mut [&mut e1, &mut e2]).await.unwrap();
 
     // Load both entities at version 1
-    let mut e1_a = repo.get_one("e1").unwrap().unwrap();
-    let mut e2_a = repo.get_one("e2").unwrap().unwrap();
+    let mut e1_a = get_one(&repo, "e1").await.unwrap();
+    let mut e2_a = get_one(&repo, "e2").await.unwrap();
 
     // Concurrently modify e2 from another "session"
-    let mut e2_b = repo.get_one("e2").unwrap().unwrap();
+    let mut e2_b = get_one(&repo, "e2").await.unwrap();
     e2_b.digest("Conflict", &"b").unwrap();
-    repo.commit(&mut e2_b).unwrap();
+    commit_one(&repo, &mut e2_b).await.unwrap();
 
     // Try to commit both e1_a and e2_a together
     // e1 would be fine, but e2 has a version conflict
     e1_a.digest("Update", &"a").unwrap();
     e2_a.digest("Update", &"a").unwrap();
-    let err = repo.commit(&mut [&mut e1_a, &mut e2_a]).unwrap_err();
+    let err = commit_many(&repo, &mut [&mut e1_a, &mut e2_a])
+        .await
+        .unwrap_err();
     match err {
         sourced_rust::RepositoryError::ConcurrentWrite { id, .. } => {
-            assert_eq!(id, "e2");
+            // Async stream commits report the conflicting stream by full identity.
+            assert_eq!(id, format!("{}:e2", AGGREGATE_TYPE));
         }
         other => panic!("expected ConcurrentWrite, got: {:?}", other),
     }
 
     // e1 should NOT have been modified (atomic rollback - phase 1 validates all before writing)
-    let e1_loaded = repo.get_one("e1").unwrap().unwrap();
+    let e1_loaded = get_one(&repo, "e1").await.unwrap();
     assert_eq!(e1_loaded.events().len(), 1);
-    let e2_loaded = repo.get_one("e2").unwrap().unwrap();
+    let e2_loaded = get_one(&repo, "e2").await.unwrap();
     assert_eq!(e2_loaded.events().len(), 2);
 }
 
@@ -194,31 +245,31 @@ fn new_entity_has_zero_versions() {
     assert!(entity.new_events().is_empty());
 }
 
-#[test]
-fn load_from_history_sets_committed_version() {
+#[tokio::test]
+async fn load_from_history_sets_committed_version() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
     entity.digest("Updated", &"v2").unwrap();
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
 
-    let loaded = repo.get_one("e1").unwrap().unwrap();
+    let loaded = get_one(&repo, "e1").await.unwrap();
     assert_eq!(loaded.committed_version(), 2);
     assert_eq!(loaded.snapshot_version(), 0);
     assert_eq!(loaded.version(), 2);
     assert!(loaded.new_events().is_empty());
 }
 
-#[test]
-fn commit_updates_committed_version() {
+#[tokio::test]
+async fn commit_updates_committed_version() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("Created", &"v1").unwrap();
     assert_eq!(entity.committed_version(), 0);
 
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
     assert_eq!(entity.committed_version(), 1);
     assert_eq!(entity.snapshot_version(), 0);
     assert!(entity.new_events().is_empty());
@@ -227,14 +278,14 @@ fn commit_updates_committed_version() {
     entity.digest("Updated", &"v2").unwrap();
     assert_eq!(entity.new_events().len(), 1);
 
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
     assert_eq!(entity.committed_version(), 2);
     assert_eq!(entity.snapshot_version(), 0);
     assert!(entity.new_events().is_empty());
 }
 
-#[test]
-fn new_events_returns_only_uncommitted() {
+#[tokio::test]
+async fn new_events_returns_only_uncommitted() {
     let repo = HashMapRepository::new();
 
     let mut entity = Entity::with_id("e1");
@@ -242,7 +293,7 @@ fn new_events_returns_only_uncommitted() {
     entity.digest("e2", &"b").unwrap();
     assert_eq!(entity.new_events().len(), 2);
 
-    repo.commit(&mut entity).unwrap();
+    commit_one(&repo, &mut entity).await.unwrap();
     assert!(entity.new_events().is_empty());
 
     entity.digest("e3", &"c").unwrap();

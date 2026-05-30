@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sourced_rust::microsvc::{self, Service};
-use sourced_rust::{AggregateBuilder, HashMapRepository, Queueable};
+use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
 use crate::handlers::Repo;
@@ -14,7 +14,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,

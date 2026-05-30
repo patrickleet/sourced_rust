@@ -4,7 +4,7 @@
 //! organized by service domain under `handlers/`.
 //!
 //! Each service is typed to a specific aggregate via
-//! `Service::with_repo(repo.queued().aggregate::<T>())`, so handlers access
+//! `Service::with_repo(repo.queued_async().async_aggregate::<T>())`, so handlers access
 //! `ctx.repo().get()`, `ctx.repo().commit()`, etc. directly.
 //!
 //! Two tests:
@@ -19,8 +19,8 @@ use serde_json::json;
 use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
-    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
-    OutboxClaimRef, Queueable,
+    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
+    HashMapRepository, OutboxClaimRef, Queueable,
 };
 
 use super::handlers;
@@ -51,13 +51,13 @@ fn event_message(name: &str, input: serde_json::Value) -> Message {
 ///  │  dispatch ──→ [Payment Service]   typed: Payment               │
 ///  └────────────────────────────────────────────────────────────────┘
 /// ```
-#[test]
-fn saga_orchestrated() {
+#[tokio::test]
+async fn saga_orchestrated() {
     let saga_svc = sourced_rust::register_handlers!(
         Service::with_repo(
             HashMapRepository::new()
-                .queued()
-                .aggregate::<OrderFulfillmentSaga>()
+                .queued_async()
+                .async_aggregate::<OrderFulfillmentSaga>()
         ),
         command handlers::saga::start,
         event handlers::saga::on_order_created,
@@ -67,19 +67,19 @@ fn saga_orchestrated() {
     );
 
     let order_svc = sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Order>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     );
 
     let inventory_svc = sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Inventory>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     );
 
     let payment_svc = sourced_rust::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Payment>()),
+        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Payment>()),
         command handlers::payments::process,
     );
 
@@ -92,6 +92,7 @@ fn saga_orchestrated() {
             json!({ "sku": "WIDGET-001", "stock": 100 }),
             s(),
         )
+        .await
         .unwrap();
 
     // 2. Start saga → creates saga + outbox(CreateOrder)
@@ -107,6 +108,7 @@ fn saga_orchestrated() {
             }),
             s(),
         )
+        .await
         .unwrap();
 
     // 3. Create order → outbox(OrderCreated)
@@ -122,6 +124,7 @@ fn saga_orchestrated() {
             }),
             s(),
         )
+        .await
         .unwrap();
 
     // 4. Saga: order created → outbox(ReserveInventory)
@@ -130,6 +133,7 @@ fn saga_orchestrated() {
             "OrderCreated",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
+        .await
         .unwrap();
 
     // 5. Reserve inventory → outbox(InventoryReserved)
@@ -144,6 +148,7 @@ fn saga_orchestrated() {
             }),
             s(),
         )
+        .await
         .unwrap();
 
     // 6. Saga: inventory reserved → outbox(ProcessPayment)
@@ -152,6 +157,7 @@ fn saga_orchestrated() {
             "InventoryReserved",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
+        .await
         .unwrap();
 
     // 7. Process payment → outbox(PaymentSucceeded)
@@ -165,6 +171,7 @@ fn saga_orchestrated() {
             }),
             s(),
         )
+        .await
         .unwrap();
 
     // 8. Saga: payment succeeded → outbox(CompleteOrder)
@@ -173,6 +180,7 @@ fn saga_orchestrated() {
             "PaymentSucceeded",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
+        .await
         .unwrap();
 
     // 9. Complete order → outbox(OrderCompleted)
@@ -182,6 +190,7 @@ fn saga_orchestrated() {
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
             s(),
         )
+        .await
         .unwrap();
 
     // 10. Saga: order completed → saga done
@@ -190,21 +199,32 @@ fn saga_orchestrated() {
             "OrderCompleted",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
+        .await
         .unwrap();
 
     // === Verify final state — typed repos return aggregates directly ===
 
-    let saga = saga_svc.repo().peek("saga-001").unwrap().unwrap();
+    let saga = saga_svc.repo().peek("saga-001").await.unwrap().unwrap();
     assert_eq!(saga.status(), SagaStatus::Completed);
     assert!(saga.is_complete());
 
-    let order = order_svc.repo().peek("order-001").unwrap().unwrap();
+    let order = order_svc.repo().peek("order-001").await.unwrap().unwrap();
     assert_eq!(order.status(), OrderStatus::Completed);
 
-    let inv = inventory_svc.repo().peek("WIDGET-001").unwrap().unwrap();
+    let inv = inventory_svc
+        .repo()
+        .peek("WIDGET-001")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(inv.available(), 95);
 
-    let payment = payment_svc.repo().peek("pay-order-001").unwrap().unwrap();
+    let payment = payment_svc
+        .repo()
+        .peek("pay-order-001")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(payment.is_successful());
 }
 
@@ -271,7 +291,7 @@ async fn saga_distributed() {
     let saga_repo = HashMapRepository::new();
     let saga_outbox = saga_repo.outbox_store();
     let saga_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
+        Service::with_repo(saga_repo.queued_async().async_aggregate::<OrderFulfillmentSaga>()),
         command handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
@@ -283,7 +303,7 @@ async fn saga_distributed() {
     let order_repo = HashMapRepository::new();
     let order_outbox = order_repo.outbox_store();
     let order_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(order_repo.queued().aggregate::<Order>()),
+        Service::with_repo(order_repo.queued_async().async_aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     ));
@@ -292,13 +312,13 @@ async fn saga_distributed() {
     let inventory_repo = HashMapRepository::new();
     let inventory_outbox = inventory_repo.outbox_store();
     {
-        let tmp = inventory_repo.clone().aggregate::<Inventory>();
+        let tmp = inventory_repo.clone().async_aggregate::<Inventory>();
         let mut inv = Inventory::new();
         inv.initialize("WIDGET-001".to_string(), 100).unwrap();
-        tmp.commit(&mut inv).unwrap();
+        tmp.commit(&mut inv).await.unwrap();
     }
     let inventory_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(inventory_repo.queued().aggregate::<Inventory>()),
+        Service::with_repo(inventory_repo.queued_async().async_aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     ));
@@ -307,7 +327,7 @@ async fn saga_distributed() {
     let payment_repo = HashMapRepository::new();
     let payment_outbox = payment_repo.outbox_store();
     let payment_svc = Arc::new(sourced_rust::register_handlers!(
-        Service::with_repo(payment_repo.queued().aggregate::<Payment>()),
+        Service::with_repo(payment_repo.queued_async().async_aggregate::<Payment>()),
         command handlers::payments::process,
     ));
 
@@ -324,6 +344,7 @@ async fn saga_distributed() {
             }),
             Session::new(),
         )
+        .await
         .unwrap();
 
     // === DRIVE THE CHOREOGRAPHY OVER THE BUS UNTIL QUIESCENT ===
@@ -362,17 +383,27 @@ async fn saga_distributed() {
 
     // === VERIFY FINAL STATE — typed repos return aggregates directly ===
 
-    let saga = saga_svc.repo().peek("saga-001").unwrap().unwrap();
+    let saga = saga_svc.repo().peek("saga-001").await.unwrap().unwrap();
     assert_eq!(saga.status(), SagaStatus::Completed);
     assert!(saga.is_complete());
 
-    let order = order_svc.repo().peek("order-001").unwrap().unwrap();
+    let order = order_svc.repo().peek("order-001").await.unwrap().unwrap();
     assert_eq!(order.status(), OrderStatus::Completed);
 
-    let inv = inventory_svc.repo().peek("WIDGET-001").unwrap().unwrap();
+    let inv = inventory_svc
+        .repo()
+        .peek("WIDGET-001")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(inv.available(), 95);
     assert_eq!(inv.reserved(), 5);
 
-    let payment = payment_svc.repo().peek("pay-order-001").unwrap().unwrap();
+    let payment = payment_svc
+        .repo()
+        .peek("pay-order-001")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(payment.is_successful());
 }

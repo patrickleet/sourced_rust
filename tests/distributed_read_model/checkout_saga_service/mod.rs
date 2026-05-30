@@ -11,6 +11,11 @@ pub use service::start_grpc_service;
 #[cfg(feature = "http")]
 pub use service::start_http_service;
 
-use sourced_rust::{AggregateRepository, HashMapRepository, QueuedRepository};
+use sourced_rust::{
+    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+};
 
-pub type CheckoutRepo = AggregateRepository<QueuedRepository<HashMapRepository>, CheckoutSaga>;
+pub type CheckoutRepo = AsyncAggregateRepository<
+    QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
+    CheckoutSaga,
+>;

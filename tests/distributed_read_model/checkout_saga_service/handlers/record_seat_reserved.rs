@@ -1,6 +1,5 @@
 use serde_json::{json, Value};
 use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::SyncOutboxCommitExt;
 
 use crate::checkout::{
     checkout_event, json_outbox_event, seat_event, SeatReservationCompleted, SeatReserved,
@@ -14,11 +13,12 @@ pub fn guard(ctx: &Context<CheckoutRepo>) -> bool {
     ctx.has_fields(&["checkout_id", "seat_id", "seat_category"])
 }
 
-pub fn handle(ctx: &Context<CheckoutRepo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, CheckoutRepo>) -> Result<Value, HandlerError> {
     let msg = ctx.input::<SeatReserved>()?;
     let mut saga = ctx
         .repo()
-        .get(&msg.checkout_id)?
+        .get(&msg.checkout_id)
+        .await?
         .ok_or_else(|| HandlerError::NotFound(msg.checkout_id.clone()))?;
 
     if saga.status == CHECKOUT_SEAT_RESERVED {
@@ -36,7 +36,7 @@ pub fn handle(ctx: &Context<CheckoutRepo>) -> Result<Value, HandlerError> {
         checkout_event::SEAT_RESERVATION_COMPLETED,
         &event,
     )?;
-    ctx.repo().outbox_sync(out).commit_sync(&mut saga)?;
+    ctx.repo().outbox(out).commit(&mut saga).await?;
 
     Ok(json!({ "checkout_id": msg.checkout_id }))
 }

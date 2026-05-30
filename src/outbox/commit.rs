@@ -51,12 +51,15 @@ where
 
 /// Helper returned by [`AsyncAggregateRepository::outbox`] to commit an aggregate
 /// and an outbox row in the same async transactional batch.
-pub struct AsyncOutboxCommit<R, A> {
-    repo: AsyncAggregateRepository<R, A>,
+///
+/// Borrows the repository (mirroring the synchronous [`outbox_sync`](AsyncOutboxCommitExt))
+/// so it can be called through `ctx.repo()` inside async handlers.
+pub struct AsyncOutboxCommit<'a, R, A> {
+    repo: &'a AsyncAggregateRepository<R, A>,
     message: OutboxMessage,
 }
 
-impl<R, A> AsyncOutboxCommit<R, A>
+impl<R, A> AsyncOutboxCommit<'_, R, A>
 where
     R: AsyncTransactionalCommit,
     A: Aggregate + Send,
@@ -74,7 +77,7 @@ where
 
 impl<R, A> AsyncAggregateRepository<R, A> {
     /// Attach an outbox message to be committed with the aggregate.
-    pub fn outbox(self, message: OutboxMessage) -> AsyncOutboxCommit<R, A> {
+    pub fn outbox(&self, message: OutboxMessage) -> AsyncOutboxCommit<'_, R, A> {
         AsyncOutboxCommit {
             repo: self,
             message,

@@ -20,7 +20,7 @@ use sourced_rust::microsvc::transport::{
     run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, OutboxDispatcher,
     ReceivedMessage, RunOptions, TransportError,
 };
-use sourced_rust::microsvc::{HandlerError, Message, MessageKind, Service};
+use sourced_rust::microsvc::{Context, HandlerError, Message, MessageKind, Service};
 use sourced_rust::{
     CommitBatch, HashMapOutboxStore, HashMapRepository, OutboxMessage, OutboxMessageStatus,
     TransactionalCommit,
@@ -183,19 +183,19 @@ pub fn recording_service(recorder: &Arc<Recorder>) -> Arc<Service<()>> {
     Arc::new(
         Service::new(())
             .event("ok")
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 ok.push(Event::Handled(ctx.message().name().to_string()));
-                Ok(json!({}))
+                async move { Ok(json!({})) }
             })
             .event("retryable")
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 retryable.push(Event::Handled(ctx.message().name().to_string()));
-                Err(HandlerError::Other("infra".into()))
+                async move { Err(HandlerError::Other("infra".into())) }
             })
             .event("permanent")
-            .handle(move |ctx| {
+            .handle(move |ctx: &Context<()>| {
                 permanent.push(Event::Handled(ctx.message().name().to_string()));
-                Err(HandlerError::Rejected("nope".into()))
+                async move { Err(HandlerError::Rejected("nope".into())) }
             }),
     )
 }

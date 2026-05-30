@@ -43,18 +43,18 @@ use read_models::{register_schemas, CheckoutView};
 use read_models::{CheckoutStepView, SeatView};
 use seat_inventory_service::Seat;
 use serde::Serialize;
-use sourced_rust::microsvc::{Service, Session};
+use sourced_rust::microsvc::{Context, Service, Session};
 #[cfg(feature = "sqlite")]
 use sourced_rust::SqliteRepository;
-use sourced_rust::{AggregateBuilder, HashMapRepository, InMemoryReadModelStore, Queueable};
 use sourced_rust::{
     AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
     AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
     OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
     RelationalReadModelIncludes,
 };
+use sourced_rust::{HashMapRepository, InMemoryReadModelStore, Queueable};
 
-fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
+async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where
     D: Send + Sync + 'static,
     C: Serialize,
@@ -65,6 +65,7 @@ where
             serde_json::to_value(input).expect("command should encode"),
             Session::new(),
         )
+        .await
         .unwrap_or_else(|err| panic!("{command} should dispatch: {err:?}"));
 }
 
@@ -504,9 +505,10 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
     let seat_store = HashMapRepository::new();
-    let seat_service = seat_inventory_service::service(seat_store.clone().queued().aggregate());
+    let seat_service =
+        seat_inventory_service::service(seat_store.clone().queued_async().async_aggregate());
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
     let projection_svc = projection_service(read_store.clone());
@@ -522,7 +524,8 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
             seat_id: "A-7".to_string(),
             category: "balcony".to_string(),
         },
-    );
+    )
+    .await;
     dispatch(
         &checkout_service,
         checkout_command::START,
@@ -531,7 +534,8 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
             seat_id: "A-7".to_string(),
             seat_category: "balcony".to_string(),
         },
-    );
+    )
+    .await;
 
     // Hop 1: SeatAdded + CheckoutStarted reach the bus; the projection records the
     // opening state and the seat service reacts to the checkout by reserving.
@@ -561,6 +565,7 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let checkout = query_service
         .checkout_screen("checkout-1")
+        .await
         .expect("checkout query should succeed")
         .expect("checkout should be projected");
     assert_eq!(checkout.seat_id, "A-7");
@@ -589,6 +594,7 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let seat = query_service
         .seat("A-7")
+        .await
         .expect("seat query should succeed")
         .expect("seat should be projected");
     assert_eq!(seat.status, SEAT_RESERVED);
@@ -596,9 +602,10 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let checkout_saga = checkout_store
         .clone()
-        .queued()
-        .aggregate::<CheckoutSaga>()
+        .queued_async()
+        .async_aggregate::<CheckoutSaga>()
         .peek("checkout-1")
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(checkout_saga.status, CHECKOUT_SEAT_RESERVED);
@@ -606,9 +613,10 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let seat = seat_store
         .clone()
-        .queued()
-        .aggregate::<Seat>()
+        .queued_async()
+        .async_aggregate::<Seat>()
         .peek("A-7")
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(seat.status, SEAT_RESERVED);
@@ -693,7 +701,7 @@ async fn async_postgres_checkout_flow_projects_relational_read_models() {
 async fn checkout_commands_can_be_http_service() {
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
     let base = checkout_saga_service::start_http_service(checkout_service.clone()).await;
 
     let client = reqwest::Client::new();
@@ -712,6 +720,7 @@ async fn checkout_commands_can_be_http_service() {
     let saga = checkout_service
         .repo()
         .peek("checkout-http")
+        .await
         .expect("HTTP write-side load should succeed")
         .expect("HTTP write-side checkout should exist");
     assert_eq!(saga.status, checkout::CHECKOUT_STARTED);
@@ -722,7 +731,7 @@ async fn checkout_commands_can_be_http_service() {
 async fn checkout_commands_can_be_grpc_service() {
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
     let mut client = checkout_saga_service::start_grpc_service(checkout_service.clone()).await;
 
     let started = client
@@ -744,6 +753,7 @@ async fn checkout_commands_can_be_grpc_service() {
     let saga = checkout_service
         .repo()
         .peek("checkout-grpc")
+        .await
         .expect("gRPC write-side load should succeed")
         .expect("gRPC write-side checkout should exist");
     assert_eq!(saga.status, checkout::CHECKOUT_STARTED);
@@ -794,24 +804,24 @@ fn build_collector() -> (StdArc<Service<()>>, Collected) {
     );
     let service = Service::new(())
         .event(seat_event::ADDED)
-        .handle(move |ctx| {
+        .handle(move |ctx: &Context<()>| {
             record_message(&c1, ctx.message());
-            Ok(serde_json::Value::Null)
+            async { Ok(serde_json::Value::Null) }
         })
         .event(checkout_event::STARTED)
-        .handle(move |ctx| {
+        .handle(move |ctx: &Context<()>| {
             record_message(&c2, ctx.message());
-            Ok(serde_json::Value::Null)
+            async { Ok(serde_json::Value::Null) }
         })
         .event(seat_event::RESERVED)
-        .handle(move |ctx| {
+        .handle(move |ctx: &Context<()>| {
             record_message(&c3, ctx.message());
-            Ok(serde_json::Value::Null)
+            async { Ok(serde_json::Value::Null) }
         })
         .event(checkout_event::SEAT_RESERVATION_COMPLETED)
-        .handle(move |ctx| {
+        .handle(move |ctx: &Context<()>| {
             record_message(&c4, ctx.message());
-            Ok(serde_json::Value::Null)
+            async { Ok(serde_json::Value::Null) }
         });
     (StdArc::new(service), collected)
 }

@@ -6,7 +6,7 @@ pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id", "customer_id", "items"])
 }
 
-pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
+pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let input = ctx.input::<CreateOrderMsg>()?;
 
     let mut order = Order::new();
@@ -22,6 +22,6 @@ pub fn handle(ctx: &Context<Repo>) -> Result<Value, HandlerError> {
         },
     )?;
 
-    ctx.repo().outbox_sync(msg).commit_sync(&mut order)?;
+    ctx.repo().outbox(msg).commit(&mut order).await?;
     Ok(json!({ "order_id": input.order_id }))
 }
