@@ -3,8 +3,7 @@
 //! This module provides the outbox message type and commit helpers:
 //! - `OutboxMessage` - publishable message envelope plus delivery state
 //! - `OutboxMessageStatus` - Message status (Pending, InFlight, Published, Failed)
-//! - `SyncOutboxCommit` - Helper for aggregate + outbox commits
-//! - `SyncOutboxCommitExt` - Extension trait for repositories
+//! - `AsyncOutboxCommit` - Helper for aggregate + outbox commits
 //!
 //! Outbox messages are durable publication work items. Their payload can be a
 //! domain event, integration event, command, or generic transport message.
@@ -25,7 +24,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use sourced_rust::{OutboxMessage, SyncOutboxCommitExt};
+//! use sourced_rust::OutboxMessage;
 //!
 //! // Create aggregate and domain event outbox message
 //! let mut order = Order::new();
@@ -33,8 +32,8 @@
 //!
 //! let outbox = OutboxMessage::create("order-1:created", "OrderCreated", payload);
 //!
-//! // Commit in one repository batch
-//! repo.outbox_sync(outbox).commit_sync(&mut order)?;
+//! // Commit in one async repository batch
+//! repo.outbox(outbox).commit(&mut order).await?;
 //! ```
 
 mod commit;
@@ -50,4 +49,4 @@ pub use table::{
 };
 
 // Commit helpers
-pub use commit::{AsyncOutboxCommit, SyncOutboxCommit, SyncOutboxCommitExt};
+pub use commit::AsyncOutboxCommit;

@@ -1,16 +1,13 @@
-use sourced_rust::{
-    Commit, ReadModelWritePlanStore, RelationalReadModelQueryStore,
-    SyncReadModelWritePlanCommitExt, TransactionalCommit,
-};
+use sourced_rust::{AsyncReadModelWritePlanCommitExt, AsyncTransactionalCommit};
 
 use super::shared::board_write_plan;
 use crate::domain::game_map::GameMap;
 use crate::error::GameError;
 use crate::views::BoardView;
 
-pub fn create_game<R>(repo: &R, game_id: &str, ascii_map: &str) -> Result<GameMap, GameError>
+pub async fn create_game<R>(repo: &R, game_id: &str, ascii_map: &str) -> Result<GameMap, GameError>
 where
-    R: Commit + TransactionalCommit + ReadModelWritePlanStore + RelationalReadModelQueryStore,
+    R: AsyncTransactionalCommit,
 {
     let (width, height, tiles, spawn_points) = GameMap::from_ascii(ascii_map);
 
@@ -18,8 +15,9 @@ where
     map.create(game_id.into(), width, height, tiles.clone(), spawn_points)?;
 
     let board = BoardView::new(game_id, width, height, tiles);
-    repo.read_models_sync(board_write_plan(&board)?)
-        .commit_sync(&mut map)?;
+    repo.read_models(board_write_plan(&board)?)
+        .commit(&mut map)
+        .await?;
 
     Ok(map)
 }

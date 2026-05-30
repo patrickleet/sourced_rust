@@ -239,7 +239,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HashMapRepository, TransactionalCommit};
+    use crate::{AsyncCommitBatch, AsyncTransactionalCommit, HashMapRepository};
     use std::future::Future;
     use std::sync::Mutex;
 
@@ -296,9 +296,9 @@ mod tests {
 
     fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
         let id = message.id().to_string();
-        let mut batch = crate::CommitBatch::empty();
+        let mut batch = AsyncCommitBatch::empty();
         batch.outbox_messages.push(message);
-        repo.commit_batch(batch).unwrap();
+        block_on(repo.commit_batch_async(batch)).unwrap();
         id
     }
 

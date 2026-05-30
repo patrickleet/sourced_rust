@@ -11,4 +11,5 @@ pub use get_player::get_player;
 pub use join_game::join_game;
 pub use move_player::move_player;
 pub use place_bomb::place_bomb;
+pub(crate) use shared::get_aggregate;
 pub use tick::tick;
