@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sourced_rust::{
-    sourced, Entity, HashMapRepository, ReadModel, ReadModelWorkspaceExt,
-    ReadModelWritePlanBuilder, RowKey, RowValue, SyncReadModelWritePlanCommitExt,
+    sourced, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanCommitExt, Entity,
+    HashMapRepository, ReadModel, ReadModelWritePlanBuilder, RowKey, RowValue,
 };
 
 #[derive(Default)]
@@ -27,8 +27,8 @@ struct BridgeView {
     value: i32,
 }
 
-#[test]
-fn repo_first_read_models_session_commit_form_is_available() {
+#[tokio::test]
+async fn repo_first_read_models_session_commit_form_is_available() {
     let repo = HashMapRepository::new();
     let view = BridgeView {
         id: "view-1".into(),
@@ -39,14 +39,16 @@ fn repo_first_read_models_session_commit_form_is_available() {
     let mut aggregate = TestAggregate::default();
     aggregate.touch().unwrap();
 
-    repo.read_models_sync(session)
-        .commit_sync(&mut aggregate)
+    repo.read_models(session)
+        .commit(&mut aggregate)
+        .await
         .unwrap();
 
     let loaded = repo
-        .workspace()
-        .load::<BridgeView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
+        .workspace_async()
+        .load_async::<BridgeView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
         .one()
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(loaded.data, view);

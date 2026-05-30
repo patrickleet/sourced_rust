@@ -1,17 +1,17 @@
 use sourced_rust::{
-    Commit, Get, GetAggregate, ReadModelWritePlanStore, RelationalReadModelQueryStore,
-    SyncReadModelWritePlanCommitExt, TransactionalCommit,
+    AsyncGetStream, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
 };
 
 use super::shared::{
-    board_write_plan, build_board_from_aggregates, load_board, load_board_bombs,
+    board_write_plan, build_board_from_aggregates, get_aggregate, load_board, load_board_bombs,
     load_board_explosions, load_board_players,
 };
 use crate::domain::game_map::GameMap;
 use crate::domain::player::Player;
 use crate::error::GameError;
 
-pub fn join_game<R>(
+pub async fn join_game<R>(
     repo: &R,
     player_id: &str,
     name: &str,
@@ -19,10 +19,13 @@ pub fn join_game<R>(
     spawn_index: usize,
 ) -> Result<(), GameError>
 where
-    R: Commit + TransactionalCommit + Get + ReadModelWritePlanStore + RelationalReadModelQueryStore,
+    R: AsyncGetStream
+        + AsyncTransactionalCommit
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore,
 {
-    let map: GameMap = repo
-        .get_aggregate(game_id)?
+    let map: GameMap = get_aggregate::<R, GameMap>(repo, game_id)
+        .await?
         .ok_or(GameError::GameNotFound)?;
 
     let (sx, sy) = map
@@ -34,12 +37,12 @@ where
     let mut player = Player::default();
     player.join(format!("player:{}", player_id), name.into(), sx, sy)?;
 
-    let current_board = load_board(repo, game_id)?;
-    let mut all_players = load_board_players(repo, &current_board)?;
+    let current_board = load_board(repo, game_id).await?;
+    let mut all_players = load_board_players(repo, &current_board).await?;
     all_players.push(player.clone());
 
-    let all_bombs = load_board_bombs(repo, &current_board)?;
-    let all_explosions = load_board_explosions(repo, &current_board)?;
+    let all_bombs = load_board_bombs(repo, &current_board).await?;
+    let all_explosions = load_board_explosions(repo, &current_board).await?;
     let board = build_board_from_aggregates(
         game_id,
         &map,
@@ -50,8 +53,9 @@ where
         current_board.explosions_created,
     );
 
-    repo.read_models_sync(board_write_plan(&board)?)
-        .commit_sync(&mut player)?;
+    repo.read_models(board_write_plan(&board)?)
+        .commit(&mut player)
+        .await?;
 
     Ok(())
 }

@@ -1,6 +1,7 @@
 use sourced_rust::{
-    Commit, Get, ReadModelWorkspaceExt, ReadModelWritePlanStore, RelationalReadModelQueryStore,
-    RepositoryError, RowKey, RowValue, TransactionalCommit, Versioned,
+    AsyncGetStream, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, RepositoryError, RowKey,
+    RowValue, Versioned,
 };
 
 use crate::domain::player::Player;
@@ -17,10 +18,13 @@ pub struct Game<'a, R> {
 
 impl<'a, R> Game<'a, R>
 where
-    R: Commit + TransactionalCommit + Get + ReadModelWritePlanStore + RelationalReadModelQueryStore,
+    R: AsyncGetStream
+        + AsyncTransactionalCommit
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore,
 {
-    pub fn new(repo: &'a R, game_id: &str, ascii: &str) -> Result<Self, GameError> {
-        handlers::create_game(repo, game_id, ascii)?;
+    pub async fn new(repo: &'a R, game_id: &str, ascii: &str) -> Result<Self, GameError> {
+        handlers::create_game(repo, game_id, ascii).await?;
         Ok(Self {
             repo,
             game_id: game_id.to_string(),
@@ -35,18 +39,19 @@ where
         }
     }
 
-    pub fn tick(&self) -> Result<TickSaga, GameError> {
-        handlers::tick(self.repo, &self.game_id)
+    pub async fn tick(&self) -> Result<TickSaga, GameError> {
+        handlers::tick(self.repo, &self.game_id).await
     }
 
-    pub fn board(&self) -> Result<Versioned<BoardView>, GameError> {
+    pub async fn board(&self) -> Result<Versioned<BoardView>, GameError> {
         self.repo
-            .workspace()
-            .load::<BoardView>(RowKey::new([(
+            .workspace_async()
+            .load_async::<BoardView>(RowKey::new([(
                 "game_id",
                 RowValue::String(self.game_id.clone()),
             )]))
             .one()
+            .await
             .map_err(|e| GameError::Repository(RepositoryError::Model(e.to_string())))?
             .ok_or(GameError::GameNotFound)
     }
@@ -60,9 +65,12 @@ pub struct PlayerSim<'a, R> {
 
 impl<'a, R> PlayerSim<'a, R>
 where
-    R: Commit + TransactionalCommit + Get + ReadModelWritePlanStore + RelationalReadModelQueryStore,
+    R: AsyncGetStream
+        + AsyncTransactionalCommit
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore,
 {
-    pub fn join(&self, spawn_index: usize) -> Result<(), GameError> {
+    pub async fn join(&self, spawn_index: usize) -> Result<(), GameError> {
         handlers::join_game(
             self.game.repo,
             &self.id,
@@ -70,22 +78,23 @@ where
             &self.game.game_id,
             spawn_index,
         )
+        .await
     }
 
-    pub fn move_dir(&self, dir: Direction) -> Result<(), GameError> {
-        handlers::move_player(self.game.repo, &self.id, dir, &self.game.game_id)
+    pub async fn move_dir(&self, dir: Direction) -> Result<(), GameError> {
+        handlers::move_player(self.game.repo, &self.id, dir, &self.game.game_id).await
     }
 
-    pub fn place_bomb(&self) -> Result<(), GameError> {
-        handlers::place_bomb(self.game.repo, &self.id, &self.game.game_id)
+    pub async fn place_bomb(&self) -> Result<(), GameError> {
+        handlers::place_bomb(self.game.repo, &self.id, &self.game.game_id).await
     }
 
-    pub fn is_alive(&self) -> Result<bool, GameError> {
-        let player = self.player()?;
+    pub async fn is_alive(&self) -> Result<bool, GameError> {
+        let player = self.player().await?;
         Ok(player.alive)
     }
 
-    pub fn player(&self) -> Result<Player, GameError> {
-        handlers::get_player(self.game.repo, &self.id)
+    pub async fn player(&self) -> Result<Player, GameError> {
+        handlers::get_player(self.game.repo, &self.id).await
     }
 }

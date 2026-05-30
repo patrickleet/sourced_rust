@@ -1,11 +1,11 @@
 use sourced_rust::{
-    Aggregate, Commit, Get, GetAggregate, OutboxMessage, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RepositoryError, SyncReadModelWritePlanCommitExt,
-    TransactionalCommit,
+    Aggregate, AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
+    AsyncRelationalReadModelQueryStore, AsyncStreamWrite, AsyncTransactionalCommit, OutboxMessage,
+    RepositoryError, StreamIdentity,
 };
 
 use super::shared::{
-    board_write_plan, build_board_from_aggregates, load_board, load_board_bombs,
+    board_write_plan, build_board_from_aggregates, get_aggregate, load_board, load_board_bombs,
     load_board_explosions, load_board_players,
 };
 use crate::domain::bomb::Bomb;
@@ -37,18 +37,21 @@ struct KillAttribution {
     bomb_owner: String,
 }
 
-pub fn tick<R>(repo: &R, game_id: &str) -> Result<TickSaga, GameError>
+pub async fn tick<R>(repo: &R, game_id: &str) -> Result<TickSaga, GameError>
 where
-    R: Commit + TransactionalCommit + Get + ReadModelWritePlanStore + RelationalReadModelQueryStore,
+    R: AsyncGetStream
+        + AsyncTransactionalCommit
+        + AsyncReadModelWritePlanStore
+        + AsyncRelationalReadModelQueryStore,
 {
-    let mut map: GameMap = repo
-        .get_aggregate(game_id)?
+    let mut map: GameMap = get_aggregate::<R, GameMap>(repo, game_id)
+        .await?
         .ok_or(GameError::GameNotFound)?;
 
-    let board = load_board(repo, game_id)?;
-    let mut bombs = load_board_bombs(repo, &board)?;
-    let mut players = load_board_players(repo, &board)?;
-    let mut explosions = load_board_explosions(repo, &board)?;
+    let board = load_board(repo, game_id).await?;
+    let mut bombs = load_board_bombs(repo, &board).await?;
+    let mut players = load_board_players(repo, &board).await?;
+    let mut explosions = load_board_explosions(repo, &board).await?;
 
     let bombs_ticked = bombs.len();
     for bomb in &mut bombs {
@@ -181,7 +184,11 @@ where
         explosion_counter,
     );
 
-    let mut builder = repo.read_models_sync(board_write_plan(&board)?);
+    let read_model_plan = board_write_plan(&board)?
+        .into_write_plan()
+        .map_err(RepositoryError::from)?;
+
+    let mut outbox_messages = Vec::new();
     for killed_id in &saga.players_killed {
         let attribution = kill_attributions
             .iter()
@@ -204,22 +211,37 @@ where
                 )))
             })?,
         )?;
-        builder = builder.outbox_sync(outbox);
+        outbox_messages.push(outbox);
     }
 
-    let mut entities: Vec<&mut sourced_rust::Entity> = Vec::new();
-    entities.push(map.entity_mut());
+    // Stage every touched aggregate stream under its own type's stream identity.
+    let mut streams: Vec<AsyncStreamWrite<'_>> = Vec::new();
+    let map_identity = StreamIdentity::new(GameMap::aggregate_type(), map.entity.id())
+        .map_err(GameError::Repository)?;
+    streams.push(AsyncStreamWrite::new(map_identity, map.entity_mut()));
     for player in &mut players {
-        entities.push(player.entity_mut());
+        let identity = StreamIdentity::new(Player::aggregate_type(), player.entity.id())
+            .map_err(GameError::Repository)?;
+        streams.push(AsyncStreamWrite::new(identity, player.entity_mut()));
     }
     for bomb in &mut bombs {
-        entities.push(bomb.entity_mut());
+        let identity = StreamIdentity::new(Bomb::aggregate_type(), bomb.entity.id())
+            .map_err(GameError::Repository)?;
+        streams.push(AsyncStreamWrite::new(identity, bomb.entity_mut()));
     }
     for explosion in &mut explosions {
-        entities.push(explosion.entity_mut());
+        let identity = StreamIdentity::new(Explosion::aggregate_type(), explosion.entity.id())
+            .map_err(GameError::Repository)?;
+        streams.push(AsyncStreamWrite::new(identity, explosion.entity_mut()));
     }
-    entities.push(saga.entity_mut());
-    builder.commit_many_sync(&mut entities)?;
+    let saga_identity = StreamIdentity::new(TickSaga::aggregate_type(), saga.entity.id())
+        .map_err(GameError::Repository)?;
+    streams.push(AsyncStreamWrite::new(saga_identity, saga.entity_mut()));
+
+    let mut batch = AsyncCommitBatch::new(streams);
+    batch.outbox_messages = outbox_messages;
+    batch.read_model_plans = vec![read_model_plan];
+    repo.commit_batch_async(batch).await?;
 
     Ok(saga)
 }

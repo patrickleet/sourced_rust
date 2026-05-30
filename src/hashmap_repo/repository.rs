@@ -8,23 +8,20 @@ use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use crate::entity::{
-    Committable, Entity, EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC,
-    BITCODE_PAYLOAD_CODEC_VERSION,
+    Entity, EventRecord, EventRecordError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
 };
 use crate::outbox::OutboxMessage;
 use crate::read_model::in_memory::apply_read_model_write_plan;
 use crate::read_model::{
     InMemoryReadModelStore, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
     ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
-    ReadModelWritePlanStore, RelationalReadModelQueryStore,
 };
 use crate::repository::{
     AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
-    AsyncTransactionalCommit, Commit, CommitBatch, GetMany, GetOne, PreparedEventAppend,
-    RepositoryError, SnapshotWrite, StreamIdentity, TransactionalCommit,
+    AsyncTransactionalCommit, PreparedEventAppend, RepositoryError, StreamIdentity,
 };
-use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord, SnapshotStore};
+use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord};
 
 /// In-memory repository implementation using HashMap.
 ///
@@ -96,36 +93,6 @@ impl HashMapRepository {
     }
 }
 
-impl GetOne for HashMapRepository {
-    fn get_one(&self, id: &str) -> Result<Option<Entity>, RepositoryError> {
-        let storage = self
-            .event_store
-            .read()
-            .map_err(|_| RepositoryError::LockPoisoned("read"))?;
-
-        if let Some(events) = storage.get(id) {
-            let mut entity = Entity::new();
-            entity.set_id(id);
-            entity.load_from_history(events.clone());
-            Ok(Some(entity))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl GetMany for HashMapRepository {
-    fn get_many(&self, ids: &[&str]) -> Result<Vec<Entity>, RepositoryError> {
-        let mut entities = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(entity) = self.get_one(id)? {
-                entities.push(entity);
-            }
-        }
-        Ok(entities)
-    }
-}
-
 impl AsyncGetStream for HashMapRepository {
     fn get_stream<'a>(
         &'a self,
@@ -161,13 +128,6 @@ impl AsyncGetStream for HashMapRepository {
             }
             Ok(entities)
         }
-    }
-}
-
-impl Commit for HashMapRepository {
-    fn commit<C: Committable + ?Sized>(&self, committable: &mut C) -> Result<(), RepositoryError> {
-        let entities = committable.entities_mut();
-        TransactionalCommit::commit_batch(self, CommitBatch::new(entities))
     }
 }
 
@@ -297,109 +257,6 @@ impl AsyncInboxStore for HashMapRepository {
     }
 }
 
-impl TransactionalCommit for HashMapRepository {
-    fn commit_batch(&self, batch: CommitBatch<'_>) -> Result<(), RepositoryError> {
-        reject_duplicate_streams(&batch.entities)?;
-        reject_duplicate_outbox_messages(&batch.outbox_messages)?;
-
-        let mut storage = self
-            .event_store
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("write"))?;
-        let mut relational_rows = self
-            .model_store
-            .relational_rows
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("read model write"))?;
-        let mut snapshot_storage = self
-            .snapshot_store
-            .storage
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("snapshot write"))?;
-        let mut outbox_storage = self
-            .outbox_store
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
-        let mut inbox_storage = self
-            .inbox_store
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("inbox write"))?;
-
-        let mut staged_events = storage.clone();
-        let mut staged_rows = relational_rows.clone();
-        let mut staged_snapshots = snapshot_storage.clone();
-        let mut staged_outbox = outbox_storage.clone();
-        let mut staged_inbox = inbox_storage.clone();
-
-        // Phase 1: Validate all stream versions before staging any writes.
-        for entity in &batch.entities {
-            let stored_len = stored_stream_version(staged_events.get(entity.id()));
-            if stored_len != entity.committed_version() {
-                return Err(RepositoryError::ConcurrentWrite {
-                    id: entity.id().to_string(),
-                    expected: entity.committed_version(),
-                    actual: stored_len,
-                });
-            }
-        }
-
-        // Phase 2: Apply every write to staged maps only.
-        for entity in &batch.entities {
-            let new_events = entity.new_events().to_vec();
-            let stored = staged_events
-                .entry(entity.id().to_string())
-                .or_insert_with(Vec::new);
-            stored.extend(new_events);
-        }
-
-        for plan in batch.read_model_plans {
-            apply_read_model_write_plan(plan, &mut staged_rows)?;
-        }
-
-        for write in batch.snapshots {
-            match write {
-                SnapshotWrite::Save(record) => {
-                    record.validate()?;
-                    staged_snapshots.insert(record.aggregate_id.clone(), record);
-                }
-            }
-        }
-
-        for message in batch.outbox_messages {
-            let id = message.id().to_string();
-            if staged_outbox.contains_key(&id) {
-                return Err(RepositoryError::DuplicateOutboxMessageInBatch { id });
-            }
-            staged_outbox.insert(id, message);
-        }
-
-        // Inbox receipts gate effectively-once (see the async impl).
-        for receipt in batch.inbox_receipts {
-            receipt.validate()?;
-            let key = (receipt.consumer.clone(), receipt.message_id.clone());
-            if !staged_inbox.insert(key) {
-                return Err(RepositoryError::DuplicateInboxReceipt {
-                    consumer: receipt.consumer,
-                    message_id: receipt.message_id,
-                });
-            }
-        }
-
-        // Phase 3: Publish staged state only after all validation and staging succeeds.
-        *storage = staged_events;
-        *relational_rows = staged_rows;
-        *snapshot_storage = staged_snapshots;
-        *outbox_storage = staged_outbox;
-        *inbox_storage = staged_inbox;
-
-        for entity in batch.entities {
-            entity.mark_committed();
-        }
-
-        Ok(())
-    }
-}
-
 fn reject_duplicate_async_streams(streams: &[AsyncStreamWrite<'_>]) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(streams.len());
     for stream in streams {
@@ -495,86 +352,35 @@ fn validate_snapshot_identity(
     record.validate_for_identity(identity)
 }
 
-fn reject_duplicate_streams(entities: &[&mut Entity]) -> Result<(), RepositoryError> {
-    let mut seen = HashSet::with_capacity(entities.len());
-    for entity in entities {
-        let id = entity.id();
-        if !seen.insert(id.to_string()) {
-            return Err(RepositoryError::DuplicateStreamInBatch { id: id.to_string() });
-        }
-    }
-    Ok(())
-}
-
 fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
     // A missing stream has committed version 0; the first appended event will
     // occupy sequence 1.
     events.map_or(0, |events| events.len() as u64)
 }
 
-impl ReadModelWritePlanStore for HashMapRepository {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
-        ReadModelWritePlanStore::read_model_capabilities(&self.model_store)
-    }
-
-    fn commit_write_plan(
-        &self,
-        plan: ReadModelWritePlan,
-    ) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        ReadModelWritePlanStore::commit_write_plan(&self.model_store, plan)
-    }
-}
-
 impl AsyncReadModelWritePlanStore for HashMapRepository {
     fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        ReadModelWritePlanStore::read_model_capabilities(self)
+        self.model_store.read_model_capabilities_async()
     }
 
     fn commit_write_plan_async(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move { ReadModelWritePlanStore::commit_write_plan(self, plan) }
-    }
-}
-
-impl RelationalReadModelQueryStore for HashMapRepository {
-    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
-        RelationalReadModelQueryStore::read_model_query_capabilities(&self.model_store)
-    }
-
-    fn load_graph(
-        &self,
-        request: ReadModelLoadRequest,
-    ) -> Result<ReadModelLoadGraph, ReadModelError> {
-        RelationalReadModelQueryStore::load_graph(&self.model_store, request)
+        self.model_store.commit_write_plan_async(plan)
     }
 }
 
 impl AsyncRelationalReadModelQueryStore for HashMapRepository {
     fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
-        RelationalReadModelQueryStore::read_model_query_capabilities(self)
+        self.model_store.read_model_query_capabilities_async()
     }
 
     fn load_graph_async(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
-        async move { RelationalReadModelQueryStore::load_graph(self, request) }
-    }
-}
-
-impl SnapshotStore for HashMapRepository {
-    fn get_snapshot(&self, id: &str) -> Result<Option<SnapshotRecord>, RepositoryError> {
-        SnapshotStore::get_snapshot(&self.snapshot_store, id)
-    }
-
-    fn save_snapshot(&self, record: SnapshotRecord) -> Result<(), RepositoryError> {
-        SnapshotStore::save_snapshot(&self.snapshot_store, record)
-    }
-
-    fn delete_snapshot(&self, id: &str) -> Result<bool, RepositoryError> {
-        SnapshotStore::delete_snapshot(&self.snapshot_store, id)
+        self.model_store.load_graph_async(request)
     }
 }
 
@@ -628,7 +434,39 @@ impl AsyncSnapshotStore for HashMapRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::Get;
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        use std::ptr;
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(ptr::null(), &VTABLE),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
+        let mut cx = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+                return output;
+            }
+        }
+    }
+
+    fn identity(id: &str) -> StreamIdentity {
+        StreamIdentity::new("test.aggregate", id).unwrap()
+    }
+
+    fn commit_one(repo: &HashMapRepository, entity: &mut Entity) -> Result<(), RepositoryError> {
+        let id = entity.id().to_string();
+        block_on(
+            repo.commit_batch_async(AsyncCommitBatch::new(vec![AsyncStreamWrite::new(
+                identity(&id),
+                entity,
+            )])),
+        )
+    }
 
     #[test]
     fn new() {
@@ -644,9 +482,9 @@ mod tests {
 
         entity.digest("test_event", &("arg1", "arg2")).unwrap();
 
-        repo.commit(&mut entity).unwrap();
+        commit_one(&repo, &mut entity).unwrap();
 
-        let fetched_entity = repo.get(id).unwrap().unwrap();
+        let fetched_entity = block_on(repo.get_stream(&identity(id))).unwrap().unwrap();
         assert_eq!(fetched_entity.id(), id);
         assert_eq!(fetched_entity.events(), entity.events());
     }
@@ -661,10 +499,14 @@ mod tests {
         let mut entity2 = Entity::with_id("id_2");
         entity2.digest("event2", &"arg2").unwrap();
 
-        // Commit multiple entities using array syntax
-        repo.commit(&mut [&mut entity1, &mut entity2]).unwrap();
+        block_on(repo.commit_batch_async(AsyncCommitBatch::new(vec![
+            AsyncStreamWrite::new(identity("id_1"), &mut entity1),
+            AsyncStreamWrite::new(identity("id_2"), &mut entity2),
+        ])))
+        .unwrap();
 
-        let all_entities: Vec<Entity> = repo.get(&["id_1", "id_2"]).unwrap();
+        let all_entities: Vec<Entity> =
+            block_on(repo.get_streams(&[identity("id_1"), identity("id_2")])).unwrap();
         assert_eq!(all_entities.len(), 2);
     }
 
@@ -678,15 +520,21 @@ mod tests {
         let mut entity2 = Entity::with_id("same-id");
         entity2.digest("event2", &"arg2").unwrap();
 
-        let err = repo.commit(&mut [&mut entity1, &mut entity2]).unwrap_err();
+        let err = block_on(repo.commit_batch_async(AsyncCommitBatch::new(vec![
+            AsyncStreamWrite::new(identity("same-id"), &mut entity1),
+            AsyncStreamWrite::new(identity("same-id"), &mut entity2),
+        ])))
+        .unwrap_err();
         assert_eq!(
             err,
             RepositoryError::DuplicateStreamInBatch {
-                id: "same-id".into()
+                id: identity("same-id").to_string(),
             }
         );
 
-        assert!(repo.get("same-id").unwrap().is_none());
+        assert!(block_on(repo.get_stream(&identity("same-id")))
+            .unwrap()
+            .is_none());
         assert_eq!(entity1.committed_version(), 0);
         assert_eq!(entity2.committed_version(), 0);
         assert_eq!(entity1.new_events().len(), 1);
@@ -698,17 +546,17 @@ mod tests {
         use crate::repository::InboxReceipt;
         let repo = HashMapRepository::new();
 
-        let mut batch = CommitBatch::empty();
+        let mut batch = AsyncCommitBatch::empty();
         batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
-        repo.commit_batch(batch).unwrap();
+        block_on(repo.commit_batch_async(batch)).unwrap();
         assert!(repo.inbox_contains("proj", "m1"));
         assert!(!repo.inbox_contains("proj", "m2"));
 
         // A batch with a duplicate (m1) and a fresh receipt (m2) rolls back whole.
-        let mut dup = CommitBatch::empty();
+        let mut dup = AsyncCommitBatch::empty();
         dup.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
         dup.inbox_receipts.push(InboxReceipt::new("proj", "m2"));
-        let err = repo.commit_batch(dup).unwrap_err();
+        let err = block_on(repo.commit_batch_async(dup)).unwrap_err();
         assert!(
             matches!(err, RepositoryError::DuplicateInboxReceipt { ref message_id, .. } if message_id == "m1"),
             "got {err:?}"
@@ -719,10 +567,10 @@ mod tests {
         );
 
         // An empty receipt field is rejected (parity with the SQL CHECK).
-        let mut invalid = CommitBatch::empty();
+        let mut invalid = AsyncCommitBatch::empty();
         invalid.inbox_receipts.push(InboxReceipt::new("", "m3"));
         assert!(matches!(
-            repo.commit_batch(invalid).unwrap_err(),
+            block_on(repo.commit_batch_async(invalid)).unwrap_err(),
             RepositoryError::InvalidInboxReceipt { .. }
         ));
     }
