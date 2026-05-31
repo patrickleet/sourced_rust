@@ -1,4 +1,4 @@
-use sourced_rust::{
+use distributed::{
     AsyncCommitBatch, AsyncGetStream, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
     HashMapRepository, StreamIdentity,
 };
@@ -25,7 +25,7 @@ async fn get_one(repo: &HashMapRepository, id: &str) -> Option<Entity> {
 async fn commit_one(
     repo: &HashMapRepository,
     entity: &mut Entity,
-) -> Result<(), sourced_rust::RepositoryError> {
+) -> Result<(), distributed::RepositoryError> {
     let id = entity.id().to_string();
     let stream = AsyncStreamWrite::new(identity(&id), entity);
     repo.commit_batch_async(AsyncCommitBatch::new(vec![stream]))
@@ -36,7 +36,7 @@ async fn commit_one(
 async fn commit_many(
     repo: &HashMapRepository,
     entities: &mut [&mut Entity],
-) -> Result<(), sourced_rust::RepositoryError> {
+) -> Result<(), distributed::RepositoryError> {
     let mut streams = Vec::with_capacity(entities.len());
     for entity in entities.iter_mut() {
         let id = entity.id().to_string();
@@ -178,7 +178,7 @@ async fn concurrent_writes_detected() {
     // Second commit fails with ConcurrentWrite
     let err = commit_one(&repo, &mut reader2).await.unwrap_err();
     match err {
-        sourced_rust::RepositoryError::ConcurrentWrite {
+        distributed::RepositoryError::ConcurrentWrite {
             id,
             expected,
             actual,
@@ -221,7 +221,7 @@ async fn partial_conflict_rolls_back_entire_commit() {
         .await
         .unwrap_err();
     match err {
-        sourced_rust::RepositoryError::ConcurrentWrite { id, .. } => {
+        distributed::RepositoryError::ConcurrentWrite { id, .. } => {
             // Async stream commits report the conflicting stream by full identity.
             assert_eq!(id, format!("{}:e2", AGGREGATE_TYPE));
         }

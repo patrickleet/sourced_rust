@@ -1,7 +1,7 @@
 //! Consumer inbox conformance: identical observable semantics across the
 //! in-memory, SQLite, and Postgres backends.
 
-use sourced_rust::{
+use distributed::{
     AsyncCommitBatch, AsyncInboxStore, AsyncOutboxStore, AsyncTransactionalCommit, InboxReceipt,
     OutboxMessage, OutboxMessageStatus, RepositoryError,
 };

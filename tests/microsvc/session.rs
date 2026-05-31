@@ -1,7 +1,7 @@
 //! Session integration tests — exercises session variables through dispatch.
 
+use distributed::microsvc::{Context, HandlerError, Service, Session};
 use serde_json::json;
-use sourced_rust::microsvc::{Context, HandlerError, Service, Session};
 use std::collections::HashMap;
 
 #[tokio::test]

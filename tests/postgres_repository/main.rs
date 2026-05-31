@@ -7,14 +7,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
     AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
     AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository, ReadModel,
     ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
     StreamIdentity, TableSchemaRegistry,
 };
+use serde::{Deserialize, Serialize};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -220,7 +220,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
             ],
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
-            snapshots: vec![sourced_rust::AsyncSnapshotWrite::Save {
+            snapshots: vec![distributed::AsyncSnapshotWrite::Save {
                 identity: other_identity.clone(),
                 record: SnapshotRecord::new(
                     CounterProjection::aggregate_type(),

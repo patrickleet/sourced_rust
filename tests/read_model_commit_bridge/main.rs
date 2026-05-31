@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     sourced, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanCommitExt, Entity,
     HashMapRepository, ReadModel, ReadModelWritePlanBuilder, RowKey, RowValue,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 struct TestAggregate {

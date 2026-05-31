@@ -34,7 +34,7 @@ fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
 
     let read_model_impl = if let Some(id_field) = &id_field {
         Some(quote! {
-            impl sourced_rust::ReadModel for #name {
+            impl distributed::ReadModel for #name {
                 const COLLECTION: &'static str = #collection;
 
                 fn id(&self) -> &str {
@@ -162,7 +162,7 @@ fn expand_relational_read_model(
         let jsonb = attrs.jsonb;
 
         column_defs.push(quote! {
-            sourced_rust::ColumnDef {
+            distributed::ColumnDef {
                 field_name: #field_name.to_string(),
                 column_name: #column_name.to_string(),
                 column_type: #column_type,
@@ -199,7 +199,7 @@ fn expand_relational_read_model(
                 key_inserts.push(quote! {
                     key.values.insert(
                         #column_name.to_string(),
-                        sourced_rust::RowValue::from_serde(&self.#ident)?,
+                        distributed::RowValue::from_serde(&self.#ident)?,
                     );
                 });
             }
@@ -230,50 +230,50 @@ fn expand_relational_read_model(
     }
 
     Ok(quote! {
-        impl sourced_rust::RelationalReadModel for #name {
-            fn schema() -> sourced_rust::ReadModelSchema {
-                sourced_rust::ReadModelSchema {
+        impl distributed::RelationalReadModel for #name {
+            fn schema() -> distributed::ReadModelSchema {
+                distributed::ReadModelSchema {
                     model_name: #model_name.to_string(),
                     table_name: #table_name.to_string(),
                     columns: vec![#(#column_defs),*],
-                    primary_key: sourced_rust::PrimaryKey {
+                    primary_key: distributed::PrimaryKey {
                         columns: vec![#(#primary_key_columns),*],
                     },
-                    version_column: Some(sourced_rust::DEFAULT_READ_MODEL_VERSION_COLUMN.to_string()),
+                    version_column: Some(distributed::DEFAULT_READ_MODEL_VERSION_COLUMN.to_string()),
                     foreign_keys: vec![#(#foreign_keys),*],
                     indexes: vec![#(#indexes),*],
                     relationships: vec![#(#relationships),*],
                 }
             }
 
-            fn primary_key(&self) -> Result<sourced_rust::RowKey, sourced_rust::ReadModelError> {
-                let mut key = sourced_rust::RowKey::default();
+            fn primary_key(&self) -> Result<distributed::RowKey, distributed::ReadModelError> {
+                let mut key = distributed::RowKey::default();
                 #(#key_inserts)*
                 Ok(key)
             }
 
-            fn to_row(&self) -> Result<sourced_rust::RowValues, sourced_rust::ReadModelError> {
-                let mut row = sourced_rust::RowValues::new();
+            fn to_row(&self) -> Result<distributed::RowValues, distributed::ReadModelError> {
+                let mut row = distributed::RowValues::new();
                 #(#row_inserts)*
                 Ok(row)
             }
 
-            fn from_row(row: sourced_rust::RowValues) -> Result<Self, sourced_rust::ReadModelError> {
+            fn from_row(row: distributed::RowValues) -> Result<Self, distributed::ReadModelError> {
                 Ok(Self {
                     #(#row_fields),*
                 })
             }
         }
 
-        impl sourced_rust::RelationalReadModelIncludes for #name {
+        impl distributed::RelationalReadModelIncludes for #name {
             fn hydrate_include(
                 &mut self,
                 include: &str,
-                rows: Vec<sourced_rust::RowValues>,
-            ) -> Result<(), sourced_rust::ReadModelError> {
+                rows: Vec<distributed::RowValues>,
+            ) -> Result<(), distributed::ReadModelError> {
                 match include {
                     #(#hydrate_include_arms,)*
-                    _ => Err(sourced_rust::ReadModelError::Metadata(format!(
+                    _ => Err(distributed::ReadModelError::Metadata(format!(
                         "read model `{}` has no hydratable relationship `{}`",
                         #model_name,
                         include
@@ -284,10 +284,10 @@ fn expand_relational_read_model(
             fn include_rows(
                 &self,
                 include: &str,
-            ) -> Result<Vec<sourced_rust::RowValues>, sourced_rust::ReadModelError> {
+            ) -> Result<Vec<distributed::RowValues>, distributed::ReadModelError> {
                 match include {
                     #(#include_rows_arms,)*
-                    _ => Err(sourced_rust::ReadModelError::Metadata(format!(
+                    _ => Err(distributed::ReadModelError::Metadata(format!(
                         "read model `{}` has no tracked relationship `{}`",
                         #model_name,
                         include
@@ -356,7 +356,7 @@ fn index_def_tokens(
         .collect::<Vec<_>>();
 
     quote! {
-        sourced_rust::IndexDef {
+        distributed::IndexDef {
             name: Some(#index_name.to_string()),
             columns: vec![#(#columns),*],
             unique: #unique,
@@ -640,14 +640,14 @@ impl FieldAttrs {
         let target_model = &relationship.target_model;
         let through = option_string_tokens(relationship.through.as_deref());
         let kind = match relationship.kind {
-            RelationshipKindAttr::HasMany => quote! { sourced_rust::RelationshipKind::HasMany },
-            RelationshipKindAttr::BelongsTo => quote! { sourced_rust::RelationshipKind::BelongsTo },
+            RelationshipKindAttr::HasMany => quote! { distributed::RelationshipKind::HasMany },
+            RelationshipKindAttr::BelongsTo => quote! { distributed::RelationshipKind::BelongsTo },
             RelationshipKindAttr::ManyToMany => {
-                quote! { sourced_rust::RelationshipKind::ManyToMany }
+                quote! { distributed::RelationshipKind::ManyToMany }
             }
         };
         Ok(Some(quote! {
-            sourced_rust::RelationshipDef {
+            distributed::RelationshipDef {
                 field_name: #field_name.to_string(),
                 kind: #kind,
                 target_model: #target_model.to_string(),
@@ -688,8 +688,8 @@ impl FieldAttrs {
                     #field_name => {
                         self.#ident = rows
                             .into_iter()
-                            .map(<#inner as sourced_rust::RelationalReadModel>::from_row)
-                            .collect::<Result<Vec<_>, sourced_rust::ReadModelError>>()?;
+                            .map(<#inner as distributed::RelationalReadModel>::from_row)
+                            .collect::<Result<Vec<_>, distributed::ReadModelError>>()?;
                         Ok(())
                     }
                 };
@@ -697,8 +697,8 @@ impl FieldAttrs {
                     #field_name => self
                         .#ident
                         .iter()
-                        .map(sourced_rust::RelationalReadModel::to_row)
-                        .collect::<Result<Vec<_>, sourced_rust::ReadModelError>>()
+                        .map(distributed::RelationalReadModel::to_row)
+                        .collect::<Result<Vec<_>, distributed::ReadModelError>>()
                 };
                 Ok((hydrate, include_rows))
             }
@@ -721,11 +721,11 @@ impl FieldAttrs {
                     #field_name => {
                         let mut rows = rows.into_iter();
                         self.#ident = match rows.next() {
-                            Some(row) => Some(<#inner as sourced_rust::RelationalReadModel>::from_row(row)?),
+                            Some(row) => Some(<#inner as distributed::RelationalReadModel>::from_row(row)?),
                             None => None,
                         };
                         if rows.next().is_some() {
-                            return Err(sourced_rust::ReadModelError::Metadata(format!(
+                            return Err(distributed::ReadModelError::Metadata(format!(
                                 "belongs_to relationship `{}` returned more than one row",
                                 #field_name
                             )));
@@ -737,7 +737,7 @@ impl FieldAttrs {
                     #field_name => {
                         let mut rows = Vec::new();
                         if let Some(value) = &self.#ident {
-                            rows.push(sourced_rust::RelationalReadModel::to_row(value)?);
+                            rows.push(distributed::RelationalReadModel::to_row(value)?);
                         }
                         Ok(rows)
                     }
@@ -910,7 +910,7 @@ fn foreign_key_tokens(foreign_key: &ForeignKeyParts) -> proc_macro2::TokenStream
     let table = &foreign_key.table;
     let column = &foreign_key.column;
     quote! {
-        sourced_rust::ForeignKey {
+        distributed::ForeignKey {
             table: #table.to_string(),
             column: #column.to_string(),
         }
@@ -926,39 +926,39 @@ fn option_string_tokens(value: Option<&str>) -> proc_macro2::TokenStream {
 
 fn column_type_tokens(ty: &Type, jsonb: bool) -> proc_macro2::TokenStream {
     if jsonb {
-        return quote! { sourced_rust::ColumnType::Json };
+        return quote! { distributed::ColumnType::Json };
     }
 
     let ty = option_inner_type(ty).unwrap_or(ty);
     if let Some(last) = last_type_segment(ty) {
         let ident = last.ident.to_string();
         return match ident.as_str() {
-            "String" | "str" => quote! { sourced_rust::ColumnType::Text },
-            "bool" => quote! { sourced_rust::ColumnType::Boolean },
+            "String" | "str" => quote! { distributed::ColumnType::Text },
+            "bool" => quote! { distributed::ColumnType::Boolean },
             "i8" | "i16" | "i32" | "i64" | "isize" => {
-                quote! { sourced_rust::ColumnType::Integer }
+                quote! { distributed::ColumnType::Integer }
             }
             "u8" | "u16" | "u32" | "u64" | "usize" => {
-                quote! { sourced_rust::ColumnType::UnsignedInteger }
+                quote! { distributed::ColumnType::UnsignedInteger }
             }
-            "f32" | "f64" => quote! { sourced_rust::ColumnType::Float },
+            "f32" | "f64" => quote! { distributed::ColumnType::Float },
             "Vec" => {
                 if vec_inner_is_u8(last) {
-                    quote! { sourced_rust::ColumnType::Bytes }
+                    quote! { distributed::ColumnType::Bytes }
                 } else {
-                    quote! { sourced_rust::ColumnType::Json }
+                    quote! { distributed::ColumnType::Json }
                 }
             }
-            "HashMap" | "BTreeMap" | "Value" => quote! { sourced_rust::ColumnType::Json },
+            "HashMap" | "BTreeMap" | "Value" => quote! { distributed::ColumnType::Json },
             _ => {
                 let type_name = ty.to_token_stream().to_string();
-                quote! { sourced_rust::ColumnType::Unsupported(#type_name.to_string()) }
+                quote! { distributed::ColumnType::Unsupported(#type_name.to_string()) }
             }
         };
     }
 
     let type_name = ty.to_token_stream().to_string();
-    quote! { sourced_rust::ColumnType::Unsupported(#type_name.to_string()) }
+    quote! { distributed::ColumnType::Unsupported(#type_name.to_string()) }
 }
 
 fn bytes_row_value_tokens(
@@ -975,13 +975,13 @@ fn bytes_row_value_tokens(
     if option_inner.is_some() {
         Some(quote! {
             match &#value {
-                Some(value) => sourced_rust::RowValue::Bytes(value.clone()),
-                None => sourced_rust::RowValue::Null,
+                Some(value) => distributed::RowValue::Bytes(value.clone()),
+                None => distributed::RowValue::Null,
             }
         })
     } else {
         Some(quote! {
-            sourced_rust::RowValue::Bytes(#value.clone())
+            distributed::RowValue::Bytes(#value.clone())
         })
     }
 }
@@ -1090,7 +1090,7 @@ mod tests {
 
         let expanded = expand_read_model(input).unwrap().to_string();
 
-        assert!(expanded.contains("impl sourced_rust :: ReadModel for CounterView"));
+        assert!(expanded.contains("impl distributed :: ReadModel for CounterView"));
         assert!(expanded.contains("fn id"));
     }
 
@@ -1310,8 +1310,8 @@ mod tests {
 
         let expanded = expand_read_model(input).unwrap().to_string();
 
-        assert!(expanded.contains("impl sourced_rust :: RelationalReadModel for PlayerWeapon"));
-        assert!(!expanded.contains("impl sourced_rust :: ReadModel for PlayerWeapon"));
+        assert!(expanded.contains("impl distributed :: RelationalReadModel for PlayerWeapon"));
+        assert!(!expanded.contains("impl distributed :: ReadModel for PlayerWeapon"));
     }
 
     #[test]

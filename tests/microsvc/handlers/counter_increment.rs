@@ -1,9 +1,9 @@
 //! Handler: counter.increment
 
+use distributed::microsvc::{Context, HandlerError};
+use distributed::OutboxMessage;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::OutboxMessage;
 
 use super::Repo;
 use crate::models::counter::Counter;

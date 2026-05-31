@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use sourced_rust::{
+use distributed::{
     sourced, AsyncAggregateBuilder, AsyncLock, AsyncLockManager, Entity, HashMapRepository,
     LockError, Queueable,
 };
@@ -289,7 +289,7 @@ async fn scenario_cancelled_acquire_releases_gate<M: AsyncLockManager>(holder: &
 #[cfg(feature = "sqlite")]
 mod sqlite_backend {
     use super::*;
-    use sourced_rust::SqliteLockManager;
+    use distributed::SqliteLockManager;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::SqlitePool;
     use std::path::PathBuf;
@@ -465,7 +465,7 @@ mod postgres_support;
 mod postgres_backend {
     use super::*;
     use crate::postgres_support::PostgresTestSchema;
-    use sourced_rust::PostgresLockManager;
+    use distributed::PostgresLockManager;
 
     const SKIP: &str = "skipping postgres lock test";
 

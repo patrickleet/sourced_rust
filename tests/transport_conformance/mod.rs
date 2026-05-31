@@ -15,17 +15,17 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::json;
-use sourced_rust::bus::{
+use distributed::bus::{
     run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, ReceivedMessage,
     RunOptions, TransportError,
 };
-use sourced_rust::microsvc::{Context, HandlerError, Message, MessageKind, Service};
-use sourced_rust::OutboxDispatcher;
-use sourced_rust::{
+use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Service};
+use distributed::OutboxDispatcher;
+use distributed::{
     AsyncCommitBatch, AsyncTransactionalCommit, HashMapOutboxStore, HashMapRepository,
     OutboxMessage, OutboxMessageStatus,
 };
+use serde_json::json;
 
 /// One observable transport effect, recorded in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,7 +358,7 @@ async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
 }
 
 fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
-    use sourced_rust::OutboxStore;
+    use distributed::OutboxStore;
     let store = repo.outbox_store();
     [
         OutboxMessageStatus::Pending,

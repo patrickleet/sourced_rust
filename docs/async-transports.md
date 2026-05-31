@@ -1,6 +1,6 @@
 # Async Microservice Transports
 
-Distributed (published from the `sourced_rust` crate) keeps the synchronous
+Distributed (published from the `distributed` crate) keeps the synchronous
 in-memory bus intact and adds an async transport layer under
 `bus`. The design line is:
 
@@ -43,7 +43,7 @@ Direct transports implement `AsyncMessageSource` (pull a message) and
 `Service::dispatch_message` and settling only after the handler completes:
 
 ```rust,ignore
-use sourced_rust::bus::{run_source, RunOptions};
+use distributed::bus::{run_source, RunOptions};
 
 run_source(service, source, RunOptions::idempotent()).await?;
 ```
@@ -108,7 +108,7 @@ The app surface is identical across transports; only the constructor changes:
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
 // Built once — handlers are transport-agnostic.
 let service = Arc::new(build_service());
@@ -163,7 +163,7 @@ when their env var is unset:
 ```sh
 docker compose up -d   # postgres, rabbitmq, kafka, nats (see compose.yaml)
 
-DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
+DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
   cargo test --test postgres_transport --features postgres
 NATS_URL=nats://localhost:4222   cargo test --test nats_transport --features nats
 AMQP_URL=amqp://guest:guest@localhost:5672/%2f \

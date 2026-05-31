@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{Notifier, NotifierEvent, Order, OrderEvent};
-use sourced_rust::{Aggregate, AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{Aggregate, AsyncAggregateBuilder, HashMapRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 

@@ -11,7 +11,7 @@ pub use service::start_grpc_service;
 #[cfg(feature = "http")]
 pub use service::start_http_service;
 
-use sourced_rust::{
+use distributed::{
     AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 

@@ -37,22 +37,22 @@ use checkout::{
     SEAT_AVAILABLE,
 };
 use checkout_saga_service::CheckoutSaga;
+use distributed::microsvc::{Context, Service, Session};
+#[cfg(feature = "sqlite")]
+use distributed::SqliteRepository;
+use distributed::{
+    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
+    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
+    OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
+    RelationalReadModelIncludes,
+};
+use distributed::{HashMapRepository, InMemoryReadModelStore, Queueable};
 use projection_service::service as projection_service;
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};
 use read_models::{CheckoutStepView, SeatView};
 use seat_inventory_service::Seat;
 use serde::Serialize;
-use sourced_rust::microsvc::{Context, Service, Session};
-#[cfg(feature = "sqlite")]
-use sourced_rust::SqliteRepository;
-use sourced_rust::{
-    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
-    OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
-    RelationalReadModelIncludes,
-};
-use sourced_rust::{HashMapRepository, InMemoryReadModelStore, Queueable};
 
 async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where
@@ -465,11 +465,11 @@ where
 /// new-transport equivalent of the old `OutboxWorkerThread`: claim → publish →
 /// complete, so each event is forwarded exactly once.
 async fn publish_pending_outbox(
-    outbox: &sourced_rust::HashMapOutboxStore,
-    bus: &sourced_rust::bus::InMemoryBus,
+    outbox: &distributed::HashMapOutboxStore,
+    bus: &distributed::bus::InMemoryBus,
 ) {
     let claimed = outbox
-        .claim_async(sourced_rust::ClaimOutboxMessages::new(
+        .claim_async(distributed::ClaimOutboxMessages::new(
             "matrix-outbox-bridge",
             64,
             Duration::from_secs(60),
@@ -486,7 +486,7 @@ async fn publish_pending_outbox(
         bus.publish_message(bus_message)
             .await
             .expect("outbox event should publish to the bus");
-        let claim = sourced_rust::OutboxClaimRef::from_message(&message)
+        let claim = distributed::OutboxClaimRef::from_message(&message)
             .expect("claimed message should yield a claim ref");
         outbox
             .complete_async(&claim)
@@ -501,7 +501,7 @@ async fn publish_pending_outbox(
 /// assertions — only the transport changed.
 #[tokio::test]
 async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
-    use sourced_rust::bus::InMemoryBus;
+    use distributed::bus::InMemoryBus;
 
     let checkout_store = HashMapRepository::new();
     let checkout_service =
@@ -735,7 +735,7 @@ async fn checkout_commands_can_be_grpc_service() {
     let mut client = checkout_saga_service::start_grpc_service(checkout_service.clone()).await;
 
     let started = client
-        .dispatch(sourced_rust::microsvc::grpc::GrpcRequest {
+        .dispatch(distributed::microsvc::grpc::GrpcRequest {
             command: checkout_command::START.to_string(),
             input: serde_json::to_string(&StartCheckout {
                 checkout_id: "checkout-grpc".to_string(),
@@ -770,8 +770,8 @@ async fn checkout_commands_can_be_grpc_service() {
 use std::collections::HashMap as StdHashMap;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-use sourced_rust::bus::{Bus, BusConsumer, RunOptions};
-use sourced_rust::microsvc::{Message, MessageKind};
+use distributed::bus::{Bus, BusConsumer, RunOptions};
+use distributed::microsvc::{Message, MessageKind};
 
 /// The four checkout events in flow (causal) order, by CloudEvent/event type.
 const FLOW_EVENT_TYPES: [&str; 4] = [
@@ -957,7 +957,7 @@ fn matrix_ids(tag: &str) -> AsyncFlowIds {
 /// In-memory persistence × in-memory transport — the always-on matrix cell.
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_in_memory_bus() {
-    use sourced_rust::bus::InMemoryBus;
+    use distributed::bus::InMemoryBus;
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         InMemoryBus::new(),
@@ -1007,8 +1007,8 @@ where
         + Sync
         + 'static,
 {
-    use sourced_rust::bus::KnativeBus;
-    use sourced_rust::microsvc::cloud_events_router;
+    use distributed::bus::KnativeBus;
+    use distributed::microsvc::cloud_events_router;
 
     let (collector, collected) = build_collector();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1059,7 +1059,7 @@ where
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn matrix_sqlite_persistence_over_in_memory_bus() {
-    use sourced_rust::bus::InMemoryBus;
+    use distributed::bus::InMemoryBus;
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         InMemoryBus::new(),
@@ -1089,9 +1089,9 @@ fn nats_url() -> Option<String> {
 }
 
 #[cfg(feature = "nats")]
-async fn nats_matrix_bus(ns: &str) -> sourced_rust::bus::NatsBus {
+async fn nats_matrix_bus(ns: &str) -> distributed::bus::NatsBus {
     let url = nats_url().expect("NATS_URL set");
-    let bus = sourced_rust::bus::NatsBus::connect(&url, "matrix", ns)
+    let bus = distributed::bus::NatsBus::connect(&url, "matrix", ns)
         .await
         .expect("nats connect")
         .with_fetch_timeout(Duration::from_millis(800));
@@ -1144,9 +1144,9 @@ fn amqp_url() -> Option<String> {
 async fn rabbit_matrix_bus(
     ns: &str,
     collector: &StdArc<Service<()>>,
-) -> sourced_rust::bus::RabbitBus {
+) -> distributed::bus::RabbitBus {
     let url = amqp_url().expect("AMQP_URL set");
-    let bus = sourced_rust::bus::RabbitBus::connect(&url, "matrix", ns)
+    let bus = distributed::bus::RabbitBus::connect(&url, "matrix", ns)
         .await
         .expect("rabbit connect");
     // Topic exchange drops events with no bound queue, so bind before publishing.
@@ -1200,9 +1200,9 @@ fn kafka_brokers() -> Option<String> {
 }
 
 #[cfg(feature = "kafka")]
-async fn kafka_matrix_bus(ns: &str) -> sourced_rust::bus::KafkaBus {
+async fn kafka_matrix_bus(ns: &str) -> distributed::bus::KafkaBus {
     let brokers = kafka_brokers().expect("KAFKA_BROKERS set");
-    sourced_rust::bus::KafkaBus::connect(&brokers, "matrix", ns)
+    distributed::bus::KafkaBus::connect(&brokers, "matrix", ns)
         .await
         .expect("kafka connect")
         .with_fetch_timeout(Duration::from_secs(10))
@@ -1247,7 +1247,7 @@ async fn matrix_sqlite_persistence_over_kafka_bus() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_postgres_bus() {
-    use sourced_rust::bus::PostgresBus;
+    use distributed::bus::PostgresBus;
     let Some(schema) = postgres::PostgresTestSchema::create_from_env(
         "matrix_pgbus",
         "skipping Postgres-bus matrix cell",
@@ -1273,7 +1273,7 @@ async fn matrix_in_memory_persistence_over_postgres_bus() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn matrix_postgres_persistence_over_in_memory_bus() {
-    use sourced_rust::bus::InMemoryBus;
+    use distributed::bus::InMemoryBus;
     let Some(schema) = postgres::PostgresTestSchema::create_from_env(
         "matrix_pg",
         "skipping Postgres-persistence matrix cell",
@@ -1303,7 +1303,7 @@ async fn matrix_postgres_persistence_over_in_memory_bus() {
 #[cfg(feature = "postgres")]
 async fn postgres_matrix_repo() -> Option<(
     postgres::PostgresTestSchema,
-    sourced_rust::PostgresRepository,
+    distributed::PostgresRepository,
 )> {
     let schema = postgres::PostgresTestSchema::create_from_env(
         "matrix_pg",
@@ -1319,8 +1319,8 @@ async fn postgres_matrix_repo() -> Option<(
 }
 
 #[cfg(feature = "postgres")]
-async fn postgres_matrix_bus() -> Option<sourced_rust::bus::PostgresBus> {
-    use sourced_rust::bus::PostgresBus;
+async fn postgres_matrix_bus() -> Option<distributed::bus::PostgresBus> {
+    use distributed::bus::PostgresBus;
     let schema = postgres::PostgresTestSchema::create_from_env(
         "matrix_pgbus",
         "skipping Postgres-bus matrix cell",

@@ -1,5 +1,5 @@
+use distributed::microsvc::{Context, HandlerError};
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
 
 use crate::checkout::{
     checkout_event, json_outbox_event, seat_event, CheckoutStarted, SeatReserved, SEAT_AVAILABLE,

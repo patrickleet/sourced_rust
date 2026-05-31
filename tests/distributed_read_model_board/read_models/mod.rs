@@ -8,7 +8,7 @@ mod card_view;
 pub use board_view::BoardView;
 pub use card_view::{CardPayload, CardView};
 
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
+use distributed::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
 
 pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
     store.register_schema::<BoardView>()?;

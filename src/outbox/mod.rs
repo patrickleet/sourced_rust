@@ -24,7 +24,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use sourced_rust::OutboxMessage;
+//! use distributed::OutboxMessage;
 //!
 //! // Create aggregate and domain event outbox message
 //! let mut order = Order::new();

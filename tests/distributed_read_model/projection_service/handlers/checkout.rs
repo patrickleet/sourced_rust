@@ -1,6 +1,6 @@
+use distributed::microsvc::{Context, HandlerError};
+use distributed::AsyncReadModelWorkspaceExt;
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::AsyncReadModelWorkspaceExt;
 
 use crate::checkout::{
     checkout_event, CheckoutStarted, SeatReservationCompleted, CHECKOUT_SEAT_RESERVED,

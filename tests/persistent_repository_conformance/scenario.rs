@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore,
     AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Entity, RepositoryError,
     SnapshotRecord, StreamIdentity,

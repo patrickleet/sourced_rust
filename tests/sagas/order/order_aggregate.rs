@@ -1,6 +1,6 @@
 use bitcode::{Decode, Encode};
+use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
 
 /// Represents a line item in an order
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Encode, Decode)]

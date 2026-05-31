@@ -8,7 +8,7 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use sourced_rust::{microsvc, HashMapRepository};
+//! use distributed::{microsvc, HashMapRepository};
 //! use serde_json::json;
 //!
 //! let service = Arc::new(
@@ -108,7 +108,7 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 ///
 /// # Example
 /// ```ignore
-/// let service = sourced_rust::register_handlers!(
+/// let service = distributed::register_handlers!(
 ///     microsvc::Service::with_repo(HashMapRepository::new()),
 ///     command handlers::counter_create,
 ///     command handlers::counter_increment,

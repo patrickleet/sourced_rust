@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
-use sourced_rust::{
+use distributed::{
     AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncLock, AsyncLockManager, ClaimOutboxMessages,
     EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxClaimRef,
     OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,

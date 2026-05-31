@@ -1,4 +1,4 @@
-use sourced_rust::{
+use distributed::{
     AsyncGetStream, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
 };

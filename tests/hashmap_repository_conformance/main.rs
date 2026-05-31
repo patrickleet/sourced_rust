@@ -1,7 +1,7 @@
 #[path = "../persistent_repository_conformance/mod.rs"]
 mod conformance;
 
-use sourced_rust::HashMapRepository;
+use distributed::HashMapRepository;
 
 fn repository() -> HashMapRepository {
     HashMapRepository::new()

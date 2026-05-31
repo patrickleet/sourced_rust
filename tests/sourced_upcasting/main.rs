@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{TodoV1, TodoV1Event, TodoV2, TodoV2Event, TodoV3};
-use sourced_rust::{
+use distributed::{
     hydrate, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncStreamWrite,
     AsyncTransactionalCommit, Entity, HashMapRepository, StreamIdentity,
 };
@@ -140,7 +140,7 @@ fn v2_try_from_event_record() {
         3u8,
     ))
     .unwrap();
-    let record = sourced_rust::EventRecord::new_versioned("Initialized", payload, 1, 2);
+    let record = distributed::EventRecord::new_versioned("Initialized", payload, 1, 2);
     let event = TodoV2Event::try_from(&record).unwrap();
     match event {
         TodoV2Event::Initialized {

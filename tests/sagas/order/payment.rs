@@ -1,5 +1,5 @@
+use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
 
 /// Payment status
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

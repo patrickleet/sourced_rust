@@ -2,8 +2,8 @@
 //!
 //! Returns the authenticated user's ID from the session.
 
+use distributed::microsvc::{Context, HandlerError};
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
 
 use super::Repo;
 

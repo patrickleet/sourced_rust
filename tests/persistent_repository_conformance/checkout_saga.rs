@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, CHECKOUT_STARTED_STATUS};
 

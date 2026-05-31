@@ -1,5 +1,5 @@
+use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
-use sourced_rust::ReadModel;
 
 use super::{CheckoutStepView, SeatView};
 

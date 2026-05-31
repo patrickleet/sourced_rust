@@ -11,16 +11,16 @@ mod postgres;
 
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
-use sourced_rust::bus::{
+use distributed::bus::{
     run_source, AsyncMessageSource, Bus, BusConsumer, PostgresBus, ReceivedMessage, RunOptions,
 };
-use sourced_rust::microsvc::{Context, Message, MessageKind, Service};
-use sourced_rust::OutboxSource;
-use sourced_rust::{
+use distributed::microsvc::{Context, Message, MessageKind, Service};
+use distributed::OutboxSource;
+use distributed::{
     AsyncCommitBatch, AsyncOutboxStore, AsyncTransactionalCommit, OutboxMessage,
     OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,
 };
+use serde_json::json;
 
 const SKIP: &str = "skipping postgres transport test";
 

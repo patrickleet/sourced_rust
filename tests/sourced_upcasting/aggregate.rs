@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 pub type InitializedV1 = (String, String, String);
 pub type InitializedV2 = (String, String, String, u8);

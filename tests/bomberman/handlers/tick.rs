@@ -1,4 +1,4 @@
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncCommitBatch, AsyncGetStream, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncStreamWrite, AsyncTransactionalCommit, OutboxMessage,
     RepositoryError, StreamIdentity,

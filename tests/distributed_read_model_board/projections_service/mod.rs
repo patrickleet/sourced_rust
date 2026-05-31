@@ -5,15 +5,15 @@ mod handlers;
 
 use std::sync::Arc;
 
-use sourced_rust::microsvc::{HandlerError, Service};
-use sourced_rust::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
+use distributed::microsvc::{HandlerError, Service};
+use distributed::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
 
 use crate::read_models::{board_key, BoardView};
 
 pub type ProjectionDependencies = InMemoryReadModelStore;
 
 pub fn service(store: InMemoryReadModelStore) -> Arc<Service<ProjectionDependencies>> {
-    Arc::new(sourced_rust::register_handlers!(
+    Arc::new(distributed::register_handlers!(
         Service::with_read_model_store(store),
         events handlers::board,
     ))

@@ -3,9 +3,9 @@
 //! Each message is serialized as JSON via [`json_outbox_to`] so the receiving
 //! service can decode it from the bus message payload (`ctx.input`).
 
+use distributed::microsvc::HandlerError;
+use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
-use sourced_rust::microsvc::HandlerError;
-use sourced_rust::OutboxMessage;
 
 use crate::order::OrderItem;
 

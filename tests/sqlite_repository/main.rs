@@ -2,14 +2,14 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
     AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
     AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
     RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SqliteRepository, StreamIdentity,
     TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 struct Counter {
@@ -96,7 +96,7 @@ async fn dev_bootstrap_applies_registered_table_schemas() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let mut registry = TableSchemaRegistry::new();
     registry
-        .register_schema(sourced_rust::outbox_message_schema())
+        .register_schema(distributed::outbox_message_schema())
         .unwrap();
 
     let artifacts = repo.generate_table_migration_artifacts(&registry).unwrap();

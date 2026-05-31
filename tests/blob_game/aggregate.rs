@@ -1,5 +1,5 @@
+use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
 
 /// Tile states for the game grid
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

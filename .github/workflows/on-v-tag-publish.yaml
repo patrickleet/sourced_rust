@@ -14,7 +14,7 @@ jobs:
     secrets:
       crates_io_token: ${{ secrets.CRATES_IO_TOKEN }}
     with:
-      manifest_path: sourced_rust_macros/Cargo.toml
+      manifest_path: distributed_macros/Cargo.toml
       cargo_publish_args: "--locked"
 
   publish:

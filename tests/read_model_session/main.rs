@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     AsyncReadModelWorkspaceExt, ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel,
     ReadModelAdapterCapabilities, ReadModelError, ReadModelMutation, ReadModelWritePlanBuilder,
     RowKey, RowPatch, RowValue, RowWriteMode, Versioned,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
 #[table("account_summaries")]

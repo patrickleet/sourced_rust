@@ -3,9 +3,9 @@
 //! inserts/patches/deletes. A monotonic `source_version` guard ignores stale
 //! snapshots under out-of-order delivery.
 
+use distributed::microsvc::{Context, HandlerError};
+use distributed::{AsyncReadModelWorkspaceExt, BitcodePayloadCodec, PayloadCodec};
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{AsyncReadModelWorkspaceExt, BitcodePayloadCodec, PayloadCodec};
 
 use crate::board_service::BoardSnapshot;
 use crate::projections_service::{read_model_error, ProjectionDependencies};

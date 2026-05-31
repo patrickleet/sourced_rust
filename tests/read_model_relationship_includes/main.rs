@@ -1,12 +1,12 @@
 use std::future::Future;
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
     ReadModelWritePlan, RowKey, RowValue,
 };
+use serde::{Deserialize, Serialize};
 
 fn block_on<F: Future>(future: F) -> F::Output {
     use std::ptr;
@@ -160,7 +160,7 @@ fn store_with_player_and_weapons(
     store.register_schema::<Player>().unwrap();
     store.register_schema::<PlayerWeapon>().unwrap();
 
-    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    let mut session = distributed::ReadModelWritePlanBuilder::new();
     session.upsert(&player("player-1", "Ada")).unwrap();
     for weapon in weapons {
         session.upsert(&weapon).unwrap();
@@ -416,7 +416,7 @@ fn missing_root_returns_none_without_include_loading() {
 fn unregistered_relationship_target_fails_before_loading() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<Player>().unwrap();
-    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    let mut session = distributed::ReadModelWritePlanBuilder::new();
     session.upsert(&player("player-1", "Ada")).unwrap();
     block_on(session.commit_async(&store)).unwrap();
     let mut read_models = store.workspace_async();
@@ -437,7 +437,7 @@ fn unregistered_relationship_target_fails_before_loading() {
 #[test]
 fn unregistered_root_schema_can_load_primary_key_without_includes() {
     let store = InMemoryReadModelStore::new();
-    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    let mut session = distributed::ReadModelWritePlanBuilder::new();
     session.upsert(&player("player-1", "Ada")).unwrap();
     block_on(session.commit_async(&store)).unwrap();
     let mut read_models = store.workspace_async();
@@ -514,7 +514,7 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<WeaponLabelRef>().unwrap();
     store.register_schema::<CompositeWeaponLabel>().unwrap();
-    let mut session = sourced_rust::ReadModelWritePlanBuilder::new();
+    let mut session = distributed::ReadModelWritePlanBuilder::new();
     session
         .upsert(&WeaponLabelRef {
             ref_id: "ref-1".into(),

@@ -6,7 +6,7 @@ pub mod models;
 mod handlers;
 mod service;
 
-use sourced_rust::{
+use distributed::{
     AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 

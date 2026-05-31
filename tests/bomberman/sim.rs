@@ -1,4 +1,4 @@
-use sourced_rust::{
+use distributed::{
     AsyncGetStream, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, RepositoryError, RowKey,
     RowValue, Versioned,

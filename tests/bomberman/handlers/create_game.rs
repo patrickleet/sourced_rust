@@ -1,4 +1,4 @@
-use sourced_rust::{AsyncReadModelWritePlanCommitExt, AsyncTransactionalCommit};
+use distributed::{AsyncReadModelWritePlanCommitExt, AsyncTransactionalCommit};
 
 use super::shared::board_write_plan;
 use crate::domain::game_map::GameMap;

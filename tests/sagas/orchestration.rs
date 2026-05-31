@@ -18,7 +18,7 @@ use super::order::{
     Inventory, Order, OrderFulfillmentSaga, OrderItem, OrderStatus, Payment, PaymentStatus,
     SagaStatus,
 };
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository};
+use distributed::{AsyncAggregateBuilder, HashMapRepository};
 
 #[tokio::test]
 async fn saga_happy_path_completes_order() {

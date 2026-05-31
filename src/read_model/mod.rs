@@ -3,7 +3,7 @@
 //! Relational models stage explicit row mutations:
 //!
 //! ```ignore
-//! use sourced_rust::{ReadModelWritePlanBuilder, AsyncReadModelWritePlanCommitExt};
+//! use distributed::{ReadModelWritePlanBuilder, AsyncReadModelWritePlanCommitExt};
 //!
 //! let mut read_models = ReadModelWritePlanBuilder::new();
 //! read_models.upsert(&player)?;

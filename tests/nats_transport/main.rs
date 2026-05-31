@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::json;
-use sourced_rust::bus::{
+use distributed::bus::{
     run_source, AsyncMessagePublisher, Bus, BusConsumer, NatsBus, NatsJetStreamSource,
     NatsPublisher, RunOptions,
 };
-use sourced_rust::microsvc::{Context, Message, MessageKind, Service};
+use distributed::microsvc::{Context, Message, MessageKind, Service};
+use serde_json::json;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 

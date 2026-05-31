@@ -7,12 +7,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
-use sourced_rust::bus::{Bus, KnativeBus};
-use sourced_rust::microsvc::cloud_events_router;
-use sourced_rust::microsvc::{
+use distributed::bus::{Bus, KnativeBus};
+use distributed::microsvc::cloud_events_router;
+use distributed::microsvc::{
     Context, HandlerError, Message, MessageKind, Service, SubscriptionPlan,
 };
+use serde_json::json;
 
 async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -29,7 +29,7 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
             .event("flaky")
             .handle(|_ctx: &Context<()>| async move {
                 Err(HandlerError::Repository(
-                    sourced_rust::RepositoryError::Model("transient".into()),
+                    distributed::RepositoryError::Model("transient".into()),
                 ))
             })
             .event("bad")

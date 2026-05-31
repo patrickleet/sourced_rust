@@ -1,12 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     ColumnType, ReadModel, ReadModelError, ReadModelMigrationArtifact, ReadModelSchema,
     ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap,
     ReadModelSchemaIssue, ReadModelSchemaIssueKind, ReadModelSchemaRegistry,
     ReadModelSchemaVerification, RelationalReadModel, DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
 #[table("account_summaries")]

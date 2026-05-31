@@ -1,8 +1,8 @@
 //! Basic microsvc integration tests — exercises dispatch with a real repository.
 
+use distributed::microsvc::{Context, HandlerError, Service, Session};
+use distributed::{AsyncAggregateBuilder, HashMapRepository};
 use serde_json::json;
-use sourced_rust::microsvc::{Context, HandlerError, Service, Session};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository};
 
 use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
 

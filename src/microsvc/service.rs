@@ -6,7 +6,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use sourced_rust::microsvc;
+//! use distributed::microsvc;
 //! use serde_json::json;
 //!
 //! let service = microsvc::Service::new(())

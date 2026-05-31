@@ -6,7 +6,7 @@
 # Then point each test's env var at the service and run the feature-gated target
 # (each integration test skips when its env var is unset):
 #
-#   DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
+#   DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
 #     cargo test --test postgres_transport --features postgres
 #   AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
 #     cargo test --test rabbitmq_transport --features rabbitmq
@@ -20,11 +20,11 @@ services:
     environment:
       POSTGRES_USER: sourced
       POSTGRES_PASSWORD: sourced
-      POSTGRES_DB: sourced_rust
+      POSTGRES_DB: distributed
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sourced -d sourced_rust"]
+      test: ["CMD-SHELL", "pg_isready -U sourced -d distributed"]
       interval: 2s
       timeout: 5s
       retries: 20

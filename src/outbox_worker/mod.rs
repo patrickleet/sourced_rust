@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use sourced_rust::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore, OutboxWorker, LogPublisher};
+//! use distributed::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore, OutboxWorker, LogPublisher};
 //! use std::time::Duration;
 //!
 //! // Claim pending messages

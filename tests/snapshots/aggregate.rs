@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity, Snapshot};
+use distributed::{sourced, Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
 pub struct Todo {

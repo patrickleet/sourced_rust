@@ -1,5 +1,5 @@
-use sourced_rust::emitter::EntityEmitter;
-use sourced_rust::{sourced, Entity};
+use distributed::emitter::EntityEmitter;
+use distributed::{sourced, Entity};
 
 pub struct Order {
     pub entity: Entity,

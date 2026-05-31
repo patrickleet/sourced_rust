@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
     AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, AsyncStreamWrite, AsyncTransactionalCommit, ReadModel,
     ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError, RowKey, RowValue,
     StreamIdentity, Versioned,
 };
+use serde::{Deserialize, Serialize};
 
 use super::scenario::unique_id;
 use super::seat::Seat;

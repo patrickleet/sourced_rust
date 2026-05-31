@@ -7,9 +7,9 @@
 //!
 //! Registration uses the `register_handlers!` macro.
 
+use distributed::microsvc::{Service, Session};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, OutboxStore, Queueable};
 use serde_json::json;
-use sourced_rust::microsvc::{Service, Session};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, OutboxStore, Queueable};
 
 use crate::handlers;
 use crate::models::counter::Counter;
@@ -20,7 +20,7 @@ use crate::models::counter::Counter;
 
 #[tokio::test]
 async fn register_handlers_and_dispatch() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
@@ -55,7 +55,7 @@ async fn register_handlers_and_dispatch() {
 
 #[tokio::test]
 async fn guard_rejects_bad_input() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
     );
@@ -68,7 +68,7 @@ async fn guard_rejects_bad_input() {
 
 #[tokio::test]
 async fn handler_rejects_duplicate_create() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
     );
@@ -90,7 +90,7 @@ async fn handler_rejects_duplicate_create() {
 
 #[tokio::test]
 async fn create_persists_outbox_message() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
     );
@@ -115,7 +115,7 @@ async fn create_persists_outbox_message() {
 
 #[tokio::test]
 async fn duplicate_create_leaves_single_outbox_message() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
     );
@@ -143,7 +143,7 @@ async fn duplicate_create_leaves_single_outbox_message() {
 
 #[tokio::test]
 async fn increment_persists_outbox_message() {
-    let service = sourced_rust::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,

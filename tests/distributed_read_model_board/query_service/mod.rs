@@ -1,7 +1,7 @@
 //! Read-only query service for the board read model. Primary-key loads plus
 //! `has_many` / `belongs_to` relationship includes.
 
-use sourced_rust::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
+use distributed::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
 
 use crate::read_models::{board_key, card_key, BoardView, CardView};
 

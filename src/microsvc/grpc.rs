@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use sourced_rust::{microsvc, HashMapRepository};
+//! use distributed::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
 //!     microsvc::Service::with_repo(HashMapRepository::new())

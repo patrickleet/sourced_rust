@@ -1,5 +1,5 @@
+use distributed::{sourced, Entity, Snapshot};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity, Snapshot};
 
 // ============================================================================
 // Default case: id + all fields
@@ -101,7 +101,7 @@ pub struct Counter {
     pub count: i64,
 }
 
-#[sourced_rust::sourced(entity)]
+#[distributed::sourced(entity)]
 impl Counter {
     pub fn new() -> Self {
         Self::default()

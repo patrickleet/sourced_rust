@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
-use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
-use sourced_rust::{
+use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use distributed::microsvc::{Message, MessageKind, Service, Session};
+use distributed::{
     AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
     HashMapRepository, OutboxClaimRef, Queueable,
 };
@@ -53,7 +53,7 @@ fn event_message(name: &str, input: serde_json::Value) -> Message {
 /// ```
 #[tokio::test]
 async fn saga_orchestrated() {
-    let saga_svc = sourced_rust::register_handlers!(
+    let saga_svc = distributed::register_handlers!(
         Service::with_repo(
             HashMapRepository::new()
                 .queued_async()
@@ -66,19 +66,19 @@ async fn saga_orchestrated() {
         event handlers::saga::on_order_completed,
     );
 
-    let order_svc = sourced_rust::register_handlers!(
+    let order_svc = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     );
 
-    let inventory_svc = sourced_rust::register_handlers!(
+    let inventory_svc = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     );
 
-    let payment_svc = sourced_rust::register_handlers!(
+    let payment_svc = distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Payment>()),
         command handlers::payments::process,
     );
@@ -290,7 +290,7 @@ async fn saga_distributed() {
     // === SAGA SERVICE ===
     let saga_repo = HashMapRepository::new();
     let saga_outbox = saga_repo.outbox_store();
-    let saga_svc = Arc::new(sourced_rust::register_handlers!(
+    let saga_svc = Arc::new(distributed::register_handlers!(
         Service::with_repo(saga_repo.queued_async().async_aggregate::<OrderFulfillmentSaga>()),
         command handlers::saga::start,
         event handlers::saga::on_order_created,
@@ -302,7 +302,7 @@ async fn saga_distributed() {
     // === ORDER SERVICE ===
     let order_repo = HashMapRepository::new();
     let order_outbox = order_repo.outbox_store();
-    let order_svc = Arc::new(sourced_rust::register_handlers!(
+    let order_svc = Arc::new(distributed::register_handlers!(
         Service::with_repo(order_repo.queued_async().async_aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
@@ -317,7 +317,7 @@ async fn saga_distributed() {
         inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         tmp.commit(&mut inv).await.unwrap();
     }
-    let inventory_svc = Arc::new(sourced_rust::register_handlers!(
+    let inventory_svc = Arc::new(distributed::register_handlers!(
         Service::with_repo(inventory_repo.queued_async().async_aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
@@ -326,7 +326,7 @@ async fn saga_distributed() {
     // === PAYMENT SERVICE ===
     let payment_repo = HashMapRepository::new();
     let payment_outbox = payment_repo.outbox_store();
-    let payment_svc = Arc::new(sourced_rust::register_handlers!(
+    let payment_svc = Arc::new(distributed::register_handlers!(
         Service::with_repo(payment_repo.queued_async().async_aggregate::<Payment>()),
         command handlers::payments::process,
     ));

@@ -29,7 +29,7 @@ Foundation status: stream-aware async repository/read-model/snapshot/outbox trai
 
 ### Feature Matrix
 
-| Feature | sourced_rust | cqrs-es | disintegrate | esrs | eventually-rs |
+| Feature | distributed | cqrs-es | disintegrate | esrs | eventually-rs |
 |---------|-------------|---------|-------------|------|---------------|
 | Aggregates | Yes (PORS + macros) | Yes (trait) | Decision pattern | Yes (trait) | Yes (DDD) |
 | Event storage | In-memory | PG/MySQL/Dynamo | PG/In-memory | PG only | PG/In-memory |
@@ -48,7 +48,7 @@ Foundation status: stream-aware async repository/read-model/snapshot/outbox trai
 | Observability | No | No | No | Yes (tracing) | No |
 | Pluggable infra (all concerns) | **Yes (6 traits)** | Partial (storage) | Partial (storage) | No (PG only) | Partial (storage) |
 
-### sourced_rust differentiators (things others don't have)
+### distributed differentiators (things others don't have)
 - **Outbox pattern as first-class** with fan-out and point-to-point routing
 - **Service bus** with both pub/sub and send/listen patterns
 - **Read model transactional commits** with decision flowchart for choosing consistency strategy

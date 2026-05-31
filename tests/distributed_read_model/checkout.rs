@@ -2,9 +2,9 @@
 //!
 //! Commands are present-tense requests. Events are past-tense facts.
 
+use distributed::microsvc::HandlerError;
+use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
-use sourced_rust::microsvc::HandlerError;
-use sourced_rust::OutboxMessage;
 
 pub mod checkout_command {
     pub const START: &str = "checkout.start";

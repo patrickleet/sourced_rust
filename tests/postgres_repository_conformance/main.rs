@@ -5,7 +5,7 @@ mod conformance;
 #[path = "../support/postgres.rs"]
 mod postgres;
 
-use sourced_rust::PostgresRepository;
+use distributed::PostgresRepository;
 
 async fn repository() -> Option<PostgresRepository> {
     let schema = postgres::PostgresTestSchema::create_from_env(

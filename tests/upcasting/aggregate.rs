@@ -1,5 +1,5 @@
+use distributed::{digest, Entity, Snapshottable};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{digest, Entity, Snapshottable};
 
 pub type InitializedV1 = (String, String, String);
 pub type InitializedV2 = (String, String, String, u8);
@@ -32,7 +32,7 @@ impl TodoV1 {
     }
 }
 
-sourced_rust::aggregate!(TodoV1, entity, aggregate_type = "Todo" {
+distributed::aggregate!(TodoV1, entity, aggregate_type = "Todo" {
     "Initialized"(id, user_id, task) => initialize,
     "Completed"() => complete(),
 });
@@ -70,7 +70,7 @@ impl TodoV2 {
     }
 }
 
-sourced_rust::aggregate!(TodoV2, entity, aggregate_type = "Todo" {
+distributed::aggregate!(TodoV2, entity, aggregate_type = "Todo" {
     "Initialized"(id, user_id, task, priority) => initialize,
     "Completed"() => complete(),
 } upcasters [
@@ -119,7 +119,7 @@ impl TodoV3 {
     }
 }
 
-sourced_rust::aggregate!(TodoV3, entity, aggregate_type = "Todo" {
+distributed::aggregate!(TodoV3, entity, aggregate_type = "Todo" {
     "Initialized"(id, user_id, task, priority, due_date) => initialize,
     "Completed"() => complete(),
 } upcasters [

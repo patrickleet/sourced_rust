@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
-use sourced_rust::microsvc::grpc::{
+use distributed::microsvc::grpc::{
     CommandServiceClient, GrpcRequest, GrpcServeError, HealthRequest,
 };
-use sourced_rust::microsvc::Service;
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::microsvc::Service;
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 
@@ -18,7 +18,7 @@ use crate::handlers::Repo;
 use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
-    Arc::new(sourced_rust::register_handlers!(
+    Arc::new(distributed::register_handlers!(
         Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
@@ -33,7 +33,7 @@ async fn start_server(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let grpc_svc = sourced_rust::microsvc::grpc_server(service);
+    let grpc_svc = distributed::microsvc::grpc_server(service);
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(grpc_svc)
@@ -61,7 +61,7 @@ async fn health_check() {
 
 #[tokio::test]
 async fn serve_grpc_returns_error_for_invalid_address() {
-    let err = sourced_rust::microsvc::serve_grpc(counter_service(), "not an address")
+    let err = distributed::microsvc::serve_grpc(counter_service(), "not an address")
         .await
         .expect_err("invalid gRPC bind address should return an error");
 

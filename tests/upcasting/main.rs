@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{TodoV1, TodoV2, TodoV3};
-use sourced_rust::{
+use distributed::{
     hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AsyncAggregateBuilder,
     AsyncSnapshotStore, Entity, EventRecord, EventUpcaster, HashMapRepository, RepositoryError,
     SnapshotRecord, StreamIdentity, UpcastError,

@@ -11,8 +11,8 @@ pub use checkout_view::CheckoutView;
 pub use seat_view::SeatView;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-use sourced_rust::TableSchemaRegistry;
-use sourced_rust::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
+use distributed::TableSchemaRegistry;
+use distributed::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
 
 pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
     store.register_schema::<SeatView>()?;

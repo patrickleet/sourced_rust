@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use sourced_rust::{
+use distributed::{
     sourced, AsyncAggregateBuilder, AsyncAggregateRepository, Entity, HashMapRepository,
     InMemoryAsyncLockManager, Queueable,
 };
@@ -33,7 +33,7 @@ impl Counter {
 }
 
 type QueuedCounterRepo = AsyncAggregateRepository<
-    sourced_rust::QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
+    distributed::QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
     Counter,
 >;
 

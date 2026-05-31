@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 #[derive(Default)]
 pub struct Todo {
@@ -28,7 +28,7 @@ impl Todo {
         self.tail_check()?
     }
 
-    fn tail_check(&self) -> sourced_rust::SourcedResult {
+    fn tail_check(&self) -> distributed::SourcedResult {
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 //! Simple Counter aggregate for testing read models.
 
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 #[derive(Default)]
 pub struct Counter {

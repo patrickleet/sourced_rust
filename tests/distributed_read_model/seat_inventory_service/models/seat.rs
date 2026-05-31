@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity, Snapshot};
+use distributed::{sourced, Entity, Snapshot};
 
 use crate::checkout::{SEAT_AVAILABLE, SEAT_RESERVED};
 

@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 #[derive(Default, Clone)]
 pub struct Explosion {

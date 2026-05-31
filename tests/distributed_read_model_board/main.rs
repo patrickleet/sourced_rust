@@ -17,16 +17,16 @@ mod read_models;
 use std::time::Duration;
 
 use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
+use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use distributed::microsvc::{Message, MessageKind, Service, Session};
+use distributed::{
+    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
+    HashMapRepository, InMemoryReadModelStore, OutboxClaimRef, Queueable,
+};
 use projections_service::{load_board, service as build_projection};
 use query_service::BoardQueryService;
 use read_models::register_schemas;
 use serde::Serialize;
-use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
-use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
-use sourced_rust::{
-    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
-    HashMapRepository, InMemoryReadModelStore, OutboxClaimRef, Queueable,
-};
 
 async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
 where

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncAggregateBuilder, AsyncGetStream, AsyncOutboxStore, AsyncTransactionalCommit,
     ClaimOutboxMessages, OutboxClaimRef, OutboxMessage, OutboxMessageStatus,
     OutboxPublishFailureAction, RepositoryError, StreamIdentity,
@@ -42,7 +42,7 @@ where
     assert_eq!(stored.source_sequence, Some(1));
 
     let old_outbox_stream =
-        StreamIdentity::new("sourced_rust::outbox::message::OutboxMessage", stored.id())
+        StreamIdentity::new("distributed::outbox::message::OutboxMessage", stored.id())
             .expect("old outbox stream identity should be syntactically valid");
     assert!(repo
         .get_stream(&old_outbox_stream)

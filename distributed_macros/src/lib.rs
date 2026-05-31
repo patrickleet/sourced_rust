@@ -61,7 +61,7 @@ fn ensure_sourced_result_signature(
 ) -> Result<bool, syn::Error> {
     match &sig.output {
         ReturnType::Default => {
-            sig.output = syn::parse_quote!(-> sourced_rust::SourcedResult<()>);
+            sig.output = syn::parse_quote!(-> distributed::SourcedResult<()>);
             Ok(true)
         }
         ReturnType::Type(_, _) if returns_result(sig) => Ok(false),
@@ -211,9 +211,9 @@ fn generate_upcaster_tokens(
             let transform_fn = &u.transform_fn;
             quote! {
                 fn #wrapper(
-                    event: &sourced_rust::EventRecord,
-                ) -> Result<Vec<u8>, sourced_rust::UpcastError> {
-                    sourced_rust::upcast_payload::<#source_type, #target_type>(
+                    event: &distributed::EventRecord,
+                ) -> Result<Vec<u8>, distributed::UpcastError> {
+                    distributed::upcast_payload::<#source_type, #target_type>(
                         event,
                         #to_version,
                         #transform_fn,
@@ -230,7 +230,7 @@ fn generate_upcaster_tokens(
             let from_version = &u.from_version;
             let to_version = &u.to_version;
             quote! {
-                sourced_rust::EventUpcaster {
+                distributed::EventUpcaster {
                     event_type: #event_name,
                     from_version: #from_version,
                     to_version: #to_version,
@@ -240,8 +240,8 @@ fn generate_upcaster_tokens(
         });
 
     let upcasters_method = quote! {
-        fn upcasters() -> &'static [sourced_rust::EventUpcaster] {
-            static UPCASTERS: &[sourced_rust::EventUpcaster] = &[
+        fn upcasters() -> &'static [distributed::EventUpcaster] {
+            static UPCASTERS: &[distributed::EventUpcaster] = &[
                 #(#upcaster_entries),*
             ];
             UPCASTERS
@@ -300,7 +300,7 @@ fn generate_upcaster_tokens(
 /// The macro supports:
 /// - Default emitter field name: `emitter` (can be overridden by specifying field name first)
 /// - `when = condition`: guard that wraps the entire method body
-/// - Methods may omit the return type; the macro expands them to `sourced_rust::SourcedResult<()>`
+/// - Methods may omit the return type; the macro expands them to `distributed::SourcedResult<()>`
 #[proc_macro_attribute]
 pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_enqueue_args);
@@ -413,9 +413,9 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// Attribute macro that automatically inserts a digest call at the beginning of a method.
 ///
 /// If the annotated method omits a return type, it expands to
-/// `sourced_rust::SourcedResult<()>`. Methods may also explicitly return
+/// `distributed::SourcedResult<()>`. Methods may also explicitly return
 /// `Result<(), E>` where `E` can be constructed from
-/// `sourced_rust::EventRecordError`; explicit `Result` methods should return
+/// `distributed::EventRecordError`; explicit `Result` methods should return
 /// `Ok(())` from the original body.
 ///
 /// The generated digest call runs before the original method body. This means
@@ -436,7 +436,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// With guard condition:
 /// ```ignore
 /// #[digest("Completed", when = !self.completed)]
-/// fn complete(&mut self) -> Result<(), sourced_rust::EventRecordError> {
+/// fn complete(&mut self) -> Result<(), distributed::EventRecordError> {
 ///     self.completed = true;
 ///     Ok(())
 /// }
@@ -460,7 +460,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// With custom entity field name:
 /// ```ignore
 /// #[digest(my_entity, "Created")]
-/// fn create(&mut self, name: String) -> Result<(), sourced_rust::EventRecordError> {
+/// fn create(&mut self, name: String) -> Result<(), distributed::EventRecordError> {
 ///     // uses self.my_entity instead of self.entity
 ///     Ok(())
 /// }
@@ -557,7 +557,7 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
 /// # Usage
 ///
 /// ```ignore
-/// sourced_rust::aggregate!(Todo, entity {
+/// distributed::aggregate!(Todo, entity {
 ///     "Initialized"(id, user_id, task) => initialize,
 ///     "Completed"() => complete(),
 /// });
@@ -635,22 +635,22 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #upcaster_wrappers
 
-        impl sourced_rust::Aggregate for #agg_name {
+        impl distributed::Aggregate for #agg_name {
             type ReplayError = String;
 
             #aggregate_type_method
 
-            fn entity(&self) -> &sourced_rust::Entity {
+            fn entity(&self) -> &distributed::Entity {
                 &self.#entity_field
             }
 
-            fn entity_mut(&mut self) -> &mut sourced_rust::Entity {
+            fn entity_mut(&mut self) -> &mut distributed::Entity {
                 &mut self.#entity_field
             }
 
             fn replay_event(
                 &mut self,
-                event: &sourced_rust::EventRecord,
+                event: &distributed::EventRecord,
             ) -> Result<(), Self::ReplayError> {
                 match event.event_name.as_str() {
                     #(#replay_arms)*
@@ -1156,9 +1156,9 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     let try_from_impl = quote! {
-        impl TryFrom<&sourced_rust::EventRecord> for #enum_name {
+        impl TryFrom<&distributed::EventRecord> for #enum_name {
             type Error = String;
-            fn try_from(event: &sourced_rust::EventRecord) -> Result<Self, Self::Error> {
+            fn try_from(event: &distributed::EventRecord) -> Result<Self, Self::Error> {
                 match event.event_name.as_str() {
                     #(#try_from_arms)*
                     _ => Err(format!("Unknown event: {}", event.event_name)),
@@ -1208,22 +1208,22 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     let aggregate_impl = quote! {
-        impl sourced_rust::Aggregate for #struct_name {
+        impl distributed::Aggregate for #struct_name {
             type ReplayError = String;
 
             #aggregate_type_method
 
-            fn entity(&self) -> &sourced_rust::Entity {
+            fn entity(&self) -> &distributed::Entity {
                 &self.#entity_field
             }
 
-            fn entity_mut(&mut self) -> &mut sourced_rust::Entity {
+            fn entity_mut(&mut self) -> &mut distributed::Entity {
                 &mut self.#entity_field
             }
 
             fn replay_event(
                 &mut self,
-                event: &sourced_rust::EventRecord,
+                event: &distributed::EventRecord,
             ) -> Result<(), Self::ReplayError> {
                 match event.event_name.as_str() {
                     #(#replay_arms)*

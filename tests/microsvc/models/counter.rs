@@ -1,7 +1,7 @@
 //! Test domain: a simple Counter aggregate for microsvc tests.
 
+use distributed::{sourced, Entity, Snapshot};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity, Snapshot};
 
 /// A simple counter aggregate for testing microsvc dispatch.
 #[derive(Default, Snapshot)]

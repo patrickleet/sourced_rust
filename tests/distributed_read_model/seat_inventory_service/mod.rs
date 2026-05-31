@@ -6,7 +6,7 @@ pub mod models;
 pub use models::Seat;
 pub use service::service;
 
-use sourced_rust::{
+use distributed::{
     AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 

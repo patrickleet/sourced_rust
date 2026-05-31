@@ -4,7 +4,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! let mut read_models = sourced_rust::ReadModelWritePlanBuilder::new();
+//! let mut read_models = distributed::ReadModelWritePlanBuilder::new();
 //! read_models.upsert(&player)?;
 //! read_models.upsert_related(&player, "weapons", &weapon)?;
 //!

@@ -1,4 +1,4 @@
-//! Bomberman Game Example — exercises the full sourced_rust framework.
+//! Bomberman Game Example — exercises the full distributed framework.
 //!
 //! A 4-player Bomberman demonstrates:
 //! - Single aggregate + atomic read model commit (player join/move)
@@ -18,7 +18,7 @@ mod views;
 use domain::types::Direction;
 use sim::Game;
 
-use sourced_rust::HashMapRepository;
+use distributed::HashMapRepository;
 
 const SMALL_MAP: &str = "\
 #######
@@ -208,7 +208,7 @@ async fn player_killed_by_bomb() {
         .contains(&"player:p2".to_string()));
 
     // Verify outbox message was created (PlayerKilled)
-    use sourced_rust::{OutboxMessageStatus, OutboxStore};
+    use distributed::{OutboxMessageStatus, OutboxStore};
     let pending = repo2
         .outbox_store()
         .messages_by_status(OutboxMessageStatus::Pending)
@@ -305,10 +305,10 @@ async fn bob_move_to_position<R>(
     to_x: i32,
     to_y: i32,
 ) where
-    R: sourced_rust::AsyncGetStream
-        + sourced_rust::AsyncTransactionalCommit
-        + sourced_rust::AsyncReadModelWritePlanStore
-        + sourced_rust::AsyncRelationalReadModelQueryStore,
+    R: distributed::AsyncGetStream
+        + distributed::AsyncTransactionalCommit
+        + distributed::AsyncReadModelWritePlanStore
+        + distributed::AsyncRelationalReadModelQueryStore,
 {
     let sim = game.sim(id, _name);
     let mut cx = from_x;
@@ -342,7 +342,7 @@ async fn bob_move_to_position<R>(
 
 #[tokio::test]
 async fn concurrent_bomb_placement() {
-    use sourced_rust::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
+    use distributed::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
     use std::sync::Arc;
 
     // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across tasks

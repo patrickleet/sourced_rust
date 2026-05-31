@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
     AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncStreamWrite,
     AsyncTransactionalCommit, ClaimOutboxMessages, Entity, HashMapRepository,
@@ -9,6 +8,7 @@ use sourced_rust::{
     RelationalReadModel, RepositoryError, RowKey, RowValue, SnapshotRecord, Snapshottable,
     StreamIdentity, Versioned,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 struct AlphaAggregate {

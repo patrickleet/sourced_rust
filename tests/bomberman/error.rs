@@ -1,6 +1,6 @@
 use std::fmt;
 
-use sourced_rust::{EventRecordError, RepositoryError};
+use distributed::{EventRecordError, RepositoryError};
 
 #[derive(Debug)]
 pub enum GameError {

@@ -1,5 +1,5 @@
-use sourced_rust::emitter::EntityEmitter;
-use sourced_rust::{digest, enqueue, Entity};
+use distributed::emitter::EntityEmitter;
+use distributed::{digest, enqueue, Entity};
 
 /// An aggregate using both #[digest] and #[enqueue] — the typical pattern.
 /// Events are recorded to the entity stream for replay AND queued for
@@ -47,7 +47,7 @@ impl Order {
     }
 }
 
-sourced_rust::aggregate!(Order, entity {
+distributed::aggregate!(Order, entity {
     "OrderCreated"(order_id, customer) => create,
     "OrderConfirmed"() => confirm(),
     "OrderShipped"() => ship(),
@@ -79,7 +79,7 @@ impl Notifier {
     }
 }
 
-sourced_rust::aggregate!(Notifier, entity {
+distributed::aggregate!(Notifier, entity {
     "NotificationSent"(id, message) => send,
 });
 
@@ -117,7 +117,7 @@ impl Ephemeral {
         self.tail_check()?
     }
 
-    fn tail_check(&self) -> sourced_rust::SourcedResult {
+    fn tail_check(&self) -> distributed::SourcedResult {
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 mod aggregate;
 
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 

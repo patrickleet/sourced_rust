@@ -1,7 +1,7 @@
 mod aggregates;
 
 use aggregates::*;
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncAggregateBuilder, AsyncSnapshotStore, HashMapRepository, OutboxMessage,
     OutboxStore, Snapshottable, StreamIdentity,
 };

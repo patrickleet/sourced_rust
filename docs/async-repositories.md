@@ -1,6 +1,6 @@
 # Async Repository Boundary
 
-Distributed, currently published from the `sourced_rust` crate, keeps the
+Distributed, currently published from the `distributed` crate, keeps the
 synchronous in-memory repository API intact and adds a parallel async persistence
 boundary for database-backed adapters.
 
@@ -51,7 +51,7 @@ The optional `sqlite` feature exports `SqliteRepository`, an async-only
 SQL-backed adapter for local persistence and conformance work:
 
 ```rust
-let repo = sourced_rust::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
+let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
 ```
 
 `SqliteRepository::migrate` applies explicit SQLite migrations from
@@ -72,14 +72,14 @@ SQLx adapter for the production SQL event-store path:
 
 ```rust
 let repo =
-    sourced_rust::PostgresRepository::connect_and_migrate(database_url).await?;
+    distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 ```
 
 Local integration tests can use the root `compose.yaml` service:
 
 ```bash
 docker compose up -d postgres
-DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
+DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
   cargo test --features postgres --test postgres_repository
 ```
 

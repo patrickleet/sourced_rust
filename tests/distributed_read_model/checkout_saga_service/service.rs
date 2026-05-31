@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use sourced_rust::microsvc::Service;
+use distributed::microsvc::Service;
 
 use super::{handlers, CheckoutRepo};
 
 pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
-    Arc::new(sourced_rust::register_handlers!(
+    Arc::new(distributed::register_handlers!(
         Service::with_repo(repo),
         command handlers::start,
         event handlers::record_seat_reserved,
@@ -14,7 +14,7 @@ pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
 
 #[cfg(feature = "http")]
 pub async fn start_http_service(service: Arc<Service<CheckoutRepo>>) -> String {
-    let app = sourced_rust::microsvc::router(service);
+    let app = distributed::microsvc::router(service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("HTTP test server should bind");
@@ -34,14 +34,14 @@ pub async fn start_http_service(service: Arc<Service<CheckoutRepo>>) -> String {
 #[cfg(feature = "grpc")]
 pub async fn start_grpc_service(
     service: Arc<Service<CheckoutRepo>>,
-) -> sourced_rust::microsvc::grpc::CommandServiceClient<tonic::transport::Channel> {
+) -> distributed::microsvc::grpc::CommandServiceClient<tonic::transport::Channel> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("gRPC test server should bind");
     let addr = listener
         .local_addr()
         .expect("gRPC test server should expose local address");
-    let grpc_svc = sourced_rust::microsvc::grpc_server(service);
+    let grpc_svc = distributed::microsvc::grpc_server(service);
 
     tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -51,7 +51,7 @@ pub async fn start_grpc_service(
             .expect("gRPC test server should serve");
     });
 
-    sourced_rust::microsvc::grpc::CommandServiceClient::connect(format!("http://{addr}"))
+    distributed::microsvc::grpc::CommandServiceClient::connect(format!("http://{addr}"))
         .await
         .expect("gRPC test client should connect")
 }

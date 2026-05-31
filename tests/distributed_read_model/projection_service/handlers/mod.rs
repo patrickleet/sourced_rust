@@ -4,8 +4,8 @@
 pub mod checkout;
 pub mod seat;
 
-use sourced_rust::microsvc::HandlerError;
-use sourced_rust::ReadModelError;
+use distributed::microsvc::HandlerError;
+use distributed::ReadModelError;
 
 pub fn read_model_error(err: ReadModelError) -> HandlerError {
     HandlerError::Repository(err.into())

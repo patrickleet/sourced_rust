@@ -3,7 +3,7 @@
 #[path = "../persistent_repository_conformance/mod.rs"]
 mod conformance;
 
-use sourced_rust::SqliteRepository;
+use distributed::SqliteRepository;
 
 async fn repository() -> SqliteRepository {
     SqliteRepository::connect_and_migrate("sqlite::memory:")

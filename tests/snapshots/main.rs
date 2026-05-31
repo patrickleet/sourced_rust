@@ -1,11 +1,11 @@
 mod aggregate;
 
 use aggregate::Todo;
-use serde::{Deserialize, Serialize};
-use sourced_rust::{
+use distributed::{
     sourced, Aggregate, AsyncAggregateBuilder, AsyncSnapshotStore, Entity, HashMapRepository,
     Queueable, SnapshotRecord, Snapshottable, StreamIdentity,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 struct ReplayCounter {
@@ -85,7 +85,7 @@ async fn snapshot_created_at_frequency_threshold() {
     assert_eq!(snap.version, 2);
     assert_eq!(snap.aggregate_type, Todo::aggregate_type());
     assert!(snap.snapshot_type.ends_with("TodoSnapshot"));
-    assert_eq!(snap.payload_codec, sourced_rust::BITCODE_PAYLOAD_CODEC);
+    assert_eq!(snap.payload_codec, distributed::BITCODE_PAYLOAD_CODEC);
 
     // Reload and verify state
     let loaded = repo.get("t1").await.unwrap().unwrap();

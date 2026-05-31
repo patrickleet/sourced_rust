@@ -90,7 +90,7 @@ macro_rules! impl_aggregate {
     };
 }
 
-// Note: The `aggregate!` macro is now provided as a proc-macro from sourced_rust_macros.
+// Note: The `aggregate!` macro is now provided as a proc-macro from distributed_macros.
 // It generates the event enum, TryFrom impl, apply method, and Aggregate trait impl.
 // Use: aggregate!(MyAggregate, entity_field { "EventName"(args) => method_name, ... });
 

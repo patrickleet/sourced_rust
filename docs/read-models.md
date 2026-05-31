@@ -21,7 +21,7 @@ metadata also have direct helper attributes:
 
 ```rust
 use serde::{Deserialize, Serialize};
-use sourced_rust::ReadModel;
+use distributed::ReadModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[table("players")]
@@ -68,7 +68,7 @@ relational schemas with an adapter, load one root row, ask for each relationship
 explicitly, mutate the hydrated struct, then sync the tracked workspace:
 
 ```rust
-use sourced_rust::{InMemoryReadModelStore, ReadModelWorkspaceExt, RowKey, RowValue};
+use distributed::{InMemoryReadModelStore, ReadModelWorkspaceExt, RowKey, RowValue};
 
 let store = InMemoryReadModelStore::new();
 store.register_schema::<PlayerView>()?;
@@ -119,7 +119,7 @@ Use `ReadModelWritePlanBuilder` when a command or projector stages multiple
 row mutations. The current repository APIs are synchronous:
 
 ```rust
-use sourced_rust::{
+use distributed::{
     ReadModelWritePlanBuilder, SyncCommitBuilderExt, SyncReadModelWritePlanCommitExt,
 };
 
@@ -133,7 +133,7 @@ repo.read_models_sync(read_models).commit_sync(&mut aggregate)?;
 Async adapters can expose the same shape at their boundary:
 
 ```rust,ignore
-use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
+use distributed::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player)?;
@@ -166,7 +166,7 @@ A read-model service can commit a write plan without owning an aggregate
 repository:
 
 ```rust
-use sourced_rust::{ReadModelError, ReadModelWritePlanBuilder, ReadModelWritePlanStore};
+use distributed::{ReadModelError, ReadModelWritePlanBuilder, ReadModelWritePlanStore};
 
 fn project_message(
     store: &impl ReadModelWritePlanStore,
@@ -195,7 +195,7 @@ messages return a skipped outcome and do not apply the staged mutations again.
 Register relational models once and pass the registry to adapters:
 
 ```rust
-use sourced_rust::ReadModelSchemaRegistry;
+use distributed::ReadModelSchemaRegistry;
 
 let mut registry = ReadModelSchemaRegistry::new();
 registry
@@ -217,7 +217,7 @@ path:
 
 ```rust
 let mut registry = TableSchemaRegistry::new();
-registry.register_schema(sourced_rust::outbox_message_schema())?;
+registry.register_schema(distributed::outbox_message_schema())?;
 
 let artifacts = repo.generate_table_migration_artifacts(&registry)?;
 let bootstrap = repo.bootstrap_table_schema_for_dev(&registry).await?;

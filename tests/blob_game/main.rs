@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{BlobGame, TileState};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository};
+use distributed::{AsyncAggregateBuilder, HashMapRepository};
 
 // Tile state shortcuts
 const P: TileState = TileState::Player;

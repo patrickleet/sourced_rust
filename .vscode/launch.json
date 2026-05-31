@@ -9,7 +9,7 @@
                 "args": [
                     "build",
                     "--example=todos",
-                    "--package=sourced_rust"
+                    "--package=distributed"
                 ],
                 "filter": {
                     "name": "todos",
@@ -22,16 +22,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'sourced_rust'",
+            "name": "Debug unit tests in library 'distributed'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=sourced_rust"
+                    "--package=distributed"
                 ],
                 "filter": {
-                    "name": "sourced_rust",
+                    "name": "distributed",
                     "kind": "lib"
                 }
             },

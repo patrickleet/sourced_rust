@@ -1,7 +1,7 @@
 #![allow(clippy::module_inception)]
 
 // Allow proc-macros to reference this crate by name even when used internally
-extern crate self as sourced_rust;
+extern crate self as distributed;
 
 pub mod aggregate;
 pub mod bus;
@@ -150,8 +150,8 @@ pub use snapshot::{
 pub use event_emitter_rs::EventEmitter;
 
 // Re-export proc macros
-pub use sourced_rust_macros::{aggregate, digest, sourced, ReadModel, Snapshot};
+pub use distributed_macros::{aggregate, digest, sourced, ReadModel, Snapshot};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]
-pub use sourced_rust_macros::enqueue;
+pub use distributed_macros::enqueue;

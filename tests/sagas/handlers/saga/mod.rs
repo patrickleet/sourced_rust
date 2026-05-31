@@ -1,10 +1,10 @@
 //! Saga service handlers — coordinates the order fulfillment flow.
 
-use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::{
+use distributed::microsvc::{Context, HandlerError};
+use distributed::{
     AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
+use serde_json::{json, Value};
 
 use super::messages::*;
 use crate::order::OrderFulfillmentSaga;

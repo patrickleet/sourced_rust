@@ -1,4 +1,4 @@
-use sourced_rust::{sourced, Entity, SourcedResult};
+use distributed::{sourced, Entity, SourcedResult};
 
 use super::types::{PowerUp, Tile};
 

@@ -2,7 +2,7 @@
 //! projected relational tables through primary-key loads plus explicit
 //! relationship includes.
 
-use sourced_rust::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
+use distributed::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
 
 use crate::read_models::{checkout_key, seat_key, CheckoutView, SeatView};
 

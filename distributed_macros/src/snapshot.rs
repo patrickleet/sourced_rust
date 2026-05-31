@@ -156,7 +156,7 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
             }
         }
 
-        impl sourced_rust::Snapshottable for #name {
+        impl distributed::Snapshottable for #name {
             type Snapshot = #snapshot_name;
 
             fn create_snapshot(&self) -> #snapshot_name {
@@ -250,7 +250,7 @@ mod tests {
     fn expand_snapshot_accepts_named_struct() {
         let input: DeriveInput = syn::parse_quote! {
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };
@@ -258,7 +258,7 @@ mod tests {
         let expanded = expand_snapshot(input).unwrap().to_string();
 
         assert!(expanded.contains("pub struct TodoSnapshot"));
-        assert!(expanded.contains("impl sourced_rust :: Snapshottable for Todo"));
+        assert!(expanded.contains("impl distributed :: Snapshottable for Todo"));
     }
 
     #[test]
@@ -296,7 +296,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(id = "not-valid")]
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };
@@ -314,7 +314,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(collection = "todos")]
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };
@@ -332,7 +332,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(entity = "state")]
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };
@@ -354,7 +354,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(id = "sku")]
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };
@@ -373,7 +373,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(id = "sku")]
             struct Inventory {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 #[serde(skip)]
                 sku: String,
                 quantity: i32,
@@ -397,7 +397,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             #[snapshot(id = "entity")]
             struct Todo {
-                entity: sourced_rust::Entity,
+                entity: distributed::Entity,
                 task: String,
             }
         };

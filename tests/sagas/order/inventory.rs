@@ -1,5 +1,5 @@
+use distributed::{sourced, Entity};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
 use std::collections::HashMap;
 
 /// Inventory aggregate - tracks stock levels and reservations

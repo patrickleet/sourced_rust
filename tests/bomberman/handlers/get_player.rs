@@ -1,4 +1,4 @@
-use sourced_rust::AsyncGetStream;
+use distributed::AsyncGetStream;
 
 use super::shared::get_aggregate;
 use crate::domain::player::Player;

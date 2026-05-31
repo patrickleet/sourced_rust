@@ -4,7 +4,7 @@ use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sourced_rust::PostgresRepository;
+use distributed::PostgresRepository;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Executor;
 

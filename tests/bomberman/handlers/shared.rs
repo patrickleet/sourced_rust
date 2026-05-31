@@ -1,4 +1,4 @@
-use sourced_rust::{
+use distributed::{
     hydrate, Aggregate, AsyncGetStream, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore,
     AsyncRelationalReadModelQueryStore, ReadModelWritePlanBuilder, RepositoryError, RowKey,
     RowValue, StreamIdentity,

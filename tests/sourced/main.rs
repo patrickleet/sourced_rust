@@ -1,12 +1,12 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoEvent};
-use serde::ser::Error as _;
-use serde::Serialize;
-use sourced_rust::{
+use distributed::{
     Aggregate, AsyncAggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
     Queueable,
 };
+use serde::ser::Error as _;
+use serde::Serialize;
 
 #[derive(Clone)]
 struct FailingSerialize;
@@ -27,23 +27,23 @@ struct SafeRecorder {
 }
 
 impl SafeRecorder {
-    #[sourced_rust::digest("Recorded")]
+    #[distributed::digest("Recorded")]
     fn record(&mut self, _payload: FailingSerialize) {
         self.applied = true;
     }
 
-    #[sourced_rust::digest("Recorded", version = 2)]
+    #[distributed::digest("Recorded", version = 2)]
     fn record_ok(&mut self, payload: String) {
         self.applied = true;
         assert_eq!(payload, "ok");
     }
 
-    #[sourced_rust::digest("TailChecked")]
+    #[distributed::digest("TailChecked")]
     fn record_after_tail_check(&mut self) {
         self.tail_check()?
     }
 
-    fn tail_check(&self) -> sourced_rust::SourcedResult {
+    fn tail_check(&self) -> distributed::SourcedResult {
         Ok(())
     }
 }

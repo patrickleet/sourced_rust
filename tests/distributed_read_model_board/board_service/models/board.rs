@@ -1,5 +1,5 @@
+use distributed::{sourced, Entity, Snapshot};
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity, Snapshot};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CardState {

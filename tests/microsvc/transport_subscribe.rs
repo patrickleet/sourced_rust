@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
-use sourced_rust::microsvc::{Message, MessageKind, Service};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use distributed::microsvc::{Message, MessageKind, Service};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
 use crate::handlers::Repo;

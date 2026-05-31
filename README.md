@@ -1,6 +1,6 @@
-# Sourced Rust
+# Distributed
 
-Sourced Rust is a CQRS and event-sourcing framework for Rust applications that want simple domain models, replayable aggregate history, durable publication, and pluggable infrastructure.
+Distributed is a CQRS and event-sourcing framework for Rust applications that want simple domain models, replayable aggregate history, durable publication, and pluggable infrastructure.
 
 It keeps your domain model as a plain struct (Plain Old Rust Struct, or PORS), inspired by POCO/POJO, while giving you append-only aggregate event records, replay, snapshots, read models, an outbox, a multi-transport service bus, and a small async command-handler framework.
 
@@ -41,7 +41,7 @@ hydration cache for long streams.
 
 ```rust
 use serde::Deserialize;
-use sourced_rust::{sourced, Entity, Snapshot};
+use distributed::{sourced, Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
 struct Todo {
@@ -87,8 +87,8 @@ events — optionally alongside a durable outbox message in the same transaction
 ```rust
 // handlers/todo_create.rs
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::OutboxMessage;
+use distributed::microsvc::{Context, HandlerError};
+use distributed::OutboxMessage;
 
 use super::Repo; // an AsyncAggregateRepository<_, Todo> alias
 
@@ -121,13 +121,13 @@ are written once and are transport-agnostic.
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::microsvc::{self, Service, Session};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::microsvc::{self, Service, Session};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = Arc::new(sourced_rust::register_handlers!(
+    let service = Arc::new(distributed::register_handlers!(
         Service::with_repo(
             HashMapRepository::new()
                 .queued_async()
@@ -163,8 +163,8 @@ default you replace with a durable adapter.
 
 ```rust
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
-let repo = sourced_rust::PostgresRepository::connect_and_migrate(database_url).await?;
-let service = Arc::new(sourced_rust::register_handlers!(
+let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
+let service = Arc::new(distributed::register_handlers!(
     Service::with_repo(repo.queued_async().async_aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
@@ -195,7 +195,7 @@ Complete runnable examples live under [`tests/`](tests/). Short snippets focus o
 
 ## Project Inspiration
 
-Sourced Rust is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) Node.js project by Matt Walters and his accompanying [servicebus](https://github.com/mateodelnorte/servicebus) library for distributed messaging. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript versions, brought these concepts to Rust and refactored them for the Rust ecosystem. The bus facade (`send`/`listen` + `publish`/`subscribe`, with per-transport `*Bus` types) mirrors the `servicebus` / `rabbitbus` / `kafkabus` / `knativebus` family.
+Distributed is inspired by the original [sourced](https://github.com/mateodelnorte/sourced) Node.js project by Matt Walters and his accompanying [servicebus](https://github.com/mateodelnorte/servicebus) library for distributed messaging. Patrick Lee Scott, a contributor and maintainer of the original JavaScript/TypeScript versions, brought these concepts to Rust and refactored them for the Rust ecosystem. The bus facade (`send`/`listen` + `publish`/`subscribe`, with per-transport `*Bus` types) mirrors the `servicebus` / `rabbitbus` / `kafkabus` / `knativebus` family.
 
 ## Design Goals
 
@@ -255,7 +255,7 @@ The existing names and serialized fields such as `EventRecord::event_name` remai
 
 ## Pluggable by Default
 
-Every infrastructure concern in `sourced_rust` follows the same pattern: an **async trait** defines the contract, an **in-memory implementation** ships out of the box for testing and development, and you swap in your own for production.
+Every infrastructure concern in `distributed` follows the same pattern: an **async trait** defines the contract, an **in-memory implementation** ships out of the box for testing and development, and you swap in your own for production.
 
 | Concern | Async trait(s) | In-memory default | Swap in for production |
 |---|---|---|---|
@@ -277,7 +277,7 @@ Event methods are rewritten to return `SourcedResult`, even when the source meth
 ### Basic Usage
 
 ```rust
-use sourced_rust::{sourced, Entity};
+use distributed::{sourced, Entity};
 
 #[derive(Default)]
 struct Todo {
@@ -340,7 +340,7 @@ impl Todo {
 The generated enum enables exhaustive matching — if you add or remove an event, the compiler tells you everywhere that needs updating:
 
 ```rust
-use sourced_rust::EventRecord;
+use distributed::EventRecord;
 
 fn print_todo_event(record: &EventRecord) -> Result<(), String> {
     let event = TodoEvent::try_from(record)?;
@@ -408,8 +408,8 @@ impl MyAggregate {
 Add `enqueue` to `#[sourced]` to automatically queue events for in-process emission alongside digest. Every `#[event]` method both records to the entity stream and enqueues for emission:
 
 ```rust
-use sourced_rust::{sourced, Entity};
-use sourced_rust::emitter::EntityEmitter;
+use distributed::{sourced, Entity};
+use distributed::emitter::EntityEmitter;
 
 #[derive(Default)]
 struct Order {
@@ -577,8 +577,8 @@ Every `#[event]` method automatically records to the entity stream (for replay) 
 
 ```rust
 use serde::{Deserialize, Serialize};
-use sourced_rust::{sourced, Entity};
-use sourced_rust::emitter::EntityEmitter;
+use distributed::{sourced, Entity};
+use distributed::emitter::EntityEmitter;
 
 #[derive(Default, Serialize, Deserialize)]
 struct OrderSaga {
@@ -640,7 +640,7 @@ This pattern is useful for reactive workflows within the same process. For cross
 Per-entity async locking for serialized workflows. `get` acquires the lock, `commit` releases it:
 
 ```rust
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
 let repo = HashMapRepository::new().queued_async().async_aggregate::<Todo>();
 
@@ -663,7 +663,7 @@ SQLx lease lock (feature `postgres` or `sqlite`). It implements the same
 `AsyncLockManager` trait, so it's a drop-in via `queued_async_with`:
 
 ```rust
-use sourced_rust::{PostgresLockManager, PostgresRepository};
+use distributed::{PostgresLockManager, PostgresRepository};
 
 let repo = PostgresRepository::connect_and_migrate(&database_url).await?;
 // The `aggregate_locks` lease table is created by the repository's migrations.
@@ -689,10 +689,10 @@ committed via `AsyncCommitBatch`.
 
 ```rust
 // SQLite — local persistence and conformance (requires `sqlite`)
-let repo = sourced_rust::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
+let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
 
 // Postgres — the production SQL event-store path (requires `postgres`)
-let repo = sourced_rust::PostgresRepository::connect_and_migrate(database_url).await?;
+let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 ```
 
 `connect_and_migrate` applies the explicit migrations under `migrations/`. Plain
@@ -708,7 +708,7 @@ read models, the outbox, **and** the durable transport (`PostgresBus`). See
 Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
 
 ```rust
-use sourced_rust::{AsyncOutboxCommit, OutboxMessage};
+use distributed::{AsyncOutboxCommit, OutboxMessage};
 
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
@@ -760,7 +760,7 @@ transports; only the constructor line changes.**
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
 // Built once — handlers are transport-agnostic.
 let service = Arc::new(build_service());
@@ -805,7 +805,7 @@ carries a `FailurePolicy` controlling what happens to a **permanent** handler
 failure — `Retry`, `DeadLetter`, `Park`, `LogAndAck`, or `Stop`:
 
 ```rust
-use sourced_rust::bus::{FailurePolicy, RunOptions};
+use distributed::bus::{FailurePolicy, RunOptions};
 
 bus.listen(
     service.clone(),
@@ -833,8 +833,8 @@ Handlers are registered with a fluent builder. `.command(name)` / `.event(name)`
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::microsvc::{Context, HandlerError, Service, Session};
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::microsvc::{Context, HandlerError, Service, Session};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 let service = Arc::new(
@@ -891,8 +891,8 @@ For larger services, organize handlers into separate files. Each handler module 
 // src/handlers/counter_create.rs
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sourced_rust::microsvc::{Context, HandlerError};
-use sourced_rust::OutboxMessage;
+use distributed::microsvc::{Context, HandlerError};
+use distributed::OutboxMessage;
 
 use super::Repo;
 use crate::models::counter::Counter;
@@ -926,7 +926,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 Register them with the `register_handlers!` macro:
 
 ```rust
-let service = sourced_rust::register_handlers!(
+let service = distributed::register_handlers!(
     Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
     command handlers::counter_create,
     command handlers::counter_increment,
@@ -941,7 +941,7 @@ The `http` feature adds an axum-based HTTP transport. Every registered command b
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::microsvc;
+use distributed::microsvc;
 
 // Get an axum Router to compose with other routes
 let app = microsvc::router(service.clone());
@@ -1012,7 +1012,7 @@ Read models are query-optimized relational projections derived from aggregates, 
 
 ```rust
 use serde::{Deserialize, Serialize};
-use sourced_rust::ReadModel;
+use distributed::ReadModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ReadModel)]
 #[table("game_views")]
@@ -1031,7 +1031,7 @@ pub struct GameView {
 When the response to a command must include the fully consistent, updated view, commit the aggregate and read model together in one transaction:
 
 ```rust
-use sourced_rust::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
+use distributed::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 
 // Player submits a move
 game.make_move(player_move)?;
@@ -1063,7 +1063,7 @@ This is a deliberate consistency tradeoff: the read model is in sync with the ag
 Distributed projectors subscribe to published messages and commit read-model rows through a workspace, marking the message processed in the same adapter transaction for SQL idempotency:
 
 ```rust
-use sourced_rust::AsyncReadModelWorkspaceExt;
+use distributed::AsyncReadModelWorkspaceExt;
 
 let mut workspace = ctx.read_model_store().workspace_async();
 workspace.upsert(&row)?;
@@ -1073,7 +1073,7 @@ workspace.commit_async().await?;
 ### Loading
 
 ```rust
-use sourced_rust::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
+use distributed::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
 
 let loaded = repo
     .workspace_async()
@@ -1093,7 +1093,7 @@ As aggregates accumulate events, replaying from scratch gets expensive. The fram
 Add `#[derive(Snapshot)]` to your aggregate struct. This generates a state snapshot payload DTO (e.g. `TodoSnapshot`), a `fn snapshot()` method, and the full `impl Snapshottable`:
 
 ```rust
-use sourced_rust::{Entity, Snapshot};
+use distributed::{Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
 struct Todo {
@@ -1134,7 +1134,7 @@ struct Widget {
 Chain `.with_snapshots(frequency)` onto any aggregate repository. The frequency is how many events between automatic snapshots:
 
 ```rust
-use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
 let repo = HashMapRepository::new()
     .queued_async()
@@ -1243,7 +1243,7 @@ src/
   sqlite_repo/    # SQLite async SQL repository (feature = "sqlite")
   table/          # Neutral table/row primitives shared by read models and ops tables
   lib.rs          # Public exports
-sourced_rust_macros/
+distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
 docs/
   async-repositories.md
@@ -1271,7 +1271,7 @@ The transport adapters have integration tests against real brokers. They are fea
 ```bash
 docker compose up -d   # postgres, rabbitmq, kafka, nats (see compose.yaml)
 
-DATABASE_URL=postgres://sourced:sourced@localhost:5432/sourced_rust \
+DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
   cargo test --test postgres_transport --features postgres
 NATS_URL=nats://localhost:4222 \
   cargo test --test nats_transport --features nats
