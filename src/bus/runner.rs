@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{FailureAction, MessageRouter, RunOptions, TransportError};
-use crate::microsvc::Message;
+use super::Message;
 
 /// Run the receive loop for a direct transport source.
 ///
@@ -99,7 +99,7 @@ async fn dispatch<R: MessageRouter, I>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::transport::FailurePolicy;
+    use crate::bus::FailurePolicy;
     use crate::microsvc::{HandlerError, MessageKind, Service};
     use serde_json::json;
     use std::collections::VecDeque;

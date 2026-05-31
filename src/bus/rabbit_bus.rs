@@ -32,7 +32,7 @@ use lapin::{Channel, ExchangeKind};
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
 use super::source::AsyncMessageSource;
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
     TransportError::retryable(format!("{context}: {err}"))

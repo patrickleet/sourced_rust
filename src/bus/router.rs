@@ -10,7 +10,7 @@
 use std::future::Future;
 
 use super::TransportError;
-use crate::microsvc::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, MessageKind, SubscriptionPlan};
 
 /// What the receive loop and the consumer adapters need from a message consumer.
 ///

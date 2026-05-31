@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use super::{MessageRouter, TransportError};
-use crate::microsvc::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, MessageKind, SubscriptionPlan};
 
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
 type HandlerFn = dyn for<'a> Fn(&'a Message) -> HandlerFuture<'a> + Send + Sync;
@@ -140,7 +140,7 @@ impl MessageRouter for Handlers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+    use crate::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

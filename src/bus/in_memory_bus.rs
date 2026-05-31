@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 type Queues = Arc<Mutex<HashMap<String, VecDeque<Message>>>>;
 type Topics = Arc<Mutex<HashMap<String, Vec<Message>>>>;

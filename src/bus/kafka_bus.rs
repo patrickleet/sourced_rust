@@ -25,7 +25,7 @@ use super::kafka::{KafkaPublisher, KafkaSource};
 use super::{
     run_source, AsyncMessagePublisher, Bus, BusConsumer, MessageRouter, RunOptions, TransportError,
 };
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 

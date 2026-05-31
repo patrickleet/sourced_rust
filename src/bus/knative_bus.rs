@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use super::knative::sanitize_k8s_name;
 use super::{Bus, TransportError};
-use crate::microsvc::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, MessageKind, SubscriptionPlan};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 

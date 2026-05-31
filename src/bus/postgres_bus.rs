@@ -38,7 +38,7 @@ use sqlx::{PgPool, Row};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 
