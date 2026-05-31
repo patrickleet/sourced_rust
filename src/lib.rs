@@ -57,6 +57,11 @@ pub use lock::{
     AsyncLock, AsyncLockManager, InMemoryAsyncLock, InMemoryAsyncLockFuture,
     InMemoryAsyncLockManager, LockError,
 };
+// Durable SQLx lease-table lock managers (feature-gated like the SQLx repos).
+#[cfg(feature = "postgres")]
+pub use lock::{PostgresLock, PostgresLockManager};
+#[cfg(feature = "sqlite")]
+pub use lock::{SqliteLock, SqliteLockManager};
 
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{

@@ -2,15 +2,18 @@ use std::future::Future;
 
 use super::LockError;
 
-/// Async counterpart to [`Lock`](super::Lock): a single lock instance whose
-/// acquisition yields to the executor instead of blocking the OS thread.
+/// A single lock instance whose operations yield to the executor instead of
+/// blocking the OS thread.
 ///
-/// Only `lock` is asynchronous — it must `.await` (without blocking the
-/// executor) until the lock becomes free. `try_lock` and `unlock` only inspect
-/// or mutate lock state and wake waiters, so they stay synchronous and
-/// non-blocking, mirroring the sync [`Lock`](super::Lock) trait.
+/// Every operation is asynchronous because a lock may be backed by I/O: the
+/// in-memory lock resolves immediately, but a durable lock (e.g. the SQLx
+/// lease-table [`PostgresLock`](super::PostgresLock) /
+/// [`SqliteLock`](super::SqliteLock)) acquires and releases by talking to the
+/// database. `lock` awaits until the lock becomes free; `try_lock` attempts a
+/// single non-blocking acquire; `unlock` releases the lock and (for in-memory)
+/// wakes any waiters so they can re-contend.
 ///
-/// The returned future is `Send` so an async `QueuedRepository` built on this
+/// All returned futures are `Send` so an async `QueuedRepository` built on this
 /// lock keeps its repository futures `Send` (required by the async repo traits).
 pub trait AsyncLock: Send + Sync {
     /// Acquire the lock, awaiting until it becomes available.
@@ -19,8 +22,11 @@ pub trait AsyncLock: Send + Sync {
     /// Try to acquire the lock without waiting.
     ///
     /// Returns `Ok(true)` if acquired, `Ok(false)` if already held.
-    fn try_lock(&self) -> Result<bool, LockError>;
+    fn try_lock(&self) -> impl Future<Output = Result<bool, LockError>> + Send + '_;
 
     /// Release the lock, waking any waiters so they can re-contend.
-    fn unlock(&self) -> Result<(), LockError>;
+    ///
+    /// Idempotent: releasing a lock this caller no longer holds (e.g. an
+    /// expired distributed lease that was stolen) is a no-op success.
+    fn unlock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_;
 }

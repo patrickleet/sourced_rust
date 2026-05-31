@@ -182,8 +182,12 @@ where
             let result = self.inner.commit_batch_async(batch).await;
 
             if result.is_ok() {
+                // Best-effort release: the inner commit already succeeded, so a
+                // lock-cleanup failure must not fail the committed write (a durable
+                // lease is reclaimed by its TTL regardless). Mirrors the
+                // best-effort release in the lock layer itself.
                 for lock in locks {
-                    lock.unlock()?;
+                    let _ = lock.unlock().await;
                 }
             }
 
@@ -333,27 +337,45 @@ where
     }
 }
 
-/// Async counterpart to [`UnlockableRepository`] — releasing a held lock does
-/// not await, so this stays synchronous; it exists as a separate trait because
-/// coherence cannot prove a type is not both a `LockManager` and an
-/// `AsyncLockManager`.
-pub trait AsyncUnlockableRepository {
+/// Releasing a held lock for an aborted load over the async repository surface.
+///
+/// Release is `async` because a durable [`AsyncLock`] (e.g. the SQLx lease-table
+/// locks) releases by talking to its backing store; the in-memory lock resolves
+/// immediately. It is a separate trait because coherence cannot prove a type is
+/// not both several lock-manager kinds at once.
+pub trait AsyncUnlockableRepository: Send + Sync {
     /// Release the lock held for a stream.
     ///
     /// Keyed by [`StreamIdentity`] — the same key the locking `AsyncGetStream`
     /// reads acquire — so an aborted load releases exactly the lock it took.
-    fn unlock(&self, identity: &StreamIdentity) -> Result<(), RepositoryError>;
+    fn unlock<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
     /// Release a lock for an aborted load (alias for [`unlock`](Self::unlock)).
-    fn abort(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
+    fn abort<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         self.unlock(identity)
     }
 }
 
-impl<R, L: AsyncLockManager> AsyncUnlockableRepository for QueuedRepository<R, L> {
-    fn unlock(&self, identity: &StreamIdentity) -> Result<(), RepositoryError> {
-        self.ensure_async_lock(&identity.storage_key())?.unlock()?;
-        Ok(())
+impl<R, L: AsyncLockManager> AsyncUnlockableRepository for QueuedRepository<R, L>
+where
+    R: Send + Sync,
+{
+    fn unlock<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            self.ensure_async_lock(&identity.storage_key())?
+                .unlock()
+                .await?;
+            Ok(())
+        }
     }
 }
 
