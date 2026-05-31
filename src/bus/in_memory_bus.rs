@@ -176,8 +176,7 @@ impl ReceivedMessage for InMemoryReceived {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::{HandlerError, Service};
-    use serde_json::json;
+    use crate::bus::Handlers;
     use std::future::Future;
 
     fn block_on<F: Future>(future: F) -> F::Output {
@@ -203,32 +202,26 @@ mod tests {
         Arc::new(Mutex::new(Vec::new()))
     }
 
-    fn command_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-        Arc::new(Service::new(()).command("work").handle(
-            move |ctx: &crate::microsvc::Context<()>| {
-                let rec = rec.clone();
-                let name = ctx.message().name().to_string();
-                async move {
-                    rec.lock().unwrap().push(name);
-                    Ok(json!({}))
-                }
-            },
-        ))
+    fn command_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Handlers> {
+        Arc::new(Handlers::new().on_command("work", move |msg: &Message| {
+            let rec = rec.clone();
+            let name = msg.name().to_string();
+            async move {
+                rec.lock().unwrap().push(name);
+                Ok(())
+            }
+        }))
     }
 
-    fn event_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-        Arc::new(
-            Service::new(())
-                .event("evt")
-                .handle(move |ctx: &crate::microsvc::Context<()>| {
-                    let rec = rec.clone();
-                    let id = ctx.message().id().unwrap_or("?").to_string();
-                    async move {
-                        rec.lock().unwrap().push(id);
-                        Ok(json!({}))
-                    }
-                }),
-        )
+    fn event_service(rec: Arc<Mutex<Vec<String>>>) -> Arc<Handlers> {
+        Arc::new(Handlers::new().on_event("evt", move |msg: &Message| {
+            let rec = rec.clone();
+            let id = msg.id().unwrap_or("?").to_string();
+            async move {
+                rec.lock().unwrap().push(id);
+                Ok(())
+            }
+        }))
     }
 
     #[test]
@@ -322,14 +315,13 @@ mod tests {
     fn handler_error_does_not_panic_the_loop() {
         let bus = InMemoryBus::new();
         block_on(bus.send("work", b"{}".to_vec())).unwrap();
-        let service: Arc<Service<()>> =
-            Arc::new(Service::new(()).command("work").handle(
-                |_: &crate::microsvc::Context<()>| async move {
-                    Err(HandlerError::Rejected("no".into()))
-                },
-            ));
+        let handlers: Arc<Handlers> = Arc::new(
+            Handlers::new().on_command("work", |_: &Message| async move {
+                Err(TransportError::permanent("no"))
+            }),
+        );
         // Default failure policy dead-letters the permanent failure; in-memory
         // dead_letter is a no-op nack, so the run completes cleanly.
-        block_on(bus.listen(service, RunOptions::idempotent())).unwrap();
+        block_on(bus.listen(handlers, RunOptions::idempotent())).unwrap();
     }
 }

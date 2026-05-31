@@ -157,5 +157,4 @@ mod tests {
         assert!(err.source().is_some());
         assert_eq!(err.message(), "publish timed out");
     }
-
 }

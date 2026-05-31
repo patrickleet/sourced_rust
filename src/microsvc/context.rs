@@ -9,8 +9,8 @@ use serde_json::Value;
 
 use super::dependencies::{HasReadModelStore, HasRepo};
 use super::error::HandlerError;
-use super::transport::Message;
 use super::session::Session;
+use super::transport::Message;
 
 /// The context passed to every handler.
 ///

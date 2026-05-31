@@ -27,8 +27,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use super::{MessageRouter, TransportError};
 use super::{Message, MessageKind, SubscriptionPlan};
+use super::{MessageRouter, TransportError};
 
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
 type HandlerFn = dyn for<'a> Fn(&'a Message) -> HandlerFuture<'a> + Send + Sync;
@@ -186,17 +186,19 @@ mod tests {
         }
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
-        let handlers = Arc::new(Handlers::new().on_event("seat.reserved", move |msg: &Message| {
-            let seen = seen.clone();
-            // Touch the message to prove the borrow is usable in the handler.
-            let is_event = matches!(msg.kind, MessageKind::Event);
-            async move {
-                if is_event {
-                    seen.fetch_add(1, Ordering::SeqCst);
+        let handlers = Arc::new(
+            Handlers::new().on_event("seat.reserved", move |msg: &Message| {
+                let seen = seen.clone();
+                // Touch the message to prove the borrow is usable in the handler.
+                let is_event = matches!(msg.kind, MessageKind::Event);
+                async move {
+                    if is_event {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        }));
+            }),
+        );
         block_on(bus.subscribe(handlers, RunOptions::idempotent())).unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }

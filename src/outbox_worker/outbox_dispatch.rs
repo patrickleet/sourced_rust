@@ -12,10 +12,10 @@
 
 use std::time::Duration;
 
+use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction};
 use crate::bus::{AsyncMessagePublisher, Message, MessageKind, TransportError, TransportErrorKind};
 use crate::outbox::OutboxMessage;
 use crate::repository::RepositoryError;
-use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction};
 
 /// Repository/store failures (lock contention, storage hiccups, stale-claim
 /// conflicts) are retryable: usually transient, resolved by a later re-claim. This

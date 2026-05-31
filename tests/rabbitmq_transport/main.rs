@@ -223,11 +223,11 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     let bus_proj = RabbitBus::connect(&url, "projections", &ns).await.unwrap();
     let bus_audit = RabbitBus::connect(&url, "audit", &ns).await.unwrap();
     bus_proj
-        .ensure_subscription(&svc_proj)
+        .ensure_subscription(svc_proj.as_ref())
         .await
         .expect("bind proj");
     bus_audit
-        .ensure_subscription(&svc_audit)
+        .ensure_subscription(svc_audit.as_ref())
         .await
         .expect("bind audit");
 

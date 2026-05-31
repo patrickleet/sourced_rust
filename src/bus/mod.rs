@@ -85,7 +85,6 @@ mod error;
 mod failure_policy;
 mod handlers;
 mod in_memory_bus;
-mod message;
 #[cfg(feature = "kafka")]
 mod kafka;
 #[cfg(feature = "kafka")]
@@ -94,6 +93,7 @@ mod kafka_bus;
 mod knative;
 #[cfg(feature = "http")]
 mod knative_bus;
+mod message;
 #[cfg(feature = "nats")]
 mod nats;
 #[cfg(feature = "nats")]
@@ -129,7 +129,6 @@ pub use rabbit_bus::RabbitBus;
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
 pub use bus::{Bus, BusConsumer};
-pub use router::MessageRouter;
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
@@ -139,6 +138,7 @@ pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::AsyncMessagePublisher;
+pub use router::MessageRouter;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{AsyncMessageSource, ReceivedMessage};

@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{FailureAction, MessageRouter, RunOptions, TransportError};
 use super::Message;
+use super::{FailureAction, MessageRouter, RunOptions, TransportError};
 
 /// Run the receive loop for a direct transport source.
 ///
@@ -68,7 +68,7 @@ where
                 FailureAction::Park => received.park(&error.to_string()).await?,
                 FailureAction::LogAndAck => {
                     eprintln!(
-                        "[microsvc::transport] dropping message '{}' after permanent failure: {error}",
+                        "[bus::runner] dropping message '{}' after permanent failure: {error}",
                         received.message().name()
                     );
                     received.ack().await?
@@ -99,9 +99,7 @@ async fn dispatch<R: MessageRouter, I>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::FailurePolicy;
-    use crate::microsvc::{HandlerError, MessageKind, Service};
-    use serde_json::json;
+    use crate::bus::{FailurePolicy, Handlers, MessageKind};
     use std::collections::VecDeque;
     use std::future::Future;
     use std::sync::Mutex;
@@ -224,37 +222,34 @@ mod tests {
         message
     }
 
-    fn service(recorder: &Arc<Recorder>) -> Arc<Service<()>> {
+    fn router(recorder: &Arc<Recorder>) -> Arc<Handlers> {
         let ok = recorder.clone();
         let retryable = recorder.clone();
         let permanent = recorder.clone();
         Arc::new(
-            Service::new(())
-                .event("ok")
-                .handle(move |ctx: &crate::microsvc::Context<()>| {
+            Handlers::new()
+                .on_event("ok", move |msg: &Message| {
                     let ok = ok.clone();
-                    let name = ctx.message().name().to_string();
+                    let name = msg.name().to_string();
                     async move {
                         ok.push(Event::Handled(name));
-                        Ok(json!({}))
+                        Ok(())
                     }
                 })
-                .event("retryable")
-                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                .on_event("retryable", move |msg: &Message| {
                     let retryable = retryable.clone();
-                    let name = ctx.message().name().to_string();
+                    let name = msg.name().to_string();
                     async move {
                         retryable.push(Event::Handled(name));
-                        Err(HandlerError::Other("infra".into()))
+                        Err(TransportError::retryable("infra"))
                     }
                 })
-                .event("permanent")
-                .handle(move |ctx: &crate::microsvc::Context<()>| {
+                .on_event("permanent", move |msg: &Message| {
                     let permanent = permanent.clone();
-                    let name = ctx.message().name().to_string();
+                    let name = msg.name().to_string();
                     async move {
                         permanent.push(Event::Handled(name));
-                        Err(HandlerError::Rejected("nope".into()))
+                        Err(TransportError::permanent("nope"))
                     }
                 }),
         )
@@ -276,7 +271,7 @@ mod tests {
         recv_error: bool,
     ) -> RunResult {
         let recorder = Recorder::new();
-        let svc = service(&recorder);
+        let svc = router(&recorder);
         let source = FakeSource {
             queue: messages.into_iter().collect(),
             recorder: recorder.clone(),
@@ -495,7 +490,7 @@ mod tests {
         // (no-inbox) path: the runner future must be Send.
         fn assert_send<T: Send>(_: &T) {}
         let recorder = Recorder::new();
-        let svc = service(&recorder);
+        let svc = router(&recorder);
         let source = FakeSource {
             queue: VecDeque::new(),
             recorder,

@@ -63,6 +63,7 @@ mod session;
 // `microsvc::transport::…` paths working; call sites move to `crate::bus` in P4b.
 pub use crate::bus as transport;
 
+pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use context::Context;
 pub use dependencies::{
     HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
@@ -73,7 +74,6 @@ pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
     Service,
 };
-pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use session::Session;
 
 // HTTP transport (requires "http" feature)
