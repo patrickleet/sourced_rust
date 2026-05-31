@@ -1,23 +1,25 @@
-//! Knative / CloudEvents HTTP ingress.
+//! Knative / CloudEvents HTTP ingress (microsvc side).
 //!
 //! Knative is *endpoint-driven*: the platform invokes an HTTP route, so this is
-//! a separate ingress shape from the pull-based [`AsyncMessageSource`]. It is
-//! NOT modeled as a polling source. The route parses a CloudEvent (binary or
-//! structured HTTP mode), maps it to the canonical [`Message`], and calls the
-//! same [`Service::dispatch_message`] boundary the direct-transport runner uses.
+//! a separate ingress shape from the pull-based bus sources. The route parses a
+//! CloudEvent (binary or structured HTTP mode), maps it to the canonical
+//! [`Message`], and calls the same [`Service::dispatch_message`] boundary the
+//! direct-transport runner uses.
+//!
+//! This lives on the **microsvc side**, not in the bus crate, because it is
+//! intrinsically `Service`-coupled: it serializes the handler's returned `Value`
+//! into the HTTP body and classifies a `HandlerError` to pick the status code —
+//! neither of which the bus's `MessageRouter::dispatch` (unit-returning) exposes.
 //!
 //! Acknowledgement is the HTTP response:
 //!
 //! - handler success → `200 OK` (the only ack);
 //! - retryable failure → `503` so Knative redelivers per its Delivery config;
-//! - permanent failure → `422` so Knative stops retrying / dead-letters per its
-//!   Delivery config.
+//! - permanent failure → `422` so Knative stops retrying / dead-letters.
 //!
 //! Retry, backoff, and dead-lettering are **platform-managed** by Knative
-//! Eventing here — unlike direct transports, where this crate's
-//! [`FailurePolicy`](super::FailurePolicy) owns them.
-//!
-//! Requires the `http` feature.
+//! Eventing here — unlike direct transports, where the bus `FailurePolicy` owns
+//! them. Requires the `http` feature.
 
 use std::sync::Arc;
 
@@ -29,8 +31,8 @@ use axum::{Json, Router};
 use base64::Engine;
 use serde_json::{json, Value};
 
-use super::TransportError;
-use crate::microsvc::{Message, MessageKind, Service, SubscriptionPlan};
+use crate::bus::{Message, MessageKind};
+use crate::microsvc::Service;
 
 const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 
@@ -39,8 +41,7 @@ const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 ///
 /// Both dispatch by the parsed CloudEvent `type` (the path segment is for routing
 /// alignment only), so a Knative Trigger can target either a single shared `ref`
-/// (`/`) or the per-type subscriber URI [`KnativeBus`](super::KnativeBus) emits
-/// (`/cloudevent/<type>`). Compose it with other routes or serve it directly.
+/// (`/`) or the per-type subscriber URI `KnativeBus` emits (`/cloudevent/<type>`).
 pub fn cloud_events_router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/", axum::routing::post(ingress_handler))
@@ -61,9 +62,9 @@ async fn ingress_handler<D: Send + Sync + 'static>(
     match service.dispatch_message(&message).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(err) => {
-            // Map our retryable/permanent classification onto HTTP so Knative's
+            // Map the retryable/permanent classification onto HTTP so Knative's
             // platform-managed retry/DLQ does the right thing.
-            let status = if TransportError::classify_handler_error(&err).is_retryable() {
+            let status = if err.transport_error_kind().is_retryable() {
                 StatusCode::SERVICE_UNAVAILABLE
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -188,59 +189,6 @@ fn parse_structured(body: &Bytes) -> Result<Message, String> {
     })
 }
 
-/// Sanitize a string into an RFC 1123 DNS label usable as a Kubernetes resource
-/// name: lowercase, ASCII-alphanumeric or `-`, no leading/trailing `-`, ≤63
-/// chars. Used for generated `Trigger` names, whose CloudEvent-type segment can
-/// contain dots/uppercase/other characters that are invalid in k8s names.
-pub(super) fn sanitize_k8s_name(name: &str) -> String {
-    let mapped: String = name
-        .chars()
-        .map(|c| {
-            let c = c.to_ascii_lowercase();
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let capped: String = mapped.trim_matches('-').chars().take(63).collect();
-    let trimmed = capped.trim_end_matches('-');
-    if trimmed.is_empty() {
-        "x".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Render Knative `Trigger` YAML for each event a service subscribes to, derived
-/// from its [`SubscriptionPlan`]. Each Trigger filters on the CloudEvent `type`
-/// and routes to `subscriber_service` on `broker`.
-pub fn knative_triggers(plan: &SubscriptionPlan, broker: &str, subscriber_service: &str) -> String {
-    let mut out = String::new();
-    for event in &plan.events {
-        let trigger_name = sanitize_k8s_name(&format!("{subscriber_service}-{event}"));
-        out.push_str(&format!(
-            "apiVersion: eventing.knative.dev/v1\n\
-             kind: Trigger\n\
-             metadata:\n\
-             \x20 name: {trigger_name}\n\
-             spec:\n\
-             \x20 broker: {broker}\n\
-             \x20 filter:\n\
-             \x20   attributes:\n\
-             \x20     type: {event}\n\
-             \x20 subscriber:\n\
-             \x20   ref:\n\
-             \x20     apiVersion: serving.knative.dev/v1\n\
-             \x20     kind: Service\n\
-             \x20     name: {subscriber_service}\n\
-             ---\n"
-        ));
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,48 +246,5 @@ mod tests {
     fn missing_id_is_rejected() {
         let h = headers(&[("ce-type", "order.created")]);
         assert!(parse_cloud_event(&h, &Bytes::new()).is_err());
-    }
-
-    #[test]
-    fn triggers_render_from_subscription_plan() {
-        let plan = SubscriptionPlan {
-            commands: vec![],
-            events: vec!["seat.reserved".to_string()],
-        };
-        let yaml = knative_triggers(&plan, "default", "checkout-projection");
-        assert!(yaml.contains("kind: Trigger"));
-        assert!(yaml.contains("type: seat.reserved"));
-        assert!(yaml.contains("name: checkout-projection-seat-reserved"));
-        assert!(yaml.contains("broker: default"));
-    }
-
-    #[test]
-    fn sanitize_k8s_name_enforces_rfc1123() {
-        // Valid names pass through unchanged.
-        assert_eq!(
-            sanitize_k8s_name("checkout-projection-seat-reserved"),
-            "checkout-projection-seat-reserved"
-        );
-        // Dots, uppercase, and other characters become '-' and lowercase.
-        assert_eq!(sanitize_k8s_name("Order.Created!"), "order-created");
-        // No leading/trailing dashes, capped at 63 chars.
-        let long = "a".repeat(80);
-        let out = sanitize_k8s_name(&format!(".{long}."));
-        assert_eq!(out.len(), 63);
-        assert!(!out.starts_with('-') && !out.ends_with('-'));
-        // All-invalid degrades to a safe placeholder.
-        assert_eq!(sanitize_k8s_name("..."), "x");
-    }
-
-    #[test]
-    fn trigger_name_is_sanitized_for_messy_event_types() {
-        let plan = SubscriptionPlan {
-            commands: vec![],
-            events: vec!["Order.Created".to_string()],
-        };
-        let yaml = knative_triggers(&plan, "default", "checkout-projection");
-        // The CloudEvent type filter keeps the raw type; the resource name is sanitized.
-        assert!(yaml.contains("type: Order.Created"));
-        assert!(yaml.contains("name: checkout-projection-order-created"));
     }
 }

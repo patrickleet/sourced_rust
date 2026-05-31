@@ -10,19 +10,21 @@
 //!
 //! - [`AsyncMessageSource`] / [`ReceivedMessage`] — pull a message from a direct
 //!   transport (Postgres, RabbitMQ, Kafka, NATS, in-memory) and settle it;
-//! - [`run_source`] — the runner that dispatches through
-//!   `Service::dispatch_message`, then acks/nacks/dead-letters per policy.
+//! - [`MessageRouter`] — the consume seam a runner dispatches to, implemented by
+//!   `microsvc::Service` and the dependency-free [`Handlers`] builder;
+//! - [`run_source`] — the runner that dispatches each message through the
+//!   consumer's [`MessageRouter::dispatch`], then acks/nacks/dead-letters per policy.
 //!
 //! The producer-side publish path lives here too:
 //!
 //! - [`AsyncMessagePublisher`] — the single publish boundary, with each adapter's
 //!   durable publish threshold documented;
-//! - [`OutboxDispatcher`] / [`OutboxDispatchOutcome`] — map durable outbox rows to
+//! - [`OutboxDispatcher`](crate::OutboxDispatcher) / [`OutboxDispatchOutcome`](crate::OutboxDispatchOutcome) — map durable outbox rows to
 //!   `Message` and dispatch them, sharing one claim → publish → complete path
 //!   between background polling and after-commit immediate dispatch.
 //!
 //! Concrete adapters build on these traits: the Postgres outbox-backed source
-//! ([`OutboxSource`]) is always available; the NATS JetStream and RabbitMQ
+//! ([`OutboxSource`](crate::OutboxSource)) is always available; the NATS JetStream and RabbitMQ
 //! adapters are behind the `nats` and `rabbitmq` features. The Knative/HTTP
 //! ingress shape and the Kafka adapter are still separate slices. Everything
 //! builds on the vocabulary defined here:
@@ -79,12 +81,11 @@
 //! deduplication, when needed, is the optional consumer inbox, not an outbox or
 //! publish guarantee.
 
-use crate::microsvc::Message;
-
 mod bus;
 mod capabilities;
 mod error;
 mod failure_policy;
+mod handlers;
 mod in_memory_bus;
 #[cfg(feature = "kafka")]
 mod kafka;
@@ -94,12 +95,11 @@ mod kafka_bus;
 mod knative;
 #[cfg(feature = "http")]
 mod knative_bus;
+mod message;
 #[cfg(feature = "nats")]
 mod nats;
 #[cfg(feature = "nats")]
 mod nats_bus;
-mod outbox_dispatch;
-mod outbox_source;
 #[cfg(feature = "postgres")]
 mod postgres_bus;
 mod publisher;
@@ -107,6 +107,7 @@ mod publisher;
 mod rabbit_bus;
 #[cfg(feature = "rabbitmq")]
 mod rabbitmq;
+mod router;
 mod run_options;
 mod runner;
 mod source;
@@ -117,7 +118,7 @@ pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 #[cfg(feature = "kafka")]
 pub use kafka_bus::KafkaBus;
 #[cfg(feature = "http")]
-pub use knative::{cloud_events_router, knative_triggers};
+pub use knative::knative_triggers;
 #[cfg(feature = "http")]
 pub use knative_bus::KnativeBus;
 #[cfg(feature = "nats")]
@@ -133,14 +134,13 @@ pub use bus::{Bus, BusConsumer};
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
+pub use handlers::{AsyncMessageHandler, Handlers};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
-pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
-pub use outbox_source::{
-    OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
-};
+pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::AsyncMessagePublisher;
+pub use router::MessageRouter;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{AsyncMessageSource, ReceivedMessage};

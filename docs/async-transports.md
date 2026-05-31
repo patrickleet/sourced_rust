@@ -2,14 +2,14 @@
 
 Distributed (published from the `sourced_rust` crate) keeps the synchronous
 in-memory bus intact and adds an async transport layer under
-`microsvc::transport`. The design line is:
+`bus`. The design line is:
 
 - **`microsvc`** owns handler registration, guards, typed input decoding,
   dispatch, and handler metadata;
 - **transport adapters** own how messages are received, acknowledged, retried,
   published, and mapped to external topics/subjects/queues/routes.
 
-The shared vocabulary lives in `microsvc::transport` and depends on no concrete
+The shared vocabulary lives in `bus` and depends on no concrete
 broker. The same application code runs over any transport — selecting one is an
 adapter/wiring change, not a handler change.
 
@@ -43,7 +43,7 @@ Direct transports implement `AsyncMessageSource` (pull a message) and
 `Service::dispatch_message` and settling only after the handler completes:
 
 ```rust,ignore
-use sourced_rust::microsvc::transport::{run_source, RunOptions};
+use sourced_rust::bus::{run_source, RunOptions};
 
 run_source(service, source, RunOptions::idempotent()).await?;
 ```
@@ -108,7 +108,7 @@ The app surface is identical across transports; only the constructor changes:
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
 // Built once — handlers are transport-agnostic.
 let service = Arc::new(build_service());

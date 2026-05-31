@@ -140,7 +140,7 @@ impl<I> RunOptions<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::MessageKind;
+    use crate::bus::MessageKind;
 
     struct FakeInbox {
         consumer: &'static str,

@@ -26,8 +26,10 @@ use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
-use super::{run_source, AsyncMessagePublisher, Bus, BusConsumer, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind, Service};
+use super::{
+    run_source, AsyncMessagePublisher, Bus, BusConsumer, MessageRouter, RunOptions, TransportError,
+};
+use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -166,13 +168,14 @@ impl Bus for NatsBus {
 }
 
 impl BusConsumer for NatsBus {
-    async fn listen<D: Send + Sync + 'static>(
+    async fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let subjects: Vec<String> = service
-            .command_names()
+        let subjects: Vec<String> = router
+            .subscription_plan()
+            .commands
             .iter()
             .map(|name| format!("{}.cmd.{name}", self.namespace))
             .collect();
@@ -186,16 +189,17 @@ impl BusConsumer for NatsBus {
                 format!("{}.cmd.", self.namespace),
             )
             .await?;
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 
-    async fn subscribe<D: Send + Sync + 'static>(
+    async fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let subjects: Vec<String> = service
-            .event_names()
+        let subjects: Vec<String> = router
+            .subscription_plan()
+            .events
             .iter()
             .map(|name| format!("{}.evt.{name}", self.namespace))
             .collect();
@@ -209,6 +213,6 @@ impl BusConsumer for NatsBus {
                 format!("{}.evt.", self.namespace),
             )
             .await?;
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 }

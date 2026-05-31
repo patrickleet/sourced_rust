@@ -12,13 +12,20 @@
 
 use std::time::Duration;
 
-use super::publisher::AsyncMessagePublisher;
-use super::TransportError;
-use crate::microsvc::{Message, MessageKind};
+use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction};
+use crate::bus::{AsyncMessagePublisher, Message, MessageKind, TransportError, TransportErrorKind};
 use crate::outbox::OutboxMessage;
-use crate::outbox_worker::{
-    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction,
-};
+use crate::repository::RepositoryError;
+
+/// Repository/store failures (lock contention, storage hiccups, stale-claim
+/// conflicts) are retryable: usually transient, resolved by a later re-claim. This
+/// conversion lives with the outbox bridge — which legitimately knows both the
+/// store and the bus — so bus core stays free of `RepositoryError`.
+impl From<RepositoryError> for TransportError {
+    fn from(error: RepositoryError) -> Self {
+        TransportError::new(TransportErrorKind::Retryable, error.to_string()).with_source(error)
+    }
+}
 
 /// Content type for an outbox payload. Outbox payloads are codec-encoded bytes
 /// (bitcode or raw), so the media type is binary; the exact codec travels in

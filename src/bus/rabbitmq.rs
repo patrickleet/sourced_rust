@@ -20,7 +20,7 @@ use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{AsyncMessagePublisher, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
 

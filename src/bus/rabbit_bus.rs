@@ -31,8 +31,8 @@ use lapin::{Channel, ExchangeKind};
 
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
 use super::source::AsyncMessageSource;
-use super::{run_source, Bus, BusConsumer, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind, Service};
+use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use super::{Message, MessageKind};
 
 fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
     TransportError::retryable(format!("{context}: {err}"))
@@ -145,14 +145,15 @@ impl RabbitBus {
     /// service's event names — the durable setup `subscribe` needs. Exposed so a
     /// producer can ensure all subscriber bindings exist *before* publishing
     /// (RabbitMQ drops events with no matching binding).
-    pub async fn ensure_subscription<D: Send + Sync + 'static>(
+    pub async fn ensure_subscription<R: MessageRouter>(
         &self,
-        service: &Service<D>,
+        router: &R,
     ) -> Result<(), TransportError> {
         self.declare_events_exchange(&self.channel).await?;
         let queue = self.group_queue();
         self.declare_queue(&self.channel, &queue).await?;
-        for name in service.event_names() {
+        let plan = router.subscription_plan();
+        for name in &plan.events {
             self.channel
                 .queue_bind(
                     &queue,
@@ -197,14 +198,15 @@ impl Bus for RabbitBus {
 }
 
 impl BusConsumer for RabbitBus {
-    async fn listen<D: Send + Sync + 'static>(
+    async fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
         let channel = connect_channel(&self.uri).await?;
+        let plan = router.subscription_plan();
         let mut queues = Vec::new();
-        for name in service.command_names() {
+        for name in &plan.commands {
             let queue = self.command_queue(name);
             self.declare_queue(&channel, &queue).await?;
             queues.push(queue);
@@ -217,16 +219,16 @@ impl BusConsumer for RabbitBus {
             queues,
             strip_prefix: Some(self.command_prefix()),
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 
-    async fn subscribe<D: Send + Sync + 'static>(
+    async fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        self.ensure_subscription(&service).await?;
-        if service.event_names().is_empty() {
+        self.ensure_subscription(router.as_ref()).await?;
+        if router.subscription_plan().events.is_empty() {
             return Ok(());
         }
         let channel = connect_channel(&self.uri).await?;
@@ -236,7 +238,7 @@ impl BusConsumer for RabbitBus {
             // Events are published with routing key == the bare event name.
             strip_prefix: None,
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 }
 

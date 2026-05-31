@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::bus::{PayloadDecodeError, TransportError, TransportErrorKind};
 use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
@@ -71,6 +72,12 @@ impl From<serde_json::Error> for HandlerError {
     }
 }
 
+impl From<PayloadDecodeError> for HandlerError {
+    fn from(err: PayloadDecodeError) -> Self {
+        HandlerError::DecodeFailed(err.0)
+    }
+}
+
 impl HandlerError {
     /// Map this error to an HTTP-style status code.
     pub fn status_code(&self) -> u16 {
@@ -84,5 +91,75 @@ impl HandlerError {
             HandlerError::GuardRejected(_) => 400,
             HandlerError::Other(_) => 500,
         }
+    }
+
+    /// Classify this error for transport retry purposes (retryable vs permanent).
+    ///
+    /// Transient failures (repository errors, not-found, otherwise-unclassified)
+    /// are retryable: in an at-least-once event-driven system a not-found is
+    /// usually an out-of-order delivery race a later redelivery resolves.
+    /// Deterministic failures (unknown routing, decode, rejection, auth, guard)
+    /// are permanent — redelivering the identical message cannot change them.
+    pub(crate) fn transport_error_kind(&self) -> TransportErrorKind {
+        match self {
+            HandlerError::Repository(_) | HandlerError::NotFound(_) | HandlerError::Other(_) => {
+                TransportErrorKind::Retryable
+            }
+            HandlerError::UnknownCommand(_)
+            | HandlerError::DecodeFailed(_)
+            | HandlerError::Rejected(_)
+            | HandlerError::Unauthorized(_)
+            | HandlerError::GuardRejected(_) => TransportErrorKind::Permanent,
+        }
+    }
+}
+
+/// Classify and convert a handler error into the transport's retryable/permanent
+/// vocabulary. This lives on the microsvc side (not the bus) so the bus core does
+/// not depend on `HandlerError`.
+impl From<HandlerError> for TransportError {
+    fn from(error: HandlerError) -> Self {
+        let kind = error.transport_error_kind();
+        TransportError::new(kind, error.to_string()).with_source(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_handler_errors_are_retryable() {
+        for error in [
+            HandlerError::Repository(RepositoryError::NotFound { id: "agg-1".into() }),
+            HandlerError::NotFound("agg-1".into()),
+            HandlerError::Other("boom".into()),
+        ] {
+            assert_eq!(error.transport_error_kind(), TransportErrorKind::Retryable);
+        }
+    }
+
+    #[test]
+    fn deterministic_handler_errors_are_permanent() {
+        for error in [
+            HandlerError::UnknownCommand("x".into()),
+            HandlerError::DecodeFailed("x".into()),
+            HandlerError::Rejected("x".into()),
+            HandlerError::Unauthorized("x".into()),
+            HandlerError::GuardRejected("x".into()),
+        ] {
+            assert_eq!(error.transport_error_kind(), TransportErrorKind::Permanent);
+        }
+    }
+
+    #[test]
+    fn from_handler_error_preserves_classification_and_source() {
+        let err: TransportError = HandlerError::Rejected("invalid".into()).into();
+        assert!(err.is_permanent());
+        assert!(err.source().is_some());
+
+        let err: TransportError =
+            HandlerError::Other(Box::<dyn Error + Send + Sync>::from("infra")).into();
+        assert!(err.is_retryable());
     }
 }

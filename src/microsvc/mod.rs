@@ -56,10 +56,11 @@
 mod context;
 mod dependencies;
 mod error;
+mod message_router;
 mod service;
 mod session;
-pub mod transport;
 
+pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use context::Context;
 pub use dependencies::{
     HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
@@ -68,7 +69,7 @@ pub use dependencies::{
 pub use error::HandlerError;
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
-    Message, MessageKind, Service, SubscriptionPlan,
+    Service,
 };
 pub use session::Session;
 
@@ -77,6 +78,13 @@ pub use session::Session;
 mod http;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
+
+// Knative / CloudEvents HTTP ingress (Service-coupled; the bus keeps only the
+// produce/manifest helpers). Requires the "http" feature.
+#[cfg(feature = "http")]
+mod knative_ingress;
+#[cfg(feature = "http")]
+pub use knative_ingress::cloud_events_router;
 
 // gRPC transport (requires "grpc" feature)
 #[cfg(feature = "grpc")]

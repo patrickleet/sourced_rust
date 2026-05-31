@@ -16,11 +16,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{
-    run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, OutboxDispatcher,
-    ReceivedMessage, RunOptions, TransportError,
+use sourced_rust::bus::{
+    run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, ReceivedMessage,
+    RunOptions, TransportError,
 };
 use sourced_rust::microsvc::{Context, HandlerError, Message, MessageKind, Service};
+use sourced_rust::OutboxDispatcher;
 use sourced_rust::{
     AsyncCommitBatch, AsyncTransactionalCommit, HashMapOutboxStore, HashMapRepository,
     OutboxMessage, OutboxMessageStatus,

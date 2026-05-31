@@ -57,7 +57,7 @@ pub trait AsyncMessagePublisher: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::MessageKind;
+    use crate::bus::MessageKind;
     use std::future::Future;
     use std::sync::Mutex;
 

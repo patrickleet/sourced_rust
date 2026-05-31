@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{
+use sourced_rust::bus::{
     run_source, AsyncMessagePublisher, Bus, BusConsumer, NatsBus, NatsJetStreamSource,
     NatsPublisher, RunOptions,
 };

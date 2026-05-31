@@ -12,11 +12,11 @@ mod postgres;
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{
-    run_source, AsyncMessageSource, Bus, BusConsumer, OutboxSource, PostgresBus, ReceivedMessage,
-    RunOptions,
+use sourced_rust::bus::{
+    run_source, AsyncMessageSource, Bus, BusConsumer, PostgresBus, ReceivedMessage, RunOptions,
 };
 use sourced_rust::microsvc::{Context, Message, MessageKind, Service};
+use sourced_rust::OutboxSource;
 use sourced_rust::{
     AsyncCommitBatch, AsyncOutboxStore, AsyncTransactionalCommit, OutboxMessage,
     OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,

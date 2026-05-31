@@ -8,7 +8,7 @@
 //!
 //! - [`KnativeBus::manifests`] — the role-based `Broker` + per-name `Trigger`
 //!   YAML for a service (and a local/kubefwd variant);
-//! - mounting [`cloud_events_router`](super::cloud_events_router) so the Triggers'
+//! - mounting [`cloud_events_router`](crate::microsvc::cloud_events_router) so the Triggers'
 //!   `/cloudevent/<type>` subscriber URIs reach `Service::dispatch_message`.
 //!
 //! Producing POSTs a binary-mode CloudEvent to a broker-ingress URL:
@@ -20,9 +20,11 @@
 
 use std::time::Duration;
 
-use super::knative::sanitize_k8s_name;
+use std::collections::HashSet;
+
+use super::knative::unique_k8s_name;
 use super::{Bus, TransportError};
-use crate::microsvc::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, MessageKind, SubscriptionPlan};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -148,9 +150,13 @@ impl KnativeBus {
     /// subscribed event name to the producing service's events broker. Subscriber
     /// URIs are `/cloudevent/<type>` (matching [`cloud_events_router`]).
     ///
-    /// [`cloud_events_router`]: super::cloud_events_router
+    /// [`cloud_events_router`]: crate::microsvc::cloud_events_router
     pub fn manifests(&self, plan: &SubscriptionPlan, subscriptions: &[(&str, &str)]) -> String {
         let mut out = String::new();
+        // One dedup set across commands and events: their Trigger names share the
+        // `{source}-{name}` shape, so a command and an event whose names normalize
+        // to the same label must not collide on `metadata.name`.
+        let mut used = HashSet::new();
         if !plan.commands.is_empty() {
             // The broker a service *owns* for commands it handles is
             // `{source}-commands` — distinct from `commands_broker` (the
@@ -158,7 +164,7 @@ impl KnativeBus {
             let own_commands = format!("{}-commands", self.source);
             out.push_str(&self.broker_yaml(&own_commands));
             for command in &plan.commands {
-                out.push_str(&self.trigger_yaml(&own_commands, command));
+                out.push_str(&self.trigger_yaml(&own_commands, command, &mut used));
             }
         }
         if self.publishes_events {
@@ -170,7 +176,7 @@ impl KnativeBus {
                 .find(|(name, _)| *name == event.as_str())
                 .map(|(_, broker)| *broker)
                 .unwrap_or("UNMAPPED-events");
-            out.push_str(&self.trigger_yaml(broker, event));
+            out.push_str(&self.trigger_yaml(broker, event, &mut used));
         }
         out
     }
@@ -187,8 +193,8 @@ impl KnativeBus {
         )
     }
 
-    fn trigger_yaml(&self, broker: &str, event: &str) -> String {
-        let trigger_name = sanitize_k8s_name(&format!("{}-{}", self.source, event));
+    fn trigger_yaml(&self, broker: &str, event: &str, used: &mut HashSet<String>) -> String {
+        let trigger_name = unique_k8s_name(&format!("{}-{}", self.source, event), used);
         let subscriber = match &self.local {
             Some(addr) => format!(
                 "\x20 subscriber:\n\

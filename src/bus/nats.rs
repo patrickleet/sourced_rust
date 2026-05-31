@@ -20,7 +20,7 @@ use futures::StreamExt;
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{AsyncMessagePublisher, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 /// Header carrying the stable message id (and JetStream dedup key).
 const MESSAGE_ID_HEADER: &str = "Nats-Msg-Id";

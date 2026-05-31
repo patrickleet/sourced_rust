@@ -8,7 +8,8 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{cloud_events_router, Bus, KnativeBus};
+use sourced_rust::bus::{Bus, KnativeBus};
+use sourced_rust::microsvc::cloud_events_router;
 use sourced_rust::microsvc::{
     Context, HandlerError, Message, MessageKind, Service, SubscriptionPlan,
 };

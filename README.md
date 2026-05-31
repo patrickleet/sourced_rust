@@ -760,7 +760,7 @@ transports; only the constructor line changes.**
 
 ```rust
 use std::sync::Arc;
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
 // Built once — handlers are transport-agnostic.
 let service = Arc::new(build_service());
@@ -805,7 +805,7 @@ carries a `FailurePolicy` controlling what happens to a **permanent** handler
 failure — `Retry`, `DeadLetter`, `Park`, `LogAndAck`, or `Stop`:
 
 ```rust
-use sourced_rust::microsvc::transport::{FailurePolicy, RunOptions};
+use sourced_rust::bus::{FailurePolicy, RunOptions};
 
 bus.listen(
     service.clone(),

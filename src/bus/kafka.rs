@@ -20,7 +20,7 @@ use rdkafka::{Message as KafkaMessageTrait, Offset, TopicPartitionList};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
 use super::{AsyncMessagePublisher, TransportError};
-use crate::microsvc::{Message, MessageKind};
+use super::{Message, MessageKind};
 
 const MESSAGE_ID_HEADER: &str = "x-sourced-id";
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
