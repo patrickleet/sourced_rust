@@ -91,6 +91,10 @@ pub use outbox_worker::{
 // LocalEmitterPublisher requires the emitter feature
 #[cfg(feature = "emitter")]
 pub use outbox_worker::LocalEmitterPublisher;
+pub use outbox_worker::{
+    OutboxDispatchOutcome, OutboxDispatcher, OutboxSource, ReceivedOutboxMessage,
+    DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE, SOURCED_METADATA_PREFIX,
+};
 
 pub use queued_repo::{
     // Async WithOpts + unlock traits (async lock manager variant)

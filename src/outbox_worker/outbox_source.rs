@@ -18,11 +18,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::TransportError;
-use crate::microsvc::Message;
+use crate::bus::{AsyncMessageSource, Message, ReceivedMessage, TransportError};
 use crate::outbox::OutboxMessage;
-use crate::outbox_worker::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef};
+use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef};
 
 /// Default lease held on a claimed row while it is being dispatched.
 pub const DEFAULT_OUTBOX_SOURCE_LEASE: Duration = Duration::from_secs(30);

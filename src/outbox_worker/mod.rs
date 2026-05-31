@@ -37,6 +37,8 @@
 //! }
 //! ```
 
+mod outbox_dispatch;
+mod outbox_source;
 mod publisher;
 mod store;
 mod worker;
@@ -55,3 +57,9 @@ pub use store::{
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
+
+// Outbox -> bus bridge (moved out of the bus module; depends up on bus traits).
+pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
+pub use outbox_source::{
+    OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
+};

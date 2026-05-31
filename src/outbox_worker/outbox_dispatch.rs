@@ -12,13 +12,9 @@
 
 use std::time::Duration;
 
-use super::publisher::AsyncMessagePublisher;
-use super::TransportError;
-use crate::microsvc::{Message, MessageKind};
+use crate::bus::{AsyncMessagePublisher, Message, MessageKind, TransportError};
 use crate::outbox::OutboxMessage;
-use crate::outbox_worker::{
-    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction,
-};
+use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction};
 
 /// Content type for an outbox payload. Outbox payloads are codec-encoded bytes
 /// (bitcode or raw), so the media type is binary; the exact codec travels in

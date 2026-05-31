@@ -98,8 +98,6 @@ mod knative_bus;
 mod nats;
 #[cfg(feature = "nats")]
 mod nats_bus;
-mod outbox_dispatch;
-mod outbox_source;
 #[cfg(feature = "postgres")]
 mod postgres_bus;
 mod publisher;
@@ -138,10 +136,6 @@ pub use failure_policy::{FailureAction, FailurePolicy};
 pub use handlers::{AsyncMessageHandler, Handlers};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
-pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
-pub use outbox_source::{
-    OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
-};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::AsyncMessagePublisher;
