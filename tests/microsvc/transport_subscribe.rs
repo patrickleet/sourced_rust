@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service};
 use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
     AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,

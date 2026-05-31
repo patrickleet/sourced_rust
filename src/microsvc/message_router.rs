@@ -5,7 +5,7 @@
 //! retryable/permanent vocabulary happens here, on the microsvc side, so the
 //! bus-core runner only ever sees an already-classified `TransportError`.
 
-use crate::microsvc::transport::{MessageRouter, TransportError};
+use crate::bus::{MessageRouter, TransportError};
 use crate::microsvc::{Message, MessageKind, Service, SubscriptionPlan};
 
 impl<D: Send + Sync + 'static> MessageRouter for Service<D> {

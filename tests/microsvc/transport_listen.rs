@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{AsyncAggregateBuilder, HashMapRepository, Queueable};
 

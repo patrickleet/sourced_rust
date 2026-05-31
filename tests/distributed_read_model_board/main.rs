@@ -21,7 +21,7 @@ use projections_service::{load_board, service as build_projection};
 use query_service::BoardQueryService;
 use read_models::register_schemas;
 use serde::Serialize;
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, InMemoryBus, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind, Service, Session};
 use sourced_rust::{
     AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,

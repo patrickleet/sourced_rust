@@ -59,9 +59,6 @@ mod error;
 mod message_router;
 mod service;
 mod session;
-// The bus is now the top-level `crate::bus` module. This transitional alias keeps
-// `microsvc::transport::…` paths working; call sites move to `crate::bus` in P4b.
-pub use crate::bus as transport;
 
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use context::Context;

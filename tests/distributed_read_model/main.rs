@@ -466,7 +466,7 @@ where
 /// complete, so each event is forwarded exactly once.
 async fn publish_pending_outbox(
     outbox: &sourced_rust::HashMapOutboxStore,
-    bus: &sourced_rust::microsvc::transport::InMemoryBus,
+    bus: &sourced_rust::bus::InMemoryBus,
 ) {
     let claimed = outbox
         .claim_async(sourced_rust::ClaimOutboxMessages::new(
@@ -501,7 +501,7 @@ async fn publish_pending_outbox(
 /// assertions — only the transport changed.
 #[tokio::test]
 async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
-    use sourced_rust::microsvc::transport::InMemoryBus;
+    use sourced_rust::bus::InMemoryBus;
 
     let checkout_store = HashMapRepository::new();
     let checkout_service =
@@ -770,7 +770,7 @@ async fn checkout_commands_can_be_grpc_service() {
 use std::collections::HashMap as StdHashMap;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
-use sourced_rust::microsvc::transport::{Bus, BusConsumer, RunOptions};
+use sourced_rust::bus::{Bus, BusConsumer, RunOptions};
 use sourced_rust::microsvc::{Message, MessageKind};
 
 /// The four checkout events in flow (causal) order, by CloudEvent/event type.
@@ -957,7 +957,7 @@ fn matrix_ids(tag: &str) -> AsyncFlowIds {
 /// In-memory persistence × in-memory transport — the always-on matrix cell.
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_in_memory_bus() {
-    use sourced_rust::microsvc::transport::InMemoryBus;
+    use sourced_rust::bus::InMemoryBus;
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         InMemoryBus::new(),
@@ -1008,7 +1008,7 @@ where
         + 'static,
 {
     use sourced_rust::microsvc::cloud_events_router;
-    use sourced_rust::microsvc::transport::KnativeBus;
+    use sourced_rust::bus::KnativeBus;
 
     let (collector, collected) = build_collector();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1059,7 +1059,7 @@ where
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn matrix_sqlite_persistence_over_in_memory_bus() {
-    use sourced_rust::microsvc::transport::InMemoryBus;
+    use sourced_rust::bus::InMemoryBus;
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         InMemoryBus::new(),
@@ -1089,9 +1089,9 @@ fn nats_url() -> Option<String> {
 }
 
 #[cfg(feature = "nats")]
-async fn nats_matrix_bus(ns: &str) -> sourced_rust::microsvc::transport::NatsBus {
+async fn nats_matrix_bus(ns: &str) -> sourced_rust::bus::NatsBus {
     let url = nats_url().expect("NATS_URL set");
-    let bus = sourced_rust::microsvc::transport::NatsBus::connect(&url, "matrix", ns)
+    let bus = sourced_rust::bus::NatsBus::connect(&url, "matrix", ns)
         .await
         .expect("nats connect")
         .with_fetch_timeout(Duration::from_millis(800));
@@ -1144,9 +1144,9 @@ fn amqp_url() -> Option<String> {
 async fn rabbit_matrix_bus(
     ns: &str,
     collector: &StdArc<Service<()>>,
-) -> sourced_rust::microsvc::transport::RabbitBus {
+) -> sourced_rust::bus::RabbitBus {
     let url = amqp_url().expect("AMQP_URL set");
-    let bus = sourced_rust::microsvc::transport::RabbitBus::connect(&url, "matrix", ns)
+    let bus = sourced_rust::bus::RabbitBus::connect(&url, "matrix", ns)
         .await
         .expect("rabbit connect");
     // Topic exchange drops events with no bound queue, so bind before publishing.
@@ -1200,9 +1200,9 @@ fn kafka_brokers() -> Option<String> {
 }
 
 #[cfg(feature = "kafka")]
-async fn kafka_matrix_bus(ns: &str) -> sourced_rust::microsvc::transport::KafkaBus {
+async fn kafka_matrix_bus(ns: &str) -> sourced_rust::bus::KafkaBus {
     let brokers = kafka_brokers().expect("KAFKA_BROKERS set");
-    sourced_rust::microsvc::transport::KafkaBus::connect(&brokers, "matrix", ns)
+    sourced_rust::bus::KafkaBus::connect(&brokers, "matrix", ns)
         .await
         .expect("kafka connect")
         .with_fetch_timeout(Duration::from_secs(10))
@@ -1247,7 +1247,7 @@ async fn matrix_sqlite_persistence_over_kafka_bus() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_postgres_bus() {
-    use sourced_rust::microsvc::transport::PostgresBus;
+    use sourced_rust::bus::PostgresBus;
     let Some(schema) = postgres::PostgresTestSchema::create_from_env(
         "matrix_pgbus",
         "skipping Postgres-bus matrix cell",
@@ -1273,7 +1273,7 @@ async fn matrix_in_memory_persistence_over_postgres_bus() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn matrix_postgres_persistence_over_in_memory_bus() {
-    use sourced_rust::microsvc::transport::InMemoryBus;
+    use sourced_rust::bus::InMemoryBus;
     let Some(schema) = postgres::PostgresTestSchema::create_from_env(
         "matrix_pg",
         "skipping Postgres-persistence matrix cell",
@@ -1319,8 +1319,8 @@ async fn postgres_matrix_repo() -> Option<(
 }
 
 #[cfg(feature = "postgres")]
-async fn postgres_matrix_bus() -> Option<sourced_rust::microsvc::transport::PostgresBus> {
-    use sourced_rust::microsvc::transport::PostgresBus;
+async fn postgres_matrix_bus() -> Option<sourced_rust::bus::PostgresBus> {
+    use sourced_rust::bus::PostgresBus;
     let schema = postgres::PostgresTestSchema::create_from_env(
         "matrix_pgbus",
         "skipping Postgres-bus matrix cell",

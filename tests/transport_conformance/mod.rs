@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use sourced_rust::microsvc::transport::{
+use sourced_rust::bus::{
     run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, ReceivedMessage,
     RunOptions, TransportError,
 };

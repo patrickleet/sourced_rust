@@ -173,7 +173,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::transport::{run_source, RunOptions};
+    use crate::bus::{run_source, RunOptions};
     use crate::microsvc::Service;
     use crate::{
         AsyncCommitBatch, AsyncTransactionalCommit, HashMapRepository, OutboxMessage,
