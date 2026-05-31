@@ -4,6 +4,7 @@
 extern crate self as sourced_rust;
 
 pub mod aggregate;
+pub mod bus;
 pub mod entity;
 pub mod repository;
 
