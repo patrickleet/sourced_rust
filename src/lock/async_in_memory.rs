@@ -30,6 +30,57 @@ impl InMemoryAsyncLock {
             state: Mutex::new(AsyncLockState::default()),
         }
     }
+
+    /// Synchronous core of [`try_lock`](AsyncLock::try_lock).
+    ///
+    /// In-memory acquisition is pure state mutation, so the real work lives in a
+    /// private synchronous helper and the public `AsyncLock::try_lock` runs it
+    /// inside its (lazy) future — there is no parallel sync *API*, only this
+    /// internal detail. The synchronous core also lets the regression tests
+    /// exercise acquisition from inside a `Waker`, which cannot `.await`.
+    fn try_lock_core(&self) -> Result<bool, LockError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|err| LockError::Poisoned(err.to_string()))?;
+        if state.locked {
+            Ok(false)
+        } else {
+            state.locked = true;
+            Ok(true)
+        }
+    }
+
+    /// Synchronous core of [`unlock`](AsyncLock::unlock).
+    ///
+    /// Drains waiters UNDER the guard (keeping register/drain mutually exclusive
+    /// so no wakeup is lost), then releases the guard BEFORE waking.
+    /// `Waker::wake` runs arbitrary executor code: doing it under the std
+    /// `Mutex` would let a panicking waker poison (permanently brick) the lock,
+    /// and a waker that synchronously re-polls would deadlock on the
+    /// non-reentrant guard. Waking outside the critical section avoids both.
+    ///
+    /// `pub(crate)` so the SQLx locks' cancellation-safe gate guard can release
+    /// the in-process gate synchronously from `Drop` (which cannot `.await`).
+    pub(crate) fn unlock_core(&self) -> Result<(), LockError> {
+        let woken = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| LockError::Poisoned(err.to_string()))?;
+            if state.locked {
+                state.locked = false;
+                std::mem::take(&mut state.waiters)
+            } else {
+                VecDeque::new()
+            }
+        };
+        // They re-contend and one wins, the rest re-register on their next poll.
+        for waker in woken {
+            waker.wake();
+        }
+        Ok(())
+    }
 }
 
 impl Default for InMemoryAsyncLock {
@@ -77,43 +128,16 @@ impl AsyncLock for InMemoryAsyncLock {
         InMemoryAsyncLockFuture { lock: self }
     }
 
-    fn try_lock(&self) -> Result<bool, LockError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|err| LockError::Poisoned(err.to_string()))?;
-        if state.locked {
-            Ok(false)
-        } else {
-            state.locked = true;
-            Ok(true)
-        }
+    // Lazy: the side effect runs when the future is polled, not at call time, so
+    // a future that is dropped without being awaited is a no-op — matching the
+    // I/O-backed locks (whose `async fn` bodies also only run on poll). The body
+    // has no `.await`, so the returned future is trivially `Send`.
+    async fn try_lock(&self) -> Result<bool, LockError> {
+        self.try_lock_core()
     }
 
-    fn unlock(&self) -> Result<(), LockError> {
-        // Drain waiters UNDER the guard (keeping register/drain mutually
-        // exclusive so no wakeup is lost), then release the guard BEFORE waking.
-        // `Waker::wake` runs arbitrary executor code: doing it under the std
-        // `Mutex` would let a panicking waker poison (permanently brick) the
-        // lock, and a waker that synchronously re-polls would deadlock on the
-        // non-reentrant guard. Waking outside the critical section avoids both.
-        let woken = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|err| LockError::Poisoned(err.to_string()))?;
-            if state.locked {
-                state.locked = false;
-                std::mem::take(&mut state.waiters)
-            } else {
-                VecDeque::new()
-            }
-        };
-        // They re-contend and one wins, the rest re-register on their next poll.
-        for waker in woken {
-            waker.wake();
-        }
-        Ok(())
+    async fn unlock(&self) -> Result<(), LockError> {
+        self.unlock_core()
     }
 }
 
@@ -163,9 +187,10 @@ mod tests {
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     use std::time::Duration;
 
-    /// A `Waker` whose `wake()` re-enters the given lock via `try_lock()`,
-    /// modeling an inline-polling executor. The data pointer is an
-    /// `Arc<InMemoryAsyncLock>`.
+    /// A `Waker` whose `wake()` re-enters the given lock via `try_lock_core()`,
+    /// modeling an inline-polling executor. (`wake` is synchronous, so it calls
+    /// the synchronous core rather than the `async` trait method.) The data
+    /// pointer is an `Arc<InMemoryAsyncLock>`.
     fn reentrant_waker(lock: Arc<InMemoryAsyncLock>) -> Waker {
         unsafe fn clone(data: *const ()) -> RawWaker {
             let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
@@ -175,11 +200,11 @@ mod tests {
         }
         unsafe fn wake(data: *const ()) {
             let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
-            let _ = arc.try_lock(); // re-enter from inside wake(): must not deadlock
+            let _ = arc.try_lock_core(); // re-enter from inside wake(): must not deadlock
         }
         unsafe fn wake_by_ref(data: *const ()) {
             let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
-            let _ = arc.try_lock();
+            let _ = arc.try_lock_core();
             std::mem::forget(arc);
         }
         unsafe fn drop_fn(data: *const ()) {
@@ -215,22 +240,22 @@ mod tests {
         assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Pending));
     }
 
-    #[test]
-    fn try_lock_reflects_state() {
+    #[tokio::test]
+    async fn try_lock_reflects_state() {
         let lock = InMemoryAsyncLock::new();
-        assert!(lock.try_lock().unwrap()); // free → acquired
-        assert!(!lock.try_lock().unwrap()); // held → fails
-        lock.unlock().unwrap();
-        assert!(lock.try_lock().unwrap()); // released → acquired again
+        assert!(lock.try_lock().await.unwrap()); // free → acquired
+        assert!(!lock.try_lock().await.unwrap()); // held → fails
+        lock.unlock().await.unwrap();
+        assert!(lock.try_lock().await.unwrap()); // released → acquired again
     }
 
     #[tokio::test]
     async fn lock_resolves_immediately_when_free() {
         let lock = InMemoryAsyncLock::new();
         lock.lock().await.unwrap();
-        assert!(!lock.try_lock().unwrap()); // now held
-        lock.unlock().unwrap();
-        assert!(lock.try_lock().unwrap());
+        assert!(!lock.try_lock().await.unwrap()); // now held
+        lock.unlock().await.unwrap();
+        assert!(lock.try_lock().await.unwrap());
     }
 
     #[tokio::test]
@@ -255,10 +280,10 @@ mod tests {
             "waiter must still be parked"
         );
 
-        lock.unlock().unwrap();
+        lock.unlock().await.unwrap();
         let acquired_at = waiter.await.unwrap();
         assert_eq!(acquired_at, 0, "waiter acquired exactly once after unlock");
-        assert!(!lock.try_lock().unwrap(), "waiter holds the lock");
+        assert!(!lock.try_lock().await.unwrap(), "waiter holds the lock");
     }
 
     #[test]
@@ -279,8 +304,8 @@ mod tests {
         a.lock().await.unwrap();
         // Different key acquires without waiting on `a`.
         b.lock().await.unwrap();
-        a.unlock().unwrap();
-        b.unlock().unwrap();
+        a.unlock().await.unwrap();
+        b.unlock().await.unwrap();
     }
 
     // Regression: `unlock` must wake waiters OUTSIDE the held guard, so a waker
@@ -290,13 +315,13 @@ mod tests {
     #[test]
     fn unlock_does_not_deadlock_with_reentrant_waker() {
         let lock = Arc::new(InMemoryAsyncLock::new());
-        assert!(lock.try_lock().unwrap()); // hold the lock
+        assert!(lock.try_lock_core().unwrap()); // hold the lock
         park_waker(&lock, &reentrant_waker(Arc::clone(&lock)));
 
         let (tx, rx) = mpsc::channel();
         let unlock_lock = Arc::clone(&lock);
         std::thread::spawn(move || {
-            let _ = tx.send(unlock_lock.unlock());
+            let _ = tx.send(unlock_lock.unlock_core());
         });
         let result = rx
             .recv_timeout(Duration::from_secs(2))
@@ -310,12 +335,12 @@ mod tests {
     #[test]
     fn unlock_does_not_poison_when_a_waker_panics() {
         let lock = Arc::new(InMemoryAsyncLock::new());
-        assert!(lock.try_lock().unwrap()); // hold the lock
+        assert!(lock.try_lock_core().unwrap()); // hold the lock
         park_waker(&lock, &panicking_waker());
 
         let unlock_lock = Arc::clone(&lock);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = unlock_lock.unlock();
+            let _ = unlock_lock.unlock_core();
         }))
         .is_err();
         assert!(panicked, "the panicking waker should unwind out of unlock");
@@ -323,7 +348,7 @@ mod tests {
         // Not poisoned: the guard was dropped before the panicking wake ran, and
         // the lock was released, so it can be acquired again.
         assert!(
-            lock.try_lock().unwrap(),
+            lock.try_lock_core().unwrap(),
             "lock must remain usable after a waker panic"
         );
     }

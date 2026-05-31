@@ -130,7 +130,7 @@ async fn abort_releases_a_held_lock() {
 
     // Load (acquire) then abort without committing.
     let held = repo.get("c1").await.unwrap().unwrap();
-    repo.abort(&held).unwrap();
+    repo.abort(&held).await.unwrap();
 
     // The lock is free again: a subsequent load must not block.
     let reloaded = tokio::time::timeout(Duration::from_millis(500), repo.get("c1"))

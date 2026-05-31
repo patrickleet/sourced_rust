@@ -53,7 +53,7 @@ sourced_rust_macros = { workspace = true }
 sqlx = { version = "0.8", default-features = false, optional = true }
 tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"], optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"

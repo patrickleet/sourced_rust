@@ -215,6 +215,31 @@ pub(crate) fn is_sqlite_unique_constraint(err: &sqlx::Error) -> bool {
     }
 }
 
+/// Whether a SQLite error is a transient "database is locked"/"busy" condition.
+///
+/// SQLite serializes writers; without a `busy_timeout` a colliding writer gets
+/// `SQLITE_BUSY` (5) / `SQLITE_LOCKED` (6) immediately. For the lease lock that
+/// is contention, not failure, so the acquire loop should retry rather than
+/// surface it as a `LockError`. Also treats a pool-acquire timeout (e.g. the
+/// single-connection `:memory:` pool under contention) as retryable.
+#[cfg(feature = "sqlite")]
+pub(crate) fn is_sqlite_busy(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => {
+            let message = db_err.message().to_ascii_lowercase();
+            let code = db_err.code().map(|code| code.into_owned());
+            message.contains("database is locked")
+                || message.contains("database table is locked")
+                || matches!(
+                    code.as_deref(),
+                    Some("5" | "6" | "261" | "262" | "517" | "518")
+                )
+        }
+        sqlx::Error::PoolTimedOut => true,
+        _ => false,
+    }
+}
+
 #[cfg(feature = "postgres")]
 pub(crate) fn is_postgres_unique_violation(err: &sqlx::Error) -> bool {
     match err {

@@ -280,17 +280,36 @@ either component cannot collide. A later API can split type and ID if needed.
 
 ## Locking Model
 
-`QueuedRepository` remains a process-local coordination wrapper for examples,
-tests, and single-process adapters. It complements a Postgres repository but
-must not be the durable cross-process locking mechanism.
+The Postgres repository enforces optimistic concurrency with the
+`(aggregate_type, aggregate_id, sequence)` primary key. That uniqueness
+constraint is the authoritative cross-process write-conflict boundary and holds
+regardless of any lock — concurrent writers to the same stream collide on the
+sequence and one fails.
 
-The Postgres repository should enforce optimistic concurrency with the
-`(aggregate_type, aggregate_id, sequence)` uniqueness constraint. If a queued
-read/modify/write API is exposed for Postgres, it should use database-backed
-row locks or advisory locks inside the repository/transaction boundary. Those
-database locks replace process-local queue locks for cross-process writer
-coordination; `QueuedRepository` can still wrap a Postgres repository only as an
-additional in-process convenience layer.
+For workflows that want to *serialize* per-aggregate read/modify/write (rather
+than let a stale writer fail and retry), `QueuedRepository` can be backed by a
+durable lock manager instead of the default process-local
+`InMemoryAsyncLockManager`. `PostgresLockManager` (and `SqliteLockManager`)
+implement `AsyncLockManager` over an `aggregate_locks` lease table:
+
+- a held key is a row carrying an `owner_token` and an `expires_at` computed from
+  the database clock (one authoritative clock, so no cross-process skew);
+- acquisition is a single atomic conditional upsert (insert when absent, steal
+  when expired, re-acquire your own token); contention polls on a configurable
+  interval until won or `max_wait` elapses;
+- release is scoped to the owner token, so it never frees a holder that
+  legitimately reclaimed an expired lease.
+
+This is a **mutual-exclusion optimization, not a fencing guarantee.** A critical
+section that outlives `lease_ttl` can be stolen while the original holder still
+believes it holds the lock — safe only because the sequence primary key above is
+the real boundary (a stale writer fails its optimistic commit rather than
+corrupting data). v1 has **no lease renewal**, so set `lease_ttl` above the
+worst-case critical section. Rows from crashed holders are reused on the next
+acquire of the same key, or swept with `sweep_expired`.
+
+`QueuedRepository` over the in-memory manager remains a process-local convenience
+for examples, tests, and single-process adapters.
 
 ## Backward Compatibility
 

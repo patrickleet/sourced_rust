@@ -183,7 +183,7 @@ bus.listen(service, RunOptions::idempotent()).await?;
 |---|---|---|
 | Storage | `HashMapRepository` | `PostgresRepository`, `SqliteRepository` |
 | Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
-| Locking | `InMemoryAsyncLockManager` | any `AsyncLockManager` (Redis, Postgres advisory, …) |
+| Locking | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `AsyncLockManager` (Redis, …) |
 
 The rest of this README is the reference guide for each of these pieces.
 
@@ -264,7 +264,7 @@ Every infrastructure concern in `sourced_rust` follows the same pattern: an **as
 | Read model rows | `AsyncReadModelWritePlanStore` + `AsyncRelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `AsyncSnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
 | Outbox publishing | `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` | Any transport publisher |
-| Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | Redis, Postgres advisory, … |
+| Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.
 
@@ -651,20 +651,33 @@ let Some(mut todo) = repo.get("todo-1").await? else {
 repo.commit(&mut todo).await?; // unlocks
 
 // Or release without changes:
-repo.abort(&todo)?;
+repo.abort(&todo).await?;
 
 // Read without locking:
 let _ = repo.peek("todo-1").await?;
 ```
 
-By default, locking is in-memory. For distributed deployments, plug in a custom `AsyncLockManager`:
+By default, locking is in-memory (`InMemoryAsyncLockManager`) — process-local, lost
+on restart. For **cross-process** serialization, back the queue with a durable
+SQLx lease lock (feature `postgres` or `sqlite`). It implements the same
+`AsyncLockManager` trait, so it's a drop-in via `queued_async_with`:
 
 ```rust
-let redis_locks = MyRedisLockManager::new(/* ... */);
-let repo = HashMapRepository::new()
-    .queued_with_async(redis_locks)
-    .async_aggregate::<Todo>();
+use sourced_rust::{PostgresLockManager, PostgresRepository};
+
+let repo = PostgresRepository::connect_and_migrate(&database_url).await?;
+// The `aggregate_locks` lease table is created by the repository's migrations.
+let locks = PostgresLockManager::new(repo.pool().clone());
+let todos = repo.queued_async_with(locks).async_aggregate::<Todo>();
 ```
+
+The lease records each held key in the `aggregate_locks` table (`SqliteLockManager`
+is the SQLite equivalent). It is a **mutual-exclusion optimization, not a fencing
+guarantee** — the event store's `(aggregate_type, aggregate_id, sequence)` primary
+key remains the authoritative concurrency boundary. v1 has **no lease renewal**, so
+set the lease TTL above your longest critical section. Tune with `with_lease_ttl`,
+`with_retry_interval`, and `with_max_wait`; reclaim rows from crashed holders with
+`sweep_expired`. Any custom `AsyncLockManager` (e.g. Redis) plugs in the same way.
 
 ## Persistent Repositories
 

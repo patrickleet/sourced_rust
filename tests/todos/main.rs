@@ -118,7 +118,7 @@ async fn todos() {
             assert!(completed_todo.snapshot().task == "Buy groceries");
             assert!(completed_todo.snapshot().completed);
 
-            repo.abort(&completed_todo).unwrap();
+            repo.abort(&completed_todo).await.unwrap();
         } else {
             panic!("Updated Todo not found");
         }
@@ -381,7 +381,7 @@ async fn abort_releases_lock_after_get() {
     rx_started.recv().unwrap();
     assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
 
-    repo.abort(&locked).unwrap();
+    repo.abort(&locked).await.unwrap();
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
@@ -431,7 +431,7 @@ async fn abort_releases_lock_after_get_all() {
     assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
 
     for todo in &locked {
-        repo.abort(todo).unwrap();
+        repo.abort(todo).await.unwrap();
     }
 
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
@@ -487,7 +487,7 @@ async fn queued_repo_blocks_get_until_commit() {
             .block_on(repo_other.get(&other_id_clone))
             .unwrap()
             .unwrap();
-        repo_other.abort(&todo).unwrap();
+        rt.block_on(repo_other.abort(&todo)).unwrap();
         tx_other_done.send(()).unwrap();
     });
 
@@ -536,8 +536,8 @@ async fn queued_repo_blocks_get_until_commit() {
     assert!(rx_done.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 
-#[test]
-fn manual_lock_reports_failure_when_already_held() {
+#[tokio::test]
+async fn manual_lock_reports_failure_when_already_held() {
     let repo = HashMapRepository::new().queued_async();
     let id = next_id();
 
@@ -545,18 +545,18 @@ fn manual_lock_reports_failure_when_already_held() {
 
     // First acquisition succeeds.
     assert!(
-        lock.try_lock().unwrap(),
+        lock.try_lock().await.unwrap(),
         "first manual lock should be acquired"
     );
 
     // Second acquisition reports the lock is already held.
     let second = repo.lock_manager().get_lock(&id).unwrap();
     assert!(
-        !second.try_lock().unwrap(),
+        !second.try_lock().await.unwrap(),
         "second manual lock should report already held"
     );
 
-    lock.unlock().unwrap();
+    lock.unlock().await.unwrap();
 }
 
 #[tokio::test]
@@ -606,14 +606,14 @@ async fn commit_failure_keeps_lock_until_abort() {
         tx_started.send(()).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let todo = rt.block_on(repo_other.get(&id_other)).unwrap().unwrap();
-        repo_other.abort(&todo).unwrap();
+        rt.block_on(repo_other.abort(&todo)).unwrap();
         tx_got.send(()).unwrap();
     });
 
     rx_started.recv().unwrap();
     assert!(rx_got.recv_timeout(Duration::from_millis(200)).is_err());
 
-    repo.abort(&locked).unwrap();
+    repo.abort(&locked).await.unwrap();
     assert!(rx_got.recv_timeout(Duration::from_millis(500)).is_ok());
 }
 

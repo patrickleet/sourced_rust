@@ -127,3 +127,23 @@ CREATE TABLE IF NOT EXISTS consumer_inbox (
   CHECK (consumer <> ''),
   CHECK (message_id <> '')
 );
+
+-- Durable per-stream lease lock backing `QueuedRepository` cross-process
+-- serialization (see `PostgresLockManager`). A row is a held lease: `owner_token`
+-- identifies the acquiring generation and `expires_at`/`acquired_at` are epoch
+-- seconds from the database clock (extract(epoch from now())). A lease is
+-- stealable once expires_at is at or before now. Release is scoped to the owner
+-- token so it never frees a holder that reclaimed an expired lease. This is a
+-- mutual-exclusion optimization, NOT a fencing guarantee — the event-store
+-- sequence primary key remains the authoritative concurrency boundary.
+CREATE TABLE IF NOT EXISTS aggregate_locks (
+  lock_key text NOT NULL PRIMARY KEY,
+  owner_token text NOT NULL,
+  acquired_at double precision NOT NULL,
+  expires_at double precision NOT NULL,
+  CHECK (lock_key <> ''),
+  CHECK (owner_token <> '')
+);
+
+CREATE INDEX IF NOT EXISTS aggregate_locks_expires_at_idx
+  ON aggregate_locks (expires_at);
