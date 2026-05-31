@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::microsvc::transport::PayloadDecodeError;
 use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
@@ -68,6 +69,12 @@ impl From<EventRecordError> for HandlerError {
 impl From<serde_json::Error> for HandlerError {
     fn from(err: serde_json::Error) -> Self {
         HandlerError::DecodeFailed(err.to_string())
+    }
+}
+
+impl From<PayloadDecodeError> for HandlerError {
+    fn from(err: PayloadDecodeError) -> Self {
+        HandlerError::DecodeFailed(err.0)
     }
 }
 

@@ -69,8 +69,9 @@ pub use dependencies::{
 pub use error::HandlerError;
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
-    Message, MessageKind, Service, SubscriptionPlan,
+    Service, SubscriptionPlan,
 };
+pub use transport::{Message, MessageKind, PayloadDecodeError};
 pub use session::Session;
 
 // HTTP transport (requires "http" feature)

@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::dependencies::{HasReadModelStore, HasRepo};
 use super::error::HandlerError;
-use super::service::Message;
+use super::transport::Message;
 use super::session::Session;
 
 /// The context passed to every handler.
@@ -58,7 +58,7 @@ impl<'a, D> Context<'a, D> {
 
     /// Deserialize the input payload into a typed struct.
     pub fn input<T: DeserializeOwned>(&self) -> Result<T, HandlerError> {
-        self.message.payload_json()
+        self.message.payload_json().map_err(HandlerError::from)
     }
 
     /// Get the raw JSON input.
