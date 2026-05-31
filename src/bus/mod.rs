@@ -10,8 +10,10 @@
 //!
 //! - [`AsyncMessageSource`] / [`ReceivedMessage`] — pull a message from a direct
 //!   transport (Postgres, RabbitMQ, Kafka, NATS, in-memory) and settle it;
-//! - [`run_source`] — the runner that dispatches through
-//!   `Service::dispatch_message`, then acks/nacks/dead-letters per policy.
+//! - [`MessageRouter`] — the consume seam a runner dispatches to, implemented by
+//!   `microsvc::Service` and the dependency-free [`Handlers`] builder;
+//! - [`run_source`] — the runner that dispatches each message through the
+//!   consumer's [`MessageRouter::dispatch`], then acks/nacks/dead-letters per policy.
 //!
 //! The producer-side publish path lives here too:
 //!
