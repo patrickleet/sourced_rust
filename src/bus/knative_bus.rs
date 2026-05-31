@@ -8,7 +8,7 @@
 //!
 //! - [`KnativeBus::manifests`] — the role-based `Broker` + per-name `Trigger`
 //!   YAML for a service (and a local/kubefwd variant);
-//! - mounting [`cloud_events_router`](super::cloud_events_router) so the Triggers'
+//! - mounting [`cloud_events_router`](crate::microsvc::cloud_events_router) so the Triggers'
 //!   `/cloudevent/<type>` subscriber URIs reach `Service::dispatch_message`.
 //!
 //! Producing POSTs a binary-mode CloudEvent to a broker-ingress URL:
@@ -148,7 +148,7 @@ impl KnativeBus {
     /// subscribed event name to the producing service's events broker. Subscriber
     /// URIs are `/cloudevent/<type>` (matching [`cloud_events_router`]).
     ///
-    /// [`cloud_events_router`]: super::cloud_events_router
+    /// [`cloud_events_router`]: crate::microsvc::cloud_events_router
     pub fn manifests(&self, plan: &SubscriptionPlan, subscriptions: &[(&str, &str)]) -> String {
         let mut out = String::new();
         if !plan.commands.is_empty() {
