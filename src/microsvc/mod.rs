@@ -56,6 +56,7 @@
 mod context;
 mod dependencies;
 mod error;
+mod message_router;
 mod service;
 mod session;
 pub mod transport;

@@ -107,6 +107,7 @@ mod publisher;
 mod rabbit_bus;
 #[cfg(feature = "rabbitmq")]
 mod rabbitmq;
+mod router;
 mod run_options;
 mod runner;
 mod source;
@@ -130,6 +131,7 @@ pub use rabbit_bus::RabbitBus;
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
 pub use bus::{Bus, BusConsumer};
+pub use router::MessageRouter;
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};

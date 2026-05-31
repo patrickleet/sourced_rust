@@ -37,8 +37,8 @@ use std::time::Duration;
 use sqlx::{PgPool, Row};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{run_source, Bus, BusConsumer, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind, Service};
+use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use crate::microsvc::{Message, MessageKind};
 
 const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 
@@ -211,17 +211,13 @@ impl Bus for PostgresBus {
 }
 
 impl BusConsumer for PostgresBus {
-    async fn listen<D: Send + Sync + 'static>(
+    async fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
         self.ensure_tables().await?;
-        let names: Vec<String> = service
-            .command_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
+        let names = router.subscription_plan().commands;
         if names.is_empty() {
             return Ok(());
         }
@@ -230,20 +226,16 @@ impl BusConsumer for PostgresBus {
             names,
             lease_secs: self.lease.as_secs_f64(),
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 
-    async fn subscribe<D: Send + Sync + 'static>(
+    async fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
         self.ensure_tables().await?;
-        let names: Vec<String> = service
-            .event_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
+        let names = router.subscription_plan().events;
         if names.is_empty() {
             return Ok(());
         }
@@ -252,7 +244,7 @@ impl BusConsumer for PostgresBus {
             names,
             consumer: self.group.clone(),
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 }
 

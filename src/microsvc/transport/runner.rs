@@ -10,15 +10,15 @@
 use std::sync::Arc;
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{FailureAction, RunOptions, TransportError};
-use crate::microsvc::{Message, Service};
+use super::{FailureAction, MessageRouter, RunOptions, TransportError};
+use crate::microsvc::Message;
 
 /// Run the receive loop for a direct transport source.
 ///
 /// For each message the runner:
 ///
 /// 1. enforces the inbox stable-id contract (a no-op in idempotent mode);
-/// 2. dispatches through [`Service::dispatch_message`];
+/// 2. dispatches through [`MessageRouter::dispatch`];
 /// 3. on success, acknowledges via the adapter;
 /// 4. on failure, routes through [`RunOptions::failure_policy`] — retryable
 ///    failures are nacked for redelivery, permanent failures take the configured
@@ -29,7 +29,7 @@ use crate::microsvc::{Message, Service};
 /// acks it and moves on rather than dead-lettering it. Fan-out event transports
 /// may deliver events this service does not consume, and acking matches
 /// `microsvc::subscribe`; production transports should use
-/// [`Service::subscription_plan`] to avoid delivering unrelated messages at all.
+/// [`MessageRouter::subscription_plan`] to avoid delivering unrelated messages at all.
 ///
 /// The runner **acks only after handler effects have completed**, never before.
 /// It stops gracefully when the source returns `Ok(None)`, having fully settled
@@ -43,24 +43,24 @@ use crate::microsvc::{Message, Service};
 ///
 /// `I: Send` keeps the returned future `Send` so the runner can be spawned on a
 /// multi-threaded executor regardless of the inbox hook type.
-pub async fn run_source<D, S, I>(
-    service: Arc<Service<D>>,
+pub async fn run_source<R, S, I>(
+    router: Arc<R>,
     mut source: S,
     options: RunOptions<I>,
 ) -> Result<(), TransportError>
 where
-    D: Send + Sync + 'static,
+    R: MessageRouter,
     S: AsyncMessageSource,
     I: Send,
 {
     while let Some(received) = source.recv().await? {
         // No handler for this message: intentionally ignore (ack) rather than
         // dead-letter, so unrelated fan-out events don't pile into the DLQ.
-        if !service.handles_message(received.message().kind, received.message().name()) {
+        if !router.handles(received.message().kind, received.message().name()) {
             received.ack().await?;
             continue;
         }
-        match dispatch(&service, &options, received.message()).await {
+        match dispatch(router.as_ref(), &options, received.message()).await {
             Ok(()) => received.ack().await?,
             Err(error) => match options.failure_policy.resolve(&error) {
                 FailureAction::Nack => received.nack(&error.to_string()).await?,
@@ -85,29 +85,22 @@ where
 /// Enforces the inbox stable-id contract first (idempotent mode yields no key
 /// and skips it), then dispatches. A failed stable-id check is a permanent
 /// failure — redelivery cannot supply a missing or malformed id.
-async fn dispatch<D, I>(
-    service: &Service<D>,
+async fn dispatch<R: MessageRouter, I>(
+    router: &R,
     options: &RunOptions<I>,
     message: &Message,
-) -> Result<(), TransportError>
-where
-    D: Send + Sync + 'static,
-{
+) -> Result<(), TransportError> {
     options
         .validate_message_id(message)
         .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
-    service
-        .dispatch_message(message)
-        .await
-        .map(|_| ())
-        .map_err(TransportError::from)
+    router.dispatch(message).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::microsvc::transport::FailurePolicy;
-    use crate::microsvc::{HandlerError, MessageKind};
+    use crate::microsvc::{HandlerError, MessageKind, Service};
     use serde_json::json;
     use std::collections::VecDeque;
     use std::future::Future;

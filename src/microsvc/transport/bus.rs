@@ -20,8 +20,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use super::{Message, RunOptions, TransportError};
-use crate::microsvc::Service;
+use super::{Message, MessageRouter, RunOptions, TransportError};
 
 /// Produce side of the bus — uniform across every transport.
 pub trait Bus: Send + Sync {
@@ -54,26 +53,25 @@ pub trait Bus: Send + Sync {
 
 /// Consume side of the bus — pull transports that run a [`run_source`] loop.
 ///
-/// `listen`/`subscribe` derive the message names from the service's registered
-/// handlers ([`Service::command_names`]/[`Service::event_names`]), build the
-/// transport's source with the matching topology, and run it. Both run until the
-/// source drains/stops.
+/// `listen`/`subscribe` derive the message names from the router's registered
+/// handlers ([`MessageRouter::subscription_plan`]), build the transport's source
+/// with the matching topology, and run it. Both run until the source drains/stops.
 ///
 /// [`run_source`]: super::run_source
 pub trait BusConsumer: Send + Sync {
-    /// Run `service` as a command listener: consume its command names with
+    /// Run `router` as a command listener: consume its command names with
     /// competing-consumer (point-to-point) semantics.
-    fn listen<D: Send + Sync + 'static>(
+    fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
 
-    /// Run `service` as an event subscriber: consume its event names with
+    /// Run `router` as an event subscriber: consume its event names with
     /// fan-out semantics.
-    fn subscribe<D: Send + Sync + 'static>(
+    fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
 }

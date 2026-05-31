@@ -14,8 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{run_source, Bus, BusConsumer, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind, Service};
+use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use crate::microsvc::{Message, MessageKind};
 
 type Queues = Arc<Mutex<HashMap<String, VecDeque<Message>>>>;
 type Topics = Arc<Mutex<HashMap<String, Vec<Message>>>>;
@@ -79,39 +79,31 @@ impl Bus for InMemoryBus {
 }
 
 impl BusConsumer for InMemoryBus {
-    async fn listen<D: Send + Sync + 'static>(
+    async fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let names = service
-            .command_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
+        let names = router.subscription_plan().commands;
         let source = QueueSource {
             queues: self.queues.clone(),
             names,
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 
-    async fn subscribe<D: Send + Sync + 'static>(
+    async fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let names = service
-            .event_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
+        let names = router.subscription_plan().events;
         let source = TopicSource {
             topics: self.topics.clone(),
             names,
             cursors: HashMap::new(),
         };
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 }
 
@@ -184,7 +176,7 @@ impl ReceivedMessage for InMemoryReceived {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsvc::HandlerError;
+    use crate::microsvc::{HandlerError, Service};
     use serde_json::json;
     use std::future::Future;
 

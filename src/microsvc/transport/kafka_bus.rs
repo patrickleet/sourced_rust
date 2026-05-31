@@ -22,8 +22,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
-use super::{run_source, AsyncMessagePublisher, Bus, BusConsumer, RunOptions, TransportError};
-use crate::microsvc::{Message, MessageKind, Service};
+use super::{
+    run_source, AsyncMessagePublisher, Bus, BusConsumer, MessageRouter, RunOptions, TransportError,
+};
+use crate::microsvc::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -71,9 +73,9 @@ impl KafkaBus {
         format!("{}.evt.", self.namespace)
     }
 
-    async fn run<D: Send + Sync + 'static>(
+    async fn run<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         topics: Vec<String>,
         group_id: String,
         strip_prefix: String,
@@ -87,7 +89,7 @@ impl KafkaBus {
             .await?
             .with_fetch_timeout(self.fetch_timeout)
             .with_strip_prefix(strip_prefix);
-        run_source(service, source, options).await
+        run_source(router, source, options).await
     }
 }
 
@@ -115,33 +117,35 @@ impl Bus for KafkaBus {
 }
 
 impl BusConsumer for KafkaBus {
-    async fn listen<D: Send + Sync + 'static>(
+    async fn listen<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
         let prefix = self.command_prefix();
-        let topics: Vec<String> = service
-            .command_names()
+        let topics: Vec<String> = router
+            .subscription_plan()
+            .commands
             .iter()
             .map(|name| format!("{prefix}{name}"))
             .collect();
         let group_id = format!("{}.{}.cmd", self.namespace, self.group);
-        self.run(service, topics, group_id, prefix, options).await
+        self.run(router, topics, group_id, prefix, options).await
     }
 
-    async fn subscribe<D: Send + Sync + 'static>(
+    async fn subscribe<R: MessageRouter>(
         &self,
-        service: Arc<Service<D>>,
+        router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
         let prefix = self.event_prefix();
-        let topics: Vec<String> = service
-            .event_names()
+        let topics: Vec<String> = router
+            .subscription_plan()
+            .events
             .iter()
             .map(|name| format!("{prefix}{name}"))
             .collect();
         let group_id = format!("{}.{}.evt", self.namespace, self.group);
-        self.run(service, topics, group_id, prefix, options).await
+        self.run(router, topics, group_id, prefix, options).await
     }
 }
