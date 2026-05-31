@@ -30,7 +30,7 @@ use super::context::Context;
 use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
 use super::error::HandlerError;
 use super::session::Session;
-use super::transport::{Message, MessageKind};
+use crate::bus::{Message, MessageKind, SubscriptionPlan};
 
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
@@ -132,15 +132,6 @@ impl HandlerSpec {
     pub fn names(&self) -> Vec<&'static str> {
         self.names.to_vec()
     }
-}
-
-/// Transport subscription metadata derived from registered handlers.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SubscriptionPlan {
-    /// Command names consumed by point-to-point command transports.
-    pub commands: Vec<String>,
-    /// Event names consumed by fan-out event transports.
-    pub events: Vec<String>,
 }
 
 /// A registered handler with optional guard.

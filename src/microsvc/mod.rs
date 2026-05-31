@@ -71,9 +71,9 @@ pub use dependencies::{
 pub use error::HandlerError;
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
-    Service, SubscriptionPlan,
+    Service,
 };
-pub use crate::bus::{Message, MessageKind, PayloadDecodeError};
+pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use session::Session;
 
 // HTTP transport (requires "http" feature)

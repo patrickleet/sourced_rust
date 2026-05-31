@@ -15,6 +15,15 @@ pub enum MessageKind {
     Event,
 }
 
+/// Transport subscription metadata derived from a router's registered handlers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubscriptionPlan {
+    /// Command names consumed by point-to-point command transports.
+    pub commands: Vec<String>,
+    /// Event names consumed by fan-out event transports.
+    pub events: Vec<String>,
+}
+
 /// Failure decoding a [`Message`] payload.
 ///
 /// A bus-core error so [`Message`] stays free of `microsvc::HandlerError`. The
