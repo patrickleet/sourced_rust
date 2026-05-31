@@ -82,6 +82,13 @@ mod http;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
 
+// Knative / CloudEvents HTTP ingress (Service-coupled; the bus keeps only the
+// produce/manifest helpers). Requires the "http" feature.
+#[cfg(feature = "http")]
+mod knative_ingress;
+#[cfg(feature = "http")]
+pub use knative_ingress::cloud_events_router;
+
 // gRPC transport (requires "grpc" feature)
 #[cfg(feature = "grpc")]
 pub mod grpc;

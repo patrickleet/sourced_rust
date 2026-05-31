@@ -1007,7 +1007,8 @@ where
         + Sync
         + 'static,
 {
-    use sourced_rust::microsvc::transport::{cloud_events_router, KnativeBus};
+    use sourced_rust::microsvc::cloud_events_router;
+    use sourced_rust::microsvc::transport::KnativeBus;
 
     let (collector, collected) = build_collector();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

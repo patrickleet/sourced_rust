@@ -116,7 +116,7 @@ pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 #[cfg(feature = "kafka")]
 pub use kafka_bus::KafkaBus;
 #[cfg(feature = "http")]
-pub use knative::{cloud_events_router, knative_triggers};
+pub use knative::knative_triggers;
 #[cfg(feature = "http")]
 pub use knative_bus::KnativeBus;
 #[cfg(feature = "nats")]
