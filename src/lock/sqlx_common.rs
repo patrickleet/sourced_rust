@@ -94,29 +94,76 @@ pub(crate) trait LeaseBackend: Send + Sync {
     fn db_release(&self, token: &str) -> impl Future<Output = Result<(), LockError>> + Send;
 }
 
+/// Releases the in-process gate synchronously on drop, unless disarmed.
+///
+/// Cancellation safety: the lease helpers hold the gate across `.await` points
+/// (DB acquire, retry sleep, DB release). If the caller's future is dropped
+/// there, only `Drop` runs — so the gate MUST be released from `Drop`, or the
+/// key wedges for every later same-process acquire. `Drop` cannot `.await`, so
+/// it uses the gate's synchronous `unlock_core`. On the success path the holder
+/// keeps the gate, so [`disarm`](Self::disarm) suppresses the release.
+struct GateGuard<'a> {
+    gate: &'a InMemoryAsyncLock,
+    armed: bool,
+}
+
+impl<'a> GateGuard<'a> {
+    fn new(gate: &'a InMemoryAsyncLock) -> Self {
+        Self { gate, armed: true }
+    }
+
+    /// Keep the gate held (the acquisition succeeded); the eventual `unlock`
+    /// releases it.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for GateGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.gate.unlock_core();
+        }
+    }
+}
+
 /// Acquire: hold the in-process gate, then poll the DB lease until won or
-/// `max_wait` elapses. The gate is released on any failure path.
+/// `max_wait` elapses. The gate is released (via [`GateGuard`]) on every failure
+/// path AND on cancellation. `max_wait` is measured from entry, so it also caps
+/// the wait for the in-process gate, not just the DB polling.
 pub(crate) async fn lease_lock(backend: &impl LeaseBackend) -> Result<(), LockError> {
-    backend.shared().gate.lock().await?;
+    let started = Instant::now();
+    let max_wait = backend.config().max_wait;
+
+    // Acquire the in-process gate, bounding the wait by `max_wait` if set.
+    match max_wait {
+        Some(max) => match tokio::time::timeout(max, backend.shared().gate.lock()).await {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(LockError::AcquireFailed(format!(
+                    "lease acquire timed out after {max:?} waiting for the in-process gate"
+                )))
+            }
+        },
+        None => backend.shared().gate.lock().await?,
+    }
+    let mut guard = GateGuard::new(&backend.shared().gate);
+
     // One token per acquisition, reused across retries so a lost-response retry
     // can re-acquire our own row (the `OR owner_token = ours` upsert branch).
     let token = backend.mint_token();
-    let started = Instant::now();
     loop {
         match backend.db_acquire(&token).await {
             Ok(true) => {
                 store_token(backend.shared(), Some(token));
+                guard.disarm(); // success: keep the gate held until `unlock`
                 return Ok(());
             }
             Ok(false) => {}
-            Err(err) => {
-                let _ = backend.shared().gate.unlock().await;
-                return Err(err);
-            }
+            Err(err) => return Err(err), // guard releases the gate on drop
         }
-        if let Some(max) = backend.config().max_wait {
+        if let Some(max) = max_wait {
             if started.elapsed() >= max {
-                let _ = backend.shared().gate.unlock().await;
                 return Err(LockError::AcquireFailed(format!(
                     "lease acquire timed out after {max:?}"
                 )));
@@ -127,37 +174,37 @@ pub(crate) async fn lease_lock(backend: &impl LeaseBackend) -> Result<(), LockEr
 }
 
 /// Non-blocking acquire: take the in-process gate if free, then a single DB
-/// acquire attempt. Releases the gate if the DB lease is held remotely.
+/// acquire attempt. The gate is released (via [`GateGuard`]) unless we win.
 pub(crate) async fn lease_try_lock(backend: &impl LeaseBackend) -> Result<bool, LockError> {
     if !backend.shared().gate.try_lock().await? {
         return Ok(false);
     }
+    let mut guard = GateGuard::new(&backend.shared().gate);
     let token = backend.mint_token();
     match backend.db_acquire(&token).await {
         Ok(true) => {
             store_token(backend.shared(), Some(token));
+            guard.disarm();
             Ok(true)
         }
-        Ok(false) => {
-            let _ = backend.shared().gate.unlock().await;
-            Ok(false)
-        }
-        Err(err) => {
-            let _ = backend.shared().gate.unlock().await;
-            Err(err)
-        }
+        Ok(false) => Ok(false), // guard releases the gate on drop
+        Err(err) => Err(err),   // guard releases the gate on drop
     }
 }
 
 /// Release: delete our lease row (best-effort — the lease TTL reclaims it if this
-/// fails, and a committed write must never fail on lock cleanup), then always
-/// release the in-process gate. Idempotent if we no longer hold the lease.
+/// fails, and a committed write must never fail on lock cleanup). The in-process
+/// gate is released by [`GateGuard`] on drop, so it is freed even if this future
+/// is cancelled mid `db_release`. Idempotent if we no longer hold the lease.
 pub(crate) async fn lease_unlock(backend: &impl LeaseBackend) -> Result<(), LockError> {
+    // Always-armed: this releases the gate on drop whether `db_release` completes,
+    // errors, or the future is cancelled while awaiting it.
+    let _guard = GateGuard::new(&backend.shared().gate);
     let token = store_token(backend.shared(), None);
     if let Some(token) = token {
         let _ = backend.db_release(&token).await;
     }
-    backend.shared().gate.unlock().await
+    Ok(())
 }
 
 /// Swap the stored owner token, returning the previous value. Used to set the
@@ -165,9 +212,7 @@ pub(crate) async fn lease_unlock(backend: &impl LeaseBackend) -> Result<(), Lock
 ///
 /// Infallible: the slot holds only an `Option<String>` and is mutated without
 /// running user code, so the mutex can never truly be poisoned. We recover the
-/// guard defensively rather than return an error — propagating here would
-/// otherwise leave the in-process gate held (since the lease helpers release the
-/// gate only on their explicit error paths).
+/// guard defensively rather than return an error.
 fn store_token(shared: &LockShared, next: Option<String>) -> Option<String> {
     let mut slot = shared
         .token

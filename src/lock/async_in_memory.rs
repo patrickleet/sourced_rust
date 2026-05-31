@@ -34,10 +34,10 @@ impl InMemoryAsyncLock {
     /// Synchronous core of [`try_lock`](AsyncLock::try_lock).
     ///
     /// In-memory acquisition is pure state mutation, so the real work lives in a
-    /// private synchronous helper and the public `AsyncLock` method wraps it in a
-    /// ready future — there is no parallel sync *API*, only this internal detail.
-    /// The synchronous core also lets the regression tests exercise release from
-    /// inside a `Waker`, which cannot `.await`.
+    /// private synchronous helper and the public `AsyncLock::try_lock` runs it
+    /// inside its (lazy) future — there is no parallel sync *API*, only this
+    /// internal detail. The synchronous core also lets the regression tests
+    /// exercise acquisition from inside a `Waker`, which cannot `.await`.
     fn try_lock_core(&self) -> Result<bool, LockError> {
         let mut state = self
             .state
@@ -59,7 +59,10 @@ impl InMemoryAsyncLock {
     /// `Mutex` would let a panicking waker poison (permanently brick) the lock,
     /// and a waker that synchronously re-polls would deadlock on the
     /// non-reentrant guard. Waking outside the critical section avoids both.
-    fn unlock_core(&self) -> Result<(), LockError> {
+    ///
+    /// `pub(crate)` so the SQLx locks' cancellation-safe gate guard can release
+    /// the in-process gate synchronously from `Drop` (which cannot `.await`).
+    pub(crate) fn unlock_core(&self) -> Result<(), LockError> {
         let woken = {
             let mut state = self
                 .state
@@ -125,14 +128,16 @@ impl AsyncLock for InMemoryAsyncLock {
         InMemoryAsyncLockFuture { lock: self }
     }
 
-    fn try_lock(&self) -> impl Future<Output = Result<bool, LockError>> + Send + '_ {
-        // Eager ready future: the work is pure in-memory state mutation, so it
-        // runs at call time and resolves immediately (no executor round-trip).
-        std::future::ready(self.try_lock_core())
+    // Lazy: the side effect runs when the future is polled, not at call time, so
+    // a future that is dropped without being awaited is a no-op — matching the
+    // I/O-backed locks (whose `async fn` bodies also only run on poll). The body
+    // has no `.await`, so the returned future is trivially `Send`.
+    async fn try_lock(&self) -> Result<bool, LockError> {
+        self.try_lock_core()
     }
 
-    fn unlock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_ {
-        std::future::ready(self.unlock_core())
+    async fn unlock(&self) -> Result<(), LockError> {
+        self.unlock_core()
     }
 }
 

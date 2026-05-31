@@ -258,6 +258,30 @@ async fn scenario_max_wait_timeout<M: AsyncLockManager>(holder: &M, waiter: &M) 
     within(held.unlock()).await.unwrap();
 }
 
+/// Cancellation safety: if an in-progress `lock()` is dropped while it holds the
+/// in-process gate and is polling the (held) DB lease, the gate must still be
+/// released — otherwise the key wedges for every later same-process acquire.
+async fn scenario_cancelled_acquire_releases_gate<M: AsyncLockManager>(holder: &M, other: &M) {
+    let h = holder.get_lock("cancelme").unwrap();
+    within(h.lock()).await.unwrap(); // holder owns the DB lease
+
+    // `other` acquires its own gate, then polls the held DB lease. Cancel it
+    // there by letting the timeout drop the future while it is still waiting.
+    let o = other.get_lock("cancelme").unwrap();
+    let cancelled = tokio::time::timeout(Duration::from_millis(150), o.lock()).await;
+    assert!(
+        cancelled.is_err(),
+        "the contended acquire must still be waiting when cancelled"
+    );
+
+    // Release the holder; `other` must now acquire. If the cancelled acquire had
+    // leaked its gate, this second `lock()` would hang on the wedged gate and
+    // `within` would time out.
+    within(h.unlock()).await.unwrap();
+    within(o.lock()).await.unwrap();
+    within(o.unlock()).await.unwrap();
+}
+
 // ===========================================================================
 // SQLite backend (runs unconditionally — temp-file databases, no server).
 // ===========================================================================
@@ -418,6 +442,15 @@ mod sqlite_backend {
         );
         drop(db);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_acquire_releases_gate() {
+        let db = TempDb::new();
+        let holder = SqliteLockManager::new(db.pool().await);
+        let other = SqliteLockManager::new(db.pool().await);
+        scenario_cancelled_acquire_releases_gate(&holder, &other).await;
+        drop(db);
+    }
 }
 
 // ===========================================================================
@@ -548,5 +581,15 @@ mod postgres_backend {
             reclaimed >= 1,
             "sweep_expired should delete the expired lease, got {reclaimed}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_acquire_releases_gate() {
+        let Some(schema) = schema().await else {
+            return;
+        };
+        let holder = PostgresLockManager::new(schema.repository().await.pool().clone());
+        let other = PostgresLockManager::new(schema.repository().await.pool().clone());
+        scenario_cancelled_acquire_releases_gate(&holder, &other).await;
     }
 }

@@ -179,7 +179,10 @@ where
     /// Release the lock held for an aggregate after an aborted load.
     pub async fn abort(&self, aggregate: &A) -> Result<(), RepositoryError> {
         let identity = stream_identity_for::<A>(aggregate.entity().id())?;
-        self.repo.unlock(&identity).await
+        // Forward to the repo's `abort` hook (not `unlock`) so an
+        // `AsyncUnlockableRepository` that overrides `abort` for extra cleanup
+        // is honored. The default `abort` delegates to `unlock`.
+        self.repo.abort(&identity).await
     }
 
     /// Release the lock held for an aggregate id.
