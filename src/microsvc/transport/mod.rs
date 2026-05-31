@@ -85,6 +85,7 @@ mod bus;
 mod capabilities;
 mod error;
 mod failure_policy;
+mod handlers;
 mod in_memory_bus;
 #[cfg(feature = "kafka")]
 mod kafka;
@@ -135,6 +136,7 @@ pub use router::MessageRouter;
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
+pub use handlers::{AsyncMessageHandler, Handlers};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
 pub use outbox_source::{
