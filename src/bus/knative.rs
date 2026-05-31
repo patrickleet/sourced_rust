@@ -7,6 +7,8 @@
 //!
 //! Requires the `http` feature.
 
+use std::collections::HashSet;
+
 use super::SubscriptionPlan;
 
 /// Sanitize a string into an RFC 1123 DNS label usable as a Kubernetes resource
@@ -34,13 +36,40 @@ pub(super) fn sanitize_k8s_name(name: &str) -> String {
     }
 }
 
+/// Sanitize `raw` into a Kubernetes name that is **unique** within `used`.
+///
+/// Distinct CloudEvent types can normalize to the same DNS label (e.g.
+/// `order.created` and `order-created`, or a command and an event of the same
+/// name) — which would otherwise emit two `Trigger`s with the same
+/// `metadata.name`, the second silently clobbering the first on apply. On a
+/// collision, append a numeric suffix, truncating the base so the result stays
+/// within the 63-char label limit. The Trigger's `type:` filter still carries the
+/// raw event name, so routing is unaffected; only the resource name is adjusted.
+pub(super) fn unique_k8s_name(raw: &str, used: &mut HashSet<String>) -> String {
+    let base = sanitize_k8s_name(raw);
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let mut n = 2usize;
+    loop {
+        let suffix = format!("-{n}");
+        let head = base.len().min(63usize.saturating_sub(suffix.len()));
+        let candidate = format!("{}{suffix}", base[..head].trim_end_matches('-'));
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Render Knative `Trigger` YAML for each event a service subscribes to, derived
 /// from its [`SubscriptionPlan`]. Each Trigger filters on the CloudEvent `type`
 /// and routes to `subscriber_service` on `broker`.
 pub fn knative_triggers(plan: &SubscriptionPlan, broker: &str, subscriber_service: &str) -> String {
     let mut out = String::new();
+    let mut used = HashSet::new();
     for event in &plan.events {
-        let trigger_name = sanitize_k8s_name(&format!("{subscriber_service}-{event}"));
+        let trigger_name = unique_k8s_name(&format!("{subscriber_service}-{event}"), &mut used);
         out.push_str(&format!(
             "apiVersion: eventing.knative.dev/v1\n\
              kind: Trigger\n\
@@ -107,5 +136,33 @@ mod tests {
         // The CloudEvent type filter keeps the raw type; the resource name is sanitized.
         assert!(yaml.contains("type: Order.Created"));
         assert!(yaml.contains("name: checkout-projection-order-created"));
+    }
+
+    #[test]
+    fn trigger_names_are_deduped_when_event_types_normalize_alike() {
+        // `order.created` and `order-created` both sanitize to the same label;
+        // the second Trigger must get a distinct name so neither clobbers the
+        // other on apply, while both keep their raw `type:` filters.
+        let plan = SubscriptionPlan {
+            commands: vec![],
+            events: vec!["order.created".to_string(), "order-created".to_string()],
+        };
+        let yaml = knative_triggers(&plan, "default", "svc");
+        assert!(yaml.contains("name: svc-order-created\n"));
+        assert!(yaml.contains("name: svc-order-created-2\n"));
+        assert!(yaml.contains("type: order.created"));
+        assert!(yaml.contains("type: order-created"));
+    }
+
+    #[test]
+    fn unique_k8s_name_caps_suffixed_names_at_63_chars() {
+        let mut used = HashSet::new();
+        let long = "a".repeat(80);
+        let first = unique_k8s_name(&long, &mut used);
+        let second = unique_k8s_name(&long, &mut used);
+        assert_eq!(first.len(), 63);
+        assert_ne!(first, second);
+        assert!(second.len() <= 63);
+        assert!(second.ends_with("-2"));
     }
 }
