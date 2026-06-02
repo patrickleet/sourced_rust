@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use crate::repository::{AsyncSnapshotStore, RepositoryError, StreamIdentity};
+use crate::repository::{RepositoryError, SnapshotStore, StreamIdentity};
 
 use super::store::SnapshotRecord;
 
@@ -34,8 +34,8 @@ impl InMemorySnapshotStore {
     }
 }
 
-impl AsyncSnapshotStore for InMemorySnapshotStore {
-    fn get_snapshot_async<'a>(
+impl SnapshotStore for InMemorySnapshotStore {
+    fn get_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
@@ -48,7 +48,7 @@ impl AsyncSnapshotStore for InMemorySnapshotStore {
         }
     }
 
-    fn save_snapshot_async<'a>(
+    fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
         record: SnapshotRecord,
@@ -64,7 +64,7 @@ impl AsyncSnapshotStore for InMemorySnapshotStore {
         }
     }
 
-    fn delete_snapshot_async<'a>(
+    fn delete_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
@@ -98,12 +98,12 @@ mod tests {
             vec![1, 2, 3],
         );
         store
-            .save_snapshot_async(&identity("agg-1"), record)
+            .save_snapshot(&identity("agg-1"), record)
             .await
             .unwrap();
 
         let loaded = store
-            .get_snapshot_async(&identity("agg-1"))
+            .get_snapshot(&identity("agg-1"))
             .await
             .unwrap()
             .unwrap();
@@ -116,7 +116,7 @@ mod tests {
     async fn get_missing_returns_none() {
         let store = InMemorySnapshotStore::new();
         assert!(store
-            .get_snapshot_async(&identity("missing"))
+            .get_snapshot(&identity("missing"))
             .await
             .unwrap()
             .is_none());
@@ -126,14 +126,14 @@ mod tests {
     async fn save_overwrites() {
         let store = InMemorySnapshotStore::new();
         store
-            .save_snapshot_async(
+            .save_snapshot(
                 &identity("agg-1"),
                 SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
             )
             .await
             .unwrap();
         store
-            .save_snapshot_async(
+            .save_snapshot(
                 &identity("agg-1"),
                 SnapshotRecord::new("test.aggregate", "agg-1", 5, "TestSnapshot", 1, vec![5]),
             )
@@ -141,7 +141,7 @@ mod tests {
             .unwrap();
 
         let loaded = store
-            .get_snapshot_async(&identity("agg-1"))
+            .get_snapshot(&identity("agg-1"))
             .await
             .unwrap()
             .unwrap();
@@ -153,18 +153,15 @@ mod tests {
     async fn delete_existing() {
         let store = InMemorySnapshotStore::new();
         store
-            .save_snapshot_async(
+            .save_snapshot(
                 &identity("agg-1"),
                 SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
             )
             .await
             .unwrap();
+        assert!(store.delete_snapshot(&identity("agg-1")).await.unwrap());
         assert!(store
-            .delete_snapshot_async(&identity("agg-1"))
-            .await
-            .unwrap());
-        assert!(store
-            .get_snapshot_async(&identity("agg-1"))
+            .get_snapshot(&identity("agg-1"))
             .await
             .unwrap()
             .is_none());
@@ -173,10 +170,7 @@ mod tests {
     #[tokio::test]
     async fn delete_missing_returns_false() {
         let store = InMemorySnapshotStore::new();
-        assert!(!store
-            .delete_snapshot_async(&identity("missing"))
-            .await
-            .unwrap());
+        assert!(!store.delete_snapshot(&identity("missing")).await.unwrap());
     }
 
     #[tokio::test]
@@ -184,7 +178,7 @@ mod tests {
         let store = InMemorySnapshotStore::new();
         let clone = store.clone();
         store
-            .save_snapshot_async(
+            .save_snapshot(
                 &identity("agg-1"),
                 SnapshotRecord::new("test.aggregate", "agg-1", 3, "TestSnapshot", 1, vec![3]),
             )
@@ -192,7 +186,7 @@ mod tests {
             .unwrap();
 
         let loaded = clone
-            .get_snapshot_async(&identity("agg-1"))
+            .get_snapshot(&identity("agg-1"))
             .await
             .unwrap()
             .unwrap();

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 use crate::handlers;
@@ -20,7 +20,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
@@ -169,11 +169,11 @@ async fn multiple_services_on_different_queues() {
     let store = HashMapRepository::new();
 
     let service_a = Arc::new(distributed::register_handlers!(
-        Service::with_repo(store.clone().queued_async().async_aggregate::<Counter>()),
+        Service::with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
     ));
     let service_b = Arc::new(distributed::register_handlers!(
-        Service::with_repo(store.queued_async().async_aggregate::<Counter>()),
+        Service::with_repo(store.queued().aggregate::<Counter>()),
         command handlers::counter_increment,
     ));
 

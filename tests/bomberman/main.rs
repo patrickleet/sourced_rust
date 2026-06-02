@@ -305,10 +305,10 @@ async fn bob_move_to_position<R>(
     to_x: i32,
     to_y: i32,
 ) where
-    R: distributed::AsyncGetStream
-        + distributed::AsyncTransactionalCommit
-        + distributed::AsyncReadModelWritePlanStore
-        + distributed::AsyncRelationalReadModelQueryStore,
+    R: distributed::GetStream
+        + distributed::TransactionalCommit
+        + distributed::ReadModelWritePlanStore
+        + distributed::RelationalReadModelQueryStore,
 {
     let sim = game.sim(id, _name);
     let mut cx = from_x;
@@ -342,7 +342,7 @@ async fn bob_move_to_position<R>(
 
 #[tokio::test]
 async fn concurrent_bomb_placement() {
-    use distributed::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
+    use distributed::{ReadModelWorkspaceExt, RowKey, RowValue};
     use std::sync::Arc;
 
     // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across tasks
@@ -378,8 +378,8 @@ async fn concurrent_bomb_placement() {
 
     // Verify both bombs placed
     let _board = repo
-        .workspace_async()
-        .load_async::<views::BoardView>(RowKey::new([(
+        .workspace()
+        .load::<views::BoardView>(RowKey::new([(
             "game_id",
             RowValue::String("game-5".into()),
         )]))

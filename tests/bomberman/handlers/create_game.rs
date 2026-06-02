@@ -1,4 +1,4 @@
-use distributed::{AsyncReadModelWritePlanCommitExt, AsyncTransactionalCommit};
+use distributed::{ReadModelWritePlanCommitExt, TransactionalCommit};
 
 use super::shared::board_write_plan;
 use crate::domain::game_map::GameMap;
@@ -7,7 +7,7 @@ use crate::views::BoardView;
 
 pub async fn create_game<R>(repo: &R, game_id: &str, ascii_map: &str) -> Result<GameMap, GameError>
 where
-    R: AsyncTransactionalCommit,
+    R: TransactionalCommit,
 {
     let (width, height, tiles, spawn_points) = GameMap::from_ascii(ascii_map);
 

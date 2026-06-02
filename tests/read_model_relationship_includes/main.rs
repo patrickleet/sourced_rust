@@ -1,10 +1,10 @@
 use std::future::Future;
 
 use distributed::{
-    AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore,
     InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
-    ReadModelWritePlan, RowKey, RowValue,
+    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RowKey, RowValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -98,30 +98,30 @@ impl NoIncludeStore {
     }
 }
 
-impl AsyncReadModelWritePlanStore for NoIncludeStore {
-    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        self.inner.read_model_capabilities_async()
+impl ReadModelWritePlanStore for NoIncludeStore {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+        self.inner.read_model_capabilities()
     }
 
-    fn commit_write_plan_async(
+    fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        self.inner.commit_write_plan_async(plan)
+        self.inner.commit_write_plan(plan)
     }
 }
 
-impl AsyncRelationalReadModelQueryStore for NoIncludeStore {
-    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+impl RelationalReadModelQueryStore for NoIncludeStore {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
         ReadModelQueryCapabilities::default()
     }
 
-    async fn load_graph_async(
+    async fn load_graph(
         &self,
         request: ReadModelLoadRequest,
     ) -> Result<ReadModelLoadGraph, ReadModelError> {
-        request.validate_for_query_capabilities(&self.read_model_query_capabilities_async())?;
-        self.inner.load_graph_async(request).await
+        request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
+        self.inner.load_graph(request).await
     }
 }
 
@@ -165,21 +165,16 @@ fn store_with_player_and_weapons(
     for weapon in weapons {
         session.upsert(&weapon).unwrap();
     }
-    block_on(session.commit_async(&store)).unwrap();
+    block_on(session.commit(&store)).unwrap();
     store
 }
 
 #[test]
 fn friendly_session_loads_one_root_by_primary_key_without_includes() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
-    let loaded = block_on(
-        read_models
-            .load_async::<Player>(player_key("player-1"))
-            .one(),
-    )
-    .unwrap();
+    let loaded = block_on(read_models.load::<Player>(player_key("player-1")).one()).unwrap();
 
     assert_eq!(loaded.unwrap().data.display_name, "Ada");
 }
@@ -187,11 +182,11 @@ fn friendly_session_loads_one_root_by_primary_key_without_includes() {
 #[test]
 fn friendly_session_hydrates_has_many_include() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let loaded = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -204,11 +199,11 @@ fn friendly_session_hydrates_has_many_include() {
 #[test]
 fn friendly_session_hydrates_belongs_to_include() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let loaded = block_on(
         read_models
-            .load_async::<PlayerWeapon>(weapon_key("player-1", "sword"))
+            .load::<PlayerWeapon>(weapon_key("player-1", "sword"))
             .include("player")
             .one(),
     )
@@ -221,22 +216,18 @@ fn friendly_session_hydrates_belongs_to_include() {
 #[test]
 fn sync_persists_loaded_scalar_field_without_manual_patch() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.workspace_async();
-    let mut loaded = block_on(
-        read_models
-            .load_async::<Player>(player_key("player-1"))
-            .one(),
-    )
-    .unwrap()
-    .unwrap()
-    .data;
+    let mut read_models = store.workspace();
+    let mut loaded = block_on(read_models.load::<Player>(player_key("player-1")).one())
+        .unwrap()
+        .unwrap()
+        .data;
     loaded.display_name = "Ada Lovelace".into();
 
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
-    let reloaded = block_on(check.load_async::<Player>(player_key("player-1")).one())
+    let mut check = store.workspace();
+    let reloaded = block_on(check.load::<Player>(player_key("player-1")).one())
         .unwrap()
         .unwrap();
     assert_eq!(reloaded.data.display_name, "Ada Lovelace");
@@ -245,24 +236,20 @@ fn sync_persists_loaded_scalar_field_without_manual_patch() {
 #[test]
 fn sync_refreshes_loaded_root_baseline_between_calls() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.workspace_async();
-    let mut loaded = block_on(
-        read_models
-            .load_async::<Player>(player_key("player-1"))
-            .one(),
-    )
-    .unwrap()
-    .unwrap()
-    .data;
+    let mut read_models = store.workspace();
+    let mut loaded = block_on(read_models.load::<Player>(player_key("player-1")).one())
+        .unwrap()
+        .unwrap()
+        .data;
 
     loaded.display_name = "Ada Lovelace".into();
     read_models.sync(loaded.clone()).unwrap();
     loaded.display_name = "Countess Lovelace".into();
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
-    let reloaded = block_on(check.load_async::<Player>(player_key("player-1")).one())
+    let mut check = store.workspace();
+    let reloaded = block_on(check.load::<Player>(player_key("player-1")).one())
         .unwrap()
         .unwrap();
     assert_eq!(reloaded.data.display_name, "Countess Lovelace");
@@ -271,10 +258,10 @@ fn sync_refreshes_loaded_root_baseline_between_calls() {
 #[test]
 fn sync_persists_added_and_modified_related_rows() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
     let mut loaded = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -285,12 +272,12 @@ fn sync_persists_added_and_modified_related_rows() {
     loaded.weapons.push(weapon("", "shield", "2026-05-25"));
 
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
+    let mut check = store.workspace();
     let mut reloaded = block_on(
         check
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -308,10 +295,10 @@ fn sync_persists_added_and_modified_related_rows() {
 #[test]
 fn sync_refreshes_loaded_include_baseline_between_calls() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
     let mut loaded = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -323,12 +310,12 @@ fn sync_refreshes_loaded_include_baseline_between_calls() {
     read_models.sync(loaded.clone()).unwrap();
     loaded.weapons[0].acquired_at = "2026-05-25".into();
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
+    let mut check = store.workspace();
     let reloaded = block_on(
         check
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -344,10 +331,10 @@ fn sync_deletes_removed_related_rows() {
         weapon("player-1", "shield", "2026-05-24"),
         weapon("player-1", "sword", "2026-05-23"),
     ]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
     let mut loaded = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -357,12 +344,12 @@ fn sync_deletes_removed_related_rows() {
     loaded.weapons.retain(|weapon| weapon.weapon_id == "sword");
 
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
+    let mut check = store.workspace();
     let reloaded = block_on(
         check
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -375,10 +362,10 @@ fn sync_deletes_removed_related_rows() {
 #[test]
 fn sync_clearing_belongs_to_does_not_delete_target() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
     let mut loaded = block_on(
         read_models
-            .load_async::<PlayerWeapon>(weapon_key("player-1", "sword"))
+            .load::<PlayerWeapon>(weapon_key("player-1", "sword"))
             .include("player")
             .one(),
     )
@@ -389,21 +376,21 @@ fn sync_clearing_belongs_to_does_not_delete_target() {
     loaded.player = None;
 
     read_models.sync(loaded).unwrap();
-    block_on(read_models.commit_async()).unwrap();
+    block_on(read_models.commit()).unwrap();
 
-    let mut check = store.workspace_async();
-    let player = block_on(check.load_async::<Player>(player_key("player-1")).one()).unwrap();
+    let mut check = store.workspace();
+    let player = block_on(check.load::<Player>(player_key("player-1")).one()).unwrap();
     assert_eq!(player.unwrap().data.display_name, "Ada");
 }
 
 #[test]
 fn missing_root_returns_none_without_include_loading() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let loaded = block_on(
         read_models
-            .load_async::<Player>(player_key("missing"))
+            .load::<Player>(player_key("missing"))
             .include("weapons")
             .one(),
     )
@@ -418,12 +405,12 @@ fn unregistered_relationship_target_fails_before_loading() {
     store.register_schema::<Player>().unwrap();
     let mut session = distributed::ReadModelWritePlanBuilder::new();
     session.upsert(&player("player-1", "Ada")).unwrap();
-    block_on(session.commit_async(&store)).unwrap();
-    let mut read_models = store.workspace_async();
+    block_on(session.commit(&store)).unwrap();
+    let mut read_models = store.workspace();
 
     let err = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -439,16 +426,12 @@ fn unregistered_root_schema_can_load_primary_key_without_includes() {
     let store = InMemoryReadModelStore::new();
     let mut session = distributed::ReadModelWritePlanBuilder::new();
     session.upsert(&player("player-1", "Ada")).unwrap();
-    block_on(session.commit_async(&store)).unwrap();
-    let mut read_models = store.workspace_async();
+    block_on(session.commit(&store)).unwrap();
+    let mut read_models = store.workspace();
 
-    let loaded = block_on(
-        read_models
-            .load_async::<Player>(player_key("player-1"))
-            .one(),
-    )
-    .unwrap()
-    .unwrap();
+    let loaded = block_on(read_models.load::<Player>(player_key("player-1")).one())
+        .unwrap()
+        .unwrap();
 
     assert_eq!(loaded.data.display_name, "Ada");
 }
@@ -457,11 +440,11 @@ fn unregistered_root_schema_can_load_primary_key_without_includes() {
 fn adapter_without_include_capability_rejects_includes() {
     let inner = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
     let store = NoIncludeStore::new(inner);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let err = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -475,11 +458,11 @@ fn adapter_without_include_capability_rejects_includes() {
 #[test]
 fn nested_query_style_include_paths_are_not_a_public_query_dsl() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let err = block_on(
         read_models
-            .load_async::<Player>(player_key("player-1"))
+            .load::<Player>(player_key("player-1"))
             .include("weapons.owner")
             .one(),
     )
@@ -494,11 +477,11 @@ fn nested_query_style_include_paths_are_not_a_public_query_dsl() {
 fn many_to_many_include_fails_until_join_metadata_is_rich_enough() {
     let store = InMemoryReadModelStore::new();
     store.register_schema::<PlayerWithMany>().unwrap();
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let err = block_on(
         read_models
-            .load_async::<PlayerWithMany>(player_key("player-1"))
+            .load::<PlayerWithMany>(player_key("player-1"))
             .include("weapons")
             .one(),
     )
@@ -528,15 +511,12 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
             label: "Sword".into(),
         })
         .unwrap();
-    block_on(session.commit_async(&store)).unwrap();
-    let mut read_models = store.workspace_async();
+    block_on(session.commit(&store)).unwrap();
+    let mut read_models = store.workspace();
 
     let err = block_on(
         read_models
-            .load_async::<WeaponLabelRef>(RowKey::new([(
-                "ref_id",
-                RowValue::String("ref-1".into()),
-            )]))
+            .load::<WeaponLabelRef>(RowKey::new([("ref_id", RowValue::String("ref-1".into()))]))
             .include("label")
             .one(),
     )
@@ -552,16 +532,16 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
 // --- Async workspace parity -----------------------------------------------
 //
 // `InMemoryReadModelStore` implements the async store traits, so the same
-// workspace ergonomic is available over `workspace_async()` /
-// `load_async()` / `commit_async()`.
+// workspace ergonomic is available over `workspace()` /
+// `load()` / `commit()`.
 
 #[tokio::test]
-async fn async_session_hydrates_has_many_include() {
+async fn workspace_hydrates_has_many_include() {
     let store = store_with_player_and_weapons([weapon("player-1", "sword", "2026-05-23")]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
 
     let loaded = read_models
-        .load_async::<Player>(player_key("player-1"))
+        .load::<Player>(player_key("player-1"))
         .include("weapons")
         .one()
         .await
@@ -572,11 +552,11 @@ async fn async_session_hydrates_has_many_include() {
 }
 
 #[tokio::test]
-async fn async_sync_persists_loaded_scalar_field_without_manual_patch() {
+async fn workspace_sync_persists_loaded_scalar_field_without_manual_patch() {
     let store = store_with_player_and_weapons([]);
-    let mut read_models = store.workspace_async();
+    let mut read_models = store.workspace();
     let mut loaded = read_models
-        .load_async::<Player>(player_key("player-1"))
+        .load::<Player>(player_key("player-1"))
         .one()
         .await
         .unwrap()
@@ -585,11 +565,11 @@ async fn async_sync_persists_loaded_scalar_field_without_manual_patch() {
     loaded.display_name = "Ada Lovelace".into();
 
     read_models.sync(loaded).unwrap();
-    read_models.commit_async().await.unwrap();
+    read_models.commit().await.unwrap();
 
-    let mut check = store.workspace_async();
+    let mut check = store.workspace();
     let reloaded = check
-        .load_async::<Player>(player_key("player-1"))
+        .load::<Player>(player_key("player-1"))
         .one()
         .await
         .unwrap()

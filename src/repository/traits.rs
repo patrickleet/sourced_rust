@@ -12,12 +12,12 @@ use super::inbox::InboxReceipt;
 use super::{RepositoryError, StreamIdentity};
 
 /// One aggregate event stream staged for an async transactional commit.
-pub struct AsyncStreamWrite<'a> {
+pub struct StreamWrite<'a> {
     pub identity: StreamIdentity,
     pub entity: &'a mut Entity,
 }
 
-impl<'a> AsyncStreamWrite<'a> {
+impl<'a> StreamWrite<'a> {
     pub fn new(identity: StreamIdentity, entity: &'a mut Entity) -> Self {
         Self { identity, entity }
     }
@@ -25,7 +25,7 @@ impl<'a> AsyncStreamWrite<'a> {
 
 /// Snapshot writes staged in an async transactional commit.
 #[derive(Clone, Debug)]
-pub enum AsyncSnapshotWrite {
+pub enum SnapshotWrite {
     Save {
         identity: StreamIdentity,
         record: SnapshotRecord,
@@ -33,18 +33,18 @@ pub enum AsyncSnapshotWrite {
 }
 
 /// A structured async write batch that must commit under one backend transaction.
-pub struct AsyncCommitBatch<'a> {
-    pub streams: Vec<AsyncStreamWrite<'a>>,
+pub struct CommitBatch<'a> {
+    pub streams: Vec<StreamWrite<'a>>,
     pub outbox_messages: Vec<OutboxMessage>,
     pub read_model_plans: Vec<ReadModelWritePlan>,
-    pub snapshots: Vec<AsyncSnapshotWrite>,
+    pub snapshots: Vec<SnapshotWrite>,
     /// Consumer inbox receipts to record in the same transaction (the optional
     /// effectively-once effect fence). Empty for the default idempotent path.
     pub inbox_receipts: Vec<InboxReceipt>,
 }
 
-impl<'a> AsyncCommitBatch<'a> {
-    pub fn new(streams: Vec<AsyncStreamWrite<'a>>) -> Self {
+impl<'a> CommitBatch<'a> {
+    pub fn new(streams: Vec<StreamWrite<'a>>) -> Self {
         Self {
             streams,
             outbox_messages: Vec::new(),
@@ -68,7 +68,7 @@ pub struct PreparedEventAppend {
 }
 
 impl PreparedEventAppend {
-    pub fn from_stream_write(write: &AsyncStreamWrite<'_>) -> Self {
+    pub fn from_stream_write(write: &StreamWrite<'_>) -> Self {
         Self {
             identity: write.identity.clone(),
             expected_version: write.entity.committed_version(),
@@ -78,7 +78,7 @@ impl PreparedEventAppend {
 }
 
 /// Async stream-aware aggregate loading.
-pub trait AsyncGetStream: Send + Sync {
+pub trait GetStream: Send + Sync {
     fn get_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,
@@ -91,10 +91,10 @@ pub trait AsyncGetStream: Send + Sync {
 }
 
 /// Async transactional commit capability for durable persistence backends.
-pub trait AsyncTransactionalCommit: Send + Sync {
-    fn commit_batch_async<'a>(
+pub trait TransactionalCommit: Send + Sync {
+    fn commit_batch<'a>(
         &'a self,
-        batch: AsyncCommitBatch<'a>,
+        batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 }
 
@@ -104,10 +104,10 @@ pub trait AsyncTransactionalCommit: Send + Sync {
 /// The pre-check lets a consumer skip re-running a handler for an already-processed
 /// message (and ack the redelivery) before opening a transaction. The
 /// authoritative dedupe is still the receipt's `(consumer, message_id)` primary
-/// key written in [`commit_batch_async`](AsyncTransactionalCommit::commit_batch_async),
+/// key written in [`commit_batch`](TransactionalCommit::commit_batch),
 /// which fences the race where two deliveries both pass the pre-check.
-pub trait AsyncInboxStore: Send + Sync {
-    fn inbox_contains_async<'a>(
+pub trait InboxStore: Send + Sync {
+    fn inbox_contains<'a>(
         &'a self,
         consumer: &'a str,
         message_id: &'a str,
@@ -115,44 +115,44 @@ pub trait AsyncInboxStore: Send + Sync {
 }
 
 /// Repository trait for types that implement async stream reads and commits.
-pub trait AsyncRepository: AsyncGetStream + AsyncTransactionalCommit {}
+pub trait Repository: GetStream + TransactionalCommit {}
 
-impl<T> AsyncRepository for T where T: AsyncGetStream + AsyncTransactionalCommit {}
+impl<T> Repository for T where T: GetStream + TransactionalCommit {}
 
 /// Async adapter contract for committing read-model write plans.
-pub trait AsyncReadModelWritePlanStore: Send + Sync {
-    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities;
+pub trait ReadModelWritePlanStore: Send + Sync {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities;
 
-    fn commit_write_plan_async(
+    fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_;
 }
 
 /// Async primary-key relational read-model query contract.
-pub trait AsyncRelationalReadModelQueryStore: Send + Sync {
-    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities;
+pub trait RelationalReadModelQueryStore: Send + Sync {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities;
 
-    fn load_graph_async(
+    fn load_graph(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_;
 }
 
 /// Async snapshot persistence keyed by full stream identity.
-pub trait AsyncSnapshotStore: Send + Sync {
-    fn get_snapshot_async<'a>(
+pub trait SnapshotStore: Send + Sync {
+    fn get_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a;
 
-    fn save_snapshot_async<'a>(
+    fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
         record: SnapshotRecord,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn delete_snapshot_async<'a>(
+    fn delete_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a;

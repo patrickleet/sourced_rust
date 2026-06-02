@@ -38,14 +38,13 @@ pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
 
 // Re-export repository traits at crate root for convenience
 pub use repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncRepository, AsyncSnapshotStore, AsyncSnapshotWrite,
-    AsyncStreamWrite, AsyncTransactionalCommit, CommitBatch, InboxOutcome, InboxReceipt,
-    PreparedEventAppend, RepositoryError, SnapshotWrite, StreamIdentity,
+    CommitBatch, GetStream, InboxOutcome, InboxReceipt, InboxStore, PreparedEventAppend,
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository, RepositoryError,
+    SnapshotStore, SnapshotWrite, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
 // Re-export aggregate types at crate root for convenience
-pub use aggregate::{hydrate, Aggregate, AsyncAggregateBuilder, AsyncAggregateRepository};
+pub use aggregate::{hydrate, Aggregate, AggregateBuilder, AggregateRepository};
 
 pub use hashmap_repo::{HashMapOutboxStore, HashMapRepository};
 #[cfg(feature = "postgres")]
@@ -67,8 +66,7 @@ pub use lock::{SqliteLock, SqliteLockManager};
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, AsyncOutboxCommit, OutboxMessage, OutboxMessageStatus,
-    OUTBOX_MESSAGES_TABLE,
+    outbox_message_schema, OutboxCommit, OutboxMessage, OutboxMessageStatus, OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
@@ -97,26 +95,26 @@ pub use outbox_worker::{
 };
 
 pub use queued_repo::{
-    // Async WithOpts + unlock traits (async lock manager variant)
-    AsyncGetAllWithOpts,
-    AsyncGetWithOpts,
-    AsyncUnlockableRepository,
+    // WithOpts + unlock traits for the queued repository variant.
+    GetAllWithOpts,
+    GetWithOpts,
     // Queued repository
     Queueable,
     QueuedRepository,
     ReadOpts,
+    UnlockableRepository,
 };
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    AsyncReadModelLoadBuilder, AsyncReadModelWorkspaceExt, ColumnDef, ColumnType,
-    DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore, IndexDef, PatchMode,
-    PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
-    ReadModelMigrationArtifact, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap,
-    ReadModelSchemaIssue, ReadModelSchemaIssueKind, ReadModelSchemaRegistry,
-    ReadModelSchemaVerification, ReadModelWorkspace, ReadModelWritePlan, ReadModelWritePlanBuilder,
+    ColumnDef, ColumnType, DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore,
+    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadBuilder,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
+    ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
+    ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
+    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,
+    ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder,
     RelationalReadModel, RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey,
     RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
     DEFAULT_READ_MODEL_VERSION_COLUMN,
@@ -133,15 +131,14 @@ pub use table::{
     TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
-// AsyncCommitBuilder: transactional batches of read models, outbox, and aggregates
+// CommitBuilder: transactional batches of read models, outbox, and aggregates
 pub use commit_builder::{
-    AsyncCommitBuilder, AsyncCommitBuilderExt, AsyncReadModelWritePlanCommitExt,
-    AsyncStagedCommitBuilder,
+    CommitBuilder, CommitBuilderExt, ReadModelWritePlanCommitExt, StagedCommitBuilder,
 };
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration
 pub use snapshot::{
-    hydrate_from_snapshot, AsyncSnapshotAggregateRepository, InMemorySnapshotStore, SnapshotRecord,
+    hydrate_from_snapshot, InMemorySnapshotStore, SnapshotAggregateRepository, SnapshotRecord,
     Snapshottable,
 };
 

@@ -3,11 +3,10 @@
 use std::collections::HashMap;
 
 use distributed::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
-    RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SqliteRepository, StreamIdentity,
-    TableSchemaRegistry, OUTBOX_MESSAGES_TABLE,
+    sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
+    OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt,
+    RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SnapshotStore, SqliteRepository,
+    StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit, OUTBOX_MESSAGES_TABLE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,7 +73,7 @@ fn relational_counter_key(id: &str) -> RowKey {
 async fn migration_is_idempotent_and_aggregate_stream_round_trips() {
     let repo = repository().await;
     repo.migrate().await.unwrap();
-    let counter_repo = repo.clone().async_aggregate::<Counter>();
+    let counter_repo = repo.clone().aggregate::<Counter>();
 
     let mut counter = Counter::default();
     counter.entity.set_correlation_id("corr-1");
@@ -126,8 +125,8 @@ async fn dev_bootstrap_applies_registered_table_schemas() {
 #[tokio::test]
 async fn aggregate_stream_identity_separates_same_id_across_types() {
     let repo = repository().await;
-    let counter_repo = repo.clone().async_aggregate::<Counter>();
-    let projection_repo = repo.clone().async_aggregate::<CounterProjection>();
+    let counter_repo = repo.clone().aggregate::<Counter>();
+    let projection_repo = repo.clone().aggregate::<CounterProjection>();
 
     let mut counter = Counter::default();
     counter.increment("shared-id".into(), 7).unwrap();
@@ -149,7 +148,7 @@ async fn aggregate_stream_identity_separates_same_id_across_types() {
 async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
     let repo = repository().await;
     bootstrap_relational_counter_table(&repo).await;
-    let counter_repo = repo.clone().async_aggregate::<Counter>();
+    let counter_repo = repo.clone().aggregate::<Counter>();
 
     let mut original = Counter::default();
     original.increment("conflict-1".into(), 1).unwrap();
@@ -176,11 +175,11 @@ async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
     let other_identity =
         StreamIdentity::new(CounterProjection::aggregate_type(), "should-not-commit").unwrap();
     let err = repo
-        .commit_batch_async(AsyncCommitBatch {
+        .commit_batch(CommitBatch {
             inbox_receipts: Vec::new(),
             streams: vec![
-                AsyncStreamWrite::new(stale_identity.clone(), stale.entity_mut()),
-                AsyncStreamWrite::new(other_identity.clone(), other.entity_mut()),
+                StreamWrite::new(stale_identity.clone(), stale.entity_mut()),
+                StreamWrite::new(other_identity.clone(), other.entity_mut()),
             ],
             outbox_messages: Vec::new(),
             read_model_plans: vec![read_models.into_write_plan().unwrap()],
@@ -270,7 +269,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     };
     let mut setup = ReadModelWritePlanBuilder::new();
     setup.upsert(&view).unwrap();
-    setup.commit_async(&repo).await.unwrap();
+    setup.commit(&repo).await.unwrap();
 
     let mut patched_counts = HashMap::new();
     patched_counts.insert("wins".to_string(), 3);
@@ -283,7 +282,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     patch_session
         .patch::<RelationalCounterView>(relational_counter_key("relational-session-1"), patch)
         .unwrap();
-    patch_session.commit_async(&repo).await.unwrap();
+    patch_session.commit(&repo).await.unwrap();
 
     let row = sqlx::query(
         r#"
@@ -310,7 +309,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     delete_session
         .delete::<RelationalCounterView>(relational_counter_key("relational-session-1"))
         .unwrap();
-    delete_session.commit_async(&repo).await.unwrap();
+    delete_session.commit(&repo).await.unwrap();
 
     let remaining: i64 = sqlx::query_scalar(
         r#"
@@ -338,7 +337,7 @@ async fn read_model_session_persists_relational_rows() {
     let mut session = ReadModelWritePlanBuilder::new();
     session.upsert(&view).unwrap();
 
-    let outcome = session.commit_async(&repo).await.unwrap();
+    let outcome = session.commit(&repo).await.unwrap();
     let row = sqlx::query(
         r#"
         SELECT "value", "_sourced_version"
@@ -365,7 +364,7 @@ async fn snapshots_persist_by_full_stream_identity() {
     let counter = StreamIdentity::new("sqlite.counter", "same-id").unwrap();
     let projection = StreamIdentity::new("sqlite.counter_projection", "same-id").unwrap();
 
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &counter,
         SnapshotRecord::new(
             "sqlite.counter",
@@ -378,7 +377,7 @@ async fn snapshots_persist_by_full_stream_identity() {
     )
     .await
     .unwrap();
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &projection,
         SnapshotRecord::new(
             "sqlite.counter_projection",
@@ -392,8 +391,8 @@ async fn snapshots_persist_by_full_stream_identity() {
     .await
     .unwrap();
 
-    let loaded_counter = repo.get_snapshot_async(&counter).await.unwrap().unwrap();
-    let loaded_projection = repo.get_snapshot_async(&projection).await.unwrap().unwrap();
+    let loaded_counter = repo.get_snapshot(&counter).await.unwrap().unwrap();
+    let loaded_projection = repo.get_snapshot(&projection).await.unwrap().unwrap();
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "sqlite.counter");

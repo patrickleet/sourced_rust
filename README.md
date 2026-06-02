@@ -90,7 +90,7 @@ use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
 use distributed::OutboxMessage;
 
-use super::Repo; // an AsyncAggregateRepository<_, Todo> alias
+use super::Repo; // an AggregateRepository<_, Todo> alias
 
 pub const COMMAND: &str = "todo.initialize";
 
@@ -122,7 +122,7 @@ are written once and are transport-agnostic.
 ```rust
 use std::sync::Arc;
 use distributed::microsvc::{self, Service, Session};
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 #[tokio::main]
@@ -130,8 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(distributed::register_handlers!(
         Service::with_repo(
             HashMapRepository::new()
-                .queued_async()
-                .async_aggregate::<Todo>()
+                .queued()
+                .aggregate::<Todo>()
         ),
         command handlers::todo_create,
         command handlers::todo_complete,
@@ -165,7 +165,7 @@ default you replace with a durable adapter.
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 let service = Arc::new(distributed::register_handlers!(
-    Service::with_repo(repo.queued_async().async_aggregate::<Todo>()),
+    Service::with_repo(repo.queued().aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
 ));
@@ -231,7 +231,7 @@ network servers.
 - **Entity**: Holds the event history. You embed it in your domain structs.
 - **EventRecord**: An immutable aggregate event record with name, payload, sequence, timestamp, and optional metadata. It is replayable model history, not automatically a published domain event.
 - **Aggregate**: A struct that embeds an `Entity` and replays `EventRecord`s. `aggregate_type()` provides the durable stream-identity component for persistence.
-- **AsyncRepository / AsyncAggregateRepository**: Persists and loads aggregates by event history. The event store is optimized for append and replay; `get`/`commit` are async.
+- **Repository / AggregateRepository**: Persists and loads aggregates by event history. The event store is optimized for append and replay; `get`/`commit` are async.
 - **HashMapRepository**: In-memory repository for tests and examples. Implements every async trait (repository, read-model, snapshot, outbox).
 - **SqliteRepository / PostgresRepository**: Durable async SQL adapters (optional features).
 - **QueuedRepository**: Wraps any repository and adds async per-entity queue locking.
@@ -259,10 +259,10 @@ Every infrastructure concern in `distributed` follows the same pattern: an **asy
 
 | Concern | Async trait(s) | In-memory default | Swap in for production |
 |---|---|---|---|
-| Storage | `AsyncGetStream` + `AsyncTransactionalCommit` | `HashMapRepository` | `PostgresRepository`, `SqliteRepository`, … |
+| Storage | `GetStream` + `TransactionalCommit` | `HashMapRepository` | `PostgresRepository`, `SqliteRepository`, … |
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
-| Read model rows | `AsyncReadModelWritePlanStore` + `AsyncRelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
-| Snapshot store | `AsyncSnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
+| Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
+| Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
 | Outbox publishing | `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` | Any transport publisher |
 | Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
@@ -640,9 +640,9 @@ This pattern is useful for reactive workflows within the same process. For cross
 Per-entity async locking for serialized workflows. `get` acquires the lock, `commit` releases it:
 
 ```rust
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
-let repo = HashMapRepository::new().queued_async().async_aggregate::<Todo>();
+let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
 let Some(mut todo) = repo.get("todo-1").await? else {
     return Err(RepositoryError::NotFound { id: "todo-1".into() });
@@ -660,7 +660,7 @@ let _ = repo.peek("todo-1").await?;
 By default, locking is in-memory (`InMemoryAsyncLockManager`) — process-local, lost
 on restart. For **cross-process** serialization, back the queue with a durable
 SQLx lease lock (feature `postgres` or `sqlite`). It implements the same
-`AsyncLockManager` trait, so it's a drop-in via `queued_async_with`:
+`AsyncLockManager` trait, so it's a drop-in via `queued_with`:
 
 ```rust
 use distributed::{PostgresLockManager, PostgresRepository};
@@ -668,7 +668,7 @@ use distributed::{PostgresLockManager, PostgresRepository};
 let repo = PostgresRepository::connect_and_migrate(&database_url).await?;
 // The `aggregate_locks` lease table is created by the repository's migrations.
 let locks = PostgresLockManager::new(repo.pool().clone());
-let todos = repo.queued_async_with(locks).async_aggregate::<Todo>();
+let todos = repo.queued_with(locks).aggregate::<Todo>();
 ```
 
 The lease records each held key in the `aggregate_locks` table (`SqliteLockManager`
@@ -685,7 +685,7 @@ The optional `sqlite` and `postgres` features add async, SQL-backed repositories
 that implement the same async traits as `HashMapRepository`. They persist aggregate
 event streams, relational read-model write plans, processed-message marks,
 snapshots, and outbox rows — staging everything through one SQL transaction when
-committed via `AsyncCommitBatch`.
+committed via `CommitBatch`.
 
 ```rust
 // SQLite — local persistence and conformance (requires `sqlite`)
@@ -701,14 +701,14 @@ applications can control bootstrap order.
 
 Postgres is the low-ops starter: a single Postgres cluster can back repositories,
 read models, the outbox, **and** the durable transport (`PostgresBus`). See
-[`docs/async-repositories.md`](docs/async-repositories.md) for the full guide.
+[`docs/repositories.md`](docs/repositories.md) for the full guide.
 
 ## Outbox Pattern
 
 Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
 
 ```rust
-use distributed::{AsyncOutboxCommit, OutboxMessage};
+use distributed::{OutboxCommit, OutboxMessage};
 
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
@@ -834,11 +834,11 @@ Handlers are registered with a fluent builder. `.command(name)` / `.event(name)`
 ```rust
 use std::sync::Arc;
 use distributed::microsvc::{Context, HandlerError, Service, Session};
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 let service = Arc::new(
-    Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>())
+    Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
         .command("counter.initialize")
         .handle(|ctx: &Context<Repo>| {
             let input = ctx.input::<CreateCounter>();
@@ -927,7 +927,7 @@ Register them with the `register_handlers!` macro:
 
 ```rust
 let service = distributed::register_handlers!(
-    Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>()),
+    Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
     command handlers::counter_create,
     command handlers::counter_increment,
 );
@@ -1031,7 +1031,7 @@ pub struct GameView {
 When the response to a command must include the fully consistent, updated view, commit the aggregate and read model together in one transaction:
 
 ```rust
-use distributed::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
+use distributed::{ReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 
 // Player submits a move
 game.make_move(player_move)?;
@@ -1056,28 +1056,28 @@ read_models.upsert_related(&player_view, "weapons", &weapon_view)?;
 repo.read_models(read_models).commit(&mut game).await?;
 ```
 
-This is a deliberate consistency tradeoff: the read model is in sync with the aggregate only when the repository can write both in the same transaction boundary (`AsyncTransactionalCommit`). For cross-service or cross-database views, use the eventually consistent outbox/projector pattern instead.
+This is a deliberate consistency tradeoff: the read model is in sync with the aggregate only when the repository can write both in the same transaction boundary (`TransactionalCommit`). For cross-service or cross-database views, use the eventually consistent outbox/projector pattern instead.
 
 ### Eventual Projection
 
 Distributed projectors subscribe to published messages and commit read-model rows through a workspace, marking the message processed in the same adapter transaction for SQL idempotency:
 
 ```rust
-use distributed::AsyncReadModelWorkspaceExt;
+use distributed::ReadModelWorkspaceExt;
 
-let mut workspace = ctx.read_model_store().workspace_async();
+let mut workspace = ctx.read_model_store().workspace();
 workspace.upsert(&row)?;
-workspace.commit_async().await?;
+workspace.commit().await?;
 ```
 
 ### Loading
 
 ```rust
-use distributed::{AsyncReadModelWorkspaceExt, RowKey, RowValue};
+use distributed::{ReadModelWorkspaceExt, RowKey, RowValue};
 
 let loaded = repo
-    .workspace_async()
-    .load_async::<GameView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
+    .workspace()
+    .load::<GameView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
     .one()
     .await?;
 ```
@@ -1134,11 +1134,11 @@ struct Widget {
 Chain `.with_snapshots(frequency)` onto any aggregate repository. The frequency is how many events between automatic snapshots:
 
 ```rust
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
 let repo = HashMapRepository::new()
-    .queued_async()
-    .async_aggregate::<Todo>()
+    .queued()
+    .aggregate::<Todo>()
     .with_snapshots(10); // snapshot every 10 events
 
 // Commit works normally — snapshots are created automatically at the threshold
@@ -1246,7 +1246,7 @@ src/
 distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
 docs/
-  async-repositories.md
+  repositories.md
   async-transports.md
   read-models.md
   postgres-event-store.md

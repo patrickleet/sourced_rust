@@ -17,19 +17,19 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use distributed::OutboxSource;
 use distributed::{
-    AsyncCommitBatch, AsyncOutboxStore, AsyncTransactionalCommit, OutboxMessage,
-    OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,
+    AsyncOutboxStore, CommitBatch, OutboxMessage, OutboxMessageStatus, PostgresOutboxStore,
+    PostgresRepository, TransactionalCommit,
 };
 use serde_json::json;
 
 const SKIP: &str = "skipping postgres transport test";
 
 async fn enqueue(repo: &PostgresRepository, id: &str, name: &str) {
-    let mut batch = AsyncCommitBatch::empty();
+    let mut batch = CommitBatch::empty();
     batch
         .outbox_messages
         .push(OutboxMessage::create(id, name, b"{}".to_vec()).unwrap());
-    repo.commit_batch_async(batch)
+    repo.commit_batch(batch)
         .await
         .expect("outbox row should commit");
 }

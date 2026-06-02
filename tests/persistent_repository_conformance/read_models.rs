@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 
 use distributed::{
-    Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream,
-    AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncStreamWrite, AsyncTransactionalCommit, ReadModel,
-    ReadModelWritePlanBuilder, RelationalReadModel, RepositoryError, RowKey, RowValue,
-    StreamIdentity, Versioned,
+    Aggregate, AggregateBuilder, CommitBatch, GetStream, ReadModel, ReadModelWritePlanBuilder,
+    ReadModelWritePlanCommitExt, ReadModelWritePlanStore, RelationalReadModel,
+    RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue, StreamIdentity, StreamWrite,
+    TransactionalCommit, Versioned,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,13 +25,13 @@ fn seat_view_key(id: &str) -> RowKey {
 
 async fn load_seat_view<R>(repo: &R, id: &str) -> Option<Versioned<SeatView>>
 where
-    R: AsyncRelationalReadModelQueryStore + Send + Sync,
+    R: RelationalReadModelQueryStore + Send + Sync,
 {
     let request = ReadModelWritePlanBuilder::new()
         .load::<SeatView>(seat_view_key(id))
         .expect("load request should build");
     let graph = repo
-        .load_graph_async(request)
+        .load_graph(request)
         .await
         .expect("read model should load");
     graph.root.map(|root| Versioned {
@@ -43,7 +42,7 @@ where
 
 pub async fn standalone_relational_write_plan_persists_row<R>(repo: R)
 where
-    R: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Send + Sync,
+    R: ReadModelWritePlanStore + RelationalReadModelQueryStore + Send + Sync,
 {
     let view = SeatView {
         id: unique_id("read-model-view"),
@@ -55,7 +54,7 @@ where
         .expect("row mutation should serialize");
 
     let outcome = read_models
-        .commit_async(&repo)
+        .commit(&repo)
         .await
         .expect("read model write plan should commit");
     assert!(outcome.was_applied());
@@ -69,9 +68,9 @@ where
 
 pub async fn aggregate_commit_persists_read_model_plan<R>(repo: R)
 where
-    R: AsyncGetStream
-        + AsyncRelationalReadModelQueryStore
-        + AsyncTransactionalCommit
+    R: GetStream
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
         + Clone
         + Send
         + Sync
@@ -111,16 +110,16 @@ where
 
 pub async fn aggregate_conflict_rolls_back_read_model_plan<R>(repo: R)
 where
-    R: AsyncGetStream
-        + AsyncRelationalReadModelQueryStore
-        + AsyncTransactionalCommit
+    R: GetStream
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
         + Clone
         + Send
         + Sync
         + 'static,
 {
     let seat_id = unique_id("read-model-conflict-seat");
-    let seat_repo = repo.clone().async_aggregate::<Seat>();
+    let seat_repo = repo.clone().aggregate::<Seat>();
     let mut original = Seat::default();
     original
         .add(seat_id.clone(), "floor".into())
@@ -167,9 +166,9 @@ where
     let identity =
         StreamIdentity::new(Seat::aggregate_type(), &seat_id).expect("identity should be valid");
     let err = repo
-        .commit_batch_async(AsyncCommitBatch {
+        .commit_batch(CommitBatch {
             inbox_receipts: Vec::new(),
-            streams: vec![AsyncStreamWrite::new(identity, stale.entity_mut())],
+            streams: vec![StreamWrite::new(identity, stale.entity_mut())],
             outbox_messages: Vec::new(),
             read_model_plans: vec![read_models
                 .into_write_plan()

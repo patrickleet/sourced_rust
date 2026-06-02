@@ -3,7 +3,7 @@
 //! This module provides the outbox message type and commit helpers:
 //! - `OutboxMessage` - publishable message envelope plus delivery state
 //! - `OutboxMessageStatus` - Message status (Pending, InFlight, Published, Failed)
-//! - `AsyncOutboxCommit` - Helper for aggregate + outbox commits
+//! - `OutboxCommit` - Helper for aggregate + outbox commits
 //!
 //! Outbox messages are durable publication work items. Their payload can be a
 //! domain event, integration event, command, or generic transport message.
@@ -49,4 +49,4 @@ pub use table::{
 };
 
 // Commit helpers
-pub use commit::AsyncOutboxCommit;
+pub use commit::OutboxCommit;

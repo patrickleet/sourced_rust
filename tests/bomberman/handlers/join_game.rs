@@ -1,6 +1,6 @@
 use distributed::{
-    AsyncGetStream, AsyncReadModelWritePlanCommitExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
+    GetStream, ReadModelWritePlanCommitExt, ReadModelWritePlanStore, RelationalReadModelQueryStore,
+    TransactionalCommit,
 };
 
 use super::shared::{
@@ -19,10 +19,7 @@ pub async fn join_game<R>(
     spawn_index: usize,
 ) -> Result<(), GameError>
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore,
+    R: GetStream + TransactionalCommit + ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     let map: GameMap = get_aggregate::<R, GameMap>(repo, game_id)
         .await?

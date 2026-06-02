@@ -18,15 +18,15 @@ use super::order::{
     Inventory, Order, OrderFulfillmentSaga, OrderItem, OrderStatus, Payment, PaymentStatus,
     SagaStatus,
 };
-use distributed::{AsyncAggregateBuilder, HashMapRepository};
+use distributed::{AggregateBuilder, HashMapRepository};
 
 #[tokio::test]
 async fn saga_happy_path_completes_order() {
     // Set up repositories for each aggregate type
-    let order_repo = HashMapRepository::new().async_aggregate::<Order>();
-    let inventory_repo = HashMapRepository::new().async_aggregate::<Inventory>();
-    let payment_repo = HashMapRepository::new().async_aggregate::<Payment>();
-    let saga_repo = HashMapRepository::new().async_aggregate::<OrderFulfillmentSaga>();
+    let order_repo = HashMapRepository::new().aggregate::<Order>();
+    let inventory_repo = HashMapRepository::new().aggregate::<Inventory>();
+    let payment_repo = HashMapRepository::new().aggregate::<Payment>();
+    let saga_repo = HashMapRepository::new().aggregate::<OrderFulfillmentSaga>();
 
     // === Setup: Initialize inventory ===
     let mut widget_inventory = Inventory::new();
@@ -142,10 +142,10 @@ async fn saga_happy_path_completes_order() {
 #[tokio::test]
 async fn saga_compensates_on_payment_failure() {
     // Set up repositories
-    let order_repo = HashMapRepository::new().async_aggregate::<Order>();
-    let inventory_repo = HashMapRepository::new().async_aggregate::<Inventory>();
-    let payment_repo = HashMapRepository::new().async_aggregate::<Payment>();
-    let saga_repo = HashMapRepository::new().async_aggregate::<OrderFulfillmentSaga>();
+    let order_repo = HashMapRepository::new().aggregate::<Order>();
+    let inventory_repo = HashMapRepository::new().aggregate::<Inventory>();
+    let payment_repo = HashMapRepository::new().aggregate::<Payment>();
+    let saga_repo = HashMapRepository::new().aggregate::<OrderFulfillmentSaga>();
 
     // === Setup ===
     let mut widget_inventory = Inventory::new();
@@ -262,9 +262,9 @@ async fn saga_compensates_on_payment_failure() {
 #[tokio::test]
 async fn saga_compensates_on_inventory_failure() {
     // Set up repositories
-    let order_repo = HashMapRepository::new().async_aggregate::<Order>();
-    let inventory_repo = HashMapRepository::new().async_aggregate::<Inventory>();
-    let saga_repo = HashMapRepository::new().async_aggregate::<OrderFulfillmentSaga>();
+    let order_repo = HashMapRepository::new().aggregate::<Order>();
+    let inventory_repo = HashMapRepository::new().aggregate::<Inventory>();
+    let saga_repo = HashMapRepository::new().aggregate::<OrderFulfillmentSaga>();
 
     // === Setup: Low inventory ===
     let mut widget_inventory = Inventory::new();
@@ -343,7 +343,7 @@ async fn saga_compensates_on_inventory_failure() {
 
 #[tokio::test]
 async fn saga_is_replayable_from_events() {
-    let saga_repo = HashMapRepository::new().async_aggregate::<OrderFulfillmentSaga>();
+    let saga_repo = HashMapRepository::new().aggregate::<OrderFulfillmentSaga>();
 
     let items = vec![OrderItem {
         sku: "WIDGET-REPLAY".to_string(),
@@ -389,7 +389,7 @@ async fn saga_is_replayable_from_events() {
 
 #[tokio::test]
 async fn saga_tracks_compensation_state_correctly() {
-    let saga_repo = HashMapRepository::new().async_aggregate::<OrderFulfillmentSaga>();
+    let saga_repo = HashMapRepository::new().aggregate::<OrderFulfillmentSaga>();
 
     let items = vec![OrderItem {
         sku: "WIDGET-COMP".to_string(),

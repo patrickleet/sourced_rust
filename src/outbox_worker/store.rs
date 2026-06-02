@@ -529,15 +529,15 @@ impl AsyncOutboxStore for HashMapOutboxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsyncCommitBatch, AsyncTransactionalCommit, HashMapRepository};
+    use crate::{CommitBatch, HashMapRepository, TransactionalCommit};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
     async fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
         let id = message.id().to_string();
-        let mut batch = AsyncCommitBatch::empty();
+        let mut batch = CommitBatch::empty();
         batch.outbox_messages.push(message);
-        repo.commit_batch_async(batch).await.unwrap();
+        repo.commit_batch(batch).await.unwrap();
         id
     }
 

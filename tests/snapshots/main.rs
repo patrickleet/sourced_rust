@@ -2,8 +2,8 @@ mod aggregate;
 
 use aggregate::Todo;
 use distributed::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncSnapshotStore, Entity, HashMapRepository,
-    Queueable, SnapshotRecord, Snapshottable, StreamIdentity,
+    sourced, Aggregate, AggregateBuilder, Entity, HashMapRepository, Queueable, SnapshotRecord,
+    SnapshotStore, Snapshottable, StreamIdentity,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +49,7 @@ impl Snapshottable for ReplayCounter {
 #[tokio::test]
 async fn snapshot_created_at_frequency_threshold() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     let mut todo = Todo::new();
@@ -63,7 +63,7 @@ async fn snapshot_created_at_frequency_threshold() {
     assert!(repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .is_none());
@@ -74,12 +74,7 @@ async fn snapshot_created_at_frequency_threshold() {
     repo.commit(&mut todo).await.unwrap();
 
     // Version 2 >= 0 + 2 — snapshot should now exist
-    let snap = repo
-        .repo()
-        .repo()
-        .get_snapshot_async(&identity)
-        .await
-        .unwrap();
+    let snap = repo.repo().repo().get_snapshot(&identity).await.unwrap();
     assert!(snap.is_some());
     let snap = snap.unwrap();
     assert_eq!(snap.version, 2);
@@ -101,7 +96,7 @@ async fn snapshot_created_at_frequency_threshold() {
 #[tokio::test]
 async fn no_snapshot_before_threshold() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(5);
 
     let mut todo = Todo::new();
@@ -115,7 +110,7 @@ async fn no_snapshot_before_threshold() {
     assert!(repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .is_none());
@@ -124,7 +119,7 @@ async fn no_snapshot_before_threshold() {
 #[tokio::test]
 async fn load_from_snapshot_produces_correct_state() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     let mut todo = Todo::new();
@@ -139,7 +134,7 @@ async fn load_from_snapshot_produces_correct_state() {
     assert!(repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .is_some());
@@ -156,7 +151,7 @@ async fn load_from_snapshot_produces_correct_state() {
 #[tokio::test]
 async fn snapshot_plus_newer_events() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     // Create and commit 2 events (triggers snapshot at version 2)
@@ -175,7 +170,7 @@ async fn snapshot_plus_newer_events() {
     let snap = repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .unwrap();
@@ -193,10 +188,10 @@ async fn snapshot_plus_newer_events() {
 #[tokio::test]
 async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
     let base_repo = HashMapRepository::new();
-    let full_replay_repo = base_repo.clone().async_aggregate::<ReplayCounter>();
+    let full_replay_repo = base_repo.clone().aggregate::<ReplayCounter>();
     let snapshot_repo = base_repo
         .clone()
-        .async_aggregate::<ReplayCounter>()
+        .aggregate::<ReplayCounter>()
         .with_snapshots(100);
 
     let mut counter = ReplayCounter::default();
@@ -211,7 +206,7 @@ async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
     let counter_identity =
         StreamIdentity::new(ReplayCounter::aggregate_type(), "counter-1").unwrap();
     base_repo
-        .save_snapshot_async(
+        .save_snapshot(
             &counter_identity,
             SnapshotRecord::new(
                 ReplayCounter::aggregate_type(),
@@ -257,7 +252,7 @@ async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
 #[tokio::test]
 async fn no_snapshot_falls_back_to_full_replay() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     let mut todo = Todo::new();
@@ -272,21 +267,17 @@ async fn no_snapshot_falls_back_to_full_replay() {
     assert!(repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .is_some());
 
     // Delete the snapshot
-    repo.repo()
-        .repo()
-        .delete_snapshot_async(&identity)
-        .await
-        .unwrap();
+    repo.repo().repo().delete_snapshot(&identity).await.unwrap();
     assert!(repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .is_none());
@@ -302,7 +293,7 @@ async fn no_snapshot_falls_back_to_full_replay() {
 #[tokio::test]
 async fn snapshot_version_advances_on_second_snapshot() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(1); // snapshot every event
 
     let mut todo = Todo::new();
@@ -316,7 +307,7 @@ async fn snapshot_version_advances_on_second_snapshot() {
     let snap = repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .unwrap();
@@ -331,7 +322,7 @@ async fn snapshot_version_advances_on_second_snapshot() {
     let snap = repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap()
         .unwrap();
@@ -346,8 +337,8 @@ async fn snapshot_version_advances_on_second_snapshot() {
 #[tokio::test]
 async fn with_queued_repo() {
     let repo = HashMapRepository::new()
-        .queued_async()
-        .async_aggregate::<Todo>()
+        .queued()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     let mut todo = Todo::new();
@@ -366,7 +357,7 @@ async fn with_queued_repo() {
         .repo()
         .repo()
         .inner()
-        .get_snapshot_async(&identity)
+        .get_snapshot(&identity)
         .await
         .unwrap();
     assert!(snap.is_some());
@@ -381,7 +372,7 @@ async fn with_queued_repo() {
 #[tokio::test]
 async fn get_all_with_snapshots() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     // Create two todos, both past snapshot threshold
@@ -411,7 +402,7 @@ async fn get_all_with_snapshots() {
 #[tokio::test]
 async fn commit_all_with_snapshots() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(2);
 
     let mut todo1 = Todo::new();
@@ -437,7 +428,7 @@ async fn commit_all_with_snapshots() {
     let snap1 = repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity1)
+        .get_snapshot(&identity1)
         .await
         .unwrap()
         .unwrap();
@@ -445,7 +436,7 @@ async fn commit_all_with_snapshots() {
     let snap2 = repo
         .repo()
         .repo()
-        .get_snapshot_async(&identity2)
+        .get_snapshot(&identity2)
         .await
         .unwrap()
         .unwrap();

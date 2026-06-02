@@ -1,39 +1,39 @@
-use crate::aggregate::{Aggregate, AsyncAggregateRepository};
+use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::outbox::OutboxMessage;
 use crate::repository::{
-    AsyncCommitBatch, AsyncStreamWrite, AsyncTransactionalCommit, RepositoryError, StreamIdentity,
+    CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
-/// Helper returned by [`AsyncAggregateRepository::outbox`] to commit an aggregate
+/// Helper returned by [`AggregateRepository::outbox`] to commit an aggregate
 /// and an outbox row in the same async transactional batch.
 ///
 /// Borrows the repository so it can be called through `ctx.repo()` inside async
 /// handlers.
-pub struct AsyncOutboxCommit<'a, R, A> {
-    repo: &'a AsyncAggregateRepository<R, A>,
+pub struct OutboxCommit<'a, R, A> {
+    repo: &'a AggregateRepository<R, A>,
     message: OutboxMessage,
 }
 
-impl<R, A> AsyncOutboxCommit<'_, R, A>
+impl<R, A> OutboxCommit<'_, R, A>
 where
-    R: AsyncTransactionalCommit,
+    R: TransactionalCommit,
     A: Aggregate + Send,
 {
     /// Commit the aggregate and outbox message together.
     pub async fn commit(mut self, aggregate: &mut A) -> Result<(), RepositoryError> {
         self.message.set_source(aggregate);
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
-        let stream = AsyncStreamWrite::new(identity, aggregate.entity_mut());
-        let mut batch = AsyncCommitBatch::new(vec![stream]);
+        let stream = StreamWrite::new(identity, aggregate.entity_mut());
+        let mut batch = CommitBatch::new(vec![stream]);
         batch.outbox_messages.push(self.message);
-        self.repo.repo().commit_batch_async(batch).await
+        self.repo.repo().commit_batch(batch).await
     }
 }
 
-impl<R, A> AsyncAggregateRepository<R, A> {
+impl<R, A> AggregateRepository<R, A> {
     /// Attach an outbox message to be committed with the aggregate.
-    pub fn outbox(&self, message: OutboxMessage) -> AsyncOutboxCommit<'_, R, A> {
-        AsyncOutboxCommit {
+    pub fn outbox(&self, message: OutboxMessage) -> OutboxCommit<'_, R, A> {
+        OutboxCommit {
             repo: self,
             message,
         }
@@ -43,7 +43,7 @@ impl<R, A> AsyncAggregateRepository<R, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sourced, AsyncAggregateBuilder, Entity, HashMapRepository, OutboxStore};
+    use crate::{sourced, AggregateBuilder, Entity, HashMapRepository, OutboxStore};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -66,11 +66,8 @@ mod tests {
         seen_ids: Mutex<Vec<String>>,
     }
 
-    impl AsyncTransactionalCommit for FailingOutboxRepo {
-        async fn commit_batch_async<'a>(
-            &'a self,
-            batch: AsyncCommitBatch<'a>,
-        ) -> Result<(), RepositoryError> {
+    impl TransactionalCommit for FailingOutboxRepo {
+        async fn commit_batch<'a>(&'a self, batch: CommitBatch<'a>) -> Result<(), RepositoryError> {
             {
                 *self.seen_ids.lock().unwrap() = batch
                     .streams
@@ -91,7 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn outbox_helper_commits_both_entities() {
-        let repo = HashMapRepository::new().async_aggregate::<Dummy>();
+        let repo = HashMapRepository::new().aggregate::<Dummy>();
 
         let mut aggregate = Dummy::default();
         aggregate.touch().unwrap();
@@ -107,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn outbox_helper_failure_leaves_entities_uncommitted() {
-        let repo = AsyncAggregateRepository::<_, Dummy>::new(FailingOutboxRepo::default());
+        let repo = AggregateRepository::<_, Dummy>::new(FailingOutboxRepo::default());
 
         let mut aggregate = Dummy::default();
         aggregate.touch().unwrap();

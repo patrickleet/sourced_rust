@@ -1,6 +1,6 @@
 //! SQLite-backed durable [`AsyncLockManager`] — a per-stream lease in the
 //! `aggregate_locks` table. Drop it into a `QueuedRepository` with
-//! `.queued_async_with(SqliteLockManager::new(pool))`. See [`super::sqlx_common`]
+//! `.queued_with(SqliteLockManager::new(pool))`. See [`super::sqlx_common`]
 //! for the lease model.
 //!
 //! Cross-process serialization requires the managers to share one database —

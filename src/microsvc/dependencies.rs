@@ -1,10 +1,8 @@
 //! Typed dependency wrappers for microsvc handlers.
 
-use crate::aggregate::AsyncAggregateRepository;
-use crate::repository::{
-    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncRepository,
-};
-use crate::snapshot::AsyncSnapshotAggregateRepository;
+use crate::aggregate::AggregateRepository;
+use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
+use crate::snapshot::SnapshotAggregateRepository;
 
 /// Dependency capability for services that expose an aggregate repository.
 pub trait HasRepo {
@@ -22,7 +20,7 @@ pub trait HasReadModelStore {
 
 impl<R> HasRepo for R
 where
-    R: AsyncRepository,
+    R: Repository,
 {
     type Repo = R;
 
@@ -31,7 +29,7 @@ where
     }
 }
 
-impl<R, A> HasRepo for AsyncAggregateRepository<R, A> {
+impl<R, A> HasRepo for AggregateRepository<R, A> {
     type Repo = Self;
 
     fn repo(&self) -> &Self::Repo {
@@ -39,7 +37,7 @@ impl<R, A> HasRepo for AsyncAggregateRepository<R, A> {
     }
 }
 
-impl<R, A> HasRepo for AsyncSnapshotAggregateRepository<R, A> {
+impl<R, A> HasRepo for SnapshotAggregateRepository<R, A> {
     type Repo = Self;
 
     fn repo(&self) -> &Self::Repo {
@@ -49,7 +47,7 @@ impl<R, A> HasRepo for AsyncSnapshotAggregateRepository<R, A> {
 
 impl<S> HasReadModelStore for S
 where
-    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     type ReadModelStore = S;
 

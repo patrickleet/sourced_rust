@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use serde::Serialize;
 
-use crate::repository::{AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore};
+use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
 
 use super::{
     ReadModelError, ReadModelSchema, RelationalReadModel, RelationalReadModelIncludes,
@@ -571,11 +571,11 @@ impl ReadModelWritePlanBuilder {
         Ok(plan)
     }
 
-    pub async fn commit_async<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
+    pub async fn commit<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
     where
-        S: AsyncReadModelWritePlanStore + ?Sized,
+        S: ReadModelWritePlanStore + ?Sized,
     {
-        store.commit_write_plan_async(self.into_write_plan()?).await
+        store.commit_write_plan(self.into_write_plan()?).await
     }
 
     fn stage_full_row<M>(
@@ -727,7 +727,7 @@ const INITIAL_TRACKED_ROW_VERSION: u64 = 1;
 
 /// Store-bound read-model workspace for load, mutate, sync, commit workflows.
 ///
-/// The mutation/sync/diff surface is store-independent; `load_async`/`commit_async`
+/// The mutation/sync/diff surface is store-independent; `load`/`commit`
 /// are provided by the async-store impl block below.
 pub struct ReadModelWorkspace<'a, S> {
     store: &'a S,
@@ -1110,14 +1110,14 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
 impl<'a, S> ReadModelWorkspace<'a, S>
 where
-    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     /// Begin a tracked load against the asynchronous store traits.
-    pub fn load_async<M>(&mut self, key: RowKey) -> AsyncReadModelLoadBuilder<'_, 'a, S, M>
+    pub fn load<M>(&mut self, key: RowKey) -> ReadModelLoadBuilder<'_, 'a, S, M>
     where
         M: RelationalReadModel + RelationalReadModelIncludes,
     {
-        AsyncReadModelLoadBuilder {
+        ReadModelLoadBuilder {
             unit: self,
             key,
             includes: Vec::new(),
@@ -1126,15 +1126,15 @@ where
     }
 
     /// Commit the staged write plan through the asynchronous store.
-    pub async fn commit_async(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
-        self.writes.commit_async(self.store).await
+    pub async fn commit(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
+        self.writes.commit(self.store).await
     }
 }
 
 /// Builder for one explicit primary-key read-model load over the async store traits.
-pub struct AsyncReadModelLoadBuilder<'workspace, 'store, S, M>
+pub struct ReadModelLoadBuilder<'workspace, 'store, S, M>
 where
-    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     unit: &'workspace mut ReadModelWorkspace<'store, S>,
     key: RowKey,
@@ -1142,9 +1142,9 @@ where
     _marker: PhantomData<M>,
 }
 
-impl<'workspace, 'store, S, M> AsyncReadModelLoadBuilder<'workspace, 'store, S, M>
+impl<'workspace, 'store, S, M> ReadModelLoadBuilder<'workspace, 'store, S, M>
 where
-    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    S: ReadModelWritePlanStore + RelationalReadModelQueryStore,
     M: RelationalReadModel + RelationalReadModelIncludes,
 {
     pub fn include(mut self, relationship: impl Into<String>) -> Self {
@@ -1157,7 +1157,7 @@ where
             .unit
             .writes
             .load_with::<M, _, _>(self.key, self.includes)?;
-        let graph = self.unit.store.load_graph_async(request.clone()).await?;
+        let graph = self.unit.store.load_graph(request.clone()).await?;
         let Some(root) = graph.root else {
             return Ok(None);
         };
@@ -1182,18 +1182,15 @@ where
 }
 
 /// Extension trait that starts a tracked read-model workspace from an async store.
-pub trait AsyncReadModelWorkspaceExt:
-    AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Sized
+pub trait ReadModelWorkspaceExt:
+    ReadModelWritePlanStore + RelationalReadModelQueryStore + Sized
 {
-    fn workspace_async(&self) -> ReadModelWorkspace<'_, Self> {
+    fn workspace(&self) -> ReadModelWorkspace<'_, Self> {
         ReadModelWorkspace::new(self)
     }
 }
 
-impl<S> AsyncReadModelWorkspaceExt for S where
-    S: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore
-{
-}
+impl<S> ReadModelWorkspaceExt for S where S: ReadModelWritePlanStore + RelationalReadModelQueryStore {}
 
 fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
     let mut patch = RowPatch::new();

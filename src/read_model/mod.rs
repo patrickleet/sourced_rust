@@ -3,7 +3,7 @@
 //! Relational models stage explicit row mutations:
 //!
 //! ```ignore
-//! use distributed::{ReadModelWritePlanBuilder, AsyncReadModelWritePlanCommitExt};
+//! use distributed::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 //!
 //! let mut read_models = ReadModelWritePlanBuilder::new();
 //! read_models.upsert(&player)?;
@@ -12,7 +12,7 @@
 //! ```
 //!
 //! Async persistent repositories expose the staging shape through
-//! `AsyncReadModelWritePlanCommitExt::read_models`, returning a future
+//! `ReadModelWritePlanCommitExt::read_models`, returning a future
 //! from `commit`.
 //!
 //! Distributed projectors can commit a write plan directly against a read-model
@@ -117,9 +117,9 @@ pub use schema::{
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 pub use session::{
-    AsyncReadModelLoadBuilder, AsyncReadModelWorkspaceExt, DeleteRowMutation, ExpectedVersion,
-    PatchMode, PatchRowMutation, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMutation,
-    ReadModelQueryCapabilities, ReadModelWorkspace, ReadModelWritePlan, ReadModelWritePlanBuilder,
-    RowMutation, RowPatch, RowWriteMode,
+    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
+    ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelLoadGraph,
+    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace,
+    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder, RowMutation, RowPatch,
+    RowWriteMode,
 };

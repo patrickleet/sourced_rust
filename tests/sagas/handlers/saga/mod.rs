@@ -2,14 +2,14 @@
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::{
-    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+    AggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 use serde_json::{json, Value};
 
 use super::messages::*;
 use crate::order::OrderFulfillmentSaga;
 
-pub type Repo = AsyncAggregateRepository<
+pub type Repo = AggregateRepository<
     QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
     OrderFulfillmentSaga,
 >;

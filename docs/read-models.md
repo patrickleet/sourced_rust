@@ -116,27 +116,14 @@ for normalized Postgres read models.
 ## Command-Side Atomic Writes
 
 Use `ReadModelWritePlanBuilder` when a command or projector stages multiple
-row mutations. The current repository APIs are synchronous:
+row mutations:
 
 ```rust
-use distributed::{
-    ReadModelWritePlanBuilder, SyncCommitBuilderExt, SyncReadModelWritePlanCommitExt,
-};
+use distributed::{ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt};
 
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player)?;
 read_models.upsert_related(&player, "weapons", &weapon)?;
-
-repo.read_models_sync(read_models).commit_sync(&mut aggregate)?;
-```
-
-Async adapters can expose the same shape at their boundary:
-
-```rust,ignore
-use distributed::{AsyncReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
-
-let mut read_models = ReadModelWritePlanBuilder::new();
-read_models.upsert(&player)?;
 
 repo.read_models(read_models)
     .commit(&mut aggregate)
@@ -146,18 +133,21 @@ repo.read_models(read_models)
 Builder ordering is semantic staging only. These forms are equivalent:
 
 ```rust
-repo.read_models_sync(read_models)
-    .outbox_sync(message)
-    .commit_sync(&mut aggregate)?;
+repo.read_models(read_models)
+    .outbox(message)
+    .commit(&mut aggregate)
+    .await?;
 
-repo.outbox_sync(message)
-    .read_models_sync(read_models)
-    .commit_sync(&mut aggregate)?;
+repo.outbox(message)
+    .read_models(read_models)
+    .commit(&mut aggregate)
+    .await?;
 
-repo.aggregate_sync(&mut aggregate)
-    .read_models_sync(read_models)
-    .outbox_sync(message)
-    .commit_sync()?;
+repo.aggregate(&mut aggregate)
+    .read_models(read_models)
+    .outbox(message)
+    .commit()
+    .await?;
 ```
 
 ## Standalone Distributed Projectors
@@ -168,7 +158,7 @@ repository:
 ```rust
 use distributed::{ReadModelError, ReadModelWritePlanBuilder, ReadModelWritePlanStore};
 
-fn project_message(
+async fn project_message(
     store: &impl ReadModelWritePlanStore,
     event_id: &str,
     view: &PlayerView,
@@ -178,7 +168,7 @@ fn project_message(
         .upsert(view)?
         .mark_processed("game-view-projector", event_id);
 
-    let outcome = read_models.commit(store)?;
+    let outcome = read_models.commit(store).await?;
     if outcome.was_applied() || outcome.was_skipped() {
         // Ack the broker message after commit returns.
     }

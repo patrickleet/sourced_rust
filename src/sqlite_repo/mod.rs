@@ -31,9 +31,9 @@ use crate::read_model::{
     RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncSnapshotWrite,
-    AsyncTransactionalCommit, InboxReceipt, PreparedEventAppend, RepositoryError, StreamIdentity,
+    CommitBatch, GetStream, InboxReceipt, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
@@ -193,7 +193,7 @@ impl SqliteOutboxStore {
     }
 }
 
-impl AsyncGetStream for SqliteRepository {
+impl GetStream for SqliteRepository {
     fn get_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,
@@ -246,10 +246,10 @@ impl AsyncGetStream for SqliteRepository {
     }
 }
 
-impl AsyncTransactionalCommit for SqliteRepository {
-    fn commit_batch_async<'a>(
+impl TransactionalCommit for SqliteRepository {
+    fn commit_batch<'a>(
         &'a self,
-        batch: AsyncCommitBatch<'a>,
+        batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             reject_duplicate_streams(&batch.streams)?;
@@ -301,7 +301,7 @@ impl AsyncTransactionalCommit for SqliteRepository {
 
             for write in batch.snapshots {
                 match write {
-                    AsyncSnapshotWrite::Save { identity, record } => {
+                    SnapshotWrite::Save { identity, record } => {
                         save_snapshot_in_tx(&mut tx, &identity, record).await?;
                     }
                 }
@@ -324,8 +324,8 @@ impl AsyncTransactionalCommit for SqliteRepository {
     }
 }
 
-impl AsyncInboxStore for SqliteRepository {
-    fn inbox_contains_async<'a>(
+impl InboxStore for SqliteRepository {
+    fn inbox_contains<'a>(
         &'a self,
         consumer: &'a str,
         message_id: &'a str,
@@ -344,12 +344,12 @@ impl AsyncInboxStore for SqliteRepository {
     }
 }
 
-impl AsyncReadModelWritePlanStore for SqliteRepository {
-    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
+impl ReadModelWritePlanStore for SqliteRepository {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         sql_read_model_capabilities()
     }
 
-    fn commit_write_plan_async(
+    fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
@@ -363,17 +363,17 @@ impl AsyncReadModelWritePlanStore for SqliteRepository {
     }
 }
 
-impl AsyncRelationalReadModelQueryStore for SqliteRepository {
-    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+impl RelationalReadModelQueryStore for SqliteRepository {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
         ReadModelQueryCapabilities::relationship_includes()
     }
 
-    fn load_graph_async(
+    fn load_graph(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
         async move {
-            request.validate_for_query_capabilities(&self.read_model_query_capabilities_async())?;
+            request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
 
             let (root_schema, include_specs) =
                 resolve_registered_read_model_schemas(&self.read_model_schemas, &request)?;
@@ -735,8 +735,8 @@ impl AsyncOutboxStore for SqliteOutboxStore {
     }
 }
 
-impl AsyncSnapshotStore for SqliteRepository {
-    fn get_snapshot_async<'a>(
+impl SnapshotStore for SqliteRepository {
+    fn get_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
@@ -764,7 +764,7 @@ impl AsyncSnapshotStore for SqliteRepository {
         }
     }
 
-    fn save_snapshot_async<'a>(
+    fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
         record: SnapshotRecord,
@@ -783,7 +783,7 @@ impl AsyncSnapshotStore for SqliteRepository {
         }
     }
 
-    fn delete_snapshot_async<'a>(
+    fn delete_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {

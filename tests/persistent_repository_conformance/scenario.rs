@@ -2,9 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
-    Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore,
-    AsyncSnapshotWrite, AsyncStreamWrite, AsyncTransactionalCommit, Entity, RepositoryError,
-    SnapshotRecord, StreamIdentity,
+    Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, RepositoryError, SnapshotRecord,
+    SnapshotStore, SnapshotWrite, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
 use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, SEAT_RESERVED_STATUS};
@@ -24,7 +23,7 @@ pub fn unique_id(prefix: &str) -> String {
 
 pub async fn aggregate_checkout_flow_persists_reloaded_state<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let checkout_id = unique_id("checkout");
     let seat_id = unique_id("seat");
@@ -54,7 +53,7 @@ where
         .expect("checkout saga should record reservation");
     assert_eq!(completed.seat_id, seat_id);
 
-    let checkout_repo = repo.clone().async_aggregate::<CheckoutSaga>();
+    let checkout_repo = repo.clone().aggregate::<CheckoutSaga>();
     let loaded_checkout = checkout_repo
         .get(&checkout_id)
         .await
@@ -64,7 +63,7 @@ where
     assert_eq!(loaded_checkout.reserved_seat_id, seat_id);
     assert_eq!(loaded_checkout.entity.events().len(), 2);
 
-    let seat_repo = repo.async_aggregate::<Seat>();
+    let seat_repo = repo.aggregate::<Seat>();
     let loaded_seat = seat_repo
         .get(&seat_id)
         .await
@@ -77,11 +76,11 @@ where
 
 pub async fn get_all_and_commit_all_round_trip<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let first_id = unique_id("seat-a");
     let second_id = unique_id("seat-b");
-    let seat_repo = repo.async_aggregate::<Seat>();
+    let seat_repo = repo.aggregate::<Seat>();
 
     let mut first = Seat::default();
     first
@@ -114,15 +113,9 @@ where
 
 pub async fn multi_stream_conflict_rolls_back_other_stream_and_snapshot<R>(repo: R)
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncSnapshotStore
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: GetStream + TransactionalCommit + SnapshotStore + Clone + Send + Sync + 'static,
 {
-    let seat_repo = repo.clone().async_aggregate::<Seat>();
+    let seat_repo = repo.clone().aggregate::<Seat>();
     let seat_id = unique_id("conflict-seat");
 
     let mut original = Seat::default();
@@ -178,15 +171,15 @@ where
     let checkout_identity = StreamIdentity::new(CheckoutSaga::aggregate_type(), &checkout_id)
         .expect("checkout identity should be valid");
     let err = repo
-        .commit_batch_async(AsyncCommitBatch {
+        .commit_batch(CommitBatch {
             inbox_receipts: Vec::new(),
             streams: vec![
-                AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
-                AsyncStreamWrite::new(checkout_identity.clone(), checkout.entity_mut()),
+                StreamWrite::new(stale_identity, stale.entity_mut()),
+                StreamWrite::new(checkout_identity.clone(), checkout.entity_mut()),
             ],
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
-            snapshots: vec![AsyncSnapshotWrite::Save {
+            snapshots: vec![SnapshotWrite::Save {
                 identity: checkout_identity.clone(),
                 record: SnapshotRecord::new(
                     CheckoutSaga::aggregate_type(),
@@ -208,7 +201,7 @@ where
         .expect("rollback stream lookup should succeed")
         .is_none());
     assert!(repo
-        .get_snapshot_async(&checkout_identity)
+        .get_snapshot(&checkout_identity)
         .await
         .expect("rollback snapshot lookup should succeed")
         .is_none());
@@ -218,7 +211,7 @@ where
 
 pub async fn duplicate_stream_identity_is_rejected_before_write<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Send + Sync + 'static,
 {
     let id = unique_id("duplicate-seat");
     let identity =
@@ -233,9 +226,9 @@ where
         .expect("second event should encode");
 
     let err = repo
-        .commit_batch_async(AsyncCommitBatch::new(vec![
-            AsyncStreamWrite::new(identity.clone(), &mut first),
-            AsyncStreamWrite::new(identity.clone(), &mut second),
+        .commit_batch(CommitBatch::new(vec![
+            StreamWrite::new(identity.clone(), &mut first),
+            StreamWrite::new(identity.clone(), &mut second),
         ]))
         .await
         .expect_err("duplicate stream should be rejected");
@@ -255,7 +248,7 @@ where
 
 pub async fn metadata_round_trips<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let id = unique_id("metadata-seat");
     let mut seat = Seat::default();
@@ -265,7 +258,7 @@ where
         .expect("seat should be valid");
 
     repo.clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .commit(&mut seat)
         .await
         .expect("metadata seat should commit");
@@ -287,7 +280,7 @@ where
 
 pub async fn unsupported_codec_is_rejected_on_write<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Send + Sync + 'static,
 {
     let id = unique_id("bad-codec-seat");
     let identity =
@@ -303,7 +296,7 @@ where
         serde_json::from_value(value).expect("mutated entity should deserialize");
 
     let err = repo
-        .commit_batch_async(AsyncCommitBatch::new(vec![AsyncStreamWrite::new(
+        .commit_batch(CommitBatch::new(vec![StreamWrite::new(
             identity.clone(),
             &mut bad_entity,
         )]))
@@ -321,7 +314,7 @@ where
 
 pub async fn snapshots_use_full_stream_identity<R>(repo: R)
 where
-    R: AsyncSnapshotStore + Send + Sync + 'static,
+    R: SnapshotStore + Send + Sync + 'static,
 {
     let id = unique_id("snapshot");
     let seat_identity =
@@ -329,7 +322,7 @@ where
     let checkout_identity = StreamIdentity::new(CheckoutSaga::aggregate_type(), &id)
         .expect("checkout identity should be valid");
 
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &seat_identity,
         SnapshotRecord::new(
             Seat::aggregate_type(),
@@ -342,7 +335,7 @@ where
     )
     .await
     .expect("seat snapshot should save");
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &checkout_identity,
         SnapshotRecord::new(
             CheckoutSaga::aggregate_type(),
@@ -357,12 +350,12 @@ where
     .expect("checkout snapshot should save");
 
     let loaded_seat = repo
-        .get_snapshot_async(&seat_identity)
+        .get_snapshot(&seat_identity)
         .await
         .expect("seat snapshot should load")
         .expect("seat snapshot should exist");
     let loaded_checkout = repo
-        .get_snapshot_async(&checkout_identity)
+        .get_snapshot(&checkout_identity)
         .await
         .expect("checkout snapshot should load")
         .expect("checkout snapshot should exist");
@@ -386,12 +379,12 @@ async fn add_seat<R>(
     category: String,
 ) -> Result<super::checkout::SeatAdded, RepositoryError>
 where
-    R: AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let mut seat = Seat::default();
     seat.add(seat_id.clone(), category.clone())
         .map_err(|err| RepositoryError::Model(err.to_string()))?;
-    repo.async_aggregate::<Seat>().commit(&mut seat).await?;
+    repo.aggregate::<Seat>().commit(&mut seat).await?;
     Ok(super::checkout::SeatAdded { seat_id, category })
 }
 
@@ -402,13 +395,13 @@ async fn start_checkout<R>(
     seat_category: String,
 ) -> Result<super::checkout::CheckoutStarted, RepositoryError>
 where
-    R: AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let mut checkout = CheckoutSaga::default();
     checkout
         .start(checkout_id.clone(), seat_id.clone(), seat_category.clone())
         .map_err(|err| RepositoryError::Model(err.to_string()))?;
-    repo.async_aggregate::<CheckoutSaga>()
+    repo.aggregate::<CheckoutSaga>()
         .commit(&mut checkout)
         .await?;
     Ok(super::checkout::CheckoutStarted {
@@ -423,9 +416,9 @@ async fn reserve_started_checkout_seat<R>(
     event: super::checkout::CheckoutStarted,
 ) -> Result<super::checkout::SeatReserved, RepositoryError>
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
-    let seat_repo = repo.async_aggregate::<Seat>();
+    let seat_repo = repo.aggregate::<Seat>();
     let mut seat =
         seat_repo
             .get(&event.seat_id)
@@ -453,9 +446,9 @@ async fn record_seat_reserved<R>(
     event: super::checkout::SeatReserved,
 ) -> Result<super::checkout::SeatReservationCompleted, RepositoryError>
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
-    let checkout_repo = repo.async_aggregate::<CheckoutSaga>();
+    let checkout_repo = repo.aggregate::<CheckoutSaga>();
     let mut checkout = checkout_repo
         .get(&event.checkout_id)
         .await?

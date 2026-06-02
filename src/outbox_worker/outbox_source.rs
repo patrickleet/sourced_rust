@@ -176,8 +176,8 @@ mod tests {
     use crate::bus::{run_source, RunOptions};
     use crate::microsvc::Service;
     use crate::{
-        AsyncCommitBatch, AsyncTransactionalCommit, HashMapRepository, OutboxMessage,
-        OutboxMessageStatus, OutboxStore,
+        CommitBatch, HashMapRepository, OutboxMessage, OutboxMessageStatus, OutboxStore,
+        TransactionalCommit,
     };
     use serde_json::json;
     use std::future::Future;
@@ -203,9 +203,9 @@ mod tests {
 
     fn store_row(repo: &HashMapRepository, id: &str, name: &str) {
         let message = OutboxMessage::create(id, name, b"{}".to_vec()).unwrap();
-        let mut batch = AsyncCommitBatch::empty();
+        let mut batch = CommitBatch::empty();
         batch.outbox_messages.push(message);
-        block_on(repo.commit_batch_async(batch)).unwrap();
+        block_on(repo.commit_batch(batch)).unwrap();
     }
 
     fn status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {

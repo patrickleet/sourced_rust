@@ -4,7 +4,7 @@
 //! organized by service domain under `handlers/`.
 //!
 //! Each service is typed to a specific aggregate via
-//! `Service::with_repo(repo.queued_async().async_aggregate::<T>())`, so handlers access
+//! `Service::with_repo(repo.queued().aggregate::<T>())`, so handlers access
 //! `ctx.repo().get()`, `ctx.repo().commit()`, etc. directly.
 //!
 //! Two tests:
@@ -19,8 +19,8 @@ use serde_json::json;
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
 use distributed::{
-    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
-    HashMapRepository, OutboxClaimRef, Queueable,
+    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    OutboxClaimRef, Queueable,
 };
 
 use super::handlers;
@@ -56,8 +56,8 @@ async fn saga_orchestrated() {
     let saga_svc = distributed::register_handlers!(
         Service::with_repo(
             HashMapRepository::new()
-                .queued_async()
-                .async_aggregate::<OrderFulfillmentSaga>()
+                .queued()
+                .aggregate::<OrderFulfillmentSaga>()
         ),
         command handlers::saga::start,
         event handlers::saga::on_order_created,
@@ -67,19 +67,19 @@ async fn saga_orchestrated() {
     );
 
     let order_svc = distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Order>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     );
 
     let inventory_svc = distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Inventory>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     );
 
     let payment_svc = distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Payment>()),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Payment>()),
         command handlers::payments::process,
     );
 
@@ -291,7 +291,7 @@ async fn saga_distributed() {
     let saga_repo = HashMapRepository::new();
     let saga_outbox = saga_repo.outbox_store();
     let saga_svc = Arc::new(distributed::register_handlers!(
-        Service::with_repo(saga_repo.queued_async().async_aggregate::<OrderFulfillmentSaga>()),
+        Service::with_repo(saga_repo.queued().aggregate::<OrderFulfillmentSaga>()),
         command handlers::saga::start,
         event handlers::saga::on_order_created,
         event handlers::saga::on_inventory_reserved,
@@ -303,7 +303,7 @@ async fn saga_distributed() {
     let order_repo = HashMapRepository::new();
     let order_outbox = order_repo.outbox_store();
     let order_svc = Arc::new(distributed::register_handlers!(
-        Service::with_repo(order_repo.queued_async().async_aggregate::<Order>()),
+        Service::with_repo(order_repo.queued().aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     ));
@@ -312,13 +312,13 @@ async fn saga_distributed() {
     let inventory_repo = HashMapRepository::new();
     let inventory_outbox = inventory_repo.outbox_store();
     {
-        let tmp = inventory_repo.clone().async_aggregate::<Inventory>();
+        let tmp = inventory_repo.clone().aggregate::<Inventory>();
         let mut inv = Inventory::new();
         inv.initialize("WIDGET-001".to_string(), 100).unwrap();
         tmp.commit(&mut inv).await.unwrap();
     }
     let inventory_svc = Arc::new(distributed::register_handlers!(
-        Service::with_repo(inventory_repo.queued_async().async_aggregate::<Inventory>()),
+        Service::with_repo(inventory_repo.queued().aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     ));
@@ -327,7 +327,7 @@ async fn saga_distributed() {
     let payment_repo = HashMapRepository::new();
     let payment_outbox = payment_repo.outbox_store();
     let payment_svc = Arc::new(distributed::register_handlers!(
-        Service::with_repo(payment_repo.queued_async().async_aggregate::<Payment>()),
+        Service::with_repo(payment_repo.queued().aggregate::<Payment>()),
         command handlers::payments::process,
     ));
 

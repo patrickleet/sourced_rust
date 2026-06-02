@@ -12,10 +12,10 @@ pub use service::start_grpc_service;
 pub use service::start_http_service;
 
 use distributed::{
-    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+    AggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 
-pub type CheckoutRepo = AsyncAggregateRepository<
+pub type CheckoutRepo = AggregateRepository<
     QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
     CheckoutSaga,
 >;

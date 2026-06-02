@@ -1,5 +1,5 @@
 use distributed::microsvc::{Context, HandlerError};
-use distributed::AsyncReadModelWorkspaceExt;
+use distributed::ReadModelWorkspaceExt;
 use serde_json::{json, Value};
 
 use crate::checkout::{seat_event, SeatAdded, SeatReserved, SEAT_AVAILABLE, SEAT_RESERVED};
@@ -24,12 +24,9 @@ pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, 
                 checkout_id: String::new(),
             };
 
-            let mut workspace = ctx.read_model_store().workspace_async();
+            let mut workspace = ctx.read_model_store().workspace();
             workspace.upsert(&row).map_err(super::read_model_error)?;
-            workspace
-                .commit_async()
-                .await
-                .map_err(super::read_model_error)?;
+            workspace.commit().await.map_err(super::read_model_error)?;
         }
         seat_event::RESERVED => {
             let msg: SeatReserved = serde_json::from_slice(ctx.message().payload())
@@ -46,13 +43,10 @@ pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, 
                 detail: "seat reserved".to_string(),
             };
 
-            let mut workspace = ctx.read_model_store().workspace_async();
+            let mut workspace = ctx.read_model_store().workspace();
             workspace.upsert(&seat).map_err(super::read_model_error)?;
             workspace.upsert(&step).map_err(super::read_model_error)?;
-            workspace
-                .commit_async()
-                .await
-                .map_err(super::read_model_error)?;
+            workspace.commit().await.map_err(super::read_model_error)?;
         }
         other => return Err(HandlerError::UnknownCommand(other.to_string())),
     }

@@ -1,6 +1,6 @@
 use distributed::{
-    sourced, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanCommitExt, Entity,
-    HashMapRepository, ReadModel, ReadModelWritePlanBuilder, RowKey, RowValue,
+    sourced, Entity, HashMapRepository, ReadModel, ReadModelWorkspaceExt,
+    ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt, RowKey, RowValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +45,8 @@ async fn repo_first_read_models_session_commit_form_is_available() {
         .unwrap();
 
     let loaded = repo
-        .workspace_async()
-        .load_async::<BridgeView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
+        .workspace()
+        .load::<BridgeView>(RowKey::new([("id", RowValue::String("view-1".into()))]))
         .one()
         .await
         .unwrap()

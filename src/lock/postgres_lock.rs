@@ -1,6 +1,6 @@
 //! Postgres-backed durable [`AsyncLockManager`] — a per-stream lease in the
 //! `aggregate_locks` table. Drop it into a `QueuedRepository` with
-//! `.queued_async_with(PostgresLockManager::new(pool))` to serialize aggregate
+//! `.queued_with(PostgresLockManager::new(pool))` to serialize aggregate
 //! access across processes. See [`super::sqlx_common`] for the lease model.
 
 use std::collections::HashMap;

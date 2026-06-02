@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use super::{AsyncLock, LockError};
 
-/// Async counterpart to [`LockManager`](super::LockManager): a factory for
-/// per-entity (or per-key) [`AsyncLock`]s.
+/// Factory for per-entity (or per-key) [`AsyncLock`]s.
 ///
-/// An async `QueuedRepository` uses an `AsyncLockManager` to obtain a lock for
-/// each aggregate stream. The default [`InMemoryAsyncLockManager`](super::InMemoryAsyncLockManager)
-/// stores locks in a `HashMap`; distributed implementations might talk to
-/// Redis, Postgres advisory locks, etc.
+/// `QueuedRepository` uses an `AsyncLockManager` to obtain a lock for each
+/// aggregate stream. The default [`InMemoryAsyncLockManager`](super::InMemoryAsyncLockManager)
+/// stores locks in a `HashMap`; distributed implementations can talk to Redis,
+/// Postgres advisory locks, or another lease backend.
 pub trait AsyncLockManager: Send + Sync {
     /// The concrete async lock type returned by this manager.
     type Lock: AsyncLock;

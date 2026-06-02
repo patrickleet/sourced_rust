@@ -2,7 +2,7 @@ mod aggregate;
 
 use aggregate::{Todo, TodoEvent};
 use distributed::{
-    Aggregate, AsyncAggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
+    Aggregate, AggregateBuilder, Entity, EventRecord, EventRecordError, HashMapRepository,
     Queueable,
 };
 use serde::ser::Error as _;
@@ -198,9 +198,7 @@ fn try_from_unknown_event_returns_error() {
 
 #[tokio::test]
 async fn aggregate_hydration_roundtrip() {
-    let repo = HashMapRepository::new()
-        .queued_async()
-        .async_aggregate::<Todo>();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo = Todo::default();
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into())

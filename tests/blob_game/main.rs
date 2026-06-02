@@ -1,7 +1,7 @@
 mod aggregate;
 
 use aggregate::{BlobGame, TileState};
-use distributed::{AsyncAggregateBuilder, HashMapRepository};
+use distributed::{AggregateBuilder, HashMapRepository};
 
 // Tile state shortcuts
 const P: TileState = TileState::Player;
@@ -344,7 +344,7 @@ fn should_work_with_timer_mode() {
 
 #[tokio::test]
 async fn replay_restores_game_state() {
-    let repo = HashMapRepository::new().async_aggregate::<BlobGame>();
+    let repo = HashMapRepository::new().aggregate::<BlobGame>();
 
     // Create and play a game
     let mut game = BlobGame::new();

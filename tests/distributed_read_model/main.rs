@@ -41,10 +41,9 @@ use distributed::microsvc::{Context, Service, Session};
 #[cfg(feature = "sqlite")]
 use distributed::SqliteRepository;
 use distributed::{
-    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit,
-    OutboxMessage, ReadModelError, ReadModelWritePlanBuilder, RelationalReadModel,
-    RelationalReadModelIncludes,
+    AggregateBuilder, AsyncOutboxStore, CommitBuilderExt, GetStream, OutboxMessage, ReadModelError,
+    ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
+    RelationalReadModelIncludes, RelationalReadModelQueryStore, TransactionalCommit,
 };
 use distributed::{HashMapRepository, InMemoryReadModelStore, Queueable};
 use projection_service::service as projection_service;
@@ -71,13 +70,13 @@ where
 
 static NEXT_ASYNC_FLOW_ID: AtomicU64 = AtomicU64::new(1);
 
-struct AsyncFlowIds {
+struct FlowIds {
     checkout_id: String,
     seat_id: String,
     category: String,
 }
 
-fn async_unique_id(prefix: &str) -> String {
+fn unique_id(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after epoch")
@@ -89,48 +88,48 @@ fn async_unique_id(prefix: &str) -> String {
 // Used by the gated sqlite/postgres flow tests; the matrix uses the per-step
 // helpers directly, so this is unused in a default (no-feature) build.
 #[allow(dead_code)]
-async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
+async fn run_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
     checkout_repo: R,
     checkout_outbox: CheckoutOutbox,
     seat_repo: R,
     seat_outbox: SeatOutbox,
     read_repo: R,
-    ids: AsyncFlowIds,
+    ids: FlowIds,
 ) where
     R: Clone
-        + AsyncGetStream
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore
-        + AsyncTransactionalCommit
+        + GetStream
+        + ReadModelWritePlanStore
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
         + Send
         + Sync
         + 'static,
     CheckoutOutbox: AsyncOutboxStore + Send + Sync,
     SeatOutbox: AsyncOutboxStore + Send + Sync,
 {
-    let seat_added = add_seat_async(&seat_repo, &ids.seat_id, &ids.category).await;
-    assert_pending_async(&seat_outbox, &seat_added).await;
-    project_message_async(&read_repo, &seat_added).await;
+    let seat_added = add_seat(&seat_repo, &ids.seat_id, &ids.category).await;
+    assert_pending(&seat_outbox, &seat_added).await;
+    project_message(&read_repo, &seat_added).await;
 
-    let checkout_started = start_checkout_async(
+    let checkout_started = start_checkout(
         &checkout_repo,
         &ids.checkout_id,
         &ids.seat_id,
         &ids.category,
     )
     .await;
-    assert_pending_async(&checkout_outbox, &checkout_started).await;
-    project_message_async(&read_repo, &checkout_started).await;
+    assert_pending(&checkout_outbox, &checkout_started).await;
+    project_message(&read_repo, &checkout_started).await;
 
-    let seat_reserved = reserve_started_checkout_seat_async(&seat_repo, &checkout_started).await;
-    assert_pending_async(&seat_outbox, &seat_reserved).await;
-    project_message_async(&read_repo, &seat_reserved).await;
+    let seat_reserved = reserve_started_checkout_seat(&seat_repo, &checkout_started).await;
+    assert_pending(&seat_outbox, &seat_reserved).await;
+    project_message(&read_repo, &seat_reserved).await;
 
-    let reservation_completed = record_seat_reserved_async(&checkout_repo, &seat_reserved).await;
-    assert_pending_async(&checkout_outbox, &reservation_completed).await;
-    project_message_async(&read_repo, &reservation_completed).await;
+    let reservation_completed = record_seat_reserved(&checkout_repo, &seat_reserved).await;
+    assert_pending(&checkout_outbox, &reservation_completed).await;
+    project_message(&read_repo, &reservation_completed).await;
 
-    let checkout = load_checkout_screen_async(&read_repo, &ids.checkout_id)
+    let checkout = load_checkout_screen(&read_repo, &ids.checkout_id)
         .await
         .expect("checkout read model load should succeed")
         .expect("checkout should be projected");
@@ -158,7 +157,7 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
         vec!["seat_reservation_completed", "seat_reserved", "started"]
     );
 
-    let seat = load_seat_async(&read_repo, &ids.seat_id)
+    let seat = load_seat(&read_repo, &ids.seat_id)
         .await
         .expect("seat read model load should succeed")
         .expect("seat should be projected");
@@ -167,7 +166,7 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
 
     let loaded_checkout = checkout_repo
         .clone()
-        .async_aggregate::<CheckoutSaga>()
+        .aggregate::<CheckoutSaga>()
         .get(&ids.checkout_id)
         .await
         .expect("checkout saga should reload")
@@ -177,7 +176,7 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
 
     let loaded_seat = seat_repo
         .clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .get(&ids.seat_id)
         .await
         .expect("seat aggregate should reload")
@@ -186,9 +185,9 @@ async fn run_async_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
     assert_eq!(loaded_seat.checkout_id, ids.checkout_id);
 }
 
-async fn add_seat_async<R>(repo: &R, seat_id: &str, category: &str) -> OutboxMessage
+async fn add_seat<R>(repo: &R, seat_id: &str, category: &str) -> OutboxMessage
 where
-    R: AsyncTransactionalCommit + Send + Sync,
+    R: TransactionalCommit + Send + Sync,
 {
     let mut seat = Seat::default();
     seat.add(seat_id.to_string(), category.to_string())
@@ -207,14 +206,14 @@ where
     outbox
 }
 
-async fn start_checkout_async<R>(
+async fn start_checkout<R>(
     repo: &R,
     checkout_id: &str,
     seat_id: &str,
     seat_category: &str,
 ) -> OutboxMessage
 where
-    R: AsyncTransactionalCommit + Send + Sync,
+    R: TransactionalCommit + Send + Sync,
 {
     let mut saga = CheckoutSaga::default();
     saga.start(
@@ -238,18 +237,18 @@ where
     outbox
 }
 
-async fn reserve_started_checkout_seat_async<R>(
+async fn reserve_started_checkout_seat<R>(
     repo: &R,
     checkout_started: &OutboxMessage,
 ) -> OutboxMessage
 where
-    R: Clone + AsyncGetStream + AsyncTransactionalCommit + Send + Sync + 'static,
+    R: Clone + GetStream + TransactionalCommit + Send + Sync + 'static,
 {
     let msg: CheckoutStarted = serde_json::from_slice(&checkout_started.payload)
         .expect("checkout started payload should decode");
     let mut seat = repo
         .clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .get(&msg.seat_id)
         .await
         .expect("seat should load")
@@ -274,15 +273,15 @@ where
     outbox
 }
 
-async fn record_seat_reserved_async<R>(repo: &R, seat_reserved: &OutboxMessage) -> OutboxMessage
+async fn record_seat_reserved<R>(repo: &R, seat_reserved: &OutboxMessage) -> OutboxMessage
 where
-    R: Clone + AsyncGetStream + AsyncTransactionalCommit + Send + Sync + 'static,
+    R: Clone + GetStream + TransactionalCommit + Send + Sync + 'static,
 {
     let msg: SeatReserved = serde_json::from_slice(&seat_reserved.payload)
         .expect("seat reserved payload should decode");
     let mut saga = repo
         .clone()
-        .async_aggregate::<CheckoutSaga>()
+        .aggregate::<CheckoutSaga>()
         .get(&msg.checkout_id)
         .await
         .expect("checkout saga should load")
@@ -310,9 +309,9 @@ where
     outbox
 }
 
-async fn project_message_async<R>(repo: &R, message: &OutboxMessage)
+async fn project_message<R>(repo: &R, message: &OutboxMessage)
 where
-    R: AsyncReadModelWritePlanStore + Send + Sync,
+    R: ReadModelWritePlanStore + Send + Sync,
 {
     let mut read_models = ReadModelWritePlanBuilder::new();
 
@@ -400,13 +399,13 @@ where
     }
 
     read_models
-        .commit_async(repo)
+        .commit(repo)
         .await
         .expect("projection read models should commit");
 }
 
 #[allow(dead_code)]
-async fn assert_pending_async<S>(store: &S, message: &OutboxMessage)
+async fn assert_pending<S>(store: &S, message: &OutboxMessage)
 where
     S: AsyncOutboxStore + Send + Sync,
 {
@@ -421,18 +420,18 @@ where
     );
 }
 
-async fn load_checkout_screen_async<R>(
+async fn load_checkout_screen<R>(
     repo: &R,
     checkout_id: &str,
 ) -> Result<Option<CheckoutView>, ReadModelError>
 where
-    R: AsyncRelationalReadModelQueryStore + Send + Sync,
+    R: RelationalReadModelQueryStore + Send + Sync,
 {
     let request = ReadModelWritePlanBuilder::new().load_with::<CheckoutView, _, _>(
         read_models::checkout_key(checkout_id),
         ["steps", "seat"],
     )?;
-    let graph = repo.load_graph_async(request).await?;
+    let graph = repo.load_graph(request).await?;
     let Some(root) = graph.root else {
         return Ok(None);
     };
@@ -449,13 +448,13 @@ where
     Ok(Some(checkout))
 }
 
-async fn load_seat_async<R>(repo: &R, seat_id: &str) -> Result<Option<SeatView>, ReadModelError>
+async fn load_seat<R>(repo: &R, seat_id: &str) -> Result<Option<SeatView>, ReadModelError>
 where
-    R: AsyncRelationalReadModelQueryStore + Send + Sync,
+    R: RelationalReadModelQueryStore + Send + Sync,
 {
     let request =
         ReadModelWritePlanBuilder::new().load::<SeatView>(read_models::seat_key(seat_id))?;
-    let graph = repo.load_graph_async(request).await?;
+    let graph = repo.load_graph(request).await?;
     Ok(graph
         .root
         .map(|root| SeatView::from_row(root.data).expect("seat row should hydrate")))
@@ -505,10 +504,9 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
     let seat_store = HashMapRepository::new();
-    let seat_service =
-        seat_inventory_service::service(seat_store.clone().queued_async().async_aggregate());
+    let seat_service = seat_inventory_service::service(seat_store.clone().queued().aggregate());
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
     let projection_svc = projection_service(read_store.clone());
@@ -602,8 +600,8 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let checkout_saga = checkout_store
         .clone()
-        .queued_async()
-        .async_aggregate::<CheckoutSaga>()
+        .queued()
+        .aggregate::<CheckoutSaga>()
         .peek("checkout-1")
         .await
         .unwrap()
@@ -613,8 +611,8 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let seat = seat_store
         .clone()
-        .queued_async()
-        .async_aggregate::<Seat>()
+        .queued()
+        .aggregate::<Seat>()
         .peek("A-7")
         .await
         .unwrap()
@@ -625,7 +623,7 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn async_sqlite_checkout_flow_projects_relational_read_models() {
+async fn sqlite_checkout_flow_projects_relational_read_models() {
     let checkout_repo = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .expect("checkout repository should migrate");
@@ -643,15 +641,15 @@ async fn async_sqlite_checkout_flow_projects_relational_read_models() {
         .await
         .expect("read schema should bootstrap");
 
-    run_async_persistent_checkout_flow(
+    run_persistent_checkout_flow(
         checkout_repo,
         checkout_outbox,
         seat_repo,
         seat_outbox,
         read_repo,
-        AsyncFlowIds {
-            checkout_id: async_unique_id("checkout-sqlite"),
-            seat_id: async_unique_id("seat-sqlite"),
+        FlowIds {
+            checkout_id: unique_id("checkout-sqlite"),
+            seat_id: unique_id("seat-sqlite"),
             category: "balcony".to_string(),
         },
     )
@@ -660,7 +658,7 @@ async fn async_sqlite_checkout_flow_projects_relational_read_models() {
 
 #[cfg(feature = "postgres")]
 #[tokio::test]
-async fn async_postgres_checkout_flow_projects_relational_read_models() {
+async fn postgres_checkout_flow_projects_relational_read_models() {
     let Some(schema) = postgres::PostgresTestSchema::create_from_env(
         "distributed_read",
         "skipping Postgres distributed read-model test",
@@ -681,15 +679,15 @@ async fn async_postgres_checkout_flow_projects_relational_read_models() {
         .await
         .expect("read schema should bootstrap");
 
-    run_async_persistent_checkout_flow(
+    run_persistent_checkout_flow(
         checkout_repo,
         checkout_outbox,
         seat_repo,
         seat_outbox,
         read_repo,
-        AsyncFlowIds {
-            checkout_id: async_unique_id("checkout-postgres"),
-            seat_id: async_unique_id("seat-postgres"),
+        FlowIds {
+            checkout_id: unique_id("checkout-postgres"),
+            seat_id: unique_id("seat-postgres"),
             category: "balcony".to_string(),
         },
     )
@@ -701,7 +699,7 @@ async fn async_postgres_checkout_flow_projects_relational_read_models() {
 async fn checkout_commands_can_be_http_service() {
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
     let base = checkout_saga_service::start_http_service(checkout_service.clone()).await;
 
     let client = reqwest::Client::new();
@@ -731,7 +729,7 @@ async fn checkout_commands_can_be_http_service() {
 async fn checkout_commands_can_be_grpc_service() {
     let checkout_store = HashMapRepository::new();
     let checkout_service =
-        checkout_saga_service::service(checkout_store.clone().queued_async().async_aggregate());
+        checkout_saga_service::service(checkout_store.clone().queued().aggregate());
     let mut client = checkout_saga_service::start_grpc_service(checkout_service.clone()).await;
 
     let started = client
@@ -835,24 +833,24 @@ async fn run_checkout_over_bus<B, R>(
     collector: StdArc<Service<()>>,
     collected: Collected,
     repo: R,
-    ids: AsyncFlowIds,
+    ids: FlowIds,
 ) where
     B: Bus + BusConsumer,
     R: Clone
-        + AsyncGetStream
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore
-        + AsyncTransactionalCommit
+        + GetStream
+        + ReadModelWritePlanStore
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
         + Send
         + Sync
         + 'static,
 {
     // 1. Domain flow on the persistence backend → the four causal events.
-    let seat_added = add_seat_async(&repo, &ids.seat_id, &ids.category).await;
+    let seat_added = add_seat(&repo, &ids.seat_id, &ids.category).await;
     let checkout_started =
-        start_checkout_async(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
-    let seat_reserved = reserve_started_checkout_seat_async(&repo, &checkout_started).await;
-    let reservation_completed = record_seat_reserved_async(&repo, &seat_reserved).await;
+        start_checkout(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
+    let seat_reserved = reserve_started_checkout_seat(&repo, &checkout_started).await;
+    let reservation_completed = record_seat_reserved(&repo, &seat_reserved).await;
     let events = [
         seat_added,
         checkout_started,
@@ -897,10 +895,10 @@ fn delivered_map(collected: &Collected) -> StdHashMap<String, (String, Vec<u8>)>
 /// Shared by every transport cell (pull buses and the Knative HTTP path).
 async fn project_and_assert_checkout<R>(
     repo: &R,
-    ids: &AsyncFlowIds,
+    ids: &FlowIds,
     delivered: &StdHashMap<String, (String, Vec<u8>)>,
 ) where
-    R: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore + Send + Sync,
+    R: ReadModelWritePlanStore + RelationalReadModelQueryStore + Send + Sync,
 {
     for event_type in FLOW_EVENT_TYPES {
         let (id, payload) = delivered
@@ -908,10 +906,10 @@ async fn project_and_assert_checkout<R>(
             .unwrap_or_else(|| panic!("event {event_type} should arrive over the transport"));
         let message = OutboxMessage::create(id.clone(), event_type, payload.clone())
             .expect("delivered event should rebuild");
-        project_message_async(repo, &message).await;
+        project_message(repo, &message).await;
     }
 
-    let checkout = load_checkout_screen_async(repo, &ids.checkout_id)
+    let checkout = load_checkout_screen(repo, &ids.checkout_id)
         .await
         .expect("checkout read model load should succeed")
         .expect("checkout should be projected");
@@ -938,7 +936,7 @@ async fn project_and_assert_checkout<R>(
         vec!["seat_reservation_completed", "seat_reserved", "started"]
     );
 
-    let seat = load_seat_async(repo, &ids.seat_id)
+    let seat = load_seat(repo, &ids.seat_id)
         .await
         .expect("seat read model load should succeed")
         .expect("seat should be projected");
@@ -946,10 +944,10 @@ async fn project_and_assert_checkout<R>(
     assert_eq!(seat.checkout_id, ids.checkout_id);
 }
 
-fn matrix_ids(tag: &str) -> AsyncFlowIds {
-    AsyncFlowIds {
-        checkout_id: async_unique_id(&format!("checkout-{tag}")),
-        seat_id: async_unique_id(&format!("seat-{tag}")),
+fn matrix_ids(tag: &str) -> FlowIds {
+    FlowIds {
+        checkout_id: unique_id(&format!("checkout-{tag}")),
+        seat_id: unique_id(&format!("seat-{tag}")),
         category: "balcony".to_string(),
     }
 }
@@ -996,13 +994,13 @@ async fn sqlite_matrix_repo() -> SqliteRepository {
 // projection sink, so the same scenario runs over the Knative transport with no
 // broker. (HTTP/gRPC command ingress is this same Knative surface.)
 #[cfg(feature = "http")]
-async fn run_checkout_over_knative<R>(repo: R, ids: AsyncFlowIds)
+async fn run_checkout_over_knative<R>(repo: R, ids: FlowIds)
 where
     R: Clone
-        + AsyncGetStream
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore
-        + AsyncTransactionalCommit
+        + GetStream
+        + ReadModelWritePlanStore
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
         + Send
         + Sync
         + 'static,
@@ -1024,11 +1022,11 @@ where
     // events_broker "" + namespace "" => POST to the router root ("/").
     let bus = KnativeBus::new(format!("http://{addr}"), "", "matrix-source", "", "");
 
-    let seat_added = add_seat_async(&repo, &ids.seat_id, &ids.category).await;
+    let seat_added = add_seat(&repo, &ids.seat_id, &ids.category).await;
     let checkout_started =
-        start_checkout_async(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
-    let seat_reserved = reserve_started_checkout_seat_async(&repo, &checkout_started).await;
-    let reservation_completed = record_seat_reserved_async(&repo, &seat_reserved).await;
+        start_checkout(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
+    let seat_reserved = reserve_started_checkout_seat(&repo, &checkout_started).await;
+    let reservation_completed = record_seat_reserved(&repo, &seat_reserved).await;
     for event in [
         &seat_added,
         &checkout_started,
@@ -1105,7 +1103,7 @@ async fn matrix_in_memory_persistence_over_nats_bus() {
     if nats_url().is_none() {
         return;
     }
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         nats_matrix_bus(&ns).await,
@@ -1123,7 +1121,7 @@ async fn matrix_sqlite_persistence_over_nats_bus() {
     if nats_url().is_none() {
         return;
     }
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         nats_matrix_bus(&ns).await,
@@ -1162,7 +1160,7 @@ async fn matrix_in_memory_persistence_over_rabbit_bus() {
     if amqp_url().is_none() {
         return;
     }
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     let bus = rabbit_matrix_bus(&ns, &collector).await;
     run_checkout_over_bus(
@@ -1181,7 +1179,7 @@ async fn matrix_sqlite_persistence_over_rabbit_bus() {
     if amqp_url().is_none() {
         return;
     }
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     let bus = rabbit_matrix_bus(&ns, &collector).await;
     run_checkout_over_bus(
@@ -1214,7 +1212,7 @@ async fn matrix_in_memory_persistence_over_kafka_bus() {
     if kafka_brokers().is_none() {
         return;
     }
-    let ns = async_unique_id("ns");
+    let ns = unique_id("ns");
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         kafka_matrix_bus(&ns).await,
@@ -1232,7 +1230,7 @@ async fn matrix_sqlite_persistence_over_kafka_bus() {
     if kafka_brokers().is_none() {
         return;
     }
-    let ns = async_unique_id("ns");
+    let ns = unique_id("ns");
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         kafka_matrix_bus(&ns).await,
@@ -1370,7 +1368,7 @@ async fn matrix_postgres_persistence_over_nats_bus() {
     let Some((_schema, repo)) = postgres_matrix_repo().await else {
         return;
     };
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         nats_matrix_bus(&ns).await,
@@ -1391,7 +1389,7 @@ async fn matrix_postgres_persistence_over_rabbit_bus() {
     let Some((_schema, repo)) = postgres_matrix_repo().await else {
         return;
     };
-    let ns = async_unique_id("ns").to_lowercase();
+    let ns = unique_id("ns").to_lowercase();
     let (collector, collected) = build_collector();
     let bus = rabbit_matrix_bus(&ns, &collector).await;
     run_checkout_over_bus(bus, collector, collected, repo, matrix_ids("pg-rabbit")).await;
@@ -1406,7 +1404,7 @@ async fn matrix_postgres_persistence_over_kafka_bus() {
     let Some((_schema, repo)) = postgres_matrix_repo().await else {
         return;
     };
-    let ns = async_unique_id("ns");
+    let ns = unique_id("ns");
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
         kafka_matrix_bus(&ns).await,

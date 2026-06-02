@@ -7,11 +7,11 @@ mod handlers;
 mod service;
 
 use distributed::{
-    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+    AggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 
 pub use models::{AddCard, Board, BoardSnapshot, MoveCard, OpenBoard, RemoveCard};
 pub use service::model_service;
 
 pub type BoardRepo =
-    AsyncAggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Board>;
+    AggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Board>;

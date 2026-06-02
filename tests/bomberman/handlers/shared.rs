@@ -1,7 +1,7 @@
 use distributed::{
-    hydrate, Aggregate, AsyncGetStream, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, ReadModelWritePlanBuilder, RepositoryError, RowKey,
-    RowValue, StreamIdentity,
+    hydrate, Aggregate, GetStream, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue,
+    StreamIdentity,
 };
 
 use crate::domain::bomb::Bomb;
@@ -23,10 +23,10 @@ pub(crate) fn board_write_plan(board: &BoardView) -> Result<ReadModelWritePlanBu
 
 pub(crate) async fn load_board<R>(repo: &R, game_id: &str) -> Result<BoardView, GameError>
 where
-    R: AsyncReadModelWritePlanStore + AsyncRelationalReadModelQueryStore,
+    R: ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
-    repo.workspace_async()
-        .load_async::<BoardView>(board_key(game_id))
+    repo.workspace()
+        .load::<BoardView>(board_key(game_id))
         .one()
         .await
         .map_err(RepositoryError::from)?
@@ -38,7 +38,7 @@ where
 /// aggregate's own stream type. Works through `&R` (handlers borrow the repo).
 pub(crate) async fn get_aggregate<R, A>(repo: &R, id: &str) -> Result<Option<A>, GameError>
 where
-    R: AsyncGetStream,
+    R: GetStream,
     A: Aggregate + Send,
 {
     let identity = StreamIdentity::new(A::aggregate_type(), id).map_err(GameError::Repository)?;
@@ -50,7 +50,7 @@ where
 
 async fn load_indexed_aggregates<R, A, I>(repo: &R, ids: I) -> Result<Vec<A>, GameError>
 where
-    R: AsyncGetStream,
+    R: GetStream,
     A: Aggregate + Send,
     I: IntoIterator,
     I::Item: AsRef<str>,
@@ -66,21 +66,21 @@ where
     Ok(results)
 }
 
-pub(crate) async fn load_board_players<R: AsyncGetStream>(
+pub(crate) async fn load_board_players<R: GetStream>(
     repo: &R,
     board: &BoardView,
 ) -> Result<Vec<Player>, GameError> {
     load_indexed_aggregates(repo, board.players.iter().map(|player| player.id.as_str())).await
 }
 
-pub(crate) async fn load_board_bombs<R: AsyncGetStream>(
+pub(crate) async fn load_board_bombs<R: GetStream>(
     repo: &R,
     board: &BoardView,
 ) -> Result<Vec<Bomb>, GameError> {
     load_indexed_aggregates(repo, board.bombs.iter().map(|bomb| bomb.id.as_str())).await
 }
 
-pub(crate) async fn load_board_explosions<R: AsyncGetStream>(
+pub(crate) async fn load_board_explosions<R: GetStream>(
     repo: &R,
     board: &BoardView,
 ) -> Result<Vec<Explosion>, GameError> {

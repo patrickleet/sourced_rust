@@ -14,7 +14,7 @@ All competing frameworks are async-first. The original traits (`Repository`, `Co
 - Async message brokers (rdkafka, lapin)
 - Async web frameworks (axum handlers)
 
-Foundation status: stream-aware async repository/read-model/snapshot/outbox traits now exist as a parallel surface. See [Async Repository Boundary](async-repositories.md). The next backend work should implement Postgres against those async traits directly instead of wrapping SQL I/O behind the synchronous repository traits.
+Foundation status: stream-aware repository/read-model/snapshot traits now form the async-only persistence surface. See [Repository Boundary](repositories.md). The SQL backends implement those traits directly instead of wrapping database I/O behind synchronous repository traits.
 
 ### Later
 

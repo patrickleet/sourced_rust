@@ -7,8 +7,8 @@ pub use models::Seat;
 pub use service::service;
 
 use distributed::{
-    AsyncAggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
+    AggregateRepository, HashMapRepository, InMemoryAsyncLockManager, QueuedRepository,
 };
 
 pub type SeatRepo =
-    AsyncAggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Seat>;
+    AggregateRepository<QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>, Seat>;

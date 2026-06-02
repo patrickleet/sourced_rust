@@ -16,7 +16,7 @@ use super::{
     ReadModelWritePlan, RelationalReadModel, RelationshipDef, RelationshipKind, RowKey, RowValue,
     RowValues, RowWriteMode, Versioned,
 };
-use crate::repository::{AsyncReadModelWritePlanStore, AsyncRelationalReadModelQueryStore};
+use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
 
 #[derive(Clone)]
 pub(crate) struct StoredRow {
@@ -277,12 +277,12 @@ impl InMemoryReadModelStore {
     }
 }
 
-impl AsyncReadModelWritePlanStore for InMemoryReadModelStore {
-    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
+impl ReadModelWritePlanStore for InMemoryReadModelStore {
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         relational_capabilities()
     }
 
-    fn commit_write_plan_async(
+    fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
@@ -311,17 +311,17 @@ struct IncludeSpec {
     target_schema: ReadModelSchema,
 }
 
-impl AsyncRelationalReadModelQueryStore for InMemoryReadModelStore {
-    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
+impl RelationalReadModelQueryStore for InMemoryReadModelStore {
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
         ReadModelQueryCapabilities::relationship_includes()
     }
 
-    fn load_graph_async(
+    fn load_graph(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
         async move {
-            request.validate_for_query_capabilities(&self.read_model_query_capabilities_async())?;
+            request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
 
             let (root_schema, include_specs) = {
                 let registry = self
@@ -592,7 +592,7 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         let outcome = store
-            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
                 RowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
@@ -628,7 +628,7 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         store
-            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
                 RowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
@@ -640,7 +640,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
                 PatchRowMutation {
                     schema: schema.clone(),
                     key: key.clone(),
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(version, 2);
 
         store
-            .commit_write_plan_async(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
+            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
                 DeleteRowMutation {
                     schema: schema.clone(),
                     key: key.clone(),

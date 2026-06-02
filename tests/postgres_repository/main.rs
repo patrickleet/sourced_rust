@@ -8,11 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
-    sourced, Aggregate, AsyncAggregateBuilder, AsyncCommitBatch, AsyncGetStream, AsyncOutboxStore,
-    AsyncReadModelWritePlanCommitExt, AsyncSnapshotStore, AsyncStreamWrite,
-    AsyncTransactionalCommit, Entity, OutboxMessageStatus, PostgresRepository, ReadModel,
-    ReadModelWritePlanBuilder, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    StreamIdentity, TableSchemaRegistry,
+    sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
+    OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
+    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
+    SnapshotStore, StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -165,7 +164,7 @@ async fn aggregate_stream_round_trips_with_metadata() {
     let Some((_schema, repo)) = repository().await else {
         return;
     };
-    let counter_repo = repo.clone().async_aggregate::<Counter>();
+    let counter_repo = repo.clone().aggregate::<Counter>();
     let id = unique_id("counter");
 
     let mut counter = Counter::default();
@@ -191,7 +190,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
     let Some((_schema, repo)) = repository().await else {
         return;
     };
-    let counter_repo = repo.clone().async_aggregate::<Counter>();
+    let counter_repo = repo.clone().aggregate::<Counter>();
     let counter_id = unique_id("conflict");
     let other_id = unique_id("rollback");
 
@@ -212,15 +211,15 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
     let other_identity =
         StreamIdentity::new(CounterProjection::aggregate_type(), &other_id).unwrap();
     let err = repo
-        .commit_batch_async(AsyncCommitBatch {
+        .commit_batch(CommitBatch {
             inbox_receipts: Vec::new(),
             streams: vec![
-                AsyncStreamWrite::new(stale_identity, stale.entity_mut()),
-                AsyncStreamWrite::new(other_identity.clone(), other.entity_mut()),
+                StreamWrite::new(stale_identity, stale.entity_mut()),
+                StreamWrite::new(other_identity.clone(), other.entity_mut()),
             ],
             outbox_messages: Vec::new(),
             read_model_plans: Vec::new(),
-            snapshots: vec![distributed::AsyncSnapshotWrite::Save {
+            snapshots: vec![distributed::SnapshotWrite::Save {
                 identity: other_identity.clone(),
                 record: SnapshotRecord::new(
                     CounterProjection::aggregate_type(),
@@ -237,11 +236,7 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
 
     assert!(matches!(err, RepositoryError::ConcurrentWrite { .. }));
     assert!(repo.get_stream(&other_identity).await.unwrap().is_none());
-    assert!(repo
-        .get_snapshot_async(&other_identity)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(repo.get_snapshot(&other_identity).await.unwrap().is_none());
     assert_eq!(stale.entity().committed_version(), 1);
     assert_eq!(stale.entity().new_events().len(), 1);
 }
@@ -259,9 +254,9 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
     second.digest_empty("second_recorded").unwrap();
 
     let err = repo
-        .commit_batch_async(AsyncCommitBatch::new(vec![
-            AsyncStreamWrite::new(identity.clone(), &mut first),
-            AsyncStreamWrite::new(identity.clone(), &mut second),
+        .commit_batch(CommitBatch::new(vec![
+            StreamWrite::new(identity.clone(), &mut first),
+            StreamWrite::new(identity.clone(), &mut second),
         ]))
         .await
         .unwrap_err();
@@ -340,7 +335,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     };
     let mut setup = ReadModelWritePlanBuilder::new();
     setup.upsert(&view).unwrap();
-    setup.commit_async(&repo).await.unwrap();
+    setup.commit(&repo).await.unwrap();
 
     let mut patched_counts = HashMap::new();
     patched_counts.insert("wins".to_string(), 3);
@@ -353,7 +348,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     patch_session
         .patch::<RelationalCounterView>(relational_counter_key(&id), patch)
         .unwrap();
-    patch_session.commit_async(&repo).await.unwrap();
+    patch_session.commit(&repo).await.unwrap();
 
     let row = sqlx::query(
         r#"
@@ -380,7 +375,7 @@ async fn read_model_session_patches_and_deletes_relational_rows() {
     delete_session
         .delete::<RelationalCounterView>(relational_counter_key(&id))
         .unwrap();
-    delete_session.commit_async(&repo).await.unwrap();
+    delete_session.commit(&repo).await.unwrap();
 
     let remaining: i64 = sqlx::query_scalar(
         r#"
@@ -411,7 +406,7 @@ async fn read_model_session_persists_relational_rows() {
     let mut session = ReadModelWritePlanBuilder::new();
     session.upsert(&view).unwrap();
 
-    let outcome = session.commit_async(&repo).await.unwrap();
+    let outcome = session.commit(&repo).await.unwrap();
     let row = sqlx::query(
         r#"
         SELECT "value", "_sourced_version"
@@ -441,7 +436,7 @@ async fn snapshots_persist_by_full_stream_identity() {
     let counter = StreamIdentity::new("postgres.counter", &id).unwrap();
     let projection = StreamIdentity::new("postgres.counter_projection", &id).unwrap();
 
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &counter,
         SnapshotRecord::new(
             "postgres.counter",
@@ -454,7 +449,7 @@ async fn snapshots_persist_by_full_stream_identity() {
     )
     .await
     .unwrap();
-    repo.save_snapshot_async(
+    repo.save_snapshot(
         &projection,
         SnapshotRecord::new(
             "postgres.counter_projection",
@@ -468,8 +463,8 @@ async fn snapshots_persist_by_full_stream_identity() {
     .await
     .unwrap();
 
-    let loaded_counter = repo.get_snapshot_async(&counter).await.unwrap().unwrap();
-    let loaded_projection = repo.get_snapshot_async(&projection).await.unwrap().unwrap();
+    let loaded_counter = repo.get_snapshot(&counter).await.unwrap().unwrap();
+    let loaded_projection = repo.get_snapshot(&projection).await.unwrap().unwrap();
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "postgres.counter");

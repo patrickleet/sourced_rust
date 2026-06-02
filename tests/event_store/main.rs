@@ -1,13 +1,13 @@
 use distributed::{
-    AsyncCommitBatch, AsyncGetStream, AsyncStreamWrite, AsyncTransactionalCommit, Entity,
-    HashMapRepository, StreamIdentity,
+    CommitBatch, Entity, GetStream, HashMapRepository, StreamIdentity, StreamWrite,
+    TransactionalCommit,
 };
 
 /// Fixed aggregate type used to key every event stream in this crate.
 ///
 /// The synchronous, id-only repository API (`Commit`/`GetOne`) is being removed,
 /// so these event-store semantics tests now run on the async stream API
-/// (`get_stream`/`commit_batch_async`). The async path keys streams by full
+/// (`get_stream`/`commit_batch`). The async path keys streams by full
 /// `StreamIdentity` (aggregate type + id), so every entity is committed and
 /// loaded under this single aggregate type to mirror the old id-only behavior.
 const AGGREGATE_TYPE: &str = "event_store_test";
@@ -27,9 +27,8 @@ async fn commit_one(
     entity: &mut Entity,
 ) -> Result<(), distributed::RepositoryError> {
     let id = entity.id().to_string();
-    let stream = AsyncStreamWrite::new(identity(&id), entity);
-    repo.commit_batch_async(AsyncCommitBatch::new(vec![stream]))
-        .await
+    let stream = StreamWrite::new(identity(&id), entity);
+    repo.commit_batch(CommitBatch::new(vec![stream])).await
 }
 
 /// Async equivalent of the old `repo.commit(&mut [&mut a, &mut b])` for many entities.
@@ -40,10 +39,9 @@ async fn commit_many(
     let mut streams = Vec::with_capacity(entities.len());
     for entity in entities.iter_mut() {
         let id = entity.id().to_string();
-        streams.push(AsyncStreamWrite::new(identity(&id), entity));
+        streams.push(StreamWrite::new(identity(&id), entity));
     }
-    repo.commit_batch_async(AsyncCommitBatch::new(streams))
-        .await
+    repo.commit_batch(CommitBatch::new(streams)).await
 }
 
 // --- Event Accumulation ---

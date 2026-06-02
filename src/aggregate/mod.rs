@@ -1,5 +1,5 @@
 mod aggregate;
-mod async_aggregate;
+mod repository;
 
 pub use aggregate::{hydrate, Aggregate};
-pub use async_aggregate::{AsyncAggregateBuilder, AsyncAggregateRepository};
+pub use repository::{AggregateBuilder, AggregateRepository};

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use distributed::{
-    Aggregate, AsyncAggregateBuilder, AsyncGetStream, AsyncOutboxStore, AsyncTransactionalCommit,
-    ClaimOutboxMessages, OutboxClaimRef, OutboxMessage, OutboxMessageStatus,
-    OutboxPublishFailureAction, RepositoryError, StreamIdentity,
+    Aggregate, AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, GetStream, OutboxClaimRef,
+    OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction, RepositoryError,
+    StreamIdentity, TransactionalCommit,
 };
 
 use super::scenario::unique_id;
@@ -11,7 +11,7 @@ use super::seat::Seat;
 
 pub async fn high_level_outbox_commit_persists_row_without_stream<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
     S: AsyncOutboxStore + Send + Sync,
 {
     let seat_id = unique_id("outbox-seat");
@@ -21,7 +21,7 @@ where
         .expect("outbox message should be valid");
 
     repo.clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(message)
         .commit(&mut seat)
         .await
@@ -53,7 +53,7 @@ where
 
 pub async fn duplicate_outbox_insert_rolls_back_aggregate<R>(repo: R)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let duplicate_message_id = unique_id("duplicate-outbox");
     let mut existing_seat = added_seat(&unique_id("existing-seat"));
@@ -61,7 +61,7 @@ where
         OutboxMessage::create(&duplicate_message_id, "seat.added", b"{}".to_vec())
             .expect("existing outbox message should be valid");
     repo.clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(existing_message)
         .commit(&mut existing_seat)
         .await
@@ -77,7 +77,7 @@ where
 
     let err = repo
         .clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(duplicate_message)
         .commit(&mut rollback_seat)
         .await
@@ -97,11 +97,11 @@ where
 
 pub async fn aggregate_conflict_rolls_back_outbox<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
     S: AsyncOutboxStore + Send + Sync,
 {
     let seat_id = unique_id("conflict-outbox-seat");
-    let seat_repo = repo.clone().async_aggregate::<Seat>();
+    let seat_repo = repo.clone().aggregate::<Seat>();
     let mut original = added_seat(&seat_id);
     seat_repo
         .commit(&mut original)
@@ -142,7 +142,7 @@ where
         .expect("outbox message should be valid");
     let err = repo
         .clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(message)
         .commit(&mut stale)
         .await
@@ -154,7 +154,7 @@ where
 
 pub async fn worker_claim_complete_and_retry_lifecycle<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
     S: AsyncOutboxStore + Send + Sync,
 {
     let complete_message_id = unique_id("complete-outbox");
@@ -163,7 +163,7 @@ where
         OutboxMessage::create(&complete_message_id, "seat.added", b"{}".to_vec())
             .expect("complete outbox message should be valid");
     repo.clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(complete_message)
         .commit(&mut complete_seat)
         .await
@@ -207,7 +207,7 @@ where
     let retry_message = OutboxMessage::create(&retry_message_id, "seat.added", b"{}".to_vec())
         .expect("retry outbox message should be valid");
     repo.clone()
-        .async_aggregate::<Seat>()
+        .aggregate::<Seat>()
         .outbox(retry_message)
         .commit(&mut retry_seat)
         .await
@@ -265,7 +265,7 @@ where
 
 pub async fn worker_claim_by_ids_claims_only_requested<R, S>(repo: R, outbox: S)
 where
-    R: AsyncGetStream + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
     S: AsyncOutboxStore + Send + Sync,
 {
     let wanted_id = unique_id("wanted-outbox");
@@ -275,7 +275,7 @@ where
         let message = OutboxMessage::create(message_id, "seat.added", b"{}".to_vec())
             .expect("outbox message should be valid");
         repo.clone()
-            .async_aggregate::<Seat>()
+            .aggregate::<Seat>()
             .outbox(message)
             .commit(&mut seat)
             .await

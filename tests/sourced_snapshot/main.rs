@@ -2,8 +2,8 @@ mod aggregates;
 
 use aggregates::*;
 use distributed::{
-    Aggregate, AsyncAggregateBuilder, AsyncSnapshotStore, HashMapRepository, OutboxMessage,
-    OutboxStore, Snapshottable, StreamIdentity,
+    Aggregate, AggregateBuilder, HashMapRepository, OutboxMessage, OutboxStore, SnapshotStore,
+    Snapshottable, StreamIdentity,
 };
 
 // ============================================================================
@@ -27,7 +27,7 @@ fn default_snapshot_has_id_and_all_fields() {
 #[tokio::test]
 async fn default_snapshot_roundtrip_via_snapshottable() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Todo>()
+        .aggregate::<Todo>()
         .with_snapshots(1);
 
     let mut todo = Todo::new();
@@ -90,7 +90,7 @@ fn custom_id_restore_sets_entity_id_from_field() {
 #[tokio::test]
 async fn custom_id_roundtrip_via_repo() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Inventory>()
+        .aggregate::<Inventory>()
         .with_snapshots(1);
 
     let mut inv = Inventory::new();
@@ -133,7 +133,7 @@ fn serde_skip_default_excluded_from_snapshot() {
 #[tokio::test]
 async fn serde_skip_restore_roundtrip() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Order>()
+        .aggregate::<Order>()
         .with_snapshots(1);
 
     let mut order = Order::new();
@@ -166,7 +166,7 @@ fn sourced_attr_with_snapshot_derive() {
 #[tokio::test]
 async fn sourced_attr_snapshot_roundtrip_via_repo() {
     let repo = HashMapRepository::new()
-        .async_aggregate::<Counter>()
+        .aggregate::<Counter>()
         .with_snapshots(2);
 
     let mut counter = Counter::new();
@@ -176,12 +176,7 @@ async fn sourced_attr_snapshot_roundtrip_via_repo() {
 
     // At version 2, should have a snapshot
     let identity = StreamIdentity::new(Counter::aggregate_type(), "c1").unwrap();
-    let snap_record = repo
-        .repo()
-        .repo()
-        .get_snapshot_async(&identity)
-        .await
-        .unwrap();
+    let snap_record = repo.repo().repo().get_snapshot(&identity).await.unwrap();
     assert!(snap_record.is_some());
 
     let loaded = repo.get("c1").await.unwrap().unwrap();
@@ -254,7 +249,7 @@ fn domain_event_propagates_metadata() {
 
 #[tokio::test]
 async fn domain_event_commits_with_outbox() {
-    let repo = HashMapRepository::new().async_aggregate::<Todo>();
+    let repo = HashMapRepository::new().aggregate::<Todo>();
 
     let mut todo = Todo::new();
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())

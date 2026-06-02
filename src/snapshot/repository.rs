@@ -1,8 +1,8 @@
-use crate::aggregate::{hydrate, AsyncAggregateRepository};
+use crate::aggregate::{hydrate, AggregateRepository};
 use crate::entity::{upcast_events, Entity};
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncSnapshotStore, AsyncSnapshotWrite, AsyncStreamWrite,
-    AsyncTransactionalCommit, RepositoryError, StreamIdentity,
+    CommitBatch, GetStream, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
+    StreamWrite, TransactionalCommit,
 };
 
 use super::snapshottable::Snapshottable;
@@ -171,32 +171,32 @@ fn hydrate_with_optional_snapshot<A: Snapshottable>(
 
 /// Async repository wrapper that treats aggregate snapshots as rebuildable
 /// hydration cache records.
-pub struct AsyncSnapshotAggregateRepository<R, A> {
-    inner: AsyncAggregateRepository<R, A>,
+pub struct SnapshotAggregateRepository<R, A> {
+    inner: AggregateRepository<R, A>,
     frequency: u64,
 }
 
-impl<R, A> AsyncSnapshotAggregateRepository<R, A> {
-    pub fn new(inner: AsyncAggregateRepository<R, A>, frequency: u64) -> Self {
+impl<R, A> SnapshotAggregateRepository<R, A> {
+    pub fn new(inner: AggregateRepository<R, A>, frequency: u64) -> Self {
         Self { inner, frequency }
     }
 
-    pub fn repo(&self) -> &AsyncAggregateRepository<R, A> {
+    pub fn repo(&self) -> &AggregateRepository<R, A> {
         &self.inner
     }
 }
 
-impl<R, A> AsyncAggregateRepository<R, A> {
+impl<R, A> AggregateRepository<R, A> {
     /// Wrap this async repository with snapshot cache support at the given event
     /// frequency.
-    pub fn with_snapshots(self, frequency: u64) -> AsyncSnapshotAggregateRepository<R, A> {
-        AsyncSnapshotAggregateRepository::new(self, frequency)
+    pub fn with_snapshots(self, frequency: u64) -> SnapshotAggregateRepository<R, A> {
+        SnapshotAggregateRepository::new(self, frequency)
     }
 }
 
-impl<R, A> AsyncSnapshotAggregateRepository<R, A>
+impl<R, A> SnapshotAggregateRepository<R, A>
 where
-    R: AsyncGetStream + AsyncSnapshotStore,
+    R: GetStream + SnapshotStore,
     A: Snapshottable + Send,
 {
     pub async fn get(&self, id: &str) -> Result<Option<A>, RepositoryError> {
@@ -205,7 +205,7 @@ where
         let Some(entity) = entity else {
             return Ok(None);
         };
-        let snapshot = self.inner.repo().get_snapshot_async(&identity).await?;
+        let snapshot = self.inner.repo().get_snapshot(&identity).await?;
         Ok(Some(hydrate_with_optional_snapshot::<A>(entity, snapshot)?))
     }
 
@@ -218,16 +218,16 @@ where
         let mut aggregates = Vec::with_capacity(entities.len());
         for entity in entities {
             let identity = StreamIdentity::new(A::aggregate_type(), entity.id())?;
-            let snapshot = self.inner.repo().get_snapshot_async(&identity).await?;
+            let snapshot = self.inner.repo().get_snapshot(&identity).await?;
             aggregates.push(hydrate_with_optional_snapshot::<A>(entity, snapshot)?);
         }
         Ok(aggregates)
     }
 }
 
-impl<R, A> AsyncSnapshotAggregateRepository<R, A>
+impl<R, A> SnapshotAggregateRepository<R, A>
 where
-    R: AsyncTransactionalCommit,
+    R: TransactionalCommit,
     A: Snapshottable + Send,
 {
     pub async fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
@@ -236,7 +236,7 @@ where
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let snapshots = snapshot
             .into_iter()
-            .map(|record| AsyncSnapshotWrite::Save {
+            .map(|record| SnapshotWrite::Save {
                 identity: identity.clone(),
                 record,
             })
@@ -244,8 +244,8 @@ where
 
         self.inner
             .repo()
-            .commit_batch_async(AsyncCommitBatch {
-                streams: vec![AsyncStreamWrite::new(identity, aggregate.entity_mut())],
+            .commit_batch(CommitBatch {
+                streams: vec![StreamWrite::new(identity, aggregate.entity_mut())],
                 outbox_messages: Vec::new(),
                 read_model_plans: Vec::new(),
                 snapshots,
@@ -266,7 +266,7 @@ where
             let snapshot = self.snapshot_record(*aggregate)?;
             snapshot_versions.push(snapshot.as_ref().map(|record| record.version));
             if let Some(record) = snapshot {
-                snapshots.push(AsyncSnapshotWrite::Save {
+                snapshots.push(SnapshotWrite::Save {
                     identity: StreamIdentity::new(
                         A::aggregate_type(),
                         record.aggregate_id.as_str(),
@@ -279,12 +279,12 @@ where
         let mut streams = Vec::with_capacity(aggregates.len());
         for aggregate in aggregates.iter_mut() {
             let identity = StreamIdentity::new(A::aggregate_type(), (*aggregate).entity().id())?;
-            streams.push(AsyncStreamWrite::new(identity, (*aggregate).entity_mut()));
+            streams.push(StreamWrite::new(identity, (*aggregate).entity_mut()));
         }
 
         self.inner
             .repo()
-            .commit_batch_async(AsyncCommitBatch {
+            .commit_batch(CommitBatch {
                 streams,
                 outbox_messages: Vec::new(),
                 read_model_plans: Vec::new(),
@@ -351,11 +351,8 @@ mod tests {
         saw_snapshot: std::sync::atomic::AtomicBool,
     }
 
-    impl AsyncTransactionalCommit for FailingSnapshotRepo {
-        async fn commit_batch_async<'a>(
-            &'a self,
-            batch: AsyncCommitBatch<'a>,
-        ) -> Result<(), RepositoryError> {
+    impl TransactionalCommit for FailingSnapshotRepo {
+        async fn commit_batch<'a>(&'a self, batch: CommitBatch<'a>) -> Result<(), RepositoryError> {
             {
                 if !batch.snapshots.is_empty() {
                     self.saw_snapshot
@@ -374,8 +371,8 @@ mod tests {
     #[tokio::test]
     async fn snapshot_batch_failure_leaves_aggregate_uncommitted() {
         let repo = FailingSnapshotRepo::default();
-        let aggregate_repo = AsyncAggregateRepository::new(repo);
-        let snapshot_repo = AsyncSnapshotAggregateRepository::new(aggregate_repo, 1);
+        let aggregate_repo = AggregateRepository::new(repo);
+        let snapshot_repo = SnapshotAggregateRepository::new(aggregate_repo, 1);
 
         let mut aggregate = TestAggregate::default();
         aggregate.touch().unwrap();

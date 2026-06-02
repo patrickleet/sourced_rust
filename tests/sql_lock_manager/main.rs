@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use distributed::{
-    sourced, AsyncAggregateBuilder, AsyncLock, AsyncLockManager, Entity, HashMapRepository,
-    LockError, Queueable,
+    sourced, AggregateBuilder, AsyncLock, AsyncLockManager, Entity, HashMapRepository, LockError,
+    Queueable,
 };
 
 #[derive(Default)]
@@ -189,8 +189,8 @@ where
     M: AsyncLockManager + 'static,
 {
     let repo = HashMapRepository::new()
-        .queued_async_with(manager)
-        .async_aggregate::<Counter>();
+        .queued_with(manager)
+        .aggregate::<Counter>();
 
     let mut seed = Counter::default();
     seed.create("c1".into()).unwrap();

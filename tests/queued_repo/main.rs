@@ -1,14 +1,14 @@
-//! Async `QueuedRepository` — per-aggregate serialization over the async
-//! repository surface. Proves `.queued_async().async_aggregate::<T>()` engages
-//! the async lock on `get`/`commit` exactly like the sync `.queued()` path,
-//! plus per-aggregate granularity, the `no_lock` opt-out, and explicit abort.
+//! `QueuedRepository` — per-aggregate serialization over the repository
+//! surface. Proves `.queued().aggregate::<T>()` engages the async lock on
+//! `get`/`commit`, plus per-aggregate granularity, the `no_lock` opt-out,
+//! and explicit abort.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use distributed::{
-    sourced, AsyncAggregateBuilder, AsyncAggregateRepository, Entity, HashMapRepository,
+    sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository,
     InMemoryAsyncLockManager, Queueable,
 };
 
@@ -32,17 +32,13 @@ impl Counter {
     }
 }
 
-type QueuedCounterRepo = AsyncAggregateRepository<
+type QueuedCounterRepo = AggregateRepository<
     distributed::QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
     Counter,
 >;
 
 fn queued_repo() -> Arc<QueuedCounterRepo> {
-    Arc::new(
-        HashMapRepository::new()
-            .queued_async()
-            .async_aggregate::<Counter>(),
-    )
+    Arc::new(HashMapRepository::new().queued().aggregate::<Counter>())
 }
 
 async fn seed(repo: &QueuedCounterRepo, id: &str) {

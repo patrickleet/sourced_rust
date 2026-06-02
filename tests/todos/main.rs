@@ -2,7 +2,7 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use distributed::{
-    AsyncAggregateBuilder, AsyncCommitBuilderExt, AsyncLock, AsyncLockManager, ClaimOutboxMessages,
+    AggregateBuilder, AsyncLock, AsyncLockManager, ClaimOutboxMessages, CommitBuilderExt,
     EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxClaimRef,
     OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,
 };
@@ -53,9 +53,7 @@ fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
 
 #[tokio::test]
 async fn todos() {
-    let repo = HashMapRepository::new()
-        .queued_async()
-        .async_aggregate::<Todo>();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     // Create a new Todo + Outbox messages
     let mut todo = Todo::new();
@@ -161,9 +159,7 @@ async fn todos() {
 
 #[tokio::test]
 async fn get_commit_roundtrip() {
-    let repo = HashMapRepository::new()
-        .queued_async()
-        .async_aggregate::<Todo>();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string())
@@ -180,9 +176,7 @@ async fn get_commit_roundtrip() {
 
 #[tokio::test]
 async fn get_all_commit_all_roundtrip() {
-    let repo = HashMapRepository::new()
-        .queued_async()
-        .async_aggregate::<Todo>();
+    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
     let mut todo1 = Todo::new();
     let id1 = next_id();
@@ -365,11 +359,7 @@ async fn outbox_worker_local_emitter_publisher() {
 
 #[tokio::test]
 async fn abort_releases_lock_after_get() {
-    let repo = Arc::new(
-        HashMapRepository::new()
-            .queued_async()
-            .async_aggregate::<Todo>(),
-    );
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string())
@@ -398,11 +388,7 @@ async fn abort_releases_lock_after_get() {
 
 #[tokio::test]
 async fn abort_releases_lock_after_get_all() {
-    let repo = Arc::new(
-        HashMapRepository::new()
-            .queued_async()
-            .async_aggregate::<Todo>(),
-    );
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo1 = Todo::new();
     let id1 = next_id();
     todo1
@@ -450,11 +436,7 @@ async fn abort_releases_lock_after_get_all() {
 
 #[tokio::test]
 async fn queued_repo_blocks_get_until_commit() {
-    let repo = Arc::new(
-        HashMapRepository::new()
-            .queued_async()
-            .async_aggregate::<Todo>(),
-    );
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string())
@@ -549,7 +531,7 @@ async fn queued_repo_blocks_get_until_commit() {
 
 #[tokio::test]
 async fn manual_lock_reports_failure_when_already_held() {
-    let repo = HashMapRepository::new().queued_async();
+    let repo = HashMapRepository::new().queued();
     let id = next_id();
 
     let lock = repo.lock_manager().get_lock(&id).unwrap();
@@ -572,11 +554,7 @@ async fn manual_lock_reports_failure_when_already_held() {
 
 #[tokio::test]
 async fn commit_failure_keeps_lock_until_abort() {
-    let repo = Arc::new(
-        HashMapRepository::new()
-            .queued_async()
-            .async_aggregate::<Todo>(),
-    );
+    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
     let mut todo = Todo::new();
     let id = next_id();
     todo.initialize(
@@ -594,7 +572,7 @@ async fn commit_failure_keeps_lock_until_abort() {
     // the `QueuedRepository` wrapper held by the main thread), and a cheap clone
     // shares the same `Arc`-backed store, so this writes to the same namespaced
     // stream without contending on the lock.
-    let inner = repo.repo().inner().clone().async_aggregate::<Todo>();
+    let inner = repo.repo().inner().clone().aggregate::<Todo>();
     let mut concurrent = inner.get(&id).await.unwrap().unwrap();
     concurrent.complete().unwrap();
     inner.commit(&mut concurrent).await.unwrap();
@@ -738,7 +716,7 @@ async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     assert_eq!(message.causation_id(), Some("cmd-create-todo"));
 
     // 4. Commit both using outbox commit builder
-    let repo = repo.async_aggregate::<Todo>();
+    let repo = repo.aggregate::<Todo>();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // 5. Process through outbox worker, verify metadata reaches publisher

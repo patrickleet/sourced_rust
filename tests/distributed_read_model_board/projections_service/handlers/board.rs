@@ -4,7 +4,7 @@
 //! snapshots under out-of-order delivery.
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::{AsyncReadModelWorkspaceExt, BitcodePayloadCodec, PayloadCodec};
+use distributed::{BitcodePayloadCodec, PayloadCodec, ReadModelWorkspaceExt};
 use serde_json::{json, Value};
 
 use crate::board_service::BoardSnapshot;
@@ -32,9 +32,9 @@ pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, 
     let version = event_version(message_id)?;
     let updated_view = updated_board_view(&snapshot, version);
 
-    let mut workspace = ctx.read_model_store().workspace_async();
+    let mut workspace = ctx.read_model_store().workspace();
     let existing = workspace
-        .load_async::<BoardView>(board_key(&updated_view.board_id))
+        .load::<BoardView>(board_key(&updated_view.board_id))
         .include("cards")
         .one()
         .await
@@ -53,7 +53,7 @@ pub async fn handle(ctx: &Context<'_, ProjectionDependencies>) -> Result<Value, 
         }
     }
 
-    workspace.commit_async().await.map_err(read_model_error)?;
+    workspace.commit().await.map_err(read_model_error)?;
 
     Ok(json!({ "event_id": message_id }))
 }

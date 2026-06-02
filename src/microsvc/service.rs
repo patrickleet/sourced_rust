@@ -40,13 +40,13 @@ type HandlerFn<D> = dyn for<'a> Fn(&'a Context<'a, D>) -> HandlerFuture<'a> + Se
 /// register directly as a handler. The higher-ranked bound ties the returned
 /// future's lifetime to the borrowed [`Context`], which a plain generic future
 /// parameter cannot express.
-pub trait AsyncHandler<'a, D: 'a>: Send + Sync {
+pub trait Handler<'a, D: 'a>: Send + Sync {
     /// The future returned by the handler for a context borrowed for `'a`.
     type Future: Future<Output = Result<Value, HandlerError>> + Send + 'a;
     fn call(&self, ctx: &'a Context<'a, D>) -> Self::Future;
 }
 
-impl<'a, D, F, Fut> AsyncHandler<'a, D> for F
+impl<'a, D, F, Fut> Handler<'a, D> for F
 where
     D: 'a,
     F: Fn(&'a Context<'a, D>) -> Fut + Send + Sync,
@@ -60,7 +60,7 @@ where
 
 fn boxed_handler<D, F>(handler: F) -> Arc<HandlerFn<D>>
 where
-    F: for<'a> AsyncHandler<'a, D> + 'static,
+    F: for<'a> Handler<'a, D> + 'static,
 {
     Arc::new(move |ctx| Box::pin(handler.call(ctx)) as HandlerFuture<'_>)
 }
@@ -151,7 +151,7 @@ impl<D: Send + Sync + 'static> HandlerBuilder<D> {
     /// Register an async handler without a guard.
     pub fn handle<F>(self, handler: F) -> Service<D>
     where
-        F: for<'a> AsyncHandler<'a, D> + 'static,
+        F: for<'a> Handler<'a, D> + 'static,
     {
         self.service
             .register_handler(self.spec, None, boxed_handler(handler))
@@ -161,7 +161,7 @@ impl<D: Send + Sync + 'static> HandlerBuilder<D> {
     pub fn guarded<G, F>(self, guard: G, handler: F) -> Service<D>
     where
         G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
-        F: for<'a> AsyncHandler<'a, D> + 'static,
+        F: for<'a> Handler<'a, D> + 'static,
     {
         self.service
             .register_handler(self.spec, Some(Arc::new(guard)), boxed_handler(handler))

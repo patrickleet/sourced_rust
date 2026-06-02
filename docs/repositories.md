@@ -1,26 +1,26 @@
-# Async Repository Boundary
+# Repository Boundary
 
 Distributed, currently published from the `distributed` crate, keeps the
-synchronous in-memory repository API intact and adds a parallel async persistence
-boundary for database-backed adapters.
+repository API async-only. The repository traits are stream-aware and are used
+by the in-memory, SQLite, and Postgres adapters.
 
-The async traits are stream-aware. Event-store adapters should load and commit
-streams with `StreamIdentity`, the pair `(aggregate_type, aggregate_id)`, rather
-than an ID-only key. `Aggregate::aggregate_type()` provides the type component;
-the default uses Rust's type name for development compatibility, but production
-persistence should override it with an explicit durable name through
-`impl_aggregate!(..., aggregate_type = "...")`, `aggregate!(..., aggregate_type =
-"..." { ... })`, or `#[sourced(..., aggregate_type = "...")]`.
+Event-store adapters load and commit streams with `StreamIdentity`, the pair
+`(aggregate_type, aggregate_id)`, rather than an ID-only key.
+`Aggregate::aggregate_type()` provides the type component; the default uses
+Rust's type name for development compatibility, but production persistence
+should override it with an explicit durable name through `impl_aggregate!(...,
+aggregate_type = "...")`, `aggregate!(..., aggregate_type = "..." { ... })`, or
+`#[sourced(..., aggregate_type = "...")]`.
 
 ## Core Traits
 
-- `AsyncGetStream` loads one or more event streams by full identity.
-- `AsyncTransactionalCommit` commits `AsyncCommitBatch` values with stream
+- `GetStream` loads one or more event streams by full identity.
+- `TransactionalCommit` commits `CommitBatch` values with stream
   writes, read-model write plans, and snapshots under one backend transaction.
-- `AsyncReadModelWritePlanStore` and `AsyncRelationalReadModelQueryStore`
+- `ReadModelWritePlanStore` and `RelationalReadModelQueryStore`
   mirror the relational read-model write and primary-key load surfaces for
-  async adapters.
-- `AsyncSnapshotStore` keys rebuildable snapshot cache records by full stream
+  repository adapters.
+- `SnapshotStore` keys rebuildable snapshot cache records by full stream
   identity. The record envelope carries stream identity, covered event version,
   snapshot payload type/version, payload codec metadata, cache metadata, and
   timestamp.
@@ -28,22 +28,19 @@ persistence should override it with an explicit durable name through
   table stores. Aggregate repositories commit outbox rows transactionally, but
   workers do not hydrate outbox messages through aggregate repositories.
 
-Async methods use an `_async` suffix where a synchronous method with the same
-name already exists. This keeps `HashMapRepository`, `InMemoryReadModelStore`,
-and `InMemorySnapshotStore` unambiguous when both sync and async traits are
-imported.
+`AsyncOutboxStore` keeps its prefix because `OutboxStore` remains the synchronous
+worker-facing API for in-memory/local publisher workflows.
 
 ## In-Memory Reference
 
 `HashMapRepository`, `InMemoryReadModelStore`, and `InMemorySnapshotStore`
-implement the async traits as a behavioral reference for conformance tests. The
-in-memory async implementation is not a production I/O adapter; it exists so
+implement the repository traits as a behavioral reference for conformance tests.
+The in-memory implementation is not a production I/O adapter; it exists so
 Postgres, SQLite, and other persistent backends can be tested against the same
 stream-aware contract before SQL code lands.
 
-The Postgres repository should implement the async traits directly with `sqlx`.
-It should not hide database I/O behind the synchronous traits with `block_on`,
-`block_in_place`, or a blocking wrapper in normal async runtimes.
+The Postgres repository implements the traits directly with `sqlx`; database I/O
+is not hidden behind blocking wrappers in normal async runtimes.
 
 ## SQLite Adapter
 
@@ -60,7 +57,7 @@ tables implicitly, so applications can control bootstrap order.
 
 The SQLite adapter persists aggregate events, relational read-model write
 plans, processed-message marks, and snapshots in one SQL transaction when they
-are staged through `AsyncCommitBatch`. It intentionally does not claim Postgres
+are staged through `CommitBatch`. It intentionally does not claim Postgres
 production readiness: Postgres-specific column types, isolation behavior, error
 mapping, deployment, and migration validation still belong to the Postgres
 adapter and its own tests.

@@ -13,9 +13,8 @@ use crate::read_model::{
     ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
 };
 use crate::repository::{
-    AsyncCommitBatch, AsyncGetStream, AsyncInboxStore, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncSnapshotStore, AsyncTransactionalCommit,
-    RepositoryError, StreamIdentity,
+    CommitBatch, GetStream, InboxStore, ReadModelWritePlanStore, RelationalReadModelQueryStore,
+    RepositoryError, SnapshotStore, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
 
@@ -86,39 +85,31 @@ impl<R, L> QueuedRepository<R, L> {
 }
 
 // ============================================================================
-// Async variant (async lock manager): the same serialization semantics over
-// the async repository trait surface. `QueuedRepository<R, AsyncLockManager>`
-// is a drop-in async repository — `.queued_async().async_aggregate::<T>()`
-// serializes per-aggregate `get`/`commit` exactly like the sync variant.
+// Queue-locking variant over the repository trait surface. `.queued().aggregate::<T>()`
+// serializes per-aggregate `get`/`commit` with the configured async lock manager.
 // ============================================================================
 
 impl<R, L: AsyncLockManager> QueuedRepository<R, L> {
     /// Create a `QueuedRepository` with a custom async lock manager.
-    pub fn with_async_lock_manager(inner: R, lock_manager: L) -> Self {
+    pub fn with_lock_manager(inner: R, lock_manager: L) -> Self {
         QueuedRepository {
             inner,
             lock_manager: Arc::new(lock_manager),
         }
     }
 
-    // Distinct names from the sync inherent helpers: coherence cannot prove a
-    // type is not both a `LockManager` and an `AsyncLockManager`, so same-named
-    // inherent methods across the two bounded impls would be ambiguous.
-    fn ensure_async_lock(&self, id: &str) -> Result<Arc<L::Lock>, RepositoryError> {
+    fn ensure_lock(&self, id: &str) -> Result<Arc<L::Lock>, RepositoryError> {
         Ok(self.lock_manager.get_lock(id)?)
     }
 
-    async fn lock_async_ids_in_order(
-        &self,
-        ids: &[&str],
-    ) -> Result<Vec<Arc<L::Lock>>, RepositoryError> {
+    async fn lock_ids_in_order(&self, ids: &[&str]) -> Result<Vec<Arc<L::Lock>>, RepositoryError> {
         let mut unique: Vec<&str> = ids.to_vec();
         unique.sort_unstable();
         unique.dedup();
 
         let mut locks = Vec::with_capacity(unique.len());
         for id in unique {
-            let lock = self.ensure_async_lock(id)?;
+            let lock = self.ensure_lock(id)?;
             lock.lock().await?;
             locks.push(lock);
         }
@@ -127,9 +118,9 @@ impl<R, L: AsyncLockManager> QueuedRepository<R, L> {
     }
 }
 
-impl<R, L> AsyncGetStream for QueuedRepository<R, L>
+impl<R, L> GetStream for QueuedRepository<R, L>
 where
-    R: AsyncGetStream,
+    R: GetStream,
     L: AsyncLockManager,
 {
     fn get_stream<'a>(
@@ -138,9 +129,9 @@ where
     ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
         async move {
             // Acquire and HOLD the per-stream lock across the load, like the
-            // synchronous `GetOne`. It is released by `commit_batch_async` on
+            // synchronous `GetOne`. It is released by `commit_batch` on
             // success, or by an explicit `unlock`/`abort`.
-            let lock = self.ensure_async_lock(&identity.storage_key())?;
+            let lock = self.ensure_lock(&identity.storage_key())?;
             lock.lock().await?;
             self.inner.get_stream(identity).await
         }
@@ -154,20 +145,20 @@ where
             let keys: Vec<String> = identities.iter().map(StreamIdentity::storage_key).collect();
             let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
             // Sorted-order acquire prevents deadlock; locks held after return.
-            let _locks = self.lock_async_ids_in_order(&key_refs).await?;
+            let _locks = self.lock_ids_in_order(&key_refs).await?;
             self.inner.get_streams(identities).await
         }
     }
 }
 
-impl<R, L> AsyncTransactionalCommit for QueuedRepository<R, L>
+impl<R, L> TransactionalCommit for QueuedRepository<R, L>
 where
-    R: AsyncTransactionalCommit,
+    R: TransactionalCommit,
     L: AsyncLockManager,
 {
-    fn commit_batch_async<'a>(
+    fn commit_batch<'a>(
         &'a self,
-        batch: AsyncCommitBatch<'a>,
+        batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
             // Resolve the lock handles for the committed streams. Like the sync
@@ -176,10 +167,10 @@ where
             // them held on error so callers can retry or `abort`.
             let mut locks = Vec::with_capacity(batch.streams.len());
             for stream in &batch.streams {
-                locks.push(self.ensure_async_lock(&stream.identity.storage_key())?);
+                locks.push(self.ensure_lock(&stream.identity.storage_key())?);
             }
 
-            let result = self.inner.commit_batch_async(batch).await;
+            let result = self.inner.commit_batch(batch).await;
 
             if result.is_ok() {
                 // Best-effort release: the inner commit already succeeded, so a
@@ -200,85 +191,85 @@ where
 // gated by aggregate locks (matching the sync `SnapshotStore` delegation), so a
 // queued repository stays a complete drop-in for its inner async repository.
 
-impl<R, L> AsyncSnapshotStore for QueuedRepository<R, L>
+impl<R, L> SnapshotStore for QueuedRepository<R, L>
 where
-    R: AsyncSnapshotStore,
+    R: SnapshotStore,
     L: AsyncLockManager,
 {
-    fn get_snapshot_async<'a>(
+    fn get_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a {
-        self.inner.get_snapshot_async(identity)
+        self.inner.get_snapshot(identity)
     }
 
-    fn save_snapshot_async<'a>(
+    fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
         record: SnapshotRecord,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
-        self.inner.save_snapshot_async(identity, record)
+        self.inner.save_snapshot(identity, record)
     }
 
-    fn delete_snapshot_async<'a>(
+    fn delete_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
-        self.inner.delete_snapshot_async(identity)
+        self.inner.delete_snapshot(identity)
     }
 }
 
-impl<R, L> AsyncReadModelWritePlanStore for QueuedRepository<R, L>
+impl<R, L> ReadModelWritePlanStore for QueuedRepository<R, L>
 where
-    R: AsyncReadModelWritePlanStore,
+    R: ReadModelWritePlanStore,
     L: AsyncLockManager,
 {
-    fn read_model_capabilities_async(&self) -> ReadModelAdapterCapabilities {
-        self.inner.read_model_capabilities_async()
+    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+        self.inner.read_model_capabilities()
     }
 
-    fn commit_write_plan_async(
+    fn commit_write_plan(
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        self.inner.commit_write_plan_async(plan)
+        self.inner.commit_write_plan(plan)
     }
 }
 
-impl<R, L> AsyncRelationalReadModelQueryStore for QueuedRepository<R, L>
+impl<R, L> RelationalReadModelQueryStore for QueuedRepository<R, L>
 where
-    R: AsyncRelationalReadModelQueryStore,
+    R: RelationalReadModelQueryStore,
     L: AsyncLockManager,
 {
-    fn read_model_query_capabilities_async(&self) -> ReadModelQueryCapabilities {
-        self.inner.read_model_query_capabilities_async()
+    fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
+        self.inner.read_model_query_capabilities()
     }
 
-    fn load_graph_async(
+    fn load_graph(
         &self,
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
-        self.inner.load_graph_async(request)
+        self.inner.load_graph(request)
     }
 }
 
-impl<R, L> AsyncInboxStore for QueuedRepository<R, L>
+impl<R, L> InboxStore for QueuedRepository<R, L>
 where
-    R: AsyncInboxStore,
+    R: InboxStore,
     L: AsyncLockManager,
 {
-    fn inbox_contains_async<'a>(
+    fn inbox_contains<'a>(
         &'a self,
         consumer: &'a str,
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
-        self.inner.inbox_contains_async(consumer, message_id)
+        self.inner.inbox_contains(consumer, message_id)
     }
 }
 
 /// Async opt-out reads for a queued repository — the async counterpart to
 /// [`GetWithOpts`]. `ReadOpts::no_lock()` reads without acquiring the lock.
-pub trait AsyncGetWithOpts {
+pub trait GetWithOpts {
     fn get_stream_with<'a>(
         &'a self,
         identity: &'a StreamIdentity,
@@ -287,7 +278,7 @@ pub trait AsyncGetWithOpts {
 }
 
 /// Async opt-out multi-reads — the async counterpart to [`GetAllWithOpts`].
-pub trait AsyncGetAllWithOpts {
+pub trait GetAllWithOpts {
     fn get_streams_with<'a>(
         &'a self,
         identities: &'a [StreamIdentity],
@@ -295,9 +286,9 @@ pub trait AsyncGetAllWithOpts {
     ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a;
 }
 
-impl<R, L> AsyncGetWithOpts for QueuedRepository<R, L>
+impl<R, L> GetWithOpts for QueuedRepository<R, L>
 where
-    R: AsyncGetStream,
+    R: GetStream,
     L: AsyncLockManager,
 {
     fn get_stream_with<'a>(
@@ -307,7 +298,7 @@ where
     ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
         async move {
             if opts.lock {
-                let lock = self.ensure_async_lock(&identity.storage_key())?;
+                let lock = self.ensure_lock(&identity.storage_key())?;
                 lock.lock().await?;
             }
             self.inner.get_stream(identity).await
@@ -315,9 +306,9 @@ where
     }
 }
 
-impl<R, L> AsyncGetAllWithOpts for QueuedRepository<R, L>
+impl<R, L> GetAllWithOpts for QueuedRepository<R, L>
 where
-    R: AsyncGetStream,
+    R: GetStream,
     L: AsyncLockManager,
 {
     fn get_streams_with<'a>(
@@ -330,7 +321,7 @@ where
                 let keys: Vec<String> =
                     identities.iter().map(StreamIdentity::storage_key).collect();
                 let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-                let _locks = self.lock_async_ids_in_order(&key_refs).await?;
+                let _locks = self.lock_ids_in_order(&key_refs).await?;
             }
             self.inner.get_streams(identities).await
         }
@@ -343,10 +334,10 @@ where
 /// locks) releases by talking to its backing store; the in-memory lock resolves
 /// immediately. It is a separate trait because coherence cannot prove a type is
 /// not both several lock-manager kinds at once.
-pub trait AsyncUnlockableRepository: Send + Sync {
+pub trait UnlockableRepository: Send + Sync {
     /// Release the lock held for a stream.
     ///
-    /// Keyed by [`StreamIdentity`] — the same key the locking `AsyncGetStream`
+    /// Keyed by [`StreamIdentity`] — the same key the locking `GetStream`
     /// reads acquire — so an aborted load releases exactly the lock it took.
     fn unlock<'a>(
         &'a self,
@@ -362,7 +353,7 @@ pub trait AsyncUnlockableRepository: Send + Sync {
     }
 }
 
-impl<R, L: AsyncLockManager> AsyncUnlockableRepository for QueuedRepository<R, L>
+impl<R, L: AsyncLockManager> UnlockableRepository for QueuedRepository<R, L>
 where
     R: Send + Sync,
 {
@@ -371,9 +362,7 @@ where
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            self.ensure_async_lock(&identity.storage_key())?
-                .unlock()
-                .await?;
+            self.ensure_lock(&identity.storage_key())?.unlock().await?;
             Ok(())
         }
     }
@@ -382,15 +371,15 @@ where
 /// Builder trait for wrapping a repository with queue locking.
 pub trait Queueable: Sized {
     /// Wrap with the default async lock manager. Pair with
-    /// `.async_aggregate::<T>()` for per-aggregate serialization over the async
+    /// `.aggregate::<T>()` for per-aggregate serialization over the async
     /// repository surface.
-    fn queued_async(self) -> QueuedRepository<Self, InMemoryAsyncLockManager> {
-        QueuedRepository::with_async_lock_manager(self, InMemoryAsyncLockManager::new())
+    fn queued(self) -> QueuedRepository<Self, InMemoryAsyncLockManager> {
+        QueuedRepository::with_lock_manager(self, InMemoryAsyncLockManager::new())
     }
 
     /// Wrap with a custom async lock manager.
-    fn queued_async_with<L: AsyncLockManager>(self, lock_manager: L) -> QueuedRepository<Self, L> {
-        QueuedRepository::with_async_lock_manager(self, lock_manager)
+    fn queued_with<L: AsyncLockManager>(self, lock_manager: L) -> QueuedRepository<Self, L> {
+        QueuedRepository::with_lock_manager(self, lock_manager)
     }
 }
 

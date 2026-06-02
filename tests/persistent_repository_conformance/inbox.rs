@@ -2,17 +2,14 @@
 //! in-memory, SQLite, and Postgres backends.
 
 use distributed::{
-    AsyncCommitBatch, AsyncInboxStore, AsyncOutboxStore, AsyncTransactionalCommit, InboxReceipt,
-    OutboxMessage, OutboxMessageStatus, RepositoryError,
+    AsyncOutboxStore, CommitBatch, InboxReceipt, InboxStore, OutboxMessage, OutboxMessageStatus,
+    RepositoryError, TransactionalCommit,
 };
 
 use super::scenario::unique_id;
 
-fn batch_with(
-    outbox: Vec<OutboxMessage>,
-    receipts: Vec<InboxReceipt>,
-) -> AsyncCommitBatch<'static> {
-    let mut batch = AsyncCommitBatch::new(Vec::new());
+fn batch_with(outbox: Vec<OutboxMessage>, receipts: Vec<InboxReceipt>) -> CommitBatch<'static> {
+    let mut batch = CommitBatch::new(Vec::new());
     batch.outbox_messages = outbox;
     batch.inbox_receipts = receipts;
     batch
@@ -42,7 +39,7 @@ async fn outbox_present<S: AsyncOutboxStore + Send + Sync>(outbox: &S, id: &str)
 /// independence of the same message id.
 pub async fn inbox_records_dedupes_and_fences_with_real_effects<R, S>(repo: R, outbox: S)
 where
-    R: AsyncInboxStore + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: InboxStore + TransactionalCommit + Clone + Send + Sync + 'static,
     S: AsyncOutboxStore + Send + Sync,
 {
     let consumer = unique_id("consumer");
@@ -51,16 +48,16 @@ where
     let effect2 = unique_id("effect");
 
     // Pre-check is false until the receipt is committed.
-    assert!(!repo.inbox_contains_async(&consumer, &m1).await.unwrap());
+    assert!(!repo.inbox_contains(&consumer, &m1).await.unwrap());
 
     // First delivery: the receipt commits atomically with a real outbox effect.
-    repo.commit_batch_async(batch_with(
+    repo.commit_batch(batch_with(
         vec![OutboxMessage::create(&effect1, "effect.applied", b"{}".to_vec()).unwrap()],
         vec![InboxReceipt::new(&consumer, &m1)],
     ))
     .await
     .expect("first delivery commits");
-    assert!(repo.inbox_contains_async(&consumer, &m1).await.unwrap());
+    assert!(repo.inbox_contains(&consumer, &m1).await.unwrap());
     assert!(
         outbox_present(&outbox, &effect1).await,
         "first effect landed"
@@ -69,7 +66,7 @@ where
     // Replay: a batch with the duplicate receipt AND a fresh effect must roll back
     // the effect too — proving the receipt fences the whole transaction.
     let err = repo
-        .commit_batch_async(batch_with(
+        .commit_batch(batch_with(
             vec![OutboxMessage::create(&effect2, "effect.applied", b"{}".to_vec()).unwrap()],
             vec![InboxReceipt::new(&consumer, &m1)],
         ))
@@ -87,7 +84,7 @@ where
     // Multiple distinct receipts commit together.
     let a = unique_id("msg");
     let b = unique_id("msg");
-    repo.commit_batch_async(batch_with(
+    repo.commit_batch(batch_with(
         Vec::new(),
         vec![
             InboxReceipt::new(&consumer, &a),
@@ -96,30 +93,30 @@ where
     ))
     .await
     .expect("distinct receipts commit");
-    assert!(repo.inbox_contains_async(&consumer, &a).await.unwrap());
-    assert!(repo.inbox_contains_async(&consumer, &b).await.unwrap());
+    assert!(repo.inbox_contains(&consumer, &a).await.unwrap());
+    assert!(repo.inbox_contains(&consumer, &b).await.unwrap());
 
     // The dedupe scope is the consumer: the same message id for a different
     // consumer is independent.
     let other = unique_id("consumer");
-    repo.commit_batch_async(batch_with(Vec::new(), vec![InboxReceipt::new(&other, &m1)]))
+    repo.commit_batch(batch_with(Vec::new(), vec![InboxReceipt::new(&other, &m1)]))
         .await
         .expect("a different consumer records the same message id independently");
-    assert!(repo.inbox_contains_async(&other, &m1).await.unwrap());
+    assert!(repo.inbox_contains(&other, &m1).await.unwrap());
 }
 
 /// Empty `consumer` or `message_id` is rejected with the same typed error on
 /// every backend (parity — the relational `CHECK` is only a backstop).
 pub async fn inbox_rejects_empty_receipt<R>(repo: R)
 where
-    R: AsyncInboxStore + AsyncTransactionalCommit + Clone + Send + Sync + 'static,
+    R: InboxStore + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     for receipt in [
         InboxReceipt::new("", unique_id("msg")),
         InboxReceipt::new(unique_id("consumer"), ""),
     ] {
         let err = repo
-            .commit_batch_async(batch_with(Vec::new(), vec![receipt]))
+            .commit_batch(batch_with(Vec::new(), vec![receipt]))
             .await
             .expect_err("an empty receipt field is rejected");
         assert!(

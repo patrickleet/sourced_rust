@@ -1,7 +1,7 @@
 //! Basic microsvc integration tests — exercises dispatch with a real repository.
 
 use distributed::microsvc::{Context, HandlerError, Service, Session};
-use distributed::{AsyncAggregateBuilder, HashMapRepository};
+use distributed::{AggregateBuilder, HashMapRepository};
 use serde_json::json;
 
 use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
@@ -12,7 +12,7 @@ async fn full_lifecycle() {
         .command("counter.initialize")
         .handle(|ctx: &Context<HashMapRepository>| {
             let input = ctx.input::<CreateCounter>();
-            let counter_repo = ctx.repo().clone().async_aggregate::<Counter>();
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
             async move {
                 let input = input?;
                 let mut counter = Counter::default();
@@ -24,7 +24,7 @@ async fn full_lifecycle() {
         .command("counter.increment")
         .handle(|ctx: &Context<HashMapRepository>| {
             let input = ctx.input::<IncrementCounter>();
-            let counter_repo = ctx.repo().clone().async_aggregate::<Counter>();
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
             async move {
                 let input = input?;
                 let mut counter: Counter = counter_repo
@@ -39,7 +39,7 @@ async fn full_lifecycle() {
         .command("counter.decrement")
         .handle(|ctx: &Context<HashMapRepository>| {
             let input = ctx.input::<DecrementCounter>();
-            let counter_repo = ctx.repo().clone().async_aggregate::<Counter>();
+            let counter_repo = ctx.repo().clone().aggregate::<Counter>();
             async move {
                 let input = input?;
                 let mut counter: Counter = counter_repo
@@ -91,7 +91,7 @@ async fn full_lifecycle() {
     assert_eq!(result, json!({ "value": 6 }));
 
     // Verify final state via repo
-    let counter_repo = service.repo().clone().async_aggregate::<Counter>();
+    let counter_repo = service.repo().clone().aggregate::<Counter>();
     let counter: Counter = counter_repo.get("c1").await.unwrap().unwrap();
     assert_eq!(counter.value, 6);
 }

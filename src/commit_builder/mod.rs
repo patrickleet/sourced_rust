@@ -1,4 +1,4 @@
-//! AsyncCommitBuilder chains read models, write plans, outbox, and aggregates
+//! CommitBuilder chains read models, write plans, outbox, and aggregates
 //! into one transactional batch.
 //!
 //! ## Example
@@ -19,7 +19,7 @@ use crate::entity::Entity;
 use crate::outbox::OutboxMessage;
 use crate::read_model::{ReadModelWritePlan, ReadModelWritePlanBuilder};
 use crate::repository::{
-    AsyncCommitBatch, AsyncStreamWrite, AsyncTransactionalCommit, RepositoryError, StreamIdentity,
+    CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,15 +75,15 @@ impl StagedOutboxSource {
 }
 
 /// Async builder for chaining multiple items into one transactional commit batch.
-pub struct AsyncCommitBuilder<'a, R> {
+pub struct CommitBuilder<'a, R> {
     repo: &'a R,
-    streams: Vec<AsyncStreamWrite<'a>>,
+    streams: Vec<StreamWrite<'a>>,
     outbox_messages: Vec<OutboxMessage>,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
 
-impl<'a, R> AsyncCommitBuilder<'a, R> {
+impl<'a, R> CommitBuilder<'a, R> {
     pub fn new(repo: &'a R) -> Self {
         Self {
             repo,
@@ -114,9 +114,9 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
     }
 
     /// Stage an aggregate and switch to a no-argument staged async commit builder.
-    pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> AsyncStagedCommitBuilder<'a, R> {
+    pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
         let source = OutboxSource::from_aggregate(aggregate);
-        let mut builder = AsyncStagedCommitBuilder::from_builder(self);
+        let mut builder = StagedCommitBuilder::from_builder(self);
         builder.push_aggregate(source, A::aggregate_type(), aggregate);
         builder
     }
@@ -127,7 +127,7 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
         aggregate: &mut A,
     ) -> Result<(), RepositoryError>
     where
-        R: AsyncTransactionalCommit,
+        R: TransactionalCommit,
     {
         self.check_staged()?;
         for message in &mut self.outbox_messages {
@@ -136,7 +136,7 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
 
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         self.streams
-            .push(AsyncStreamWrite::new(identity, aggregate.entity_mut()));
+            .push(StreamWrite::new(identity, aggregate.entity_mut()));
         self.commit_streams().await
     }
 
@@ -146,13 +146,13 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
         aggregates: &mut [&mut A],
     ) -> Result<(), RepositoryError>
     where
-        R: AsyncTransactionalCommit,
+        R: TransactionalCommit,
     {
         self.check_staged()?;
         for aggregate in aggregates.iter_mut() {
             let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
             self.streams
-                .push(AsyncStreamWrite::new(identity, aggregate.entity_mut()));
+                .push(StreamWrite::new(identity, aggregate.entity_mut()));
         }
         self.commit_streams().await
     }
@@ -160,7 +160,7 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
     /// Commit without a primary aggregate.
     pub async fn commit_all(mut self) -> Result<(), RepositoryError>
     where
-        R: AsyncTransactionalCommit,
+        R: TransactionalCommit,
     {
         self.check_staged()?;
         self.commit_streams().await
@@ -175,10 +175,10 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
 
     async fn commit_streams(self) -> Result<(), RepositoryError>
     where
-        R: AsyncTransactionalCommit,
+        R: TransactionalCommit,
     {
         self.repo
-            .commit_batch_async(AsyncCommitBatch {
+            .commit_batch(CommitBatch {
                 streams: self.streams,
                 outbox_messages: self.outbox_messages,
                 read_model_plans: self.read_model_plans,
@@ -190,17 +190,17 @@ impl<'a, R> AsyncCommitBuilder<'a, R> {
 }
 
 /// Async builder returned after one or more aggregates are staged explicitly.
-pub struct AsyncStagedCommitBuilder<'a, R> {
+pub struct StagedCommitBuilder<'a, R> {
     repo: &'a R,
-    streams: Vec<AsyncStreamWrite<'a>>,
+    streams: Vec<StreamWrite<'a>>,
     outbox_messages: Vec<OutboxMessage>,
     outbox_source: StagedOutboxSource,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
 
-impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
-    fn from_builder(builder: AsyncCommitBuilder<'a, R>) -> Self {
+impl<'a, R> StagedCommitBuilder<'a, R> {
+    fn from_builder(builder: CommitBuilder<'a, R>) -> Self {
         Self {
             repo: builder.repo,
             streams: builder.streams,
@@ -235,18 +235,18 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
     }
 
     pub fn entity(mut self, identity: StreamIdentity, entity: &'a mut Entity) -> Self {
-        self.streams.push(AsyncStreamWrite::new(identity, entity));
+        self.streams.push(StreamWrite::new(identity, entity));
         self
     }
 
     pub async fn commit(mut self) -> Result<(), RepositoryError>
     where
-        R: AsyncTransactionalCommit,
+        R: TransactionalCommit,
     {
         self.check_staged()?;
         self.outbox_source.apply_to(&mut self.outbox_messages);
         self.repo
-            .commit_batch_async(AsyncCommitBatch {
+            .commit_batch(CommitBatch {
                 streams: self.streams,
                 outbox_messages: self.outbox_messages,
                 read_model_plans: self.read_model_plans,
@@ -270,7 +270,7 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
             Ok(identity) => {
                 self.outbox_source.record(source);
                 self.streams
-                    .push(AsyncStreamWrite::new(identity, aggregate.entity_mut()));
+                    .push(StreamWrite::new(identity, aggregate.entity_mut()));
             }
             Err(err) => self.error = Some(err),
         }
@@ -285,39 +285,39 @@ impl<'a, R> AsyncStagedCommitBuilder<'a, R> {
 }
 
 /// Extension trait to start an async commit builder chain from an outbox message.
-pub trait AsyncCommitBuilderExt: AsyncTransactionalCommit + Sized {
+pub trait CommitBuilderExt: TransactionalCommit + Sized {
     /// Start an async commit builder chain with an outbox message.
-    fn outbox(&self, msg: OutboxMessage) -> AsyncCommitBuilder<'_, Self> {
-        AsyncCommitBuilder::new(self).outbox(msg)
+    fn outbox(&self, msg: OutboxMessage) -> CommitBuilder<'_, Self> {
+        CommitBuilder::new(self).outbox(msg)
     }
 }
 
-impl<R: AsyncTransactionalCommit> AsyncCommitBuilderExt for R {}
+impl<R: TransactionalCommit> CommitBuilderExt for R {}
 
 /// Extension trait for async relational read-model write-plan commit entrypoints.
-pub trait AsyncReadModelWritePlanCommitExt: AsyncTransactionalCommit + Sized {
+pub trait ReadModelWritePlanCommitExt: TransactionalCommit + Sized {
     /// Start an async commit builder chain with a relational read-model write plan.
-    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> AsyncCommitBuilder<'_, Self> {
-        AsyncCommitBuilder::new(self).read_models(read_models)
+    fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> CommitBuilder<'_, Self> {
+        CommitBuilder::new(self).read_models(read_models)
     }
 
     /// Start a staged async commit builder with an aggregate.
     fn aggregate<'a, A: Aggregate>(
         &'a self,
         aggregate: &'a mut A,
-    ) -> AsyncStagedCommitBuilder<'a, Self> {
-        AsyncCommitBuilder::new(self).aggregate(aggregate)
+    ) -> StagedCommitBuilder<'a, Self> {
+        CommitBuilder::new(self).aggregate(aggregate)
     }
 }
 
-impl<R: AsyncTransactionalCommit> AsyncReadModelWritePlanCommitExt for R {}
+impl<R: TransactionalCommit> ReadModelWritePlanCommitExt for R {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        sourced, AsyncReadModelWorkspaceExt, AsyncTransactionalCommit, Entity, HashMapRepository,
-        RowKey, RowValue,
+        sourced, Entity, HashMapRepository, ReadModelWorkspaceExt, RowKey, RowValue,
+        TransactionalCommit,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Mutex;
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RecordingAsyncBatchRepo {
+    struct RecordingBatchRepo {
         fail: bool,
         stream_ids: Mutex<Vec<(String, String)>>,
         outbox_ids: Mutex<Vec<String>>,
@@ -356,11 +356,8 @@ mod tests {
         read_model_keys: Mutex<Vec<String>>,
     }
 
-    impl AsyncTransactionalCommit for RecordingAsyncBatchRepo {
-        async fn commit_batch_async<'a>(
-            &'a self,
-            batch: AsyncCommitBatch<'a>,
-        ) -> Result<(), RepositoryError> {
+    impl TransactionalCommit for RecordingBatchRepo {
+        async fn commit_batch<'a>(&'a self, batch: CommitBatch<'a>) -> Result<(), RepositoryError> {
             *self.stream_ids.lock().unwrap() = batch
                 .streams
                 .iter()
@@ -435,8 +432,8 @@ mod tests {
 
     async fn loaded_view(repo: &HashMapRepository, id: &str) -> Option<RelationalView> {
         repo.model_store()
-            .workspace_async()
-            .load_async::<RelationalView>(view_key(id))
+            .workspace()
+            .load::<RelationalView>(view_key(id))
             .one()
             .await
             .unwrap()
@@ -444,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_read_models_and_aggregate() {
+    async fn commit_builder_ext_commits_read_models_and_aggregate() {
         let repo = HashMapRepository::new();
 
         let view = RelationalView {
@@ -455,7 +452,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch().unwrap();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
             .commit(&mut agg)
             .await
             .unwrap();
@@ -484,7 +481,7 @@ mod tests {
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.upsert(&view1).unwrap().upsert(&view2).unwrap();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models)
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models)
             .commit(&mut agg)
             .await
             .unwrap();
@@ -507,7 +504,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch().unwrap();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
             .outbox(outbox)
             .commit(&mut agg)
             .await
@@ -530,7 +527,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch().unwrap();
 
-        AsyncCommitBuilderExt::outbox(&repo, outbox)
+        CommitBuilderExt::outbox(&repo, outbox)
             .read_models(read_models(&view))
             .commit(&mut agg)
             .await
@@ -555,7 +552,7 @@ mod tests {
         let mut read_models = crate::read_model::ReadModelWritePlanBuilder::new();
         read_models.upsert(&view1).unwrap().upsert(&view2).unwrap();
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models)
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models)
             .commit_all()
             .await
             .unwrap();
@@ -587,7 +584,7 @@ mod tests {
         agg2.touch().unwrap();
         agg2.entity.set_id("agg-2");
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
             .commit_many(&mut [&mut agg1, &mut agg2])
             .await
             .unwrap();
@@ -595,26 +592,22 @@ mod tests {
         assert_eq!(loaded_view(&repo, "multi").await.unwrap().counter, 77);
 
         let agg_type = TestAggregate::aggregate_type();
-        let e1 = crate::AsyncGetStream::get_stream(
-            &repo,
-            &StreamIdentity::new(agg_type, "agg-1").unwrap(),
-        )
-        .await
-        .unwrap();
+        let e1 =
+            crate::GetStream::get_stream(&repo, &StreamIdentity::new(agg_type, "agg-1").unwrap())
+                .await
+                .unwrap();
         assert!(e1.is_some());
-        let e2 = crate::AsyncGetStream::get_stream(
-            &repo,
-            &StreamIdentity::new(agg_type, "agg-2").unwrap(),
-        )
-        .await
-        .unwrap();
+        let e2 =
+            crate::GetStream::get_stream(&repo, &StreamIdentity::new(agg_type, "agg-2").unwrap())
+                .await
+                .unwrap();
         assert!(e2.is_some());
     }
 
     #[tokio::test]
     async fn staged_builder_ordering_is_semantic_for_outbox_session_and_aggregate() {
         async fn record(order: u8) -> (Vec<(String, String)>, Vec<String>) {
-            let repo = RecordingAsyncBatchRepo::default();
+            let repo = RecordingBatchRepo::default();
             let view = RelationalView {
                 id: "ordered".into(),
                 counter: 7,
@@ -624,7 +617,7 @@ mod tests {
             agg.touch().unwrap();
 
             match order {
-                0 => AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+                0 => ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
                     .outbox(outbox)
                     .aggregate(&mut agg)
                     .commit()
@@ -637,7 +630,7 @@ mod tests {
                     .commit()
                     .await
                     .unwrap(),
-                _ => AsyncReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
+                _ => ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
                     .read_models(read_models(&view))
                     .outbox(outbox)
                     .commit()
@@ -657,12 +650,12 @@ mod tests {
 
     #[tokio::test]
     async fn staged_commit_sets_outbox_source_from_single_aggregate() {
-        let repo = RecordingAsyncBatchRepo::default();
+        let repo = RecordingBatchRepo::default();
         let mut agg = TestAggregate::default();
         agg.touch().unwrap();
         let outbox = OutboxMessage::create("sourced-msg", "TestEvent", b"{}".to_vec()).unwrap();
 
-        AsyncReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
+        ReadModelWritePlanCommitExt::aggregate(&repo, &mut agg)
             .outbox(outbox)
             .commit()
             .await
@@ -681,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn staged_builder_supports_multiple_aggregates() {
-        let repo = RecordingAsyncBatchRepo::default();
+        let repo = RecordingBatchRepo::default();
         let view = RelationalView {
             id: "staged-multi".into(),
             counter: 77,
@@ -693,7 +686,7 @@ mod tests {
         agg2.touch().unwrap();
         agg2.entity.set_id("agg-2");
 
-        AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
             .aggregate(&mut agg1)
             .aggregate(&mut agg2)
             .commit()
@@ -721,7 +714,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_builder_failure_does_not_mark_aggregate_committed() {
-        let repo = RecordingAsyncBatchRepo {
+        let repo = RecordingBatchRepo {
             fail: true,
             ..Default::default()
         };
@@ -734,7 +727,7 @@ mod tests {
         let mut agg = TestAggregate::default();
         agg.touch().unwrap();
 
-        let err = AsyncReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
+        let err = ReadModelWritePlanCommitExt::read_models(&repo, read_models(&view))
             .outbox(outbox)
             .commit(&mut agg)
             .await
@@ -766,17 +759,17 @@ mod tests {
 
     #[tokio::test]
     async fn commit_builder_empty_batch_succeeds() {
-        let repo = RecordingAsyncBatchRepo::default();
+        let repo = RecordingBatchRepo::default();
 
-        AsyncCommitBuilder::new(&repo).commit_all().await.unwrap();
+        CommitBuilder::new(&repo).commit_all().await.unwrap();
 
         assert!(repo.stream_ids.lock().unwrap().is_empty());
         assert!(repo.read_model_keys.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn async_commit_read_models_and_aggregate() {
-        let repo = RecordingAsyncBatchRepo::default();
+    async fn commit_read_models_and_aggregate() {
+        let repo = RecordingBatchRepo::default();
         let view = RelationalView {
             id: "async-view".into(),
             counter: 42,
@@ -804,8 +797,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_staged_builder_ordering_sets_outbox_source() {
-        let repo = RecordingAsyncBatchRepo::default();
+    async fn staged_builder_ordering_sets_outbox_source() {
+        let repo = RecordingBatchRepo::default();
         let view = RelationalView {
             id: "async-staged".into(),
             counter: 7,
@@ -837,8 +830,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_commit_many_supports_same_type_aggregates() {
-        let repo = RecordingAsyncBatchRepo::default();
+    async fn commit_many_supports_same_type_aggregates() {
+        let repo = RecordingBatchRepo::default();
         let mut agg1 = TestAggregate::default();
         agg1.touch().unwrap();
         agg1.entity.set_id("async-agg-1");
@@ -846,7 +839,7 @@ mod tests {
         agg2.touch().unwrap();
         agg2.entity.set_id("async-agg-2");
 
-        AsyncCommitBuilder::new(&repo)
+        CommitBuilder::new(&repo)
             .commit_many(&mut [&mut agg1, &mut agg2])
             .await
             .unwrap();

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service};
-use distributed::{AsyncAggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
 use crate::handlers::Repo;
@@ -15,21 +15,17 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(
-        Service::with_repo(
-            HashMapRepository::new()
-                .queued_async()
-                .async_aggregate::<Counter>(),
-        )
-        .event(handlers::counter_create::COMMAND)
-        .guarded(
-            handlers::counter_create::guard,
-            handlers::counter_create::handle,
-        )
-        .event(handlers::counter_increment::COMMAND)
-        .guarded(
-            handlers::counter_increment::guard,
-            handlers::counter_increment::handle,
-        ),
+        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+            .event(handlers::counter_create::COMMAND)
+            .guarded(
+                handlers::counter_create::guard,
+                handlers::counter_create::handle,
+            )
+            .event(handlers::counter_increment::COMMAND)
+            .guarded(
+                handlers::counter_increment::guard,
+                handlers::counter_increment::handle,
+            ),
     )
 }
 

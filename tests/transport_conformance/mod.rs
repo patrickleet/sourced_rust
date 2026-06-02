@@ -22,8 +22,8 @@ use distributed::bus::{
 use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Service};
 use distributed::OutboxDispatcher;
 use distributed::{
-    AsyncCommitBatch, AsyncTransactionalCommit, HashMapOutboxStore, HashMapRepository,
-    OutboxMessage, OutboxMessageStatus,
+    CommitBatch, HashMapOutboxStore, HashMapRepository, OutboxMessage, OutboxMessageStatus,
+    TransactionalCommit,
 };
 use serde_json::json;
 
@@ -372,9 +372,9 @@ pub async fn source_propagates_settle_errors() {
 
 async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
     let message = OutboxMessage::create(id, "order.initialized", b"\x01".to_vec()).unwrap();
-    let mut batch = AsyncCommitBatch::empty();
+    let mut batch = CommitBatch::empty();
     batch.outbox_messages.push(message);
-    repo.commit_batch_async(batch).await.unwrap();
+    repo.commit_batch(batch).await.unwrap();
     id.to_string()
 }
 

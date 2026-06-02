@@ -6,7 +6,7 @@ mod handlers;
 use std::sync::Arc;
 
 use distributed::microsvc::{HandlerError, Service};
-use distributed::{AsyncReadModelWorkspaceExt, InMemoryReadModelStore, ReadModelError};
+use distributed::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
 
 use crate::read_models::{board_key, BoardView};
 
@@ -28,8 +28,8 @@ fn read_model_error(err: ReadModelError) -> HandlerError {
 /// processed event.
 pub async fn load_board(store: &InMemoryReadModelStore, board_id: &str) -> Option<BoardView> {
     store
-        .workspace_async()
-        .load_async::<BoardView>(board_key(board_id))
+        .workspace()
+        .load::<BoardView>(board_key(board_id))
         .include("cards")
         .one()
         .await

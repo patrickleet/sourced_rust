@@ -1,7 +1,6 @@
 use distributed::{
-    AsyncGetStream, AsyncReadModelWorkspaceExt, AsyncReadModelWritePlanStore,
-    AsyncRelationalReadModelQueryStore, AsyncTransactionalCommit, RepositoryError, RowKey,
-    RowValue, Versioned,
+    GetStream, ReadModelWorkspaceExt, ReadModelWritePlanStore, RelationalReadModelQueryStore,
+    RepositoryError, RowKey, RowValue, TransactionalCommit, Versioned,
 };
 
 use crate::domain::player::Player;
@@ -18,10 +17,7 @@ pub struct Game<'a, R> {
 
 impl<'a, R> Game<'a, R>
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore,
+    R: GetStream + TransactionalCommit + ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     pub async fn new(repo: &'a R, game_id: &str, ascii: &str) -> Result<Self, GameError> {
         handlers::create_game(repo, game_id, ascii).await?;
@@ -45,8 +41,8 @@ where
 
     pub async fn board(&self) -> Result<Versioned<BoardView>, GameError> {
         self.repo
-            .workspace_async()
-            .load_async::<BoardView>(RowKey::new([(
+            .workspace()
+            .load::<BoardView>(RowKey::new([(
                 "game_id",
                 RowValue::String(self.game_id.clone()),
             )]))
@@ -65,10 +61,7 @@ pub struct PlayerSim<'a, R> {
 
 impl<'a, R> PlayerSim<'a, R>
 where
-    R: AsyncGetStream
-        + AsyncTransactionalCommit
-        + AsyncReadModelWritePlanStore
-        + AsyncRelationalReadModelQueryStore,
+    R: GetStream + TransactionalCommit + ReadModelWritePlanStore + RelationalReadModelQueryStore,
 {
     pub async fn join(&self, spawn_index: usize) -> Result<(), GameError> {
         handlers::join_game(

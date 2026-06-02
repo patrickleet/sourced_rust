@@ -6,12 +6,10 @@ use crate::entity::{
 use crate::outbox::{validate_outbox_message_table_write, OutboxMessage};
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 use crate::read_model::ReadModelError;
-use crate::repository::{AsyncStreamWrite, PreparedEventAppend, RepositoryError, StreamIdentity};
+use crate::repository::{PreparedEventAppend, RepositoryError, StreamIdentity, StreamWrite};
 use crate::snapshot::SnapshotRecord;
 
-pub(crate) fn reject_duplicate_streams(
-    streams: &[AsyncStreamWrite<'_>],
-) -> Result<(), RepositoryError> {
+pub(crate) fn reject_duplicate_streams(streams: &[StreamWrite<'_>]) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(streams.len());
     for stream in streams {
         let key = stream.identity.storage_key();
@@ -50,7 +48,7 @@ pub(crate) fn reject_duplicate_outbox_messages(
 }
 
 pub(crate) fn validate_entity_id_matches_identity(
-    streams: &[AsyncStreamWrite<'_>],
+    streams: &[StreamWrite<'_>],
 ) -> Result<(), RepositoryError> {
     for stream in streams {
         if stream.entity.id() != stream.identity.aggregate_id() {

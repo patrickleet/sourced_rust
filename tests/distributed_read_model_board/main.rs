@@ -20,8 +20,8 @@ use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
 use distributed::{
-    AsyncAggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore,
-    HashMapRepository, InMemoryReadModelStore, OutboxClaimRef, Queueable,
+    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    InMemoryReadModelStore, OutboxClaimRef, Queueable,
 };
 use projections_service::{load_board, service as build_projection};
 use query_service::BoardQueryService;
@@ -79,7 +79,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 async fn board_service_feeds_a_normalized_card_read_model() {
     let board_store = HashMapRepository::new();
     let board_outbox = board_store.outbox_store();
-    let board_service = board_service::model_service(board_store.queued_async().async_aggregate());
+    let board_service = board_service::model_service(board_store.queued().aggregate());
 
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
