@@ -13,6 +13,7 @@ mod commit_builder;
 pub mod emitter;
 mod hashmap_repo;
 pub mod lock;
+pub mod manifest;
 pub mod microsvc;
 mod outbox;
 mod outbox_worker;
@@ -129,6 +130,11 @@ pub use table::{
     TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry,
     TableSchemaRegistryExt, TableSchemaVerification, TableSqlDialect, TableSqlSchemaAdapter,
     TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
+};
+
+pub use manifest::{
+    DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,
+    ServiceManifest, TransportManifest, DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
 };
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates

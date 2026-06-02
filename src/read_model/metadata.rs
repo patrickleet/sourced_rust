@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use super::ReadModelError;
 
 pub const DEFAULT_READ_MODEL_VERSION_COLUMN: &str = "_sourced_version";
 
 /// Logical storage type for a relational read-model column.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
     Text,
     Boolean,
@@ -21,7 +21,7 @@ pub enum ColumnType {
 }
 
 /// A foreign-key declaration from one read-model column to another table column.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignKey {
     pub table: String,
     pub column: String,
@@ -37,7 +37,7 @@ impl ForeignKey {
 }
 
 /// Primary-key metadata for a relational read-model table.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrimaryKey {
     pub columns: Vec<String>,
 }
@@ -86,7 +86,7 @@ impl RowKey {
 }
 
 /// Column metadata for a relational read-model table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDef {
     pub field_name: String,
     pub column_name: String,
@@ -124,7 +124,7 @@ impl ColumnDef {
 }
 
 /// Index or unique-constraint metadata for a relational read-model table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexDef {
     pub name: Option<String>,
     pub columns: Vec<String>,
@@ -142,7 +142,7 @@ impl IndexDef {
 }
 
 /// Relationship category for later workspace/write-plan lowering.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationshipKind {
     HasMany,
     BelongsTo,
@@ -150,7 +150,7 @@ pub enum RelationshipKind {
 }
 
 /// Relationship metadata for a relational read model.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationshipDef {
     pub field_name: String,
     pub kind: RelationshipKind,
@@ -160,7 +160,7 @@ pub struct RelationshipDef {
 }
 
 /// Schema metadata for one relational read-model table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadModelSchema {
     pub model_name: String,
     pub table_name: String,
