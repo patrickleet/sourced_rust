@@ -186,6 +186,39 @@ fn upcaster_wrapper_prefix(owner: &Ident) -> String {
         .to_ascii_lowercase()
 }
 
+fn event_variant_ident(event_name: &LitStr) -> Ident {
+    let value = event_name.value();
+    let segment = value
+        .rsplit('.')
+        .find(|part| !part.is_empty())
+        .unwrap_or(&value);
+    let mut ident = String::new();
+    let mut capitalize_next = true;
+
+    for ch in segment.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ident.is_empty() && ch.is_ascii_digit() {
+                ident.push_str("Event");
+            }
+
+            if capitalize_next {
+                ident.push(ch.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                ident.push(ch);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+
+    if ident.is_empty() {
+        ident.push_str("Event");
+    }
+
+    format_ident!("{}", ident)
+}
+
 fn generate_upcaster_tokens(
     owner: &Ident,
     upcasters: &[UpcasterDef],
@@ -274,7 +307,7 @@ fn generate_upcaster_tokens(
 ///
 /// Basic usage with function parameters (automatically captured):
 /// ```ignore
-/// #[enqueue("OrderCreated")]
+/// #[enqueue("order.initialized")]
 /// fn create(&mut self, id: String, items: Vec<Item>) {
 ///     // enqueue call auto-inserted, params serialized as JSON
 ///     // calls self.emitter.enqueue_with(...)
@@ -283,7 +316,7 @@ fn generate_upcaster_tokens(
 ///
 /// With guard condition:
 /// ```ignore
-/// #[enqueue("StepCompleted", when = self.can_complete())]
+/// #[enqueue("step.completed", when = self.can_complete())]
 /// fn complete_step(&mut self) {
 ///     self.completed = true;
 /// }
@@ -291,7 +324,7 @@ fn generate_upcaster_tokens(
 ///
 /// With custom emitter field name:
 /// ```ignore
-/// #[enqueue(my_emitter, "Created")]
+/// #[enqueue(my_emitter, "todo.initialized")]
 /// fn create(&mut self, name: String) {
 ///     // uses self.my_emitter instead of self.emitter
 /// }
@@ -427,7 +460,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 ///
 /// Basic usage with function parameters (automatically captured):
 /// ```ignore
-/// #[digest("Initialized")]
+/// #[digest("initialized")]
 /// fn initialize(&mut self, id: String, user_id: String) {
 ///     // digest call auto-inserted, params serialized as tuple
 /// }
@@ -435,7 +468,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 ///
 /// With guard condition:
 /// ```ignore
-/// #[digest("Completed", when = !self.completed)]
+/// #[digest("completed", when = !self.completed)]
 /// fn complete(&mut self) -> Result<(), distributed::EventRecordError> {
 ///     self.completed = true;
 ///     Ok(())
@@ -451,7 +484,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 ///         return Err(TodoError::EmptyTitle);
 ///     }
 ///
-///     self.entity.digest("Renamed", &(title.clone(),))?;
+///     self.entity.digest("renamed", &(title.clone(),))?;
 ///     self.title = title;
 ///     Ok(())
 /// }
@@ -459,7 +492,7 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 ///
 /// With custom entity field name:
 /// ```ignore
-/// #[digest(my_entity, "Created")]
+/// #[digest(my_entity, "initialized")]
 /// fn create(&mut self, name: String) -> Result<(), distributed::EventRecordError> {
 ///     // uses self.my_entity instead of self.entity
 ///     Ok(())
@@ -558,8 +591,8 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
 ///
 /// ```ignore
 /// distributed::aggregate!(Todo, entity {
-///     "Initialized"(id, user_id, task) => initialize,
-///     "Completed"() => complete(),
+///     "initialized"(id, user_id, task) => initialize,
+///     "completed"() => complete(),
 /// });
 /// ```
 ///
@@ -779,7 +812,7 @@ impl Parse for AggregateInput {
             syn::bracketed!(upcaster_content in input);
 
             while !upcaster_content.is_empty() {
-                // Parse: ("EventName", from => to, SourceType => TargetType, transform_fn)
+                // Parse: ("initialized", from => to, SourceType => TargetType, transform_fn)
                 let inner;
                 syn::parenthesized!(inner in upcaster_content);
 
@@ -975,14 +1008,14 @@ struct EventMethodInfo {
 /// ```ignore
 /// #[sourced(entity)]
 /// impl Todo {
-///     #[event("Initialized")]
+///     #[event("initialized")]
 ///     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
 ///         self.entity.set_id(&id);
 ///         self.user_id = user_id;
 ///         self.task = task;
 ///     }
 ///
-///     #[event("Completed", when = !self.completed)]
+///     #[event("completed", when = !self.completed)]
 ///     pub fn complete(&mut self) {
 ///         self.completed = true;
 ///     }
@@ -994,7 +1027,7 @@ struct EventMethodInfo {
 /// - `#[sourced(entity)]` - entity field name
 /// - `#[sourced(entity, events = "CustomName")]` - custom enum name
 /// - `#[sourced(entity, aggregate_type = "todos")]` - stable stream type name
-/// - `#[sourced(entity, upcasters(("EventName", 1 => 2, OldPayload => NewPayload, upcast_fn)))]` - upcasters
+/// - `#[sourced(entity, upcasters(("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn)))]` - upcasters
 #[proc_macro_attribute]
 pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with parse_sourced_args);
@@ -1090,7 +1123,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate event enum
     let enum_variants = event_methods.iter().map(|e| {
-        let variant_name = format_ident!("{}", e.event_name.value());
+        let variant_name = event_variant_ident(&e.event_name);
         if e.params.is_empty() {
             quote! { #variant_name }
         } else {
@@ -1109,7 +1142,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate event_name() method on the enum
     let event_name_arms = event_methods.iter().map(|e| {
-        let variant_name = format_ident!("{}", e.event_name.value());
+        let variant_name = event_variant_ident(&e.event_name);
         let name_str = &e.event_name;
         if e.params.is_empty() {
             quote! { #enum_name::#variant_name => #name_str }
@@ -1130,7 +1163,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate TryFrom<&EventRecord>
     let try_from_arms = event_methods.iter().map(|e| {
-        let variant_name = format_ident!("{}", e.event_name.value());
+        let variant_name = event_variant_ident(&e.event_name);
         let event_name_str = &e.event_name;
         if e.params.is_empty() {
             quote! {

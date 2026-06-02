@@ -31,7 +31,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     counter.increment(input.amount)?;
 
-    let message = OutboxMessage::domain_event("CounterIncremented", &counter)?;
+    let message = OutboxMessage::domain_event("counter.incremented", &counter)?;
 
     ctx.repo().outbox(message).commit(&mut counter).await?;
 

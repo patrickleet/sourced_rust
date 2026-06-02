@@ -1,6 +1,6 @@
 use super::*;
 
-pub const COMMAND: &str = "StartSaga";
+pub const COMMAND: &str = "saga.start";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id", "customer_id", "items", "total_cents"])
@@ -20,7 +20,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     let msg = json_outbox_to(
         &format!("{}-create-order", input.saga_id),
-        "CreateOrder",
+        "order.initialize",
         "orders",
         &CreateOrderMsg {
             saga_id: input.saga_id.clone(),

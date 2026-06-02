@@ -15,14 +15,14 @@ impl Todo {
         Self::default()
     }
 
-    #[event("Initialized")]
+    #[event("initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }

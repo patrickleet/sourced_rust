@@ -1,13 +1,13 @@
 use super::*;
 
-pub const EVENT: &str = "OrderCreated";
+pub const EVENT: &str = "order.initialized";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id"])
 }
 
 pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
-    let input = ctx.input::<OrderCreatedMsg>()?;
+    let input = ctx.input::<OrderInitializedMsg>()?;
 
     let mut saga = ctx
         .repo()
@@ -20,7 +20,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     let msg = json_outbox_to(
         &format!("{}-reserve-inventory", input.saga_id),
-        "ReserveInventory",
+        "inventory.reserve",
         "inventory",
         &ReserveInventoryMsg {
             saga_id: input.saga_id.clone(),
@@ -31,5 +31,5 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     )?;
 
     ctx.repo().outbox(msg).commit(&mut saga).await?;
-    Ok(json!({ "next": "ReserveInventory" }))
+    Ok(json!({ "next": "inventory.reserve" }))
 }

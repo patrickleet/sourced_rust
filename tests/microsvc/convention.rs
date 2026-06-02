@@ -28,11 +28,11 @@ async fn register_handlers_and_dispatch() {
 
     let mut cmds = service.command_names();
     cmds.sort();
-    assert_eq!(cmds, vec!["counter.create", "counter.increment"]);
+    assert_eq!(cmds, vec!["counter.increment", "counter.initialize"]);
 
     // Create
     let result = service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));
@@ -61,7 +61,7 @@ async fn guard_rejects_bad_input() {
     );
 
     let result = service
-        .dispatch("counter.create", json!({ "wrong": 1 }), Session::new())
+        .dispatch("counter.initialize", json!({ "wrong": 1 }), Session::new())
         .await;
     assert!(result.is_err());
 }
@@ -74,12 +74,12 @@ async fn handler_rejects_duplicate_create() {
     );
 
     service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
 
     let result = service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await;
     assert!(result.is_err());
 }
@@ -96,7 +96,7 @@ async fn create_persists_outbox_message() {
     );
 
     let result = service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));
@@ -110,7 +110,7 @@ async fn create_persists_outbox_message() {
     // Outbox message was persisted
     let pending = inner.outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].event_type, "CounterCreated");
+    assert_eq!(pending[0].event_type, "counter.initialized");
 }
 
 #[tokio::test]
@@ -121,13 +121,13 @@ async fn duplicate_create_leaves_single_outbox_message() {
     );
 
     service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
 
     // Second create fails — no duplicate outbox message
     let result = service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await;
     assert!(result.is_err());
 
@@ -150,7 +150,7 @@ async fn increment_persists_outbox_message() {
     );
 
     service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
 
@@ -173,5 +173,8 @@ async fn increment_persists_outbox_message() {
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
     event_types.sort();
-    assert_eq!(event_types, vec!["CounterCreated", "CounterIncremented"]);
+    assert_eq!(
+        event_types,
+        vec!["counter.incremented", "counter.initialized"]
+    );
 }

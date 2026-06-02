@@ -26,7 +26,7 @@ struct Counter {
 
 #[sourced(entity, aggregate_type = "postgres.counter")]
 impl Counter {
-    #[event("Incremented")]
+    #[event("incremented")]
     fn increment(&mut self, id: String, by: i32) {
         self.entity.set_id(&id);
         self.value += by;
@@ -40,7 +40,7 @@ struct CounterProjection {
 
 #[sourced(entity, aggregate_type = "postgres.counter_projection")]
 impl CounterProjection {
-    #[event("Touched")]
+    #[event("touched")]
     fn touch(&mut self, id: String) {
         self.entity.set_id(&id);
     }
@@ -254,9 +254,9 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
     let id = unique_id("duplicate");
     let identity = StreamIdentity::new(Counter::aggregate_type(), &id).unwrap();
     let mut first = Entity::with_id(&id);
-    first.digest_empty("First").unwrap();
+    first.digest_empty("first_recorded").unwrap();
     let mut second = Entity::with_id(&id);
-    second.digest_empty("Second").unwrap();
+    second.digest_empty("second_recorded").unwrap();
 
     let err = repo
         .commit_batch_async(AsyncCommitBatch::new(vec![

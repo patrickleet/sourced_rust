@@ -17,7 +17,7 @@ where
     let seat_id = unique_id("outbox-seat");
     let message_id = unique_id("outbox-message");
     let mut seat = added_seat(&seat_id);
-    let message = OutboxMessage::create(&message_id, "SeatAdded", b"{}".to_vec())
+    let message = OutboxMessage::create(&message_id, "seat.added", b"{}".to_vec())
         .expect("outbox message should be valid");
 
     repo.clone()
@@ -58,7 +58,7 @@ where
     let duplicate_message_id = unique_id("duplicate-outbox");
     let mut existing_seat = added_seat(&unique_id("existing-seat"));
     let existing_message =
-        OutboxMessage::create(&duplicate_message_id, "SeatAdded", b"{}".to_vec())
+        OutboxMessage::create(&duplicate_message_id, "seat.added", b"{}".to_vec())
             .expect("existing outbox message should be valid");
     repo.clone()
         .async_aggregate::<Seat>()
@@ -72,7 +72,7 @@ where
         .expect("seat stream identity should be valid");
     let mut rollback_seat = added_seat(&rollback_seat_id);
     let duplicate_message =
-        OutboxMessage::create(&duplicate_message_id, "SeatAddedAgain", b"{}".to_vec())
+        OutboxMessage::create(&duplicate_message_id, "seat.added_again", b"{}".to_vec())
             .expect("duplicate outbox message should be valid");
 
     let err = repo
@@ -138,7 +138,7 @@ where
         .expect("winner commit should succeed");
 
     let message_id = unique_id("rollback-outbox-message");
-    let message = OutboxMessage::create(&message_id, "SeatReserved", b"{}".to_vec())
+    let message = OutboxMessage::create(&message_id, "seat.reserved", b"{}".to_vec())
         .expect("outbox message should be valid");
     let err = repo
         .clone()
@@ -159,8 +159,9 @@ where
 {
     let complete_message_id = unique_id("complete-outbox");
     let mut complete_seat = added_seat(&unique_id("complete-seat"));
-    let complete_message = OutboxMessage::create(&complete_message_id, "SeatAdded", b"{}".to_vec())
-        .expect("complete outbox message should be valid");
+    let complete_message =
+        OutboxMessage::create(&complete_message_id, "seat.added", b"{}".to_vec())
+            .expect("complete outbox message should be valid");
     repo.clone()
         .async_aggregate::<Seat>()
         .outbox(complete_message)
@@ -203,7 +204,7 @@ where
 
     let retry_message_id = unique_id("retry-outbox");
     let mut retry_seat = added_seat(&unique_id("retry-seat"));
-    let retry_message = OutboxMessage::create(&retry_message_id, "SeatAdded", b"{}".to_vec())
+    let retry_message = OutboxMessage::create(&retry_message_id, "seat.added", b"{}".to_vec())
         .expect("retry outbox message should be valid");
     repo.clone()
         .async_aggregate::<Seat>()
@@ -271,7 +272,7 @@ where
     let other_id = unique_id("other-outbox");
     for (message_id, seat_id) in [(&wanted_id, "wanted-seat"), (&other_id, "other-seat")] {
         let mut seat = added_seat(&unique_id(seat_id));
-        let message = OutboxMessage::create(message_id, "SeatAdded", b"{}".to_vec())
+        let message = OutboxMessage::create(message_id, "seat.added", b"{}".to_vec())
             .expect("outbox message should be valid");
         repo.clone()
             .async_aggregate::<Seat>()

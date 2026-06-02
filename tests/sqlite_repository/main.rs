@@ -19,7 +19,7 @@ struct Counter {
 
 #[sourced(entity, aggregate_type = "sqlite.counter")]
 impl Counter {
-    #[event("Incremented")]
+    #[event("incremented")]
     fn increment(&mut self, id: String, by: i32) {
         self.entity.set_id(&id);
         self.value += by;
@@ -33,7 +33,7 @@ struct CounterProjection {
 
 #[sourced(entity, aggregate_type = "sqlite.counter_projection")]
 impl CounterProjection {
-    #[event("Touched")]
+    #[event("touched")]
     fn touch(&mut self, id: String) {
         self.entity.set_id(&id);
     }

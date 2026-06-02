@@ -23,7 +23,7 @@ impl Default for Order {
 
 #[sourced(entity, enqueue)]
 impl Order {
-    #[event("OrderCreated")]
+    #[event("initialized")]
     pub fn create(&mut self, order_id: String, customer: String) {
         self.entity.set_id(&order_id);
         self.order_id = order_id;
@@ -31,12 +31,12 @@ impl Order {
         self.status = "created".into();
     }
 
-    #[event("OrderConfirmed", when = self.status == "created")]
+    #[event("confirmed", when = self.status == "created")]
     pub fn confirm(&mut self) {
         self.status = "confirmed".into();
     }
 
-    #[event("OrderShipped", when = self.status == "confirmed")]
+    #[event("shipped", when = self.status == "confirmed")]
     pub fn ship(&mut self) {
         self.status = "shipped".into();
     }
@@ -61,7 +61,7 @@ impl Default for Notifier {
 
 #[sourced(entity, enqueue(my_emitter))]
 impl Notifier {
-    #[event("NotificationSent")]
+    #[event("sent")]
     pub fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;

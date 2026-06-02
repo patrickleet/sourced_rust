@@ -1,6 +1,6 @@
 use super::*;
 
-pub const COMMAND: &str = "InitInventory";
+pub const COMMAND: &str = "inventory.initialize";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["sku", "stock"])

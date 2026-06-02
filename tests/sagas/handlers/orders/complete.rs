@@ -1,6 +1,6 @@
 use super::*;
 
-pub const COMMAND: &str = "CompleteOrder";
+pub const COMMAND: &str = "order.complete";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id"])
@@ -20,7 +20,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     let msg = json_outbox_to(
         &format!("{}-order-completed", input.order_id),
-        "OrderCompleted",
+        "order.completed",
         "saga",
         &OrderCompletedMsg {
             saga_id: input.saga_id,

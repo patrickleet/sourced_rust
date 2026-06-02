@@ -14,7 +14,7 @@ pub struct Explosion {
 
 #[sourced(entity)]
 impl Explosion {
-    #[event("ExplosionStarted")]
+    #[event("started")]
     pub fn start(
         &mut self,
         id: String,
@@ -34,12 +34,12 @@ impl Explosion {
         self.active = true;
     }
 
-    #[event("ExplosionExpanded", when = self.active && !self.is_fully_expanded())]
+    #[event("expanded", when = self.active && !self.is_fully_expanded())]
     pub fn expand(&mut self) {
         self.current_ring += 1;
     }
 
-    #[event("ExplosionDissipated", when = self.active)]
+    #[event("dissipated", when = self.active)]
     pub fn dissipate(&mut self) {
         self.active = false;
     }

@@ -183,17 +183,17 @@ pub fn recording_service(recorder: &Arc<Recorder>) -> Arc<Service<()>> {
     let permanent = recorder.clone();
     Arc::new(
         Service::new(())
-            .event("ok")
+            .event("delivery.succeeded")
             .handle(move |ctx: &Context<()>| {
                 ok.push(Event::Handled(ctx.message().name().to_string()));
                 async move { Ok(json!({})) }
             })
-            .event("retryable")
+            .event("delivery.retry_requested")
             .handle(move |ctx: &Context<()>| {
                 retryable.push(Event::Handled(ctx.message().name().to_string()));
                 async move { Err(HandlerError::Other("infra".into())) }
             })
-            .event("permanent")
+            .event("delivery.permanently_failed")
             .handle(move |ctx: &Context<()>| {
                 permanent.push(Event::Handled(ctx.message().name().to_string()));
                 async move { Err(HandlerError::Rejected("nope".into())) }
@@ -216,13 +216,16 @@ pub fn event_message(name: &str, id: Option<&str>) -> Message {
 pub async fn source_dispatches_before_ack() {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
-    let source = FakeSource::new(recorder.clone(), vec![event_message("ok", Some("m1"))]);
+    let source = FakeSource::new(
+        recorder.clone(),
+        vec![event_message("delivery.succeeded", Some("m1"))],
+    );
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
     assert_eq!(
         recorder.events(),
-        vec![Event::Handled("ok".into()), Event::Ack],
+        vec![Event::Handled("delivery.succeeded".into()), Event::Ack],
         "handler must run before ack"
     );
 }
@@ -232,13 +235,16 @@ pub async fn source_retryable_failure_nacks_without_ack() {
     let service = recording_service(&recorder);
     let source = FakeSource::new(
         recorder.clone(),
-        vec![event_message("retryable", Some("m1"))],
+        vec![event_message("delivery.retry_requested", Some("m1"))],
     );
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
     let events = recorder.events();
-    assert_eq!(events.first(), Some(&Event::Handled("retryable".into())));
+    assert_eq!(
+        events.first(),
+        Some(&Event::Handled("delivery.retry_requested".into()))
+    );
     assert!(matches!(events.get(1), Some(Event::Nack(_))));
     assert!(!events.contains(&Event::Ack));
 }
@@ -248,7 +254,7 @@ pub async fn source_permanent_failure_dead_letters_by_default() {
     let service = recording_service(&recorder);
     let source = FakeSource::new(
         recorder.clone(),
-        vec![event_message("permanent", Some("m1"))],
+        vec![event_message("delivery.permanently_failed", Some("m1"))],
     );
     run_source(service, source, RunOptions::idempotent())
         .await
@@ -265,8 +271,8 @@ pub async fn source_permanent_failure_stops_under_stop_policy() {
     let source = FakeSource::new(
         recorder.clone(),
         vec![
-            event_message("permanent", Some("m1")),
-            event_message("ok", Some("m2")),
+            event_message("delivery.permanently_failed", Some("m1")),
+            event_message("delivery.succeeded", Some("m2")),
         ],
     );
     let outcome = run_source(
@@ -277,7 +283,10 @@ pub async fn source_permanent_failure_stops_under_stop_policy() {
     .await;
     assert!(outcome.unwrap_err().is_permanent());
     // Second message never processed; first was not settled.
-    assert_eq!(recorder.events(), vec![Event::Handled("permanent".into())]);
+    assert_eq!(
+        recorder.events(),
+        vec![Event::Handled("delivery.permanently_failed".into())]
+    );
 }
 
 pub async fn source_unhandled_message_is_acked_and_ignored() {
@@ -298,7 +307,10 @@ pub async fn source_inbox_mode_rejects_missing_stable_id() {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
     // No id on the message; inbox mode requires a stable id.
-    let source = FakeSource::new(recorder.clone(), vec![event_message("ok", None)]);
+    let source = FakeSource::new(
+        recorder.clone(),
+        vec![event_message("delivery.succeeded", None)],
+    );
     run_source(service, source, RunOptions::inbox(()))
         .await
         .unwrap();
@@ -311,21 +323,27 @@ pub async fn source_inbox_mode_rejects_missing_stable_id() {
 pub async fn source_inbox_mode_dispatches_with_stable_id() {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
-    let source = FakeSource::new(recorder.clone(), vec![event_message("ok", Some("m1"))]);
+    let source = FakeSource::new(
+        recorder.clone(),
+        vec![event_message("delivery.succeeded", Some("m1"))],
+    );
     run_source(service, source, RunOptions::inbox(()))
         .await
         .unwrap();
     assert_eq!(
         recorder.events(),
-        vec![Event::Handled("ok".into()), Event::Ack]
+        vec![Event::Handled("delivery.succeeded".into()), Event::Ack]
     );
 }
 
 pub async fn source_propagates_recv_errors() {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
-    let source =
-        FakeSource::new(recorder.clone(), vec![event_message("ok", Some("m1"))]).with_recv_error();
+    let source = FakeSource::new(
+        recorder.clone(),
+        vec![event_message("delivery.succeeded", Some("m1"))],
+    )
+    .with_recv_error();
     let outcome = run_source(service, source, RunOptions::idempotent()).await;
     assert!(outcome.is_err(), "recv errors must not be swallowed");
     assert!(recorder.events().is_empty());
@@ -334,14 +352,17 @@ pub async fn source_propagates_recv_errors() {
 pub async fn source_propagates_settle_errors() {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
-    let source = FakeSource::new(recorder.clone(), vec![event_message("ok", Some("m1"))])
-        .with_settle_failure();
+    let source = FakeSource::new(
+        recorder.clone(),
+        vec![event_message("delivery.succeeded", Some("m1"))],
+    )
+    .with_settle_failure();
     let outcome = run_source(service, source, RunOptions::idempotent()).await;
     assert!(outcome.is_err(), "settle errors must not be swallowed");
     // The ack was attempted before the error surfaced.
     assert_eq!(
         recorder.events(),
-        vec![Event::Handled("ok".into()), Event::Ack]
+        vec![Event::Handled("delivery.succeeded".into()), Event::Ack]
     );
 }
 
@@ -350,7 +371,7 @@ pub async fn source_propagates_settle_errors() {
 // =============================================================================
 
 async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
-    let message = OutboxMessage::create(id, "OrderCreated", b"\x01".to_vec()).unwrap();
+    let message = OutboxMessage::create(id, "order.initialized", b"\x01".to_vec()).unwrap();
     let mut batch = AsyncCommitBatch::empty();
     batch.outbox_messages.push(message);
     repo.commit_batch_async(batch).await.unwrap();

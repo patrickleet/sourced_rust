@@ -25,12 +25,12 @@ struct Counter {
 
 #[sourced(entity, aggregate_type = "sqllock.counter")]
 impl Counter {
-    #[event("Created")]
+    #[event("initialized")]
     fn create(&mut self, id: String) {
         self.entity.set_id(&id);
     }
 
-    #[event("Incremented")]
+    #[event("incremented")]
     fn increment(&mut self, id: String, by: i32) {
         self.entity.set_id(&id);
         self.value += by;

@@ -16,7 +16,7 @@ impl Counter {
         Self::default()
     }
 
-    #[event("CounterCreated")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String, name: String, user_id: String) {
         self.entity.set_id(&id);
         self.name = name;
@@ -24,12 +24,12 @@ impl Counter {
         self.value = 0;
     }
 
-    #[event("CounterIncremented")]
+    #[event("incremented")]
     pub fn increment(&mut self, amount: i32) {
         self.value += amount;
     }
 
-    #[event("CounterDecremented")]
+    #[event("decremented")]
     pub fn decrement(&mut self, amount: i32) {
         self.value -= amount;
     }

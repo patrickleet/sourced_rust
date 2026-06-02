@@ -12,18 +12,18 @@ pub struct Counter {
 
 #[sourced(entity)]
 impl Counter {
-    #[event("Created")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String) {
         self.entity.set_id(&id);
         self.value = 0;
     }
 
-    #[event("Incremented")]
+    #[event("incremented")]
     pub fn increment(&mut self, amount: i64) {
         self.value += amount;
     }
 
-    #[event("Decremented", when = self.value >= amount)]
+    #[event("decremented", when = self.value >= amount)]
     pub fn decrement(&mut self, amount: i64) {
         self.value -= amount;
     }

@@ -88,7 +88,7 @@ async fn saga_orchestrated() {
     // 1. Initialize inventory
     inventory_svc
         .dispatch(
-            "InitInventory",
+            "inventory.initialize",
             json!({ "sku": "WIDGET-001", "stock": 100 }),
             s(),
         )
@@ -98,7 +98,7 @@ async fn saga_orchestrated() {
     // 2. Start saga → creates saga + outbox(CreateOrder)
     saga_svc
         .dispatch(
-            "StartSaga",
+            "saga.start",
             json!({
                 "saga_id": "saga-001",
                 "order_id": "order-001",
@@ -111,10 +111,10 @@ async fn saga_orchestrated() {
         .await
         .unwrap();
 
-    // 3. Create order → outbox(OrderCreated)
+    // 3. Create order -> outbox(order.initialized)
     order_svc
         .dispatch(
-            "CreateOrder",
+            "order.initialize",
             json!({
                 "saga_id": "saga-001",
                 "order_id": "order-001",
@@ -130,7 +130,7 @@ async fn saga_orchestrated() {
     // 4. Saga: order created → outbox(ReserveInventory)
     saga_svc
         .dispatch_message(&event_message(
-            "OrderCreated",
+            "order.initialized",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
         .await
@@ -139,7 +139,7 @@ async fn saga_orchestrated() {
     // 5. Reserve inventory → outbox(InventoryReserved)
     inventory_svc
         .dispatch(
-            "ReserveInventory",
+            "inventory.reserve",
             json!({
                 "saga_id": "saga-001",
                 "order_id": "order-001",
@@ -154,7 +154,7 @@ async fn saga_orchestrated() {
     // 6. Saga: inventory reserved → outbox(ProcessPayment)
     saga_svc
         .dispatch_message(&event_message(
-            "InventoryReserved",
+            "inventory.reserved",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
         .await
@@ -163,7 +163,7 @@ async fn saga_orchestrated() {
     // 7. Process payment → outbox(PaymentSucceeded)
     payment_svc
         .dispatch(
-            "ProcessPayment",
+            "payment.process",
             json!({
                 "saga_id": "saga-001",
                 "order_id": "order-001",
@@ -177,7 +177,7 @@ async fn saga_orchestrated() {
     // 8. Saga: payment succeeded → outbox(CompleteOrder)
     saga_svc
         .dispatch_message(&event_message(
-            "PaymentSucceeded",
+            "payment.succeeded",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
         .await
@@ -186,7 +186,7 @@ async fn saga_orchestrated() {
     // 9. Complete order → outbox(OrderCompleted)
     order_svc
         .dispatch(
-            "CompleteOrder",
+            "order.complete",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
             s(),
         )
@@ -196,7 +196,7 @@ async fn saga_orchestrated() {
     // 10. Saga: order completed → saga done
     saga_svc
         .dispatch_message(&event_message(
-            "OrderCompleted",
+            "order.completed",
             json!({ "saga_id": "saga-001", "order_id": "order-001" }),
         ))
         .await
@@ -282,7 +282,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 /// ends when no service has pending outbox work — i.e. the saga is complete.
 ///
 /// ```text
-/// StartSaga ─▶ CreateOrder ─▶ OrderCreated ─▶ ReserveInventory ─▶ InventoryReserved
+/// StartSaga -> CreateOrder -> order.initialized -> ReserveInventory -> InventoryReserved
 ///   ─▶ ProcessPayment ─▶ PaymentSucceeded ─▶ CompleteOrder ─▶ OrderCompleted ─▶ done
 /// ```
 #[tokio::test]
@@ -334,7 +334,7 @@ async fn saga_distributed() {
     // === START THE SAGA ===
     saga_svc
         .dispatch(
-            "StartSaga",
+            "saga.start",
             json!({
                 "saga_id": "saga-001",
                 "order_id": "order-001",

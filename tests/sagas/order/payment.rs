@@ -53,7 +53,7 @@ impl Payment {
         self.failure_reason.as_deref()
     }
 
-    #[event("PaymentInitiated")]
+    #[event("initiated")]
     pub fn initiate(&mut self, id: String, order_id: String, amount_cents: u32) {
         self.entity.set_id(&id);
         self.order_id = order_id;
@@ -61,24 +61,24 @@ impl Payment {
         self.status = PaymentStatus::Pending;
     }
 
-    #[event("PaymentAuthorized", when = self.status == PaymentStatus::Pending)]
+    #[event("authorized", when = self.status == PaymentStatus::Pending)]
     pub fn authorize(&mut self, transaction_id: String) {
         self.status = PaymentStatus::Authorized;
         self.transaction_id = Some(transaction_id);
     }
 
-    #[event("PaymentCaptured", when = self.status == PaymentStatus::Authorized)]
+    #[event("captured", when = self.status == PaymentStatus::Authorized)]
     pub fn capture(&mut self) {
         self.status = PaymentStatus::Captured;
     }
 
-    #[event("PaymentFailed", when = self.status == PaymentStatus::Pending || self.status == PaymentStatus::Authorized)]
+    #[event("failed", when = self.status == PaymentStatus::Pending || self.status == PaymentStatus::Authorized)]
     pub fn fail(&mut self, reason: String) {
         self.status = PaymentStatus::Failed;
         self.failure_reason = Some(reason);
     }
 
-    #[event("PaymentRefunded", when = self.status == PaymentStatus::Captured)]
+    #[event("refunded", when = self.status == PaymentStatus::Captured)]
     pub fn refund(&mut self) {
         self.status = PaymentStatus::Refunded;
     }

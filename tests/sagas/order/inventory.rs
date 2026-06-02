@@ -39,21 +39,21 @@ impl Inventory {
         self.reservations.get(order_id).copied()
     }
 
-    #[event("InventoryInitialized")]
+    #[event("initialized")]
     pub fn initialize(&mut self, sku: String, initial_stock: u32) {
         self.entity.set_id(&sku);
         self.sku = sku;
         self.available = initial_stock;
     }
 
-    #[event("StockReserved", when = self.can_reserve(quantity))]
+    #[event("stock_reserved", when = self.can_reserve(quantity))]
     pub fn reserve(&mut self, order_id: String, quantity: u32) {
         self.available -= quantity;
         self.reserved += quantity;
         self.reservations.insert(order_id, quantity);
     }
 
-    #[event("ReservationReleased", when = self.reservations.contains_key(&order_id))]
+    #[event("reservation_released", when = self.reservations.contains_key(&order_id))]
     pub fn release_reservation(&mut self, order_id: String) {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.available += quantity;
@@ -61,7 +61,7 @@ impl Inventory {
         }
     }
 
-    #[event("ReservationCommitted", when = self.reservations.contains_key(&order_id))]
+    #[event("reservation_committed", when = self.reservations.contains_key(&order_id))]
     pub fn commit_reservation(&mut self, order_id: String) {
         if let Some(quantity) = self.reservations.remove(&order_id) {
             self.reserved -= quantity;

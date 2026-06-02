@@ -65,7 +65,7 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
 #[tokio::test]
 async fn publish_then_consume_round_trips_through_rabbitmq() {
     let Some(url) = amqp_url() else { return };
-    let queue = unique("evt");
+    let queue = unique("order.initialized");
 
     // Declare the queue (source) before publishing so the default-exchange route
     // has a destination.
@@ -108,7 +108,7 @@ async fn publish_then_consume_round_trips_through_rabbitmq() {
 #[tokio::test]
 async fn message_id_and_metadata_survive_the_round_trip() {
     let Some(url) = amqp_url() else { return };
-    let queue = unique("evt");
+    let queue = unique("order.initialized");
 
     let source = RabbitSource::connect(&url, &queue)
         .await
@@ -171,7 +171,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     for i in 0..total {
         producer
             .send_message(
-                Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+                Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
+                    .with_id(format!("c{i}")),
             )
             .await
             .expect("send command");
@@ -183,11 +184,11 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     let bus_b = RabbitBus::connect(&url, "orders", &ns).await.unwrap();
     let (ra, rb) = tokio::join!(
         bus_a.listen(
-            recording_for("work", MessageKind::Command, rec.clone()),
+            recording_for("order.initialize", MessageKind::Command, rec.clone()),
             RunOptions::idempotent()
         ),
         bus_b.listen(
-            recording_for("work", MessageKind::Command, rec.clone()),
+            recording_for("order.initialize", MessageKind::Command, rec.clone()),
             RunOptions::idempotent()
         ),
     );
@@ -218,8 +219,8 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     // events with no matching binding.
     let proj_rec = Arc::new(Mutex::new(Vec::new()));
     let audit_rec = Arc::new(Mutex::new(Vec::new()));
-    let svc_proj = recording_for("evt", MessageKind::Event, proj_rec.clone());
-    let svc_audit = recording_for("evt", MessageKind::Event, audit_rec.clone());
+    let svc_proj = recording_for("order.initialized", MessageKind::Event, proj_rec.clone());
+    let svc_audit = recording_for("order.initialized", MessageKind::Event, audit_rec.clone());
     let bus_proj = RabbitBus::connect(&url, "projections", &ns).await.unwrap();
     let bus_audit = RabbitBus::connect(&url, "audit", &ns).await.unwrap();
     bus_proj
@@ -235,7 +236,8 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     for i in 0..total {
         producer
             .publish_message(
-                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
             )
             .await
             .expect("publish event");

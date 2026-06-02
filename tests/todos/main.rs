@@ -68,9 +68,12 @@ async fn todos() {
     .unwrap();
 
     // Add an outbox event for the initialization
-    let init_message =
-        OutboxMessage::encode(format!("{}:init", id1), "TodoInitialized", &todo.snapshot())
-            .unwrap();
+    let init_message = OutboxMessage::encode(
+        format!("{}:init", id1),
+        "todo.initialized",
+        &todo.snapshot(),
+    )
+    .unwrap();
 
     // Commit the Todo + Outbox message to the repository
     repo.outbox(init_message)
@@ -82,7 +85,7 @@ async fn todos() {
     {
         let pending = repo.repo().inner().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].event_type, "TodoInitialized");
+        assert_eq!(pending[0].event_type, "todo.initialized");
     }
 
     // Retrieve the Todo from the repository and complete it, then commit again
@@ -92,7 +95,7 @@ async fn todos() {
         // Add an outbox event for the completion
         let complete_message = OutboxMessage::encode(
             format!("{}:complete", id1),
-            "TodoCompleted",
+            "todo.completed",
             &retrieved_todo.snapshot(),
         )
         .unwrap();
@@ -108,8 +111,8 @@ async fn todos() {
             assert_eq!(pending.len(), 2);
             assert!(pending
                 .iter()
-                .any(|msg| msg.event_type == "TodoInitialized"));
-            assert!(pending.iter().any(|msg| msg.event_type == "TodoCompleted"));
+                .any(|msg| msg.event_type == "todo.initialized"));
+            assert!(pending.iter().any(|msg| msg.event_type == "todo.completed"));
         }
 
         if let Some(completed_todo) = repo.get(&id1).await.unwrap() {
@@ -184,13 +187,21 @@ async fn get_all_commit_all_roundtrip() {
     let mut todo1 = Todo::new();
     let id1 = next_id();
     todo1
-        .initialize(id1.clone(), "user1".to_string(), "First".to_string())
+        .initialize(
+            id1.clone(),
+            "user1".to_string(),
+            "todo.first_recorded".to_string(),
+        )
         .unwrap();
 
     let mut todo2 = Todo::new();
     let id2 = next_id();
     todo2
-        .initialize(id2.clone(), "user2".to_string(), "Second".to_string())
+        .initialize(
+            id2.clone(),
+            "user2".to_string(),
+            "todo.second_recorded".to_string(),
+        )
         .unwrap();
 
     repo.commit_all(&mut [&mut todo1, &mut todo2])
@@ -233,14 +244,14 @@ async fn outbox_records_persisted() {
         .unwrap();
     let snapshot = todo.snapshot();
     let message =
-        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
+        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
 
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Check pending outbox messages
     let pending = repo.outbox_store().pending().unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].event_type, "TodoInitialized");
+    assert_eq!(pending[0].event_type, "todo.initialized");
 
     let published: TodoSnapshot = bitcode::deserialize(&pending[0].payload).unwrap();
     assert_eq!(published.id, snapshot.id);
@@ -262,7 +273,7 @@ async fn outbox_worker_log_publisher() {
     .unwrap();
     let snapshot = todo.snapshot();
     let message =
-        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
+        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
     let message_id = message.id().to_string();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
@@ -294,7 +305,7 @@ async fn outbox_worker_log_publisher() {
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("TodoInitialized"));
+    assert!(lines[0].contains("todo.initialized"));
 
     // Check record is marked as published
     let published = load_outbox_message(&repo, &message_id);
@@ -314,12 +325,12 @@ async fn outbox_worker_local_emitter_publisher() {
     .unwrap();
     let snapshot = todo.snapshot();
     let message =
-        OutboxMessage::encode(format!("{}:init", id), "TodoInitialized", &snapshot).unwrap();
+        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     let mut emitter = EventEmitter::new();
     let (tx, rx) = mpsc::channel::<String>();
-    emitter.on("TodoInitialized", move |payload: String| {
+    emitter.on("todo.initialized", move |payload: String| {
         tx.send(payload).unwrap();
     });
 
@@ -631,9 +642,12 @@ async fn outbox_worker_process_next_with_commit() {
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    let message1 = OutboxMessage::encode(format!("{}:1", id), "Event1", &snapshot).unwrap();
-    let message2 = OutboxMessage::encode(format!("{}:2", id), "Event2", &snapshot).unwrap();
-    let message3 = OutboxMessage::encode(format!("{}:3", id), "Event3", &snapshot).unwrap();
+    let message1 =
+        OutboxMessage::encode(format!("{}:1", id), "todo.first_recorded", &snapshot).unwrap();
+    let message2 =
+        OutboxMessage::encode(format!("{}:2", id), "todo.second_recorded", &snapshot).unwrap();
+    let message3 =
+        OutboxMessage::encode(format!("{}:3", id), "todo.third_recorded", &snapshot).unwrap();
 
     let message_ids = vec![
         message1.id().to_string(),
@@ -715,7 +729,7 @@ async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     let snapshot = todo.snapshot();
     let message = OutboxMessage::encode_for_entity(
         format!("{}:init", id),
-        "TodoInitialized",
+        "todo.initialized",
         &snapshot,
         &todo.entity,
     )
@@ -752,7 +766,7 @@ async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     // 6. Verify the publisher received metadata
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("TodoInitialized"));
+    assert!(lines[0].contains("todo.initialized"));
     assert!(lines[0].contains("correlation_id"));
     assert!(lines[0].contains("req-abc-123"));
     assert!(lines[0].contains("cmd-create-todo"));

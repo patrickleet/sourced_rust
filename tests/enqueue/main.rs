@@ -32,9 +32,11 @@ fn emit_queued_fires_registered_listeners() {
     let mut order = Order::default();
 
     let (tx, rx) = mpsc::channel();
-    order.emitter.on("OrderCreated", move |payload: String| {
-        tx.send(payload).unwrap();
-    });
+    order
+        .emitter
+        .on("order.initialized", move |payload: String| {
+            tx.send(payload).unwrap();
+        });
 
     order.create("order-1".into(), "alice".into()).unwrap();
     order.emitter.emit_queued();
@@ -60,13 +62,13 @@ fn emit_queued_fires_correct_event_types() {
     let mut order = Order::default();
 
     let (tx_created, rx_created) = mpsc::channel();
-    order.emitter.on("OrderCreated", move |_: String| {
-        tx_created.send("OrderCreated").unwrap();
+    order.emitter.on("order.initialized", move |_: String| {
+        tx_created.send("order.initialized").unwrap();
     });
 
     let (tx_confirmed, rx_confirmed) = mpsc::channel();
-    order.emitter.on("OrderConfirmed", move |_: String| {
-        tx_confirmed.send("OrderConfirmed").unwrap();
+    order.emitter.on("order.confirmed", move |_: String| {
+        tx_confirmed.send("order.confirmed").unwrap();
     });
 
     order.create("order-1".into(), "alice".into()).unwrap();
@@ -75,10 +77,10 @@ fn emit_queued_fires_correct_event_types() {
 
     rx_created
         .recv_timeout(Duration::from_secs(1))
-        .expect("OrderCreated callback never fired");
+        .expect("order.initialized callback never fired");
     rx_confirmed
         .recv_timeout(Duration::from_secs(1))
-        .expect("OrderConfirmed callback never fired");
+        .expect("order.confirmed callback never fired");
 }
 
 // =============================================================================
@@ -93,7 +95,7 @@ fn enqueue_guard_prevents_event_when_condition_false() {
     // Try to ship without confirming first — guard blocks it
     order.ship().unwrap();
 
-    // Only OrderCreated should be queued, not OrderShipped
+    // Only order.initialized should be queued, not order.shipped
     assert_eq!(order.emitter.queued_len(), 1);
     assert_eq!(order.status, "created");
 }
@@ -151,7 +153,7 @@ fn custom_field_emit_fires_listener() {
     let (tx, rx) = mpsc::channel();
     notifier
         .my_emitter
-        .on("NotificationSent", move |_: String| {
+        .on("notification.sent", move |_: String| {
             tx.send(()).unwrap();
         });
 
@@ -203,7 +205,7 @@ fn digest_and_enqueue_guards_stay_in_sync() {
     order.confirm().unwrap();
     order.confirm().unwrap();
 
-    assert_eq!(order.entity.version(), 2); // OrderCreated + OrderConfirmed
+    assert_eq!(order.entity.version(), 2); // order.initialized + order.confirmed
     assert_eq!(order.emitter.queued_len(), 2);
 }
 
@@ -230,14 +232,14 @@ async fn enqueue_events_survive_commit_and_emit_after() {
     assert_eq!(order.emitter.queued_len(), 2);
 
     let (tx, rx) = mpsc::channel();
-    order.emitter.on("OrderCreated", move |_: String| {
+    order.emitter.on("order.initialized", move |_: String| {
         tx.send(()).unwrap();
     });
 
     order.emitter.emit_queued();
 
     rx.recv_timeout(Duration::from_secs(1))
-        .expect("OrderCreated callback never fired after commit");
+        .expect("order.initialized callback never fired after commit");
     assert_eq!(order.emitter.queued_len(), 0);
 }
 
@@ -282,7 +284,7 @@ fn enqueue_only_emits_correctly() {
     let mut eph = Ephemeral::default();
 
     let (tx, rx) = mpsc::channel();
-    eph.emitter.on("ValueSet", move |payload: String| {
+    eph.emitter.on("value.set", move |payload: String| {
         tx.send(payload).unwrap();
     });
 

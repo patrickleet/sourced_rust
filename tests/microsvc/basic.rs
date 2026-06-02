@@ -9,7 +9,7 @@ use crate::models::counter::{Counter, CreateCounter, DecrementCounter, Increment
 #[tokio::test]
 async fn full_lifecycle() {
     let service = Service::with_repo(HashMapRepository::new())
-        .command("counter.create")
+        .command("counter.initialize")
         .handle(|ctx: &Context<HashMapRepository>| {
             let input = ctx.input::<CreateCounter>();
             let counter_repo = ctx.repo().clone().async_aggregate::<Counter>();
@@ -54,7 +54,7 @@ async fn full_lifecycle() {
 
     // Create
     let result = service
-        .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
         .await
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));

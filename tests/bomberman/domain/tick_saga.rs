@@ -24,19 +24,19 @@ pub struct TickSaga {
 
 #[sourced(entity)]
 impl TickSaga {
-    #[event("TickStarted")]
+    #[event("started")]
     pub fn start(&mut self, saga_id: String, game_id: String, bombs_ticked: usize) {
         self.entity.set_id(&saga_id);
         self.game_id = game_id;
         self.bombs_ticked = bombs_ticked;
     }
 
-    #[event("DetonationRecorded")]
+    #[event("detonation_recorded")]
     pub fn record_detonation(&mut self, detonation: Detonation) {
         self.detonations.push(detonation);
     }
 
-    #[event("DamageRecorded")]
+    #[event("damage_recorded")]
     pub fn record_damage(
         &mut self,
         blocks_destroyed: Vec<(i32, i32)>,
@@ -48,12 +48,12 @@ impl TickSaga {
         self.chain_detonations.extend(chain_detonations);
     }
 
-    #[event("DissipationRecorded")]
+    #[event("dissipation_recorded")]
     pub fn record_dissipation(&mut self, explosion_id: String) {
         self.explosions_dissipated.push(explosion_id);
     }
 
-    #[event("TickCompleted")]
+    #[event("completed")]
     pub fn complete(&mut self, game_over: bool, winner: Option<String>) {
         self.game_over = game_over;
         self.winner = winner;

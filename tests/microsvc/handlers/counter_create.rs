@@ -1,4 +1,4 @@
-//! Handler: counter.create
+//! Handler: counter.initialize
 //!
 //! Follows the microsvc handler convention:
 //! - `COMMAND` — the command name this handler responds to
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use super::Repo;
 use crate::models::counter::Counter;
 
-pub const COMMAND: &str = "counter.create";
+pub const COMMAND: &str = "counter.initialize";
 
 #[derive(Deserialize)]
 pub struct Input {
@@ -37,7 +37,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let message = OutboxMessage::domain_event("CounterCreated", &counter)?;
+    let message = OutboxMessage::domain_event("counter.initialized", &counter)?;
 
     ctx.repo().outbox(message).commit(&mut counter).await?;
 

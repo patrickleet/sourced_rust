@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::Repo;
 
-pub const COMMAND: &str = "whoami";
+pub const COMMAND: &str = "session.identify";
 
 pub fn guard(_ctx: &Context<Repo>) -> bool {
     true

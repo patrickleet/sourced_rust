@@ -13,7 +13,7 @@ pub struct Bomb {
 
 #[sourced(entity)]
 impl Bomb {
-    #[event("BombCreated")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String, owner_id: String, x: i32, y: i32, blast_radius: u8) {
         self.entity.set_id(&id);
         self.owner_id = owner_id;
@@ -24,12 +24,12 @@ impl Bomb {
         self.exploded = false;
     }
 
-    #[event("BombTicked", when = !self.exploded && self.ticks_remaining > 0)]
+    #[event("ticked", when = !self.exploded && self.ticks_remaining > 0)]
     pub fn tick(&mut self) {
         self.ticks_remaining -= 1;
     }
 
-    #[event("BombExploded", when = !self.exploded)]
+    #[event("exploded", when = !self.exploded)]
     pub fn explode(&mut self) {
         self.exploded = true;
     }

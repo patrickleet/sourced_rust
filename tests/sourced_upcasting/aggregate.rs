@@ -18,14 +18,14 @@ pub struct TodoV1 {
 
 #[sourced(entity)]
 impl TodoV1 {
-    #[event("Initialized")]
+    #[event("initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
@@ -49,14 +49,14 @@ pub struct TodoV2 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, Self::upcast_initialized_v1_v2),
+    ("initialized", 1 => 2, InitializedV1 => InitializedV2, Self::upcast_initialized_v1_v2),
 ))]
 impl TodoV2 {
     pub fn upcast_initialized_v1_v2(payload: InitializedV1) -> InitializedV2 {
         upcast_initialized_v1_v2(payload)
     }
 
-    #[event("Initialized", version = 2)]
+    #[event("initialized", version = 2)]
     pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
         self.user_id = user_id;
@@ -64,7 +64,7 @@ impl TodoV2 {
         self.priority = priority;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
@@ -89,11 +89,11 @@ pub struct TodoV3 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
-    ("Initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
+    ("initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
 ))]
 impl TodoV3 {
-    #[event("Initialized", version = 3)]
+    #[event("initialized", version = 3)]
     pub fn initialize(
         &mut self,
         id: String,
@@ -109,7 +109,7 @@ impl TodoV3 {
         self.due_date = due_date;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }

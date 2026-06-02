@@ -53,14 +53,14 @@ struct Todo {
 
 #[sourced(entity, aggregate_type = "todo")]
 impl Todo {
-    #[event("Initialized")]
+    #[event("initialized")]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -92,7 +92,7 @@ use distributed::OutboxMessage;
 
 use super::Repo; // an AsyncAggregateRepository<_, Todo> alias
 
-pub const COMMAND: &str = "todo.create";
+pub const COMMAND: &str = "todo.initialize";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["id", "user_id", "task"])
@@ -106,7 +106,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     // Publish a fact for other services. The outbox row commits atomically
     // with the aggregate's events.
-    let message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+    let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
     ctx.repo().outbox(message).commit(&mut todo).await?;
 
     Ok(json!({ "id": input.id }))
@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Direct, in-process dispatch
     service
         .dispatch(
-            "todo.create",
+            "todo.initialize",
             json!({ "id": "todo-1", "user_id": "alice", "task": "Ship it" }),
             Session::new(),
         )
@@ -270,7 +270,7 @@ All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-tas
 
 ## The `#[sourced]` Macro
 
-The `#[sourced]` attribute macro is the recommended way to define event-sourced aggregates. Place it on an impl block and annotate command methods with `#[event("Name")]`. It replaces both `#[digest]` and `aggregate!()`, and auto-generates a typed event enum plus the `Aggregate` impl.
+The `#[sourced]` attribute macro is the recommended way to define event-sourced aggregates. Place it on an impl block and annotate command methods with lowercase, past-tense aggregate event names such as `#[event("initialized")]`. It replaces both `#[digest]` and `aggregate!()`, and auto-generates a typed event enum plus the `Aggregate` impl.
 
 Event methods are rewritten to return `SourcedResult`, even when the source method omits an explicit return type. Call them with `?` in application code so serialization and event-recording failures are propagated.
 
@@ -289,14 +289,14 @@ struct Todo {
 
 #[sourced(entity)]
 impl Todo {
-    #[event("Initialized")]
+    #[event("initialized")]
     fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -376,15 +376,15 @@ fn upcast_init_v1_v2((id, task): InitV1) -> InitV2 {
 }
 
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
+    ("initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ))]
 impl TodoV2 {
-    #[event("Initialized", version = 2)]
+    #[event("initialized", version = 2)]
     fn initialize(&mut self, id: String, task: String, priority: u8) {
         // creates events at version 2
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -396,7 +396,7 @@ impl TodoV2 {
 ```rust
 #[sourced(my_entity)]
 impl MyAggregate {
-    #[event("Created")]
+    #[event("initialized")]
     fn create(&mut self, name: String) {
         // uses self.my_entity
     }
@@ -420,13 +420,13 @@ struct Order {
 
 #[sourced(entity, enqueue)]
 impl Order {
-    #[event("OrderCreated")]
+    #[event("initialized")]
     fn create(&mut self, order_id: String, customer: String) {
         self.entity.set_id(&order_id);
         self.status = "created".into();
     }
 
-    #[event("OrderShipped", when = self.status == "created")]
+    #[event("shipped", when = self.status == "created")]
     fn ship(&mut self) {
         self.status = "shipped".into();
     }
@@ -438,7 +438,7 @@ impl Order {
 ```rust
 #[sourced(entity, enqueue(my_emitter))]
 impl Notifier {
-    #[event("NotificationSent")]
+    #[event("sent")]
     fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;
@@ -454,7 +454,7 @@ The `#[digest]` and `aggregate!()` macros are the lower-level building blocks th
 
 ```rust
 // Basic — captures function parameters
-#[digest("Initialized")]
+#[digest("initialized")]
 fn initialize(&mut self, id: String, user_id: String, task: String) {
     self.entity.set_id(&id);
     self.user_id = user_id;
@@ -462,17 +462,17 @@ fn initialize(&mut self, id: String, user_id: String, task: String) {
 }
 
 // Guard conditions — only emit when the condition is true
-#[digest("Completed", when = !self.completed)]
+#[digest("completed", when = !self.completed)]
 fn complete(&mut self) {
     self.completed = true;
 }
 
 // Versioned events
-#[digest("Initialized", version = 2)]
+#[digest("initialized", version = 2)]
 fn initialize(&mut self, id: String, task: String, priority: u8) { /* ... */ }
 
 // Custom entity field
-#[digest(my_entity, "Created")]
+#[digest(my_entity, "initialized")]
 fn create(&mut self, name: String) { /* uses self.my_entity */ }
 ```
 
@@ -482,8 +482,8 @@ Generates the `Aggregate` trait implementation with replay logic:
 
 ```rust
 aggregate!(Todo, entity, aggregate_type = "todo" {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
+    "initialized"(id, user_id, task) => initialize,
+    "completed"() => complete(),
 });
 ```
 
@@ -498,10 +498,10 @@ fn upcast_initialized_v1_v2((id, task): InitV1) -> InitV2 {
 }
 
 aggregate!(Todo, entity {
-    "Initialized"(id, task, priority) => initialize,
-    "Completed"() => complete(),
+    "initialized"(id, task, priority) => initialize,
+    "completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_initialized_v1_v2),
+    ("initialized", 1 => 2, InitV1 => InitV2, upcast_initialized_v1_v2),
 ]);
 ```
 
@@ -534,7 +534,7 @@ Use `encode_for_entity` to create outbox messages that automatically inherit the
 ```rust
 let outbox = OutboxMessage::encode_for_entity(
     format!("{}:created", order.entity.id()),
-    "OrderCreated",
+    "order.initialized",
     &payload,
     &order.entity,  // metadata propagates automatically
 )?;
@@ -591,14 +591,14 @@ struct OrderSaga {
 
 #[sourced(entity, enqueue)]
 impl OrderSaga {
-    #[event("OrderStarted")]
+    #[event("started")]
     fn start(&mut self, order_id: String) {
         self.entity.set_id(&order_id);
         self.order_id = order_id;
         self.status = "started".into();
     }
 
-    #[event("StepCompleted", when = self.status == "started")]
+    #[event("completed", when = self.status == "started")]
     fn complete_step(&mut self) {
         self.status = "completed".into();
     }
@@ -626,7 +626,7 @@ saga.emitter.emit_queued();
 let shared_state = Arc::new(Mutex::new(Vec::new()));
 let state = Arc::clone(&shared_state);
 
-saga.emitter.on("OrderStarted", move |payload: String| {
+saga.emitter.on("started", move |payload: String| {
     if let Ok(mut events) = state.lock() {
         events.push(payload);
     }
@@ -715,7 +715,7 @@ todo.entity.set_correlation_id("req-abc");
 todo.initialize("todo-1".into(), "user-1".into(), "Buy milk".into())?;
 
 // Derives id, snapshot payload, and metadata from the aggregate automatically
-let message = OutboxMessage::domain_event("TodoInitialized", &todo)?;
+let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
 
 // Commit both in one repository transaction
 repo.outbox(message).commit(&mut todo).await?;
@@ -726,7 +726,7 @@ For custom payloads or IDs, use `encode_for_entity`:
 ```rust
 let message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
-    "TodoInitialized",
+    "todo.initialized",
     &custom_payload,
     &todo.entity,
 )?;
@@ -839,7 +839,7 @@ use serde_json::json;
 
 let service = Arc::new(
     Service::with_repo(HashMapRepository::new().queued_async().async_aggregate::<Counter>())
-        .command("counter.create")
+        .command("counter.initialize")
         .handle(|ctx: &Context<Repo>| {
             let input = ctx.input::<CreateCounter>();
             async move {
@@ -866,7 +866,7 @@ let service = Arc::new(
 
 // Direct dispatch
 let _result = service
-    .dispatch("counter.create", json!({ "id": "c1" }), Session::new())
+    .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
     .await?;
 ```
 
@@ -897,7 +897,7 @@ use distributed::OutboxMessage;
 use super::Repo;
 use crate::models::counter::Counter;
 
-pub const COMMAND: &str = "counter.create";
+pub const COMMAND: &str = "counter.initialize";
 
 #[derive(Deserialize)]
 struct Input { id: String }
@@ -916,7 +916,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.create(input.id.clone())?;
 
-    let message = OutboxMessage::domain_event("CounterCreated", &counter)?;
+    let message = OutboxMessage::domain_event("counter.initialized", &counter)?;
     ctx.repo().outbox(message).commit(&mut counter).await?;
 
     Ok(json!({ "id": input.id }))
@@ -955,10 +955,10 @@ Routes:
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/:command` | Dispatch a command. Body = JSON input, headers = session variables. |
-| `GET` | `/health` | Health check: `{ "ok": true, "commands": ["counter.create", ...] }` |
+| `GET` | `/health` | Health check: `{ "ok": true, "commands": ["counter.initialize", ...] }` |
 
 ```bash
-curl -X POST http://localhost:3000/counter.create \
+curl -X POST http://localhost:3000/counter.initialize \
   -H 'Content-Type: application/json' \
   -H 'x-hasura-user-id: user-42' \
   -d '{"id": "c1"}'
@@ -1182,17 +1182,17 @@ With `#[sourced]`, add upcasters directly in the attribute:
 
 ```rust
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
+    ("initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ))]
 impl Todo {
-    #[event("Initialized", version = 2)]
+    #[event("initialized", version = 2)]
     fn initialize(&mut self, id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
         self.task = task;
         self.priority = priority;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     fn complete(&mut self) {
         self.completed = true;
     }
@@ -1207,8 +1207,8 @@ Upcasters chain automatically. Each transforms one version to the next (v1→v2�
 
 ```rust
 #[sourced(entity, upcasters(
-    ("Initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
-    ("Initialized", 2 => 3, InitV2 => InitV3, upcast_init_v2_v3),
+    ("initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
+    ("initialized", 2 => 3, InitV2 => InitV3, upcast_init_v2_v3),
 ))]
 impl Todo { /* ... */ }
 ```
@@ -1261,7 +1261,8 @@ compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tes
 cargo test                  # default features (`emitter`)
 cargo test --features http
 cargo test --features grpc
-cargo test --all-features   # full transport and integration coverage
+make test                 # starts compose and runs full local coverage
+cargo test --all-features   # all features; broker tests skip without env vars
 ```
 
 ### Real-Broker Integration Tests
@@ -1277,7 +1278,7 @@ NATS_URL=nats://localhost:4222 \
   cargo test --test nats_transport --features nats
 AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
   cargo test --test rabbitmq_transport --features rabbitmq
-KAFKA_BROKERS=localhost:9092 \
+KAFKA_BROKERS=127.0.0.1:9092 \
   cargo test --test kafka_transport --features kafka
 ```
 

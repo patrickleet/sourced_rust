@@ -45,7 +45,7 @@ pub struct CompleteOrderMsg {
 // === Order Service → Saga ===
 
 #[derive(Serialize, Deserialize)]
-pub struct OrderCreatedMsg {
+pub struct OrderInitializedMsg {
     pub saga_id: String,
     pub order_id: String,
 }

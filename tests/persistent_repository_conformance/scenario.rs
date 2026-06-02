@@ -225,11 +225,11 @@ where
         StreamIdentity::new(Seat::aggregate_type(), &id).expect("identity should be valid");
     let mut first = Entity::with_id(&id);
     first
-        .digest_empty("First")
+        .digest_empty("first_recorded")
         .expect("first event should encode");
     let mut second = Entity::with_id(&id);
     second
-        .digest_empty("Second")
+        .digest_empty("second_recorded")
         .expect("second event should encode");
 
     let err = repo
@@ -294,7 +294,7 @@ where
         StreamIdentity::new(Seat::aggregate_type(), &id).expect("identity should be valid");
     let mut entity = Entity::with_id(&id);
     entity
-        .digest_empty("BadCodec")
+        .digest_empty("bad_codec_recorded")
         .expect("event should encode before codec mutation");
 
     let mut value = serde_json::to_value(&entity).expect("entity should serialize");

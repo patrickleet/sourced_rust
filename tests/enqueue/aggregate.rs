@@ -25,8 +25,8 @@ impl Default for Order {
 }
 
 impl Order {
-    #[digest("OrderCreated")]
-    #[enqueue("OrderCreated")]
+    #[digest("initialized")]
+    #[enqueue("order.initialized")]
     pub fn create(&mut self, order_id: String, customer: String) {
         self.entity.set_id(&order_id);
         self.order_id = order_id;
@@ -34,23 +34,23 @@ impl Order {
         self.status = "created".into();
     }
 
-    #[digest("OrderConfirmed", when = self.status == "created")]
-    #[enqueue("OrderConfirmed", when = self.status == "created")]
+    #[digest("confirmed", when = self.status == "created")]
+    #[enqueue("order.confirmed", when = self.status == "created")]
     pub fn confirm(&mut self) {
         self.status = "confirmed".into();
     }
 
-    #[digest("OrderShipped", when = self.status == "confirmed")]
-    #[enqueue("OrderShipped", when = self.status == "confirmed")]
+    #[digest("shipped", when = self.status == "confirmed")]
+    #[enqueue("order.shipped", when = self.status == "confirmed")]
     pub fn ship(&mut self) {
         self.status = "shipped".into();
     }
 }
 
 distributed::aggregate!(Order, entity {
-    "OrderCreated"(order_id, customer) => create,
-    "OrderConfirmed"() => confirm(),
-    "OrderShipped"() => ship(),
+    "initialized"(order_id, customer) => create,
+    "confirmed"() => confirm(),
+    "shipped"() => ship(),
 });
 
 /// An aggregate using #[enqueue] with a custom emitter field name.
@@ -71,8 +71,8 @@ impl Default for Notifier {
 }
 
 impl Notifier {
-    #[digest("NotificationSent")]
-    #[enqueue(my_emitter, "NotificationSent")]
+    #[digest("sent")]
+    #[enqueue(my_emitter, "notification.sent")]
     pub fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;
@@ -80,7 +80,7 @@ impl Notifier {
 }
 
 distributed::aggregate!(Notifier, entity {
-    "NotificationSent"(id, message) => send,
+    "sent"(id, message) => send,
 });
 
 /// An aggregate using only #[enqueue] without #[digest] — valid but uncommon.
@@ -102,17 +102,17 @@ impl Default for Ephemeral {
 }
 
 impl Ephemeral {
-    #[enqueue("ValueSet")]
+    #[enqueue("value.set")]
     pub fn set_value(&mut self, value: String) {
         self.value = value;
     }
 
-    #[enqueue("ValueCleared", when = !self.value.is_empty())]
+    #[enqueue("value.cleared", when = !self.value.is_empty())]
     pub fn clear(&mut self) {
         self.value = String::new();
     }
 
-    #[enqueue("ValueChecked")]
+    #[enqueue("value.checked")]
     pub fn check_with_tail_expression(&mut self) {
         self.tail_check()?
     }

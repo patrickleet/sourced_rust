@@ -16,7 +16,7 @@ pub struct GameMap {
 
 #[sourced(entity)]
 impl GameMap {
-    #[event("MapCreated")]
+    #[event("initialized")]
     pub fn create(
         &mut self,
         id: String,
@@ -33,7 +33,7 @@ impl GameMap {
         self.power_ups = vec![];
     }
 
-    #[event("BlockDestroyed", when = self.tile_at(x, y) == &Tile::Block)]
+    #[event("block_destroyed", when = self.tile_at(x, y) == &Tile::Block)]
     pub fn destroy_block(&mut self, x: i32, y: i32) {
         self.tiles[y as usize][x as usize] = Tile::Floor;
         // 50% chance to reveal a power-up based on position parity
@@ -58,7 +58,7 @@ impl GameMap {
         Ok(Some(power_up))
     }
 
-    #[event("PowerUpCollected")]
+    #[event("power_up_collected")]
     fn record_power_up_collected(&mut self, x: i32, y: i32, power_up: PowerUp) {
         if let Some(idx) = self
             .power_ups
@@ -162,7 +162,7 @@ mod tests {
 
         assert_eq!(collected, Some(PowerUp::BombUp));
         assert_eq!(map.entity.events().len(), 1);
-        assert_eq!(map.entity.events()[0].event_name, "PowerUpCollected");
+        assert_eq!(map.entity.events()[0].event_name, "power_up_collected");
         assert_eq!(
             map.entity.events()[0]
                 .decode::<(i32, i32, PowerUp)>()

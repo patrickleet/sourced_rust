@@ -58,7 +58,7 @@ fn unique(prefix: &str) -> String {
 #[tokio::test]
 async fn publish_then_consume_round_trips_through_kafka() {
     let Some(brokers) = brokers() else { return };
-    let topic = unique("evt");
+    let topic = unique("order.initialized");
     let group = unique("group");
 
     // Produce first so the topic auto-creates; then a fresh group reads from
@@ -102,7 +102,7 @@ async fn publish_then_consume_round_trips_through_kafka() {
 #[tokio::test]
 async fn message_id_and_metadata_survive_the_round_trip() {
     let Some(brokers) = brokers() else { return };
-    let topic = unique("evt");
+    let topic = unique("order.initialized");
     let group = unique("group");
 
     let publisher = KafkaPublisher::connect(&brokers).await.expect("producer");
@@ -164,7 +164,8 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
     for i in 0..total {
         producer
             .send_message(
-                Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+                Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
+                    .with_id(format!("c{i}")),
             )
             .await
             .expect("send command");
@@ -177,7 +178,7 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
         .unwrap()
         .with_fetch_timeout(Duration::from_secs(10))
         .listen(
-            recording_for("work", MessageKind::Command, first.clone()),
+            recording_for("order.initialize", MessageKind::Command, first.clone()),
             RunOptions::idempotent(),
         )
         .await
@@ -195,7 +196,7 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
         .unwrap()
         .with_fetch_timeout(Duration::from_secs(6))
         .listen(
-            recording_for("work", MessageKind::Command, second.clone()),
+            recording_for("order.initialize", MessageKind::Command, second.clone()),
             RunOptions::idempotent(),
         )
         .await
@@ -221,7 +222,8 @@ async fn bus_subscribe_fans_out_across_groups() {
     for i in 0..total {
         producer
             .publish_message(
-                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
             )
             .await
             .expect("publish event");
@@ -235,7 +237,7 @@ async fn bus_subscribe_fans_out_across_groups() {
             .unwrap()
             .with_fetch_timeout(Duration::from_secs(10))
             .subscribe(
-                recording_for("evt", MessageKind::Event, rec.clone()),
+                recording_for("order.initialized", MessageKind::Event, rec.clone()),
                 RunOptions::idempotent(),
             )
             .await

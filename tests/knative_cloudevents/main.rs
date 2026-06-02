@@ -19,23 +19,23 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let h = handled.clone();
     let service = Arc::new(
         Service::new(())
-            .event("order.created")
+            .event("order.initialized")
             .handle(move |ctx: &Context<()>| {
                 h.lock()
                     .unwrap()
                     .push(ctx.message().id().unwrap_or_default().to_string());
                 async move { Ok(json!({"ok": true})) }
             })
-            .event("flaky")
+            .event("order.temporarily_failed")
             .handle(|_ctx: &Context<()>| async move {
                 Err(HandlerError::Repository(
                     distributed::RepositoryError::Model("transient".into()),
                 ))
             })
-            .event("bad")
-            .handle(
-                |_ctx: &Context<()>| async move { Err(HandlerError::Rejected("permanent".into())) },
-            ),
+            .event("order.rejected")
+            .handle(|_ctx: &Context<()>| async move {
+                Err(HandlerError::Rejected("order.permanently_failed".into()))
+            }),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -54,7 +54,7 @@ async fn binary_mode_success_returns_200_after_handler() {
     let resp = client
         .post(&url)
         .header("ce-id", "evt-1")
-        .header("ce-type", "order.created")
+        .header("ce-type", "order.initialized")
         .header("ce-source", "/orders")
         .header("content-type", "application/json")
         .body(r#"{"order":"o1"}"#)
@@ -72,7 +72,7 @@ async fn structured_mode_success_returns_200() {
     let event = json!({
         "specversion": "1.0",
         "id": "evt-2",
-        "type": "order.created",
+        "type": "order.initialized",
         "source": "/orders",
         "datacontenttype": "application/json",
         "data": {"order": "o2"},
@@ -94,7 +94,7 @@ async fn retryable_failure_returns_503() {
     let resp = reqwest::Client::new()
         .post(&url)
         .header("ce-id", "evt-3")
-        .header("ce-type", "flaky")
+        .header("ce-type", "order.temporarily_failed")
         .body("{}")
         .send()
         .await
@@ -109,7 +109,7 @@ async fn permanent_failure_returns_422() {
     let resp = reqwest::Client::new()
         .post(&url)
         .header("ce-id", "evt-4")
-        .header("ce-type", "bad")
+        .header("ce-type", "order.rejected")
         .body("{}")
         .send()
         .await
@@ -137,7 +137,7 @@ async fn missing_id_returns_400() {
     let (url, _) = spawn_server().await;
     let resp = reqwest::Client::new()
         .post(&url)
-        .header("ce-type", "order.created")
+        .header("ce-type", "order.initialized")
         .body("{}")
         .send()
         .await
@@ -156,7 +156,7 @@ async fn knative_bus_publish_round_trips_through_router() {
     let bus = KnativeBus::new(url.trim_end_matches('/'), "", "orders-svc", "", "");
     bus.publish_message(
         Message::new(
-            "order.created",
+            "order.initialized",
             MessageKind::Event,
             br#"{"order":"o9"}"#.to_vec(),
         )
@@ -176,7 +176,7 @@ async fn knative_bus_publish_without_id_is_rejected() {
     let bus = KnativeBus::new("http://127.0.0.1:1", "", "orders-svc", "", "");
     let err = bus
         .publish_message(Message::new(
-            "order.created",
+            "order.initialized",
             MessageKind::Event,
             b"{}".to_vec(),
         ))

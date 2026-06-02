@@ -195,7 +195,7 @@ where
             .find(|attribution| attribution.player_id.as_str() == killed_id.as_str());
         let outbox = OutboxMessage::create(
             format!("player-killed:{}", killed_id),
-            "PlayerKilled",
+            "player.killed",
             serde_json::to_vec(&serde_json::json!({
                 "player_id": killed_id,
                 "killed_by_bomb": attribution

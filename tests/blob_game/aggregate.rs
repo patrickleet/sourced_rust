@@ -192,7 +192,7 @@ impl BlobGame {
         }
     }
 
-    #[event("Initialized")]
+    #[event("initialized")]
     pub fn initialize(
         &mut self,
         id: String,
@@ -210,7 +210,7 @@ impl BlobGame {
         }
     }
 
-    #[event("NextLevelStarted", when = self.current_level_completed && !self.player_dead)]
+    #[event("next_level_started", when = self.current_level_completed && !self.player_dead)]
     pub fn start_next_level(&mut self, map: Vec<Vec<TileState>>) {
         self.current_level += 1;
         let level = Level {
@@ -222,7 +222,7 @@ impl BlobGame {
         self.current_level_completed = false;
     }
 
-    #[event("MovedUp", when = self.can_move_up())]
+    #[event("moved_up", when = self.can_move_up())]
     pub fn up(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -233,7 +233,7 @@ impl BlobGame {
         }
     }
 
-    #[event("MovedDown", when = self.can_move_down())]
+    #[event("moved_down", when = self.can_move_down())]
     pub fn down(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -244,7 +244,7 @@ impl BlobGame {
         }
     }
 
-    #[event("MovedLeft", when = self.can_move_left())]
+    #[event("moved_left", when = self.can_move_left())]
     pub fn left(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {
@@ -255,7 +255,7 @@ impl BlobGame {
         }
     }
 
-    #[event("MovedRight", when = self.can_move_right())]
+    #[event("moved_right", when = self.can_move_right())]
     pub fn right(&mut self, time: Option<u64>) {
         if let Some(pos) = self.player_position() {
             let new_pos = Coordinate {

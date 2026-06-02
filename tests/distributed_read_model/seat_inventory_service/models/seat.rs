@@ -15,7 +15,7 @@ pub struct Seat {
 
 #[sourced(entity, aggregate_type = "seat")]
 impl Seat {
-    #[event("SeatAdded", when = !seat_id.is_empty() && !category.is_empty())]
+    #[event("added", when = !seat_id.is_empty() && !category.is_empty())]
     pub fn add(&mut self, seat_id: String, category: String) {
         self.entity.set_id(&seat_id);
         self.seat_id = seat_id;
@@ -25,7 +25,7 @@ impl Seat {
     }
 
     #[event(
-        "SeatReserved",
+        "seat.reserved",
         when = self.status == SEAT_AVAILABLE && !checkout_id.is_empty()
     )]
     pub fn reserve(&mut self, checkout_id: String) {

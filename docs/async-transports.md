@@ -168,7 +168,7 @@ DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
 NATS_URL=nats://localhost:4222   cargo test --test nats_transport --features nats
 AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
   cargo test --test rabbitmq_transport --features rabbitmq
-KAFKA_BROKERS=localhost:9092     cargo test --test kafka_transport --features kafka
+KAFKA_BROKERS=127.0.0.1:9092     cargo test --test kafka_transport --features kafka
 ```
 
 Each transport's integration binary also covers its `*Bus`: a competing-consumer

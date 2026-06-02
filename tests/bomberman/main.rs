@@ -6,7 +6,7 @@
 //! - Aggregate lifecycle: bomb created -> ticked -> exploded -> explosion expands
 //! - In-process orchestration saga (tick resolves explosions across aggregates)
 //! - Composite read model (BoardView from map + players + bombs + explosions)
-//! - Outbox events ("PlayerKilled" on death)
+//! - Outbox events ("player.killed" on death)
 //! - Guard conditions (can't move when dead, can't bomb at max)
 
 mod domain;
@@ -214,7 +214,7 @@ async fn player_killed_by_bomb() {
         .messages_by_status(OutboxMessageStatus::Pending)
         .unwrap();
     assert!(!pending.is_empty());
-    assert_eq!(pending[0].event_type, "PlayerKilled");
+    assert_eq!(pending[0].event_type, "player.killed");
 }
 
 // ============================================================================

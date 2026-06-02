@@ -62,7 +62,7 @@ fn emit_fires_listeners() {
     let mut order = Order::default();
 
     let (tx, rx) = mpsc::channel();
-    order.emitter.on("OrderCreated", move |_: String| {
+    order.emitter.on("initialized", move |_: String| {
         tx.send(()).unwrap();
     });
 
@@ -70,7 +70,7 @@ fn emit_fires_listeners() {
     order.emitter.emit_queued();
 
     rx.recv_timeout(Duration::from_secs(1))
-        .expect("OrderCreated callback never fired");
+        .expect("initialized callback never fired");
 }
 
 // =============================================================================
@@ -94,13 +94,13 @@ fn guards_stay_in_sync_between_digest_and_enqueue() {
 
 #[test]
 fn typed_event_enum_exists() {
-    let created = OrderEvent::OrderCreated {
+    let created = OrderEvent::Initialized {
         order_id: "o-1".into(),
         customer: "alice".into(),
     };
-    assert_eq!(created.event_name(), "OrderCreated");
-    assert_eq!(OrderEvent::OrderConfirmed.event_name(), "OrderConfirmed");
-    assert_eq!(OrderEvent::OrderShipped.event_name(), "OrderShipped");
+    assert_eq!(created.event_name(), "initialized");
+    assert_eq!(OrderEvent::Confirmed.event_name(), "confirmed");
+    assert_eq!(OrderEvent::Shipped.event_name(), "shipped");
 }
 
 // =============================================================================
@@ -121,11 +121,9 @@ fn custom_emitter_field_emits() {
     let mut notifier = Notifier::default();
 
     let (tx, rx) = mpsc::channel();
-    notifier
-        .my_emitter
-        .on("NotificationSent", move |_: String| {
-            tx.send(()).unwrap();
-        });
+    notifier.my_emitter.on("sent", move |_: String| {
+        tx.send(()).unwrap();
+    });
 
     notifier.send("n-1".into(), "Hello".into()).unwrap();
     notifier.my_emitter.emit_queued();
@@ -152,11 +150,11 @@ async fn custom_emitter_replay_does_not_enqueue() {
 
 #[test]
 fn custom_emitter_typed_enum() {
-    let event = NotifierEvent::NotificationSent {
+    let event = NotifierEvent::Sent {
         id: "n-1".into(),
         message: "Hello".into(),
     };
-    assert_eq!(event.event_name(), "NotificationSent");
+    assert_eq!(event.event_name(), "sent");
 }
 
 #[test]

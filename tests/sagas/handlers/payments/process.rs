@@ -1,6 +1,6 @@
 use super::*;
 
-pub const COMMAND: &str = "ProcessPayment";
+pub const COMMAND: &str = "payment.process";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id", "amount_cents"])
@@ -21,7 +21,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     let msg = json_outbox_to(
         &format!("{}-payment-succeeded", input.order_id),
-        "PaymentSucceeded",
+        "payment.succeeded",
         "saga",
         &PaymentSucceededMsg {
             saga_id: input.saga_id,

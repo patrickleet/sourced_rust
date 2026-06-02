@@ -96,7 +96,7 @@ impl OrderFulfillmentSaga {
 
     // === Saga Commands ===
 
-    #[event("SagaStarted")]
+    #[event("started")]
     pub fn start(
         &mut self,
         saga_id: String,
@@ -113,42 +113,42 @@ impl OrderFulfillmentSaga {
         self.status = SagaStatus::Started;
     }
 
-    #[event("InventoryReservationSucceeded", when = self.status == SagaStatus::Started)]
+    #[event("inventory_reservation_succeeded", when = self.status == SagaStatus::Started)]
     pub fn inventory_reserved(&mut self) {
         self.status = SagaStatus::InventoryReserved;
         self.compensation.inventory_reserved = true;
     }
 
-    #[event("PaymentSucceeded", when = self.status == SagaStatus::InventoryReserved)]
+    #[event("succeeded", when = self.status == SagaStatus::InventoryReserved)]
     pub fn payment_succeeded(&mut self) {
         self.status = SagaStatus::PaymentProcessed;
         self.compensation.payment_processed = true;
     }
 
-    #[event("SagaCompleted", when = self.status == SagaStatus::PaymentProcessed)]
+    #[event("completed", when = self.status == SagaStatus::PaymentProcessed)]
     pub fn complete(&mut self) {
         self.status = SagaStatus::Completed;
     }
 
     // === Failure and Compensation ===
 
-    #[event("StepFailed", when = !self.is_complete())]
+    #[event("step_failed", when = !self.is_complete())]
     pub fn step_failed(&mut self, step: String, reason: String) {
         self.status = SagaStatus::Compensating;
         self.failure_reason = Some(format!("{}: {}", step, reason));
     }
 
-    #[event("InventoryCompensated", when = self.needs_inventory_compensation())]
+    #[event("inventory_compensated", when = self.needs_inventory_compensation())]
     pub fn inventory_compensated(&mut self) {
         self.compensation.inventory_reserved = false;
     }
 
-    #[event("PaymentCompensated", when = self.needs_payment_compensation())]
+    #[event("payment_compensated", when = self.needs_payment_compensation())]
     pub fn payment_compensated(&mut self) {
         self.compensation.payment_processed = false;
     }
 
-    #[event("SagaFailed", when = self.status == SagaStatus::Compensating && !self.compensation.inventory_reserved && !self.compensation.payment_processed)]
+    #[event("failed", when = self.status == SagaStatus::Compensating && !self.compensation.inventory_reserved && !self.compensation.payment_processed)]
     pub fn mark_failed(&mut self) {
         self.status = SagaStatus::Failed;
     }

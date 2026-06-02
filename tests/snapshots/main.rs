@@ -15,7 +15,7 @@ struct ReplayCounter {
 
 #[sourced(entity, aggregate_type = "snapshot.replay_counter")]
 impl ReplayCounter {
-    #[event("Added")]
+    #[event("added")]
     fn add(&mut self, id: String, amount: i32) {
         if self.entity.id().is_empty() {
             self.entity.set_id(&id);

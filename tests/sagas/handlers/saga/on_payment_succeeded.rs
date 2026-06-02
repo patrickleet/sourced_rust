@@ -1,6 +1,6 @@
 use super::*;
 
-pub const EVENT: &str = "PaymentSucceeded";
+pub const EVENT: &str = "payment.succeeded";
 
 pub fn guard(ctx: &Context<Repo>) -> bool {
     ctx.has_fields(&["saga_id", "order_id"])
@@ -18,7 +18,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
     let msg = json_outbox_to(
         &format!("{}-complete-order", input.saga_id),
-        "CompleteOrder",
+        "order.complete",
         "orders",
         &CompleteOrderMsg {
             saga_id: input.saga_id.clone(),
@@ -27,5 +27,5 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     )?;
 
     ctx.repo().outbox(msg).commit(&mut saga).await?;
-    Ok(json!({ "next": "CompleteOrder" }))
+    Ok(json!({ "next": "order.complete" }))
 }

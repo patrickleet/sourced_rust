@@ -19,13 +19,13 @@ pub struct Board {
 
 #[sourced(entity)]
 impl Board {
-    #[event("BoardOpened")]
+    #[event("opened")]
     pub fn open(&mut self, id: String, name: String) {
         self.entity.set_id(&id);
         self.name = name;
     }
 
-    #[event("CardAdded")]
+    #[event("card_added")]
     pub fn add_card(
         &mut self,
         card_id: String,
@@ -45,14 +45,14 @@ impl Board {
         }
     }
 
-    #[event("CardMoved")]
+    #[event("card_moved")]
     pub fn move_card(&mut self, card_id: String, column: String) {
         if let Some(card) = self.cards.iter_mut().find(|card| card.card_id == card_id) {
             card.column = column;
         }
     }
 
-    #[event("CardRemoved")]
+    #[event("card_removed")]
     pub fn remove_card(&mut self, card_id: String) {
         self.cards.retain(|card| card.card_id != card_id);
     }

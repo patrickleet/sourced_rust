@@ -10,7 +10,7 @@
 #     cargo test --test postgres_transport --features postgres
 #   AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
 #     cargo test --test rabbitmq_transport --features rabbitmq
-#   KAFKA_BROKERS=localhost:9092 \
+#   KAFKA_BROKERS=127.0.0.1:9092 \
 #     cargo test --test kafka_transport --features kafka
 #   NATS_URL=nats://localhost:4222 \
 #     cargo test --test nats_transport --features nats
@@ -48,7 +48,7 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093

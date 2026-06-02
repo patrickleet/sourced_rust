@@ -59,7 +59,7 @@ impl Order {
         self.failure_reason.as_deref()
     }
 
-    #[event("OrderCreated")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String, customer_id: String, items: Vec<OrderItem>) {
         self.entity.set_id(&id);
         self.customer_id = customer_id;
@@ -68,22 +68,22 @@ impl Order {
         self.status = OrderStatus::Pending;
     }
 
-    #[event("InventoryReserved", when = self.status == OrderStatus::Pending)]
+    #[event("reserved", when = self.status == OrderStatus::Pending)]
     pub fn mark_inventory_reserved(&mut self) {
         self.status = OrderStatus::InventoryReserved;
     }
 
-    #[event("PaymentProcessed", when = self.status == OrderStatus::InventoryReserved)]
+    #[event("processed", when = self.status == OrderStatus::InventoryReserved)]
     pub fn mark_payment_processed(&mut self) {
         self.status = OrderStatus::PaymentProcessed;
     }
 
-    #[event("OrderCompleted", when = self.status == OrderStatus::PaymentProcessed)]
+    #[event("completed", when = self.status == OrderStatus::PaymentProcessed)]
     pub fn complete(&mut self) {
         self.status = OrderStatus::Completed;
     }
 
-    #[event("OrderCancelled", when = self.status != OrderStatus::Completed && self.status != OrderStatus::Cancelled)]
+    #[event("cancelled", when = self.status != OrderStatus::Completed && self.status != OrderStatus::Cancelled)]
     pub fn cancel(&mut self, reason: String) {
         self.status = OrderStatus::Cancelled;
         self.failure_reason = Some(reason);

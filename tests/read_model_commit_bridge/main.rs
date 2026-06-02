@@ -11,7 +11,7 @@ struct TestAggregate {
 
 #[sourced(entity)]
 impl TestAggregate {
-    #[event("Touched")]
+    #[event("touched")]
     fn touch(&mut self) {
         if self.entity.id().is_empty() {
             self.entity.set_id("agg-1");

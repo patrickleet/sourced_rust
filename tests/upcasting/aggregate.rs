@@ -19,22 +19,22 @@ pub struct TodoV1 {
 }
 
 impl TodoV1 {
-    #[digest("Initialized")]
+    #[digest("initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[digest("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
 
 distributed::aggregate!(TodoV1, entity, aggregate_type = "Todo" {
-    "Initialized"(id, user_id, task) => initialize,
-    "Completed"() => complete(),
+    "initialized"(id, user_id, task) => initialize,
+    "completed"() => complete(),
 });
 
 // =============================================================================
@@ -56,7 +56,7 @@ pub struct TodoV2 {
 }
 
 impl TodoV2 {
-    #[digest("Initialized", version = 2)]
+    #[digest("initialized", version = 2)]
     pub fn initialize(&mut self, id: String, user_id: String, task: String, priority: u8) {
         self.entity.set_id(&id);
         self.user_id = user_id;
@@ -64,17 +64,17 @@ impl TodoV2 {
         self.priority = priority;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[digest("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
 
 distributed::aggregate!(TodoV2, entity, aggregate_type = "Todo" {
-    "Initialized"(id, user_id, task, priority) => initialize,
-    "Completed"() => complete(),
+    "initialized"(id, user_id, task, priority) => initialize,
+    "completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
 ]);
 
 // =============================================================================
@@ -97,7 +97,7 @@ pub struct TodoV3 {
 }
 
 impl TodoV3 {
-    #[digest("Initialized", version = 3)]
+    #[digest("initialized", version = 3)]
     pub fn initialize(
         &mut self,
         id: String,
@@ -113,18 +113,18 @@ impl TodoV3 {
         self.due_date = due_date;
     }
 
-    #[digest("Completed", when = !self.completed)]
+    #[digest("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
 
 distributed::aggregate!(TodoV3, entity, aggregate_type = "Todo" {
-    "Initialized"(id, user_id, task, priority, due_date) => initialize,
-    "Completed"() => complete(),
+    "initialized"(id, user_id, task, priority, due_date) => initialize,
+    "completed"() => complete(),
 } upcasters [
-    ("Initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
-    ("Initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
+    ("initialized", 1 => 2, InitializedV1 => InitializedV2, upcast_initialized_v1_v2),
+    ("initialized", 2 => 3, InitializedV2 => InitializedV3, upcast_initialized_v2_v3),
 ]);
 
 // =============================================================================

@@ -36,7 +36,7 @@ async fn dispatches_from_queue() {
     let bus = InMemoryBus::new();
     let service = counter_service();
 
-    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+    bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
         .await
         .expect("create should enqueue");
     bus.send_message(command(
@@ -69,14 +69,18 @@ async fn tolerates_handler_failures_and_keeps_processing() {
     // errors before committing, so re-reading it would block.)
     bus.send_message(command(
         "counter.increment",
-        "bad",
+        "counter.rejected",
         r#"{"id":"nonexistent","amount":1}"#,
     ))
     .await
     .expect("bad increment should enqueue");
-    bus.send_message(command("counter.create", "good-create", r#"{"id":"c2"}"#))
-        .await
-        .expect("create should enqueue");
+    bus.send_message(command(
+        "counter.initialize",
+        "good-create",
+        r#"{"id":"c2"}"#,
+    ))
+    .await
+    .expect("create should enqueue");
     bus.send_message(command(
         "counter.increment",
         "good-inc",
@@ -101,7 +105,7 @@ async fn coexists_with_direct_dispatch() {
     let service = counter_service();
 
     // c1 created via the bus.
-    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+    bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
         .await
         .expect("create should enqueue");
     bus.listen(service.clone(), RunOptions::idempotent())
@@ -110,7 +114,7 @@ async fn coexists_with_direct_dispatch() {
 
     // c2 created via direct dispatch on the same service.
     service
-        .dispatch("counter.create", json!({ "id": "c2" }), Session::new())
+        .dispatch("counter.initialize", json!({ "id": "c2" }), Session::new())
         .await
         .expect("direct dispatch should create c2");
 
@@ -127,9 +131,11 @@ async fn metadata_becomes_session() {
 
     // `whoami` reads `ctx.user_id()`, which the runner derives from the message
     // metadata (`message_to_session` lowercases keys into session variables).
-    bus.send_message(command("whoami", "cmd-1", "{}").with_metadata("x-hasura-user-id", "user-42"))
-        .await
-        .expect("whoami should enqueue");
+    bus.send_message(
+        command("session.identify", "cmd-1", "{}").with_metadata("x-hasura-user-id", "user-42"),
+    )
+    .await
+    .expect("whoami should enqueue");
 
     // Stop on permanent failure so a missing session user would surface as Err;
     // `whoami` succeeding proves the metadata became the session.
@@ -142,7 +148,7 @@ async fn metadata_becomes_session() {
 
     // Negative control: without metadata, whoami has no user (permanent
     // Unauthorized) and the Stop policy surfaces the failure.
-    bus.send_message(command("whoami", "cmd-2", "{}"))
+    bus.send_message(command("session.identify", "cmd-2", "{}"))
         .await
         .expect("whoami should enqueue");
     let result = bus
@@ -172,9 +178,9 @@ async fn multiple_services_on_different_queues() {
     ));
 
     // Each service drains only its own command queue from the shared bus, so the
-    // two never compete: service_a takes `counter.create`, service_b takes
+    // two never compete: service_a takes `counter.initialize`, service_b takes
     // `counter.increment`.
-    bus.send_message(command("counter.create", "cmd-1", r#"{"id":"c1"}"#))
+    bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
         .await
         .expect("create should enqueue");
     bus.listen(service_a.clone(), RunOptions::idempotent())

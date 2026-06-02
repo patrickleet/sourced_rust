@@ -14,7 +14,7 @@ pub struct CheckoutSaga {
 
 #[sourced(entity, aggregate_type = "conformance.checkout_saga")]
 impl CheckoutSaga {
-    #[event("CheckoutSagaStarted", when = !checkout_id.is_empty() && !seat_id.is_empty())]
+    #[event("started", when = !checkout_id.is_empty() && !seat_id.is_empty())]
     pub fn start(&mut self, checkout_id: String, seat_id: String, seat_category: String) {
         self.entity.set_id(&checkout_id);
         self.checkout_id = checkout_id;
@@ -24,7 +24,7 @@ impl CheckoutSaga {
     }
 
     #[event(
-        "CheckoutSagaSeatReservationCompleted",
+        "checkout_saga.seat_reservation_completed",
         when = self.status == CHECKOUT_STARTED_STATUS
             && self.entity.id() == checkout_id.as_str()
             && (self.seat_id.is_empty() || self.seat_id == seat_id)

@@ -227,9 +227,9 @@ fn domain_event_derives_id_and_payload() {
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
         .unwrap();
 
-    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
-    assert_eq!(outbox.id(), "t1:TodoInitialized:1");
-    assert_eq!(outbox.event_type, "TodoInitialized");
+    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
+    assert_eq!(outbox.id(), "t1:todo.initialized:1");
+    assert_eq!(outbox.event_type, "todo.initialized");
 
     let decoded: TodoSnapshot = outbox.decode().unwrap();
     assert_eq!(decoded.id, "t1");
@@ -246,7 +246,7 @@ fn domain_event_propagates_metadata() {
     todo.initialize("t1".into(), "alice".into(), "Buy milk".into())
         .unwrap();
 
-    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
     assert_eq!(outbox.correlation_id(), Some("req-abc"));
     assert_eq!(outbox.causation_id(), Some("cmd-create"));
     assert_eq!(outbox.meta("user_id"), Some("u-42"));
@@ -260,7 +260,7 @@ async fn domain_event_commits_with_outbox() {
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())
         .unwrap();
 
-    let outbox = OutboxMessage::domain_event("TodoInitialized", &todo).unwrap();
+    let outbox = OutboxMessage::domain_event("todo.initialized", &todo).unwrap();
     repo.outbox(outbox).commit(&mut todo).await.unwrap();
 
     let loaded = repo.get("t1").await.unwrap().unwrap();

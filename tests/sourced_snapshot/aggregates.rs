@@ -19,14 +19,14 @@ impl Todo {
         Self::default()
     }
 
-    #[event("Initialized")]
+    #[event("initialized")]
     pub fn initialize(&mut self, id: String, user_id: String, task: String) {
         self.entity.set_id(&id);
         self.user_id = user_id;
         self.task = task;
     }
 
-    #[event("Completed", when = !self.completed)]
+    #[event("completed", when = !self.completed)]
     pub fn complete(&mut self) {
         self.completed = true;
     }
@@ -50,14 +50,14 @@ impl Inventory {
         Self::default()
     }
 
-    #[event("Created")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String, sku: String, available: u32) {
         self.entity.set_id(&id);
         self.sku = sku;
         self.available = available;
     }
 
-    #[event("Restocked")]
+    #[event("restocked")]
     pub fn restock(&mut self, qty: u32) {
         self.available += qty;
     }
@@ -82,7 +82,7 @@ impl Order {
         Self::default()
     }
 
-    #[event("Placed")]
+    #[event("placed")]
     pub fn place(&mut self, id: String, customer: String, total: u64) {
         self.entity.set_id(&id);
         self.customer = customer;
@@ -107,12 +107,12 @@ impl Counter {
         Self::default()
     }
 
-    #[event("Initialized")]
+    #[event("initialized")]
     pub fn initialize(&mut self, id: String) {
         self.entity.set_id(&id);
     }
 
-    #[event("Incremented")]
+    #[event("incremented")]
     pub fn increment(&mut self, amount: i64) {
         self.count += amount;
     }
@@ -136,7 +136,7 @@ impl Widget {
         Self::default()
     }
 
-    #[event("Created")]
+    #[event("initialized")]
     pub fn create(&mut self, id: String, name: String, weight: f64) {
         self.my_entity.set_id(&id);
         self.name = name;
@@ -166,7 +166,7 @@ impl Notifier {
         Self::default()
     }
 
-    #[event("Sent")]
+    #[event("sent")]
     pub fn send(&mut self, id: String, message: String) {
         self.entity.set_id(&id);
         self.message = message;

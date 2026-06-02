@@ -15,7 +15,7 @@ fn v1_has_no_upcasters() {
 fn v2_has_one_upcaster() {
     let upcasters = TodoV2::upcasters();
     assert_eq!(upcasters.len(), 1);
-    assert_eq!(upcasters[0].event_type, "Initialized");
+    assert_eq!(upcasters[0].event_type, "initialized");
     assert_eq!(upcasters[0].from_version, 1);
     assert_eq!(upcasters[0].to_version, 2);
 }
@@ -126,9 +126,9 @@ fn typed_events_have_correct_names() {
             task: "".into(),
         }
         .event_name(),
-        "Initialized"
+        "initialized"
     );
-    assert_eq!(TodoV1Event::Completed.event_name(), "Completed");
+    assert_eq!(TodoV1Event::Completed.event_name(), "completed");
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn v2_try_from_event_record() {
         3u8,
     ))
     .unwrap();
-    let record = distributed::EventRecord::new_versioned("Initialized", payload, 1, 2);
+    let record = distributed::EventRecord::new_versioned("initialized", payload, 1, 2);
     let event = TodoV2Event::try_from(&record).unwrap();
     match event {
         TodoV2Event::Initialized {

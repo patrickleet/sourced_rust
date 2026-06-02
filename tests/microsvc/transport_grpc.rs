@@ -55,7 +55,7 @@ async fn health_check() {
     let resp = client.health(HealthRequest {}).await.unwrap().into_inner();
 
     assert!(resp.ok);
-    assert!(resp.commands.iter().any(|c| c == "counter.create"));
+    assert!(resp.commands.iter().any(|c| c == "counter.initialize"));
     assert!(resp.commands.iter().any(|c| c == "counter.increment"));
 }
 
@@ -80,7 +80,7 @@ async fn create_counter() {
 
     let resp = client
         .dispatch(GrpcRequest {
-            command: "counter.create".into(),
+            command: "counter.initialize".into(),
             input: json!({ "id": "c1" }).to_string(),
             session_variables: Default::default(),
         })
@@ -101,7 +101,7 @@ async fn create_and_increment_counter() {
     // Create
     let resp = client
         .dispatch(GrpcRequest {
-            command: "counter.create".into(),
+            command: "counter.initialize".into(),
             input: json!({ "id": "c1" }).to_string(),
             session_variables: Default::default(),
         })
@@ -163,7 +163,7 @@ async fn metadata_flows_to_session() {
     let mut client = start_server(service).await;
 
     let mut request = tonic::Request::new(GrpcRequest {
-        command: "whoami".into(),
+        command: "session.identify".into(),
         input: json!({}).to_string(),
         session_variables: Default::default(),
     });
@@ -185,7 +185,7 @@ async fn missing_session_returns_401_status() {
 
     let resp = client
         .dispatch(GrpcRequest {
-            command: "whoami".into(),
+            command: "session.identify".into(),
             input: json!({}).to_string(),
             session_variables: Default::default(),
         })

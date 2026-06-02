@@ -17,7 +17,7 @@ struct AlphaAggregate {
 
 #[sourced(entity, aggregate_type = "async.alpha")]
 impl AlphaAggregate {
-    #[event("Touched")]
+    #[event("touched")]
     fn touch(&mut self, id: String) {
         self.entity.set_id(&id);
     }
@@ -30,7 +30,7 @@ struct BetaAggregate {
 
 #[sourced(entity, aggregate_type = "async.beta")]
 impl BetaAggregate {
-    #[event("Touched")]
+    #[event("touched")]
     fn touch(&mut self, id: String) {
         self.entity.set_id(&id);
     }
@@ -44,7 +44,7 @@ struct SnapshotCounter {
 
 #[sourced(entity, aggregate_type = "async.snapshot_counter")]
 impl SnapshotCounter {
-    #[event("Incremented")]
+    #[event("incremented")]
     fn increment(&mut self, id: String, by: i32) {
         self.entity.set_id(&id);
         self.value += by;
@@ -112,9 +112,9 @@ async fn async_batch_rejects_duplicate_stream_identity_before_write() {
     let repo = HashMapRepository::new();
     let identity = StreamIdentity::new("async.alpha", "duplicate").unwrap();
     let mut first = Entity::with_id("duplicate");
-    first.digest_empty("First").unwrap();
+    first.digest_empty("first_recorded").unwrap();
     let mut second = Entity::with_id("duplicate");
-    second.digest_empty("Second").unwrap();
+    second.digest_empty("second_recorded").unwrap();
 
     let err = repo
         .commit_batch_async(AsyncCommitBatch::new(vec![
@@ -200,8 +200,8 @@ async fn async_snapshot_repository_writes_cache_without_event_record() {
     let snapshot = repo.get_snapshot_async(&identity).await.unwrap().unwrap();
 
     assert_eq!(stream.events().len(), 2);
-    assert_eq!(stream.events()[0].event_name, "Incremented");
-    assert_eq!(stream.events()[1].event_name, "Incremented");
+    assert_eq!(stream.events()[0].event_name, "incremented");
+    assert_eq!(stream.events()[1].event_name, "incremented");
     assert_eq!(snapshot.version, 2);
     assert_eq!(snapshot.aggregate_type, SnapshotCounter::aggregate_type());
     assert_eq!(snapshot.payload, bitcode::serialize(&5_i32).unwrap());
@@ -274,7 +274,7 @@ async fn async_snapshot_repository_ignores_cache_past_stream_version_and_replays
 async fn async_outbox_repository_delegates_worker_operations() {
     let repo = HashMapRepository::new();
     let outbox = repo.outbox_store();
-    let message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+    let message = OutboxMessage::create("msg-1", "alpha.happened", b"{}".to_vec()).unwrap();
     let mut aggregate = AlphaAggregate::default();
     aggregate.touch("outbox-aggregate-1".into()).unwrap();
     repo.clone()

@@ -52,7 +52,7 @@ fn unique(prefix: &str) -> String {
 #[tokio::test]
 async fn publish_then_consume_round_trips_through_jetstream() {
     let Some(url) = nats_url() else { return };
-    let subject = unique("evt");
+    let subject = unique("order.initialized");
     let stream = unique("STREAM");
     let durable = unique("consumer");
 
@@ -104,7 +104,7 @@ async fn publish_then_consume_round_trips_through_jetstream() {
 #[tokio::test]
 async fn message_id_and_metadata_survive_the_round_trip() {
     let Some(url) = nats_url() else { return };
-    let subject = unique("evt");
+    let subject = unique("order.initialized");
     let stream = unique("STREAM");
     let durable = unique("consumer");
 
@@ -186,7 +186,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     for i in 0..total {
         producer
             .send_message(
-                Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+                Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
+                    .with_id(format!("c{i}")),
             )
             .await
             .expect("send command");
@@ -199,8 +200,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600));
     let bus_b = bus_a.clone();
-    let svc_a = recording_service("work", MessageKind::Command, rec.clone());
-    let svc_b = recording_service("work", MessageKind::Command, rec.clone());
+    let svc_a = recording_service("order.initialize", MessageKind::Command, rec.clone());
+    let svc_b = recording_service("order.initialize", MessageKind::Command, rec.clone());
 
     let (ra, rb) = tokio::join!(
         bus_a.listen(svc_a, RunOptions::idempotent()),
@@ -234,7 +235,8 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     for i in 0..total {
         producer
             .publish_message(
-                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
             )
             .await
             .expect("publish event");
@@ -248,7 +250,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
             .with_fetch_timeout(Duration::from_millis(600));
         let rec = Arc::new(Mutex::new(Vec::new()));
         bus.subscribe(
-            recording_service("evt", MessageKind::Event, rec.clone()),
+            recording_service("order.initialized", MessageKind::Event, rec.clone()),
             RunOptions::idempotent(),
         )
         .await

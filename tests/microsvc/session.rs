@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[tokio::test]
 async fn handler_accesses_user_id() {
     let service = Service::new(())
-        .command("whoami")
+        .command("session.identify")
         .handle(|ctx: &Context<()>| {
             let user_id = ctx.user_id().map(|id| id.to_string());
             async move {
@@ -21,7 +21,7 @@ async fn handler_accesses_user_id() {
     let session = Session::from_map(vars);
 
     let result = service
-        .dispatch("whoami", json!({}), session)
+        .dispatch("session.identify", json!({}), session)
         .await
         .unwrap();
     assert_eq!(result, json!({ "user_id": "user-42" }));
@@ -30,7 +30,7 @@ async fn handler_accesses_user_id() {
 #[tokio::test]
 async fn missing_user_id_returns_unauthorized() {
     let service = Service::new(())
-        .command("whoami")
+        .command("session.identify")
         .handle(|ctx: &Context<()>| {
             let user_id = ctx.user_id().map(|id| id.to_string());
             async move {
@@ -39,6 +39,8 @@ async fn missing_user_id_returns_unauthorized() {
             }
         });
 
-    let result = service.dispatch("whoami", json!({}), Session::new()).await;
+    let result = service
+        .dispatch("session.identify", json!({}), Session::new())
+        .await;
     assert!(matches!(result, Err(HandlerError::Unauthorized(_))));
 }

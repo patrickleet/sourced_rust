@@ -55,7 +55,7 @@ where
 
     // First delivery: the receipt commits atomically with a real outbox effect.
     repo.commit_batch_async(batch_with(
-        vec![OutboxMessage::create(&effect1, "Effect", b"{}".to_vec()).unwrap()],
+        vec![OutboxMessage::create(&effect1, "effect.applied", b"{}".to_vec()).unwrap()],
         vec![InboxReceipt::new(&consumer, &m1)],
     ))
     .await
@@ -70,7 +70,7 @@ where
     // the effect too — proving the receipt fences the whole transaction.
     let err = repo
         .commit_batch_async(batch_with(
-            vec![OutboxMessage::create(&effect2, "Effect", b"{}".to_vec()).unwrap()],
+            vec![OutboxMessage::create(&effect2, "effect.applied", b"{}".to_vec()).unwrap()],
             vec![InboxReceipt::new(&consumer, &m1)],
         ))
         .await

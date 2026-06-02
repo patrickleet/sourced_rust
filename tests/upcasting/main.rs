@@ -33,7 +33,7 @@ impl Aggregate for SameVersionUpcasterAggregate {
 
     fn upcasters() -> &'static [EventUpcaster] {
         static UPCASTERS: &[EventUpcaster] = &[EventUpcaster {
-            event_type: "Loop",
+            event_type: "looped",
             from_version: 1,
             to_version: 1,
             transform: identity_payload,
@@ -48,20 +48,20 @@ impl Aggregate for SameVersionUpcasterAggregate {
 
 #[test]
 fn event_record_defaults_to_version_1() {
-    let record = EventRecord::new("TestEvent", vec![], 1);
+    let record = EventRecord::new("tested", vec![], 1);
     assert_eq!(record.event_version, 1);
 }
 
 #[test]
 fn event_record_new_versioned() {
-    let record = EventRecord::new_versioned("TestEvent", vec![], 1, 3);
+    let record = EventRecord::new_versioned("tested", vec![], 1, 3);
     assert_eq!(record.event_version, 3);
-    assert_eq!(record.event_name, "TestEvent");
+    assert_eq!(record.event_name, "tested");
 }
 
 #[test]
 fn event_version_serializes_cleanly_when_v1() {
-    let record = EventRecord::new("TestEvent", vec![], 1);
+    let record = EventRecord::new("tested", vec![], 1);
     let json = serde_json::to_string(&record).unwrap();
     // Version 1 is skipped in serialization
     assert!(!json.contains("event_version"));
@@ -69,7 +69,7 @@ fn event_version_serializes_cleanly_when_v1() {
 
 #[test]
 fn event_version_serializes_when_not_v1() {
-    let record = EventRecord::new_versioned("TestEvent", vec![], 1, 2);
+    let record = EventRecord::new_versioned("tested", vec![], 1, 2);
     let json = serde_json::to_string(&record).unwrap();
     assert!(json.contains("\"event_version\":2"));
 }
@@ -91,11 +91,11 @@ fn old_events_without_metadata_deserialize_with_empty_metadata() {
 
 #[test]
 fn event_version_round_trips_through_serde() {
-    let record = EventRecord::new_versioned("TestEvent", vec![1, 2, 3], 1, 5);
+    let record = EventRecord::new_versioned("tested", vec![1, 2, 3], 1, 5);
     let json = serde_json::to_string(&record).unwrap();
     let deserialized: EventRecord = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.event_version, 5);
-    assert_eq!(deserialized.event_name, "TestEvent");
+    assert_eq!(deserialized.event_name, "tested");
     assert_eq!(deserialized.sequence, 1);
 }
 
@@ -112,7 +112,7 @@ fn digest_v_creates_events_at_specified_version() {
     let events = todo.entity.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_version, 2);
-    assert_eq!(events[0].event_name, "Initialized");
+    assert_eq!(events[0].event_name, "initialized");
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn hydrate_v2_from_v1_events() {
 fn v2_aggregate_has_upcasters() {
     let upcasters = TodoV2::upcasters();
     assert_eq!(upcasters.len(), 1);
-    assert_eq!(upcasters[0].event_type, "Initialized");
+    assert_eq!(upcasters[0].event_type, "initialized");
     assert_eq!(upcasters[0].from_version, 1);
     assert_eq!(upcasters[0].to_version, 2);
 }
@@ -290,7 +290,7 @@ async fn repo_roundtrip_v1_to_v2() {
 fn upcast_events_standalone() {
     let payload_v1 =
         bitcode::serialize(&("id1".to_string(), "user1".to_string(), "task1".to_string())).unwrap();
-    let event = EventRecord::new("Initialized", payload_v1, 1);
+    let event = EventRecord::new("initialized", payload_v1, 1);
 
     let result = upcast_events(vec![event], TodoV2::upcasters()).unwrap();
     assert_eq!(result[0].event_version, 2);
@@ -306,7 +306,7 @@ fn upcast_events_standalone() {
 #[test]
 fn hydrate_rejects_invalid_same_version_upcaster() {
     let mut entity = Entity::new();
-    entity.load_from_history(vec![EventRecord::new("Loop", vec![], 1)]);
+    entity.load_from_history(vec![EventRecord::new("looped", vec![], 1)]);
 
     let err = hydrate::<SameVersionUpcasterAggregate>(entity).unwrap_err();
 
@@ -321,11 +321,11 @@ fn hydrate_rejects_invalid_same_version_upcaster() {
 #[test]
 fn hydrate_returns_replay_error_when_typed_upcaster_decode_fails() {
     let mut entity = Entity::new();
-    entity.load_from_history(vec![EventRecord::new("Initialized", vec![0xff], 1)]);
+    entity.load_from_history(vec![EventRecord::new("initialized", vec![0xff], 1)]);
 
     match hydrate::<TodoV2>(entity) {
         Err(RepositoryError::Replay(message)) => {
-            assert!(message.contains("failed to upcast event Initialized"));
+            assert!(message.contains("failed to upcast event initialized"));
         }
         Err(other) => panic!("expected replay error, got {other:?}"),
         Ok(_) => panic!("expected replay error"),
@@ -413,7 +413,7 @@ fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode
         })
         .unwrap(),
     );
-    let mut invalid_event = EventRecord::new("Initialized", vec![0xff], 2);
+    let mut invalid_event = EventRecord::new("initialized", vec![0xff], 2);
     invalid_event.sequence = 2;
 
     let mut entity = Entity::with_id("t1");
@@ -421,7 +421,7 @@ fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode
 
     match hydrate_from_snapshot::<TodoV2>(entity, snapshot) {
         Err(RepositoryError::Replay(message)) => {
-            assert!(message.contains("failed to upcast event Initialized"));
+            assert!(message.contains("failed to upcast event initialized"));
         }
         Err(other) => panic!("expected replay error, got {other:?}"),
         Ok(_) => panic!("expected replay error"),

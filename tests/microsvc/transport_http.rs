@@ -45,7 +45,7 @@ async fn health_check() {
     assert_eq!(body["ok"], true);
 
     let commands = body["commands"].as_array().unwrap();
-    assert!(commands.iter().any(|c| c == "counter.create"));
+    assert!(commands.iter().any(|c| c == "counter.initialize"));
     assert!(commands.iter().any(|c| c == "counter.increment"));
 }
 
@@ -56,7 +56,7 @@ async fn create_counter() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/counter.create"))
+        .post(format!("{base}/counter.initialize"))
         .json(&json!({ "id": "c1" }))
         .send()
         .await
@@ -75,7 +75,7 @@ async fn create_and_increment_counter() {
 
     // Create
     let resp = client
-        .post(format!("{base}/counter.create"))
+        .post(format!("{base}/counter.initialize"))
         .json(&json!({ "id": "c1" }))
         .send()
         .await
@@ -144,7 +144,7 @@ async fn headers_flow_to_session() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/whoami"))
+        .post(format!("{base}/session.identify"))
         .header("x-hasura-user-id", "user-42")
         .json(&json!({}))
         .send()
@@ -163,7 +163,7 @@ async fn missing_session_returns_401() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/whoami"))
+        .post(format!("{base}/session.identify"))
         .json(&json!({}))
         .send()
         .await

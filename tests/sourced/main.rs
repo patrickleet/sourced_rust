@@ -27,18 +27,18 @@ struct SafeRecorder {
 }
 
 impl SafeRecorder {
-    #[distributed::digest("Recorded")]
+    #[distributed::digest("recorded")]
     fn record(&mut self, _payload: FailingSerialize) {
         self.applied = true;
     }
 
-    #[distributed::digest("Recorded", version = 2)]
+    #[distributed::digest("recorded", version = 2)]
     fn record_ok(&mut self, payload: String) {
         self.applied = true;
         assert_eq!(payload, "ok");
     }
 
-    #[distributed::digest("TailChecked")]
+    #[distributed::digest("tail_checked")]
     fn record_after_tail_check(&mut self) {
         self.tail_check()?
     }
@@ -83,7 +83,7 @@ impl ExplicitlyValidatedRecorder {
             return Err(ValidationError::EmptyTitle);
         }
 
-        self.entity.digest("Renamed", &(title.clone(),))?;
+        self.entity.digest("renamed", &(title.clone(),))?;
         self.title = title;
         Ok(())
     }
@@ -134,7 +134,7 @@ fn digest_macro_records_successful_versioned_events() {
 
     assert!(recorder.applied);
     assert_eq!(recorder.entity.events().len(), 1);
-    assert_eq!(recorder.entity.events()[0].event_name, "Recorded");
+    assert_eq!(recorder.entity.events()[0].event_name, "recorded");
     assert_eq!(recorder.entity.events()[0].event_version, 2);
 }
 
@@ -145,7 +145,7 @@ fn digest_macro_accepts_inferred_tail_try_expression() {
     recorder.record_after_tail_check().unwrap();
 
     assert_eq!(recorder.entity.events().len(), 1);
-    assert_eq!(recorder.entity.events()[0].event_name, "TailChecked");
+    assert_eq!(recorder.entity.events()[0].event_name, "tail_checked");
 }
 
 #[test]
@@ -155,10 +155,10 @@ fn event_name_returns_correct_strings() {
         user_id: "alice".into(),
         task: "Buy milk".into(),
     };
-    assert_eq!(init.event_name(), "Initialized");
+    assert_eq!(init.event_name(), "initialized");
 
     let completed = TodoEvent::Completed;
-    assert_eq!(completed.event_name(), "Completed");
+    assert_eq!(completed.event_name(), "completed");
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn try_from_event_record_initialized() {
         "Buy milk".to_string(),
     ))
     .unwrap();
-    let record = EventRecord::new("Initialized", payload, 1);
+    let record = EventRecord::new("initialized", payload, 1);
     let event = TodoEvent::try_from(&record).unwrap();
     match event {
         TodoEvent::Initialized { id, user_id, task } => {
@@ -183,14 +183,14 @@ fn try_from_event_record_initialized() {
 
 #[test]
 fn try_from_event_record_completed() {
-    let record = EventRecord::new("Completed", vec![], 2);
+    let record = EventRecord::new("completed", vec![], 2);
     let event = TodoEvent::try_from(&record).unwrap();
     assert_eq!(event, TodoEvent::Completed);
 }
 
 #[test]
 fn try_from_unknown_event_returns_error() {
-    let record = EventRecord::new("Unknown", vec![], 1);
+    let record = EventRecord::new("unknown", vec![], 1);
     let result = TodoEvent::try_from(&record);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Unknown event"));
@@ -235,7 +235,7 @@ fn sourced_event_macro_accepts_inferred_tail_try_expression() {
     todo.validate_tail().unwrap();
 
     assert_eq!(todo.entity.events().len(), 1);
-    assert_eq!(todo.entity.events()[0].event_name, "TailValidated");
+    assert_eq!(todo.entity.events()[0].event_name, "tail_validated");
 }
 
 #[test]

@@ -57,7 +57,7 @@ async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageSt
 fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
     Arc::new(
         Service::new(())
-            .event("evt")
+            .event("order.initialized")
             .handle(move |ctx: &Context<()>| {
                 handled
                     .lock()
@@ -75,8 +75,8 @@ async fn outbox_source_run_drains_and_completes() {
         return;
     };
     let repo = schema.repository().await;
-    enqueue(&repo, "m1", "evt").await;
-    enqueue(&repo, "m2", "evt").await;
+    enqueue(&repo, "m1", "order.initialized").await;
+    enqueue(&repo, "m2", "order.initialized").await;
     let store = Arc::new(repo.outbox_store());
 
     let handled = Arc::new(Mutex::new(Vec::new()));
@@ -112,7 +112,7 @@ async fn concurrent_sources_process_each_row_once() {
     let repo = schema.repository().await;
     let ids: Vec<String> = (0..20).map(|i| format!("c{i}")).collect();
     for id in &ids {
-        enqueue(&repo, id, "evt").await;
+        enqueue(&repo, id, "order.initialized").await;
     }
     let store = Arc::new(repo.outbox_store());
 
@@ -148,7 +148,7 @@ async fn nack_releases_then_a_later_claim_completes() {
         return;
     };
     let repo = schema.repository().await;
-    enqueue(&repo, "m1", "evt").await;
+    enqueue(&repo, "m1", "order.initialized").await;
     let store = Arc::new(repo.outbox_store());
 
     // First claim, nack -> released to pending (attempts incremented).
@@ -177,7 +177,7 @@ async fn dead_letter_marks_row_failed() {
         return;
     };
     let repo = schema.repository().await;
-    enqueue(&repo, "m1", "evt").await;
+    enqueue(&repo, "m1", "order.initialized").await;
     let store = Arc::new(repo.outbox_store());
 
     let mut source = OutboxSource::new(store.clone(), "pg-dlq", 3);
@@ -222,7 +222,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     let total = 6;
     for i in 0..total {
         bus.send_message(
-            Message::new("work", MessageKind::Command, b"{}".to_vec()).with_id(format!("c{i}")),
+            Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
+                .with_id(format!("c{i}")),
         )
         .await
         .expect("send command");
@@ -233,11 +234,11 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     let bus_b = bus.clone();
     let (ra, rb) = tokio::join!(
         bus_a.listen(
-            recording_for("work", MessageKind::Command, rec.clone()),
+            recording_for("order.initialize", MessageKind::Command, rec.clone()),
             RunOptions::idempotent()
         ),
         bus_b.listen(
-            recording_for("work", MessageKind::Command, rec.clone()),
+            recording_for("order.initialize", MessageKind::Command, rec.clone()),
             RunOptions::idempotent()
         ),
     );
@@ -269,7 +270,8 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     for i in 0..total {
         producer
             .publish_message(
-                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(format!("e{i}")),
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
             )
             .await
             .expect("publish event");
@@ -280,7 +282,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
         let bus = PostgresBus::new(pool.clone(), group);
         let rec = Arc::new(Mutex::new(Vec::new()));
         bus.subscribe(
-            recording_for("evt", MessageKind::Event, rec.clone()),
+            recording_for("order.initialized", MessageKind::Event, rec.clone()),
             RunOptions::idempotent(),
         )
         .await
