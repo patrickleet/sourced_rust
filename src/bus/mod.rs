@@ -139,7 +139,7 @@ pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
-pub use publisher::AsyncMessagePublisher;
+pub use publisher::{AsyncMessagePublisher, DynPublisher};
 pub use router::MessageRouter;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;

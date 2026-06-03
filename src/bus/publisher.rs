@@ -17,6 +17,7 @@
 //! is acceptable under at-least-once, silent loss is not.
 
 use std::future::Future;
+use std::pin::Pin;
 
 use super::{Message, TransportError};
 
@@ -51,6 +52,34 @@ pub trait AsyncMessagePublisher: Send + Sync {
             }
             Ok(())
         }
+    }
+}
+
+/// Object-safe form of [`AsyncMessagePublisher`].
+///
+/// `AsyncMessagePublisher::publish` returns `impl Future` (RPITIT), which makes
+/// the trait itself not object-safe — `dyn AsyncMessagePublisher` will not
+/// compile. `DynPublisher` boxes the returned future so a publisher can be held
+/// behind `Arc<dyn DynPublisher>`, used where the concrete publisher type cannot
+/// be a type parameter (for example on `microsvc::Service`, so attaching a bus
+/// does not change the service's type).
+///
+/// Blanket-implemented for every [`AsyncMessagePublisher`]; callers normally
+/// produce one with `Arc::new(publisher) as Arc<dyn DynPublisher>`.
+pub trait DynPublisher: Send + Sync {
+    /// Publish a single message, returning a boxed future.
+    fn publish_dyn<'a>(
+        &'a self,
+        message: Message,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
+}
+
+impl<P: AsyncMessagePublisher> DynPublisher for P {
+    fn publish_dyn<'a>(
+        &'a self,
+        message: Message,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(self.publish(message))
     }
 }
 
