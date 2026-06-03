@@ -32,6 +32,7 @@ pub trait InboxHook {
 ///
 /// Defaults to [`ConsumerDeliveryMode::Idempotent`]: the convention is
 /// idempotent handlers/projections, so a redelivered message is safe.
+#[derive(Clone)]
 pub enum ConsumerDeliveryMode<I> {
     /// Dispatch directly and acknowledge after handler success. Handlers are
     /// expected to be idempotent under redelivery.
@@ -63,6 +64,7 @@ pub enum NoInbox {}
 ///
 /// Generic over the inbox hook type `I`, defaulting to [`NoInbox`] for the
 /// common idempotent case.
+#[derive(Clone)]
 pub struct RunOptions<I = NoInbox> {
     /// Whether consumer execution is plain idempotent dispatch or inbox-wrapped.
     pub delivery_mode: ConsumerDeliveryMode<I>,
