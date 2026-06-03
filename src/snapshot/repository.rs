@@ -1,5 +1,8 @@
+use std::time::{Duration, SystemTime};
+
 use crate::aggregate::{hydrate, AggregateRepository};
 use crate::entity::{upcast_events, Entity};
+use crate::outbox::{CommitReceipt, OutboxCommitting, OutboxMessage};
 use crate::repository::{
     CommitBatch, GetStream, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
     StreamWrite, TransactionalCommit,
@@ -309,6 +312,91 @@ where
             return snapshot_record_for(aggregate).map(Some);
         }
         Ok(None)
+    }
+
+    /// Commit the aggregate, an outbox message, and (when due) a snapshot in one
+    /// transaction. With `claim` set, the outbox row is claimed in the same
+    /// transaction for immediate publication and a clone of the claimed message
+    /// is returned. This is what lets snapshot-backed repositories take part in
+    /// the durable-enqueue command path.
+    async fn commit_with_outbox(
+        &self,
+        aggregate: &mut A,
+        mut message: OutboxMessage,
+        claim: Option<(&str, Duration)>,
+    ) -> Result<(CommitReceipt, Option<OutboxMessage>), RepositoryError> {
+        message.set_source(aggregate);
+        let claimed = match claim {
+            Some((worker_id, lease)) => {
+                message.claim_at(worker_id, lease, SystemTime::now())?;
+                Some(message.clone())
+            }
+            None => None,
+        };
+        let outbox_message_id = message.id().to_string();
+
+        let snapshot = self.snapshot_record(aggregate)?;
+        let snapshot_version = snapshot.as_ref().map(|record| record.version);
+        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
+        let snapshots = snapshot
+            .into_iter()
+            .map(|record| SnapshotWrite::Save {
+                identity: identity.clone(),
+                record,
+            })
+            .collect();
+
+        self.inner
+            .repo()
+            .commit_batch(CommitBatch {
+                streams: vec![StreamWrite::new(identity, aggregate.entity_mut())],
+                outbox_messages: vec![message],
+                read_model_plans: Vec::new(),
+                snapshots,
+                inbox_receipts: Vec::new(),
+            })
+            .await?;
+
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
+        Ok((
+            CommitReceipt {
+                outbox_message_ids: vec![outbox_message_id],
+            },
+            claimed,
+        ))
+    }
+}
+
+impl<R, A> OutboxCommitting<A> for SnapshotAggregateRepository<R, A>
+where
+    R: TransactionalCommit + Send + Sync,
+    A: Snapshottable + Send + Sync,
+{
+    async fn commit_outbox_pending(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+    ) -> Result<CommitReceipt, RepositoryError> {
+        let (receipt, _) = self.commit_with_outbox(aggregate, message, None).await?;
+        Ok(receipt)
+    }
+
+    async fn commit_outbox_claimed(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+        worker_id: &str,
+        lease: Duration,
+    ) -> Result<(CommitReceipt, OutboxMessage), RepositoryError> {
+        let (receipt, claimed) = self
+            .commit_with_outbox(aggregate, message, Some((worker_id, lease)))
+            .await?;
+        Ok((
+            receipt,
+            claimed.expect("claimed commit always returns the claimed message"),
+        ))
     }
 }
 

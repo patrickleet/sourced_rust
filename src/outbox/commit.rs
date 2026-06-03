@@ -110,6 +110,64 @@ impl<R, A> AggregateRepository<R, A> {
     }
 }
 
+/// A repository that can commit an aggregate together with an outbox message in
+/// one transaction, staging whatever else the repository requires (for example a
+/// snapshot, for snapshot-backed repositories).
+///
+/// This is the abstraction
+/// [`Context::commit_outbox`](crate::microsvc::Context::commit_outbox) binds to,
+/// so the durable-enqueue command path works for **any** repository shape — a
+/// plain [`AggregateRepository`] or a `SnapshotAggregateRepository` — not just
+/// one. The underlying `CommitBatch`/`TransactionalCommit` boundary already
+/// applies streams, outbox rows, read models, and snapshots in one transaction;
+/// this trait exposes that to the ergonomic command path.
+pub trait OutboxCommitting<A> {
+    /// Commit the aggregate and outbox row (left `pending`) in one transaction.
+    /// The polling worker publishes the row later.
+    fn commit_outbox_pending(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+    ) -> impl core::future::Future<Output = Result<CommitReceipt, RepositoryError>> + Send;
+
+    /// Commit the aggregate and outbox row, claiming the row in the same
+    /// transaction for immediate publication. Returns a clone of the claimed
+    /// message so the caller can build the transport message and settle the claim.
+    fn commit_outbox_claimed(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+        worker_id: &str,
+        lease: Duration,
+    ) -> impl core::future::Future<Output = Result<(CommitReceipt, OutboxMessage), RepositoryError>> + Send;
+}
+
+impl<R, A> OutboxCommitting<A> for AggregateRepository<R, A>
+where
+    R: TransactionalCommit + Send + Sync,
+    A: Aggregate + Send + Sync,
+{
+    async fn commit_outbox_pending(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+    ) -> Result<CommitReceipt, RepositoryError> {
+        self.outbox(message).commit(aggregate).await
+    }
+
+    async fn commit_outbox_claimed(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+        worker_id: &str,
+        lease: Duration,
+    ) -> Result<(CommitReceipt, OutboxMessage), RepositoryError> {
+        self.outbox(message)
+            .commit_claimed(aggregate, worker_id, lease)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
