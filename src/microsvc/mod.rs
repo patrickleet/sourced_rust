@@ -57,6 +57,7 @@ mod context;
 mod dependencies;
 mod error;
 mod message_router;
+mod runtime;
 mod service;
 mod session;
 
@@ -67,6 +68,7 @@ pub use dependencies::{
     RepoReadModelDependencies,
 };
 pub use error::HandlerError;
+pub use runtime::{Microservice, DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
     Service,
