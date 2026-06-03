@@ -63,7 +63,7 @@ mod session;
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use context::Context;
 pub use dependencies::{
-    HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
+    HasOutboxStore, HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
     RepoReadModelDependencies,
 };
 pub use error::HandlerError;
