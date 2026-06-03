@@ -4,6 +4,30 @@ use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
+/// Outcome of an outbox-bearing commit.
+///
+/// Carries the ids of the outbox rows the transaction inserted so an
+/// after-commit dispatcher knows exactly which rows to publish. This is the seam
+/// the immediate-dispatch path hangs off (see
+/// `specs/durable-enqueue-outbox-dispatch`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitReceipt {
+    /// Ids of the outbox messages inserted by this commit, in insertion order.
+    pub outbox_message_ids: Vec<String>,
+}
+
+impl CommitReceipt {
+    /// The outbox message ids inserted by this commit.
+    pub fn outbox_message_ids(&self) -> &[String] {
+        &self.outbox_message_ids
+    }
+
+    /// Whether this commit inserted any outbox messages.
+    pub fn has_outbox_messages(&self) -> bool {
+        !self.outbox_message_ids.is_empty()
+    }
+}
+
 /// Helper returned by [`AggregateRepository::outbox`] to commit an aggregate
 /// and an outbox row in the same async transactional batch.
 ///
@@ -20,13 +44,21 @@ where
     A: Aggregate + Send,
 {
     /// Commit the aggregate and outbox message together.
-    pub async fn commit(mut self, aggregate: &mut A) -> Result<(), RepositoryError> {
+    ///
+    /// Returns a [`CommitReceipt`] carrying the inserted outbox message id, so
+    /// an after-commit dispatcher can publish exactly the rows this transaction
+    /// wrote without re-scanning the outbox.
+    pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
         self.message.set_source(aggregate);
+        let outbox_message_id = self.message.id().to_string();
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let stream = StreamWrite::new(identity, aggregate.entity_mut());
         let mut batch = CommitBatch::new(vec![stream]);
         batch.outbox_messages.push(self.message);
-        self.repo.repo().commit_batch(batch).await
+        self.repo.repo().commit_batch(batch).await?;
+        Ok(CommitReceipt {
+            outbox_message_ids: vec![outbox_message_id],
+        })
     }
 }
 
@@ -95,7 +127,12 @@ mod tests {
 
         let event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
 
-        repo.outbox(event).commit(&mut aggregate).await.unwrap();
+        let receipt = repo.outbox(event).commit(&mut aggregate).await.unwrap();
+
+        // The receipt reports the inserted outbox row so an after-commit
+        // dispatcher knows what to publish.
+        assert!(receipt.has_outbox_messages());
+        assert_eq!(receipt.outbox_message_ids(), ["msg-1".to_string()]);
 
         let pending = repo.repo().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
