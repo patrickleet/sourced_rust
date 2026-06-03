@@ -18,7 +18,7 @@ use std::time::Duration;
 use super::dependencies::{HasOutboxStore, HasRepo};
 use super::service::ImmediatePublish;
 use super::Service;
-use crate::bus::{Bus, DynPublisher};
+use crate::bus::{Bus, BusConsumer, DynPublisher, RunOptions, TransportError};
 use crate::outbox_worker::{BusPublisher, OutboxDispatcher};
 
 /// Default lease for an immediate after-commit outbox publish.
@@ -109,6 +109,66 @@ where
     }
 }
 
+impl<D, B> Microservice<D, B>
+where
+    D: Send + Sync + 'static,
+    B: Bus + BusConsumer,
+{
+    /// Run the service against the attached bus.
+    ///
+    /// Derives the consumers from the registered handlers: command handlers are
+    /// consumed with competing (point-to-point) `listen`, event handlers with
+    /// fan-out `subscribe`. Both run concurrently on the caller's runtime;
+    /// `run` returns when the consumers stop (a pull source that drains, or the
+    /// first error).
+    ///
+    /// Producing is handled separately: the primary path is immediate publish via
+    /// [`Context::commit_outbox`](crate::microsvc::Context::commit_outbox); the
+    /// background poll loop (the crash backstop, which needs an async timer) is
+    /// driven from [`Self::dispatcher`] by a runtime that provides one.
+    pub async fn run(&self, options: RunOptions) -> Result<(), TransportError> {
+        use std::future::{poll_fn, Future};
+        use std::pin::Pin;
+        use std::task::Poll;
+
+        let plan = self.service.subscription_plan();
+        let mut consumers: Vec<
+            Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>>,
+        > = Vec::new();
+        if !plan.commands.is_empty() {
+            consumers.push(Box::pin(
+                self.bus.listen(Arc::clone(&self.service), options.clone()),
+            ));
+        }
+        if !plan.events.is_empty() {
+            consumers.push(Box::pin(
+                self.bus.subscribe(Arc::clone(&self.service), options),
+            ));
+        }
+
+        // Drive every consumer concurrently on the caller's runtime — no spawn,
+        // no timer. Return on the first error; finish when all consumers stop.
+        poll_fn(move |cx| {
+            let mut index = 0;
+            while index < consumers.len() {
+                match consumers[index].as_mut().poll(cx) {
+                    Poll::Ready(Ok(())) => {
+                        consumers.remove(index);
+                    }
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => index += 1,
+                }
+            }
+            if consumers.is_empty() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
 impl<D: Send + Sync + 'static> Service<D> {
     /// Attach a bus, producing a [`Microservice`] that carries the transport
     /// config for both producing (outbox dispatch) and consuming
@@ -140,7 +200,7 @@ impl<D: Send + Sync + 'static> Service<D> {
 mod tests {
     use serde_json::{json, Value};
 
-    use crate::bus::InMemoryBus;
+    use crate::bus::{Bus, InMemoryBus, RunOptions};
     use crate::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
     use crate::outbox_worker::AsyncOutboxStore;
     use crate::{
@@ -228,6 +288,36 @@ mod tests {
         assert!(
             store.pending_async().await.unwrap().is_empty(),
             "no row should be left for the poller"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_consumes_registered_commands_from_the_bus() {
+        let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+            .command("dummy.touch")
+            .handle(touch_and_publish);
+        let microservice = service.with_bus(InMemoryBus::new());
+
+        // Enqueue a command on the bus, then run: `listen` is derived from the
+        // registered command, drains the message, and the handler runs
+        // (commit_outbox publishes immediately). `run` returns once the queue is
+        // empty (InMemoryBus source yields `None`).
+        microservice
+            .bus()
+            .send("dummy.touch", b"{}".to_vec())
+            .await
+            .unwrap();
+        microservice.run(RunOptions::idempotent()).await.unwrap();
+
+        let store = microservice.service().repo().outbox_store();
+        let published = store
+            .messages_by_status_async(OutboxMessageStatus::Published)
+            .await
+            .unwrap();
+        assert_eq!(
+            published.len(),
+            1,
+            "run() should consume the command and publish its outbox row"
         );
     }
 }
