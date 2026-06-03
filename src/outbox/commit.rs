@@ -1,3 +1,5 @@
+use std::time::{Duration, SystemTime};
+
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::outbox::OutboxMessage;
 use crate::repository::{
@@ -59,6 +61,42 @@ where
         Ok(CommitReceipt {
             outbox_message_ids: vec![outbox_message_id],
         })
+    }
+
+    /// Commit the aggregate and outbox message together, **claiming the outbox
+    /// row for publication in the same transaction**.
+    ///
+    /// The row inserts already `InFlight` under `worker_id`'s lease
+    /// (`attempts = 1`), so the caller can publish it immediately after commit
+    /// without a separate claim and without racing the polling worker. While the
+    /// lease is held the poller skips the row; if the caller never publishes
+    /// (e.g. a crash), the lease expires and the worker reclaims it.
+    ///
+    /// Returns the receipt plus a clone of the claimed message so the caller can
+    /// build the transport message and settle the claim (`complete` on success,
+    /// `record_failure` on a publish error). The publish itself happens after
+    /// this returns — a broker call is never held open inside the transaction.
+    pub async fn commit_claimed(
+        mut self,
+        aggregate: &mut A,
+        worker_id: &str,
+        lease: Duration,
+    ) -> Result<(CommitReceipt, OutboxMessage), RepositoryError> {
+        self.message.set_source(aggregate);
+        self.message.claim_at(worker_id, lease, SystemTime::now())?;
+        let claimed = self.message.clone();
+        let outbox_message_id = self.message.id().to_string();
+        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
+        let stream = StreamWrite::new(identity, aggregate.entity_mut());
+        let mut batch = CommitBatch::new(vec![stream]);
+        batch.outbox_messages.push(self.message);
+        self.repo.repo().commit_batch(batch).await?;
+        Ok((
+            CommitReceipt {
+                outbox_message_ids: vec![outbox_message_id],
+            },
+            claimed,
+        ))
     }
 }
 
@@ -137,6 +175,35 @@ mod tests {
         let pending = repo.repo().outbox_store().pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "msg-1");
+    }
+
+    #[tokio::test]
+    async fn commit_claimed_inserts_row_in_flight_under_lease() {
+        let repo = HashMapRepository::new().aggregate::<Dummy>();
+
+        let mut aggregate = Dummy::default();
+        aggregate.touch().unwrap();
+
+        let event = OutboxMessage::create("msg-1", "DummyTouched", b"{}".to_vec()).unwrap();
+
+        let (receipt, claimed) = repo
+            .outbox(event)
+            .commit_claimed(&mut aggregate, "immediate:test", Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        // The committed row is claimed in the same transaction: in-flight, under
+        // this worker's lease, attempt 1.
+        assert_eq!(receipt.outbox_message_ids(), ["msg-1".to_string()]);
+        assert!(!claimed.is_pending());
+        assert_eq!(claimed.attempts, 1);
+
+        // A polling worker sees nothing claimable while the lease is held.
+        let pending = repo.repo().outbox_store().pending().unwrap();
+        assert!(
+            pending.is_empty(),
+            "a row claimed in-transaction must not be claimable by the poller"
+        );
     }
 
     #[tokio::test]
