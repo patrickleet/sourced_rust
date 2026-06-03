@@ -153,7 +153,8 @@ where
             while index < consumers.len() {
                 match consumers[index].as_mut().poll(cx) {
                     Poll::Ready(Ok(())) => {
-                        consumers.remove(index);
+                        // Drop the finished consumer future; nothing left to poll.
+                        let _finished = consumers.remove(index);
                     }
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                     Poll::Pending => index += 1,
