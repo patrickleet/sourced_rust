@@ -7,10 +7,15 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::dependencies::{HasReadModelStore, HasRepo};
+use super::dependencies::{HasOutboxStore, HasReadModelStore, HasRepo};
 use super::error::HandlerError;
+use super::service::ImmediatePublish;
 use super::session::Session;
+use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::bus::Message;
+use crate::outbox::{CommitReceipt, OutboxMessage};
+use crate::outbox_worker::{AsyncOutboxStore, OutboxClaimRef};
+use crate::repository::TransactionalCommit;
 
 /// The context passed to every handler.
 ///
@@ -38,6 +43,8 @@ pub struct Context<'a, D> {
     session: Session,
     /// Reference to the service dependencies.
     dependencies: &'a D,
+    /// After-commit publish config, present when a bus is attached.
+    immediate_publish: Option<&'a ImmediatePublish>,
 }
 
 impl<'a, D> Context<'a, D> {
@@ -47,12 +54,14 @@ impl<'a, D> Context<'a, D> {
         input: Value,
         session: Session,
         dependencies: &'a D,
+        immediate_publish: Option<&'a ImmediatePublish>,
     ) -> Self {
         Self {
             message,
             input,
             session,
             dependencies,
+            immediate_publish,
         }
     }
 
@@ -117,6 +126,56 @@ impl<'a, D> Context<'a, D> {
         D: HasReadModelStore,
     {
         self.dependencies.read_model_store()
+    }
+
+    /// Commit an aggregate and an outbox message together, then publish the
+    /// message — the durable-enqueue command path.
+    ///
+    /// When the service was built with a bus (`Service::with_bus`), this claims
+    /// the outbox row in the commit transaction and publishes it immediately
+    /// after commit through the configured bus. The publish is best-effort: a
+    /// failure leaves the row claimed/retryable for the polling worker and does
+    /// **not** roll back the committed aggregate, so the command still succeeds.
+    ///
+    /// When no bus is configured, the row is committed `pending` and left for the
+    /// polling worker to publish.
+    pub async fn commit_outbox<R, A>(
+        &self,
+        aggregate: &mut A,
+        message: OutboxMessage,
+    ) -> Result<CommitReceipt, HandlerError>
+    where
+        D: HasRepo<Repo = AggregateRepository<R, A>>,
+        R: TransactionalCommit + HasOutboxStore,
+        A: Aggregate + Send,
+    {
+        let repo = self.repo();
+
+        let Some(immediate) = self.immediate_publish else {
+            // No bus configured: durable enqueue only; the worker publishes.
+            return Ok(repo.outbox(message).commit(aggregate).await?);
+        };
+
+        // Claim the row in the commit transaction, then publish after commit.
+        // The lease hands the row to the poller if we crash before completing.
+        let (receipt, claimed) = repo
+            .outbox(message)
+            .commit_claimed(aggregate, &immediate.worker_id, immediate.lease)
+            .await?;
+        let claim = OutboxClaimRef::from_message(&claimed)?;
+        let transport = Message::from(&claimed);
+        let store = repo.outbox_store();
+        match immediate.publisher.publish_dyn(transport).await {
+            Ok(()) => store.complete_async(&claim).await?,
+            Err(error) => {
+                // Best-effort: release/fail the claim for retry; the command
+                // still succeeded because the aggregate + row are committed.
+                store
+                    .record_failure_async(&claim, &error.to_string(), immediate.max_attempts)
+                    .await?;
+            }
+        }
+        Ok(receipt)
     }
 
     /// Check if the raw input contains a field.
