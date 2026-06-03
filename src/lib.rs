@@ -67,7 +67,8 @@ pub use lock::{SqliteLock, SqliteLockManager};
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, OutboxCommit, OutboxMessage, OutboxMessageStatus, OUTBOX_MESSAGES_TABLE,
+    outbox_message_schema, CommitReceipt, OutboxCommit, OutboxMessage, OutboxMessageStatus,
+    OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
