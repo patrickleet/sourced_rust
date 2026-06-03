@@ -11,11 +11,9 @@ use super::dependencies::{HasOutboxStore, HasReadModelStore, HasRepo};
 use super::error::HandlerError;
 use super::service::ImmediatePublish;
 use super::session::Session;
-use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::bus::Message;
-use crate::outbox::{CommitReceipt, OutboxMessage};
+use crate::outbox::{CommitReceipt, OutboxCommitting, OutboxMessage};
 use crate::outbox_worker::{AsyncOutboxStore, OutboxClaimRef};
-use crate::repository::TransactionalCommit;
 
 /// The context passed to every handler.
 ///
@@ -139,28 +137,27 @@ impl<'a, D> Context<'a, D> {
     ///
     /// When no bus is configured, the row is committed `pending` and left for the
     /// polling worker to publish.
-    pub async fn commit_outbox<R, A>(
+    pub async fn commit_outbox<A>(
         &self,
         aggregate: &mut A,
         message: OutboxMessage,
     ) -> Result<CommitReceipt, HandlerError>
     where
-        D: HasRepo<Repo = AggregateRepository<R, A>>,
-        R: TransactionalCommit + HasOutboxStore,
-        A: Aggregate + Send,
+        D: HasRepo,
+        D::Repo: OutboxCommitting<A> + HasOutboxStore,
+        A: Send,
     {
         let repo = self.repo();
 
         let Some(immediate) = self.immediate_publish else {
             // No bus configured: durable enqueue only; the worker publishes.
-            return Ok(repo.outbox(message).commit(aggregate).await?);
+            return Ok(repo.commit_outbox_pending(aggregate, message).await?);
         };
 
         // Claim the row in the commit transaction, then publish after commit.
         // The lease hands the row to the poller if we crash before completing.
         let (receipt, claimed) = repo
-            .outbox(message)
-            .commit_claimed(aggregate, &immediate.worker_id, immediate.lease)
+            .commit_outbox_claimed(aggregate, message, &immediate.worker_id, immediate.lease)
             .await?;
         let claim = OutboxClaimRef::from_message(&claimed)?;
         let transport = Message::from(&claimed);
