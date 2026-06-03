@@ -92,7 +92,7 @@ pub use outbox_worker::{
 #[cfg(feature = "emitter")]
 pub use outbox_worker::LocalEmitterPublisher;
 pub use outbox_worker::{
-    OutboxDispatchOutcome, OutboxDispatcher, OutboxSource, ReceivedOutboxMessage,
+    BusPublisher, OutboxDispatchOutcome, OutboxDispatcher, OutboxSource, ReceivedOutboxMessage,
     DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE, SOURCED_METADATA_PREFIX,
 };
 
