@@ -87,6 +87,10 @@ impl<D: Send + Sync + 'static> Service<D> {
     }
 }
 
+/// A running transport consumer (a `listen` or `subscribe` loop), borrowing the
+/// bus for `'b`.
+type ConsumerFuture<'b> = Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'b>>;
+
 /// Drive a service's command/event consumers concurrently on the caller's
 /// runtime — no spawn, no timer. Returns on the first error; finishes when all
 /// consumers stop.
@@ -100,8 +104,7 @@ where
     B: Bus + BusConsumer,
 {
     let plan = service.subscription_plan();
-    let mut consumers: Vec<Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'b>>> =
-        Vec::new();
+    let mut consumers: Vec<ConsumerFuture<'b>> = Vec::new();
     if !plan.commands.is_empty() {
         consumers.push(Box::pin(bus.listen(Arc::clone(&service), options.clone())));
     }
@@ -139,7 +142,7 @@ mod tests {
     use crate::outbox_worker::AsyncOutboxStore;
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, OutboxMessage,
-        OutboxMessageStatus, QueuedRepository, Queueable, Snapshot,
+        OutboxMessageStatus, Queueable, QueuedRepository, Snapshot,
     };
 
     #[derive(Default)]
@@ -159,7 +162,8 @@ mod tests {
 
     #[tokio::test]
     async fn plain_commit_publishes_immediately_when_bus_is_attached() {
-        let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+        let service = Service::new()
+            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .with_bus(InMemoryBus::new());
         let store = service.repo().outbox_store();
 
@@ -167,7 +171,12 @@ mod tests {
         let mut dummy = Dummy::default();
         dummy.touch().unwrap();
         let message = OutboxMessage::create("evt-1", "dummy.touched", b"{}".to_vec()).unwrap();
-        let receipt = service.repo().outbox(message).commit(&mut dummy).await.unwrap();
+        let receipt = service
+            .repo()
+            .outbox(message)
+            .commit(&mut dummy)
+            .await
+            .unwrap();
         assert_eq!(receipt.outbox_message_ids(), ["evt-1".to_string()]);
 
         let published = store
@@ -193,7 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_through_a_handler_publishes_immediately() {
-        let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+        let service = Service::new()
+            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .command("dummy.touch")
             .handle(touch_and_publish)
             .with_bus(InMemoryBus::new());
@@ -218,7 +228,8 @@ mod tests {
     #[tokio::test]
     async fn run_consumes_registered_commands_from_the_bus() {
         let bus = InMemoryBus::new();
-        let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+        let service = Service::new()
+            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .command("dummy.touch")
             .handle(touch_and_publish)
             .with_bus(bus.clone());
@@ -274,15 +285,16 @@ mod tests {
         // `outbox().commit()` must work for a snapshot-backed repository too: the
         // outbox row and the snapshot commit together in one transaction, then
         // the row publishes immediately.
-        let service = Service::with_repo(
-            HashMapRepository::new()
-                .queued()
-                .aggregate::<SnapCounter>()
-                .with_snapshots(1),
-        )
-        .command("snap.touch")
-        .handle(touch_snap)
-        .with_bus(InMemoryBus::new());
+        let service = Service::new()
+            .with_repo(
+                HashMapRepository::new()
+                    .queued()
+                    .aggregate::<SnapCounter>()
+                    .with_snapshots(1),
+            )
+            .command("snap.touch")
+            .handle(touch_snap)
+            .with_bus(InMemoryBus::new());
 
         service
             .dispatch("snap.touch", json!({}), Session::new())

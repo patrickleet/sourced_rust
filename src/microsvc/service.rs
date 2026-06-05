@@ -9,7 +9,7 @@
 //! use distributed::microsvc;
 //! use serde_json::json;
 //!
-//! let service = microsvc::Service::new(())
+//! let service = microsvc::Service::new()
 //!     .command("order.create")
 //!     .handle(|ctx| {
 //!         let input = ctx.input::<CreateOrderInput>()?;
@@ -184,9 +184,9 @@ impl<D: Send + Sync + 'static> HandlerBuilder<D> {
 
 /// A microservice that routes commands to handler functions.
 ///
-/// Generic over `D`, the service dependency type. Prefer
-/// [`Service::with_repo`], [`Service::with_read_model_store`], or
-/// [`Service::with_repo_and_read_model_store`] for common dependency shapes.
+/// Generic over `D`, the service dependency type. Build one fluently from
+/// [`Service::new`], adding dependencies and a bus with the `with_*` steps:
+/// `Service::new().with_repo(repo).with_read_model_store(store).with_bus(bus)`.
 pub struct Service<D> {
     dependencies: D,
     handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
@@ -195,8 +195,8 @@ pub struct Service<D> {
 }
 
 impl<D: Send + Sync + 'static> Service<D> {
-    /// Create a new service with custom dependencies.
-    pub fn new(dependencies: D) -> Self {
+    /// Build a service around an already-assembled dependency value.
+    pub(crate) fn from_dependencies(dependencies: D) -> Self {
         Self {
             dependencies,
             handlers: HashMap::new(),
@@ -219,22 +219,6 @@ impl<D: Send + Sync + 'static> Service<D> {
     /// Take the installed bus run behavior (used by `run`).
     pub(crate) fn take_runner(&mut self) -> Option<ServiceRunner<D>> {
         self.runner.take()
-    }
-
-    /// Create a service whose dependency type is an aggregate repository.
-    pub fn with_repo(repo: D) -> Self
-    where
-        D: HasRepo,
-    {
-        Self::new(repo)
-    }
-
-    /// Create a service whose dependency type is a read-model store.
-    pub fn with_read_model_store(read_model_store: D) -> Self
-    where
-        D: HasReadModelStore,
-    {
-        Self::new(read_model_store)
     }
 
     /// Start registering a command handler that consumes JSON payload input.
@@ -447,11 +431,64 @@ impl<D: Send + Sync + 'static> Service<D> {
     }
 }
 
-impl<R: Send + Sync + 'static, S: Send + Sync + 'static> Service<RepoReadModelDependencies<R, S>> {
-    /// Create a service whose handlers need both an aggregate repository and a
-    /// read-model store.
-    pub fn with_repo_and_read_model_store(repo: R, read_model_store: S) -> Self {
-        Self::new(RepoReadModelDependencies::new(repo, read_model_store))
+// =============================================================================
+// Dependency builder: `Service::new().with_repo(..).with_read_model_store(..)`
+// =============================================================================
+
+impl Default for Service<()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Service<()> {
+    /// Start building a service. Add dependencies and a bus with the `with_*`
+    /// builder steps, then register handlers:
+    ///
+    /// ```ignore
+    /// Service::new()
+    ///     .with_repo(repo)
+    ///     .with_read_model_store(store)
+    ///     .with_bus(bus)
+    ///     .command("x").handle(handler)
+    ///     .run(opts).await?;
+    /// ```
+    pub fn new() -> Self {
+        Self::from_dependencies(())
+    }
+
+    /// Use an aggregate repository as the service's dependency.
+    pub fn with_repo<R>(self, repo: R) -> Service<R>
+    where
+        R: HasRepo + Send + Sync + 'static,
+    {
+        Service::from_dependencies(repo)
+    }
+
+    /// Use a read-model store as the service's dependency.
+    pub fn with_read_model_store<S>(self, read_model_store: S) -> Service<S>
+    where
+        S: HasReadModelStore + Send + Sync + 'static,
+    {
+        Service::from_dependencies(read_model_store)
+    }
+}
+
+impl<R: HasRepo + Send + Sync + 'static> Service<R> {
+    /// Add a read-model store alongside the aggregate repository, so handlers can
+    /// reach both via `ctx.repo()` and `ctx.read_model_store()`. Call after
+    /// `with_repo`.
+    pub fn with_read_model_store<S>(
+        self,
+        read_model_store: S,
+    ) -> Service<RepoReadModelDependencies<R, S>>
+    where
+        S: HasReadModelStore + Send + Sync + 'static,
+    {
+        Service::from_dependencies(RepoReadModelDependencies::new(
+            self.dependencies,
+            read_model_store,
+        ))
     }
 }
 
@@ -501,7 +538,7 @@ mod tests {
     use serde_json::json;
 
     fn test_service() -> Service<()> {
-        Service::new(())
+        Service::new()
     }
 
     #[tokio::test]

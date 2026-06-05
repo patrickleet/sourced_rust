@@ -800,7 +800,7 @@ fn build_collector() -> (StdArc<Service<()>>, Collected) {
         collected.clone(),
         collected.clone(),
     );
-    let service = Service::new(())
+    let service = Service::new()
         .event(seat_event::ADDED)
         .handle(move |ctx: &Context<()>| {
             record_message(&c1, ctx.message());

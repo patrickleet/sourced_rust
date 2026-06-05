@@ -63,7 +63,7 @@ pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
 // Outbox -> bus bridge (moved out of the bus module; depends up on bus traits).
 pub use bus_publisher::BusPublisher;
 pub use outbox_dispatch::{OutboxDispatchOutcome, OutboxDispatcher, SOURCED_METADATA_PREFIX};
-pub use publish_hook::BusOutboxPublishHook;
 pub use outbox_source::{
     OutboxSource, ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
 };
+pub use publish_hook::BusOutboxPublishHook;

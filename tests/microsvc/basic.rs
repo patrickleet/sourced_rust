@@ -8,7 +8,8 @@ use crate::models::counter::{Counter, CreateCounter, DecrementCounter, Increment
 
 #[tokio::test]
 async fn full_lifecycle() {
-    let service = Service::with_repo(HashMapRepository::new())
+    let service = Service::new()
+        .with_repo(HashMapRepository::new())
         .command("counter.initialize")
         .handle(|ctx: &Context<HashMapRepository>| {
             let input = ctx.input::<CreateCounter>();

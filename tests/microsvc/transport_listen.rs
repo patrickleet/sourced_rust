@@ -20,7 +20,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
@@ -169,11 +169,11 @@ async fn multiple_services_on_different_queues() {
     let store = HashMapRepository::new();
 
     let service_a = Arc::new(distributed::register_handlers!(
-        Service::with_repo(store.clone().queued().aggregate::<Counter>()),
+        Service::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
     ));
     let service_b = Arc::new(distributed::register_handlers!(
-        Service::with_repo(store.queued().aggregate::<Counter>()),
+        Service::new().with_repo(store.queued().aggregate::<Counter>()),
         command handlers::counter_increment,
     ));
 
