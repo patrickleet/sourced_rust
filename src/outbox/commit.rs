@@ -358,4 +358,68 @@ mod tests {
             "snapshot should be staged alongside the read-model commit"
         );
     }
+
+    #[tokio::test]
+    async fn aggregate_outbox_read_model_and_snapshot_commit_in_one_transaction() {
+        use crate::{
+            Aggregate, GetStream, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey,
+            RowValue, SnapshotStore, StreamIdentity,
+        };
+
+        let repo = HashMapRepository::new()
+            .aggregate::<ComposeCounter>()
+            .with_snapshots(1);
+
+        let mut counter = ComposeCounter::default();
+        counter.bump("c1".to_string()).unwrap();
+
+        let mut plan = ReadModelWritePlanBuilder::new();
+        plan.upsert(&ComposeView {
+            id: "c1".into(),
+            n: 1,
+        })
+        .unwrap();
+
+        let message = OutboxMessage::create("evt-c1", "counter.bumped", b"{}".to_vec()).unwrap();
+
+        // All four in one commit: aggregate events + outbox row + read-model
+        // write + snapshot.
+        let receipt = repo
+            .outbox(message)
+            .read_models(plan)
+            .commit(&mut counter)
+            .await
+            .unwrap();
+        assert_eq!(receipt.outbox_message_ids(), ["evt-c1".to_string()]);
+
+        let identity = StreamIdentity::new(ComposeCounter::aggregate_type(), "c1").unwrap();
+
+        // 1) aggregate stream committed
+        assert!(
+            repo.repo().get_stream(&identity).await.unwrap().is_some(),
+            "aggregate stream should be committed"
+        );
+
+        // 2) outbox row present (pending — no bus attached here)
+        let pending = repo.repo().outbox_store().pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), "evt-c1");
+
+        // 3) read-model row written
+        let loaded = repo
+            .repo()
+            .model_store()
+            .workspace()
+            .load::<ComposeView>(RowKey::new([("id", RowValue::String("c1".into()))]))
+            .one()
+            .await
+            .unwrap();
+        assert!(loaded.is_some(), "read-model row should be committed");
+
+        // 4) snapshot staged
+        assert!(
+            repo.repo().get_snapshot(&identity).await.unwrap().is_some(),
+            "snapshot should be staged"
+        );
+    }
 }
