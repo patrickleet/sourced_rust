@@ -33,6 +33,13 @@ pub fn generate_service_scaffold(
     Ok(Scaffold::from_spec(spec)?.generate())
 }
 
+/// Normalize a free-form service name to its kebab-case package/crate directory
+/// name — the same normalization [`generate_service_scaffold`] applies. Callers
+/// need this to compute a default output directory before generating.
+pub fn package_name(name: &str) -> Result<String, ScaffoldError> {
+    Ok(ScaffoldNames::new(name)?.package_name)
+}
+
 /// The normalized scaffold: spec values resolved into derived names, models, and
 /// handlers. Template methods are implemented in the `service_crate` submodule.
 pub(crate) struct Scaffold {

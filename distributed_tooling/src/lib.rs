@@ -13,7 +13,7 @@
 
 mod generate;
 
-pub use generate::generate_service_scaffold;
+pub use generate::{generate_service_scaffold, package_name};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].
 ///
