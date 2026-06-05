@@ -353,7 +353,6 @@ async fn snapshot_plus_upcasting_post_snapshot_events() {
     let snapshot_identity = StreamIdentity::new(TodoV2::aggregate_type(), "t1").unwrap();
     assert!(repo
         .repo()
-        .repo()
         .get_snapshot(&snapshot_identity)
         .await
         .unwrap()

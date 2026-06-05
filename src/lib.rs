@@ -145,8 +145,7 @@ pub use commit_builder::{
 
 // Snapshot: state snapshot payloads and rebuildable cache records for hydration
 pub use snapshot::{
-    hydrate_from_snapshot, InMemorySnapshotStore, SnapshotAggregateRepository, SnapshotRecord,
-    Snapshottable,
+    hydrate_from_snapshot, InMemorySnapshotStore, SnapshotRecord, Snapshottable,
 };
 
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)

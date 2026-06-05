@@ -206,7 +206,7 @@ mod tests {
     use crate::outbox_worker::AsyncOutboxStore;
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, OutboxMessage,
-        OutboxMessageStatus, QueuedRepository, Queueable,
+        OutboxMessageStatus, QueuedRepository, Queueable, Snapshot,
     };
 
     #[derive(Default)]
@@ -320,5 +320,64 @@ mod tests {
             1,
             "run() should consume the command and publish its outbox row"
         );
+    }
+
+    #[derive(Default, Snapshot)]
+    struct SnapCounter {
+        entity: Entity,
+        value: i64,
+    }
+
+    #[sourced(entity, aggregate_type = "snap_counter")]
+    impl SnapCounter {
+        #[event("touched")]
+        fn touch(&mut self, id: String) {
+            self.entity.set_id(&id);
+            self.value += 1;
+        }
+    }
+
+    // Snapshots are a transparent optimization: the repo type is unchanged.
+    type SnapRepo = AggregateRepository<QueuedRepository<HashMapRepository>, SnapCounter>;
+
+    async fn touch_snap(ctx: &Context<'_, SnapRepo>) -> Result<Value, HandlerError> {
+        let mut counter = SnapCounter::default();
+        counter.touch("s1".to_string())?;
+        let message = OutboxMessage::create("evt-s1", "snap.touched", b"{}".to_vec())?;
+        ctx.commit_outbox(&mut counter, message).await?;
+        Ok(json!({}))
+    }
+
+    #[tokio::test]
+    async fn commit_outbox_works_with_snapshot_backed_repo() {
+        // `commit_outbox` must work for a snapshot-backed repository too: the
+        // outbox row and the snapshot commit together in one transaction, then
+        // the row publishes immediately.
+        let repo = HashMapRepository::new()
+            .queued()
+            .aggregate::<SnapCounter>()
+            .with_snapshots(1);
+        let microservice = Service::with_repo(repo)
+            .command("snap.touch")
+            .handle(touch_snap)
+            .with_bus(InMemoryBus::new());
+
+        microservice
+            .service()
+            .dispatch("snap.touch", json!({}), Session::new())
+            .await
+            .unwrap();
+
+        let store = microservice.service().repo().outbox_store();
+        let published = store
+            .messages_by_status_async(OutboxMessageStatus::Published)
+            .await
+            .unwrap();
+        assert_eq!(
+            published.len(),
+            1,
+            "snapshot-backed commit_outbox should publish immediately"
+        );
+        assert_eq!(published[0].id(), "evt-s1");
     }
 }
