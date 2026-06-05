@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::outbox::OutboxMessage;
+use crate::read_model::{ReadModelWritePlan, ReadModelWritePlanBuilder};
 use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
@@ -75,81 +76,132 @@ impl CommitReceipt {
     }
 }
 
-/// Helper returned by [`AggregateRepository::outbox`] to commit an aggregate
-/// and an outbox row in the same async transactional batch.
+/// Builder returned by [`AggregateRepository::outbox`] and
+/// [`AggregateRepository::read_models`] that commits an aggregate together with
+/// outbox rows, relational read-model writes, and (when the repository has
+/// snapshots configured) a snapshot — all in one async transactional batch.
 ///
 /// Borrows the repository so it can be called through `ctx.repo()` inside async
-/// handlers.
-pub struct OutboxCommit<'a, R, A> {
+/// handlers. Chain `.outbox(..)` / `.read_models(..)` to stage more, then
+/// `.commit(&mut aggregate)`.
+pub struct AggregateCommit<'a, R, A> {
     repo: &'a AggregateRepository<R, A>,
-    message: OutboxMessage,
+    outbox_messages: Vec<OutboxMessage>,
+    read_model_plans: Vec<ReadModelWritePlan>,
+    error: Option<RepositoryError>,
 }
 
-impl<R, A> OutboxCommit<'_, R, A>
+impl<'a, R, A> AggregateCommit<'a, R, A> {
+    fn empty(repo: &'a AggregateRepository<R, A>) -> Self {
+        Self {
+            repo,
+            outbox_messages: Vec::new(),
+            read_model_plans: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// Stage an outbox message to publish/enqueue with the commit.
+    pub fn outbox(mut self, message: OutboxMessage) -> Self {
+        self.outbox_messages.push(message);
+        self
+    }
+
+    /// Stage relational read-model writes to apply in the same transaction.
+    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
+        if self.error.is_none() {
+            match read_models.into_write_plan() {
+                Ok(plan) => self.read_model_plans.push(plan),
+                Err(err) => self.error = Some(err.into()),
+            }
+        }
+        self
+    }
+}
+
+impl<R, A> AggregateCommit<'_, R, A>
 where
     R: TransactionalCommit,
     A: Aggregate + Send,
 {
-    /// Commit the aggregate and outbox message together, and — when the
-    /// repository has a bus configured (via `Service::with_bus`) — publish the
-    /// row immediately.
+    /// Commit the aggregate together with the staged outbox rows, read-model
+    /// writes, and a snapshot (when due) in one transaction — and, when the
+    /// repository has a bus configured (via `Service::with_bus`), publish the
+    /// outbox rows immediately.
     ///
-    /// With a bus configured, the row is **claimed in this same transaction**
-    /// (born `InFlight` under a short lease) and published right after commit, so
-    /// publication needs no separate claim and cannot race the polling worker; a
-    /// crash before publish hands the row back to the worker at lease expiry, and
-    /// a publish failure leaves it retryable. Without a bus, the row is committed
-    /// `pending` for the polling worker to publish. A snapshot is also staged when
-    /// the repository has snapshots configured and one is due — all in the one
-    /// transaction.
+    /// With a bus configured, each outbox row is **claimed in this same
+    /// transaction** (born `InFlight` under a short lease) and published right
+    /// after commit, so publication needs no separate claim and cannot race the
+    /// polling worker; a crash before publish hands the row back to the worker at
+    /// lease expiry, and a publish failure leaves it retryable. Without a bus,
+    /// rows are committed `pending` for the worker to publish.
     ///
-    /// Returns a [`CommitReceipt`] carrying the inserted outbox message id.
+    /// Returns a [`CommitReceipt`] carrying the inserted outbox message ids.
     pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
-        self.message.set_source(aggregate);
-        let outbox_message_id = self.message.id().to_string();
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
+        for message in &mut self.outbox_messages {
+            message.set_source(aggregate);
+        }
+        let outbox_message_ids: Vec<String> = self
+            .outbox_messages
+            .iter()
+            .map(|message| message.id().to_string())
+            .collect();
 
-        // When a bus is configured, claim the row in this transaction so it can
-        // be published immediately after commit; otherwise leave it `pending`.
+        // When a bus is configured, claim the rows in this transaction so they
+        // can be published immediately after commit; otherwise leave them
+        // `pending`.
         let publisher = self.repo.outbox_publisher();
-        let claimed = match publisher {
-            Some(config) => {
-                self.message
-                    .claim_at(&config.worker_id, config.lease, SystemTime::now())?;
-                Some(self.message.clone())
+        let mut claimed = Vec::new();
+        if let Some(config) = publisher {
+            let now = SystemTime::now();
+            for message in &mut self.outbox_messages {
+                message.claim_at(&config.worker_id, config.lease, now)?;
+                claimed.push(message.clone());
             }
-            None => None,
-        };
+        }
 
         let (snapshots, snapshot_version) = self.repo.snapshot_writes_for(aggregate)?;
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let stream = StreamWrite::new(identity, aggregate.entity_mut());
-        let mut batch = CommitBatch::new(vec![stream]);
-        batch.outbox_messages.push(self.message);
-        batch.snapshots = snapshots;
-        self.repo.repo().commit_batch(batch).await?;
+        self.repo
+            .repo()
+            .commit_batch(CommitBatch {
+                streams: vec![stream],
+                outbox_messages: self.outbox_messages,
+                read_model_plans: self.read_model_plans,
+                snapshots,
+                inbox_receipts: Vec::new(),
+            })
+            .await?;
         if let Some(version) = snapshot_version {
             aggregate.entity_mut().set_snapshot_version(version);
         }
 
         // Best-effort immediate publish. A failure leaves the claimed row for the
         // polling worker and never fails the already-committed command.
-        if let (Some(config), Some(claimed)) = (publisher, claimed) {
-            let _ = config.hook.publish_claimed(claimed).await;
+        if let Some(config) = publisher {
+            for message in claimed {
+                let _ = config.hook.publish_claimed(message).await;
+            }
         }
 
-        Ok(CommitReceipt {
-            outbox_message_ids: vec![outbox_message_id],
-        })
+        Ok(CommitReceipt { outbox_message_ids })
     }
 }
 
 impl<R, A> AggregateRepository<R, A> {
-    /// Attach an outbox message to be committed with the aggregate.
-    pub fn outbox(&self, message: OutboxMessage) -> OutboxCommit<'_, R, A> {
-        OutboxCommit {
-            repo: self,
-            message,
-        }
+    /// Start a commit with an outbox message attached.
+    pub fn outbox(&self, message: OutboxMessage) -> AggregateCommit<'_, R, A> {
+        AggregateCommit::empty(self).outbox(message)
+    }
+
+    /// Start a commit with relational read-model writes attached. Composes with
+    /// `.outbox(..)`, the aggregate's events, and snapshots in one transaction.
+    pub fn read_models(&self, read_models: ReadModelWritePlanBuilder) -> AggregateCommit<'_, R, A> {
+        AggregateCommit::empty(self).read_models(read_models)
     }
 }
 
@@ -237,6 +289,73 @@ mod tests {
         assert_eq!(
             repo.repo().seen_ids.lock().unwrap().as_slice(),
             &["dummy-1".to_string(), "msg-fail".to_string()]
+        );
+    }
+
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, crate::ReadModel)]
+    #[table("agg_commit_views")]
+    struct ComposeView {
+        #[id]
+        id: String,
+        n: i32,
+    }
+
+    #[derive(Default, crate::Snapshot)]
+    struct ComposeCounter {
+        entity: Entity,
+        value: i64,
+    }
+
+    #[sourced(entity, aggregate_type = "agg_commit_counter")]
+    impl ComposeCounter {
+        #[event("bumped")]
+        fn bump(&mut self, id: String) {
+            self.entity.set_id(&id);
+            self.value += 1;
+        }
+    }
+
+    #[tokio::test]
+    async fn read_models_and_snapshot_commit_in_one_transaction() {
+        use crate::{
+            Aggregate, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey, RowValue,
+            SnapshotStore, StreamIdentity,
+        };
+
+        let repo = HashMapRepository::new()
+            .aggregate::<ComposeCounter>()
+            .with_snapshots(1);
+
+        let mut counter = ComposeCounter::default();
+        counter.bump("c1".to_string()).unwrap();
+
+        let mut plan = ReadModelWritePlanBuilder::new();
+        plan.upsert(&ComposeView {
+            id: "c1".into(),
+            n: 1,
+        })
+        .unwrap();
+
+        // Read-model writes + the aggregate's events + a snapshot — one commit.
+        repo.read_models(plan).commit(&mut counter).await.unwrap();
+
+        // The read-model row is committed...
+        let loaded = repo
+            .repo()
+            .model_store()
+            .workspace()
+            .load::<ComposeView>(RowKey::new([("id", RowValue::String("c1".into()))]))
+            .one()
+            .await
+            .unwrap();
+        assert!(loaded.is_some(), "read-model row should be committed");
+
+        // ...and a snapshot was staged in the same transaction (frequency 1).
+        let identity = StreamIdentity::new(ComposeCounter::aggregate_type(), "c1").unwrap();
+        let snapshot = repo.repo().get_snapshot(&identity).await.unwrap();
+        assert!(
+            snapshot.is_some(),
+            "snapshot should be staged alongside the read-model commit"
         );
     }
 }
