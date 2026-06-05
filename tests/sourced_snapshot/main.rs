@@ -176,7 +176,7 @@ async fn sourced_attr_snapshot_roundtrip_via_repo() {
 
     // At version 2, should have a snapshot
     let identity = StreamIdentity::new(Counter::aggregate_type(), "c1").unwrap();
-    let snap_record = repo.repo().repo().get_snapshot(&identity).await.unwrap();
+    let snap_record = repo.repo().get_snapshot(&identity).await.unwrap();
     assert!(snap_record.is_some());
 
     let loaded = repo.get("c1").await.unwrap().unwrap();

@@ -3,7 +3,6 @@
 use crate::aggregate::AggregateRepository;
 use crate::outbox_worker::AsyncOutboxStore;
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
-use crate::snapshot::SnapshotAggregateRepository;
 
 /// Dependency capability for services that expose an aggregate repository.
 pub trait HasRepo {
@@ -80,16 +79,6 @@ where
     }
 }
 
-impl<R, A> HasOutboxStore for SnapshotAggregateRepository<R, A>
-where
-    R: HasOutboxStore,
-{
-    type OutboxStore = <AggregateRepository<R, A> as HasOutboxStore>::OutboxStore;
-    fn outbox_store(&self) -> Self::OutboxStore {
-        self.repo().outbox_store()
-    }
-}
-
 impl<R> HasRepo for R
 where
     R: Repository,
@@ -102,14 +91,6 @@ where
 }
 
 impl<R, A> HasRepo for AggregateRepository<R, A> {
-    type Repo = Self;
-
-    fn repo(&self) -> &Self::Repo {
-        self
-    }
-}
-
-impl<R, A> HasRepo for SnapshotAggregateRepository<R, A> {
     type Repo = Self;
 
     fn repo(&self) -> &Self::Repo {

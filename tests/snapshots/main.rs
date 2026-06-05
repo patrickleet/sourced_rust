@@ -62,7 +62,6 @@ async fn snapshot_created_at_frequency_threshold() {
     // Version 1 — below threshold of 2, no snapshot yet
     assert!(repo
         .repo()
-        .repo()
         .get_snapshot(&identity)
         .await
         .unwrap()
@@ -74,7 +73,7 @@ async fn snapshot_created_at_frequency_threshold() {
     repo.commit(&mut todo).await.unwrap();
 
     // Version 2 >= 0 + 2 — snapshot should now exist
-    let snap = repo.repo().repo().get_snapshot(&identity).await.unwrap();
+    let snap = repo.repo().get_snapshot(&identity).await.unwrap();
     assert!(snap.is_some());
     let snap = snap.unwrap();
     assert_eq!(snap.version, 2);
@@ -109,7 +108,6 @@ async fn no_snapshot_before_threshold() {
     // Only 1 event, threshold is 5
     assert!(repo
         .repo()
-        .repo()
         .get_snapshot(&identity)
         .await
         .unwrap()
@@ -132,7 +130,6 @@ async fn load_from_snapshot_produces_correct_state() {
 
     // Snapshot at version 2
     assert!(repo
-        .repo()
         .repo()
         .get_snapshot(&identity)
         .await
@@ -168,7 +165,6 @@ async fn snapshot_plus_newer_events() {
 
     // Snapshot exists at version 2, completed = true
     let snap = repo
-        .repo()
         .repo()
         .get_snapshot(&identity)
         .await
@@ -266,16 +262,14 @@ async fn no_snapshot_falls_back_to_full_replay() {
     // Snapshot exists
     assert!(repo
         .repo()
-        .repo()
         .get_snapshot(&identity)
         .await
         .unwrap()
         .is_some());
 
     // Delete the snapshot
-    repo.repo().repo().delete_snapshot(&identity).await.unwrap();
+    repo.repo().delete_snapshot(&identity).await.unwrap();
     assert!(repo
-        .repo()
         .repo()
         .get_snapshot(&identity)
         .await
@@ -306,7 +300,6 @@ async fn snapshot_version_advances_on_second_snapshot() {
     // First snapshot at version 1
     let snap = repo
         .repo()
-        .repo()
         .get_snapshot(&identity)
         .await
         .unwrap()
@@ -320,7 +313,6 @@ async fn snapshot_version_advances_on_second_snapshot() {
 
     // Second snapshot at version 2
     let snap = repo
-        .repo()
         .repo()
         .get_snapshot(&identity)
         .await
@@ -354,7 +346,6 @@ async fn with_queued_repo() {
 
     // Snapshot should exist through the queued + snapshot chain
     let snap = repo
-        .repo()
         .repo()
         .inner()
         .get_snapshot(&identity)
@@ -427,14 +418,12 @@ async fn commit_all_with_snapshots() {
     // Both should have snapshots at version 2
     let snap1 = repo
         .repo()
-        .repo()
         .get_snapshot(&identity1)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(snap1.version, 2);
     let snap2 = repo
-        .repo()
         .repo()
         .get_snapshot(&identity2)
         .await
