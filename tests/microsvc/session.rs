@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 #[tokio::test]
 async fn handler_accesses_user_id() {
-    let service = Service::new(())
+    let service = Service::new()
         .command("session.identify")
         .handle(|ctx: &Context<()>| {
             let user_id = ctx.user_id().map(|id| id.to_string());
@@ -29,7 +29,7 @@ async fn handler_accesses_user_id() {
 
 #[tokio::test]
 async fn missing_user_id_returns_unauthorized() {
-    let service = Service::new(())
+    let service = Service::new()
         .command("session.identify")
         .handle(|ctx: &Context<()>| {
             let user_id = ctx.user_id().map(|id| id.to_string());

@@ -6,7 +6,7 @@ use super::{handlers, CheckoutRepo};
 
 pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
     Arc::new(distributed::register_handlers!(
-        Service::with_repo(repo),
+        Service::new().with_repo(repo),
         command handlers::start,
         event handlers::record_seat_reserved,
     ))

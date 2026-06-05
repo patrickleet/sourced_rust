@@ -12,7 +12,7 @@
 //! use serde_json::json;
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::with_repo(HashMapRepository::new())
+//!     microsvc::Service::new().with_repo(HashMapRepository::new())
 //!         .command("order.create")
 //!         .handle(|ctx| {
 //!             let input = ctx.input::<CreateOrderInput>()?;
@@ -111,7 +111,7 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 /// # Example
 /// ```ignore
 /// let service = distributed::register_handlers!(
-///     microsvc::Service::with_repo(HashMapRepository::new()),
+///     microsvc::Service::new().with_repo(HashMapRepository::new()),
 ///     command handlers::counter_create,
 ///     command handlers::counter_increment,
 ///     event handlers::counter_rebuilt,

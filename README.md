@@ -128,7 +128,7 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(distributed::register_handlers!(
-        Service::with_repo(
+        Service::new().with_repo(
             HashMapRepository::new()
                 .queued()
                 .aggregate::<Todo>()
@@ -165,7 +165,7 @@ default you replace with a durable adapter.
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 let service = Arc::new(distributed::register_handlers!(
-    Service::with_repo(repo.queued().aggregate::<Todo>()),
+    Service::new().with_repo(repo.queued().aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
 ));
@@ -827,7 +827,7 @@ The `microsvc` module provides a convention-based async command/event handler fr
 
 ### Defining a Service
 
-A `Service<D>` is generic over a dependency type `D` that handlers read via `ctx`. Use `Service::with_repo` for aggregate command handlers, `Service::with_read_model_store` for projection handlers, `Service::with_repo_and_read_model_store` when a handler needs both, or `Service::new(deps)` for an arbitrary dependency.
+A `Service<D>` is generic over a dependency type `D` that handlers read via `ctx`. Build one fluently from `Service::new()`: add `.with_repo(repo)` for aggregate command handlers, `.with_read_model_store(store)` for projection handlers (chain both when a handler needs both), and `.with_bus(bus)` to consume from / publish to a transport.
 
 Handlers are registered with a fluent builder. `.command(name)` / `.event(name)` start a registration; `.handle(closure)` adds an unguarded handler and `.guarded(guard, closure)` adds a guarded one. The handler closure receives `&Context<D>` and returns a future:
 
@@ -838,7 +838,7 @@ use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 let service = Arc::new(
-    Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+    Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
         .command("counter.initialize")
         .handle(|ctx: &Context<Repo>| {
             let input = ctx.input::<CreateCounter>();
@@ -927,7 +927,7 @@ Register them with the `register_handlers!` macro:
 
 ```rust
 let service = distributed::register_handlers!(
-    Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
     command handlers::counter_create,
     command handlers::counter_increment,
 );

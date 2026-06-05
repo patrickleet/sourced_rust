@@ -60,12 +60,7 @@ async fn snapshot_created_at_frequency_threshold() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Version 1 — below threshold of 2, no snapshot yet
-    assert!(repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(repo.repo().get_snapshot(&identity).await.unwrap().is_none());
 
     // Load, add another event to reach version 2
     let mut todo = repo.get("t1").await.unwrap().unwrap();
@@ -106,12 +101,7 @@ async fn no_snapshot_before_threshold() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Only 1 event, threshold is 5
-    assert!(repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(repo.repo().get_snapshot(&identity).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -129,12 +119,7 @@ async fn load_from_snapshot_produces_correct_state() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Snapshot at version 2
-    assert!(repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .is_some());
+    assert!(repo.repo().get_snapshot(&identity).await.unwrap().is_some());
 
     // Reload — should use snapshot
     let loaded = repo.get("t1").await.unwrap().unwrap();
@@ -164,12 +149,7 @@ async fn snapshot_plus_newer_events() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Snapshot exists at version 2, completed = true
-    let snap = repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .unwrap();
+    let snap = repo.repo().get_snapshot(&identity).await.unwrap().unwrap();
     assert_eq!(snap.version, 2);
 
     // Now create a second todo to verify snapshot + partial replay works.
@@ -260,21 +240,11 @@ async fn no_snapshot_falls_back_to_full_replay() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Snapshot exists
-    assert!(repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .is_some());
+    assert!(repo.repo().get_snapshot(&identity).await.unwrap().is_some());
 
     // Delete the snapshot
     repo.repo().delete_snapshot(&identity).await.unwrap();
-    assert!(repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(repo.repo().get_snapshot(&identity).await.unwrap().is_none());
 
     // Loading should still work via full replay
     let loaded = repo.get("t1").await.unwrap().unwrap();
@@ -298,12 +268,7 @@ async fn snapshot_version_advances_on_second_snapshot() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // First snapshot at version 1
-    let snap = repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .unwrap();
+    let snap = repo.repo().get_snapshot(&identity).await.unwrap().unwrap();
     assert_eq!(snap.version, 1);
 
     // Add another event
@@ -312,12 +277,7 @@ async fn snapshot_version_advances_on_second_snapshot() {
     repo.commit(&mut todo).await.unwrap();
 
     // Second snapshot at version 2
-    let snap = repo
-        .repo()
-        .get_snapshot(&identity)
-        .await
-        .unwrap()
-        .unwrap();
+    let snap = repo.repo().get_snapshot(&identity).await.unwrap().unwrap();
     assert_eq!(snap.version, 2);
 
     // Verify the loaded aggregate has correct snapshot_version
@@ -345,12 +305,7 @@ async fn with_queued_repo() {
     let identity = StreamIdentity::new(Todo::aggregate_type(), "t1").unwrap();
 
     // Snapshot should exist through the queued + snapshot chain
-    let snap = repo
-        .repo()
-        .inner()
-        .get_snapshot(&identity)
-        .await
-        .unwrap();
+    let snap = repo.repo().inner().get_snapshot(&identity).await.unwrap();
     assert!(snap.is_some());
     assert_eq!(snap.unwrap().version, 2);
 
@@ -416,18 +371,8 @@ async fn commit_all_with_snapshots() {
     let identity2 = StreamIdentity::new(Todo::aggregate_type(), "t2").unwrap();
 
     // Both should have snapshots at version 2
-    let snap1 = repo
-        .repo()
-        .get_snapshot(&identity1)
-        .await
-        .unwrap()
-        .unwrap();
+    let snap1 = repo.repo().get_snapshot(&identity1).await.unwrap().unwrap();
     assert_eq!(snap1.version, 2);
-    let snap2 = repo
-        .repo()
-        .get_snapshot(&identity2)
-        .await
-        .unwrap()
-        .unwrap();
+    let snap2 = repo.repo().get_snapshot(&identity2).await.unwrap().unwrap();
     assert_eq!(snap2.version, 2);
 }
