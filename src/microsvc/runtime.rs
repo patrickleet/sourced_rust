@@ -1,208 +1,133 @@
-//! Runtime that ties a [`Service`] to a bus.
+//! Bus integration for [`Service`]: `with_bus` (a builder step) and `run`.
 //!
-//! `register_handlers!` builds a [`Service`] that is purely a consumer. Attaching
-//! a bus with [`Service::with_bus`] turns it into a [`Microservice`] that carries
-//! the transport config for both sides: it can drain committed outbox rows to the
-//! bus (produce) and — once `run` lands — derive listen/subscribe from the
-//! registered handlers (consume).
-//!
-//! The producing side is a thin assembly over [`OutboxDispatcher`] and
-//! [`BusPublisher`]: [`Microservice::dispatcher`] hands back a dispatcher whose
-//! store is the service's own outbox store and whose publisher routes through the
-//! attached bus by [`MessageKind`](crate::bus::MessageKind). The same dispatcher
-//! backs immediate after-commit dispatch and a background poll loop.
+//! Attaching a bus does not change the service's type. `with_bus` is a plain
+//! builder step on [`Service`] that (1) installs an outbox publisher on the
+//! repository, so `repo.outbox(msg).commit(agg)` publishes immediately, and
+//! (2) captures the bus's consume behavior as a type-erased closure on the
+//! service. `run` drives that closure. There is no separate runtime type.
 
+use std::future::{poll_fn, Future};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
-use super::dependencies::{ConfigurableOutboxPublisher, HasOutboxStore, HasRepo};
+use super::dependencies::{ConfigurableOutboxPublisher, HasOutboxStore};
 use super::Service;
 use crate::bus::{Bus, BusConsumer, RunOptions, TransportError};
 use crate::outbox::OutboxPublisherConfig;
-use crate::outbox_worker::{BusOutboxPublishHook, BusPublisher, OutboxDispatcher};
+use crate::outbox_worker::{BusOutboxPublishHook, BusPublisher};
 
-/// Default lease for an immediate after-commit outbox publish.
-///
-/// Short by design: it only needs to cover commit → publish, so a crash before
-/// the publish completes hands the row back to the polling worker quickly.
+/// Default lease for an immediate after-commit outbox publish. Short by design:
+/// it only needs to cover commit → publish, so a crash before the publish
+/// completes hands the row back to the polling worker quickly.
 pub const DEFAULT_PUBLISH_LEASE: Duration = Duration::from_secs(5);
 
 /// Default publish-failure ceiling before an outbox row is permanently failed.
 pub const DEFAULT_MAX_PUBLISH_ATTEMPTS: u32 = 5;
 
-/// A [`Service`] bound to a bus.
-///
-/// Holds the service and bus behind `Arc`s so the produce side (the dispatcher)
-/// and the consume side (listen/subscribe) can share them.
-pub struct Microservice<D, B> {
-    service: Arc<Service<D>>,
-    bus: Arc<B>,
-    worker_id: String,
-    publish_lease: Duration,
-    max_attempts: u32,
-}
-
-impl<D, B> Microservice<D, B> {
-    /// Bind a service to a bus with default dispatch settings.
-    pub fn new(service: Arc<Service<D>>, bus: Arc<B>) -> Self {
-        Self {
-            service,
-            bus,
-            worker_id: format!("microsvc-immediate:{}", std::process::id()),
-            publish_lease: DEFAULT_PUBLISH_LEASE,
-            max_attempts: DEFAULT_MAX_PUBLISH_ATTEMPTS,
-        }
-    }
-
-    /// The bound service.
-    pub fn service(&self) -> &Arc<Service<D>> {
-        &self.service
-    }
-
-    /// The bound bus.
-    pub fn bus(&self) -> &Arc<B> {
-        &self.bus
-    }
-
-    /// Set the worker id used to scope outbox claims (default
-    /// `microsvc-immediate:<pid>`).
-    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
-        self.worker_id = worker_id.into();
-        self
-    }
-
-    /// Set the lease taken when claiming an outbox row for publication.
-    pub fn with_publish_lease(mut self, lease: Duration) -> Self {
-        self.publish_lease = lease;
-        self
-    }
-
-    /// Set the publish-failure ceiling before a row is permanently failed.
-    pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
-        self.max_attempts = max_attempts;
-        self
-    }
-}
-
-impl<D, B> Microservice<D, B>
-where
-    D: HasRepo + Send + Sync + 'static,
-    D::Repo: HasOutboxStore,
-    B: Bus,
-{
-    /// Build a dispatcher that drains committed outbox rows to the bus.
-    ///
-    /// The store is the service's own outbox store; the publisher routes each
-    /// message to the bus by kind (commands point-to-point, events fan-out). The
-    /// same dispatcher is used by immediate after-commit dispatch
-    /// (`dispatch_ids`) and a background poll loop (`dispatch_batch`).
-    pub fn dispatcher(
-        &self,
-    ) -> OutboxDispatcher<<D::Repo as HasOutboxStore>::OutboxStore, BusPublisher<B>> {
-        OutboxDispatcher::new(
-            self.service.repo().outbox_store(),
-            BusPublisher::new(Arc::clone(&self.bus)),
-            self.worker_id.clone(),
-            self.publish_lease,
-            self.max_attempts,
-        )
-    }
-}
-
-impl<D, B> Microservice<D, B>
-where
-    D: Send + Sync + 'static,
-    B: Bus + BusConsumer,
-{
-    /// Run the service against the attached bus.
-    ///
-    /// Derives the consumers from the registered handlers: command handlers are
-    /// consumed with competing (point-to-point) `listen`, event handlers with
-    /// fan-out `subscribe`. Both run concurrently on the caller's runtime;
-    /// `run` returns when the consumers stop (a pull source that drains, or the
-    /// first error).
-    ///
-    /// Producing is handled separately: the primary path is immediate publish on
-    /// `repo.outbox(msg).commit(agg)` (enabled by `with_bus`); the background poll
-    /// loop (the crash backstop, which needs an async timer) is driven from
-    /// [`Self::dispatcher`] by a runtime that provides one.
-    pub async fn run(&self, options: RunOptions) -> Result<(), TransportError> {
-        use std::future::{poll_fn, Future};
-        use std::pin::Pin;
-        use std::task::Poll;
-
-        let plan = self.service.subscription_plan();
-        let mut consumers: Vec<
-            Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + '_>>,
-        > = Vec::new();
-        if !plan.commands.is_empty() {
-            consumers.push(Box::pin(
-                self.bus.listen(Arc::clone(&self.service), options.clone()),
-            ));
-        }
-        if !plan.events.is_empty() {
-            consumers.push(Box::pin(
-                self.bus.subscribe(Arc::clone(&self.service), options),
-            ));
-        }
-
-        // Drive every consumer concurrently on the caller's runtime — no spawn,
-        // no timer. Return on the first error; finish when all consumers stop.
-        poll_fn(move |cx| {
-            let mut index = 0;
-            while index < consumers.len() {
-                match consumers[index].as_mut().poll(cx) {
-                    Poll::Ready(Ok(())) => {
-                        // Drop the finished consumer future; nothing left to poll.
-                        let _finished = consumers.remove(index);
-                    }
-                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                    Poll::Pending => index += 1,
-                }
-            }
-            if consumers.is_empty() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        })
-        .await
-    }
-}
-
 impl<D> Service<D>
 where
     D: Send + Sync + 'static + HasOutboxStore + ConfigurableOutboxPublisher,
 {
-    /// Attach a bus, producing a [`Microservice`] that carries the transport
-    /// config for both producing and consuming.
+    /// Attach a bus — a builder step that returns the same [`Service`].
     ///
-    /// Attaching a bus installs an outbox publisher on the repository, so
-    /// `repo.outbox(msg).commit(agg)` (and `ctx.repo().outbox(...).commit(...)`)
-    /// claims the row in the commit transaction and publishes it immediately
-    /// through this bus — no separate call. The immediate path uses
-    /// [`DEFAULT_PUBLISH_LEASE`] and [`DEFAULT_MAX_PUBLISH_ATTEMPTS`]; the polling
-    /// worker remains the crash/retry backstop.
-    pub fn with_bus<B>(mut self, bus: B) -> Microservice<D, B>
+    /// Two effects, both composing with the rest of the builder:
+    /// - installs an outbox publisher on the repository, so
+    ///   `repo.outbox(msg).commit(agg)` claims the row in the commit transaction
+    ///   and publishes it immediately through this bus (the polling worker stays
+    ///   the crash/retry backstop);
+    /// - captures how to consume, so [`run`](Self::run) listens for the
+    ///   registered command names (competing) and subscribes to the event names
+    ///   (fan-out).
+    pub fn with_bus<B>(mut self, bus: B) -> Self
     where
-        B: Bus + 'static,
+        B: Bus + BusConsumer + 'static,
     {
         let bus = Arc::new(bus);
-        // Build the publish hook over the service's own outbox store + this bus,
-        // and install it on the repository so commits publish immediately.
+
         let hook = BusOutboxPublishHook::new(
             self.dependencies().outbox_store(),
             BusPublisher::new(Arc::clone(&bus)),
             DEFAULT_MAX_PUBLISH_ATTEMPTS,
         );
-        let config = OutboxPublisherConfig::new(
-            Arc::new(hook),
-            format!("microsvc-immediate:{}", std::process::id()),
-            DEFAULT_PUBLISH_LEASE,
-        );
-        self.dependencies_mut().configure_outbox_publisher(config);
-        Microservice::new(Arc::new(self), bus)
+        self.dependencies_mut()
+            .configure_outbox_publisher(OutboxPublisherConfig::new(
+                Arc::new(hook),
+                format!("microsvc-immediate:{}", std::process::id()),
+                DEFAULT_PUBLISH_LEASE,
+            ));
+
+        self.set_runner(Box::new(
+            move |service: Arc<Service<D>>, options: RunOptions| {
+                let bus = Arc::clone(&bus);
+                Box::pin(async move { run_consumers(&*bus, service, options).await })
+            },
+        ));
+        self
     }
+}
+
+impl<D: Send + Sync + 'static> Service<D> {
+    /// Run against the bus attached with [`with_bus`](Self::with_bus): consume
+    /// the registered command names (competing `listen`) and event names
+    /// (fan-out `subscribe`) concurrently on the caller's runtime. Returns when
+    /// the consumers stop (a pull source that drains, or the first error).
+    ///
+    /// Producing is handled on the commit path — `repo.outbox(msg).commit(agg)`
+    /// publishes immediately once a bus is attached.
+    ///
+    /// # Panics
+    /// If no bus was attached — call [`with_bus`](Self::with_bus) first.
+    pub async fn run(mut self, options: RunOptions) -> Result<(), TransportError> {
+        let runner = self
+            .take_runner()
+            .expect("Service::run requires a bus; call `with_bus` first");
+        runner(Arc::new(self), options).await
+    }
+}
+
+/// Drive a service's command/event consumers concurrently on the caller's
+/// runtime — no spawn, no timer. Returns on the first error; finishes when all
+/// consumers stop.
+async fn run_consumers<'b, D, B>(
+    bus: &'b B,
+    service: Arc<Service<D>>,
+    options: RunOptions,
+) -> Result<(), TransportError>
+where
+    D: Send + Sync + 'static,
+    B: Bus + BusConsumer,
+{
+    let plan = service.subscription_plan();
+    let mut consumers: Vec<Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'b>>> =
+        Vec::new();
+    if !plan.commands.is_empty() {
+        consumers.push(Box::pin(bus.listen(Arc::clone(&service), options.clone())));
+    }
+    if !plan.events.is_empty() {
+        consumers.push(Box::pin(bus.subscribe(Arc::clone(&service), options)));
+    }
+
+    poll_fn(move |cx| {
+        let mut index = 0;
+        while index < consumers.len() {
+            match consumers[index].as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    // Drop the finished consumer future; nothing left to poll.
+                    let _finished = consumers.remove(index);
+                }
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => index += 1,
+            }
+        }
+        if consumers.is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -233,30 +158,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_publishes_immediately_leaving_nothing_for_the_dispatcher() {
-        let microservice = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+    async fn plain_commit_publishes_immediately_when_bus_is_attached() {
+        let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .with_bus(InMemoryBus::new());
+        let store = service.repo().outbox_store();
 
         // The plain commit API publishes immediately because a bus is attached.
         let mut dummy = Dummy::default();
         dummy.touch().unwrap();
         let message = OutboxMessage::create("evt-1", "dummy.touched", b"{}".to_vec()).unwrap();
-        let receipt = microservice
-            .service()
-            .repo()
-            .outbox(message)
-            .commit(&mut dummy)
-            .await
-            .unwrap();
+        let receipt = service.repo().outbox(message).commit(&mut dummy).await.unwrap();
         assert_eq!(receipt.outbox_message_ids(), ["evt-1".to_string()]);
 
-        // The row was already published at commit time, so the backstop
-        // dispatcher (poll loop) finds nothing to drain.
-        let outcome = microservice.dispatcher().dispatch_batch(10).await.unwrap();
-        assert_eq!(outcome.claimed, 0, "row was already published at commit");
-        assert_eq!(outcome.published, 0);
-        assert_eq!(outcome.released, 0);
-        assert_eq!(outcome.failed, 0);
+        let published = store
+            .messages_by_status_async(OutboxMessageStatus::Published)
+            .await
+            .unwrap();
+        assert_eq!(published.len(), 1, "row should be published at commit time");
+        assert_eq!(published[0].id(), "evt-1");
+        assert!(store.pending_async().await.unwrap().is_empty());
     }
 
     type TouchRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Dummy>;
@@ -272,54 +192,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_publishes_immediately_when_bus_is_attached() {
+    async fn dispatch_through_a_handler_publishes_immediately() {
         let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .command("dummy.touch")
-            .handle(touch_and_publish);
-        let microservice = service.with_bus(InMemoryBus::new());
+            .handle(touch_and_publish)
+            .with_bus(InMemoryBus::new());
 
-        // Dispatching the command runs the handler, which calls `outbox().commit()`:
-        // claim-in-transaction, then immediate publish through the attached bus.
-        microservice
-            .service()
+        // The handler runs `outbox().commit()`: claim-in-transaction, then
+        // immediate publish through the attached bus.
+        service
             .dispatch("dummy.touch", json!({}), Session::new())
             .await
             .unwrap();
 
-        // The row was published immediately (claim-in-tx -> publish -> complete),
-        // so nothing is left pending for the poller.
-        let store = microservice.service().repo().outbox_store();
+        let store = service.repo().outbox_store();
         let published = store
             .messages_by_status_async(OutboxMessageStatus::Published)
             .await
             .unwrap();
         assert_eq!(published.len(), 1, "row should be published immediately");
         assert_eq!(published[0].id(), "evt-1");
-        assert!(
-            store.pending_async().await.unwrap().is_empty(),
-            "no row should be left for the poller"
-        );
+        assert!(store.pending_async().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn run_consumes_registered_commands_from_the_bus() {
+        let bus = InMemoryBus::new();
         let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .command("dummy.touch")
-            .handle(touch_and_publish);
-        let microservice = service.with_bus(InMemoryBus::new());
+            .handle(touch_and_publish)
+            .with_bus(bus.clone());
+        // The store shares state with the repo, so it stays inspectable after
+        // `run` consumes the service.
+        let store = service.repo().outbox_store();
 
         // Enqueue a command on the bus, then run: `listen` is derived from the
-        // registered command, drains the message, and the handler runs
-        // (commit publishes immediately). `run` returns once the queue is
-        // empty (InMemoryBus source yields `None`).
-        microservice
-            .bus()
-            .send("dummy.touch", b"{}".to_vec())
-            .await
-            .unwrap();
-        microservice.run(RunOptions::idempotent()).await.unwrap();
+        // registered command, drains the message, and the handler publishes.
+        // `run` returns once the queue is empty (InMemoryBus yields `None`).
+        bus.send("dummy.touch", b"{}".to_vec()).await.unwrap();
+        service.run(RunOptions::idempotent()).await.unwrap();
 
-        let store = microservice.service().repo().outbox_store();
         let published = store
             .messages_by_status_async(OutboxMessageStatus::Published)
             .await
@@ -362,22 +274,22 @@ mod tests {
         // `outbox().commit()` must work for a snapshot-backed repository too: the
         // outbox row and the snapshot commit together in one transaction, then
         // the row publishes immediately.
-        let repo = HashMapRepository::new()
-            .queued()
-            .aggregate::<SnapCounter>()
-            .with_snapshots(1);
-        let microservice = Service::with_repo(repo)
-            .command("snap.touch")
-            .handle(touch_snap)
-            .with_bus(InMemoryBus::new());
+        let service = Service::with_repo(
+            HashMapRepository::new()
+                .queued()
+                .aggregate::<SnapCounter>()
+                .with_snapshots(1),
+        )
+        .command("snap.touch")
+        .handle(touch_snap)
+        .with_bus(InMemoryBus::new());
 
-        microservice
-            .service()
+        service
             .dispatch("snap.touch", json!({}), Session::new())
             .await
             .unwrap();
 
-        let store = microservice.service().repo().outbox_store();
+        let store = service.repo().outbox_store();
         let published = store
             .messages_by_status_async(OutboxMessageStatus::Published)
             .await
