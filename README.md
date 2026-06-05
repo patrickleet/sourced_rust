@@ -104,8 +104,9 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut todo = Todo::default();
     todo.initialize(input.id.clone(), input.user_id, input.task)?;
 
-    // Publish a fact for other services. The outbox row commits atomically
-    // with the aggregate's events.
+    // Record a fact for other services. The outbox row commits atomically with
+    // the aggregate's events. Once a bus is attached (step 3) this `commit`
+    // publishes the row immediately; with no bus it stays pending for a worker.
     let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
     ctx.repo().outbox(message).commit(&mut todo).await?;
 
@@ -115,19 +116,20 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
 ### 3. Serve it
 
-Register your handlers on a `microsvc::Service` with `register_handlers!`, then
-expose the exact same service over direct dispatch, HTTP, gRPC, or the bus. Handlers
-are written once and are transport-agnostic.
+Build the service fluently from `Service::new()`, register handlers with
+`register_handlers!`, then expose the exact same service over direct dispatch,
+HTTP, gRPC, or the bus. Handlers are written once and are transport-agnostic.
 
 ```rust
 use std::sync::Arc;
 use distributed::microsvc::{self, Service, Session};
+use distributed::bus::{InMemoryBus, RunOptions};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = Arc::new(distributed::register_handlers!(
+    let service = distributed::register_handlers!(
         Service::new().with_repo(
             HashMapRepository::new()
                 .queued()
@@ -135,21 +137,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         command handlers::todo_create,
         command handlers::todo_complete,
-    ));
+    );
 
-    // Direct, in-process dispatch
+    // Attach a bus and run. `with_bus` closes the loop from step 2: that
+    // `outbox(..).commit(..)` now publishes on commit, and `run` consumes the
+    // registered commands (and events). Same handlers, one line of wiring.
     service
-        .dispatch(
-            "todo.initialize",
-            json!({ "id": "todo-1", "user_id": "alice", "task": "Ship it" }),
-            Session::new(),
-        )
+        .with_bus(InMemoryBus::new())
+        .run(RunOptions::idempotent())
         .await?;
 
-    // ...or expose it over the network / a broker — pick any, they share handlers:
-    //   microsvc::serve(service, "0.0.0.0:3000").await?;        // HTTP   (feature = "http")
-    //   microsvc::serve_grpc(service, "[::1]:50051").await?;    // gRPC   (feature = "grpc")
-    //   InMemoryBus::new().listen(service, RunOptions::idempotent()).await?; // bus
+    // Alternatives that share the same handlers:
+    //   service.dispatch("todo.initialize", json!({ "id": "todo-1", .. }), Session::new()).await?; // in-process
+    //   microsvc::serve(Arc::new(service), "0.0.0.0:3000").await?;     // HTTP (feature = "http")
+    //   microsvc::serve_grpc(Arc::new(service), "[::1]:50051").await?; // gRPC (feature = "grpc")
 
     Ok(())
 }
@@ -164,19 +165,19 @@ default you replace with a durable adapter.
 ```rust
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
-let service = Arc::new(distributed::register_handlers!(
+let service = distributed::register_handlers!(
     Service::new().with_repo(repo.queued().aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
-));
+);
 
-// Transport: InMemoryBus → a real broker. send/listen/publish/subscribe + the
-// handlers are unchanged; only this line differs.
+// Transport: InMemoryBus → a real broker. The handlers and the
+// `with_bus(..).run(..)` wiring are unchanged; only this constructor line differs.
 //   let bus = NatsBus::connect("nats://localhost:4222", "todos", "app").await?;
 //   let bus = PostgresBus::new(pool, "todos");
 //   let bus = RabbitBus::connect("amqp://localhost:5672/%2f", "todos", "app").await?;
 //   let bus = KafkaBus::connect("localhost:9092", "todos", "app").await?;
-bus.listen(service, RunOptions::idempotent()).await?;
+service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ```
 
 | Concern | In-memory default | Swap in for production |
@@ -732,20 +733,43 @@ let message = OutboxMessage::encode_for_entity(
 )?;
 ```
 
-### Draining the Outbox
+### Publishing the Outbox
 
-`OutboxDispatcher` bridges durable outbox rows to a transport publisher, sharing one
-claim → publish → complete path between background polling (`dispatch_batch`) and
-after-commit immediate dispatch (`dispatch_ids`):
+How a committed row reaches the bus depends on whether a bus is attached to the
+service:
+
+- **Bus attached (`service.with_bus(bus)`)** — `repo.outbox(msg).commit(agg)`
+  claims the row in the commit transaction and publishes it **immediately** after
+  commit. A crash before the publish, or a publish failure, leaves the row
+  claimed under a short lease; when the lease expires the polling worker takes it.
+- **No bus** — the row is committed `pending` and a worker publishes it.
+
+The polling worker is the durable backstop in both cases. It is the same
+`OutboxDispatcher` primitive composed with your runtime's timer — run it in the
+service process or as a separate worker, against the same outbox store:
 
 ```rust
-let dispatcher = OutboxDispatcher::new(store, publisher, "worker-1", lease, max_attempts);
-let outcome = dispatcher.dispatch_ids(&committed_ids).await?; // claim-before-publish
+use distributed::{BusPublisher, OutboxDispatcher};
+use std::{sync::Arc, time::Duration};
+
+let dispatcher = OutboxDispatcher::new(
+    repo.outbox_store(),
+    BusPublisher::new(Arc::new(bus)),   // routes commands/events by kind
+    "outbox-worker-1",
+    Duration::from_secs(30),            // claim lease
+    5,                                  // max publish attempts
+);
+
+loop {
+    dispatcher.dispatch_batch(100).await?;          // claim → publish → complete
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
 ```
 
 A row completes only after `publish()` resolves `Ok`; an unknown or failed publish
 leaves it retryable (released until the attempt ceiling, then moved to `Failed`).
-Claims use leases, so competing workers never publish the same row concurrently.
+Claims use leases, so the immediate path and competing workers never publish the
+same row concurrently.
 
 ## Service Bus
 
@@ -779,6 +803,12 @@ bus.subscribe(service.clone(), RunOptions::idempotent()).await?;  // fan-out
 //   let bus = RabbitBus::connect("amqp://localhost:5672/%2f", "orders", "app").await?;
 //   let bus = KafkaBus::connect("localhost:9092", "orders", "app").await?;
 ```
+
+This is the low-level facade. For a `microsvc::Service`, the one-call convenience
+is `service.with_bus(bus).run(opts)`: it derives the command names to `listen`
+and the event names to `subscribe` from the registered handlers, and makes
+`repo.outbox(msg).commit(agg)` publish on commit. Drop to `listen` / `subscribe`
+/ `send` / `publish` directly when you need finer control.
 
 Point-to-point vs fan-out is consistently a **consumer-group/identity** choice in
 each transport's native topology — the same `group` competes, different `group`s
@@ -987,7 +1017,13 @@ Session handling mirrors HTTP — gRPC metadata headers are merged with payload 
 
 ### Bus Transport
 
-Drive a service from the bus with `listen` (point-to-point) or `subscribe` (fan-out). The same `Service` can handle commands from multiple transports simultaneously — HTTP, gRPC, bus, and direct dispatch all share the same handlers and repository. See [Service Bus](#service-bus) above.
+Attach a bus with `service.with_bus(bus)` and drive it with `run(opts)`: it
+derives `listen` (point-to-point commands) and `subscribe` (fan-out events) from
+the registered handlers, and makes `repo.outbox(msg).commit(agg)` publish on
+commit. The same `Service` can handle commands from multiple transports
+simultaneously — HTTP, gRPC, bus, and direct dispatch all share the same handlers
+and repository. For finer-grained control, call the `listen` / `subscribe` facade
+methods directly. See [Service Bus](#service-bus) above.
 
 ### Error Handling
 
