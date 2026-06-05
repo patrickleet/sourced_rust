@@ -30,7 +30,21 @@ use super::context::Context;
 use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
 use super::error::HandlerError;
 use super::session::Session;
-use crate::bus::{Message, MessageKind, SubscriptionPlan};
+use crate::bus::{Message, MessageKind, RunOptions, SubscriptionPlan, TransportError};
+
+/// The bus run behavior captured by [`Service::with_bus`], type-erased so that
+/// attaching a bus does not change the service's type. Given the service (as the
+/// transport router) and run options, it consumes the registered command/event
+/// names. Stored on the service so `with_bus` stays a plain builder step and
+/// `run` can drive it.
+pub(crate) type ServiceRunner<D> = Box<
+    dyn Fn(
+            Arc<Service<D>>,
+            RunOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
@@ -177,6 +191,7 @@ pub struct Service<D> {
     dependencies: D,
     handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
+    runner: Option<ServiceRunner<D>>,
 }
 
 impl<D: Send + Sync + 'static> Service<D> {
@@ -186,6 +201,7 @@ impl<D: Send + Sync + 'static> Service<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
+            runner: None,
         }
     }
 
@@ -193,6 +209,16 @@ impl<D: Send + Sync + 'static> Service<D> {
     /// outbox publisher on the repository before the service is shared.
     pub(crate) fn dependencies_mut(&mut self) -> &mut D {
         &mut self.dependencies
+    }
+
+    /// Install the bus run behavior (used by `with_bus`).
+    pub(crate) fn set_runner(&mut self, runner: ServiceRunner<D>) {
+        self.runner = Some(runner);
+    }
+
+    /// Take the installed bus run behavior (used by `run`).
+    pub(crate) fn take_runner(&mut self) -> Option<ServiceRunner<D>> {
+        self.runner.take()
     }
 
     /// Create a service whose dependency type is an aggregate repository.
