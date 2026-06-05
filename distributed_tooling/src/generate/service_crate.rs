@@ -379,7 +379,7 @@ use serde::{{Deserialize, Serialize}};
         )
     }
 
-    fn command_model(&self, handler: &MessageHandler) -> Option<&ModelScaffold> {
+    pub(super) fn command_model(&self, handler: &MessageHandler) -> Option<&ModelScaffold> {
         if self.models.is_empty() {
             return None;
         }

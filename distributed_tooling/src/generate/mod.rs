@@ -7,6 +7,7 @@
 //! - [`github`] — GitHub repo parsing (+ workflow templates, follow-up slice).
 
 mod github;
+mod gitops;
 mod names;
 mod service_crate;
 
@@ -38,7 +39,6 @@ pub(crate) struct Scaffold {
     pub(crate) distributed_dependency_path: String,
     pub(crate) transport: ServiceTransport,
     pub(crate) store: StoreTarget,
-    #[allow(dead_code)] // consumed by GitOps/Knative generation (follow-up slice)
     pub(crate) bus: Option<BusTarget>,
     pub(crate) include_read_models: bool,
     pub(crate) gitops: bool,
@@ -94,7 +94,6 @@ impl Scaffold {
 
     fn generate(self) -> GeneratedProject {
         let mut files = Vec::new();
-        let mut warnings = Vec::new();
         let mut post_create_actions = Vec::new();
 
         files.push(file("Cargo.toml", self.cargo_toml()));
@@ -128,16 +127,11 @@ impl Scaffold {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
         }
 
-        // GitOps deploy/promote charts and GitHub workflow files are a follow-up
-        // slice; the spec fields are accepted so the API is stable. Until then,
-        // surface a warning so the caller knows those artifacts were not emitted.
-        if self.gitops || self.gitops_promote.is_some() || self.github.is_some() {
-            warnings.push(
-                "GitOps and GitHub workflow generation are not yet ported into \
-                 distributed_tooling; those artifacts were not generated"
-                    .to_string(),
-            );
-        }
+        // GitOps charts (.gitops/deploy + optional .gitops/promote) and GitHub
+        // workflow files (+ promotion charts) — staged in the same project.
+        files.extend(self.gitops_files());
+        files.extend(self.github_files());
+
         if let Some(github) = &self.github {
             post_create_actions.push(PostCreateAction::EnsureGithubRepository {
                 repo: github.repository.clone(),
@@ -146,7 +140,7 @@ impl Scaffold {
 
         GeneratedProject {
             files,
-            warnings,
+            warnings: Vec::new(),
             post_create_actions,
         }
     }
@@ -250,14 +244,30 @@ mod tests {
     }
 
     #[test]
-    fn github_yields_a_post_create_action_and_warning() {
+    fn github_generates_workflows_and_a_post_create_action() {
         let mut s = spec("orders");
         s.github = Some(GithubScaffoldSpec {
             repository: GithubRepo::parse("hops-ops/orders").unwrap(),
-            preview_environment_repository: None,
-            promote_environment_repository: None,
+            preview_environment_repository: Some(GithubRepo::parse("hops-ops/preview").unwrap()),
+            promote_environment_repository: Some(GithubRepo::parse("hops-ops/prod").unwrap()),
         });
         let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        for expected in [
+            ".github/workflows/version.yaml",
+            ".github/workflows/release.yaml",
+            ".github/workflows/preview.yaml",
+            ".github/workflows/promote.yaml",
+            ".gitops/preview/helm/Chart.yaml",
+            ".gitops/promote/helm/templates/application.yaml",
+            // GitHub presence implies the deploy chart the promotions target.
+            ".gitops/deploy/Chart.yaml",
+        ] {
+            assert!(paths.contains(&expected), "missing {expected} in {paths:?}");
+        }
+        // The image repo is derived from the GitHub repo.
+        let preview = contents(&project, ".github/workflows/preview.yaml");
+        assert!(preview.contains("ghcr.io/hops-ops/orders"));
         assert_eq!(
             project.post_create_actions,
             vec![PostCreateAction::EnsureGithubRepository {
@@ -267,7 +277,43 @@ mod tests {
                 },
             }]
         );
-        assert!(!project.warnings.is_empty());
+        assert!(project.warnings.is_empty());
+    }
+
+    #[test]
+    fn gitops_http_deploy_chart() {
+        let mut s = spec("orders");
+        s.gitops = true;
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
+        assert!(paths.contains(&".gitops/deploy/templates/deployment.yaml"));
+        assert!(paths.contains(&".gitops/deploy/templates/service.yaml"));
+        assert!(!paths.iter().any(|p| p.contains("knative")));
+    }
+
+    #[test]
+    fn knative_deploy_emits_brokers_and_triggers() {
+        let mut s = spec("orders");
+        s.transport = ServiceTransport::Knative;
+        s.gitops = true;
+        s.events = vec!["orders.shipped".to_string()];
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/deploy/templates/knative-service.yaml"));
+        assert!(paths.contains(&".gitops/deploy/templates/knative-brokers.yaml"));
+        let triggers = contents(&project, ".gitops/deploy/templates/knative-triggers.yaml");
+        assert!(triggers.contains("type: orders.shipped"));
+    }
+
+    #[test]
+    fn gitops_promote_flux() {
+        let mut s = spec("orders");
+        s.gitops_promote = Some(crate::GitopsPromoteTarget::Flux);
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/promote/Chart.yaml"));
+        assert!(paths.contains(&".gitops/promote/templates/helmrelease.yaml"));
     }
 
     #[test]

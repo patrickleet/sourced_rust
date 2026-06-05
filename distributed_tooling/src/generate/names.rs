@@ -39,6 +39,8 @@ pub(crate) struct ModelScaffold {
     pub(crate) type_ident: String,
     pub(crate) view_ident: String,
     pub(crate) table_name: String,
+    pub(crate) command_broker: String,
+    pub(crate) event_broker: String,
 }
 
 impl ModelScaffold {
@@ -59,8 +61,48 @@ impl ModelScaffold {
             type_ident,
             view_ident,
             table_name: format!("{ident}_views"),
+            command_broker: format!("{name}-commands"),
+            event_broker: format!("{name}-events"),
         })
     }
+}
+
+/// A Knative `Trigger` (one per command/event handler).
+#[derive(Clone, Debug)]
+pub(crate) struct KnativeTrigger {
+    pub(crate) name: String,
+    pub(crate) broker: String,
+    pub(crate) event_type: String,
+}
+
+impl KnativeTrigger {
+    pub(crate) fn new(event_type: &str, broker: &str, suffix: &str) -> Self {
+        Self {
+            name: k8s_name(&format!("{}-{suffix}", event_type.replace('.', "-"))),
+            broker: broker.to_string(),
+            event_type: event_type.to_string(),
+        }
+    }
+}
+
+/// Broker name for a command message (`<owner>-commands`).
+pub(crate) fn command_broker_for_message(message_name: &str) -> String {
+    format!("{}-commands", message_owner(message_name))
+}
+
+/// Broker name for an event message (`<owner>-events`), where `owner` is the
+/// first segment of a 3+-segment dotted name, else the first segment.
+pub(crate) fn event_broker_for_message(message_name: &str) -> String {
+    let parts = message_name
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let owner = if parts.len() >= 3 {
+        parts[0]
+    } else {
+        parts.first().copied().unwrap_or("events")
+    };
+    format!("{}-events", k8s_name(owner))
 }
 
 pub(crate) fn model_scaffolds(raw_models: &[String]) -> Result<Vec<ModelScaffold>, ScaffoldError> {
