@@ -16,7 +16,11 @@ impl Scaffold {
     /// promotion charts target `.gitops/deploy`.
     pub(super) fn gitops_files(&self) -> Vec<GeneratedFile> {
         let mut files = Vec::new();
-        let want_deploy = self.gitops || self.gitops_promote.is_some() || self.github.is_some();
+        let want_deploy = self.gitops
+            || self.gitops_promote.is_some()
+            || self.github.is_some()
+            || self.github_preview.is_some()
+            || self.github_promote.is_some();
         if want_deploy {
             files.push(file(
                 ".gitops/deploy/Chart.yaml",
@@ -84,7 +88,7 @@ impl Scaffold {
     pub(super) fn image_repository(&self) -> String {
         self.github
             .as_ref()
-            .map(|g| format!("ghcr.io/{}", g.repository.slug().to_ascii_lowercase()))
+            .map(|g| format!("ghcr.io/{}", g.slug().to_ascii_lowercase()))
             .unwrap_or_else(|| format!("ghcr.io/hops-ops/{}", self.names.package_name))
     }
 
