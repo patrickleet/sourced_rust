@@ -1,5 +1,5 @@
 [workspace]
-members = ["distributed_macros"]
+members = ["distributed_macros", "distributed_tooling"]
 resolver = "2"
 
 [workspace.package]
