@@ -4,7 +4,8 @@
 //!
 //! - [`names`] — name/message normalization + validation (the portable rules);
 //! - [`service_crate`] — the Rust service-crate templates;
-//! - [`github`] — GitHub repo parsing (+ workflow templates, follow-up slice).
+//! - [`gitops`] — the `.gitops/{deploy,promote}` Helm/Knative charts;
+//! - [`github`] — GitHub repo parsing + the release/preview/promote workflows.
 
 mod github;
 mod gitops;
@@ -21,8 +22,8 @@ use names::{
 };
 
 use crate::{
-    BusTarget, GeneratedFile, GeneratedProject, GithubScaffoldSpec, GitopsPromoteTarget,
-    PostCreateAction, ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
+    BusTarget, GeneratedFile, GeneratedProject, GithubRepo, GitopsPromoteTarget, PostCreateAction,
+    ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
 /// Generate a Distributed service project from a spec. The public entry point.
@@ -43,7 +44,9 @@ pub(crate) struct Scaffold {
     pub(crate) include_read_models: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
-    pub(crate) github: Option<GithubScaffoldSpec>,
+    pub(crate) github: Option<GithubRepo>,
+    pub(crate) github_preview: Option<GithubRepo>,
+    pub(crate) github_promote: Option<GithubRepo>,
     pub(crate) models: Vec<ModelScaffold>,
     pub(crate) read_models: Vec<ModelScaffold>,
     pub(crate) commands: Vec<MessageHandler>,
@@ -85,6 +88,8 @@ impl Scaffold {
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
             github: spec.github,
+            github_preview: spec.github_preview,
+            github_promote: spec.github_promote,
             models,
             read_models,
             commands,
@@ -132,10 +137,9 @@ impl Scaffold {
         files.extend(self.gitops_files());
         files.extend(self.github_files());
 
-        if let Some(github) = &self.github {
-            post_create_actions.push(PostCreateAction::EnsureGithubRepository {
-                repo: github.repository.clone(),
-            });
+        if let Some(repo) = &self.github {
+            post_create_actions
+                .push(PostCreateAction::EnsureGithubRepository { repo: repo.clone() });
         }
 
         GeneratedProject {
@@ -157,8 +161,8 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 #[cfg(test)]
 mod tests {
     use crate::{
-        generate_service_scaffold, GeneratedProject, GithubRepo, GithubScaffoldSpec,
-        PostCreateAction, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
+        generate_service_scaffold, GeneratedProject, GithubRepo, PostCreateAction,
+        ServiceScaffoldSpec, ServiceTransport, StoreTarget,
     };
 
     fn spec(name: &str) -> ServiceScaffoldSpec {
@@ -175,6 +179,8 @@ mod tests {
             gitops: false,
             gitops_promote: None,
             github: None,
+            github_preview: None,
+            github_promote: None,
         }
     }
 
@@ -246,11 +252,9 @@ mod tests {
     #[test]
     fn github_generates_workflows_and_a_post_create_action() {
         let mut s = spec("orders");
-        s.github = Some(GithubScaffoldSpec {
-            repository: GithubRepo::parse("hops-ops/orders").unwrap(),
-            preview_environment_repository: Some(GithubRepo::parse("hops-ops/preview").unwrap()),
-            promote_environment_repository: Some(GithubRepo::parse("hops-ops/prod").unwrap()),
-        });
+        s.github = Some(GithubRepo::parse("hops-ops/orders").unwrap());
+        s.github_preview = Some(GithubRepo::parse("hops-ops/preview").unwrap());
+        s.github_promote = Some(GithubRepo::parse("hops-ops/prod").unwrap());
         let project = generate_service_scaffold(s).unwrap();
         let paths = paths(&project);
         for expected in [
@@ -278,6 +282,25 @@ mod tests {
             }]
         );
         assert!(project.warnings.is_empty());
+    }
+
+    #[test]
+    fn github_preview_is_independent_of_the_service_repo() {
+        // Only --github-preview: a preview workflow + chart, the deploy chart it
+        // targets, but NO version/release workflows and NO repo-create action.
+        let mut s = spec("orders");
+        s.github_preview = Some(GithubRepo::parse("hops-ops/preview").unwrap());
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".github/workflows/preview.yaml"));
+        assert!(paths.contains(&".gitops/preview/helm/Chart.yaml"));
+        assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
+        assert!(!paths.contains(&".github/workflows/version.yaml"));
+        assert!(!paths.contains(&".github/workflows/release.yaml"));
+        assert!(project.post_create_actions.is_empty());
+        // No service repo → the default image repository.
+        let preview = contents(&project, ".github/workflows/preview.yaml");
+        assert!(preview.contains("ghcr.io/hops-ops/orders"));
     }
 
     #[test]

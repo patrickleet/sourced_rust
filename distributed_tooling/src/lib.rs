@@ -45,8 +45,15 @@ pub struct ServiceScaffoldSpec {
     pub gitops: bool,
     /// Generate a GitOps promotion chart for Argo CD or Flux.
     pub gitops_promote: Option<GitopsPromoteTarget>,
-    /// GitHub repository + release/GitOps workflow scaffolding.
-    pub github: Option<GithubScaffoldSpec>,
+    /// The service's own GitHub repository: emits the version/release workflows
+    /// and an `EnsureGithubRepository` post-create action.
+    pub github: Option<GithubRepo>,
+    /// Preview-environment GitOps repository: emits the preview workflow and the
+    /// `.gitops/preview/helm` promotion chart. Independent of `github`.
+    pub github_preview: Option<GithubRepo>,
+    /// Permanent-environment GitOps repository: emits the promote workflow and the
+    /// `.gitops/promote/helm` promotion chart. Independent of `github`.
+    pub github_promote: Option<GithubRepo>,
 }
 
 /// Runtime transport for the scaffolded service.
@@ -101,17 +108,6 @@ pub enum GitopsPromoteTarget {
     Argo,
     /// Flux `HelmRelease`.
     Flux,
-}
-
-/// GitHub repository + workflow scaffolding inputs.
-#[derive(Clone, Debug)]
-pub struct GithubScaffoldSpec {
-    /// The service's own GitHub repository.
-    pub repository: GithubRepo,
-    /// Optional preview-environment GitOps repository.
-    pub preview_environment_repository: Option<GithubRepo>,
-    /// Optional permanent-environment GitOps repository.
-    pub promote_environment_repository: Option<GithubRepo>,
 }
 
 /// An `owner/repo` GitHub identifier.

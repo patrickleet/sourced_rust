@@ -32,30 +32,31 @@ pub(crate) fn parse_github_repo(raw: &str) -> Result<GithubRepo, ScaffoldError> 
 
 impl Scaffold {
     /// The `.github/workflows/*` files and (when preview/promote repos are set)
-    /// the `.gitops/{preview,promote}/helm` promotion charts.
+    /// the `.gitops/{preview,promote}/helm` promotion charts. The three GitHub
+    /// repositories gate independent slices: `github` → version/release workflows;
+    /// `github_preview` → the preview workflow + chart; `github_promote` → the
+    /// promote workflow + chart.
     pub(super) fn github_files(&self) -> Vec<GeneratedFile> {
         let mut files = Vec::new();
-        let Some(github) = &self.github else {
-            return files;
-        };
 
-        files.push(file(
-            ".github/workflows/version.yaml",
-            github_version_workflow_yaml(),
-        ));
-        files.push(file(
-            ".github/workflows/release.yaml",
-            github_release_workflow_yaml(),
-        ));
-
-        if let Some(preview) = &github.preview_environment_repository {
+        if self.github.is_some() {
+            files.push(file(
+                ".github/workflows/version.yaml",
+                github_version_workflow_yaml(),
+            ));
+            files.push(file(
+                ".github/workflows/release.yaml",
+                github_release_workflow_yaml(),
+            ));
+        }
+        if let Some(preview) = &self.github_preview {
             files.push(file(
                 ".github/workflows/preview.yaml",
                 self.github_preview_workflow_yaml(preview),
             ));
             files.extend(self.github_promotion_chart(".gitops/preview/helm"));
         }
-        if let Some(promote) = &github.promote_environment_repository {
+        if let Some(promote) = &self.github_promote {
             files.push(file(
                 ".github/workflows/promote.yaml",
                 self.github_promote_workflow_yaml(promote),
@@ -206,7 +207,7 @@ preview: false
             github_repository = self
                 .github
                 .as_ref()
-                .map(|g| g.repository.slug())
+                .map(|g| g.slug())
                 .unwrap_or_else(|| "OWNER/REPO".to_string()),
         )
     }
