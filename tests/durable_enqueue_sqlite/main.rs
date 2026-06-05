@@ -51,20 +51,19 @@ async fn service() -> Repo {
 
 #[tokio::test]
 async fn commit_publishes_immediately_over_sqlite() {
-    let microservice = Service::with_repo(service().await)
+    let service = Service::with_repo(service().await)
         .command("counter.touch")
         .handle(handle_touch)
         .with_bus(InMemoryBus::new());
 
     // The handler claims the outbox row in the SQL transaction, then publishes
     // it immediately through the attached bus.
-    microservice
-        .service()
+    service
         .dispatch("counter.touch", json!({}), Session::new())
         .await
         .unwrap();
 
-    let store = microservice.service().repo().outbox_store();
+    let store = service.repo().outbox_store();
     let published = store
         .messages_by_status_async(OutboxMessageStatus::Published)
         .await
@@ -79,21 +78,18 @@ async fn commit_publishes_immediately_over_sqlite() {
 
 #[tokio::test]
 async fn run_consumes_command_and_publishes_over_sqlite() {
-    let microservice = Service::with_repo(service().await)
+    let bus = InMemoryBus::new();
+    let service = Service::with_repo(service().await)
         .command("counter.touch")
         .handle(handle_touch)
-        .with_bus(InMemoryBus::new());
+        .with_bus(bus.clone());
+    let store = service.repo().outbox_store();
 
     // Enqueue a command, then run: listen is derived from the registered command,
     // drains it, and the handler publishes its outbox row through the bus.
-    microservice
-        .bus()
-        .send("counter.touch", b"{}".to_vec())
-        .await
-        .unwrap();
-    microservice.run(RunOptions::idempotent()).await.unwrap();
+    bus.send("counter.touch", b"{}".to_vec()).await.unwrap();
+    service.run(RunOptions::idempotent()).await.unwrap();
 
-    let store = microservice.service().repo().outbox_store();
     let published = store
         .messages_by_status_async(OutboxMessageStatus::Published)
         .await

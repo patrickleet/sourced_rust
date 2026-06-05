@@ -68,7 +68,7 @@ pub use dependencies::{
     ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
-pub use runtime::{Microservice, DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
+pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
     Service,
