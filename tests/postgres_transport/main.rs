@@ -56,7 +56,7 @@ async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageSt
 
 fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
     Arc::new(
-        Service::new(())
+        Service::new()
             .event("order.initialized")
             .handle(move |ctx: &Context<()>| {
                 handled
@@ -195,7 +195,7 @@ async fn dead_letter_marks_row_failed() {
 /// event registration.
 fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new(());
+    let builder = Service::new();
     let registered = match kind {
         MessageKind::Command => builder.command(leaked),
         MessageKind::Event => builder.event(leaked),

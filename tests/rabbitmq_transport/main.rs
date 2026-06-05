@@ -49,7 +49,7 @@ fn unique(prefix: &str) -> String {
 /// event registration.
 fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new(());
+    let builder = Service::new();
     let registered = match kind {
         MessageKind::Command => builder.command(leaked),
         MessageKind::Event => builder.event(leaked),
@@ -84,7 +84,7 @@ async fn publish_then_consume_round_trips_through_rabbitmq() {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
     let h = handled.clone();
     let service = Arc::new(
-        Service::new(())
+        Service::new()
             .event(Box::leak(queue.clone().into_boxed_str()))
             .handle(move |ctx: &Context<()>| {
                 h.lock()
@@ -127,7 +127,7 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     let observed = Arc::new(Mutex::new(None));
     let o = observed.clone();
     let service = Arc::new(
-        Service::new(())
+        Service::new()
             .event(Box::leak(queue.clone().into_boxed_str()))
             .handle(move |ctx: &Context<()>| {
                 let m = ctx.message();

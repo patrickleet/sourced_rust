@@ -14,7 +14,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service<Repo>> {
     Arc::new(distributed::register_handlers!(
-        Service::with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,

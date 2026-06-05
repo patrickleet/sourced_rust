@@ -303,7 +303,7 @@ mod tests {
 
         let handled = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let h = handled.clone();
-        let service = Arc::new(Service::new(()).event("evt").handle(
+        let service = Arc::new(Service::new().event("evt").handle(
             move |ctx: &crate::microsvc::Context<()>| {
                 let h = h.clone();
                 let id = ctx.message().id().unwrap_or_default().to_string();
@@ -330,7 +330,7 @@ mod tests {
         // Service handles a different event; the unrelated row is acked-ignored,
         // i.e. completed, so it does not loop forever.
         let service: Arc<Service<()>> = Arc::new(
-            Service::new(())
+            Service::new()
                 .event("evt")
                 .handle(|_: &crate::microsvc::Context<()>| async move { Ok(json!({})) }),
         );

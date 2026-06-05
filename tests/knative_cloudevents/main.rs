@@ -18,7 +18,7 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
     let h = handled.clone();
     let service = Arc::new(
-        Service::new(())
+        Service::new()
             .event("order.initialized")
             .handle(move |ctx: &Context<()>| {
                 h.lock()

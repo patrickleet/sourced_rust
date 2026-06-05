@@ -182,7 +182,7 @@ pub fn recording_service(recorder: &Arc<Recorder>) -> Arc<Service<()>> {
     let retryable = recorder.clone();
     let permanent = recorder.clone();
     Arc::new(
-        Service::new(())
+        Service::new()
             .event("delivery.succeeded")
             .handle(move |ctx: &Context<()>| {
                 ok.push(Event::Handled(ctx.message().name().to_string()));

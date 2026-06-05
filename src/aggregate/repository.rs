@@ -45,11 +45,12 @@ pub(crate) struct SnapshotPolicy<R, A> {
     hydrate: HydrateFn<R, A>,
 }
 
-type HydrateFn<R, A> = for<'a> fn(
-    &'a R,
-    &'a StreamIdentity,
-    Entity,
-) -> Pin<Box<dyn Future<Output = Result<A, RepositoryError>> + Send + 'a>>;
+type HydrateFn<R, A> =
+    for<'a> fn(
+        &'a R,
+        &'a StreamIdentity,
+        Entity,
+    ) -> Pin<Box<dyn Future<Output = Result<A, RepositoryError>> + Send + 'a>>;
 
 impl<R, A> SnapshotPolicy<R, A> {
     /// Construct a policy from its captured hooks. Called by `with_snapshots`,
@@ -150,7 +151,10 @@ where
         };
         let version = record.version;
         let identity = stream_identity_for::<A>(aggregate.entity().id())?;
-        Ok((vec![SnapshotWrite::Save { identity, record }], Some(version)))
+        Ok((
+            vec![SnapshotWrite::Save { identity, record }],
+            Some(version),
+        ))
     }
 
     /// Snapshot writes for `aggregate`, exposed to the outbox/read-model commit

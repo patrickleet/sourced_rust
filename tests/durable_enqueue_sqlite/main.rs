@@ -12,7 +12,7 @@ use distributed::bus::{Bus, InMemoryBus, RunOptions};
 use distributed::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
 use distributed::{
     sourced, AggregateBuilder, AggregateRepository, AsyncOutboxStore, Entity, OutboxMessage,
-    OutboxMessageStatus, QueuedRepository, Queueable, SqliteRepository,
+    OutboxMessageStatus, Queueable, QueuedRepository, SqliteRepository,
 };
 
 #[derive(Default)]
@@ -51,7 +51,8 @@ async fn service() -> Repo {
 
 #[tokio::test]
 async fn commit_publishes_immediately_over_sqlite() {
-    let service = Service::with_repo(service().await)
+    let service = Service::new()
+        .with_repo(service().await)
         .command("counter.touch")
         .handle(handle_touch)
         .with_bus(InMemoryBus::new());
@@ -79,7 +80,8 @@ async fn commit_publishes_immediately_over_sqlite() {
 #[tokio::test]
 async fn run_consumes_command_and_publishes_over_sqlite() {
     let bus = InMemoryBus::new();
-    let service = Service::with_repo(service().await)
+    let service = Service::new()
+        .with_repo(service().await)
         .command("counter.touch")
         .handle(handle_touch)
         .with_bus(bus.clone());

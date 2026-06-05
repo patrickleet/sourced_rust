@@ -15,7 +15,7 @@
 //! use distributed::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::with_repo(HashMapRepository::new())
+//!     microsvc::Service::new().with_repo(HashMapRepository::new())
 //!         .command("counter.create")
 //!         .handle(|ctx| { /* ... */ })
 //! );

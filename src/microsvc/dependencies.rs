@@ -36,6 +36,21 @@ impl<R, A> ConfigurableOutboxPublisher for AggregateRepository<R, A> {
     }
 }
 
+impl<R: ConfigurableOutboxPublisher, S> ConfigurableOutboxPublisher
+    for RepoReadModelDependencies<R, S>
+{
+    fn configure_outbox_publisher(&mut self, config: OutboxPublisherConfig) {
+        self.repo.configure_outbox_publisher(config);
+    }
+}
+
+impl<R: HasOutboxStore, S> HasOutboxStore for RepoReadModelDependencies<R, S> {
+    type OutboxStore = R::OutboxStore;
+    fn outbox_store(&self) -> Self::OutboxStore {
+        self.repo().outbox_store()
+    }
+}
+
 /// Dependency capability for repositories that expose a durable outbox store.
 ///
 /// A runtime uses this to build an `OutboxDispatcher` that drains committed
