@@ -1,6 +1,7 @@
 //! Typed dependency wrappers for microsvc handlers.
 
 use crate::aggregate::AggregateRepository;
+use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::AsyncOutboxStore;
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
 
@@ -16,6 +17,23 @@ pub trait HasReadModelStore {
     type ReadModelStore;
 
     fn read_model_store(&self) -> &Self::ReadModelStore;
+}
+
+/// Dependency capability for repositories whose outbox commits can publish
+/// immediately.
+///
+/// `Service::with_bus` installs an [`OutboxPublisherConfig`] through this so that
+/// `repo.outbox(msg).commit(agg)` publishes the row right after commit. Without
+/// it, commits leave the row `pending` for the polling worker.
+pub trait ConfigurableOutboxPublisher {
+    /// Install the outbox publisher.
+    fn configure_outbox_publisher(&mut self, config: OutboxPublisherConfig);
+}
+
+impl<R, A> ConfigurableOutboxPublisher for AggregateRepository<R, A> {
+    fn configure_outbox_publisher(&mut self, config: OutboxPublisherConfig) {
+        self.set_outbox_publisher(config);
+    }
 }
 
 /// Dependency capability for repositories that expose a durable outbox store.

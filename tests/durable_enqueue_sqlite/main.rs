@@ -1,7 +1,8 @@
 //! End-to-end durable-enqueue dispatch over a real SQL backend (in-memory
-//! SQLite). Exercises `commit_outbox` (claim-in-transaction + immediate publish)
-//! and the `with_bus` runtime against a persistent repository, not just the
-//! in-memory `HashMapRepository` covered by the unit tests.
+//! SQLite). Exercises `repo.outbox(msg).commit(agg)` (claim-in-transaction +
+//! immediate publish, enabled by `with_bus`) and the `with_bus` runtime against a
+//! persistent repository, not just the in-memory `HashMapRepository` covered by
+//! the unit tests.
 
 #![cfg(feature = "sqlite")]
 
@@ -36,7 +37,7 @@ async fn handle_touch(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     let mut counter = Counter::default();
     counter.touch("c1".to_string())?;
     let message = OutboxMessage::create("evt-c1", "counter.touched", b"{}".to_vec())?;
-    ctx.commit_outbox(&mut counter, message).await?;
+    ctx.repo().outbox(message).commit(&mut counter).await?;
     Ok(json!({ "value": counter.value }))
 }
 
@@ -49,7 +50,7 @@ async fn service() -> Repo {
 }
 
 #[tokio::test]
-async fn commit_outbox_publishes_immediately_over_sqlite() {
+async fn commit_publishes_immediately_over_sqlite() {
     let microservice = Service::with_repo(service().await)
         .command("counter.touch")
         .handle(handle_touch)
