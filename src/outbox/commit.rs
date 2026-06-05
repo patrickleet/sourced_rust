@@ -53,11 +53,18 @@ where
     pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
         self.message.set_source(aggregate);
         let outbox_message_id = self.message.id().to_string();
+        // Stage a snapshot too when the repository has snapshots configured and
+        // one is due — same transaction as the events and the outbox row.
+        let (snapshots, snapshot_version) = self.repo.snapshot_writes_for(aggregate)?;
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let stream = StreamWrite::new(identity, aggregate.entity_mut());
         let mut batch = CommitBatch::new(vec![stream]);
         batch.outbox_messages.push(self.message);
+        batch.snapshots = snapshots;
         self.repo.repo().commit_batch(batch).await?;
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
         Ok(CommitReceipt {
             outbox_message_ids: vec![outbox_message_id],
         })
@@ -86,11 +93,16 @@ where
         self.message.claim_at(worker_id, lease, SystemTime::now())?;
         let claimed = self.message.clone();
         let outbox_message_id = self.message.id().to_string();
+        let (snapshots, snapshot_version) = self.repo.snapshot_writes_for(aggregate)?;
         let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
         let stream = StreamWrite::new(identity, aggregate.entity_mut());
         let mut batch = CommitBatch::new(vec![stream]);
         batch.outbox_messages.push(self.message);
+        batch.snapshots = snapshots;
         self.repo.repo().commit_batch(batch).await?;
+        if let Some(version) = snapshot_version {
+            aggregate.entity_mut().set_snapshot_version(version);
+        }
         Ok((
             CommitReceipt {
                 outbox_message_ids: vec![outbox_message_id],

@@ -1,12 +1,9 @@
-use std::time::{Duration, SystemTime};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::aggregate::{hydrate, AggregateRepository};
+use crate::aggregate::{hydrate, AggregateRepository, SnapshotPolicy};
 use crate::entity::{upcast_events, Entity};
-use crate::outbox::{CommitReceipt, OutboxCommitting, OutboxMessage};
-use crate::repository::{
-    CommitBatch, GetStream, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
-    StreamWrite, TransactionalCommit,
-};
+use crate::repository::{RepositoryError, SnapshotStore, StreamIdentity};
 
 use super::snapshottable::Snapshottable;
 use super::store::SnapshotRecord;
@@ -172,237 +169,64 @@ fn hydrate_with_optional_snapshot<A: Snapshottable>(
         .map_err(snapshot_hydration_error_to_repository_error)
 }
 
-/// Async repository wrapper that treats aggregate snapshots as rebuildable
-/// hydration cache records.
-pub struct SnapshotAggregateRepository<R, A> {
-    inner: AggregateRepository<R, A>,
+impl<R, A> AggregateRepository<R, A>
+where
+    R: SnapshotStore + Sync,
+    A: Snapshottable + Send,
+{
+    /// Enable snapshot caching at the given event frequency.
+    ///
+    /// Snapshots are a transparent optimization: this configures snapshot
+    /// behaviour on the **same** repository type and returns it. On commit a
+    /// snapshot is staged (when due) in the same transaction; on load the
+    /// aggregate is hydrated from a snapshot when one exists. Every other method
+    /// behaves identically with or without snapshots.
+    pub fn with_snapshots(mut self, frequency: u64) -> Self {
+        self.set_snapshot_policy(SnapshotPolicy::new(
+            frequency,
+            snapshot_record_if_due::<A>,
+            hydrate_from_store::<R, A>,
+        ));
+        self
+    }
+}
+
+/// Build a snapshot cache record for `aggregate` when one is due at `frequency`.
+/// Captured as the `record` hook of a `SnapshotPolicy`.
+fn snapshot_record_if_due<A: Snapshottable>(
+    aggregate: &A,
     frequency: u64,
-}
-
-impl<R, A> SnapshotAggregateRepository<R, A> {
-    pub fn new(inner: AggregateRepository<R, A>, frequency: u64) -> Self {
-        Self { inner, frequency }
-    }
-
-    pub fn repo(&self) -> &AggregateRepository<R, A> {
-        &self.inner
-    }
-}
-
-impl<R, A> AggregateRepository<R, A> {
-    /// Wrap this async repository with snapshot cache support at the given event
-    /// frequency.
-    pub fn with_snapshots(self, frequency: u64) -> SnapshotAggregateRepository<R, A> {
-        SnapshotAggregateRepository::new(self, frequency)
-    }
-}
-
-impl<R, A> SnapshotAggregateRepository<R, A>
-where
-    R: GetStream + SnapshotStore,
-    A: Snapshottable + Send,
-{
-    pub async fn get(&self, id: &str) -> Result<Option<A>, RepositoryError> {
-        let identity = StreamIdentity::new(A::aggregate_type(), id)?;
-        let entity = self.inner.repo().get_stream(&identity).await?;
-        let Some(entity) = entity else {
-            return Ok(None);
-        };
-        let snapshot = self.inner.repo().get_snapshot(&identity).await?;
-        Ok(Some(hydrate_with_optional_snapshot::<A>(entity, snapshot)?))
-    }
-
-    pub async fn get_all(&self, ids: &[&str]) -> Result<Vec<A>, RepositoryError> {
-        let identities = ids
-            .iter()
-            .map(|id| StreamIdentity::new(A::aggregate_type(), *id))
-            .collect::<Result<Vec<_>, _>>()?;
-        let entities = self.inner.repo().get_streams(&identities).await?;
-        let mut aggregates = Vec::with_capacity(entities.len());
-        for entity in entities {
-            let identity = StreamIdentity::new(A::aggregate_type(), entity.id())?;
-            let snapshot = self.inner.repo().get_snapshot(&identity).await?;
-            aggregates.push(hydrate_with_optional_snapshot::<A>(entity, snapshot)?);
-        }
-        Ok(aggregates)
-    }
-}
-
-impl<R, A> SnapshotAggregateRepository<R, A>
-where
-    R: TransactionalCommit,
-    A: Snapshottable + Send,
-{
-    pub async fn commit(&self, aggregate: &mut A) -> Result<(), RepositoryError> {
-        let snapshot = self.snapshot_record(aggregate)?;
-        let snapshot_version = snapshot.as_ref().map(|record| record.version);
-        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
-        let snapshots = snapshot
-            .into_iter()
-            .map(|record| SnapshotWrite::Save {
-                identity: identity.clone(),
-                record,
-            })
-            .collect();
-
-        self.inner
-            .repo()
-            .commit_batch(CommitBatch {
-                streams: vec![StreamWrite::new(identity, aggregate.entity_mut())],
-                outbox_messages: Vec::new(),
-                read_model_plans: Vec::new(),
-                snapshots,
-                inbox_receipts: Vec::new(),
-            })
-            .await?;
-
-        if let Some(version) = snapshot_version {
-            aggregate.entity_mut().set_snapshot_version(version);
-        }
-        Ok(())
-    }
-
-    pub async fn commit_all(&self, aggregates: &mut [&mut A]) -> Result<(), RepositoryError> {
-        let mut snapshot_versions = Vec::with_capacity(aggregates.len());
-        let mut snapshots = Vec::new();
-        for aggregate in aggregates.iter() {
-            let snapshot = self.snapshot_record(*aggregate)?;
-            snapshot_versions.push(snapshot.as_ref().map(|record| record.version));
-            if let Some(record) = snapshot {
-                snapshots.push(SnapshotWrite::Save {
-                    identity: StreamIdentity::new(
-                        A::aggregate_type(),
-                        record.aggregate_id.as_str(),
-                    )?,
-                    record,
-                });
-            }
-        }
-
-        let mut streams = Vec::with_capacity(aggregates.len());
-        for aggregate in aggregates.iter_mut() {
-            let identity = StreamIdentity::new(A::aggregate_type(), (*aggregate).entity().id())?;
-            streams.push(StreamWrite::new(identity, (*aggregate).entity_mut()));
-        }
-
-        self.inner
-            .repo()
-            .commit_batch(CommitBatch {
-                streams,
-                outbox_messages: Vec::new(),
-                read_model_plans: Vec::new(),
-                snapshots,
-                inbox_receipts: Vec::new(),
-            })
-            .await?;
-
-        for (aggregate, snapshot_version) in aggregates.iter_mut().zip(snapshot_versions) {
-            if let Some(version) = snapshot_version {
-                aggregate.entity_mut().set_snapshot_version(version);
-            }
-        }
-        Ok(())
-    }
-
-    fn snapshot_record(&self, aggregate: &A) -> Result<Option<SnapshotRecord>, RepositoryError> {
-        let version = aggregate.entity().version();
-        let snap_version = aggregate.entity().snapshot_version();
-
-        if snapshot_due(version, snap_version, self.frequency) {
-            return snapshot_record_for(aggregate).map(Some);
-        }
+) -> Result<Option<SnapshotRecord>, RepositoryError> {
+    let version = aggregate.entity().version();
+    let snap_version = aggregate.entity().snapshot_version();
+    if snapshot_due(version, snap_version, frequency) {
+        snapshot_record_for(aggregate).map(Some)
+    } else {
         Ok(None)
     }
-
-    /// Commit the aggregate, an outbox message, and (when due) a snapshot in one
-    /// transaction. With `claim` set, the outbox row is claimed in the same
-    /// transaction for immediate publication and a clone of the claimed message
-    /// is returned. This is what lets snapshot-backed repositories take part in
-    /// the durable-enqueue command path.
-    async fn commit_with_outbox(
-        &self,
-        aggregate: &mut A,
-        mut message: OutboxMessage,
-        claim: Option<(&str, Duration)>,
-    ) -> Result<(CommitReceipt, Option<OutboxMessage>), RepositoryError> {
-        message.set_source(aggregate);
-        let claimed = match claim {
-            Some((worker_id, lease)) => {
-                message.claim_at(worker_id, lease, SystemTime::now())?;
-                Some(message.clone())
-            }
-            None => None,
-        };
-        let outbox_message_id = message.id().to_string();
-
-        let snapshot = self.snapshot_record(aggregate)?;
-        let snapshot_version = snapshot.as_ref().map(|record| record.version);
-        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
-        let snapshots = snapshot
-            .into_iter()
-            .map(|record| SnapshotWrite::Save {
-                identity: identity.clone(),
-                record,
-            })
-            .collect();
-
-        self.inner
-            .repo()
-            .commit_batch(CommitBatch {
-                streams: vec![StreamWrite::new(identity, aggregate.entity_mut())],
-                outbox_messages: vec![message],
-                read_model_plans: Vec::new(),
-                snapshots,
-                inbox_receipts: Vec::new(),
-            })
-            .await?;
-
-        if let Some(version) = snapshot_version {
-            aggregate.entity_mut().set_snapshot_version(version);
-        }
-        Ok((
-            CommitReceipt {
-                outbox_message_ids: vec![outbox_message_id],
-            },
-            claimed,
-        ))
-    }
 }
 
-impl<R, A> OutboxCommitting<A> for SnapshotAggregateRepository<R, A>
+/// Load the snapshot cache record (if any) and hydrate `entity` from it.
+/// Captured as the `hydrate` hook of a `SnapshotPolicy`.
+fn hydrate_from_store<'a, R, A>(
+    repo: &'a R,
+    identity: &'a StreamIdentity,
+    entity: Entity,
+) -> Pin<Box<dyn Future<Output = Result<A, RepositoryError>> + Send + 'a>>
 where
-    R: TransactionalCommit + Send + Sync,
-    A: Snapshottable + Send + Sync,
+    R: SnapshotStore + Sync,
+    A: Snapshottable + Send,
 {
-    async fn commit_outbox_pending(
-        &self,
-        aggregate: &mut A,
-        message: OutboxMessage,
-    ) -> Result<CommitReceipt, RepositoryError> {
-        let (receipt, _) = self.commit_with_outbox(aggregate, message, None).await?;
-        Ok(receipt)
-    }
-
-    async fn commit_outbox_claimed(
-        &self,
-        aggregate: &mut A,
-        message: OutboxMessage,
-        worker_id: &str,
-        lease: Duration,
-    ) -> Result<(CommitReceipt, OutboxMessage), RepositoryError> {
-        let (receipt, claimed) = self
-            .commit_with_outbox(aggregate, message, Some((worker_id, lease)))
-            .await?;
-        Ok((
-            receipt,
-            claimed.expect("claimed commit always returns the claimed message"),
-        ))
-    }
+    Box::pin(async move {
+        let snapshot = repo.get_snapshot(identity).await?;
+        hydrate_with_optional_snapshot::<A>(entity, snapshot)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository::{CommitBatch, TransactionalCommit};
     use crate::{sourced, Aggregate, EventRecord};
 
     #[derive(Default)]
@@ -456,11 +280,34 @@ mod tests {
         }
     }
 
+    // Snapshots can only be enabled on a repo that can store them; this stub
+    // satisfies the bound (the commit-failure test never loads a snapshot).
+    impl SnapshotStore for FailingSnapshotRepo {
+        async fn get_snapshot(
+            &self,
+            _identity: &StreamIdentity,
+        ) -> Result<Option<SnapshotRecord>, RepositoryError> {
+            Ok(None)
+        }
+        async fn save_snapshot(
+            &self,
+            _identity: &StreamIdentity,
+            _record: SnapshotRecord,
+        ) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn delete_snapshot(
+            &self,
+            _identity: &StreamIdentity,
+        ) -> Result<bool, RepositoryError> {
+            Ok(false)
+        }
+    }
+
     #[tokio::test]
     async fn snapshot_batch_failure_leaves_aggregate_uncommitted() {
         let repo = FailingSnapshotRepo::default();
-        let aggregate_repo = AggregateRepository::new(repo);
-        let snapshot_repo = SnapshotAggregateRepository::new(aggregate_repo, 1);
+        let snapshot_repo = AggregateRepository::new(repo).with_snapshots(1);
 
         let mut aggregate = TestAggregate::default();
         aggregate.touch().unwrap();
@@ -469,7 +316,6 @@ mod tests {
 
         assert_eq!(err, RepositoryError::Model("snapshot write failed".into()));
         assert!(snapshot_repo
-            .repo()
             .repo()
             .saw_snapshot
             .load(std::sync::atomic::Ordering::SeqCst));
