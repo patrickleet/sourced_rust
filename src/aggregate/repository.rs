@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 
 use crate::entity::Entity;
+use crate::outbox::OutboxPublisherConfig;
 use crate::queued_repo::{GetAllWithOpts, GetWithOpts, ReadOpts, UnlockableRepository};
 use crate::repository::{
     CommitBatch, GetStream, RepositoryError, SnapshotWrite, StreamIdentity, StreamWrite,
@@ -76,6 +77,7 @@ impl<R, A> SnapshotPolicy<R, A> {
 pub struct AggregateRepository<R, A> {
     repo: R,
     snapshot: Option<SnapshotPolicy<R, A>>,
+    outbox_publisher: Option<OutboxPublisherConfig>,
     _marker: PhantomData<A>,
 }
 
@@ -84,6 +86,7 @@ impl<R, A> AggregateRepository<R, A> {
         Self {
             repo,
             snapshot: None,
+            outbox_publisher: None,
             _marker: PhantomData,
         }
     }
@@ -99,6 +102,18 @@ impl<R, A> AggregateRepository<R, A> {
     /// Install the snapshot policy (used by `with_snapshots`).
     pub(crate) fn set_snapshot_policy(&mut self, policy: SnapshotPolicy<R, A>) {
         self.snapshot = Some(policy);
+    }
+
+    /// Install the outbox publisher so commits publish immediately (used by
+    /// `Service::with_bus`).
+    pub(crate) fn set_outbox_publisher(&mut self, config: OutboxPublisherConfig) {
+        self.outbox_publisher = Some(config);
+    }
+
+    /// The configured outbox publisher, if any. Consulted by
+    /// `OutboxCommit::commit`.
+    pub(crate) fn outbox_publisher(&self) -> Option<&OutboxPublisherConfig> {
+        self.outbox_publisher.as_ref()
     }
 }
 

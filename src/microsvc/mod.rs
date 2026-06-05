@@ -64,8 +64,8 @@ mod session;
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use context::Context;
 pub use dependencies::{
-    HasOutboxStore, HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
-    RepoReadModelDependencies,
+    ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore, HasRepo,
+    ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
 pub use runtime::{Microservice, DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};

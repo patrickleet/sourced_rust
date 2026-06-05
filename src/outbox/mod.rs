@@ -49,4 +49,4 @@ pub use table::{
 };
 
 // Commit helpers
-pub use commit::{CommitReceipt, OutboxCommit, OutboxCommitting};
+pub use commit::{CommitReceipt, OutboxCommit, OutboxPublishHook, OutboxPublisherConfig};

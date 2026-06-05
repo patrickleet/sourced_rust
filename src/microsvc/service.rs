@@ -23,7 +23,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::Value;
 
@@ -31,21 +30,7 @@ use super::context::Context;
 use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
 use super::error::HandlerError;
 use super::session::Session;
-use crate::bus::{DynPublisher, Message, MessageKind, SubscriptionPlan};
-
-/// After-commit publish configuration, set when a bus is attached via
-/// [`Service::with_bus`](crate::microsvc::Service::with_bus).
-///
-/// When present, [`Context::commit_outbox`](crate::microsvc::Context::commit_outbox)
-/// claims the outbox row in the commit transaction and publishes it through
-/// `publisher`. When absent, `commit_outbox` writes the row `pending` and leaves
-/// publication to the polling worker.
-pub(crate) struct ImmediatePublish {
-    pub(crate) publisher: Arc<dyn DynPublisher>,
-    pub(crate) worker_id: String,
-    pub(crate) lease: Duration,
-    pub(crate) max_attempts: u32,
-}
+use crate::bus::{Message, MessageKind, SubscriptionPlan};
 
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
@@ -192,7 +177,6 @@ pub struct Service<D> {
     dependencies: D,
     handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
-    immediate_publish: Option<ImmediatePublish>,
 }
 
 impl<D: Send + Sync + 'static> Service<D> {
@@ -202,13 +186,13 @@ impl<D: Send + Sync + 'static> Service<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
-            immediate_publish: None,
         }
     }
 
-    /// Attach the after-commit publish configuration (set by `with_bus`).
-    pub(crate) fn set_immediate_publish(&mut self, immediate_publish: ImmediatePublish) {
-        self.immediate_publish = Some(immediate_publish);
+    /// Mutable access to the dependencies, used by `with_bus` to install the
+    /// outbox publisher on the repository before the service is shared.
+    pub(crate) fn dependencies_mut(&mut self) -> &mut D {
+        &mut self.dependencies
     }
 
     /// Create a service whose dependency type is an aggregate repository.
@@ -352,13 +336,7 @@ impl<D: Send + Sync + 'static> Service<D> {
             (handler.guard.clone(), handler.handle.clone())
         };
         let name = message.name.clone();
-        let ctx = Context::new(
-            message,
-            input,
-            session,
-            &self.dependencies,
-            self.immediate_publish.as_ref(),
-        );
+        let ctx = Context::new(message, input, session, &self.dependencies);
 
         // Run guard (synchronous) if present.
         if let Some(guard) = &guard {

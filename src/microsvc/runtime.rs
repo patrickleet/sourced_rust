@@ -15,11 +15,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::dependencies::{HasOutboxStore, HasRepo};
-use super::service::ImmediatePublish;
+use super::dependencies::{ConfigurableOutboxPublisher, HasOutboxStore, HasRepo};
 use super::Service;
-use crate::bus::{Bus, BusConsumer, DynPublisher, RunOptions, TransportError};
-use crate::outbox_worker::{BusPublisher, OutboxDispatcher};
+use crate::bus::{Bus, BusConsumer, RunOptions, TransportError};
+use crate::outbox::OutboxPublisherConfig;
+use crate::outbox_worker::{BusOutboxPublishHook, BusPublisher, OutboxDispatcher};
 
 /// Default lease for an immediate after-commit outbox publish.
 ///
@@ -122,10 +122,10 @@ where
     /// `run` returns when the consumers stop (a pull source that drains, or the
     /// first error).
     ///
-    /// Producing is handled separately: the primary path is immediate publish via
-    /// [`Context::commit_outbox`](crate::microsvc::Context::commit_outbox); the
-    /// background poll loop (the crash backstop, which needs an async timer) is
-    /// driven from [`Self::dispatcher`] by a runtime that provides one.
+    /// Producing is handled separately: the primary path is immediate publish on
+    /// `repo.outbox(msg).commit(agg)` (enabled by `with_bus`); the background poll
+    /// loop (the crash backstop, which needs an async timer) is driven from
+    /// [`Self::dispatcher`] by a runtime that provides one.
     pub async fn run(&self, options: RunOptions) -> Result<(), TransportError> {
         use std::future::{poll_fn, Future};
         use std::pin::Pin;
@@ -170,29 +170,37 @@ where
     }
 }
 
-impl<D: Send + Sync + 'static> Service<D> {
+impl<D> Service<D>
+where
+    D: Send + Sync + 'static + HasOutboxStore + ConfigurableOutboxPublisher,
+{
     /// Attach a bus, producing a [`Microservice`] that carries the transport
-    /// config for both producing (outbox dispatch) and consuming
-    /// (listen/subscribe).
+    /// config for both producing and consuming.
     ///
-    /// Attaching a bus also enables immediate after-commit publish: handlers
-    /// that call [`Context::commit_outbox`](crate::microsvc::Context::commit_outbox)
-    /// claim the outbox row in the commit transaction and publish it through this
-    /// bus. The immediate path uses [`DEFAULT_PUBLISH_LEASE`] and
-    /// [`DEFAULT_MAX_PUBLISH_ATTEMPTS`]; the `with_publish_lease` /
-    /// `with_max_attempts` setters configure the background poll loop.
+    /// Attaching a bus installs an outbox publisher on the repository, so
+    /// `repo.outbox(msg).commit(agg)` (and `ctx.repo().outbox(...).commit(...)`)
+    /// claims the row in the commit transaction and publishes it immediately
+    /// through this bus — no separate call. The immediate path uses
+    /// [`DEFAULT_PUBLISH_LEASE`] and [`DEFAULT_MAX_PUBLISH_ATTEMPTS`]; the polling
+    /// worker remains the crash/retry backstop.
     pub fn with_bus<B>(mut self, bus: B) -> Microservice<D, B>
     where
         B: Bus + 'static,
     {
         let bus = Arc::new(bus);
-        let publisher: Arc<dyn DynPublisher> = Arc::new(BusPublisher::new(Arc::clone(&bus)));
-        self.set_immediate_publish(ImmediatePublish {
-            publisher,
-            worker_id: format!("microsvc-immediate:{}", std::process::id()),
-            lease: DEFAULT_PUBLISH_LEASE,
-            max_attempts: DEFAULT_MAX_PUBLISH_ATTEMPTS,
-        });
+        // Build the publish hook over the service's own outbox store + this bus,
+        // and install it on the repository so commits publish immediately.
+        let hook = BusOutboxPublishHook::new(
+            self.dependencies().outbox_store(),
+            BusPublisher::new(Arc::clone(&bus)),
+            DEFAULT_MAX_PUBLISH_ATTEMPTS,
+        );
+        let config = OutboxPublisherConfig::new(
+            Arc::new(hook),
+            format!("microsvc-immediate:{}", std::process::id()),
+            DEFAULT_PUBLISH_LEASE,
+        );
+        self.dependencies_mut().configure_outbox_publisher(config);
         Microservice::new(Arc::new(self), bus)
     }
 }
@@ -225,13 +233,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatcher_drains_committed_outbox_row_to_the_bus() {
-        let service =
-            Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>());
+    async fn commit_publishes_immediately_leaving_nothing_for_the_dispatcher() {
+        let microservice = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+            .with_bus(InMemoryBus::new());
 
-        let microservice = service.with_bus(InMemoryBus::new());
-
-        // Commit an aggregate + outbox row through the bound service's repo.
+        // The plain commit API publishes immediately because a bus is attached.
         let mut dummy = Dummy::default();
         dummy.touch().unwrap();
         let message = OutboxMessage::create("evt-1", "dummy.touched", b"{}".to_vec()).unwrap();
@@ -244,9 +250,11 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.outbox_message_ids(), ["evt-1".to_string()]);
 
-        // The dispatcher (store + bus) drains the committed row to the bus.
+        // The row was already published at commit time, so the backstop
+        // dispatcher (poll loop) finds nothing to drain.
         let outcome = microservice.dispatcher().dispatch_batch(10).await.unwrap();
-        assert_eq!(outcome.published, 1);
+        assert_eq!(outcome.claimed, 0, "row was already published at commit");
+        assert_eq!(outcome.published, 0);
         assert_eq!(outcome.released, 0);
         assert_eq!(outcome.failed, 0);
     }
@@ -258,18 +266,19 @@ mod tests {
         let mut dummy = Dummy::default();
         dummy.touch()?;
         let message = OutboxMessage::create("evt-1", "dummy.touched", b"{}".to_vec())?;
-        ctx.commit_outbox(&mut dummy, message).await?;
+        // The good old API — commit publishes immediately because a bus is attached.
+        ctx.repo().outbox(message).commit(&mut dummy).await?;
         Ok(json!({ "ok": true }))
     }
 
     #[tokio::test]
-    async fn commit_outbox_publishes_immediately_when_bus_is_attached() {
+    async fn commit_publishes_immediately_when_bus_is_attached() {
         let service = Service::with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
             .command("dummy.touch")
             .handle(touch_and_publish);
         let microservice = service.with_bus(InMemoryBus::new());
 
-        // Dispatching the command runs the handler, which calls `commit_outbox`:
+        // Dispatching the command runs the handler, which calls `outbox().commit()`:
         // claim-in-transaction, then immediate publish through the attached bus.
         microservice
             .service()
@@ -301,7 +310,7 @@ mod tests {
 
         // Enqueue a command on the bus, then run: `listen` is derived from the
         // registered command, drains the message, and the handler runs
-        // (commit_outbox publishes immediately). `run` returns once the queue is
+        // (commit publishes immediately). `run` returns once the queue is
         // empty (InMemoryBus source yields `None`).
         microservice
             .bus()
@@ -344,13 +353,13 @@ mod tests {
         let mut counter = SnapCounter::default();
         counter.touch("s1".to_string())?;
         let message = OutboxMessage::create("evt-s1", "snap.touched", b"{}".to_vec())?;
-        ctx.commit_outbox(&mut counter, message).await?;
+        ctx.repo().outbox(message).commit(&mut counter).await?;
         Ok(json!({}))
     }
 
     #[tokio::test]
-    async fn commit_outbox_works_with_snapshot_backed_repo() {
-        // `commit_outbox` must work for a snapshot-backed repository too: the
+    async fn outbox_commit_publishes_with_snapshot_backed_repo() {
+        // `outbox().commit()` must work for a snapshot-backed repository too: the
         // outbox row and the snapshot commit together in one transaction, then
         // the row publishes immediately.
         let repo = HashMapRepository::new()
@@ -376,7 +385,7 @@ mod tests {
         assert_eq!(
             published.len(),
             1,
-            "snapshot-backed commit_outbox should publish immediately"
+            "snapshot-backed outbox commit should publish immediately"
         );
         assert_eq!(published[0].id(), "evt-s1");
     }

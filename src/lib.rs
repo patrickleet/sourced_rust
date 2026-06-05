@@ -67,8 +67,8 @@ pub use lock::{SqliteLock, SqliteLockManager};
 // Outbox: commit concerns (aggregate + outbox in one commit)
 pub use outbox::{
     outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, CommitReceipt, OutboxCommit, OutboxCommitting, OutboxMessage,
-    OutboxMessageStatus, OUTBOX_MESSAGES_TABLE,
+    outbox_message_schema, CommitReceipt, OutboxCommit, OutboxMessage, OutboxMessageStatus,
+    OutboxPublishHook, OutboxPublisherConfig, OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
@@ -92,8 +92,9 @@ pub use outbox_worker::{
 #[cfg(feature = "emitter")]
 pub use outbox_worker::LocalEmitterPublisher;
 pub use outbox_worker::{
-    BusPublisher, OutboxDispatchOutcome, OutboxDispatcher, OutboxSource, ReceivedOutboxMessage,
-    DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE, SOURCED_METADATA_PREFIX,
+    BusOutboxPublishHook, BusPublisher, OutboxDispatchOutcome, OutboxDispatcher, OutboxSource,
+    ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
+    SOURCED_METADATA_PREFIX,
 };
 
 pub use queued_repo::{
