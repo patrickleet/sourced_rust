@@ -709,7 +709,7 @@ read models, the outbox, **and** the durable transport (`PostgresBus`). See
 Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
 
 ```rust
-use distributed::{OutboxCommit, OutboxMessage};
+use distributed::OutboxMessage;
 
 let mut todo = Todo::default();
 todo.entity.set_correlation_id("req-abc");
