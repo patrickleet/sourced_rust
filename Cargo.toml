@@ -42,7 +42,7 @@ async-nats = { version = "0.49", optional = true }
 axum = { version = "0.8", optional = true }
 base64 = "0.22.1"
 futures = { version = "0.3", optional = true }
-lapin = { version = "2", optional = true }
+lapin = { version = "4", optional = true }
 rdkafka = { version = "0.39", features = ["cmake-build", "tokio"], optional = true }
 reqwest = { version = "0.13", default-features = false, optional = true }
 bitcode = { version = "0.6.9", features = ["serde"] }
