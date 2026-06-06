@@ -51,12 +51,12 @@ serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 distributed_macros = { workspace = true }
 sqlx = { version = "0.9", default-features = false, optional = true }
-tonic = { version = "0.12", optional = true }
+tonic = { version = "0.12", default-features = false, features = ["transport", "codegen"], optional = true }
 prost = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"], optional = true }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = { version = "0.12", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
 axum = "0.8"
@@ -65,4 +65,4 @@ reqwest = { version = "0.13", features = ["json"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tonic = "0.12"
+tonic = { version = "0.12", default-features = false, features = ["transport", "codegen"] }

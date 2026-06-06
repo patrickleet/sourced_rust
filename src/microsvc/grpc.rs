@@ -30,10 +30,12 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::marker::PhantomData;
 use std::net::{AddrParseError, SocketAddr};
 use std::sync::Arc;
 
 use serde_json::json;
+use tonic::codec::{BufferSettings, Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::{Request, Response, Status};
 
 use super::service::Service;
@@ -70,6 +72,93 @@ pub struct HealthResponse {
     pub ok: bool,
     #[prost(string, repeated, tag = "2")]
     pub commands: Vec<String>,
+}
+
+/// Bridges tonic 0.12's generic codec traits to prost 0.14 message types.
+#[derive(Debug, Clone)]
+pub(crate) struct Prost14Codec<T, U> {
+    _pd: PhantomData<(T, U)>,
+}
+
+impl<T, U> Prost14Codec<T, U> {
+    fn new() -> Self {
+        Self { _pd: PhantomData }
+    }
+}
+
+impl<T, U> Default for Prost14Codec<T, U> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, U> Codec for Prost14Codec<T, U>
+where
+    T: prost::Message + Send + 'static,
+    U: prost::Message + Default + Send + 'static,
+{
+    type Encode = T;
+    type Decode = U;
+    type Encoder = Prost14Encoder<T>;
+    type Decoder = Prost14Decoder<U>;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        Prost14Encoder {
+            _pd: PhantomData,
+            buffer_settings: BufferSettings::default(),
+        }
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        Prost14Decoder {
+            _pd: PhantomData,
+            buffer_settings: BufferSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Prost14Encoder<T> {
+    _pd: PhantomData<T>,
+    buffer_settings: BufferSettings,
+}
+
+impl<T: prost::Message> Encoder for Prost14Encoder<T> {
+    type Item = T;
+    type Error = Status;
+
+    fn encode(&mut self, item: Self::Item, buf: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
+        item.encode(buf)
+            .map_err(|error| Status::internal(error.to_string()))
+    }
+
+    fn buffer_settings(&self) -> BufferSettings {
+        self.buffer_settings
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Prost14Decoder<T> {
+    _pd: PhantomData<T>,
+    buffer_settings: BufferSettings,
+}
+
+impl<T> Decoder for Prost14Decoder<T>
+where
+    T: prost::Message + Default,
+{
+    type Item = T;
+    type Error = Status;
+
+    fn decode(&mut self, buf: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
+        T::decode(buf)
+            .map(Some)
+            .map_err(|error| Status::internal(error.to_string()))
+    }
+
+    fn buffer_settings(&self) -> BufferSettings {
+        self.buffer_settings
+    }
 }
 
 // ---------------------------------------------------------------------------
