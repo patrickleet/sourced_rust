@@ -11,7 +11,7 @@ fn main() {
                     .route_name("Dispatch")
                     .input_type("crate::microsvc::grpc::GrpcRequest")
                     .output_type("crate::microsvc::grpc::GrpcResponse")
-                    .codec_path("crate::microsvc::grpc::Prost14Codec")
+                    .codec_path("tonic_prost::ProstCodec")
                     .build(),
             )
             .method(
@@ -20,7 +20,7 @@ fn main() {
                     .route_name("Health")
                     .input_type("crate::microsvc::grpc::HealthRequest")
                     .output_type("crate::microsvc::grpc::HealthResponse")
-                    .codec_path("crate::microsvc::grpc::Prost14Codec")
+                    .codec_path("tonic_prost::ProstCodec")
                     .build(),
             )
             .build();
