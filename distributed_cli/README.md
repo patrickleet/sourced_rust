@@ -1,0 +1,131 @@
+# distributed_cli (`dsvc`)
+
+Service tooling for [Distributed](https://crates.io/crates/distributed): a `dsvc`
+binary — and a library — that scaffolds service crates, inspects a service's
+project manifest, and renders schema artifacts (SQL or an Atlas Operator
+resource).
+
+```bash
+cargo install distributed_cli   # installs the `dsvc` binary
+```
+
+It is also a library, so another CLI can mount its commands instead of
+reimplementing them. `hops`, for example, exposes the same surface under
+`hops service` by depending on this crate and dispatching with
+`distributed_cli::run`. **Everything below documented as `dsvc <cmd>` is also
+available as `hops service <cmd>`.**
+
+## `dsvc scaffold <name>` — generate a service crate
+
+```bash
+dsvc scaffold orders --store postgres --transport http --gitops
+```
+
+Writes a ready-to-build Distributed service under `./<name>` (override with
+`--path`). Common flags: `--store <postgres|sqlite|in-memory>`, `--transport
+<http|knative>`, `--model <name>` (repeatable), `--read-models`, `--command` /
+`--event` (repeatable), `--bus <rabbitmq|kafka|psql|nats>`, `--gitops`,
+`--gitops-promote <argo|flux>`, `--github OWNER/REPO`, `--force`. See
+`dsvc scaffold --help` for the full list.
+
+## The project manifest entrypoint
+
+`describe` and `schema` work by compiling your service crate and calling an
+exported manifest function — by default `<crate>::distributed_manifest`. Add one
+to your service that registers its read models / tables and services:
+
+```rust
+use distributed::{DistributedProjectManifest, ReadModel};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("orders")]
+pub struct OrderView {
+    #[id("order_id")]
+    pub order_id: String,
+    pub status: String,
+}
+
+pub fn distributed_manifest() -> DistributedProjectManifest {
+    DistributedProjectManifest::new("orders").read_model::<OrderView>()
+}
+```
+
+Point at a different function with `--entrypoint <path>`. Because these commands
+compile the target crate, they need the local `distributed` crate to be
+resolvable — found automatically from the workspace, or pass `--distributed-path`
+/ set `DISTRIBUTED_PATH`.
+
+## `dsvc describe` — manifest as JSON
+
+```bash
+dsvc describe                       # current directory
+dsvc describe --manifest-path path/to/Cargo.toml --package orders-service
+```
+
+Prints the versioned manifest envelope (schemas, services, transports) as JSON —
+a stable contract for other tooling.
+
+## `dsvc schema` — schema artifacts
+
+Renders the **desired-state** schema for the manifest's read models and
+operational tables. Output goes to stdout by default (or `--out <file>`).
+
+### SQL (default)
+
+```bash
+dsvc schema --dialect postgres      # or --dialect sqlite
+```
+
+### Atlas Operator resource (`--format atlas`)
+
+Wraps the desired-state SQL into an `AtlasSchema` (`db.atlasgo.io/v1alpha1`) for
+the [ariga atlas-operator](https://github.com/ariga/atlas-operator), so the
+operator diffs the live database against it and applies the migration in-cluster.
+
+The resource is written to **stdout** — `dsvc` deliberately does not pick a
+location for it. Redirect it wherever you keep schema manifests: a file in the
+service repo, or a separate GitOps/schema repo.
+
+```bash
+dsvc schema --format atlas \
+  --name orders \
+  --namespace data \
+  --db-secret orders-db \
+  --db-secret-key url \
+  > orders.schema.yaml
+```
+
+| flag | maps to |
+|------|---------|
+| `--name` | `metadata.name` (required; RFC-1123 label) |
+| `--namespace` | `metadata.namespace` (optional) |
+| `--db-secret` / `--db-secret-key` | `spec.urlFrom.secretKeyRef` — the GitOps-friendly choice, no credentials in the manifest (`--db-secret-key` defaults to `url`) |
+| `--db-url` | inline `spec.url` — convenient for dev; avoid committing real credentials |
+| `--dev-url` | `spec.devURL` — a scratch database Atlas uses to plan changes |
+| `--dialect` | SQL dialect of the wrapped schema (`postgres` default) |
+
+Provide a database reference via **either** `--db-secret` or `--db-url` (not
+both). Example output:
+
+```yaml
+apiVersion: db.atlasgo.io/v1alpha1
+kind: AtlasSchema
+metadata:
+  name: orders
+  namespace: data
+spec:
+  urlFrom:
+    secretKeyRef:
+      name: orders-db
+      key: url
+  schema:
+    sql: |
+      CREATE TABLE IF NOT EXISTS "orders" (
+        ...
+      );
+```
+
+Names are validated as RFC-1123 labels (lowercase letters, digits, hyphens; no
+leading/trailing hyphen) so generation fails with a clear message rather than
+emitting YAML the API server would reject.

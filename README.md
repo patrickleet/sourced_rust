@@ -1259,6 +1259,47 @@ A v1 event automatically chains through v1→v2→v3; a v2 event only goes throu
 - **No stored data modified**: Upcasters are read-time transformations.
 - **Zero overhead when unused**: Aggregates with no upcasters take the fast hydration path.
 
+## Service CLI (`dsvc`)
+
+The [`distributed_cli`](distributed_cli/) crate ships `dsvc` — tooling to scaffold
+services, inspect a service's project manifest, and render schema artifacts. It is
+also a library, so `hops` mounts the same commands under `hops service` (anything
+below as `dsvc <cmd>` works as `hops service <cmd>`).
+
+```bash
+cargo install distributed_cli            # installs `dsvc`
+
+dsvc scaffold orders --store postgres --gitops    # generate a service crate
+dsvc describe                            # print the project manifest as JSON
+dsvc schema --dialect postgres           # render migration SQL
+```
+
+`describe`/`schema` compile your crate and call its `distributed_manifest()`
+entrypoint (override with `--entrypoint`), which registers the [read
+models](#read-models) and tables that define the schema:
+
+```rust
+pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
+    distributed::DistributedProjectManifest::new("orders").read_model::<OrderView>()
+}
+```
+
+### Apply schema in-cluster with Atlas
+
+`dsvc schema --format atlas` wraps the desired-state SQL into an `AtlasSchema`
+(`db.atlasgo.io/v1alpha1`) for the [ariga atlas-operator](https://github.com/ariga/atlas-operator),
+so migrations apply declaratively in-cluster. The resource is written to
+**stdout** — redirect it wherever you keep schema manifests (a file, or a separate
+GitOps repo); `dsvc` does not choose a location for it.
+
+```bash
+dsvc schema --format atlas --name orders --db-secret orders-db > orders.schema.yaml
+```
+
+Use `--db-secret`/`--db-secret-key` for a Secret reference (GitOps-friendly) or
+`--db-url` for an inline dev URL; `--namespace` and `--dev-url` are optional. Full
+reference: [`distributed_cli/README.md`](distributed_cli/README.md).
+
 ## Project Structure
 
 ```
