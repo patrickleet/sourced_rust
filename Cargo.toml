@@ -38,7 +38,7 @@ rabbitmq = ["dep:lapin", "dep:futures", "dep:tokio"]
 kafka = ["dep:rdkafka", "dep:tokio"]
 
 [dependencies]
-async-nats = { version = "0.38", optional = true }
+async-nats = { version = "0.49", optional = true }
 axum = { version = "0.7", optional = true }
 base64 = "0.22.1"
 futures = { version = "0.3", optional = true }
