@@ -30,7 +30,7 @@ services:
       retries: 20
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:4.3-management-alpine
     ports:
       - "5672:5672"   # AMQP
       - "15672:15672" # management UI
