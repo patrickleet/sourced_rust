@@ -739,10 +739,10 @@ How a committed row reaches the bus depends on whether a bus is attached to the
 service:
 
 - **Bus attached (`service.with_bus(bus)`)** — `repo.outbox(msg).commit(agg)`
-  commits the row, then **immediately** after commit claims it under a short
-  lease and publishes it. A crash before the publish, or a publish failure,
-  leaves the row claimed under that lease; when the lease expires the polling
-  worker takes it.
+  claims the row in the commit transaction (born `InFlight` under a short lease)
+  and publishes it **immediately** after commit. A crash before the publish, or a
+  publish failure, leaves the row claimed under that lease; when the lease expires
+  the polling worker takes it.
 - **No bus** — the row is committed `pending` and a worker publishes it.
 
 The polling worker is the durable backstop in both cases. It is the same
