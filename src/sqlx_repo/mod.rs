@@ -199,6 +199,13 @@ pub(crate) fn read_model_u64_from_i64(
     })
 }
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) fn audited_table_schema_sql(statement: String) -> sqlx::AssertSqlSafe<String> {
+    // table_schema_statements validates the registry and quotes identifiers before
+    // rendering DDL. Schema-authored SQL defaults are the only raw fragments.
+    sqlx::AssertSqlSafe(statement)
+}
+
 #[cfg(feature = "sqlite")]
 pub(crate) fn is_sqlite_unique_constraint(err: &sqlx::Error) -> bool {
     match err {

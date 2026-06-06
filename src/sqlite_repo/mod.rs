@@ -37,7 +37,7 @@ use crate::repository::{
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
-    self, deserialize_event_metadata, is_sqlite_unique_constraint,
+    self, audited_table_schema_sql, deserialize_event_metadata, is_sqlite_unique_constraint,
     read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
     read_model_u64_from_i64 as sqlx_read_model_u64_from_i64, reject_duplicate_outbox_messages,
     reject_duplicate_streams, repository_i64_from_u64 as sqlx_repository_i64_from_u64,
@@ -139,7 +139,7 @@ impl SqliteRepository {
         registry: &TableSchemaRegistry,
     ) -> Result<TableSchemaBootstrap, TableStoreError> {
         for statement in table_schema_statements(registry, TableSqlDialect::Sqlite)? {
-            sqlx::query(&statement)
+            sqlx::query(audited_table_schema_sql(statement))
                 .execute(&self.pool)
                 .await
                 .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
@@ -184,7 +184,7 @@ impl SqliteOutboxStore {
         registry: &TableSchemaRegistry,
     ) -> Result<TableSchemaBootstrap, TableStoreError> {
         for statement in table_schema_statements(registry, TableSqlDialect::Sqlite)? {
-            sqlx::query(&statement)
+            sqlx::query(audited_table_schema_sql(statement))
                 .execute(&self.pool)
                 .await
                 .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
@@ -1814,9 +1814,9 @@ async fn load_sqlite_rows_matching_column(
         .collect()
 }
 
-fn sqlite_relational_row_select<'args>(
+fn sqlite_relational_row_select(
     schema: &ReadModelSchema,
-) -> Result<QueryBuilder<'args, Sqlite>, ReadModelError> {
+) -> Result<QueryBuilder<Sqlite>, ReadModelError> {
     let version_column = version_column(schema)?;
     let mut builder = QueryBuilder::<Sqlite>::new("SELECT ");
     for (index, column) in schema.columns.iter().enumerate() {
@@ -1834,10 +1834,7 @@ fn sqlite_relational_row_select<'args>(
     Ok(builder)
 }
 
-fn push_sqlite_order_by_primary_key(
-    builder: &mut QueryBuilder<'_, Sqlite>,
-    schema: &ReadModelSchema,
-) {
+fn push_sqlite_order_by_primary_key(builder: &mut QueryBuilder<Sqlite>, schema: &ReadModelSchema) {
     if schema.primary_key.columns.is_empty() {
         return;
     }
@@ -2127,8 +2124,8 @@ fn version_column(schema: &ReadModelSchema) -> Result<&str, ReadModelError> {
     })
 }
 
-fn push_sqlite_key_predicates<'args>(
-    builder: &mut QueryBuilder<'args, Sqlite>,
+fn push_sqlite_key_predicates(
+    builder: &mut QueryBuilder<Sqlite>,
     schema: &ReadModelSchema,
     key: &RowKey,
 ) -> Result<(), ReadModelError> {
@@ -2151,8 +2148,8 @@ fn push_sqlite_key_predicates<'args>(
     Ok(())
 }
 
-fn push_sqlite_row_value_bind<'args>(
-    builder: &mut QueryBuilder<'args, Sqlite>,
+fn push_sqlite_row_value_bind(
+    builder: &mut QueryBuilder<Sqlite>,
     value: RowValue,
     column: &ColumnDef,
 ) -> Result<(), ReadModelError> {
@@ -2190,8 +2187,8 @@ fn push_sqlite_row_value_bind<'args>(
     Ok(())
 }
 
-fn push_sqlite_null_bind<'args>(
-    builder: &mut QueryBuilder<'args, Sqlite>,
+fn push_sqlite_null_bind(
+    builder: &mut QueryBuilder<Sqlite>,
     column: &ColumnDef,
 ) -> Result<(), ReadModelError> {
     match &column.column_type {

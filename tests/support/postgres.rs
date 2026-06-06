@@ -35,9 +35,12 @@ impl PostgresTestSchema {
             .max_connections(1)
             .connect(database_url)
             .await?;
-        sqlx::query(&format!("CREATE SCHEMA {}", quote_identifier(&schema_name)))
-            .execute(&admin_pool)
-            .await?;
+        sqlx::query(audited_schema_sql(format!(
+            "CREATE SCHEMA {}",
+            quote_identifier(&schema_name)
+        )))
+        .execute(&admin_pool)
+        .await?;
         admin_pool.close().await;
 
         Ok(Self {
@@ -61,7 +64,7 @@ impl PostgresTestSchema {
                         let search_path =
                             format!("SET search_path TO {}", quote_identifier(&schema_name));
                         Box::pin(async move {
-                            connection.execute(search_path.as_str()).await?;
+                            connection.execute(audited_schema_sql(search_path)).await?;
                             Ok(())
                         })
                     }
@@ -112,4 +115,10 @@ fn sanitize_prefix(prefix: &str) -> String {
 fn quote_identifier(identifier: &str) -> String {
     let escaped = identifier.replace('"', "\"\"");
     format!("\"{escaped}\"")
+}
+
+fn audited_schema_sql(statement: String) -> sqlx::AssertSqlSafe<String> {
+    // Test schema names are generated locally, sanitized, and quoted as identifiers
+    // before they are interpolated into schema-management statements.
+    sqlx::AssertSqlSafe(statement)
 }

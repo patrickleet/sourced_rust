@@ -38,7 +38,7 @@ use crate::repository::{
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
-    self, deserialize_event_metadata, is_postgres_unique_violation,
+    self, audited_table_schema_sql, deserialize_event_metadata, is_postgres_unique_violation,
     read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
     read_model_u64_from_i64 as sqlx_read_model_u64_from_i64, reject_duplicate_outbox_messages,
     reject_duplicate_streams, repository_i32_from_u64 as sqlx_repository_i32_from_u64,
@@ -143,7 +143,7 @@ impl PostgresRepository {
         registry: &TableSchemaRegistry,
     ) -> Result<TableSchemaBootstrap, TableStoreError> {
         for statement in table_schema_statements(registry, TableSqlDialect::Postgres)? {
-            sqlx::query(&statement)
+            sqlx::query(audited_table_schema_sql(statement))
                 .execute(&self.pool)
                 .await
                 .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
@@ -188,7 +188,7 @@ impl PostgresOutboxStore {
         registry: &TableSchemaRegistry,
     ) -> Result<TableSchemaBootstrap, TableStoreError> {
         for statement in table_schema_statements(registry, TableSqlDialect::Postgres)? {
-            sqlx::query(&statement)
+            sqlx::query(audited_table_schema_sql(statement))
                 .execute(&self.pool)
                 .await
                 .map_err(|err| table_schema_storage_error("bootstrap table schema", err))?;
@@ -1425,9 +1425,9 @@ async fn load_postgres_rows_matching_column(
         .collect()
 }
 
-fn postgres_relational_row_select<'args>(
+fn postgres_relational_row_select(
     schema: &ReadModelSchema,
-) -> Result<QueryBuilder<'args, Postgres>, ReadModelError> {
+) -> Result<QueryBuilder<Postgres>, ReadModelError> {
     let version_column = version_column(schema)?;
     let mut builder = QueryBuilder::<Postgres>::new("SELECT ");
     for (index, column) in schema.columns.iter().enumerate() {
@@ -1445,7 +1445,7 @@ fn postgres_relational_row_select<'args>(
     Ok(builder)
 }
 
-fn push_postgres_select_column(builder: &mut QueryBuilder<'_, Postgres>, column: &ColumnDef) {
+fn push_postgres_select_column(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
     builder.push(quote_identifier(&column.column_name));
     if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
         builder.push("::text");
@@ -1455,7 +1455,7 @@ fn push_postgres_select_column(builder: &mut QueryBuilder<'_, Postgres>, column:
 }
 
 fn push_postgres_order_by_primary_key(
-    builder: &mut QueryBuilder<'_, Postgres>,
+    builder: &mut QueryBuilder<Postgres>,
     schema: &ReadModelSchema,
 ) {
     if schema.primary_key.columns.is_empty() {
@@ -1747,8 +1747,8 @@ fn version_column(schema: &ReadModelSchema) -> Result<&str, ReadModelError> {
     })
 }
 
-fn push_postgres_key_predicates<'args>(
-    builder: &mut QueryBuilder<'args, Postgres>,
+fn push_postgres_key_predicates(
+    builder: &mut QueryBuilder<Postgres>,
     schema: &ReadModelSchema,
     key: &RowKey,
 ) -> Result<(), ReadModelError> {
@@ -1771,8 +1771,8 @@ fn push_postgres_key_predicates<'args>(
     Ok(())
 }
 
-fn push_postgres_row_value_bind<'args>(
-    builder: &mut QueryBuilder<'args, Postgres>,
+fn push_postgres_row_value_bind(
+    builder: &mut QueryBuilder<Postgres>,
     value: RowValue,
     column: &ColumnDef,
 ) -> Result<(), ReadModelError> {
@@ -1811,8 +1811,8 @@ fn push_postgres_row_value_bind<'args>(
     Ok(())
 }
 
-fn push_postgres_null_bind<'args>(
-    builder: &mut QueryBuilder<'args, Postgres>,
+fn push_postgres_null_bind(
+    builder: &mut QueryBuilder<Postgres>,
     column: &ColumnDef,
 ) -> Result<(), ReadModelError> {
     match &column.column_type {
@@ -1841,7 +1841,7 @@ fn push_postgres_null_bind<'args>(
     Ok(())
 }
 
-fn push_postgres_type_cast(builder: &mut QueryBuilder<'_, Postgres>, column: &ColumnDef) {
+fn push_postgres_type_cast(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
     match column.column_type {
         ColumnType::Json => {
             builder.push("::jsonb");
