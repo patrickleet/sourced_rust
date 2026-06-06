@@ -10,9 +10,15 @@
 //! A CLI such as `hops-cli` maps its flags to a [`ServiceScaffoldSpec`], calls
 //! this crate, then decides where to write files, whether to overwrite, and
 //! whether to run the [`PostCreateAction`]s (e.g. `gh repo create`).
+//!
+//! The crate also renders standalone deployment artifacts from already-known
+//! inputs — see [`render_atlas_schema`], which wraps desired-state schema SQL into
+//! an `AtlasSchema` resource for the caller to emit anywhere (e.g. stdout).
 
+mod atlas;
 mod generate;
 
+pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use generate::{generate_service_scaffold, package_name};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].
