@@ -49,10 +49,11 @@ pub struct AtlasSchemaSpec {
 /// Returns an error for an empty name or empty schema SQL (nothing to apply), or
 /// an incompletely specified database reference.
 pub fn render_atlas_schema(spec: &AtlasSchemaSpec) -> Result<String, ScaffoldError> {
-    let name = spec.name.trim();
-    if name.is_empty() {
-        return Err(ScaffoldError::new("AtlasSchema name must not be empty"));
+    validate_k8s_name(&spec.name, "AtlasSchema name")?;
+    if let Some(namespace) = trimmed_non_empty(spec.namespace.as_deref()) {
+        validate_k8s_name(namespace, "AtlasSchema namespace")?;
     }
+    let name = spec.name.trim();
     if spec.sql.trim().is_empty() {
         return Err(ScaffoldError::new(
             "AtlasSchema has no schema SQL to apply (no tables registered?)",
@@ -115,6 +116,32 @@ pub fn render_atlas_schema(spec: &AtlasSchemaSpec) -> Result<String, ScaffoldErr
 
 fn trimmed_non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Validate a Kubernetes object name (RFC 1123 label: lowercase ASCII letters,
+/// digits, and `-`, not starting or ending with `-`). Fails at generation time
+/// with a clear message rather than emitting YAML the API server would reject —
+/// and rejects names with characters (newlines, colons, quotes) that would also
+/// break the document itself.
+fn validate_k8s_name(value: &str, field: &str) -> Result<(), ScaffoldError> {
+    let name = value.trim();
+    if name.is_empty() {
+        return Err(ScaffoldError::new(format!("{field} must not be empty")));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(ScaffoldError::new(format!(
+            "{field} `{name}` must contain only lowercase letters, digits, and hyphens"
+        )));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(ScaffoldError::new(format!(
+            "{field} `{name}` must not start or end with a hyphen"
+        )));
+    }
+    Ok(())
 }
 
 /// Quote a value as a double-quoted YAML scalar. A JSON string literal is valid
@@ -193,6 +220,34 @@ mod tests {
         let mut blank_sql = secret_spec();
         blank_sql.sql = "\n  \n".to_string();
         assert!(render_atlas_schema(&blank_sql).is_err());
+    }
+
+    #[test]
+    fn invalid_kubernetes_names_are_rejected() {
+        for bad in [
+            "Orders",
+            "orders_db",
+            "orders.db",
+            "-orders",
+            "orders-",
+            "a b",
+        ] {
+            let mut spec = secret_spec();
+            spec.name = bad.to_string();
+            assert!(
+                render_atlas_schema(&spec).is_err(),
+                "expected `{bad}` to be rejected"
+            );
+        }
+
+        let mut bad_ns = secret_spec();
+        bad_ns.namespace = Some("Data".to_string());
+        assert!(render_atlas_schema(&bad_ns).is_err());
+
+        // A valid RFC-1123 name still renders.
+        let mut ok = secret_spec();
+        ok.name = "orders-2".to_string();
+        assert!(render_atlas_schema(&ok).is_ok());
     }
 
     #[test]
