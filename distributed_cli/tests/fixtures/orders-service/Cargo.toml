@@ -1,0 +1,16 @@
+# Standalone fixture compiled by the `dsvc` manifest harness in integration tests.
+# Its own `[workspace]` decouples it from the repo workspace.
+[package]
+name = "orders-service"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+distributed = { path = "../../../.." }
+serde = { version = "1", features = ["derive"] }

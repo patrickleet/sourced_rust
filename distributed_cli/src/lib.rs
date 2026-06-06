@@ -1,18 +1,31 @@
-//! Deterministic service-scaffold generation for Distributed services.
+//! The `dsvc` CLI for Distributed services — both a binary and a library.
 //!
-//! This crate owns the *pure* generation rules for a Distributed service project:
-//! Cargo layout, Rust source templates, manifest wiring, read-model/handler
-//! defaults, GitOps/Knative inference, and GitHub workflow contents. It performs
-//! **no** filesystem, network, or CLI side effects — [`generate_service_scaffold`]
-//! takes a [`ServiceScaffoldSpec`] and returns a [`GeneratedProject`] describing
-//! the files to write and any follow-up actions to perform.
+//! It bundles two things in one crate so there is no cross-repo coordination:
 //!
-//! A CLI such as `hops-cli` maps its flags to a [`ServiceScaffoldSpec`], calls
-//! this crate, then decides where to write files, whether to overwrite, and
-//! whether to run the [`PostCreateAction`]s (e.g. `gh repo create`).
+//! - **Pure generation** (the [`generate`]/[`atlas`] modules): the rules for a
+//!   Distributed service project — Cargo layout, Rust source templates, manifest
+//!   wiring, GitOps/Knative inference, GitHub workflows, and Atlas schema
+//!   resources. These perform no I/O — [`generate_service_scaffold`] takes a
+//!   [`ServiceScaffoldSpec`] and returns a [`GeneratedProject`];
+//!   [`render_atlas_schema`] wraps desired-state SQL into an `AtlasSchema`.
+//! - **The command surface** (the [`cli`] module): the clap types and [`run`]
+//!   dispatcher that own the filesystem / process side effects (writing files,
+//!   running `gh`, compiling the manifest harness).
+//!
+//! The `dsvc` binary parses [`ServiceArgs`] and calls [`run`]. Another CLI (e.g.
+//! `hops`) can depend on this crate, mount [`ServiceArgs`] under its own
+//! subcommand, and dispatch with [`run`] — re-exporting the commands rather than
+//! reimplementing them.
 
+mod atlas;
+mod cli;
 mod generate;
 
+pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
+pub use cli::{
+    run, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, ScaffoldArgs, SchemaArgs,
+    SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands, Store, Transport,
+};
 pub use generate::{generate_service_scaffold, package_name};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].
