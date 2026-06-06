@@ -28,6 +28,16 @@ fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
     TransportError::retryable(format!("{context}: {err}"))
 }
 
+fn settle_result(context: &str, settled: bool) -> Result<(), TransportError> {
+    if settled {
+        Ok(())
+    } else {
+        Err(TransportError::retryable(format!(
+            "{context}: acker unavailable"
+        )))
+    }
+}
+
 pub(super) async fn connect_channel(uri: &str) -> Result<Channel, TransportError> {
     let connection = Connection::connect(uri, ConnectionProperties::default())
         .await
@@ -86,8 +96,8 @@ impl AsyncMessagePublisher for RabbitPublisher {
         let confirm = self
             .channel
             .basic_publish(
-                "", // default exchange: routes to the queue named by the routing key
-                message.name(),
+                ShortString::from(""), // default exchange: routes to the queue named by the routing key
+                ShortString::from(message.name()),
                 BasicPublishOptions::default(),
                 &message.payload,
                 message_properties(&message),
@@ -126,7 +136,7 @@ impl RabbitSource {
         let channel = connect_channel(uri).await?;
         channel
             .queue_declare(
-                queue,
+                ShortString::from(queue),
                 QueueDeclareOptions {
                     durable: true,
                     ..Default::default()
@@ -145,7 +155,10 @@ impl AsyncMessageSource for RabbitSource {
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         let message = self
             .channel
-            .basic_get(&self.queue, BasicGetOptions::default())
+            .basic_get(
+                ShortString::from(self.queue.as_str()),
+                BasicGetOptions::default(),
+            )
             .await
             .map_err(|err| retryable("amqp basic_get", err))?;
         Ok(message.map(|get| RabbitReceived::from_delivery(get.delivery, self.queue.clone())))
@@ -206,37 +219,45 @@ impl ReceivedMessage for RabbitReceived {
     }
 
     async fn ack(self) -> Result<(), TransportError> {
-        self.delivery
+        let settled = self
+            .delivery
             .ack(BasicAckOptions::default())
             .await
-            .map_err(|err| retryable("amqp ack", err))
+            .map_err(|err| retryable("amqp ack", err))?;
+        settle_result("amqp ack", settled)
     }
 
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
         // Requeue for redelivery.
-        self.delivery
+        let settled = self
+            .delivery
             .nack(BasicNackOptions {
                 requeue: true,
                 ..Default::default()
             })
             .await
-            .map_err(|err| retryable("amqp nack", err))
+            .map_err(|err| retryable("amqp nack", err))?;
+        settle_result("amqp nack", settled)
     }
 
     async fn dead_letter(self, _reason: &str) -> Result<(), TransportError> {
         // Reject without requeue: routes to the queue's dead-letter exchange if
         // one is configured, otherwise drops.
-        self.delivery
+        let settled = self
+            .delivery
             .reject(BasicRejectOptions { requeue: false })
             .await
-            .map_err(|err| retryable("amqp reject", err))
+            .map_err(|err| retryable("amqp reject", err))?;
+        settle_result("amqp reject", settled)
     }
 
     async fn park(self, _reason: &str) -> Result<(), TransportError> {
-        self.delivery
+        let settled = self
+            .delivery
             .reject(BasicRejectOptions { requeue: false })
             .await
-            .map_err(|err| retryable("amqp reject", err))
+            .map_err(|err| retryable("amqp reject", err))?;
+        settle_result("amqp reject", settled)
     }
 }
 

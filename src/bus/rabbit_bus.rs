@@ -26,7 +26,7 @@ use lapin::options::{
     BasicGetOptions, BasicPublishOptions, ConfirmSelectOptions, ExchangeDeclareOptions,
     QueueBindOptions, QueueDeclareOptions,
 };
-use lapin::types::FieldTable;
+use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, ExchangeKind};
 
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
@@ -86,7 +86,7 @@ impl RabbitBus {
     async fn declare_queue(&self, channel: &Channel, queue: &str) -> Result<(), TransportError> {
         channel
             .queue_declare(
-                queue,
+                ShortString::from(queue),
                 QueueDeclareOptions {
                     durable: true,
                     ..Default::default()
@@ -101,7 +101,7 @@ impl RabbitBus {
     async fn declare_events_exchange(&self, channel: &Channel) -> Result<(), TransportError> {
         channel
             .exchange_declare(
-                &self.events_exchange,
+                ShortString::from(self.events_exchange.as_str()),
                 ExchangeKind::Topic,
                 ExchangeDeclareOptions {
                     durable: true,
@@ -123,8 +123,8 @@ impl RabbitBus {
         let confirm = self
             .channel
             .basic_publish(
-                exchange,
-                routing_key,
+                ShortString::from(exchange),
+                ShortString::from(routing_key),
                 BasicPublishOptions::default(),
                 &message.payload,
                 message_properties(message),
@@ -156,9 +156,9 @@ impl RabbitBus {
         for name in &plan.events {
             self.channel
                 .queue_bind(
-                    &queue,
-                    &self.events_exchange,
-                    name,
+                    ShortString::from(queue.as_str()),
+                    ShortString::from(self.events_exchange.as_str()),
+                    ShortString::from(name.as_str()),
                     QueueBindOptions::default(),
                     FieldTable::default(),
                 )
@@ -257,7 +257,10 @@ impl AsyncMessageSource for RabbitBusSource {
         for queue in &self.queues {
             let got = self
                 .channel
-                .basic_get(queue, BasicGetOptions::default())
+                .basic_get(
+                    ShortString::from(queue.as_str()),
+                    BasicGetOptions::default(),
+                )
                 .await
                 .map_err(|err| retryable("amqp basic_get", err))?;
             if let Some(get) = got {
