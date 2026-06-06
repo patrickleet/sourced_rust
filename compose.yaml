@@ -16,7 +16,7 @@
 #     cargo test --test nats_transport --features nats
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_USER: sourced
       POSTGRES_PASSWORD: sourced
