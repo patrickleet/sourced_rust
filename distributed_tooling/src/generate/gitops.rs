@@ -125,6 +125,11 @@ impl Scaffold {
     }
 
     fn knative_triggers(&self) -> Vec<KnativeTrigger> {
+        // Different message names can normalize to the same `metadata.name`
+        // (e.g. `orders.Created` and `orders.created`). Deduplicate so the
+        // generated manifest never declares two Triggers with the same name,
+        // which would fail `kubectl apply`.
+        let mut seen = BTreeSet::new();
         self.commands
             .iter()
             .map(|command| {
@@ -138,6 +143,15 @@ impl Scaffold {
                 let broker = event_broker_for_message(&event.message_name);
                 KnativeTrigger::new(&event.message_name, &broker, "event")
             }))
+            .map(|mut trigger| {
+                let base = trigger.name.clone();
+                let mut suffix = 2;
+                while !seen.insert(trigger.name.clone()) {
+                    trigger.name = format!("{base}-{suffix}");
+                    suffix += 1;
+                }
+                trigger
+            })
             .collect()
     }
 
@@ -194,7 +208,7 @@ spec:
     spec:
       containers:
         - name: {name}
-          image: {image_repository}:latest
+          image: {{{{ .Values.image.repository }}}}:{{{{ .Values.image.tag }}}}
           ports:
             - containerPort: 3000
           env:
@@ -202,7 +216,6 @@ spec:
               value: 0.0.0.0:3000
 {bus_env}
 "#,
-            image_repository = self.image_repository(),
         )
     }
 
@@ -243,7 +256,7 @@ spec:
         autoscaling.knative.dev/min-scale: "0"
     spec:
       containers:
-        - image: {image_repository}:latest
+        - image: {{{{ .Values.image.repository }}}}:{{{{ .Values.image.tag }}}}
           ports:
             - containerPort: 3000
           env:
@@ -251,7 +264,6 @@ spec:
               value: 0.0.0.0:3000
 {bus_env}
 "#,
-            image_repository = self.image_repository(),
         )
     }
 

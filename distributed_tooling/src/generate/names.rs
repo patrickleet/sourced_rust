@@ -21,6 +21,12 @@ impl ScaffoldNames {
             ));
         }
         let crate_ident = package_name.replace('-', "_");
+        if !is_rust_ident(&crate_ident) {
+            return Err(ScaffoldError::new(format!(
+                "service name `{input}` yields the invalid Rust crate identifier `{crate_ident}`; \
+                 start the name with a letter and avoid Rust keywords"
+            )));
+        }
         let command_name = format!("{crate_ident}.create");
         Ok(Self {
             package_name,
@@ -52,6 +58,12 @@ impl ModelScaffold {
             ));
         }
         let ident = name.replace('-', "_");
+        if !is_rust_ident(&ident) {
+            return Err(ScaffoldError::new(format!(
+                "model name `{raw_name}` yields the invalid Rust identifier `{ident}`; \
+                 start the name with a letter and avoid Rust keywords"
+            )));
+        }
         let type_ident = to_pascal_case(&name);
         let view_ident = format!("{type_ident}View");
         Ok(Self {
@@ -227,6 +239,26 @@ fn to_rust_ident(value: &str, fallback_prefix: &str) -> String {
         ident = format!("{fallback_prefix}_{ident}");
     }
     ident
+}
+
+/// True if `value` is a usable Rust identifier given this crate's normalization
+/// (already lowercased ASCII alphanumerics and `_`): non-empty, not starting
+/// with a digit, and not a reserved keyword. Guards against generated crates
+/// whose name would not compile (e.g. a service called `3d`).
+fn is_rust_ident(value: &str) -> bool {
+    let Some(first) = value.chars().next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if value
+        .chars()
+        .any(|char| !(char.is_ascii_alphanumeric() || char == '_'))
+    {
+        return false;
+    }
+    !is_rust_keyword(value)
 }
 
 fn is_rust_keyword(value: &str) -> bool {

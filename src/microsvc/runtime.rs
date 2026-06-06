@@ -34,9 +34,9 @@ where
     ///
     /// Two effects, both composing with the rest of the builder:
     /// - installs an outbox publisher on the repository, so
-    ///   `repo.outbox(msg).commit(agg)` claims the row in the commit transaction
-    ///   and publishes it immediately through this bus (the polling worker stays
-    ///   the crash/retry backstop);
+    ///   `repo.outbox(msg).commit(agg)` publishes immediately after commit
+    ///   through this bus — the row is claimed under a short lease for that
+    ///   publish, and the polling worker stays the crash/retry backstop;
     /// - captures how to consume, so [`run`](Self::run) listens for the
     ///   registered command names (competing) and subscribes to the event names
     ///   (fan-out).

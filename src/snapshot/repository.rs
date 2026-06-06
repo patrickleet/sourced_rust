@@ -182,6 +182,11 @@ where
     /// aggregate is hydrated from a snapshot when one exists. Every other method
     /// behaves identically with or without snapshots.
     pub fn with_snapshots(mut self, frequency: u64) -> Self {
+        assert!(
+            frequency > 0,
+            "snapshot frequency must be greater than zero; \
+             frequency 0 would snapshot on every commit"
+        );
         self.set_snapshot_policy(SnapshotPolicy::new(
             frequency,
             snapshot_record_if_due::<A>,
@@ -322,6 +327,13 @@ mod tests {
         assert_eq!(aggregate.entity.committed_version(), 0);
         assert_eq!(aggregate.entity.snapshot_version(), 0);
         assert_eq!(aggregate.entity.new_events().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "snapshot frequency must be greater than zero")]
+    fn with_snapshots_rejects_zero_frequency() {
+        let _: AggregateRepository<_, TestAggregate> =
+            AggregateRepository::new(FailingSnapshotRepo::default()).with_snapshots(0);
     }
 
     #[test]
