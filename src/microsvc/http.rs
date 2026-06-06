@@ -4,7 +4,7 @@
 //!
 //! ## Routes
 //!
-//! - `POST /:command` — dispatch a command. Body = JSON input, request headers → Session.
+//! - `POST /{command}` — dispatch a command. Body = JSON input, request headers → Session.
 //! - `GET /health` — health check returning `{ "ok": true, "commands": [...] }`.
 //!
 //! ## Example
@@ -43,7 +43,7 @@ use super::session::Session;
 pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
-        .route("/:command", axum::routing::post(command_handler))
+        .route("/{command}", axum::routing::post(command_handler))
         .with_state(service)
 }
 
@@ -65,7 +65,7 @@ async fn health_handler<D: Send + Sync + 'static>(
     Json(json!({ "ok": true, "commands": commands }))
 }
 
-/// `POST /:command` — dispatch a command with JSON body and headers as session.
+/// `POST /{command}` — dispatch a command with JSON body and headers as session.
 async fn command_handler<D: Send + Sync + 'static>(
     State(service): State<Arc<Service<D>>>,
     Path(command): Path<String>,

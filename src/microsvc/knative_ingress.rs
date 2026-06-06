@@ -37,7 +37,7 @@ use crate::microsvc::Service;
 const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 
 /// Build an axum router exposing a CloudEvents ingress at `POST /` and the
-/// per-type route `POST /cloudevent/:type`.
+/// per-type route `POST /cloudevent/{type}`.
 ///
 /// Both dispatch by the parsed CloudEvent `type` (the path segment is for routing
 /// alignment only), so a Knative Trigger can target either a single shared `ref`
@@ -45,7 +45,7 @@ const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 pub fn cloud_events_router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/", axum::routing::post(ingress_handler))
-        .route("/cloudevent/:type", axum::routing::post(ingress_handler))
+        .route("/cloudevent/{type}", axum::routing::post(ingress_handler))
         .with_state(service)
 }
 
