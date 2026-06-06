@@ -257,6 +257,55 @@ mod tests {
     }
 
     #[test]
+    fn invalid_rust_identifier_names_are_rejected() {
+        // A service whose normalized crate identifier would start with a digit
+        // (or be a keyword) cannot compile — fail at generation, not `cargo build`.
+        assert!(generate_service_scaffold(spec("3d")).is_err());
+
+        let mut keyword = spec("orders");
+        keyword.models = vec!["enum".to_string()];
+        assert!(generate_service_scaffold(keyword).is_err());
+
+        let mut digit_model = spec("orders");
+        digit_model.models = vec!["3d".to_string()];
+        assert!(generate_service_scaffold(digit_model).is_err());
+    }
+
+    #[test]
+    fn deploy_templates_consume_helm_image_values() {
+        // The deploy chart's values.yaml exposes image.repository/tag, so the
+        // templates must reference them — hardcoding `:latest` makes the knob dead
+        // and breaks release automation that patches values.yaml.
+        let mut s = spec("orders");
+        s.gitops = true;
+        let project = generate_service_scaffold(s).unwrap();
+        let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(
+            deployment.contains("{{ .Values.image.repository }}:{{ .Values.image.tag }}"),
+            "deployment.yaml should template the image from values:\n{deployment}"
+        );
+        assert!(!deployment.contains(":latest"));
+    }
+
+    #[test]
+    fn knative_triggers_with_colliding_names_are_deduplicated() {
+        // Two command names that normalize to the same Trigger `metadata.name`
+        // must still produce two distinctly-named Trigger resources, or
+        // `kubectl apply` fails on the duplicate.
+        let mut s = spec("orders");
+        s.transport = ServiceTransport::Knative;
+        s.gitops = true;
+        s.commands = vec!["orders.created".to_string(), "orders.Created".to_string()];
+        let project = generate_service_scaffold(s).unwrap();
+        let triggers = contents(&project, ".gitops/deploy/templates/knative-triggers.yaml");
+        assert!(triggers.contains("name: orders-created-command"));
+        assert!(
+            triggers.contains("name: orders-created-command-2"),
+            "the colliding trigger should be suffixed:\n{triggers}"
+        );
+    }
+
+    #[test]
     fn github_generates_workflows_and_a_post_create_action() {
         let mut s = spec("orders");
         s.github = Some(GithubRepo::parse("hops-ops/orders").unwrap());

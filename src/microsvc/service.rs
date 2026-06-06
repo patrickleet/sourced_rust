@@ -205,6 +205,17 @@ impl<D: Send + Sync + 'static> Service<D> {
         }
     }
 
+    /// Fail fast if handlers, specs, or a runner are already registered. The
+    /// dependency builders (`with_repo`, `with_read_model_store`) reconstruct the
+    /// service around a new dependency type, which would otherwise silently drop
+    /// anything registered earlier and leave an empty router with no error.
+    fn assert_no_registrations(&self, builder: &str) {
+        assert!(
+            self.handlers.is_empty() && self.handler_specs.is_empty() && self.runner.is_none(),
+            "Service::{builder} must be called before registering handlers or attaching a bus"
+        );
+    }
+
     /// Mutable access to the dependencies, used by `with_bus` to install the
     /// outbox publisher on the repository before the service is shared.
     pub(crate) fn dependencies_mut(&mut self) -> &mut D {
@@ -462,6 +473,7 @@ impl Service<()> {
     where
         R: HasRepo + Send + Sync + 'static,
     {
+        self.assert_no_registrations("with_repo");
         Service::from_dependencies(repo)
     }
 
@@ -470,6 +482,7 @@ impl Service<()> {
     where
         S: HasReadModelStore + Send + Sync + 'static,
     {
+        self.assert_no_registrations("with_read_model_store");
         Service::from_dependencies(read_model_store)
     }
 }
@@ -485,6 +498,7 @@ impl<R: HasRepo + Send + Sync + 'static> Service<R> {
     where
         S: HasReadModelStore + Send + Sync + 'static,
     {
+        self.assert_no_registrations("with_read_model_store");
         Service::from_dependencies(RepoReadModelDependencies::new(
             self.dependencies,
             read_model_store,
