@@ -32,7 +32,7 @@ jobs:
         name: coverage-lcov
         path: lcov.info
     - name: Upload to Codecov (optional)
-      uses: codecov/codecov-action@v6
+      uses: codecov/codecov-action@v7
       with:
         files: lcov.info
         fail_ci_if_error: false
