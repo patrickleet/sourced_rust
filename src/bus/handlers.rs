@@ -177,6 +177,15 @@ mod tests {
     }
 
     #[test]
+    fn named_handlers_expose_consumer_group() {
+        let handlers = Handlers::new().named("order-projection");
+        assert_eq!(
+            crate::bus::MessageRouter::consumer_group(&handlers),
+            Some("order-projection")
+        );
+    }
+
+    #[test]
     fn subscription_plan_groups_by_kind() {
         let handlers = Handlers::new()
             .on_command("place.bet", |_: &Message| async { Ok(()) })
