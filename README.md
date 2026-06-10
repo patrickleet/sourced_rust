@@ -166,19 +166,39 @@ default you replace with a durable adapter.
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 let service = distributed::register_handlers!(
-    Service::new().with_repo(repo.queued().aggregate::<Todo>()),
+    Service::new()
+        .named("todo-api")
+        .with_repo(repo.queued().aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
 );
 
 // Transport: InMemoryBus → a real broker. The handlers and the
 // `with_bus(..).run(..)` wiring are unchanged; only this constructor line differs.
-//   let bus = NatsBus::connect("nats://localhost:4222", "todos", "app").await?;
-//   let bus = PostgresBus::new(pool, "todos");
-//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f", "todos", "app").await?;
-//   let bus = KafkaBus::connect("localhost:9092", "todos", "app").await?;
+let namespace = "todos-prod"; // broker namespace/prefix for this app/environment
+//   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
+//   let bus = PostgresBus::new(pool);
+//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
+//   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
 service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ```
+
+`group` and `namespace` are broker topology names, not the command/event names
+your service handles. `register_handlers!` gives the service its command/event
+names; `with_bus(bus).run(..)` reads those names through `subscription_plan()` and
+passes them to the transport.
+
+- `Service::named("todo-api")` supplies the default durable consumer `group`.
+  Use the same service name for every replica of one deployment. For direct
+  `bus.listen(..)` / `bus.subscribe(..)` consumers that are not a `Service`, set
+  the group with `bus.group("todo-projections")`.
+- `namespace` scopes streams, subjects, topics, queues, or exchanges on a shared
+  broker. `PostgresBus` does not take `namespace` because the database/schema
+  behind `pool` already scopes its bus tables.
+- Topology names are validated before broker use. Keep groups/service names to
+  portable deployment IDs (`A-Z`, `a-z`, `0-9`, `_`, `-`); namespaces may also
+  use `.`. Blank names, whitespace, control characters, path separators, broker
+  wildcards, and names longer than 128 bytes are rejected.
 
 | Concern | In-memory default | Swap in for production |
 |---|---|---|
@@ -787,8 +807,9 @@ transports; only the constructor line changes.**
 use std::sync::Arc;
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
-// Built once — handlers are transport-agnostic.
-let service = Arc::new(build_service());
+// Built once — handlers are transport-agnostic. The service name becomes the
+// default durable consumer group for broker-backed buses.
+let service = Arc::new(build_service().named("order-api"));
 
 // Dev/test: in-memory.
 let bus = InMemoryBus::new();
@@ -798,11 +819,12 @@ bus.listen(service.clone(), RunOptions::idempotent()).await?;     // competing
 bus.subscribe(service.clone(), RunOptions::idempotent()).await?;  // fan-out
 
 // Production: swap the one constructor line — send/listen/publish/subscribe
-// and the handlers are unchanged.
-//   let bus = NatsBus::connect("nats://localhost:4222", "orders", "app").await?;
-//   let bus = PostgresBus::new(pool, "orders");
-//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f", "orders", "app").await?;
-//   let bus = KafkaBus::connect("localhost:9092", "orders", "app").await?;
+// and the handlers are unchanged. A named Service supplies the consumer group.
+let namespace = "orders-prod";
+//   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
+//   let bus = PostgresBus::new(pool);
+//   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
+//   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
 ```
 
 This is the low-level facade. For a `microsvc::Service`, the one-call convenience
@@ -811,9 +833,20 @@ and the event names to `subscribe` from the registered handlers, and makes
 `repo.outbox(msg).commit(agg)` publish on commit. Drop to `listen` / `subscribe`
 / `send` / `publish` directly when you need finer control.
 
-Point-to-point vs fan-out is consistently a **consumer-group/identity** choice in
-each transport's native topology — the same `group` competes, different `group`s
-fan out:
+Consumer identity controls the durable broker state in each transport. Command
+handlers should normally be owned by one service deployment, with every replica
+using the same `group` so the deployment competes as one logical consumer. Event
+handlers use distinct `group`s when each service needs its own copy.
+
+The `group` is not a list of handler names. Handler names come from
+`subscription_plan()`; `group` tells the broker which durable consumer, offset, or
+queue belongs to this running service. `Service::named(..)` supplies that group
+for `service.with_bus(bus).run(..)`; direct `Handlers` or manual
+`listen`/`subscribe` calls can set it with `bus.group(..)` or `Handlers::named(..)`.
+Groups/service names should use portable deployment IDs (`A-Z`, `a-z`, `0-9`,
+`_`, `-`); namespaces may also include `.`. Blank names, whitespace, control
+characters, path separators, broker wildcards, and names longer than 128 bytes
+are rejected before broker topology is created.
 
 | `*Bus` | Feature | `send` / `listen` (competing) | `publish` / `subscribe` (fan-out) |
 |---|---|---|---|

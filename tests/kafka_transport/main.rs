@@ -35,6 +35,26 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
     }))
 }
 
+fn named_recording_for(
+    service_name: &str,
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new().named(service_name.to_string());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
 fn brokers() -> Option<String> {
     match std::env::var("KAFKA_BROKERS") {
         Ok(b) => Some(b),
@@ -157,7 +177,9 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
     let Some(brokers) = brokers() else { return };
     let ns = unique("ns");
 
-    let producer = KafkaBus::connect(&brokers, "orders", &ns)
+    let producer = KafkaBus::connect(&brokers)
+        .group("orders")
+        .namespace(&ns)
         .await
         .expect("connect producer");
     let total = 5;
@@ -173,7 +195,9 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
 
     // First member of group "orders" drains every command.
     let first = Arc::new(Mutex::new(Vec::new()));
-    KafkaBus::connect(&brokers, "orders", &ns)
+    KafkaBus::connect(&brokers)
+        .group("orders")
+        .namespace(&ns)
         .await
         .unwrap()
         .with_fetch_timeout(Duration::from_secs(10))
@@ -191,7 +215,9 @@ async fn bus_listen_shared_group_consumes_each_command_once() {
     // A second member of the SAME group sees nothing — the group already consumed
     // and committed past these records (point-to-point, not fan-out).
     let second = Arc::new(Mutex::new(Vec::new()));
-    KafkaBus::connect(&brokers, "orders", &ns)
+    KafkaBus::connect(&brokers)
+        .group("orders")
+        .namespace(&ns)
         .await
         .unwrap()
         .with_fetch_timeout(Duration::from_secs(6))
@@ -215,7 +241,9 @@ async fn bus_subscribe_fans_out_across_groups() {
     let Some(brokers) = brokers() else { return };
     let ns = unique("ns");
 
-    let producer = KafkaBus::connect(&brokers, "producer", &ns)
+    let producer = KafkaBus::connect(&brokers)
+        .group("producer")
+        .namespace(&ns)
         .await
         .expect("connect producer");
     let total = 4;
@@ -232,7 +260,9 @@ async fn bus_subscribe_fans_out_across_groups() {
     let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
     for group in ["projections", "audit"] {
         let rec = Arc::new(Mutex::new(Vec::new()));
-        KafkaBus::connect(&brokers, group, &ns)
+        KafkaBus::connect(&brokers)
+            .group(group)
+            .namespace(&ns)
             .await
             .unwrap()
             .with_fetch_timeout(Duration::from_secs(10))
@@ -246,4 +276,49 @@ async fn bus_subscribe_fans_out_across_groups() {
         ids.sort();
         assert_eq!(ids, expected, "group {group} sees every event");
     }
+}
+
+#[tokio::test]
+async fn bus_subscribe_uses_named_service_as_consumer_group() {
+    let Some(brokers) = brokers() else { return };
+    let ns = unique("ns");
+
+    let producer = KafkaBus::connect(&brokers)
+        .namespace(&ns)
+        .await
+        .expect("connect producer");
+    for i in 0..3 {
+        producer
+            .publish_message(
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    KafkaBus::connect(&brokers)
+        .namespace(&ns)
+        .await
+        .unwrap()
+        .with_fetch_timeout(Duration::from_secs(10))
+        .subscribe(
+            named_recording_for(
+                "order-projection",
+                "order.initialized",
+                MessageKind::Event,
+                rec.clone(),
+            ),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
+    );
 }

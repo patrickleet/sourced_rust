@@ -18,12 +18,15 @@
 //!
 //! Requires the `kafka` feature. Integration-tested in `tests/kafka_transport`.
 
+use std::future::{Future, IntoFuture};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
 use super::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, MessageRouter, RunOptions, TransportError,
+    run_source, AsyncMessagePublisher, Bus, BusConsumer, BusTopologyConfig, MessageRouter,
+    RunOptions, TransportError,
 };
 use super::{Message, MessageKind};
 
@@ -34,28 +37,29 @@ const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 pub struct KafkaBus {
     brokers: String,
     publisher: Arc<KafkaPublisher>,
-    group: String,
-    namespace: String,
+    topology: BusTopologyConfig,
     fetch_timeout: Duration,
 }
 
-impl KafkaBus {
-    /// Connect a producer to `brokers` and build a bus. `group` is the consumer
-    /// identity (same group ⇒ competing; different groups ⇒ fan-out); `namespace`
-    /// scopes topics and group ids.
-    pub async fn connect(
-        brokers: &str,
-        group: impl Into<String>,
-        namespace: impl Into<String>,
-    ) -> Result<Self, TransportError> {
-        let publisher = KafkaPublisher::connect(brokers).await?;
-        Ok(Self {
-            brokers: brokers.to_string(),
-            publisher: Arc::new(publisher),
-            group: group.into(),
-            namespace: namespace.into(),
-            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
-        })
+/// Awaitable builder returned by [`KafkaBus::connect`].
+pub struct KafkaBusConnect {
+    brokers: String,
+    topology: BusTopologyConfig,
+    fetch_timeout: Duration,
+}
+
+impl KafkaBusConnect {
+    /// Set an explicit Kafka consumer group. Service consumers can usually omit
+    /// this and use [`Service::named`](crate::microsvc::Service::named) instead.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.topology = self.topology.group(group);
+        self
+    }
+
+    /// Set the topic/group-id namespace used on the shared Kafka cluster.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.topology = self.topology.namespace(namespace);
+        self
     }
 
     /// Override how long a `listen`/`subscribe` poll waits before idling. Kafka
@@ -65,12 +69,86 @@ impl KafkaBus {
         self
     }
 
-    fn command_prefix(&self) -> String {
-        format!("{}.cmd.", self.namespace)
+    async fn connect(self) -> Result<KafkaBus, TransportError> {
+        let topology = self.topology.validate_for("kafka")?;
+        let publisher = KafkaPublisher::connect(&self.brokers).await?;
+        Ok(KafkaBus {
+            brokers: self.brokers,
+            publisher: Arc::new(publisher),
+            topology,
+            fetch_timeout: self.fetch_timeout,
+        })
+    }
+}
+
+impl IntoFuture for KafkaBusConnect {
+    type Output = Result<KafkaBus, TransportError>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.connect())
+    }
+}
+
+impl KafkaBus {
+    /// Start building a bus connected to Kafka brokers.
+    ///
+    /// The returned builder is awaitable:
+    ///
+    /// ```ignore
+    /// let bus = KafkaBus::connect("localhost:9092")
+    ///     .namespace("todos-prod")
+    ///     .await?;
+    /// ```
+    pub fn connect(brokers: &str) -> KafkaBusConnect {
+        KafkaBusConnect {
+            brokers: brokers.to_string(),
+            topology: BusTopologyConfig::default(),
+            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+        }
     }
 
-    fn event_prefix(&self) -> String {
-        format!("{}.evt.", self.namespace)
+    /// Connect with an explicit group and namespace for direct/low-level use.
+    pub async fn connect_with(
+        brokers: &str,
+        group: impl Into<String>,
+        namespace: impl Into<String>,
+    ) -> Result<Self, TransportError> {
+        Self::connect(brokers)
+            .group(group)
+            .namespace(namespace)
+            .await
+    }
+
+    /// Set an explicit Kafka consumer group on an already-built bus.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.topology = self.topology.group(group);
+        self
+    }
+
+    /// Set the topic/group-id namespace used on the shared Kafka cluster.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.topology = self.topology.namespace(namespace);
+        self
+    }
+
+    /// Override how long a `listen`/`subscribe` poll waits before idling. Kafka
+    /// group bootstrap/rebalance takes time, so this is generous by default.
+    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = timeout;
+        self
+    }
+
+    fn validated_namespace(&self) -> Result<String, TransportError> {
+        self.topology.namespace_for("kafka")
+    }
+
+    fn command_prefix(&self) -> Result<String, TransportError> {
+        Ok(format!("{}.cmd.", self.validated_namespace()?))
+    }
+
+    fn event_prefix(&self) -> Result<String, TransportError> {
+        Ok(format!("{}.evt.", self.validated_namespace()?))
     }
 
     async fn run<R: MessageRouter>(
@@ -106,12 +184,12 @@ impl Bus for KafkaBus {
 
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
         // The publisher uses the message name as the topic; namespace it.
-        message.name = format!("{}{}", self.command_prefix(), message.name);
+        message.name = format!("{}{}", self.command_prefix()?, message.name);
         self.publisher.publish(message).await
     }
 
     async fn publish_message(&self, mut message: Message) -> Result<(), TransportError> {
-        message.name = format!("{}{}", self.event_prefix(), message.name);
+        message.name = format!("{}{}", self.event_prefix()?, message.name);
         self.publisher.publish(message).await
     }
 }
@@ -122,14 +200,21 @@ impl BusConsumer for KafkaBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let prefix = self.command_prefix();
-        let topics: Vec<String> = router
-            .subscription_plan()
+        let plan = router.subscription_plan();
+        if plan.commands.is_empty() {
+            return Ok(());
+        }
+        let prefix = self.command_prefix()?;
+        let topics: Vec<String> = plan
             .commands
             .iter()
             .map(|name| format!("{prefix}{name}"))
             .collect();
-        let group_id = format!("{}.{}.cmd", self.namespace, self.group);
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "kafka")?;
+        let namespace = self.validated_namespace()?;
+        let group_id = format!("{namespace}.{group}.cmd");
         self.run(router, topics, group_id, prefix, options).await
     }
 
@@ -138,14 +223,74 @@ impl BusConsumer for KafkaBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let prefix = self.event_prefix();
-        let topics: Vec<String> = router
-            .subscription_plan()
+        let plan = router.subscription_plan();
+        if plan.events.is_empty() {
+            return Ok(());
+        }
+        let prefix = self.event_prefix()?;
+        let topics: Vec<String> = plan
             .events
             .iter()
             .map(|name| format!("{prefix}{name}"))
             .collect();
-        let group_id = format!("{}.{}.evt", self.namespace, self.group);
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "kafka")?;
+        let namespace = self.validated_namespace()?;
+        let group_id = format!("{namespace}.{group}.evt");
         self.run(router, topics, group_id, prefix, options).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::SubscriptionPlan;
+    use rdkafka::config::ClientConfig;
+    use rdkafka::producer::FutureProducer;
+
+    struct EmptyRouter;
+
+    impl MessageRouter for EmptyRouter {
+        fn handles(&self, _kind: MessageKind, _name: &str) -> bool {
+            false
+        }
+
+        fn subscription_plan(&self) -> SubscriptionPlan {
+            SubscriptionPlan::default()
+        }
+
+        async fn dispatch(&self, _message: &Message) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn test_bus() -> KafkaBus {
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", "localhost:1")
+            .create()
+            .unwrap();
+        KafkaBus {
+            brokers: "localhost:1".to_string(),
+            publisher: Arc::new(KafkaPublisher::new(producer)),
+            topology: BusTopologyConfig::default(),
+            fetch_timeout: Duration::from_millis(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn listen_returns_ok_for_empty_plan_without_group() {
+        let bus = test_bus();
+        let router = Arc::new(EmptyRouter);
+        bus.listen(router, RunOptions::idempotent()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscribe_returns_ok_for_empty_plan_without_group() {
+        let bus = test_bus();
+        let router = Arc::new(EmptyRouter);
+        bus.subscribe(router, RunOptions::idempotent())
+            .await
+            .unwrap();
     }
 }

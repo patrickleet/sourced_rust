@@ -1089,7 +1089,9 @@ fn nats_url() -> Option<String> {
 #[cfg(feature = "nats")]
 async fn nats_matrix_bus(ns: &str) -> distributed::bus::NatsBus {
     let url = nats_url().expect("NATS_URL set");
-    let bus = distributed::bus::NatsBus::connect(&url, "matrix", ns)
+    let bus = distributed::bus::NatsBus::connect(&url)
+        .group("matrix")
+        .namespace(ns)
         .await
         .expect("nats connect")
         .with_fetch_timeout(Duration::from_millis(800));
@@ -1144,7 +1146,9 @@ async fn rabbit_matrix_bus(
     collector: &StdArc<Service<()>>,
 ) -> distributed::bus::RabbitBus {
     let url = amqp_url().expect("AMQP_URL set");
-    let bus = distributed::bus::RabbitBus::connect(&url, "matrix", ns)
+    let bus = distributed::bus::RabbitBus::connect(&url)
+        .group("matrix")
+        .namespace(ns)
         .await
         .expect("rabbit connect");
     // Topic exchange drops events with no bound queue, so bind before publishing.
@@ -1200,7 +1204,9 @@ fn kafka_brokers() -> Option<String> {
 #[cfg(feature = "kafka")]
 async fn kafka_matrix_bus(ns: &str) -> distributed::bus::KafkaBus {
     let brokers = kafka_brokers().expect("KAFKA_BROKERS set");
-    distributed::bus::KafkaBus::connect(&brokers, "matrix", ns)
+    distributed::bus::KafkaBus::connect(&brokers)
+        .group("matrix")
+        .namespace(ns)
         .await
         .expect("kafka connect")
         .with_fetch_timeout(Duration::from_secs(10))
@@ -1255,7 +1261,7 @@ async fn matrix_in_memory_persistence_over_postgres_bus() {
         return;
     };
     let bus_pool = schema.repository().await.pool().clone();
-    let bus = PostgresBus::new(bus_pool, "matrix");
+    let bus = PostgresBus::new(bus_pool).group("matrix");
     bus.ensure_tables().await.expect("postgres bus tables");
     let (collector, collected) = build_collector();
     run_checkout_over_bus(
@@ -1324,7 +1330,7 @@ async fn postgres_matrix_bus() -> Option<distributed::bus::PostgresBus> {
         "skipping Postgres-bus matrix cell",
     )
     .await?;
-    let bus = PostgresBus::new(schema.repository().await.pool().clone(), "matrix");
+    let bus = PostgresBus::new(schema.repository().await.pool().clone()).group("matrix");
     bus.ensure_tables().await.expect("postgres bus tables");
     // The schema has no Drop, so the bus's tables outlive this fixture.
     Some(bus)

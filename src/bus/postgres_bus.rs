@@ -37,7 +37,9 @@ use std::time::Duration;
 use sqlx::{PgPool, Row};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use super::{
+    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
+};
 use super::{Message, MessageKind};
 
 const DEFAULT_LEASE: Duration = Duration::from_secs(30);
@@ -113,20 +115,36 @@ fn message_from_row(row: &sqlx::postgres::PgRow) -> Message {
 #[derive(Clone)]
 pub struct PostgresBus {
     pool: PgPool,
-    group: String,
+    topology: BusTopologyConfig,
     lease: Duration,
 }
 
 impl PostgresBus {
-    /// Build a bus over an existing pool. `group` is the consumer identity:
-    /// replicas sharing a `group` compete on the queue (point-to-point) and share
-    /// one log offset; distinct `group`s each get their own log offset (fan-out).
-    pub fn new(pool: PgPool, group: impl Into<String>) -> Self {
+    /// Build a bus over an existing pool.
+    ///
+    /// For event subscriptions, `subscribe` uses the router's consumer identity as
+    /// the durable Postgres log offset. Service consumers usually get that identity
+    /// from [`Service::named`](crate::microsvc::Service::named). Direct consumers
+    /// can set it with [`group`](Self::group). Commands are claimed from
+    /// `bus_queue` by message name, so command replicas compete by listening to the
+    /// same registered command names.
+    pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            group: group.into(),
+            topology: BusTopologyConfig::default(),
             lease: DEFAULT_LEASE,
         }
+    }
+
+    /// Build a bus with an explicit group for direct/low-level use.
+    pub fn new_with_group(pool: PgPool, group: impl Into<String>) -> Self {
+        Self::new(pool).group(group)
+    }
+
+    /// Set an explicit durable event subscription group.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.topology = self.topology.group(group);
+        self
     }
 
     /// Override the claim lease for `listen` (how long a claimed command stays
@@ -239,10 +257,13 @@ impl BusConsumer for PostgresBus {
         if names.is_empty() {
             return Ok(());
         }
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "postgres")?;
         let source = LogSource {
             pool: self.pool.clone(),
             names,
-            consumer: self.group.clone(),
+            consumer: group,
         };
         run_source(router, source, options).await
     }

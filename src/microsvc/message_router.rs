@@ -9,6 +9,10 @@ use crate::bus::{MessageRouter, TransportError};
 use crate::microsvc::{Message, MessageKind, Service, SubscriptionPlan};
 
 impl<D: Send + Sync + 'static> MessageRouter for Service<D> {
+    fn consumer_group(&self) -> Option<&str> {
+        self.name()
+    }
+
     fn handles(&self, kind: MessageKind, name: &str) -> bool {
         self.handles_message(kind, name)
     }
