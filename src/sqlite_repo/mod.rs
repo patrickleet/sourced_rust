@@ -235,12 +235,73 @@ impl GetStream for SqliteRepository {
         identities: &'a [StreamIdentity],
     ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a {
         async move {
-            let mut entities = Vec::with_capacity(identities.len());
+            if identities.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Group ids by aggregate type so each type is one `aggregate_id IN
+            // (...)` round trip instead of a query per identity. SQLite has no
+            // array type, so the id list is built as bound placeholders.
+            // `get_all` builds single-type batches, so the common case is one
+            // query.
+            let mut ids_by_type: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
             for identity in identities {
-                if let Some(entity) = self.get_stream(identity).await? {
-                    entities.push(entity);
+                ids_by_type
+                    .entry(identity.aggregate_type())
+                    .or_default()
+                    .push(identity.aggregate_id());
+            }
+
+            let mut entities = Vec::with_capacity(identities.len());
+            for (aggregate_type, aggregate_ids) in ids_by_type {
+                // Ordering by aggregate_id then sequence lets us slice the flat
+                // result into per-aggregate entities in one pass. Callers of
+                // `get_all` accept storage-order results.
+                let mut builder = QueryBuilder::<Sqlite>::new(
+                    "SELECT aggregate_id, event_name, event_version, payload, \
+                     payload_codec, payload_codec_version, metadata, sequence, recorded_at \
+                     FROM aggregate_events WHERE aggregate_type = ",
+                );
+                builder.push_bind(aggregate_type);
+                builder.push(" AND aggregate_id IN (");
+                let mut separated = builder.separated(", ");
+                for id in &aggregate_ids {
+                    separated.push_bind(*id);
+                }
+                builder.push(") ORDER BY aggregate_id ASC, sequence ASC");
+
+                let rows = builder
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|err| repository_storage_error("load streams", err))?;
+
+                let mut current_id: Option<String> = None;
+                let mut current_events: Vec<EventRecord> = Vec::new();
+                for row in rows {
+                    let row_id: String = row
+                        .try_get("aggregate_id")
+                        .map_err(|err| repository_storage_error("decode aggregate id row", err))?;
+                    let event = event_from_row(row)?;
+                    match &current_id {
+                        Some(id) if id == &row_id => current_events.push(event),
+                        _ => {
+                            if let Some(id) = current_id.take() {
+                                entities.push(entity_from_events(
+                                    id,
+                                    std::mem::take(&mut current_events),
+                                ));
+                            }
+                            current_id = Some(row_id);
+                            current_events.push(event);
+                        }
+                    }
+                }
+                if let Some(id) = current_id.take() {
+                    entities.push(entity_from_events(id, current_events));
                 }
             }
+
             Ok(entities)
         }
     }
@@ -333,16 +394,9 @@ impl TransactionalCommit for SqliteRepository {
                 }
             }
 
-            for append in &prepared {
-                for event in &append.events {
-                    insert_event_in_tx(&mut tx, &append.identity, append.expected_version, event)
-                        .await?;
-                }
-            }
+            insert_events_in_tx(&mut tx, &prepared).await?;
 
-            for message in &batch.outbox_messages {
-                insert_outbox_message_in_tx(&mut tx, message).await?;
-            }
+            insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
 
             for plan in batch.read_model_plans {
                 apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
@@ -1005,85 +1059,117 @@ async fn insert_inbox_receipt_in_tx(
     }
 }
 
-async fn insert_outbox_message_in_tx(
+/// Insert every outbox message with multi-row INSERTs (chunked to respect
+/// SQLite's bound-parameter limit). A unique constraint violation on
+/// `message_id` still maps to `DuplicateOutboxMessageInBatch`.
+async fn insert_outbox_messages_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    message: &OutboxMessage,
+    messages: &[OutboxMessage],
 ) -> Result<(), RepositoryError> {
-    let metadata = serialize_event_metadata(&message.metadata)?;
-    let result = sqlx::query(
-        r#"
-        INSERT INTO outbox_messages (
-          message_id,
-          event_type,
-          payload,
-          payload_codec,
-          payload_codec_version,
-          destination,
-          metadata,
-          status,
-          created_at,
-          next_available_at,
-          claimed_by,
-          claimed_until,
-          attempts,
-          last_error,
-          source_aggregate_type,
-          source_aggregate_id,
-          source_sequence,
-          correlation_id,
-          causation_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(message.id())
-    .bind(&message.event_type)
-    .bind(&message.payload)
-    .bind(&message.payload_codec)
-    .bind(i64::from(message.payload_codec_version))
-    .bind(&message.destination)
-    .bind(metadata)
-    .bind(message.status.as_str())
-    .bind(system_time_to_storage(message.created_at)?)
-    .bind(system_time_to_storage(message.created_at)?)
-    .bind(&message.worker_id)
-    .bind(
-        message
-            .leased_until
-            .map(system_time_to_storage)
-            .transpose()?,
-    )
-    .bind(i64::from(message.attempts))
-    .bind(&message.last_error)
-    .bind(&message.source_aggregate_type)
-    .bind(&message.source_aggregate_id)
-    .bind(
-        message
-            .source_sequence
-            .map(|value| {
-                sqlx_repository_i64_from_u64(
-                    SQLITE_BACKEND,
-                    value,
-                    "outbox source sequence",
-                    SIGNED_INTEGER_STORAGE,
-                )
-            })
-            .transpose()?,
-    )
-    .bind(message.correlation_id())
-    .bind(message.causation_id())
-    .execute(&mut **tx)
-    .await;
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) if is_sqlite_unique_constraint(&err) => {
-            Err(RepositoryError::DuplicateOutboxMessageInBatch {
-                id: message.id().to_string(),
-            })
-        }
-        Err(err) => Err(repository_storage_error("insert outbox message", err)),
+    struct OutboxRow<'a> {
+        message_id: &'a str,
+        event_type: &'a str,
+        payload: &'a [u8],
+        payload_codec: &'a str,
+        payload_codec_version: i64,
+        destination: Option<&'a str>,
+        metadata: String,
+        status: &'a str,
+        created_at: String,
+        worker_id: Option<&'a str>,
+        leased_until: Option<String>,
+        attempts: i64,
+        last_error: Option<&'a str>,
+        source_aggregate_type: Option<&'a str>,
+        source_aggregate_id: Option<&'a str>,
+        source_sequence: Option<i64>,
+        correlation_id: Option<&'a str>,
+        causation_id: Option<&'a str>,
     }
+
+    let mut rows = Vec::with_capacity(messages.len());
+    for message in messages {
+        rows.push(OutboxRow {
+            message_id: message.id(),
+            event_type: &message.event_type,
+            payload: &message.payload,
+            payload_codec: &message.payload_codec,
+            payload_codec_version: i64::from(message.payload_codec_version),
+            destination: message.destination.as_deref(),
+            metadata: serialize_event_metadata(&message.metadata)?,
+            status: message.status.as_str(),
+            created_at: system_time_to_storage(message.created_at)?,
+            worker_id: message.worker_id.as_deref(),
+            leased_until: message
+                .leased_until
+                .map(system_time_to_storage)
+                .transpose()?,
+            attempts: i64::from(message.attempts),
+            last_error: message.last_error.as_deref(),
+            source_aggregate_type: message.source_aggregate_type.as_deref(),
+            source_aggregate_id: message.source_aggregate_id.as_deref(),
+            source_sequence: message
+                .source_sequence
+                .map(|value| {
+                    sqlx_repository_i64_from_u64(
+                        SQLITE_BACKEND,
+                        value,
+                        "outbox source sequence",
+                        SIGNED_INTEGER_STORAGE,
+                    )
+                })
+                .transpose()?,
+            correlation_id: message.correlation_id(),
+            causation_id: message.causation_id(),
+        });
+    }
+
+    for chunk in rows.chunks(SQLITE_MAX_BIND_PARAMS / OUTBOX_BIND_COLUMNS) {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO outbox_messages (\
+             message_id, event_type, payload, payload_codec, payload_codec_version, \
+             destination, metadata, status, created_at, next_available_at, \
+             claimed_by, claimed_until, attempts, last_error, source_aggregate_type, \
+             source_aggregate_id, source_sequence, correlation_id, causation_id) ",
+        );
+        builder.push_values(chunk, |mut row, message| {
+            row.push_bind(message.message_id)
+                .push_bind(message.event_type)
+                .push_bind(message.payload)
+                .push_bind(message.payload_codec)
+                .push_bind(message.payload_codec_version)
+                .push_bind(message.destination)
+                .push_bind(message.metadata.as_str())
+                .push_bind(message.status)
+                .push_bind(message.created_at.as_str())
+                // created_at and next_available_at share the same value.
+                .push_bind(message.created_at.as_str())
+                .push_bind(message.worker_id)
+                .push_bind(message.leased_until.as_deref())
+                .push_bind(message.attempts)
+                .push_bind(message.last_error)
+                .push_bind(message.source_aggregate_type)
+                .push_bind(message.source_aggregate_id)
+                .push_bind(message.source_sequence)
+                .push_bind(message.correlation_id)
+                .push_bind(message.causation_id);
+        });
+
+        let result = builder.build().execute(&mut **tx).await;
+        if let Err(err) = result {
+            if is_sqlite_unique_constraint(&err) {
+                // The batch was already deduped, so a violation means the id
+                // collides with a previously committed row. Report the first id
+                // in the chunk, matching the per-row path's contract.
+                return Err(RepositoryError::DuplicateOutboxMessageInBatch {
+                    id: chunk[0].message_id.to_string(),
+                });
+            }
+            return Err(repository_storage_error("insert outbox messages", err));
+        }
+    }
+
+    Ok(())
 }
 
 async fn outbox_message_by_id_pool(
@@ -1260,66 +1346,123 @@ async fn stream_version_in_tx(
         .unwrap_or(Ok(0))
 }
 
-async fn insert_event_in_tx(
+/// Maximum bound parameters per statement. SQLite's historical limit is 999, so
+/// staying under it keeps the batched inserts portable across SQLite builds.
+const SQLITE_MAX_BIND_PARAMS: usize = 900;
+
+/// Bound parameters per `aggregate_events` row.
+const EVENT_BIND_COLUMNS: usize = 10;
+
+/// Bound parameters per `outbox_messages` row.
+const OUTBOX_BIND_COLUMNS: usize = 19;
+
+/// Insert every event across all prepared appends with multi-row INSERTs
+/// (chunked to respect SQLite's bound-parameter limit).
+///
+/// Conflict detection is unchanged from the per-row path: the `(aggregate_type,
+/// aggregate_id, sequence)` primary key is the contiguity gate, and a unique
+/// constraint violation still surfaces as `ConcurrentWrite`. SQLite does not
+/// abort the transaction on a constraint error, so the conflicting stream's
+/// actual version is re-read in the same transaction, exactly as before.
+async fn insert_events_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    identity: &StreamIdentity,
-    expected_version: u64,
-    event: &EventRecord,
+    prepared: &[PreparedEventAppend],
 ) -> Result<(), RepositoryError> {
-    let metadata = serialize_event_metadata(&event.metadata)?;
-
-    let result = sqlx::query(
-        r#"
-        INSERT INTO aggregate_events (
-          aggregate_type,
-          aggregate_id,
-          sequence,
-          event_name,
-          event_version,
-          payload,
-          payload_codec,
-          payload_codec_version,
-          metadata,
-          recorded_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(identity.aggregate_type())
-    .bind(identity.aggregate_id())
-    .bind(sqlx_repository_i64_from_u64(
-        SQLITE_BACKEND,
-        event.sequence,
-        "sequence",
-        SIGNED_INTEGER_STORAGE,
-    )?)
-    .bind(&event.event_name)
-    .bind(sqlx_repository_i64_from_u64(
-        SQLITE_BACKEND,
-        event.event_version,
-        "event_version",
-        SIGNED_INTEGER_STORAGE,
-    )?)
-    .bind(&event.payload)
-    .bind(&event.payload_codec)
-    .bind(i64::from(event.payload_codec_version))
-    .bind(metadata)
-    .bind(system_time_to_storage(event.timestamp)?)
-    .execute(&mut **tx)
-    .await;
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) if is_sqlite_unique_constraint(&err) => {
-            let actual = stream_version_in_tx(tx, identity).await?;
-            Err(RepositoryError::ConcurrentWrite {
-                id: identity.to_string(),
-                expected: expected_version,
-                actual,
-            })
-        }
-        Err(err) => Err(repository_storage_error("insert event", err)),
+    struct EventRow<'a> {
+        identity: &'a StreamIdentity,
+        expected_version: u64,
+        sequence: i64,
+        event_name: &'a str,
+        event_version: i64,
+        payload: &'a [u8],
+        payload_codec: &'a str,
+        payload_codec_version: i64,
+        metadata: String,
+        recorded_at: String,
     }
+
+    let mut rows = Vec::new();
+    for append in prepared {
+        for event in &append.events {
+            rows.push(EventRow {
+                identity: &append.identity,
+                expected_version: append.expected_version,
+                sequence: sqlx_repository_i64_from_u64(
+                    SQLITE_BACKEND,
+                    event.sequence,
+                    "sequence",
+                    SIGNED_INTEGER_STORAGE,
+                )?,
+                event_name: &event.event_name,
+                event_version: sqlx_repository_i64_from_u64(
+                    SQLITE_BACKEND,
+                    event.event_version,
+                    "event_version",
+                    SIGNED_INTEGER_STORAGE,
+                )?,
+                payload: &event.payload,
+                payload_codec: &event.payload_codec,
+                payload_codec_version: i64::from(event.payload_codec_version),
+                metadata: serialize_event_metadata(&event.metadata)?,
+                recorded_at: system_time_to_storage(event.timestamp)?,
+            });
+        }
+    }
+
+    for chunk in rows.chunks(SQLITE_MAX_BIND_PARAMS / EVENT_BIND_COLUMNS) {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO aggregate_events (\
+             aggregate_type, aggregate_id, sequence, event_name, event_version, \
+             payload, payload_codec, payload_codec_version, metadata, recorded_at) ",
+        );
+        builder.push_values(chunk, |mut row, event| {
+            row.push_bind(event.identity.aggregate_type())
+                .push_bind(event.identity.aggregate_id())
+                .push_bind(event.sequence)
+                .push_bind(event.event_name)
+                .push_bind(event.event_version)
+                .push_bind(event.payload)
+                .push_bind(event.payload_codec)
+                .push_bind(event.payload_codec_version)
+                .push_bind(event.metadata.as_str())
+                .push_bind(event.recorded_at.as_str());
+        });
+
+        let result = builder.build().execute(&mut **tx).await;
+        if let Err(err) = result {
+            if is_sqlite_unique_constraint(&err) {
+                // Find the conflicting stream (its actual version no longer
+                // matches its expected version) and report it.
+                for event in chunk {
+                    let actual = stream_version_in_tx(tx, event.identity).await?;
+                    if actual != event.expected_version {
+                        return Err(RepositoryError::ConcurrentWrite {
+                            id: event.identity.to_string(),
+                            expected: event.expected_version,
+                            actual,
+                        });
+                    }
+                }
+                let event = &chunk[0];
+                let actual = stream_version_in_tx(tx, event.identity).await?;
+                return Err(RepositoryError::ConcurrentWrite {
+                    id: event.identity.to_string(),
+                    expected: event.expected_version,
+                    actual,
+                });
+            }
+            return Err(repository_storage_error("insert events", err));
+        }
+    }
+
+    Ok(())
+}
+
+fn entity_from_events(aggregate_id: String, events: Vec<EventRecord>) -> Entity {
+    let mut entity = Entity::new();
+    entity.set_id(aggregate_id);
+    entity.load_from_history(events);
+    entity
 }
 
 fn event_from_row(row: sqlx::sqlite::SqliteRow) -> Result<EventRecord, RepositoryError> {
