@@ -355,3 +355,154 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
         vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
     );
 }
+
+// ---- corrupt-row handling: a row that fails to decode must NOT vanish ----
+
+/// Make the most recently enqueued `bus_queue` row corrupt by nulling its
+/// required `name` column, so `try_get::<String>` fails with `UnexpectedNull`
+/// when the source claims it — the exact decode failure a real corruption (a
+/// migration mishap, a manual edit, a driver/type mismatch) produces.
+async fn corrupt_latest_queue_name(pool: &sqlx::PgPool) {
+    sqlx::query("ALTER TABLE bus_queue ALTER COLUMN name DROP NOT NULL")
+        .execute(pool)
+        .await
+        .expect("drop not null");
+    sqlx::query("UPDATE bus_queue SET name = NULL WHERE seq = (SELECT max(seq) FROM bus_queue)")
+        .execute(pool)
+        .await
+        .expect("null out name");
+}
+
+async fn corrupt_latest_log_name(pool: &sqlx::PgPool) {
+    sqlx::query("ALTER TABLE bus_log ALTER COLUMN name DROP NOT NULL")
+        .execute(pool)
+        .await
+        .expect("drop not null");
+    sqlx::query("UPDATE bus_log SET name = NULL WHERE seq = (SELECT max(seq) FROM bus_log)")
+        .execute(pool)
+        .await
+        .expect("null out name");
+}
+
+/// A corrupt `bus_queue` row is routed through the failure policy (dead-letter by
+/// default → the row is deleted) rather than being decoded into an empty-named
+/// message and silently ack-and-ignored. The valid row beside it is still
+/// handled, and the run drains to completion.
+#[tokio::test]
+async fn bus_listen_dead_letters_corrupt_queue_row_not_silently() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_corrupt_q", SKIP).await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let bus = PostgresBus::new(pool.clone()).group("orders");
+    bus.ensure_tables().await.expect("ensure tables");
+
+    // A poison row (name will be nulled) and a healthy row.
+    bus.send_message(
+        Message::new("order.initialize", MessageKind::Command, b"{}".to_vec()).with_id("poison"),
+    )
+    .await
+    .expect("send poison");
+    corrupt_latest_queue_name(&pool).await;
+    bus.send_message(
+        Message::new("order.initialize", MessageKind::Command, b"{}".to_vec()).with_id("ok"),
+    )
+    .await
+    .expect("send ok");
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    bus.listen(
+        recording_for("order.initialize", MessageKind::Command, rec.clone()),
+        RunOptions::idempotent(),
+    )
+    .await
+    .expect("listen drains without surfacing the corrupt row as a fatal error");
+
+    // The healthy command was handled; the corrupt row was never dispatched as
+    // an empty-named message.
+    let handled = rec.lock().unwrap().clone();
+    assert_eq!(
+        handled,
+        vec!["ok".to_string()],
+        "only the valid row handled"
+    );
+
+    // The corrupt row did not vanish into ack-and-ignore *and* did not get stuck
+    // redelivering forever: under the default dead-letter policy it leaves the
+    // queue. The queue is fully drained.
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM bus_queue")
+        .fetch_one(&pool)
+        .await
+        .expect("count queue");
+    assert_eq!(
+        remaining, 0,
+        "corrupt row routed through policy, not redelivered forever"
+    );
+}
+
+/// A corrupt `bus_log` row is routed through the failure policy (dead-letter by
+/// default → the consumer offset advances past it) rather than silently
+/// ack-and-ignored. The consumer makes progress to the healthy entry after it.
+#[tokio::test]
+async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_corrupt_l", SKIP).await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let producer = PostgresBus::new(pool.clone());
+    producer.ensure_tables().await.expect("ensure tables");
+
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec()).with_id("poison"),
+        )
+        .await
+        .expect("publish poison");
+    corrupt_latest_log_name(&pool).await;
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec()).with_id("ok"),
+        )
+        .await
+        .expect("publish ok");
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    PostgresBus::new(pool.clone())
+        .group("projections")
+        .subscribe(
+            recording_for("order.initialized", MessageKind::Event, rec.clone()),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscribe drains past the corrupt entry");
+
+    // The healthy event after the poison entry was handled — the consumer did not
+    // get stuck on the corrupt row, and the corrupt row was not dispatched as an
+    // empty-named message.
+    let handled = rec.lock().unwrap().clone();
+    assert_eq!(
+        handled,
+        vec!["ok".to_string()],
+        "only the valid event handled"
+    );
+
+    // The offset advanced past both entries (dead-letter advances the log offset).
+    let offset: Option<i64> =
+        sqlx::query_scalar("SELECT last_seq FROM bus_offset WHERE consumer = 'projections'")
+            .fetch_optional(&pool)
+            .await
+            .expect("read offset");
+    let max_seq: i64 = sqlx::query_scalar("SELECT max(seq) FROM bus_log")
+        .fetch_one(&pool)
+        .await
+        .expect("max seq");
+    assert_eq!(
+        offset,
+        Some(max_seq),
+        "offset advanced past the corrupt entry, not stuck or skipped-silently"
+    );
+}

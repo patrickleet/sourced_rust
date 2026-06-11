@@ -46,6 +46,20 @@ pub trait ReceivedMessage: Send {
     /// The canonical message to dispatch.
     fn message(&self) -> &Message;
 
+    /// A permanent decode failure for this delivery, if the transport could not
+    /// reconstruct the message from its stored representation.
+    ///
+    /// Defaults to `None`: most adapters either decode successfully or fail the
+    /// whole `recv`. An adapter that can claim a row/offset *before* decoding it
+    /// (so the claim must be settled even when decoding fails) returns the
+    /// classified error here. The runner treats `Some(err)` as a permanent
+    /// failure routed through the [`FailurePolicy`](super::FailurePolicy) — the
+    /// same path as a permanent dispatch failure — so a corrupt row is
+    /// dead-lettered/parked rather than ack-and-ignored as an empty message.
+    fn decode_error(&self) -> Option<&TransportError> {
+        None
+    }
+
     /// Acknowledge successful handling. The transport removes the message.
     ///
     /// The runner calls this only after consumer execution has succeeded (and,
