@@ -93,22 +93,47 @@ fn kind_from_str(value: &str) -> MessageKind {
     }
 }
 
-fn message_from_row(row: &sqlx::postgres::PgRow) -> Message {
+/// Reconstruct a [`Message`] from a claimed `bus_queue`/`bus_log` row.
+///
+/// A row that fails to decode a **required** column (`name`, `kind`, `payload`)
+/// is corrupt and can never be handled: returning a placeholder `Message` with an
+/// empty name would route it to the runner's ack-and-ignore path, silently
+/// deleting the row (queue) or advancing the offset past it (log) with no trace.
+/// Instead this returns a **permanent** [`TransportError`] so the caller surfaces
+/// it as a decode failure and the runner routes the claimed row through the
+/// failure policy (dead-letter by default) like any other permanent failure.
+///
+/// `message_id`, `content_type`, and `metadata` keep tolerant defaults: they are
+/// optional or have schema defaults, so a missing/garbled value there does not
+/// make the message unhandleable.
+fn message_from_row(row: &sqlx::postgres::PgRow) -> Result<Message, TransportError> {
+    fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
+        TransportError::permanent(format!(
+            "postgres bus corrupt row: required column '{column}' failed to decode: {err}"
+        ))
+    }
+
+    let name: String = row.try_get("name").map_err(|err| decode_err("name", err))?;
+    let kind: String = row.try_get("kind").map_err(|err| decode_err("kind", err))?;
+    let payload: Vec<u8> = row
+        .try_get("payload")
+        .map_err(|err| decode_err("payload", err))?;
+
     let metadata_json: String = row.try_get("metadata").unwrap_or_else(|_| "[]".to_string());
     let metadata =
         serde_json::from_str::<Vec<(String, String)>>(&metadata_json).unwrap_or_default();
-    Message {
+    Ok(Message {
         id: row
             .try_get::<Option<String>, _>("message_id")
             .unwrap_or(None),
-        name: row.try_get("name").unwrap_or_default(),
-        kind: kind_from_str(&row.try_get::<String, _>("kind").unwrap_or_default()),
-        payload: row.try_get("payload").unwrap_or_default(),
+        name,
+        kind: kind_from_str(&kind),
+        payload,
         content_type: row
             .try_get("content_type")
             .unwrap_or_else(|_| "application/json".to_string()),
         metadata,
-    }
+    })
 }
 
 /// Postgres [`Bus`] + [`BusConsumer`]. Cheap to clone (the pool is an `Arc`).
@@ -280,12 +305,20 @@ impl AsyncMessageSource for QueueSource {
     type Received = QueueReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        // Claim the next row whose `name` matches a subscribed command, OR whose
+        // `name` is NULL. A NULL name is un-routable corruption: it belongs to no
+        // consumer, so `name = ANY($2)` would never match it and it would sit in
+        // the queue forever, never claimed, never settled. Claiming it here lets
+        // the runner route it through the failure policy (dead-letter by default,
+        // which deletes the row) instead of leaving a poison row that blocks the
+        // queue from draining. `FOR UPDATE SKIP LOCKED` keeps the claim safe under
+        // competing listeners — only one settles the orphaned row.
         let row = sqlx::query(
             "UPDATE bus_queue SET locked_until = now() + ($1 * interval '1 second'), \
                     attempts = attempts + 1 \
              WHERE seq = ( \
                 SELECT seq FROM bus_queue \
-                WHERE name = ANY($2) AND available_at <= now() \
+                WHERE (name = ANY($2) OR name IS NULL) AND available_at <= now() \
                       AND (locked_until IS NULL OR locked_until < now()) \
                 ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT 1 \
              ) \
@@ -299,12 +332,31 @@ impl AsyncMessageSource for QueueSource {
 
         Ok(row.map(|row| {
             let seq: i64 = row.try_get("seq").unwrap_or_default();
+            let (message, decode_error) = decode_or_placeholder(&row);
             QueueReceived {
                 pool: self.pool.clone(),
                 seq,
-                message: message_from_row(&row),
+                message,
+                decode_error,
             }
         }))
+    }
+}
+
+/// Split a decode result into the handle's `(message, decode_error)` fields.
+///
+/// On failure the handle still needs *some* `Message` to return from
+/// [`ReceivedMessage::message`]; this placeholder is never dispatched because the
+/// runner sees `decode_error()` first and routes the claim through the failure
+/// policy. The placeholder name is deliberately empty — the decode error carries
+/// the diagnostic.
+fn decode_or_placeholder(row: &sqlx::postgres::PgRow) -> (Message, Option<TransportError>) {
+    match message_from_row(row) {
+        Ok(message) => (message, None),
+        Err(error) => (
+            Message::new("", MessageKind::Event, Vec::new()),
+            Some(error),
+        ),
     }
 }
 
@@ -314,6 +366,7 @@ pub struct QueueReceived {
     pool: PgPool,
     seq: i64,
     message: Message,
+    decode_error: Option<TransportError>,
 }
 
 impl QueueReceived {
@@ -330,6 +383,10 @@ impl QueueReceived {
 impl ReceivedMessage for QueueReceived {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn decode_error(&self) -> Option<&TransportError> {
+        self.decode_error.as_ref()
     }
 
     async fn ack(self) -> Result<(), TransportError> {
@@ -366,9 +423,16 @@ impl AsyncMessageSource for LogSource {
     type Received = LogReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        // Read the next entry past this consumer's offset whose `name` matches a
+        // subscribed event, OR whose `name` is NULL. A NULL name is un-routable
+        // corruption: `name = ANY($1)` would skip past it silently when the offset
+        // jumps to a later healthy entry, dropping the poison record with no trace.
+        // Surfacing it lets the runner route it through the failure policy
+        // (dead-letter by default, which advances the offset past it) so the
+        // corrupt entry is settled, not silently skipped.
         let row = sqlx::query(
             "SELECT seq, name, message_id, kind, payload, content_type, metadata FROM bus_log \
-             WHERE name = ANY($1) \
+             WHERE (name = ANY($1) OR name IS NULL) \
                    AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = $2), 0) \
              ORDER BY seq LIMIT 1",
         )
@@ -380,11 +444,13 @@ impl AsyncMessageSource for LogSource {
 
         Ok(row.map(|row| {
             let seq: i64 = row.try_get("seq").unwrap_or_default();
+            let (message, decode_error) = decode_or_placeholder(&row);
             LogReceived {
                 pool: self.pool.clone(),
                 consumer: self.consumer.clone(),
                 seq,
-                message: message_from_row(&row),
+                message,
+                decode_error,
             }
         }))
     }
@@ -398,6 +464,7 @@ pub struct LogReceived {
     consumer: String,
     seq: i64,
     message: Message,
+    decode_error: Option<TransportError>,
 }
 
 impl LogReceived {
@@ -419,6 +486,10 @@ impl LogReceived {
 impl ReceivedMessage for LogReceived {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn decode_error(&self) -> Option<&TransportError> {
+        self.decode_error.as_ref()
     }
 
     async fn ack(self) -> Result<(), TransportError> {
