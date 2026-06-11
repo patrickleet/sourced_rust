@@ -1001,7 +1001,7 @@ Event projection handlers use `EVENT` / `EVENTS` and `event handlers::...` in th
 
 ### HTTP Transport (requires `http` feature)
 
-The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session`:
+The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session` verbatim — including `x-hasura-*` identity headers, which the framework does **not** authenticate. Deploy behind a trusted proxy that strips client-supplied identity headers and injects authenticated ones (see [Security / Trust Boundary](#security--trust-boundary)).
 
 ```rust
 use std::sync::Arc;
@@ -1047,7 +1047,7 @@ microsvc::serve_grpc(service, "[::1]:50051").await?;
 | `Dispatch` | `GrpcRequest` | `GrpcResponse` | Dispatch a command. `input` = JSON string, `session_variables` = metadata map. |
 | `Health` | `HealthRequest` | `HealthResponse` | Health check. |
 
-Session handling mirrors HTTP — gRPC metadata headers are merged with payload `session_variables` (payload takes precedence). Errors are returned inside `GrpcResponse.status` (HTTP-style status codes), keeping client behavior identical across transports.
+Session handling mirrors HTTP — gRPC metadata headers are merged with payload `session_variables`. **Transport metadata (trusted, proxy-injected) takes precedence over the client-controlled payload**, so a client cannot spoof identity via the request body. See [Security / Trust Boundary](#security--trust-boundary) below. Errors are returned inside `GrpcResponse.status` (HTTP-style status codes) with internal (5xx) error detail masked to a generic message, keeping client behavior identical across transports.
 
 ### Bus Transport
 
@@ -1073,6 +1073,35 @@ methods directly. See [Service Bus](#service-bus) above.
 | `Unauthorized` | 401 |
 | `Repository` | 500 |
 | `Other` | 500 |
+
+Internal (5xx) errors are **masked** before being returned to clients — the
+response body carries a generic `"Internal server error"` so SQL text, driver
+detail, or internal paths never leak. The original error is logged
+server-side. Client-fault (4xx) errors keep their descriptive message. This
+applies identically to the HTTP and gRPC transports.
+
+### Security / Trust Boundary
+
+**This framework does NOT authenticate requests.** The `Session` is built from
+whatever the transport provides — HTTP request headers, gRPC metadata, and (for
+gRPC) the request payload's `session_variables`. Identity values such as
+`x-hasura-user-id` and `x-hasura-role` are trusted at face value by handlers.
+
+You **must** deploy `microsvc` behind a **trusted proxy / API gateway** (e.g.
+Hasura, or an authenticating ingress) that:
+
+- **Strips** any client-supplied `x-hasura-*` headers/metadata on the way in, and
+- **Injects** only identity claims it has authenticated.
+
+Without that proxy, any caller can set `x-hasura-user-id` / `x-hasura-role` and
+assume any identity or role.
+
+**Source precedence:** when identity arrives in more than one place, the trusted
+transport channel wins over the client-controlled payload. For gRPC, transport
+**metadata overrides** payload `session_variables` — a client cannot override a
+proxy-injected `x-hasura-user-id` via the request body. For HTTP, request headers
+populate the session and the proxy is responsible for ensuring they are
+authenticated. Never trust the request body for identity.
 
 ## Read Models
 

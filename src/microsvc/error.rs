@@ -93,6 +93,24 @@ impl HandlerError {
         }
     }
 
+    /// Message safe to return to an untrusted client across a transport.
+    ///
+    /// Server-internal failures (status 5xx — repository/driver/other errors)
+    /// are masked to a generic string so SQL text, driver detail, or internal
+    /// paths never leak to callers. Client-fault errors (4xx — unknown command,
+    /// decode, rejection, auth, guard) keep their descriptive message because
+    /// the caller caused them and the detail helps them correct the request.
+    ///
+    /// Both the HTTP and gRPC transports route error bodies through this so the
+    /// masking policy lives in exactly one place.
+    pub fn client_facing_message(&self) -> String {
+        if self.status_code() >= 500 {
+            "Internal server error".to_string()
+        } else {
+            self.to_string()
+        }
+    }
+
     /// Classify this error for transport retry purposes (retryable vs permanent).
     ///
     /// Transient failures (repository errors, not-found, otherwise-unclassified)
