@@ -795,9 +795,6 @@ mod tests {
         let store = HashMapOutboxStore {
             storage: Default::default(),
         };
-        let expected = RepositoryError::NotFound {
-            id: "missing".into(),
-        };
         let claim = OutboxClaimRef {
             message_id: "missing".into(),
             worker_id: "worker-1".into(),
@@ -805,9 +802,10 @@ mod tests {
             attempt: 1,
         };
 
-        assert_eq!(store.complete(&claim).unwrap_err(), expected);
-        assert_eq!(store.release(&claim, "error").unwrap_err(), expected);
-        assert_eq!(store.fail(&claim, "error").unwrap_err(), expected);
+        let is_missing = |err: RepositoryError| matches!(&err, RepositoryError::NotFound { id } if id == "missing");
+        assert!(is_missing(store.complete(&claim).unwrap_err()));
+        assert!(is_missing(store.release(&claim, "error").unwrap_err()));
+        assert!(is_missing(store.fail(&claim, "error").unwrap_err()));
     }
 
     #[tokio::test]

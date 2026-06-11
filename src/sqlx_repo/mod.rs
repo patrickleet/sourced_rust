@@ -253,12 +253,44 @@ pub(crate) fn is_postgres_unique_violation(err: &sqlx::Error) -> bool {
     }
 }
 
+/// Whether a `sqlx::Error` represents a transient condition worth retrying.
+///
+/// Connection loss, pool exhaustion, and acquire/I/O timeouts are infrastructure
+/// hiccups: the same statement may succeed once the backend recovers. SQLite
+/// `SQLITE_BUSY`/`SQLITE_LOCKED` contention is likewise transient. Everything
+/// else — most notably a `Database` error such as a constraint violation or a
+/// malformed-row decode — is deterministic: re-running the identical statement
+/// against the same data cannot change the outcome, so it is classified
+/// permanent. Treating an unknown failure as permanent is the safe default: a
+/// permanent classification hands the message to the failure policy instead of
+/// redelivering it forever.
+pub(crate) fn is_sqlx_transient(err: &sqlx::Error) -> bool {
+    // Connection / pool / timeout failures are transient regardless of backend.
+    if matches!(
+        err,
+        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_)
+    ) {
+        return true;
+    }
+    // SQLite serializes writers; busy/locked contention is retryable, not failure.
+    #[cfg(feature = "sqlite")]
+    if is_sqlite_busy(err) {
+        return true;
+    }
+    false
+}
+
 pub(crate) fn repository_storage_error(
     backend: &str,
     operation: &str,
     err: sqlx::Error,
 ) -> RepositoryError {
-    RepositoryError::Model(format!("{backend} {operation} failed: {err}"))
+    let retryable = is_sqlx_transient(&err);
+    RepositoryError::Storage {
+        operation: format!("{backend} {operation}"),
+        retryable,
+        source: Some(Box::new(err)),
+    }
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]

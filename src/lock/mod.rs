@@ -43,7 +43,7 @@ mod sqlx_common;
 pub use async_in_memory::{InMemoryAsyncLock, InMemoryAsyncLockFuture, InMemoryAsyncLockManager};
 pub use async_lock::AsyncLock;
 pub use async_lock_manager::AsyncLockManager;
-pub use error::LockError;
+pub use error::{LockError, RetryClass};
 #[cfg(feature = "postgres")]
 pub use postgres_lock::{PostgresLock, PostgresLockManager};
 #[cfg(feature = "sqlite")]

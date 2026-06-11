@@ -233,11 +233,13 @@ where
         .await
         .expect_err("duplicate stream should be rejected");
 
-    assert_eq!(
-        err,
-        RepositoryError::DuplicateStreamInBatch {
-            id: format!("{}:{id}", Seat::aggregate_type())
-        }
+    assert!(
+        matches!(
+            &err,
+            RepositoryError::DuplicateStreamInBatch { id: dup }
+                if *dup == format!("{}:{id}", Seat::aggregate_type())
+        ),
+        "unexpected error: {err}"
     );
     assert!(repo
         .get_stream(&identity)
@@ -303,7 +305,18 @@ where
         .await
         .expect_err("unsupported codec should be rejected");
     assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("unsupported payload codec"))
+        matches!(
+            &err,
+            RepositoryError::Storage {
+                retryable: false,
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("unsupported payload codec"),
+        "unexpected error: {err}"
     );
     assert!(repo
         .get_stream(&identity)

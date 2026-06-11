@@ -437,8 +437,20 @@ async fn unsupported_codec_rows_fail_on_read() {
     let err = repo.get_stream(&identity).await.unwrap_err();
 
     assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("unsupported payload codec"))
+        matches!(
+            &err,
+            RepositoryError::Storage {
+                retryable: false,
+                ..
+            }
+        ),
+        "unexpected error: {err}"
     );
+    assert!(
+        err.to_string().contains("unsupported payload codec"),
+        "unexpected error: {err}"
+    );
+    assert!(!err.is_retryable());
 }
 
 #[tokio::test]
