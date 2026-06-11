@@ -38,10 +38,19 @@ use super::source::AsyncMessageSource;
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
 };
-use super::{Message, MessageKind};
+use super::{validate_message_name, Message, MessageKind};
 
 fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
     TransportError::retryable(format!("{context}: {err}"))
+}
+
+/// Reject a routing/binding name a wildcard would mis-bind. A `#`/`*` in a
+/// RabbitMQ topic binding key is a subscription wildcard, so an unvalidated
+/// event name here would silently widen what a consumer receives.
+fn checked_name(name: &str) -> Result<(), TransportError> {
+    validate_message_name(name)
+        .map(|_| ())
+        .map_err(|e| TransportError::permanent(format!("rabbitmq message name {e}")))
 }
 
 /// RabbitMQ [`Bus`] + [`BusConsumer`].
@@ -242,6 +251,7 @@ impl RabbitBus {
         let queue = self.group_queue(&group)?;
         self.declare_queue(&self.channel, &queue).await?;
         for name in &plan.events {
+            checked_name(name)?;
             self.channel
                 .queue_bind(
                     ShortString::from(queue.as_str()),
@@ -269,6 +279,7 @@ impl Bus for RabbitBus {
     }
 
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
+        checked_name(message.name())?;
         // Default exchange routes by routing key == queue name; declare the queue
         // so the command is retained until a listener consumes it.
         let queue = self.command_queue(message.name())?;
@@ -278,6 +289,7 @@ impl Bus for RabbitBus {
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        checked_name(message.name())?;
         let exchange = self.events_exchange()?;
         self.declare_events_exchange(&self.channel, &exchange)
             .await?;

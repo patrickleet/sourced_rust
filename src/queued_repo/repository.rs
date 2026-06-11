@@ -281,6 +281,15 @@ where
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
         self.inner.inbox_contains(consumer, message_id)
     }
+
+    fn purge_inbox_older_than(
+        &self,
+        age: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, RepositoryError>> + Send {
+        // Inbox maintenance is a direct store operation; the queue/lock layer adds
+        // nothing, so delegate straight through to the inner store.
+        self.inner.purge_inbox_older_than(age)
+    }
 }
 
 /// Async opt-out reads for a queued repository — the async counterpart to

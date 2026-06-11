@@ -137,6 +137,25 @@ pub trait InboxStore: Send + Sync {
         consumer: &'a str,
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a;
+
+    /// Purge inbox receipts older than `age`, returning the number removed.
+    ///
+    /// The consumer inbox grows by one row per processed message and has no
+    /// built-in TTL: **retention is the operator's responsibility.** Once a
+    /// transport's own redelivery window has passed, an old receipt can never
+    /// gate a replay again, so it is safe to delete. Call this periodically
+    /// (e.g. a cron/maintenance task) with an `age` comfortably larger than the
+    /// broker's maximum redelivery/visibility window.
+    ///
+    /// Age is evaluated against the **database clock**, not the caller's, so
+    /// there is no client/server skew. SQL backends issue a single bounded
+    /// `DELETE`; the in-memory store keeps no timestamps and treats any positive
+    /// `age` as a no-op (see [`HashMapRepository`](crate::HashMapRepository),
+    /// whose inbox is dev-only).
+    fn purge_inbox_older_than(
+        &self,
+        age: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, RepositoryError>> + Send;
 }
 
 /// Repository trait for types that implement async stream reads and commits.

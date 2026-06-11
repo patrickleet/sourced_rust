@@ -101,8 +101,8 @@ impl HandlerError {
     /// decode, rejection, auth, guard) keep their descriptive message because
     /// the caller caused them and the detail helps them correct the request.
     ///
-    /// Both the HTTP and gRPC transports route error bodies through this so the
-    /// masking policy lives in exactly one place.
+    /// The HTTP, gRPC, and Knative ingresses route error bodies through this so
+    /// the masking policy lives in exactly one place.
     pub fn client_facing_message(&self) -> String {
         if self.status_code() >= 500 {
             "Internal server error".to_string()

@@ -154,6 +154,12 @@ fn create_table_statement(
             }
             if column.has_default {
                 if let Some(default) = column.default.as_deref() {
+                    // The single spot in this generator where a value is emitted
+                    // unquoted: a DEFAULT clause must be SQL, not a quoted literal.
+                    // Restrict it to a small allowlist of safe forms so a stray or
+                    // hostile default can't inject arbitrary DDL into a generated
+                    // CREATE TABLE.
+                    validate_column_default(&column.column_name, default)?;
                     definition.push_str(" DEFAULT ");
                     definition.push_str(default);
                 }
@@ -268,6 +274,101 @@ fn sql_type(
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+/// Validate a column `DEFAULT` expression against a conservative allowlist.
+///
+/// A `DEFAULT` clause is emitted as raw SQL (it must be — quoting it would change
+/// its meaning), so this is the one place the otherwise fully-quoted generator
+/// trusts a caller-provided string. To keep that hole closed, only a small set of
+/// unambiguous, dialect-portable forms is allowed:
+///
+/// - numeric literals (`0`, `-1`, `3.14`);
+/// - boolean / null keywords (`TRUE`, `FALSE`, `NULL`, case-insensitive);
+/// - the timestamp keyword `CURRENT_TIMESTAMP`;
+/// - single-quoted string literals with embedded quotes properly doubled
+///   (`'active'`, `'O''Brien'`).
+///
+/// Anything else — function calls, multiple tokens, comments, an unbalanced or
+/// improperly-escaped quote — is rejected. These defaults come from internal
+/// schema definitions today; the allowlist makes that boundary explicit and
+/// fails loudly rather than splicing unknown SQL into a `CREATE TABLE`.
+fn validate_column_default(column: &str, default: &str) -> Result<(), TableStoreError> {
+    if is_allowed_column_default(default) {
+        Ok(())
+    } else {
+        Err(TableStoreError::Metadata(format!(
+            "column `{column}` has an unsupported DEFAULT `{default}`; \
+             allowed: numeric/boolean/NULL/CURRENT_TIMESTAMP keywords or a \
+             single-quoted string literal"
+        )))
+    }
+}
+
+fn is_allowed_column_default(default: &str) -> bool {
+    // No surrounding whitespace, no empty value: a default is a single token or a
+    // single quoted literal, never a whitespace-joined expression.
+    if default.is_empty() || default.trim().len() != default.len() {
+        return false;
+    }
+
+    let upper = default.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "NULL" | "TRUE" | "FALSE" | "CURRENT_TIMESTAMP"
+    ) {
+        return true;
+    }
+
+    // A numeric literal: optional sign, digits, optional single decimal point.
+    if is_numeric_literal(default) {
+        return true;
+    }
+
+    // A single-quoted string literal: starts and ends with `'`, and every interior
+    // `'` is doubled (`''`). Walk the bytes pairing escaped quotes so an odd,
+    // unescaped quote (which would let the literal "escape" the clause) is rejected.
+    is_single_quoted_literal(default)
+}
+
+fn is_numeric_literal(value: &str) -> bool {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    if digits.is_empty() {
+        return false;
+    }
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for ch in digits.chars() {
+        match ch {
+            '0'..='9' => seen_digit = true,
+            '.' if !seen_dot => seen_dot = true,
+            _ => return false,
+        }
+    }
+    seen_digit
+}
+
+fn is_single_quoted_literal(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'\'' || bytes[bytes.len() - 1] != b'\'' {
+        return false;
+    }
+    // Scan the interior (between the outer quotes), requiring every `'` to be part
+    // of a doubled `''` escape.
+    let inner = &bytes[1..bytes.len() - 1];
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\'' {
+            // Must be doubled: the next byte (still inside the interior) is `'`.
+            if i + 1 < inner.len() && inner[i + 1] == b'\'' {
+                i += 2;
+                continue;
+            }
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 fn artifact_name(dialect: TableSqlDialect) -> &'static str {
@@ -385,6 +486,79 @@ mod tests {
             .expect("child statement should exist");
 
         assert!(parent_position < child_position);
+    }
+
+    #[test]
+    fn allows_safe_column_defaults() {
+        for default in [
+            "0",
+            "-1",
+            "42",
+            "3.14",
+            "-0.5",
+            "NULL",
+            "null",
+            "TRUE",
+            "false",
+            "CURRENT_TIMESTAMP",
+            "current_timestamp",
+            "'active'",
+            "''",
+            "'O''Brien'",
+        ] {
+            assert!(
+                is_allowed_column_default(default),
+                "expected `{default}` to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_column_defaults() {
+        for default in [
+            "",
+            " ",
+            "1; DROP TABLE users",
+            "now()",
+            "CURRENT_TIMESTAMP, x",
+            "'unterminated",
+            "trailing'",
+            "'bad'quote'",
+            "1 OR 1=1",
+            "0x10",
+            "-- comment",
+            "  0",
+        ] {
+            assert!(
+                !is_allowed_column_default(default),
+                "expected `{default}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn create_table_rejects_injected_default() {
+        let mut column = TableColumn::new("note", "note", ColumnType::Text);
+        column.nullable = true;
+        column.has_default = true;
+        column.default = Some("'x'); DROP TABLE secrets;--".into());
+        let schema = TableSchema {
+            model_name: "Note".into(),
+            table_name: "notes".into(),
+            columns: vec![column],
+            primary_key: PrimaryKey::new(["note"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+        };
+
+        let err = create_table_statement(&schema, TableSqlDialect::Sqlite)
+            .expect_err("an injected default must be rejected");
+        assert!(
+            matches!(err, TableStoreError::Metadata(msg) if msg.contains("unsupported DEFAULT")),
+            "unexpected error variant"
+        );
     }
 
     #[test]

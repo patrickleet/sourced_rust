@@ -391,6 +391,25 @@ impl InboxStore for SqliteRepository {
             Ok(row.is_some())
         }
     }
+
+    fn purge_inbox_older_than(
+        &self,
+        age: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, RepositoryError>> + Send {
+        async move {
+            // `processed_at` defaults to CURRENT_TIMESTAMP (UTC `YYYY-MM-DD
+            // HH:MM:SS`), so compare against the database clock via
+            // `datetime('now', '-N seconds')` — no client/server skew.
+            let modifier = format!("-{} seconds", age.as_secs());
+            let result =
+                sqlx::query("DELETE FROM consumer_inbox WHERE processed_at < datetime('now', ?)")
+                    .bind(modifier)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|err| repository_storage_error("purge consumer inbox", err))?;
+            Ok(result.rows_affected())
+        }
+    }
 }
 
 impl ReadModelWritePlanStore for SqliteRepository {

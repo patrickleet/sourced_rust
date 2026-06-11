@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -38,12 +38,16 @@ use serde_json::{json, Value};
 use super::error::HandlerError;
 use super::service::Service;
 use super::session::Session;
+use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/{command}", axum::routing::post(command_handler))
+        // Pin the body limit explicitly rather than relying on axum's default;
+        // the command handler buffers the JSON body into memory.
+        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(service)
 }
 

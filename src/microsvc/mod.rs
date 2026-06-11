@@ -75,6 +75,17 @@ pub use service::{
 };
 pub use session::Session;
 
+/// Maximum accepted HTTP request body size for the microsvc ingresses, in bytes
+/// (1 MiB).
+///
+/// Pins axum's implicit 2 MiB default to an explicit, smaller ceiling shared by
+/// the command [`router`] and the CloudEvents [`cloud_events_router`]: both
+/// buffer the whole body into memory, so an unbounded body is a
+/// memory-amplification vector. Raise it deliberately if a deployment needs
+/// larger payloads.
+#[cfg(feature = "http")]
+pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+
 // HTTP transport (requires "http" feature)
 #[cfg(feature = "http")]
 mod http;
