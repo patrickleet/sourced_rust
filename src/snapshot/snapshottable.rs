@@ -30,7 +30,9 @@ pub trait Snapshottable: Aggregate {
     /// aggregate is rebuilt by full replay (correct, just slower) rather than
     /// decoded into possibly-wrong state.
     ///
-    /// Defaults to 1 so existing implementations are unaffected.
+    /// Snapshots start at version 1; bump this constant (or
+    /// `#[snapshot(version = N)]`) whenever the `Snapshot` layout changes so old
+    /// cached snapshots are ignored and rebuilt from events.
     const SNAPSHOT_VERSION: u64 = 1;
 
     /// Create a snapshot of the current aggregate state.

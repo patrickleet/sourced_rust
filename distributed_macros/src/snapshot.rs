@@ -147,8 +147,9 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
         .collect();
 
     // Only emit the `SNAPSHOT_VERSION` const override when the user opted in via
-    // `#[snapshot(version = N)]`; otherwise inherit the trait default of 1 so
-    // existing impls are unchanged.
+    // `#[snapshot(version = N)]`; otherwise inherit the trait default of 1.
+    // Bump the version whenever the snapshot struct's layout changes so old
+    // cached snapshots are ignored and rebuilt from events.
     let snapshot_version_const = version.map(|v| {
         quote! {
             const SNAPSHOT_VERSION: u64 = #v;

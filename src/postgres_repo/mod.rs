@@ -775,7 +775,6 @@ impl SnapshotStore for PostgresRepository {
                 SELECT aggregate_type,
                        aggregate_id,
                        version,
-                       snapshot_type,
                        snapshot_version,
                        payload,
                        payload_codec,
@@ -2351,7 +2350,6 @@ async fn save_snapshot_in_tx(
           aggregate_type,
           aggregate_id,
           version,
-          snapshot_type,
           snapshot_version,
           payload,
           payload_codec,
@@ -2359,10 +2357,9 @@ async fn save_snapshot_in_tx(
           metadata,
           recorded_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, to_timestamp($10))
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, to_timestamp($9))
         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET
           version = excluded.version,
-          snapshot_type = excluded.snapshot_type,
           snapshot_version = excluded.snapshot_version,
           payload = excluded.payload,
           payload_codec = excluded.payload_codec,
@@ -2380,7 +2377,6 @@ async fn save_snapshot_in_tx(
         "snapshot version",
         BIGINT_STORAGE,
     )?)
-    .bind(&record.snapshot_type)
     .bind(sqlx_repository_i32_from_u64(
         POSTGRES_BACKEND,
         record.snapshot_version,
@@ -2416,9 +2412,6 @@ fn snapshot_from_row(row: PgRow) -> Result<SnapshotRecord, RepositoryError> {
                 .map_err(|err| repository_storage_error("decode snapshot version row", err))?,
             "snapshot version",
         )?,
-        snapshot_type: row
-            .try_get("snapshot_type")
-            .map_err(|err| repository_storage_error("decode snapshot type row", err))?,
         snapshot_version: sqlx_repository_u64_from_i32(
             POSTGRES_BACKEND,
             row.try_get("snapshot_version").map_err(|err| {

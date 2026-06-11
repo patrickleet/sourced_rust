@@ -158,14 +158,14 @@ async fn snapshot_store_uses_full_stream_identity() {
     store
         .save_snapshot(
             &alpha,
-            SnapshotRecord::new("async.alpha", "same-id", 1, "AlphaSnapshot", 1, vec![1]),
+            SnapshotRecord::new("async.alpha", "same-id", 1, 1, vec![1]),
         )
         .await
         .unwrap();
     store
         .save_snapshot(
             &beta,
-            SnapshotRecord::new("async.beta", "same-id", 2, "BetaSnapshot", 1, vec![2]),
+            SnapshotRecord::new("async.beta", "same-id", 2, 1, vec![2]),
         )
         .await
         .unwrap();
@@ -222,14 +222,7 @@ async fn snapshot_repository_ignores_invalid_cache_and_replays_events() {
     aggregate_repo.commit(&mut counter).await.unwrap();
 
     let identity = StreamIdentity::new(SnapshotCounter::aggregate_type(), id).unwrap();
-    let mut invalid = SnapshotRecord::new(
-        SnapshotCounter::aggregate_type(),
-        id,
-        1,
-        std::any::type_name::<i32>(),
-        1,
-        vec![0xff],
-    );
+    let mut invalid = SnapshotRecord::new(SnapshotCounter::aggregate_type(), id, 1, 1, vec![0xff]);
     invalid.payload_codec = "json".into();
     repo.save_snapshot(&identity, invalid).await.unwrap();
 
@@ -257,7 +250,6 @@ async fn snapshot_repository_ignores_cache_past_stream_version_and_replays_event
         SnapshotCounter::aggregate_type(),
         id,
         2,
-        std::any::type_name::<i32>(),
         1,
         bitcode::serialize(&999_i32).unwrap(),
     );

@@ -366,27 +366,13 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     repo.save_snapshot(
         &counter,
-        SnapshotRecord::new(
-            "sqlite.counter",
-            "same-id",
-            1,
-            "CounterSnapshot",
-            1,
-            vec![1],
-        ),
+        SnapshotRecord::new("sqlite.counter", "same-id", 1, 1, vec![1]),
     )
     .await
     .unwrap();
     repo.save_snapshot(
         &projection,
-        SnapshotRecord::new(
-            "sqlite.counter_projection",
-            "same-id",
-            2,
-            "ProjectionSnapshot",
-            1,
-            vec![2],
-        ),
+        SnapshotRecord::new("sqlite.counter_projection", "same-id", 2, 1, vec![2]),
     )
     .await
     .unwrap();
@@ -396,14 +382,12 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "sqlite.counter");
-    assert_eq!(loaded_counter.snapshot_type, "CounterSnapshot");
     assert_eq!(loaded_counter.payload, vec![1]);
     assert_eq!(loaded_projection.version, 2);
     assert_eq!(
         loaded_projection.aggregate_type,
         "sqlite.counter_projection"
     );
-    assert_eq!(loaded_projection.snapshot_type, "ProjectionSnapshot");
     assert_eq!(loaded_projection.payload, vec![2]);
 }
 

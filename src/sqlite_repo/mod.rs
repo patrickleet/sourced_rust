@@ -792,7 +792,7 @@ impl SnapshotStore for SqliteRepository {
         async move {
             let row = sqlx::query(
                 r#"
-                SELECT aggregate_type, aggregate_id, version, snapshot_type,
+                SELECT aggregate_type, aggregate_id, version,
                        snapshot_version, payload, payload_codec,
                        payload_codec_version, metadata, recorded_at
                 FROM aggregate_snapshots
@@ -2280,7 +2280,6 @@ async fn save_snapshot_in_tx(
           aggregate_type,
           aggregate_id,
           version,
-          snapshot_type,
           snapshot_version,
           payload,
           payload_codec,
@@ -2288,10 +2287,9 @@ async fn save_snapshot_in_tx(
           metadata,
           recorded_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET
           version = excluded.version,
-          snapshot_type = excluded.snapshot_type,
           snapshot_version = excluded.snapshot_version,
           payload = excluded.payload,
           payload_codec = excluded.payload_codec,
@@ -2309,7 +2307,6 @@ async fn save_snapshot_in_tx(
         "snapshot version",
         SIGNED_INTEGER_STORAGE,
     )?)
-    .bind(&record.snapshot_type)
     .bind(sqlx_repository_i64_from_u64(
         SQLITE_BACKEND,
         record.snapshot_version,
@@ -2345,9 +2342,6 @@ fn snapshot_from_row(row: sqlx::sqlite::SqliteRow) -> Result<SnapshotRecord, Rep
                 .map_err(|err| repository_storage_error("decode snapshot version row", err))?,
             "snapshot version",
         )?,
-        snapshot_type: row
-            .try_get("snapshot_type")
-            .map_err(|err| repository_storage_error("decode snapshot type row", err))?,
         snapshot_version: sqlx_repository_u64_from_i64(
             SQLITE_BACKEND,
             row.try_get("snapshot_version").map_err(|err| {

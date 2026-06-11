@@ -151,10 +151,6 @@ fn hydrate_prepared_snapshot<A: Snapshottable>(
     Ok(agg)
 }
 
-fn snapshot_type_name<A: Snapshottable>() -> String {
-    std::any::type_name::<A::Snapshot>().to_string()
-}
-
 fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord, RepositoryError> {
     let payload = bitcode::serialize(&aggregate.create_snapshot())
         .map_err(|e| RepositoryError::Replay(format!("snapshot serialize: {e}")))?;
@@ -163,7 +159,6 @@ fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord
         A::aggregate_type(),
         aggregate.entity().id(),
         aggregate.entity().version(),
-        snapshot_type_name::<A>(),
         A::SNAPSHOT_VERSION,
         payload,
     ))
@@ -459,7 +454,6 @@ mod tests {
             TestAggregate::aggregate_type(),
             "other",
             1,
-            std::any::type_name::<u32>(),
             1,
             bitcode::serialize(&99_u32).unwrap(),
         );
@@ -480,7 +474,6 @@ mod tests {
             TestAggregate::aggregate_type(),
             "snap-1",
             2,
-            std::any::type_name::<u32>(),
             1,
             bitcode::serialize(&99_u32).unwrap(),
         );
@@ -502,7 +495,6 @@ mod tests {
             TestAggregate::aggregate_type(),
             "snap-1",
             1,
-            std::any::type_name::<u32>(),
             2,
             bitcode::serialize(&99_u32).unwrap(),
         );
@@ -524,7 +516,6 @@ mod tests {
             TestAggregate::aggregate_type(),
             "snap-1",
             1,
-            std::any::type_name::<u32>(),
             1,
             bitcode::serialize(&99_u32).unwrap(),
         );

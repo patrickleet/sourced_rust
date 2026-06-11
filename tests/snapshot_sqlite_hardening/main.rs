@@ -227,7 +227,6 @@ async fn stale_schema_snapshot_falls_back_to_replay_with_correct_state() {
             Counter::aggregate_type(),
             id,
             3,
-            std::any::type_name::<LegacyCounterSnapshot>(),
             2, // stored schema version — deliberately != current
             payload,
         ),

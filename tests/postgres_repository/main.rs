@@ -225,7 +225,6 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
                     CounterProjection::aggregate_type(),
                     other_id.clone(),
                     1,
-                    "CounterProjectionSnapshot",
                     1,
                     vec![1],
                 ),
@@ -438,27 +437,13 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     repo.save_snapshot(
         &counter,
-        SnapshotRecord::new(
-            "postgres.counter",
-            id.clone(),
-            1,
-            "CounterSnapshot",
-            1,
-            vec![1],
-        ),
+        SnapshotRecord::new("postgres.counter", id.clone(), 1, 1, vec![1]),
     )
     .await
     .unwrap();
     repo.save_snapshot(
         &projection,
-        SnapshotRecord::new(
-            "postgres.counter_projection",
-            id,
-            2,
-            "ProjectionSnapshot",
-            1,
-            vec![2],
-        ),
+        SnapshotRecord::new("postgres.counter_projection", id, 2, 1, vec![2]),
     )
     .await
     .unwrap();
@@ -468,14 +453,12 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "postgres.counter");
-    assert_eq!(loaded_counter.snapshot_type, "CounterSnapshot");
     assert_eq!(loaded_counter.payload, vec![1]);
     assert_eq!(loaded_projection.version, 2);
     assert_eq!(
         loaded_projection.aggregate_type,
         "postgres.counter_projection"
     );
-    assert_eq!(loaded_projection.snapshot_type, "ProjectionSnapshot");
     assert_eq!(loaded_projection.payload, vec![2]);
 }
 

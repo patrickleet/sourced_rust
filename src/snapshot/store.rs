@@ -15,14 +15,6 @@ pub struct SnapshotRecord {
     pub aggregate_id: String,
     /// Aggregate event sequence covered by this cache record.
     pub version: u64,
-    /// Diagnostic label for the payload type, typically
-    /// `std::any::type_name::<A::Snapshot>()`. **Not** used to gate loads:
-    /// `type_name` is explicitly unstable across compiler versions, so
-    /// comparing it would cause spurious cache misses after a toolchain bump.
-    /// Schema compatibility is enforced by [`snapshot_version`](Self::snapshot_version)
-    /// against [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION).
-    /// Retained for human-readable diagnostics only.
-    pub snapshot_type: String,
     /// Snapshot payload schema version, written from
     /// [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION)
     /// at save time and compared on load. A mismatch is treated as a cache miss
@@ -36,18 +28,10 @@ pub struct SnapshotRecord {
 }
 
 impl SnapshotRecord {
-    /// Default snapshot schema version, mirroring
-    /// [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION)'s
-    /// default. The repository now writes `A::SNAPSHOT_VERSION` into each record
-    /// and gates loads on it; this constant remains as the documented baseline
-    /// for callers constructing records directly.
-    pub const DEFAULT_SNAPSHOT_VERSION: u64 = 1;
-
     pub fn new(
         aggregate_type: impl Into<String>,
         aggregate_id: impl Into<String>,
         version: u64,
-        snapshot_type: impl Into<String>,
         snapshot_version: u64,
         payload: Vec<u8>,
     ) -> Self {
@@ -55,7 +39,6 @@ impl SnapshotRecord {
             aggregate_type: aggregate_type.into(),
             aggregate_id: aggregate_id.into(),
             version,
-            snapshot_type: snapshot_type.into(),
             snapshot_version,
             payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
             payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
@@ -96,11 +79,6 @@ impl SnapshotRecord {
         if self.version == 0 {
             return Err(RepositoryError::Model(
                 "snapshot version must be greater than zero".into(),
-            ));
-        }
-        if self.snapshot_type.trim().is_empty() {
-            return Err(RepositoryError::Model(
-                "snapshot type must not be empty".into(),
             ));
         }
         if self.snapshot_version == 0 {
