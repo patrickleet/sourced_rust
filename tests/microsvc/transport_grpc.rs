@@ -178,6 +178,65 @@ async fn metadata_flows_to_session() {
     assert_eq!(body, json!({ "user_id": "user-42" }));
 }
 
+/// Security: a client must not be able to spoof identity via the payload.
+/// Transport metadata is injected by a trusted proxy and MUST win over the
+/// client-controlled `session_variables`. Here the payload claims to be
+/// `attacker`, but the proxy-injected metadata says `trusted-user` — the
+/// handler must see `trusted-user`.
+#[tokio::test]
+async fn grpc_payload_session_variables_do_not_override_metadata() {
+    let service = counter_service();
+    let mut client = start_server(service).await;
+
+    let mut payload_vars = std::collections::HashMap::new();
+    payload_vars.insert("x-hasura-user-id".to_string(), "attacker".to_string());
+
+    let mut request = tonic::Request::new(GrpcRequest {
+        command: "session.identify".into(),
+        input: json!({}).to_string(),
+        session_variables: payload_vars,
+    });
+    request
+        .metadata_mut()
+        .insert("x-hasura-user-id", "trusted-user".parse().unwrap());
+
+    let resp = client.dispatch(request).await.unwrap().into_inner();
+
+    assert_eq!(resp.status, 200);
+    let body: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+    // Trusted metadata wins; the payload-supplied identity is ignored.
+    assert_eq!(body, json!({ "user_id": "trusted-user" }));
+}
+
+/// Payload-only session variables (no colliding metadata) still flow through,
+/// preserving the Hasura-action use case where verified claims arrive in the
+/// payload and no transport metadata is injected.
+#[tokio::test]
+async fn grpc_payload_session_variables_apply_when_metadata_absent() {
+    let service = counter_service();
+    let mut client = start_server(service).await;
+
+    let mut payload_vars = std::collections::HashMap::new();
+    payload_vars.insert(
+        "x-hasura-user-id".to_string(),
+        "user-from-payload".to_string(),
+    );
+
+    let resp = client
+        .dispatch(GrpcRequest {
+            command: "session.identify".into(),
+            input: json!({}).to_string(),
+            session_variables: payload_vars,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(resp.status, 200);
+    let body: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+    assert_eq!(body, json!({ "user_id": "user-from-payload" }));
+}
+
 #[tokio::test]
 async fn missing_session_returns_401_status() {
     let service = counter_service();
