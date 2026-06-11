@@ -54,8 +54,11 @@ pub trait Bus: Send + Sync {
 /// Consume side of the bus — pull transports that run a [`run_source`] loop.
 ///
 /// `listen`/`subscribe` derive the message names from the router's registered
-/// handlers ([`MessageRouter::subscription_plan`]), build the transport's source
-/// with the matching topology, and run it. Both run until the source drains/stops.
+/// handlers ([`MessageRouter::subscription_plan`]) and use
+/// [`MessageRouter::consumer_group`] as the default durable consumer identity
+/// when the bus was not configured with an explicit group. They then build the
+/// transport's source with the matching topology and run it. Both run until the
+/// source drains/stops.
 ///
 /// [`run_source`]: super::run_source
 pub trait BusConsumer: Send + Sync {

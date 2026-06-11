@@ -168,6 +168,26 @@ fn recording_service(
     }))
 }
 
+fn named_recording_service(
+    service_name: &str,
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new().named(service_name.to_string());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
 /// `send` + `listen`: replicas sharing a `group` compete for the command — each
 /// message is handled exactly once across the pool (point-to-point).
 #[tokio::test]
@@ -176,7 +196,9 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     let namespace = unique("ns").to_lowercase();
     let group = "orders";
 
-    let producer = NatsBus::connect(&url, group, &namespace)
+    let producer = NatsBus::connect(&url)
+        .group(group)
+        .namespace(&namespace)
         .await
         .expect("connect producer")
         .with_fetch_timeout(Duration::from_millis(600));
@@ -195,7 +217,9 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
 
     // Two replicas of the same service (same group) drain concurrently.
     let rec = Arc::new(Mutex::new(Vec::new()));
-    let bus_a = NatsBus::connect(&url, group, &namespace)
+    let bus_a = NatsBus::connect(&url)
+        .group(group)
+        .namespace(&namespace)
         .await
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600));
@@ -226,7 +250,9 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     let Some(url) = nats_url() else { return };
     let namespace = unique("ns").to_lowercase();
 
-    let producer = NatsBus::connect(&url, "publisher", &namespace)
+    let producer = NatsBus::connect(&url)
+        .group("publisher")
+        .namespace(&namespace)
         .await
         .expect("connect producer");
     producer.ensure_stream().await.expect("ensure stream");
@@ -244,7 +270,9 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
 
     let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
     for group in ["projections", "audit"] {
-        let bus = NatsBus::connect(&url, group, &namespace)
+        let bus = NatsBus::connect(&url)
+            .group(group)
+            .namespace(&namespace)
             .await
             .unwrap()
             .with_fetch_timeout(Duration::from_millis(600));
@@ -259,4 +287,51 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
         ids.sort();
         assert_eq!(ids, expected, "group {group} sees every event");
     }
+}
+
+#[tokio::test]
+async fn bus_subscribe_uses_named_service_as_consumer_group() {
+    let Some(url) = nats_url() else { return };
+    let namespace = unique("ns").to_lowercase();
+
+    let producer = NatsBus::connect(&url)
+        .namespace(&namespace)
+        .await
+        .expect("connect producer");
+    producer.ensure_stream().await.expect("ensure stream");
+
+    for i in 0..3 {
+        producer
+            .publish_message(
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    NatsBus::connect(&url)
+        .namespace(&namespace)
+        .await
+        .unwrap()
+        .with_fetch_timeout(Duration::from_millis(600))
+        .subscribe(
+            named_recording_service(
+                "order-projection",
+                "order.initialized",
+                MessageKind::Event,
+                rec.clone(),
+            ),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
+    );
 }

@@ -144,8 +144,7 @@ impl AsyncLock for InMemoryAsyncLock {
 /// In-memory [`AsyncLockManager`] backed by a `HashMap<String, Arc<InMemoryAsyncLock>>`.
 ///
 /// Lazily creates one [`InMemoryAsyncLock`] per unique key and returns the same
-/// `Arc` for repeated lookups — the async counterpart to
-/// [`InMemoryLockManager`](super::InMemoryLockManager).
+/// `Arc` for repeated lookups.
 pub struct InMemoryAsyncLockManager {
     locks: Mutex<HashMap<String, Arc<InMemoryAsyncLock>>>,
 }

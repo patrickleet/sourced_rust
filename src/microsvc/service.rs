@@ -188,6 +188,7 @@ impl<D: Send + Sync + 'static> HandlerBuilder<D> {
 /// [`Service::new`], adding dependencies and a bus with the `with_*` steps:
 /// `Service::new().with_repo(repo).with_read_model_store(store).with_bus(bus)`.
 pub struct Service<D> {
+    name: Option<String>,
     dependencies: D,
     handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
@@ -198,11 +199,45 @@ impl<D: Send + Sync + 'static> Service<D> {
     /// Build a service around an already-assembled dependency value.
     pub(crate) fn from_dependencies(dependencies: D) -> Self {
         Self {
+            name: None,
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
             runner: None,
         }
+    }
+
+    fn map_dependencies<N>(self, map: impl FnOnce(D) -> N) -> Service<N> {
+        let Service {
+            name, dependencies, ..
+        } = self;
+        Service {
+            name,
+            dependencies: map(dependencies),
+            handlers: HashMap::new(),
+            handler_specs: Vec::new(),
+            runner: None,
+        }
+    }
+
+    fn replace_dependencies<N>(self, dependencies: N) -> Service<N> {
+        self.map_dependencies(|_| dependencies)
+    }
+
+    /// Assign a stable service/deployment identity.
+    ///
+    /// Broker-backed buses use this as the default durable consumer group when the
+    /// bus itself was not configured with an explicit group. Use the same name for
+    /// every replica of one service deployment; use different names for independent
+    /// event consumers that each need their own event copy.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// The stable service/deployment identity, if one was configured.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Fail fast if handlers, specs, or a runner are already registered. The
@@ -474,7 +509,7 @@ impl Service<()> {
         R: HasRepo + Send + Sync + 'static,
     {
         self.assert_no_registrations("with_repo");
-        Service::from_dependencies(repo)
+        self.replace_dependencies(repo)
     }
 
     /// Use a read-model store as the service's dependency.
@@ -483,7 +518,7 @@ impl Service<()> {
         S: HasReadModelStore + Send + Sync + 'static,
     {
         self.assert_no_registrations("with_read_model_store");
-        Service::from_dependencies(read_model_store)
+        self.replace_dependencies(read_model_store)
     }
 }
 
@@ -499,10 +534,7 @@ impl<R: HasRepo + Send + Sync + 'static> Service<R> {
         S: HasReadModelStore + Send + Sync + 'static,
     {
         self.assert_no_registrations("with_read_model_store");
-        Service::from_dependencies(RepoReadModelDependencies::new(
-            self.dependencies,
-            read_model_store,
-        ))
+        self.map_dependencies(|repo| RepoReadModelDependencies::new(repo, read_model_store))
     }
 }
 
@@ -553,6 +585,20 @@ mod tests {
 
     fn test_service() -> Service<()> {
         Service::new()
+    }
+
+    #[test]
+    fn named_service_preserves_identity_across_dependency_builders() {
+        let service = Service::new()
+            .named("todo-api")
+            .with_repo(crate::HashMapRepository::new())
+            .with_read_model_store(crate::HashMapRepository::new());
+
+        assert_eq!(service.name(), Some("todo-api"));
+        assert_eq!(
+            crate::bus::MessageRouter::consumer_group(&service),
+            Some("todo-api")
+        );
     }
 
     #[tokio::test]

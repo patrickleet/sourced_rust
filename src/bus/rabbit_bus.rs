@@ -15,11 +15,15 @@
 //!   queues, so every group receives every event — fan-out (replicas within a
 //!   group still compete on that group's queue).
 //!
-//! The `group` is the logical consumer identity. `{ns}` (namespace) scopes queue
-//! and exchange names so multiple apps can share a broker.
+//! The `group` is the logical consumer identity for event subscriptions. Command
+//! queues are keyed by command name; replicas compete by consuming the same command
+//! queues. `{ns}` (namespace) scopes queue and exchange names so multiple apps can
+//! share a broker.
 //!
 //! Requires the `rabbitmq` feature. Integration-tested in `tests/rabbitmq_transport`.
 
+use std::future::{Future, IntoFuture};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use lapin::options::{
@@ -31,7 +35,9 @@ use lapin::{Channel, ExchangeKind};
 
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
 use super::source::AsyncMessageSource;
-use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use super::{
+    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
+};
 use super::{Message, MessageKind};
 
 fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
@@ -42,45 +48,117 @@ fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
 pub struct RabbitBus {
     uri: String,
     channel: Channel,
-    group: String,
-    namespace: String,
-    events_exchange: String,
+    topology: BusTopologyConfig,
+}
+
+/// Awaitable builder returned by [`RabbitBus::connect`].
+pub struct RabbitBusConnect {
+    uri: String,
+    topology: BusTopologyConfig,
+}
+
+impl RabbitBusConnect {
+    /// Set an explicit event subscription group. Service consumers can usually
+    /// omit this and use [`Service::named`](crate::microsvc::Service::named)
+    /// instead.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.topology = self.topology.group(group);
+        self
+    }
+
+    /// Set the queue/exchange namespace used on the shared RabbitMQ broker.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.topology = self.topology.namespace(namespace);
+        self
+    }
+
+    async fn connect(self) -> Result<RabbitBus, TransportError> {
+        RabbitBus::connect_configured(self.uri, self.topology).await
+    }
+}
+
+impl IntoFuture for RabbitBusConnect {
+    type Output = Result<RabbitBus, TransportError>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.connect())
+    }
 }
 
 impl RabbitBus {
-    /// Connect to an AMQP URI and build a bus. `group` is the consumer identity
-    /// (same group ⇒ competing; different groups ⇒ fan-out); `namespace` scopes
-    /// queue/exchange names.
-    pub async fn connect(
+    /// Start building a bus connected to an AMQP URI.
+    ///
+    /// The returned builder is awaitable:
+    ///
+    /// ```ignore
+    /// let bus = RabbitBus::connect("amqp://localhost:5672/%2f")
+    ///     .namespace("todos-prod")
+    ///     .await?;
+    /// ```
+    pub fn connect(uri: &str) -> RabbitBusConnect {
+        RabbitBusConnect {
+            uri: uri.to_string(),
+            topology: BusTopologyConfig::default(),
+        }
+    }
+
+    /// Connect with an explicit group and namespace for direct/low-level use.
+    pub async fn connect_with(
         uri: &str,
         group: impl Into<String>,
         namespace: impl Into<String>,
     ) -> Result<Self, TransportError> {
-        let channel = connect_channel(uri).await?;
+        Self::connect(uri).group(group).namespace(namespace).await
+    }
+
+    async fn connect_configured(
+        uri: String,
+        topology: BusTopologyConfig,
+    ) -> Result<Self, TransportError> {
+        let topology = topology.validate_for("rabbitmq")?;
+        let channel = connect_channel(&uri).await?;
         channel
             .confirm_select(ConfirmSelectOptions::default())
             .await
             .map_err(|err| retryable("amqp confirm_select", err))?;
-        let namespace = namespace.into();
         Ok(Self {
-            uri: uri.to_string(),
+            uri,
             channel,
-            group: group.into(),
-            events_exchange: format!("{namespace}.events"),
-            namespace,
+            topology,
         })
     }
 
-    fn command_queue(&self, name: &str) -> String {
-        format!("{}.cmd.{name}", self.namespace)
+    /// Set an explicit event subscription group on an already-built bus.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.topology = self.topology.group(group);
+        self
     }
 
-    fn command_prefix(&self) -> String {
-        format!("{}.cmd.", self.namespace)
+    /// Set the queue/exchange namespace used on the shared RabbitMQ broker.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.topology = self.topology.namespace(namespace);
+        self
     }
 
-    fn group_queue(&self) -> String {
-        format!("{}.evt.{}", self.namespace, self.group)
+    fn validated_namespace(&self) -> Result<String, TransportError> {
+        self.topology.namespace_for("rabbitmq")
+    }
+
+    fn command_queue(&self, name: &str) -> Result<String, TransportError> {
+        Ok(format!("{}.cmd.{name}", self.validated_namespace()?))
+    }
+
+    fn command_prefix(&self) -> Result<String, TransportError> {
+        Ok(format!("{}.cmd.", self.validated_namespace()?))
+    }
+
+    fn events_exchange(&self) -> Result<String, TransportError> {
+        Ok(format!("{}.events", self.validated_namespace()?))
+    }
+
+    fn group_queue(&self, group: &str) -> Result<String, TransportError> {
+        Ok(format!("{}.evt.{group}", self.validated_namespace()?))
     }
 
     async fn declare_queue(&self, channel: &Channel, queue: &str) -> Result<(), TransportError> {
@@ -98,10 +176,14 @@ impl RabbitBus {
         Ok(())
     }
 
-    async fn declare_events_exchange(&self, channel: &Channel) -> Result<(), TransportError> {
+    async fn declare_events_exchange(
+        &self,
+        channel: &Channel,
+        exchange: &str,
+    ) -> Result<(), TransportError> {
         channel
             .exchange_declare(
-                ShortString::from(self.events_exchange.as_str()),
+                ShortString::from(exchange),
                 ExchangeKind::Topic,
                 ExchangeDeclareOptions {
                     durable: true,
@@ -149,15 +231,21 @@ impl RabbitBus {
         &self,
         router: &R,
     ) -> Result<(), TransportError> {
-        self.declare_events_exchange(&self.channel).await?;
-        let queue = self.group_queue();
-        self.declare_queue(&self.channel, &queue).await?;
         let plan = router.subscription_plan();
+        if plan.events.is_empty() {
+            return Ok(());
+        }
+        let group = self.topology.resolve_consumer_group(router, "rabbitmq")?;
+        let exchange = self.events_exchange()?;
+        self.declare_events_exchange(&self.channel, &exchange)
+            .await?;
+        let queue = self.group_queue(&group)?;
+        self.declare_queue(&self.channel, &queue).await?;
         for name in &plan.events {
             self.channel
                 .queue_bind(
                     ShortString::from(queue.as_str()),
-                    ShortString::from(self.events_exchange.as_str()),
+                    ShortString::from(exchange.as_str()),
                     ShortString::from(name.as_str()),
                     QueueBindOptions::default(),
                     FieldTable::default(),
@@ -183,16 +271,18 @@ impl Bus for RabbitBus {
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
         // Default exchange routes by routing key == queue name; declare the queue
         // so the command is retained until a listener consumes it.
-        let queue = self.command_queue(message.name());
+        let queue = self.command_queue(message.name())?;
         self.declare_queue(&self.channel, &queue).await?;
         message.name = queue.clone();
         self.publish_confirmed("", &queue, &message).await
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
-        self.declare_events_exchange(&self.channel).await?;
+        let exchange = self.events_exchange()?;
+        self.declare_events_exchange(&self.channel, &exchange)
+            .await?;
         let routing_key = message.name().to_string();
-        self.publish_confirmed(&self.events_exchange, &routing_key, &message)
+        self.publish_confirmed(&exchange, &routing_key, &message)
             .await
     }
 }
@@ -203,21 +293,21 @@ impl BusConsumer for RabbitBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let channel = connect_channel(&self.uri).await?;
         let plan = router.subscription_plan();
+        if plan.commands.is_empty() {
+            return Ok(());
+        }
+        let channel = connect_channel(&self.uri).await?;
         let mut queues = Vec::new();
         for name in &plan.commands {
-            let queue = self.command_queue(name);
+            let queue = self.command_queue(name)?;
             self.declare_queue(&channel, &queue).await?;
             queues.push(queue);
-        }
-        if queues.is_empty() {
-            return Ok(());
         }
         let source = RabbitBusSource {
             channel,
             queues,
-            strip_prefix: Some(self.command_prefix()),
+            strip_prefix: Some(self.command_prefix()?),
         };
         run_source(router, source, options).await
     }
@@ -227,14 +317,17 @@ impl BusConsumer for RabbitBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        self.ensure_subscription(router.as_ref()).await?;
         if router.subscription_plan().events.is_empty() {
             return Ok(());
         }
+        self.ensure_subscription(router.as_ref()).await?;
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "rabbitmq")?;
         let channel = connect_channel(&self.uri).await?;
         let source = RabbitBusSource {
             channel,
-            queues: vec![self.group_queue()],
+            queues: vec![self.group_queue(&group)?],
             // Events are published with routing key == the bare event name.
             strip_prefix: None,
         };

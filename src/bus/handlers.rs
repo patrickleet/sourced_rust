@@ -67,6 +67,7 @@ where
 /// [`on_event`](Handlers::on_event), then run it with `bus.listen`/`bus.subscribe`.
 #[derive(Clone, Default)]
 pub struct Handlers {
+    group: Option<String>,
     handlers: HashMap<(MessageKind, String), Arc<HandlerFn>>,
 }
 
@@ -74,6 +75,14 @@ impl Handlers {
     /// An empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Assign a stable consumer identity for broker adapters that need a durable
+    /// group when this standalone registry is used directly with `listen` or
+    /// `subscribe`.
+    pub fn named(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
     }
 
     /// Register a command handler (point-to-point / competing-consumer via `listen`).
@@ -103,6 +112,10 @@ impl Handlers {
 }
 
 impl MessageRouter for Handlers {
+    fn consumer_group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
     fn handles(&self, kind: MessageKind, name: &str) -> bool {
         self.handlers.contains_key(&(kind, name.to_string()))
     }
@@ -161,6 +174,15 @@ mod tests {
                 return output;
             }
         }
+    }
+
+    #[test]
+    fn named_handlers_expose_consumer_group() {
+        let handlers = Handlers::new().named("order-projection");
+        assert_eq!(
+            crate::bus::MessageRouter::consumer_group(&handlers),
+            Some("order-projection")
+        );
     }
 
     #[test]

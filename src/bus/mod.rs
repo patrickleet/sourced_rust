@@ -112,11 +112,12 @@ mod run_options;
 mod runner;
 mod source;
 mod stable_id;
+mod topology;
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaPublisher, KafkaReceived, KafkaSource};
 #[cfg(feature = "kafka")]
-pub use kafka_bus::KafkaBus;
+pub use kafka_bus::{KafkaBus, KafkaBusConnect};
 #[cfg(feature = "http")]
 pub use knative::knative_triggers;
 #[cfg(feature = "http")]
@@ -124,9 +125,9 @@ pub use knative_bus::KnativeBus;
 #[cfg(feature = "nats")]
 pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "nats")]
-pub use nats_bus::NatsBus;
+pub use nats_bus::{NatsBus, NatsBusConnect};
 #[cfg(feature = "rabbitmq")]
-pub use rabbit_bus::RabbitBus;
+pub use rabbit_bus::{RabbitBus, RabbitBusConnect};
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
@@ -145,3 +146,4 @@ pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{AsyncMessageSource, ReceivedMessage};
 pub use stable_id::{validate_stable_message_id, StableMessageIdError, MAX_STABLE_MESSAGE_ID_LEN};
+pub(crate) use topology::BusTopologyConfig;

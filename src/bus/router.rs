@@ -28,6 +28,12 @@ use super::{Message, MessageKind, SubscriptionPlan};
 /// [`BusConsumer`](super::BusConsumer): consume it as `Arc<R>` or a generic
 /// `<R: MessageRouter>`, never `Arc<dyn MessageRouter>`.
 pub trait MessageRouter: Send + Sync {
+    /// Stable identity for this consumer, used by broker adapters as the default
+    /// durable consumer group when the bus itself was not configured with one.
+    fn consumer_group(&self) -> Option<&str> {
+        None
+    }
+
     /// Whether this router has a handler for `(kind, name)`. The runner acks and
     /// ignores a delivered message it does not handle rather than dead-lettering it.
     fn handles(&self, kind: MessageKind, name: &str) -> bool;

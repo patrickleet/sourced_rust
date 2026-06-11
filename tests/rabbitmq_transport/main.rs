@@ -62,6 +62,26 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
     }))
 }
 
+fn named_recording_for(
+    service_name: &str,
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new().named(service_name.to_string());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
 #[tokio::test]
 async fn publish_then_consume_round_trips_through_rabbitmq() {
     let Some(url) = amqp_url() else { return };
@@ -164,7 +184,9 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
     let Some(url) = amqp_url() else { return };
     let ns = unique("ns").to_lowercase();
 
-    let producer = RabbitBus::connect(&url, "orders", &ns)
+    let producer = RabbitBus::connect(&url)
+        .group("orders")
+        .namespace(&ns)
         .await
         .expect("connect producer");
     let total = 6;
@@ -180,8 +202,16 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
 
     // Two replicas of the same group (separate connections) drain concurrently.
     let rec = Arc::new(Mutex::new(Vec::new()));
-    let bus_a = RabbitBus::connect(&url, "orders", &ns).await.unwrap();
-    let bus_b = RabbitBus::connect(&url, "orders", &ns).await.unwrap();
+    let bus_a = RabbitBus::connect(&url)
+        .group("orders")
+        .namespace(&ns)
+        .await
+        .unwrap();
+    let bus_b = RabbitBus::connect(&url)
+        .group("orders")
+        .namespace(&ns)
+        .await
+        .unwrap();
     let (ra, rb) = tokio::join!(
         bus_a.listen(
             recording_for("order.initialize", MessageKind::Command, rec.clone()),
@@ -211,7 +241,9 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     let Some(url) = amqp_url() else { return };
     let ns = unique("ns").to_lowercase();
 
-    let producer = RabbitBus::connect(&url, "producer", &ns)
+    let producer = RabbitBus::connect(&url)
+        .group("producer")
+        .namespace(&ns)
         .await
         .expect("connect producer");
 
@@ -221,8 +253,16 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     let audit_rec = Arc::new(Mutex::new(Vec::new()));
     let svc_proj = recording_for("order.initialized", MessageKind::Event, proj_rec.clone());
     let svc_audit = recording_for("order.initialized", MessageKind::Event, audit_rec.clone());
-    let bus_proj = RabbitBus::connect(&url, "projections", &ns).await.unwrap();
-    let bus_audit = RabbitBus::connect(&url, "audit", &ns).await.unwrap();
+    let bus_proj = RabbitBus::connect(&url)
+        .group("projections")
+        .namespace(&ns)
+        .await
+        .unwrap();
+    let bus_audit = RabbitBus::connect(&url)
+        .group("audit")
+        .namespace(&ns)
+        .await
+        .unwrap();
     bus_proj
         .ensure_subscription(svc_proj.as_ref())
         .await
@@ -259,4 +299,50 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     audit_ids.sort();
     assert_eq!(proj_ids, expected, "projections sees every event");
     assert_eq!(audit_ids, expected, "audit sees every event");
+}
+
+#[tokio::test]
+async fn bus_subscribe_uses_named_service_as_consumer_group() {
+    let Some(url) = amqp_url() else { return };
+    let ns = unique("ns").to_lowercase();
+
+    let producer = RabbitBus::connect(&url)
+        .namespace(&ns)
+        .await
+        .expect("connect producer");
+    let bus = RabbitBus::connect(&url)
+        .namespace(&ns)
+        .await
+        .expect("connect subscriber");
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    let service = named_recording_for(
+        "order-projection",
+        "order.initialized",
+        MessageKind::Event,
+        rec.clone(),
+    );
+    bus.ensure_subscription(service.as_ref())
+        .await
+        .expect("bind subscriber");
+
+    for i in 0..3 {
+        producer
+            .publish_message(
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    bus.subscribe(service, RunOptions::idempotent())
+        .await
+        .expect("subscriber drains");
+
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
+    );
 }

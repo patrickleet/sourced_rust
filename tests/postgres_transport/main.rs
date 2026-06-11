@@ -208,6 +208,26 @@ fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) ->
     }))
 }
 
+fn named_recording_for(
+    service_name: &str,
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new().named(service_name.to_string());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
 /// `send` + `listen`: the work queue is claimed `FOR UPDATE SKIP LOCKED`, so two
 /// replicas sharing a `group` compete — each command handled exactly once.
 #[tokio::test]
@@ -216,7 +236,7 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
         return;
     };
     let repo = schema.repository().await;
-    let bus = PostgresBus::new(repo.pool().clone(), "orders");
+    let bus = PostgresBus::new(repo.pool().clone()).group("orders");
     bus.ensure_tables().await.expect("ensure tables");
 
     let total = 6;
@@ -263,7 +283,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     };
     let repo = schema.repository().await;
     let pool = repo.pool().clone();
-    let producer = PostgresBus::new(pool.clone(), "producer");
+    let producer = PostgresBus::new(pool.clone()).group("producer");
     producer.ensure_tables().await.expect("ensure tables");
 
     let total = 4;
@@ -279,7 +299,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
 
     let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
     for group in ["projections", "audit"] {
-        let bus = PostgresBus::new(pool.clone(), group);
+        let bus = PostgresBus::new(pool.clone()).group(group);
         let rec = Arc::new(Mutex::new(Vec::new()));
         bus.subscribe(
             recording_for("order.initialized", MessageKind::Event, rec.clone()),
@@ -291,4 +311,47 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
         ids.sort();
         assert_eq!(ids, expected, "group {group} sees every event");
     }
+}
+
+#[tokio::test]
+async fn bus_subscribe_uses_named_service_as_consumer_group() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_named_group", SKIP).await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let producer = PostgresBus::new(pool.clone());
+    producer.ensure_tables().await.expect("ensure tables");
+
+    for i in 0..3 {
+        producer
+            .publish_message(
+                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                    .with_id(format!("e{i}")),
+            )
+            .await
+            .expect("publish event");
+    }
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    PostgresBus::new(pool)
+        .subscribe(
+            named_recording_for(
+                "order-projection",
+                "order.initialized",
+                MessageKind::Event,
+                rec.clone(),
+            ),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
+    );
 }
