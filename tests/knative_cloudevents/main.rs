@@ -28,8 +28,16 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
             })
             .event("order.temporarily_failed")
             .handle(|_ctx: &Context<()>| async move {
+                // A transient storage outage (connection refused / pool timeout):
+                // the same message may succeed on redelivery, so it must classify
+                // retryable. A deterministic `Model` fault would (correctly) be
+                // permanent — that is the `order.rejected` path below.
+                let io = std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                );
                 Err(HandlerError::Repository(
-                    distributed::RepositoryError::Model("transient".into()),
+                    distributed::RepositoryError::retryable_storage("load stream", io),
                 ))
             })
             .event("order.rejected")
