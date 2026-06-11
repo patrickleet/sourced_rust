@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, LitStr};
+use syn::{Data, DeriveInput, Fields, LitInt, LitStr};
 
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -15,7 +15,11 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
     let snapshot_name = format_ident!("{}Snapshot", name);
 
     // Parse struct-level #[snapshot(...)] attributes
-    let (entity_field, custom_id) = parse_struct_attrs(&input)?;
+    let SnapshotAttrs {
+        entity_field,
+        custom_id,
+        version,
+    } = parse_struct_attrs(&input)?;
 
     // Collect eligible fields (exclude entity field and #[serde(skip)] fields)
     let fields = match &input.data {
@@ -142,6 +146,15 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
         .map(|(n, _)| quote! { self.#n = snapshot.#n; })
         .collect();
 
+    // Only emit the `SNAPSHOT_VERSION` const override when the user opted in via
+    // `#[snapshot(version = N)]`; otherwise inherit the trait default of 1 so
+    // existing impls are unchanged.
+    let snapshot_version_const = version.map(|v| {
+        quote! {
+            const SNAPSHOT_VERSION: u64 = #v;
+        }
+    });
+
     Ok(quote! {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
         pub struct #snapshot_name {
@@ -159,6 +172,8 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
         impl distributed::Snapshottable for #name {
             type Snapshot = #snapshot_name;
 
+            #snapshot_version_const
+
             fn create_snapshot(&self) -> #snapshot_name {
                 self.snapshot()
             }
@@ -172,9 +187,18 @@ fn expand_snapshot(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> 
     })
 }
 
-fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<(syn::Ident, Option<syn::Ident>)> {
+/// Parsed `#[snapshot(...)]` struct-level attributes.
+struct SnapshotAttrs {
+    entity_field: syn::Ident,
+    custom_id: Option<syn::Ident>,
+    /// `version = N` if specified; `None` inherits the trait default of 1.
+    version: Option<u64>,
+}
+
+fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<SnapshotAttrs> {
     let mut entity_field = format_ident!("entity");
     let mut custom_id: Option<syn::Ident> = None;
+    let mut version: Option<u64> = None;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("snapshot") {
@@ -188,16 +212,30 @@ fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<(syn::Ident, Option<sy
             } else if meta.path.is_ident("id") {
                 let value: LitStr = meta.value()?.parse()?;
                 custom_id = Some(parse_snapshot_ident(&value, "id")?);
+            } else if meta.path.is_ident("version") {
+                let value: LitInt = meta.value()?.parse()?;
+                let parsed: u64 = value.base10_parse()?;
+                if parsed == 0 {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        "snapshot version must be greater than zero",
+                    ));
+                }
+                version = Some(parsed);
             } else {
-                return Err(
-                    meta.error("unsupported key in #[snapshot(...)]; expected `entity` or `id`")
-                );
+                return Err(meta.error(
+                    "unsupported key in #[snapshot(...)]; expected `entity`, `id`, or `version`",
+                ));
             }
             Ok(())
         })?;
     }
 
-    Ok((entity_field, custom_id))
+    Ok(SnapshotAttrs {
+        entity_field,
+        custom_id,
+        version,
+    })
 }
 
 fn parse_snapshot_ident(value: &LitStr, attr_name: &str) -> syn::Result<syn::Ident> {
@@ -388,6 +426,81 @@ mod tests {
         );
         assert!(
             err.to_string().contains("quantity"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_without_version_attr_inherits_default() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Todo {
+                entity: distributed::Entity,
+                task: String,
+            }
+        };
+
+        let expanded = expand_snapshot(input).unwrap().to_string();
+
+        // No explicit const is emitted; the trait default (1) is inherited.
+        assert!(
+            !expanded.contains("const SNAPSHOT_VERSION"),
+            "default case must not emit a SNAPSHOT_VERSION const: {expanded}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_emits_version_const() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(version = 3)]
+            struct Todo {
+                entity: distributed::Entity,
+                task: String,
+            }
+        };
+
+        let expanded = expand_snapshot(input).unwrap().to_string();
+
+        assert!(
+            expanded.contains("const SNAPSHOT_VERSION : u64 = 3"),
+            "expected emitted version const: {expanded}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_zero_version() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(version = 0)]
+            struct Todo {
+                entity: distributed::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("zero version should return an error");
+
+        assert!(
+            err.to_string()
+                .contains("version must be greater than zero"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_snapshot_rejects_non_integer_version() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[snapshot(version = "two")]
+            struct Todo {
+                entity: distributed::Entity,
+                task: String,
+            }
+        };
+
+        let err = expand_snapshot(input).expect_err("non-integer version should return an error");
+
+        // `LitInt` parse failure surfaces syn's "expected integer literal".
+        assert!(
+            err.to_string().contains("expected integer literal")
+                || err.to_string().contains("integer"),
             "unexpected error: {err}"
         );
     }

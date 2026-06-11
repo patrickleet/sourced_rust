@@ -244,6 +244,55 @@ impl GetStream for SqliteRepository {
             Ok(entities)
         }
     }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            // Fetch only the post-snapshot tail. `after_version` is the snapshot
+            // version (an event sequence); `sequence > ?` skips already-folded
+            // rows so a fresh snapshot over a long stream no longer reads and
+            // decodes the entire history.
+            let after = sqlx_repository_i64_from_u64(
+                SQLITE_BACKEND,
+                after_version,
+                "snapshot tail lower bound",
+                SIGNED_INTEGER_STORAGE,
+            )?;
+            let rows = sqlx::query(
+                r#"
+                SELECT event_name, event_version, payload, payload_codec,
+                       payload_codec_version, metadata, sequence, recorded_at
+                FROM aggregate_events
+                WHERE aggregate_type = ? AND aggregate_id = ? AND sequence > ?
+                ORDER BY sequence ASC
+                "#,
+            )
+            .bind(identity.aggregate_type())
+            .bind(identity.aggregate_id())
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("load stream tail", err))?;
+
+            // An empty tail is ambiguous from this query alone (no rows could
+            // mean "snapshot is current" or "stream does not exist"). The
+            // snapshot hydrate path only calls this after confirming a snapshot
+            // exists for the identity, so an empty tail means the snapshot is
+            // current. Return an entity at exactly `after_version`.
+            let mut events = Vec::with_capacity(rows.len());
+            for row in rows {
+                events.push(event_from_row(row)?);
+            }
+
+            let mut entity = Entity::new();
+            entity.set_id(identity.aggregate_id());
+            entity.load_tail_from_history(events, after_version);
+            Ok(Some(entity))
+        }
+    }
 }
 
 impl TransactionalCommit for SqliteRepository {

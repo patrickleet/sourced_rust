@@ -13,6 +13,13 @@ pub struct Entity {
     id: String,
     version: u64,
     events: Vec<EventRecord>,
+    /// Number of leading events NOT held in `events` — the prefix folded into a
+    /// snapshot and skipped on load. Zero for a full-history entity. The true
+    /// stream length is always `prefix_version + events.len()`, so event
+    /// sequencing and `new_events` slicing stay correct when only a tail is in
+    /// memory. Transient: not part of the durable entity representation.
+    #[serde(skip, default)]
+    prefix_version: u64,
     #[serde(skip, default)]
     replaying: bool,
     snapshot_version: u64,
@@ -32,6 +39,7 @@ impl Default for Entity {
             id: String::new(),
             version: 0,
             events: Vec::new(),
+            prefix_version: 0,
             replaying: false,
             snapshot_version: 0,
             committed_version: 0,
@@ -47,6 +55,7 @@ impl fmt::Debug for Entity {
             .field("id", &self.id)
             .field("version", &self.version)
             .field("events", &self.events)
+            .field("prefix_version", &self.prefix_version)
             .field("replaying", &self.replaying)
             .field("snapshot_version", &self.snapshot_version)
             .field("committed_version", &self.committed_version)
@@ -62,6 +71,7 @@ impl Clone for Entity {
             id: self.id.clone(),
             version: self.version,
             events: self.events.clone(),
+            prefix_version: self.prefix_version,
             replaying: self.replaying,
             snapshot_version: self.snapshot_version,
             committed_version: self.committed_version,
@@ -129,8 +139,12 @@ impl Entity {
     }
 
     /// Returns events added since the entity was loaded (not yet persisted).
+    ///
+    /// Slices relative to `prefix_version` so it is correct whether the entity
+    /// holds the full history (`prefix_version == 0`) or only a snapshot tail.
     pub fn new_events(&self) -> &[EventRecord] {
-        &self.events[self.committed_version as usize..]
+        let start = (self.committed_version - self.prefix_version) as usize;
+        &self.events[start..]
     }
 
     /// Mark all current events as committed. Called by repository after successful commit.
@@ -185,7 +199,7 @@ impl Entity {
         }
 
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        let sequence = self.events.len() as u64 + 1;
+        let sequence = self.next_sequence();
         let mut record = EventRecord::new(name, bytes, sequence);
         if !self.metadata.is_empty() {
             record.metadata = self.metadata.clone();
@@ -208,7 +222,7 @@ impl Entity {
         }
 
         let bytes = BitcodePayloadCodec::encode(payload).map_err(EventRecordError::encode)?;
-        let sequence = self.events.len() as u64 + 1;
+        let sequence = self.next_sequence();
         let mut record = EventRecord::new_versioned(name, bytes, sequence, version);
         if !self.metadata.is_empty() {
             record.metadata = self.metadata.clone();
@@ -222,15 +236,49 @@ impl Entity {
         self.digest(name, &())
     }
 
+    /// The sequence number the next appended event will carry — the true stream
+    /// length plus one. Counts the omitted snapshot prefix as well as the
+    /// in-memory events, so tail-only entities still produce contiguous,
+    /// non-colliding sequences.
+    fn next_sequence(&self) -> u64 {
+        self.prefix_version + self.events.len() as u64 + 1
+    }
+
     fn push_new_event(&mut self, record: EventRecord) {
         self.events.push(record);
-        self.version = self.events.len() as u64;
+        self.version = self.prefix_version + self.events.len() as u64;
         self.timestamp = SystemTime::now();
     }
 
     pub fn load_from_history(&mut self, history: Vec<EventRecord>) {
         self.events = history;
+        self.prefix_version = 0;
         self.version = self.events.len() as u64;
+        self.committed_version = self.version;
+    }
+
+    /// Load only the *tail* of a stream — the events after a known prefix that
+    /// is not held in memory (e.g. events already folded into a snapshot).
+    ///
+    /// Unlike [`load_from_history`](Self::load_from_history), the in-memory
+    /// `events` here are a suffix of the durable stream, so `version` and
+    /// `committed_version` must be supplied explicitly rather than derived from
+    /// `events.len()`. They reflect the true persisted stream position:
+    /// `committed_version` is the optimistic-concurrency `expected_version` for
+    /// the next commit, and `new_events()` slices relative to it.
+    ///
+    /// # Invariant
+    ///
+    /// `prefix_version` is the count of events covered by the omitted prefix.
+    /// Callers must guarantee that every event in `tail` has
+    /// `sequence > prefix_version` and that sequences are contiguous, so the
+    /// resulting `version == prefix_version + tail.len()` equals the true
+    /// `max(sequence)`. Snapshots satisfy this: `prefix_version` is the snapshot
+    /// version and the tail is exactly `sequence > snapshot.version`.
+    pub fn load_tail_from_history(&mut self, tail: Vec<EventRecord>, prefix_version: u64) {
+        self.events = tail;
+        self.prefix_version = prefix_version;
+        self.version = prefix_version + self.events.len() as u64;
         self.committed_version = self.version;
     }
 
@@ -498,6 +546,63 @@ mod tests {
 
         assert_eq!(entity.events()[0].correlation_id(), Some("req-abc"));
         assert!(entity.events()[1].metadata.is_empty());
+    }
+
+    #[test]
+    fn load_tail_records_true_version_without_full_history() {
+        // A tail of 2 events after a snapshot prefix of 3: true version is 5,
+        // even though only 2 events are held in memory.
+        let mut entity = Entity::with_id("agg");
+        entity.load_tail_from_history(
+            vec![
+                EventRecord::new("e4", vec![], 4),
+                EventRecord::new("e5", vec![], 5),
+            ],
+            3,
+        );
+
+        assert_eq!(entity.version(), 5);
+        assert_eq!(entity.committed_version(), 5);
+        assert_eq!(entity.events().len(), 2);
+        assert!(entity.new_events().is_empty());
+    }
+
+    #[test]
+    fn digest_after_tail_load_continues_sequence_from_true_version() {
+        // After loading a tail (prefix 3 + 2 events = version 5), the next
+        // digested event must be sequence 6 — not 3 (events.len() + 1).
+        let mut entity = Entity::with_id("agg");
+        entity.load_tail_from_history(
+            vec![
+                EventRecord::new("e4", vec![], 4),
+                EventRecord::new("e5", vec![], 5),
+            ],
+            3,
+        );
+
+        entity.digest("e6", &"payload").unwrap();
+
+        assert_eq!(entity.version(), 6);
+        assert_eq!(entity.events().last().unwrap().sequence, 6);
+        // Only the freshly digested event is new (uncommitted).
+        assert_eq!(entity.new_events().len(), 1);
+        assert_eq!(entity.new_events()[0].event_name, "e6");
+        assert_eq!(entity.new_events()[0].sequence, 6);
+    }
+
+    #[test]
+    fn digest_on_empty_tail_load_continues_from_prefix() {
+        // A current snapshot leaves an empty tail at the snapshot version. The
+        // next event must continue from there, not restart at sequence 1.
+        let mut entity = Entity::with_id("agg");
+        entity.load_tail_from_history(Vec::new(), 5);
+        assert_eq!(entity.version(), 5);
+        assert!(entity.new_events().is_empty());
+
+        entity.digest("e6", &"payload").unwrap();
+        assert_eq!(entity.version(), 6);
+        assert_eq!(entity.events()[0].sequence, 6);
+        assert_eq!(entity.new_events().len(), 1);
     }
 
     #[test]

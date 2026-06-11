@@ -15,7 +15,18 @@ pub struct SnapshotRecord {
     pub aggregate_id: String,
     /// Aggregate event sequence covered by this cache record.
     pub version: u64,
+    /// Diagnostic label for the payload type, typically
+    /// `std::any::type_name::<A::Snapshot>()`. **Not** used to gate loads:
+    /// `type_name` is explicitly unstable across compiler versions, so
+    /// comparing it would cause spurious cache misses after a toolchain bump.
+    /// Schema compatibility is enforced by [`snapshot_version`](Self::snapshot_version)
+    /// against [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION).
+    /// Retained for human-readable diagnostics only.
     pub snapshot_type: String,
+    /// Snapshot payload schema version, written from
+    /// [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION)
+    /// at save time and compared on load. A mismatch is treated as a cache miss
+    /// (full replay) rather than decoding a possibly-incompatible payload.
     pub snapshot_version: u64,
     pub payload_codec: String,
     pub payload_codec_version: u16,
@@ -25,6 +36,11 @@ pub struct SnapshotRecord {
 }
 
 impl SnapshotRecord {
+    /// Default snapshot schema version, mirroring
+    /// [`Snapshottable::SNAPSHOT_VERSION`](crate::Snapshottable::SNAPSHOT_VERSION)'s
+    /// default. The repository now writes `A::SNAPSHOT_VERSION` into each record
+    /// and gates loads on it; this constant remains as the documented baseline
+    /// for callers constructing records directly.
     pub const DEFAULT_SNAPSHOT_VERSION: u64 = 1;
 
     pub fn new(
