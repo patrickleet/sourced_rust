@@ -1,0 +1,5 @@
+error: #[event] methods must take a `&mut self` receiver
+  --> tests/compile_fail/event_bad_signature.rs:12:9
+   |
+12 |     pub fn initialize(id: String) {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^

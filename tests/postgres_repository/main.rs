@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
-    OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
+    OutboxMessage, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
     SnapshotStore, StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit,
 };
@@ -225,7 +225,6 @@ async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
                     CounterProjection::aggregate_type(),
                     other_id.clone(),
                     1,
-                    "CounterProjectionSnapshot",
                     1,
                     vec![1],
                 ),
@@ -270,6 +269,101 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
         "unexpected error: {err}"
     );
     assert!(repo.get_stream(&identity).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
+    // Postgres variant of the SQLite mid-plan rollback test: a commit carrying an
+    // aggregate event, an outbox row, and a two-mutation read-model plan whose
+    // second mutation violates a real CHECK constraint must roll the WHOLE
+    // transaction back — event, outbox row, and the first (already-applied)
+    // read-model mutation all absent. Skips locally without DATABASE_URL.
+    let Some((_schema, repo)) = repository().await else {
+        return;
+    };
+    bootstrap_relational_counter_table(&repo).await;
+
+    // A real engine-level constraint the read-model schema is unaware of.
+    sqlx::query(
+        r#"ALTER TABLE "postgres_relational_counter_views"
+           ADD CONSTRAINT reject_negative_value CHECK ("value" >= 0)"#,
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let good_id = unique_id("midplan-good");
+    let bad_id = unique_id("midplan-bad");
+    let mut read_models = ReadModelWritePlanBuilder::new();
+    read_models
+        .upsert(&RelationalCounterView {
+            id: good_id.clone(),
+            value: 1,
+            counts: HashMap::new(),
+        })
+        .unwrap();
+    read_models
+        .upsert(&RelationalCounterView {
+            id: bad_id.clone(),
+            value: -1,
+            counts: HashMap::new(),
+        })
+        .unwrap();
+
+    let aggregate_id = unique_id("midplan-aggregate");
+    let mut projection = CounterProjection::default();
+    projection.touch(aggregate_id.clone()).unwrap();
+    let identity = StreamIdentity::new(CounterProjection::aggregate_type(), &aggregate_id).unwrap();
+
+    let outbox_id = unique_id("midplan-outbox");
+    let outbox_message =
+        OutboxMessage::create(&outbox_id, "counter.touched", b"{}".to_vec()).unwrap();
+
+    let err = repo
+        .commit_batch(CommitBatch {
+            inbox_receipts: Vec::new(),
+            streams: vec![StreamWrite::new(identity.clone(), projection.entity_mut())],
+            outbox_messages: vec![outbox_message],
+            read_model_plans: vec![read_models.into_write_plan().unwrap()],
+            snapshots: Vec::new(),
+        })
+        .await
+        .expect_err("a mid-plan constraint violation must fail the commit");
+    assert!(
+        matches!(err, RepositoryError::Model(_)),
+        "expected a Model error from the constraint violation, got {err:?}"
+    );
+
+    // 1. Aggregate event absent.
+    assert!(
+        repo.get_stream(&identity).await.unwrap().is_none(),
+        "the aggregate stream must roll back"
+    );
+
+    // 2. Outbox row absent.
+    let outbox = repo.outbox_store();
+    for status in [
+        OutboxMessageStatus::Pending,
+        OutboxMessageStatus::InFlight,
+        OutboxMessageStatus::Published,
+        OutboxMessageStatus::Failed,
+    ] {
+        let rows = outbox.messages_by_status_async(status).await.unwrap();
+        assert!(
+            rows.iter().all(|m| m.id() != outbox_id),
+            "the outbox row must roll back"
+        );
+    }
+
+    // 3. First read-model mutation absent.
+    let good_rows: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "postgres_relational_counter_views" WHERE "id" = $1"#,
+    )
+    .bind(&good_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(good_rows, 0, "the first read-model mutation must roll back");
 }
 
 #[tokio::test]
@@ -440,27 +534,13 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     repo.save_snapshot(
         &counter,
-        SnapshotRecord::new(
-            "postgres.counter",
-            id.clone(),
-            1,
-            "CounterSnapshot",
-            1,
-            vec![1],
-        ),
+        SnapshotRecord::new("postgres.counter", id.clone(), 1, 1, vec![1]),
     )
     .await
     .unwrap();
     repo.save_snapshot(
         &projection,
-        SnapshotRecord::new(
-            "postgres.counter_projection",
-            id,
-            2,
-            "ProjectionSnapshot",
-            1,
-            vec![2],
-        ),
+        SnapshotRecord::new("postgres.counter_projection", id, 2, 1, vec![2]),
     )
     .await
     .unwrap();
@@ -470,14 +550,12 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "postgres.counter");
-    assert_eq!(loaded_counter.snapshot_type, "CounterSnapshot");
     assert_eq!(loaded_counter.payload, vec![1]);
     assert_eq!(loaded_projection.version, 2);
     assert_eq!(
         loaded_projection.aggregate_type,
         "postgres.counter_projection"
     );
-    assert_eq!(loaded_projection.snapshot_type, "ProjectionSnapshot");
     assert_eq!(loaded_projection.payload, vec![2]);
 }
 

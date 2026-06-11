@@ -254,6 +254,61 @@ impl GetStream for PostgresRepository {
             Ok(entities)
         }
     }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            // Fetch only the post-snapshot tail. `after_version` is the snapshot
+            // version (an event sequence); `sequence > $3` skips already-folded
+            // rows so a fresh snapshot over a long stream no longer reads and
+            // decodes the entire history.
+            let after = sqlx_repository_i64_from_u64(
+                POSTGRES_BACKEND,
+                after_version,
+                "snapshot tail lower bound",
+                BIGINT_STORAGE,
+            )?;
+            let rows = sqlx::query(
+                r#"
+                SELECT event_name,
+                       event_version,
+                       payload,
+                       payload_codec,
+                       payload_codec_version,
+                       metadata::text AS metadata,
+                       sequence,
+                       EXTRACT(EPOCH FROM recorded_at)::double precision AS recorded_at_epoch
+                FROM aggregate_events
+                WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > $3
+                ORDER BY sequence ASC
+                "#,
+            )
+            .bind(identity.aggregate_type())
+            .bind(identity.aggregate_id())
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("load stream tail", err))?;
+
+            // An empty tail is ambiguous from this query alone (no rows could
+            // mean "snapshot is current" or "stream does not exist"). The
+            // snapshot hydrate path only calls this after confirming a snapshot
+            // exists for the identity, so an empty tail means the snapshot is
+            // current. Return an entity at exactly `after_version`.
+            let mut events = Vec::with_capacity(rows.len());
+            for row in rows {
+                events.push(event_from_row(row)?);
+            }
+
+            let mut entity = Entity::new();
+            entity.set_id(identity.aggregate_id());
+            entity.load_tail_from_history(events, after_version);
+            Ok(Some(entity))
+        }
+    }
 }
 
 impl TransactionalCommit for PostgresRepository {
@@ -720,7 +775,6 @@ impl SnapshotStore for PostgresRepository {
                 SELECT aggregate_type,
                        aggregate_id,
                        version,
-                       snapshot_type,
                        snapshot_version,
                        payload,
                        payload_codec,
@@ -2296,7 +2350,6 @@ async fn save_snapshot_in_tx(
           aggregate_type,
           aggregate_id,
           version,
-          snapshot_type,
           snapshot_version,
           payload,
           payload_codec,
@@ -2304,10 +2357,9 @@ async fn save_snapshot_in_tx(
           metadata,
           recorded_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, to_timestamp($10))
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, to_timestamp($9))
         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET
           version = excluded.version,
-          snapshot_type = excluded.snapshot_type,
           snapshot_version = excluded.snapshot_version,
           payload = excluded.payload,
           payload_codec = excluded.payload_codec,
@@ -2325,7 +2377,6 @@ async fn save_snapshot_in_tx(
         "snapshot version",
         BIGINT_STORAGE,
     )?)
-    .bind(&record.snapshot_type)
     .bind(sqlx_repository_i32_from_u64(
         POSTGRES_BACKEND,
         record.snapshot_version,
@@ -2361,9 +2412,6 @@ fn snapshot_from_row(row: PgRow) -> Result<SnapshotRecord, RepositoryError> {
                 .map_err(|err| repository_storage_error("decode snapshot version row", err))?,
             "snapshot version",
         )?,
-        snapshot_type: row
-            .try_get("snapshot_type")
-            .map_err(|err| repository_storage_error("decode snapshot type row", err))?,
         snapshot_version: sqlx_repository_u64_from_i32(
             POSTGRES_BACKEND,
             row.try_get("snapshot_version").map_err(|err| {

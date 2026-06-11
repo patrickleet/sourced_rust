@@ -4,13 +4,14 @@
 //! and explicit abort.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::{
-    sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository,
-    InMemoryAsyncLockManager, Queueable,
+    sourced, Aggregate, AggregateBuilder, AggregateRepository, Entity, GetStream,
+    HashMapRepository, InMemoryAsyncLockManager, Queueable, StreamIdentity,
 };
+use tokio::sync::Barrier;
 
 #[derive(Default)]
 struct Counter {
@@ -117,6 +118,100 @@ async fn peek_reads_without_acquiring_the_lock() {
         .expect("no_lock peek must not block on a held lock")
         .unwrap();
     assert!(peeked.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_repo_n_writers_commit_in_fifo_order() {
+    // N writers race to increment the SAME aggregate. The queued repo serializes
+    // load→commit under a per-stream async lock, so the writes must apply one at
+    // a time. We pin two invariants:
+    //   1. The final version is exactly N (no lost updates, no double-applies).
+    //   2. The committed event order equals the lock-grant order — each writer
+    //      records the order in which it *acquired* the lock (the instant its
+    //      `get` returned), and stamps that grant index into its event payload.
+    //      Replaying the stream must then reproduce that exact grant order.
+    const WRITERS: usize = 10;
+
+    let base = HashMapRepository::new();
+    let reader = base.clone();
+    let repo: Arc<QueuedCounterRepo> = Arc::new(base.queued().aggregate::<Counter>());
+
+    // Seed the aggregate so every writer takes the load-modify-commit path.
+    {
+        let mut counter = Counter::default();
+        counter.create("fifo".into()).unwrap();
+        repo.commit(&mut counter).await.unwrap();
+    }
+
+    // Shared log of the order in which writers were granted the lock.
+    let grant_order = Arc::new(Mutex::new(Vec::<usize>::new()));
+    // Release all writers together so they genuinely contend for the lock.
+    let barrier = Arc::new(Barrier::new(WRITERS));
+
+    let mut handles = Vec::with_capacity(WRITERS);
+    for writer in 0..WRITERS {
+        let repo = Arc::clone(&repo);
+        let grant_order = Arc::clone(&grant_order);
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            // `get` parks on the held lock until granted; the instant it returns
+            // is this writer's place in the grant order.
+            let mut counter = repo.get("fifo").await.unwrap().unwrap();
+            let grant_index = {
+                let mut order = grant_order.lock().unwrap();
+                order.push(writer);
+                order.len() - 1
+            };
+            // Stamp the grant index into the event so the stream records order.
+            counter
+                .increment("fifo".into(), grant_index as i32)
+                .unwrap();
+            repo.commit(&mut counter).await.unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Invariant 1: exactly N increments landed.
+    let identity = StreamIdentity::new(Counter::aggregate_type(), "fifo").unwrap();
+    let entity = reader
+        .get_stream(&identity)
+        .await
+        .unwrap()
+        .expect("stream should exist");
+    // version = 1 (create) + WRITERS increments.
+    assert_eq!(
+        entity.committed_version() as usize,
+        WRITERS + 1,
+        "every writer's increment must land exactly once (no lost or doubled writes)"
+    );
+
+    // Invariant 2: the increment events, in stream order, carry grant indices in
+    // ascending 0..WRITERS — i.e. the stream order equals the lock-grant order.
+    let grant_indices: Vec<i32> = entity
+        .events()
+        .iter()
+        .filter(|event| event.event_name == "incremented")
+        .map(|event| {
+            let (_, by): (String, i32) =
+                bitcode::deserialize(&event.payload).expect("payload should decode");
+            by
+        })
+        .collect();
+    let expected: Vec<i32> = (0..WRITERS as i32).collect();
+    assert_eq!(
+        grant_indices, expected,
+        "committed event order must match the lock-grant order (strict FIFO serialization)"
+    );
+
+    let recorded_grant_order = grant_order.lock().unwrap().clone();
+    assert_eq!(
+        recorded_grant_order.len(),
+        WRITERS,
+        "every writer must have been granted the lock exactly once"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

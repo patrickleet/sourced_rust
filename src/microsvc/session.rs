@@ -13,6 +13,39 @@ use std::collections::HashMap;
 ///   "x-hasura-role": "customer"
 /// }
 /// ```
+///
+/// # Trust boundary (security-critical)
+///
+/// **This framework does NOT authenticate.** A `Session` is built from
+/// whatever the transport hands it — HTTP request headers, gRPC metadata, or
+/// the request payload's `session_variables`. None of that is verified here.
+/// Identity values such as `x-hasura-user-id` and `x-hasura-role` are
+/// trusted at face value by [`Session::user_id`], [`Session::role`], and any
+/// handler that reads them.
+///
+/// You MUST deploy this behind a **trusted proxy / API gateway** (e.g.
+/// Hasura, or an authenticating ingress) that:
+///
+/// - **Strips** any client-supplied `x-hasura-*` headers/metadata on inbound
+///   requests, and
+/// - **Injects** only authenticated identity claims it has verified.
+///
+/// Without that proxy, any caller can set `x-hasura-user-id` /
+/// `x-hasura-role` and assume any identity or role.
+///
+/// ## Source precedence
+///
+/// When a request carries identity in more than one place, the **trusted
+/// transport channel wins over the client-controlled payload**:
+///
+/// - **gRPC:** transport metadata (trusted, proxy-injected) overrides payload
+///   `session_variables` (client-controlled). See `grpc::build_session`.
+/// - **HTTP:** request headers populate the session; the proxy is responsible
+///   for ensuring those headers are authenticated. See
+///   `http::session_from_headers`.
+///
+/// Treat metadata/headers as trusted only insofar as your proxy guarantees
+/// it; treat the request body as never trustworthy for identity.
 #[derive(Debug, Clone, Default)]
 pub struct Session {
     variables: HashMap<String, String>,

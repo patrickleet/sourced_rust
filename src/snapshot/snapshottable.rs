@@ -15,6 +15,26 @@ use crate::aggregate::Aggregate;
 pub trait Snapshottable: Aggregate {
     type Snapshot: Serialize + DeserializeOwned;
 
+    /// Schema version of the `Snapshot` payload layout.
+    ///
+    /// Snapshot payloads are encoded with bitcode, which is positional and
+    /// **not** self-describing: a layout-compatible change (e.g. reordering two
+    /// same-typed fields, or repurposing a field) decodes *successfully* into
+    /// the wrong state. A decode error already falls back to replay safely, but
+    /// a silent mis-decode would corrupt the aggregate and then commit new
+    /// events atop that corruption.
+    ///
+    /// Bump this constant whenever the `Snapshot` layout changes in a way that
+    /// is not guaranteed to decode identically. On load, a stored snapshot whose
+    /// version differs from this constant is treated as a cache miss and the
+    /// aggregate is rebuilt by full replay (correct, just slower) rather than
+    /// decoded into possibly-wrong state.
+    ///
+    /// Snapshots start at version 1; bump this constant (or
+    /// `#[snapshot(version = N)]`) whenever the `Snapshot` layout changes so old
+    /// cached snapshots are ignored and rebuilt from events.
+    const SNAPSHOT_VERSION: u64 = 1;
+
     /// Create a snapshot of the current aggregate state.
     fn create_snapshot(&self) -> Self::Snapshot;
 

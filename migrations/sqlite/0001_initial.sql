@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS aggregate_snapshots (
   aggregate_type TEXT NOT NULL,
   aggregate_id TEXT NOT NULL,
   version INTEGER NOT NULL,
-  snapshot_type TEXT NOT NULL,
   snapshot_version INTEGER NOT NULL,
   payload BLOB NOT NULL,
   payload_codec TEXT NOT NULL,
@@ -40,7 +39,6 @@ CREATE TABLE IF NOT EXISTS aggregate_snapshots (
   CHECK (aggregate_type <> ''),
   CHECK (aggregate_id <> ''),
   CHECK (version > 0),
-  CHECK (snapshot_type <> ''),
   CHECK (snapshot_version > 0),
   CHECK (payload_codec <> ''),
   CHECK (payload_codec_version > 0)

@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use crate::aggregate::{hydrate, AggregateRepository, SnapshotPolicy};
 use crate::entity::{upcast_events, Entity};
-use crate::repository::{RepositoryError, SnapshotStore, StreamIdentity};
+use crate::repository::{GetStream, RepositoryError, SnapshotStore, StreamIdentity};
 
 use super::snapshottable::Snapshottable;
 use super::store::SnapshotRecord;
@@ -28,23 +28,23 @@ fn snapshot_due(version: u64, snapshot_version: u64, frequency: u64) -> bool {
 
 /// Hydrate an aggregate from a snapshot cache record, replaying only events
 /// after the snapshot version.
+///
+/// A stale or unusable snapshot (identity mismatch, unsupported codec, a
+/// [`Snapshottable::SNAPSHOT_VERSION`] mismatch, or a decode failure) is treated
+/// as a **cache miss** and the aggregate is rebuilt from the events already in
+/// `entity` by full replay. This matches the internal load path: a snapshot is a
+/// rebuildable cache, so an unusable one degrades to replay rather than failing
+/// the load. Only a genuine replay failure (a post-snapshot event the aggregate
+/// cannot apply) surfaces as [`RepositoryError::Replay`].
+///
+/// Because this entry point degrades gracefully, `entity` must carry the full
+/// event history (so the cache-miss fallback can replay it). The optimized
+/// snapshot+tail load lives in the repository's internal load path.
 pub fn hydrate_from_snapshot<A: Snapshottable>(
     entity: Entity,
     snapshot: SnapshotRecord,
 ) -> Result<A, RepositoryError> {
-    let snapshot_payload = prepare_snapshot::<A>(&entity, &snapshot)
-        .map_err(snapshot_hydration_error_to_repository_error)?;
-    hydrate_prepared_snapshot::<A>(entity, &snapshot, snapshot_payload)
-        .map_err(snapshot_hydration_error_to_repository_error)
-}
-
-fn entity_stream_version(entity: &Entity) -> u64 {
-    entity
-        .events()
-        .iter()
-        .map(|event| event.sequence)
-        .max()
-        .unwrap_or_else(|| entity.version())
+    hydrate_with_optional_snapshot::<A>(entity, Some(snapshot))
 }
 
 fn validate_snapshot_for_entity<A: Snapshottable>(
@@ -61,7 +61,27 @@ fn validate_snapshot_for_entity<A: Snapshottable>(
         )));
     }
 
-    let stream_version = entity_stream_version(entity);
+    // Schema-version gate. bitcode is positional and not self-describing, so a
+    // layout-compatible change to `A::Snapshot` would decode *successfully* into
+    // the wrong state. Refuse to decode any snapshot whose stored schema version
+    // does not match the aggregate's current `SNAPSHOT_VERSION`; treating it as
+    // a cache miss rebuilds correct state by replay.
+    if snapshot.snapshot_version != A::SNAPSHOT_VERSION {
+        return Err(SnapshotHydrationError::Cache(format!(
+            "snapshot schema version {} does not match aggregate {} version {} for {}:{}",
+            snapshot.snapshot_version,
+            A::aggregate_type(),
+            A::SNAPSHOT_VERSION,
+            snapshot.aggregate_type,
+            snapshot.aggregate_id
+        )));
+    }
+
+    // `entity.version()` is the true stream version in both load shapes: a
+    // full-history entity has `version == events.len() == max(sequence)`, and a
+    // tail-only entity (snapshot+tail load) records the real version via
+    // `Entity::load_tail_from_history`.
+    let stream_version = entity.version();
     if snapshot.version > stream_version {
         return Err(SnapshotHydrationError::Cache(format!(
             "snapshot cache version {} exceeds stream version {} for {}:{}",
@@ -131,10 +151,6 @@ fn hydrate_prepared_snapshot<A: Snapshottable>(
     Ok(agg)
 }
 
-fn snapshot_type_name<A: Snapshottable>() -> String {
-    std::any::type_name::<A::Snapshot>().to_string()
-}
-
 fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord, RepositoryError> {
     let payload = bitcode::serialize(&aggregate.create_snapshot())
         .map_err(|e| RepositoryError::Replay(format!("snapshot serialize: {e}")))?;
@@ -143,8 +159,7 @@ fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord
         A::aggregate_type(),
         aggregate.entity().id(),
         aggregate.entity().version(),
-        snapshot_type_name::<A>(),
-        SnapshotRecord::DEFAULT_SNAPSHOT_VERSION,
+        A::SNAPSHOT_VERSION,
         payload,
     ))
 }
@@ -171,7 +186,7 @@ fn hydrate_with_optional_snapshot<A: Snapshottable>(
 
 impl<R, A> AggregateRepository<R, A>
 where
-    R: SnapshotStore + Sync,
+    R: SnapshotStore + GetStream + Sync,
     A: Snapshottable + Send,
 {
     /// Enable snapshot caching at the given event frequency.
@@ -191,6 +206,7 @@ where
             frequency,
             snapshot_record_if_due::<A>,
             hydrate_from_store::<R, A>,
+            load_from_store::<R, A>,
         ));
         self
     }
@@ -212,7 +228,8 @@ fn snapshot_record_if_due<A: Snapshottable>(
 }
 
 /// Load the snapshot cache record (if any) and hydrate `entity` from it.
-/// Captured as the `hydrate` hook of a `SnapshotPolicy`.
+/// Captured as the `hydrate` hook of a `SnapshotPolicy` — used where the full
+/// stream is already in hand (batch loads, locked reads).
 fn hydrate_from_store<'a, R, A>(
     repo: &'a R,
     identity: &'a StreamIdentity,
@@ -225,6 +242,65 @@ where
     Box::pin(async move {
         let snapshot = repo.get_snapshot(identity).await?;
         hydrate_with_optional_snapshot::<A>(entity, snapshot)
+    })
+}
+
+/// Own the whole load, reading the snapshot **first** so only the post-snapshot
+/// tail of the stream is fetched. Captured as the `load` hook of a
+/// `SnapshotPolicy`.
+///
+/// Ordering matters: the previous design fetched the entire stream and *then*
+/// filtered it against the snapshot, so a fresh snapshot over a long stream
+/// still paid the full I/O and decode cost. Here the snapshot bounds the read.
+///
+/// Degrades gracefully on a cache miss: if there is no snapshot, or it is
+/// unusable (identity/codec/schema-version mismatch or decode failure), the
+/// aggregate is rebuilt from a full stream load — correct, just not optimized.
+fn load_from_store<'a, R, A>(
+    repo: &'a R,
+    identity: &'a StreamIdentity,
+) -> Pin<Box<dyn Future<Output = Result<Option<A>, RepositoryError>> + Send + 'a>>
+where
+    R: SnapshotStore + GetStream + Sync,
+    A: Snapshottable + Send,
+{
+    Box::pin(async move {
+        let Some(snapshot) = repo.get_snapshot(identity).await? else {
+            // No snapshot: a plain full load (same as a snapshotless repo).
+            return Ok(repo
+                .get_stream(identity)
+                .await?
+                .map(hydrate::<A>)
+                .transpose()?);
+        };
+
+        // Fetch only events after the snapshot. The returned entity records the
+        // true stream version even though it holds only the tail.
+        let Some(entity) = repo.get_stream_tail(identity, snapshot.version).await? else {
+            // The stream is gone but a snapshot lingers; nothing to hydrate.
+            return Ok(None);
+        };
+
+        // Decode and replay without crossing an await while holding the
+        // (possibly non-`Send`) snapshot payload: resolve to a concrete result
+        // first, then do any fallback I/O.
+        let prepared = prepare_snapshot::<A>(&entity, &snapshot)
+            .map(|payload| hydrate_prepared_snapshot::<A>(entity, &snapshot, payload));
+
+        match prepared {
+            Ok(Ok(aggregate)) => Ok(Some(aggregate)),
+            Ok(Err(err)) => Err(snapshot_hydration_error_to_repository_error(err)),
+            // Cache miss (stale/incompatible snapshot): the tail alone cannot
+            // rebuild the aggregate, so fall back to a full stream load. This is
+            // the I/O we hoped to avoid, but it only happens when the snapshot is
+            // unusable — the correct, safe outcome.
+            Err(SnapshotHydrationError::Cache(_)) => Ok(repo
+                .get_stream(identity)
+                .await?
+                .map(hydrate::<A>)
+                .transpose()?),
+            Err(SnapshotHydrationError::Replay(message)) => Err(RepositoryError::Replay(message)),
+        }
     })
 }
 
@@ -285,8 +361,24 @@ mod tests {
         }
     }
 
-    // Snapshots can only be enabled on a repo that can store them; this stub
-    // satisfies the bound (the commit-failure test never loads a snapshot).
+    // Snapshots can only be enabled on a repo that can both store them and read
+    // streams; these stubs satisfy the bounds (the commit-failure and
+    // zero-frequency tests never load).
+    impl GetStream for FailingSnapshotRepo {
+        async fn get_stream(
+            &self,
+            _identity: &StreamIdentity,
+        ) -> Result<Option<Entity>, RepositoryError> {
+            Ok(None)
+        }
+        async fn get_streams(
+            &self,
+            _identities: &[StreamIdentity],
+        ) -> Result<Vec<Entity>, RepositoryError> {
+            Ok(Vec::new())
+        }
+    }
+
     impl SnapshotStore for FailingSnapshotRepo {
         async fn get_snapshot(
             &self,
@@ -347,49 +439,92 @@ mod tests {
         assert!(snapshot_due(u64::MAX, u64::MAX - 1, 1));
     }
 
-    #[test]
-    fn hydrate_from_snapshot_rejects_identity_mismatch() {
+    // A `TestAggregate` snapshot encodes only `value: u32`. Replaying the
+    // single "Touched" event over the empty aggregate yields `value == 1`, so a
+    // cache-miss fallback that ignores the snapshot is observable as value 1.
+    fn snap1_entity() -> Entity {
         let mut entity = Entity::with_id("snap-1");
         entity.load_from_history(vec![EventRecord::new("Touched", vec![], 1)]);
+        entity
+    }
+
+    #[test]
+    fn hydrate_from_snapshot_falls_back_on_identity_mismatch() {
+        // Snapshot carries value 99, but its identity does not match the entity.
+        // The unusable snapshot is a cache miss → rebuild by replaying history,
+        // so the snapshot's value is ignored.
         let snapshot = SnapshotRecord::new(
             TestAggregate::aggregate_type(),
             "other",
             1,
-            std::any::type_name::<u32>(),
             1,
-            bitcode::serialize(&1_u32).unwrap(),
+            bitcode::serialize(&99_u32).unwrap(),
         );
 
-        let err = match hydrate_from_snapshot::<TestAggregate>(entity, snapshot) {
-            Err(err) => err,
-            Ok(_) => panic!("expected identity mismatch error"),
-        };
-
-        assert!(
-            matches!(err, RepositoryError::Replay(message) if message.contains("does not match"))
+        let agg = hydrate_from_snapshot::<TestAggregate>(snap1_entity(), snapshot)
+            .expect("identity mismatch should degrade to replay, not error");
+        assert_eq!(
+            agg.value, 1,
+            "value should come from replay, not the snapshot"
         );
     }
 
     #[test]
-    fn hydrate_from_snapshot_rejects_snapshot_ahead_of_stream() {
-        let mut entity = Entity::with_id("snap-1");
-        entity.load_from_history(vec![EventRecord::new("Touched", vec![], 1)]);
+    fn hydrate_from_snapshot_falls_back_when_snapshot_ahead_of_stream() {
+        // Snapshot version 2 exceeds the single-event stream → cache miss →
+        // replay history (value 1), ignoring the snapshot payload (value 99).
         let snapshot = SnapshotRecord::new(
             TestAggregate::aggregate_type(),
             "snap-1",
             2,
-            std::any::type_name::<u32>(),
             1,
-            bitcode::serialize(&1_u32).unwrap(),
+            bitcode::serialize(&99_u32).unwrap(),
         );
 
-        let err = match hydrate_from_snapshot::<TestAggregate>(entity, snapshot) {
-            Err(err) => err,
-            Ok(_) => panic!("expected future snapshot error"),
-        };
-
-        assert!(
-            matches!(err, RepositoryError::Replay(message) if message.contains("exceeds stream version"))
+        let agg = hydrate_from_snapshot::<TestAggregate>(snap1_entity(), snapshot)
+            .expect("future snapshot should degrade to replay, not error");
+        assert_eq!(
+            agg.value, 1,
+            "value should come from replay, not the snapshot"
         );
+    }
+
+    #[test]
+    fn hydrate_from_snapshot_falls_back_on_schema_version_mismatch() {
+        // `TestAggregate::SNAPSHOT_VERSION` defaults to 1. A stored snapshot at
+        // schema version 2 must NOT be decoded (its layout may differ): it is a
+        // cache miss → replay history (value 1), not the snapshot's value 99.
+        let snapshot = SnapshotRecord::new(
+            TestAggregate::aggregate_type(),
+            "snap-1",
+            1,
+            2,
+            bitcode::serialize(&99_u32).unwrap(),
+        );
+
+        let agg = hydrate_from_snapshot::<TestAggregate>(snap1_entity(), snapshot)
+            .expect("schema version mismatch should degrade to replay, not error");
+        assert_eq!(
+            agg.value, 1,
+            "mismatched-version snapshot must not be decoded"
+        );
+    }
+
+    #[test]
+    fn hydrate_from_snapshot_uses_matching_snapshot() {
+        // A valid snapshot (matching identity, codec, schema version, and not
+        // ahead of the stream) is used: its value 99 restores, and there are no
+        // post-snapshot events to replay.
+        let snapshot = SnapshotRecord::new(
+            TestAggregate::aggregate_type(),
+            "snap-1",
+            1,
+            1,
+            bitcode::serialize(&99_u32).unwrap(),
+        );
+
+        let agg = hydrate_from_snapshot::<TestAggregate>(snap1_entity(), snapshot)
+            .expect("valid snapshot should hydrate");
+        assert_eq!(agg.value, 99, "value should come from the snapshot");
     }
 }

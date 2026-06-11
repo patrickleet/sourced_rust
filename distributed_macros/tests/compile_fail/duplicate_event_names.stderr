@@ -1,0 +1,5 @@
+error: duplicate #[event] name `done` in this #[sourced] impl block
+  --> tests/compile_fail/duplicate_event_names.rs:13:13
+   |
+13 |     #[event("done")]
+   |             ^^^^^^

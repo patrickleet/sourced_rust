@@ -54,6 +54,33 @@ where
     I: Send,
 {
     while let Some(received) = source.recv().await? {
+        // A delivery the transport could not decode is a permanent failure: it
+        // carries no valid message to dispatch, and it must NOT be treated as an
+        // empty message (which would route to ack-and-ignore below and silently
+        // drop a corrupt row). Route it through the failure policy directly, the
+        // same as a permanent dispatch failure, so it is dead-lettered/parked.
+        if let Some(error) = received.decode_error() {
+            match options.failure_policy.resolve(error) {
+                FailureAction::Nack => {
+                    let reason = error.to_string();
+                    received.nack(&reason).await?
+                }
+                FailureAction::DeadLetter => {
+                    let reason = error.to_string();
+                    received.dead_letter(&reason).await?
+                }
+                FailureAction::Park => {
+                    let reason = error.to_string();
+                    received.park(&reason).await?
+                }
+                FailureAction::LogAndAck => {
+                    eprintln!("[bus::runner] dropping undecodable message after permanent failure: {error}");
+                    received.ack().await?
+                }
+                FailureAction::Stop => return Err(TransportError::permanent(error.to_string())),
+            }
+            continue;
+        }
         // No handler for this message: intentionally ignore (ack) rather than
         // dead-letter, so unrelated fan-out events don't pile into the DLQ.
         if !router.handles(received.message().kind, received.message().name()) {
@@ -161,6 +188,7 @@ mod tests {
         message: Message,
         recorder: Arc<Recorder>,
         settle_ok: bool,
+        decode_error: Option<TransportError>,
     }
 
     impl FakeReceived {
@@ -177,6 +205,9 @@ mod tests {
     impl ReceivedMessage for FakeReceived {
         fn message(&self) -> &Message {
             &self.message
+        }
+        fn decode_error(&self) -> Option<&TransportError> {
+            self.decode_error.as_ref()
         }
         async fn ack(self) -> Result<(), TransportError> {
             self.settle(Event::Ack)
@@ -197,6 +228,9 @@ mod tests {
         recorder: Arc<Recorder>,
         settle_ok: bool,
         recv_error: bool,
+        // When set, every received message reports this as a decode failure,
+        // modeling a transport that claims a row/offset before decoding it.
+        decode_error: bool,
     }
 
     impl AsyncMessageSource for FakeSource {
@@ -205,10 +239,13 @@ mod tests {
             if self.recv_error {
                 return Err(TransportError::retryable("recv failed"));
             }
+            let decode_error = self.decode_error;
             Ok(self.queue.pop_front().map(|message| FakeReceived {
                 message,
                 recorder: self.recorder.clone(),
                 settle_ok: self.settle_ok,
+                decode_error: decode_error
+                    .then(|| TransportError::permanent("corrupt row: name failed to decode")),
             }))
         }
     }
@@ -277,6 +314,7 @@ mod tests {
             recorder: recorder.clone(),
             settle_ok,
             recv_error,
+            decode_error: false,
         };
         let outcome = block_on(run_source(svc, source, options));
         RunResult {
@@ -484,6 +522,66 @@ mod tests {
         );
     }
 
+    fn run_decode_error<I: Send>(messages: Vec<Message>, options: RunOptions<I>) -> RunResult {
+        let recorder = Recorder::new();
+        let svc = router(&recorder);
+        let source = FakeSource {
+            queue: messages.into_iter().collect(),
+            recorder: recorder.clone(),
+            settle_ok: true,
+            recv_error: false,
+            decode_error: true,
+        };
+        let outcome = block_on(run_source(svc, source, options));
+        RunResult {
+            outcome,
+            events: recorder.events(),
+        }
+    }
+
+    #[test]
+    fn corrupt_row_dead_letters_under_default_policy_not_acked_and_ignored() {
+        // The corrupt delivery has an unhandled (empty) name, which would
+        // otherwise fall into the ack-and-ignore path and silently drop it. The
+        // decode error must instead route it through the failure policy.
+        let result = run_decode_error(vec![event_message("", None)], RunOptions::idempotent());
+        assert!(result.outcome.is_ok());
+        assert_eq!(result.events.len(), 1);
+        match &result.events[0] {
+            Event::DeadLetter(reason) => assert!(reason.contains("corrupt row")),
+            other => panic!("expected dead-letter, got {other:?}"),
+        }
+        // It was never handled and never plain-acked.
+        assert!(!result.events.iter().any(|e| matches!(e, Event::Handled(_))));
+        assert!(!result.events.contains(&Event::Ack));
+    }
+
+    #[test]
+    fn corrupt_row_parks_under_park_policy() {
+        let result = run_decode_error(
+            vec![event_message("", None)],
+            RunOptions::idempotent().with_failure_policy(FailurePolicy::Park),
+        );
+        assert!(result.outcome.is_ok());
+        assert!(matches!(result.events.first(), Some(Event::Park(_))));
+    }
+
+    #[test]
+    fn corrupt_row_stops_under_stop_policy_with_permanent_error() {
+        let result = run_decode_error(
+            vec![event_message("", None)],
+            RunOptions::idempotent().with_failure_policy(FailurePolicy::Stop),
+        );
+        let err = result
+            .outcome
+            .expect_err("stop policy surfaces the decode error");
+        assert!(err.is_permanent());
+        assert!(
+            result.events.is_empty(),
+            "stop does not settle the corrupt row"
+        );
+    }
+
     #[test]
     fn run_source_future_is_send() {
         // Guards the documented multi-threaded-executor contract for the common
@@ -496,6 +594,7 @@ mod tests {
             recorder,
             settle_ok: true,
             recv_error: false,
+            decode_error: false,
         };
         let future = run_source(svc, source, RunOptions::idempotent());
         assert_send(&future);
