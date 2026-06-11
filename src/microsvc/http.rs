@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -38,12 +38,16 @@ use serde_json::{json, Value};
 use super::error::HandlerError;
 use super::service::Service;
 use super::session::Session;
+use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/{command}", axum::routing::post(command_handler))
+        // Pin the body limit explicitly rather than relying on axum's default;
+        // the command handler buffers the JSON body into memory.
+        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(service)
 }
 
@@ -80,7 +84,7 @@ async fn command_handler<D: Send + Sync + 'static>(
             if status.is_server_error() {
                 eprintln!("microsvc command `{command}` failed: {err}");
             }
-            let body = json!({ "error": error_message_for_response(&err) });
+            let body = json!({ "error": err.redacted_message() });
             (status, Json(body)).into_response()
         }
     }
@@ -93,14 +97,6 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
         HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
         HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
-}
-
-fn error_message_for_response(error: &HandlerError) -> String {
-    if status_for_error(error).is_server_error() {
-        "Internal server error".to_string()
-    } else {
-        error.to_string()
     }
 }
 
@@ -168,24 +164,21 @@ mod tests {
     }
 
     #[test]
-    fn error_message_for_response_preserves_client_errors() {
+    fn redacted_message_preserves_client_errors() {
         let error = HandlerError::Rejected("invalid command".into());
 
-        assert_eq!(
-            error_message_for_response(&error),
-            "rejected: invalid command"
-        );
+        assert_eq!(error.redacted_message(), "rejected: invalid command");
     }
 
     #[test]
-    fn error_message_for_response_hides_server_errors() {
+    fn redacted_message_hides_server_errors() {
         let errors = [
             HandlerError::Repository(RepositoryError::Model("store failed".into())),
             HandlerError::Other(Box::new(std::io::Error::other("handler failed"))),
         ];
 
         for error in errors {
-            assert_eq!(error_message_for_response(&error), "Internal server error");
+            assert_eq!(error.redacted_message(), "Internal server error");
         }
     }
 }

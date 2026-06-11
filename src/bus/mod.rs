@@ -96,6 +96,7 @@ mod knative;
 #[cfg(feature = "http")]
 mod knative_bus;
 mod message;
+mod message_name;
 #[cfg(feature = "nats")]
 mod nats;
 #[cfg(feature = "nats")]
@@ -138,6 +139,7 @@ pub use failure_policy::{FailureAction, FailurePolicy};
 pub use handlers::{AsyncMessageHandler, Handlers};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
+pub use message_name::{validate_message_name, MessageNameError, MAX_MESSAGE_NAME_LEN};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
 pub use publisher::AsyncMessagePublisher;

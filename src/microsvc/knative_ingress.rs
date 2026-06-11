@@ -24,15 +24,15 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use base64::Engine;
 use serde_json::{json, Value};
 
-use crate::bus::{Message, MessageKind};
-use crate::microsvc::Service;
+use crate::bus::{validate_message_name, Message, MessageKind};
+use crate::microsvc::{Service, MAX_HTTP_BODY_BYTES};
 
 const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 
@@ -46,6 +46,9 @@ pub fn cloud_events_router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -
     Router::new()
         .route("/", axum::routing::post(ingress_handler))
         .route("/cloudevent/{type}", axum::routing::post(ingress_handler))
+        // Pin the body limit explicitly rather than relying on axum's default,
+        // since the handler buffers the whole body into memory.
+        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(service)
 }
 
@@ -69,7 +72,13 @@ async fn ingress_handler<D: Send + Sync + 'static>(
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY
             };
-            (status, Json(json!({ "error": err.to_string() }))).into_response()
+            // Mask internal faults (the same redaction the HTTP ingress applies):
+            // `err.to_string()` can carry SQL/driver/path detail. Log the real
+            // error server-side; return only a safe message on the wire.
+            if err.is_internal() {
+                eprintln!("knative ingress `{}` failed: {err}", message.name());
+            }
+            (status, Json(json!({ "error": err.redacted_message() }))).into_response()
         }
     }
 }
@@ -92,6 +101,9 @@ fn parse_cloud_event(headers: &HeaderMap, body: &Bytes) -> Result<Message, Strin
 fn parse_binary(headers: &HeaderMap, body: &Bytes) -> Result<Message, String> {
     let id = header(headers, "ce-id").ok_or("missing ce-id header")?;
     let name = header(headers, "ce-type").ok_or("missing ce-type header")?;
+    // `ce-type` is attacker-controlled wire input that becomes Message.name and,
+    // downstream, a broker routing identifier — validate before trusting it.
+    validate_message_name(name).map_err(|e| format!("invalid ce-type: {e}"))?;
     let content_type = header(headers, "content-type")
         .unwrap_or("application/json")
         .to_string();
@@ -137,6 +149,8 @@ fn parse_structured(body: &Bytes) -> Result<Message, String> {
         .and_then(Value::as_str)
         .ok_or("missing cloudevent type")?
         .to_string();
+    // Same wire-input check as binary mode: `type` becomes Message.name.
+    validate_message_name(&name).map_err(|e| format!("invalid cloudevent type: {e}"))?;
     let content_type = object
         .get("datacontenttype")
         .and_then(Value::as_str)
@@ -246,5 +260,30 @@ mod tests {
     fn missing_id_is_rejected() {
         let h = headers(&[("ce-type", "order.created")]);
         assert!(parse_cloud_event(&h, &Bytes::new()).is_err());
+    }
+
+    #[test]
+    fn binary_wildcard_ce_type_is_rejected() {
+        // A `ce-type` carrying a broker wildcard must not become a routing key.
+        let h = headers(&[("ce-id", "evt-1"), ("ce-type", "order.*")]);
+        let body = Bytes::from_static(br#"{}"#);
+        let err = parse_cloud_event(&h, &body).unwrap_err();
+        assert!(err.contains("invalid ce-type"), "got {err}");
+    }
+
+    #[test]
+    fn structured_wildcard_type_is_rejected() {
+        let h = headers(&[("content-type", "application/cloudevents+json")]);
+        let body = Bytes::from(
+            json!({
+                "specversion": "1.0",
+                "id": "evt-2",
+                "type": "orders>",
+                "source": "/orders",
+            })
+            .to_string(),
+        );
+        let err = parse_cloud_event(&h, &body).unwrap_err();
+        assert!(err.contains("invalid cloudevent type"), "got {err}");
     }
 }

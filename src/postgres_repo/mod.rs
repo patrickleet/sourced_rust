@@ -358,6 +358,26 @@ impl InboxStore for PostgresRepository {
             Ok(row.is_some())
         }
     }
+
+    fn purge_inbox_older_than(
+        &self,
+        age: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, RepositoryError>> + Send {
+        async move {
+            // Compare against the database clock (`now()`) to avoid client/server
+            // skew; `make_interval` takes the cutoff age in whole seconds.
+            let secs = age.as_secs() as f64;
+            let result = sqlx::query(
+                "DELETE FROM consumer_inbox \
+                 WHERE processed_at < now() - make_interval(secs => $1)",
+            )
+            .bind(secs)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("purge consumer inbox", err))?;
+            Ok(result.rows_affected())
+        }
+    }
 }
 
 impl ReadModelWritePlanStore for PostgresRepository {

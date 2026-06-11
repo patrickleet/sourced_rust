@@ -81,8 +81,25 @@ impl Message {
     }
 
     /// Get the message name.
+    ///
+    /// The name flows unmodified into broker routing primitives (NATS subject
+    /// suffix, Kafka topic, RabbitMQ routing/binding key). A `.` is a routing
+    /// *segment separator* on topic transports, so it changes routing
+    /// granularity rather than being an opaque label — see
+    /// [`validate_message_name`](super::validate_message_name).
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Validate this message's name for use as a transport routing identifier.
+    ///
+    /// Delegates to [`validate_message_name`](super::validate_message_name):
+    /// rejects empty, over-long, control-character-bearing, or wildcard-bearing
+    /// (`*`/`#`/`>`) names. Publish boundaries call this before a name becomes a
+    /// subject/topic/routing key; the inbound Knative ingress calls it on the
+    /// `ce-type` it reads off the wire.
+    pub fn validate_name(&self) -> Result<(), super::MessageNameError> {
+        super::validate_message_name(&self.name).map(|_| ())
     }
 
     /// Get the raw payload bytes.
@@ -119,6 +136,13 @@ impl Message {
     }
 
     /// Decode the raw payload as bitcode.
+    ///
+    /// Security caveat: bitcode is a compact binary format that is **not hardened
+    /// against hostile input**. Only decode bitcode from trusted producers — do
+    /// not use it for payloads arriving on a public bus or other untrusted
+    /// ingress, where a malformed/adversarial buffer could trigger excessive
+    /// allocation or a panic. Prefer [`payload_json`](Self::payload_json) for
+    /// untrusted input.
     pub fn payload_bitcode<T: serde::de::DeserializeOwned>(&self) -> Result<T, PayloadDecodeError> {
         bitcode::deserialize(&self.payload).map_err(|e| {
             PayloadDecodeError(format!(

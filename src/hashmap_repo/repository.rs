@@ -28,6 +28,10 @@ use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord};
 /// This repository is cheap to clone because it uses `Arc<RwLock<...>>`
 /// internally - cloning creates another handle to the same storage.
 /// Also includes an embedded `InMemoryReadModelStore` for read model storage.
+///
+/// Its consumer **inbox is dev-only**: the dedup set grows unbounded (no TTL,
+/// no timestamps) and exists for tests and local development. Use the Postgres
+/// or SQLite repository for a production inbox with retention control.
 #[derive(Clone)]
 pub struct HashMapRepository {
     event_store: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
@@ -35,6 +39,12 @@ pub struct HashMapRepository {
     model_store: InMemoryReadModelStore,
     snapshot_store: InMemorySnapshotStore,
     /// Consumer inbox: the set of recorded `(consumer, message_id)` receipts.
+    ///
+    /// Dev-only: this set has no TTL and no timestamps, so it grows unbounded for
+    /// the process lifetime and cannot be time-purged. It exists for tests and
+    /// local development, not production effectively-once dedup — back a real
+    /// deployment with the Postgres or SQLite inbox, which support
+    /// [`purge_inbox_older_than`](crate::repository::InboxStore::purge_inbox_older_than).
     inbox_store: Arc<RwLock<HashSet<(String, String)>>>,
 }
 
@@ -90,6 +100,22 @@ impl HashMapRepository {
             .read()
             .map(|set| set.contains(&(consumer.to_string(), message_id.to_string())))
             .unwrap_or(false)
+    }
+
+    /// Drop every recorded inbox receipt, returning the count removed.
+    ///
+    /// The in-memory equivalent of inbox retention: because this dev-only inbox
+    /// keeps no timestamps it cannot purge by age, so the only available control
+    /// is to clear it wholesale (e.g. between test cases).
+    pub fn clear_inbox(&self) -> usize {
+        self.inbox_store
+            .write()
+            .map(|mut set| {
+                let n = set.len();
+                set.clear();
+                n
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -254,6 +280,15 @@ impl InboxStore for HashMapRepository {
         message_id: &'a str,
     ) -> impl Future<Output = Result<bool, RepositoryError>> + Send + 'a {
         async move { Ok(self.inbox_contains(consumer, message_id)) }
+    }
+
+    fn purge_inbox_older_than(
+        &self,
+        _age: std::time::Duration,
+    ) -> impl Future<Output = Result<u64, RepositoryError>> + Send {
+        // The dev-only in-memory inbox keeps no timestamps, so age-based purge is
+        // a no-op. Use `clear_inbox` to reset it wholesale.
+        async move { Ok(0) }
     }
 }
 
@@ -559,5 +594,32 @@ mod tests {
             repo.commit_batch(invalid).await.unwrap_err(),
             RepositoryError::InvalidInboxReceipt { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn clear_inbox_drops_all_receipts_and_age_purge_is_noop() {
+        use crate::repository::{InboxReceipt, InboxStore};
+        let repo = HashMapRepository::new();
+
+        let mut batch = CommitBatch::empty();
+        batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
+        batch.inbox_receipts.push(InboxReceipt::new("proj", "m2"));
+        repo.commit_batch(batch).await.unwrap();
+
+        // The dev-only inbox cannot purge by age (no timestamps): it is a no-op
+        // that leaves the receipts in place.
+        assert_eq!(
+            repo.purge_inbox_older_than(std::time::Duration::from_secs(0))
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(repo.inbox_contains("proj", "m1"));
+
+        // `clear_inbox` is the in-memory retention equivalent: it drops everything.
+        assert_eq!(repo.clear_inbox(), 2);
+        assert!(!repo.inbox_contains("proj", "m1"));
+        assert!(!repo.inbox_contains("proj", "m2"));
+        assert_eq!(repo.clear_inbox(), 0);
     }
 }
