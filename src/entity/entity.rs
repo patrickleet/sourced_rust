@@ -138,6 +138,27 @@ impl Entity {
         &self.events
     }
 
+    /// Take the in-memory events out of the entity, leaving it empty.
+    ///
+    /// Used by replay paths that need to iterate events while also holding a
+    /// mutable borrow of the owning aggregate (the borrow checker forbids
+    /// borrowing `events` immutably and the aggregate mutably at once). The
+    /// caller is responsible for restoring history afterward — e.g. via
+    /// [`load_from_history`](Self::load_from_history) — so the entity's
+    /// `version`/`committed_version` invariants hold.
+    pub fn take_events(&mut self) -> Vec<EventRecord> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Put a previously [taken](Self::take_events) event history back without
+    /// recomputing `version`/`prefix_version`/`committed_version`. The caller
+    /// must restore the *same* events the entity already accounted for, so the
+    /// existing invariants continue to hold (used by replay paths that only
+    /// borrowed the events out to satisfy the borrow checker).
+    pub fn restore_history(&mut self, events: Vec<EventRecord>) {
+        self.events = events;
+    }
+
     /// Returns events added since the entity was loaded (not yet persisted).
     ///
     /// Slices relative to `prefix_version` so it is correct whether the entity
