@@ -17,9 +17,9 @@ use crate::read_model::{
 use crate::repository::{
     reject_duplicate_outbox_messages, reject_duplicate_streams,
     validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
-    validate_supported_event_codec, CommitBatch, GetStream, InboxStore, PreparedEventAppend,
-    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, SnapshotStore,
-    SnapshotWrite, StreamIdentity, StreamWrite, TransactionalCommit,
+    CommitBatch, GetStream, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
+    TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord};
 
@@ -380,6 +380,7 @@ impl SnapshotStore for HashMapRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository::StreamWrite;
 
     fn identity(id: &str) -> StreamIdentity {
         StreamIdentity::new("test.aggregate", id).unwrap()

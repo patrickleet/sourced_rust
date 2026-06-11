@@ -23,15 +23,11 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message as KafkaMessageTrait, Offset, TopicPartitionList};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{AsyncMessagePublisher, TransportError};
-use super::{Message, MessageKind};
+use super::{retryable, AsyncMessagePublisher, TransportError};
+use super::{strip_address_prefix, Message, MessageKind};
 
 const MESSAGE_ID_HEADER: &str = "x-sourced-id";
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
-
-fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
-    TransportError::retryable(format!("{context}: {err}"))
-}
 
 /// Publishes canonical messages to a Kafka topic named by the message name.
 pub struct KafkaPublisher {
@@ -64,7 +60,7 @@ impl KafkaPublisher {
 fn owned_headers(message: &Message) -> OwnedHeaders {
     let mut headers = OwnedHeaders::new().insert(Header {
         key: MESSAGE_KIND_HEADER,
-        value: Some(kind_str(message.kind)),
+        value: Some(message.kind.as_str()),
     });
     if let Some(id) = message.id() {
         headers = headers.insert(Header {
@@ -200,10 +196,7 @@ impl KafkaReceived {
     ) -> Self {
         let payload = borrowed.payload().map(|p| p.to_vec()).unwrap_or_default();
         let topic = borrowed.topic().to_string();
-        let name = match strip_prefix {
-            Some(prefix) => topic.strip_prefix(prefix).unwrap_or(&topic).to_string(),
-            None => topic.clone(),
-        };
+        let name = strip_address_prefix(topic.clone(), strip_prefix);
         let mut id = None;
         let mut kind = MessageKind::Event;
         let mut metadata = Vec::new();
@@ -215,7 +208,7 @@ impl KafkaReceived {
                     .unwrap_or_default();
                 match header.key {
                     MESSAGE_ID_HEADER => id = Some(value),
-                    MESSAGE_KIND_HEADER => kind = kind_from_str(&value),
+                    MESSAGE_KIND_HEADER => kind = MessageKind::from_str_lossy(&value),
                     other => metadata.push((other.to_string(), value)),
                 }
             }
@@ -293,19 +286,5 @@ impl ReceivedMessage for KafkaReceived {
 
     async fn park(self, _reason: &str) -> Result<(), TransportError> {
         self.commit_offset()
-    }
-}
-
-fn kind_str(kind: MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Command => "command",
-        MessageKind::Event => "event",
-    }
-}
-
-fn kind_from_str(value: &str) -> MessageKind {
-    match value {
-        "command" => MessageKind::Command,
-        _ => MessageKind::Event,
     }
 }

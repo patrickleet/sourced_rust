@@ -28,13 +28,6 @@ use super::{Message, MessageKind, SubscriptionPlan};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn kind_str(kind: MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Command => "command",
-        MessageKind::Event => "event",
-    }
-}
-
 /// Knative Eventing [`Bus`] (produce) + manifest generator.
 #[derive(Clone)]
 pub struct KnativeBus {
@@ -124,7 +117,7 @@ impl KnativeBus {
             .header("ce-id", id)
             .header("ce-type", message.name())
             .header("ce-source", self.source.as_str())
-            .header("ce-sourcedkind", kind_str(message.kind))
+            .header("ce-sourcedkind", message.kind.as_str())
             .header("content-type", message.content_type.as_str());
         for (key, value) in &message.metadata {
             request = request.header(format!("ce-{key}"), value);

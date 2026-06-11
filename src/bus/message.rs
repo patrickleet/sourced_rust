@@ -15,6 +15,29 @@ pub enum MessageKind {
     Event,
 }
 
+impl MessageKind {
+    /// The wire token transports use to carry the kind in headers/metadata.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageKind::Command => "command",
+            MessageKind::Event => "event",
+        }
+    }
+
+    /// Parse a wire token back into a kind, defaulting to [`MessageKind::Event`]
+    /// for anything that is not exactly `"command"`.
+    ///
+    /// The bias toward `Event` is deliberate: every transport that round-trips
+    /// the kind already did so, and treating an unrecognized token as a fan-out
+    /// event is the safe default for delivery.
+    pub fn from_str_lossy(value: &str) -> MessageKind {
+        match value {
+            "command" => MessageKind::Command,
+            _ => MessageKind::Event,
+        }
+    }
+}
+
 /// Transport subscription metadata derived from a router's registered handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubscriptionPlan {
@@ -150,5 +173,22 @@ impl Message {
                 self.name, e
             ))
         })
+    }
+}
+
+/// Derive a message name from a transport address (NATS subject, Kafka topic,
+/// or AMQP routing key) by stripping the publisher's `prefix`.
+///
+/// Takes ownership of `address` so the common `None`/no-match paths reuse the
+/// existing allocation instead of cloning. When `prefix` is set but does not
+/// match, the full address is returned unchanged.
+#[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
+pub(crate) fn strip_address_prefix(address: String, prefix: Option<&str>) -> String {
+    match prefix {
+        Some(prefix) => address
+            .strip_prefix(prefix)
+            .map(str::to_string)
+            .unwrap_or(address),
+        None => address,
     }
 }

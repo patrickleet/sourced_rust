@@ -19,14 +19,10 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{AsyncMessagePublisher, TransportError};
+use super::{retryable, AsyncMessagePublisher, TransportError};
 use super::{Message, MessageKind};
 
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
-
-fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
-    TransportError::retryable(format!("{context}: {err}"))
-}
 
 fn settle_result(context: &str, settled: bool) -> Result<(), TransportError> {
     if settled {
@@ -74,7 +70,7 @@ pub(super) fn message_properties(message: &Message) -> BasicProperties {
     let mut headers = FieldTable::default();
     headers.insert(
         ShortString::from(MESSAGE_KIND_HEADER),
-        AMQPValue::LongString(kind_str(message.kind).into()),
+        AMQPValue::LongString(message.kind.as_str().into()),
     );
     for (key, value) in &message.metadata {
         headers.insert(
@@ -195,7 +191,7 @@ impl RabbitReceived {
                 let key = key.to_string();
                 let value = amqp_value_to_string(value);
                 if key == MESSAGE_KIND_HEADER {
-                    kind = kind_from_str(&value);
+                    kind = MessageKind::from_str_lossy(&value);
                 } else {
                     metadata.push((key, value));
                 }
@@ -266,19 +262,5 @@ fn amqp_value_to_string(value: &AMQPValue) -> String {
         AMQPValue::LongString(s) => s.to_string(),
         AMQPValue::ShortString(s) => s.to_string(),
         other => format!("{other:?}"),
-    }
-}
-
-fn kind_str(kind: MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Command => "command",
-        MessageKind::Event => "event",
-    }
-}
-
-fn kind_from_str(value: &str) -> MessageKind {
-    match value {
-        "command" => MessageKind::Command,
-        _ => MessageKind::Event,
     }
 }
