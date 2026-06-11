@@ -411,7 +411,10 @@ mod tests {
 
         let err = snapshot_repo.commit(&mut aggregate).await.unwrap_err();
 
-        assert_eq!(err, RepositoryError::Model("snapshot write failed".into()));
+        assert!(
+            matches!(&err, RepositoryError::Model(message) if message == "snapshot write failed"),
+            "unexpected error: {err}"
+        );
         assert!(snapshot_repo
             .repo()
             .saw_snapshot

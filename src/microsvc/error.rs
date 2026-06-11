@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::bus::{PayloadDecodeError, TransportError, TransportErrorKind};
+use crate::lock::RetryClass;
 use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
@@ -113,16 +114,23 @@ impl HandlerError {
 
     /// Classify this error for transport retry purposes (retryable vs permanent).
     ///
-    /// Transient failures (repository errors, not-found, otherwise-unclassified)
-    /// are retryable: in an at-least-once event-driven system a not-found is
-    /// usually an out-of-order delivery race a later redelivery resolves.
-    /// Deterministic failures (unknown routing, decode, rejection, auth, guard)
-    /// are permanent — redelivering the identical message cannot change them.
+    /// A repository error is no longer one blanket "retryable" bucket: it defers
+    /// to [`RepositoryError::kind`], so a transient storage outage (connection
+    /// refused, pool timeout, `SQLITE_BUSY`) stays retryable while a deterministic
+    /// model/read-model/decode fault is permanent — otherwise the latter would be
+    /// redelivered forever. `NotFound` and `Other` remain retryable: in an
+    /// at-least-once system a not-found is usually an out-of-order delivery race a
+    /// later redelivery resolves, and an unclassified error is more often
+    /// transient infrastructure than a deterministic bug. Deterministic failures
+    /// (unknown routing, decode, rejection, auth, guard) are permanent —
+    /// redelivering the identical message cannot change them.
     pub(crate) fn transport_error_kind(&self) -> TransportErrorKind {
         match self {
-            HandlerError::Repository(_) | HandlerError::NotFound(_) | HandlerError::Other(_) => {
-                TransportErrorKind::Retryable
-            }
+            HandlerError::Repository(err) => match err.kind() {
+                RetryClass::Retryable => TransportErrorKind::Retryable,
+                RetryClass::Permanent => TransportErrorKind::Permanent,
+            },
+            HandlerError::NotFound(_) | HandlerError::Other(_) => TransportErrorKind::Retryable,
             HandlerError::UnknownCommand(_)
             | HandlerError::DecodeFailed(_)
             | HandlerError::Rejected(_)
@@ -168,6 +176,45 @@ mod tests {
         ] {
             assert_eq!(error.transport_error_kind(), TransportErrorKind::Permanent);
         }
+    }
+
+    /// A deterministic repository fault (a model error, a permanent storage
+    /// failure such as a constraint violation) must NOT be classified retryable,
+    /// or the runner would redeliver the identical message forever.
+    #[test]
+    fn deterministic_repository_errors_are_permanent() {
+        let io = std::io::Error::new(std::io::ErrorKind::InvalidData, "bad row");
+        for error in [
+            HandlerError::Repository(RepositoryError::Model("invalid model state".into())),
+            HandlerError::Repository(RepositoryError::Replay("version mismatch".into())),
+            HandlerError::Repository(RepositoryError::permanent_storage("insert event", io)),
+        ] {
+            assert_eq!(
+                error.transport_error_kind(),
+                TransportErrorKind::Permanent,
+                "{error}"
+            );
+        }
+    }
+
+    /// A transient storage failure (connection refused, pool timeout, busy) must
+    /// stay retryable so a recovered backend gets the redelivery.
+    #[test]
+    fn transient_repository_storage_errors_are_retryable() {
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused");
+        let error = HandlerError::Repository(RepositoryError::retryable_storage("load stream", io));
+        assert_eq!(error.transport_error_kind(), TransportErrorKind::Retryable);
+
+        // A concurrency conflict is retryable: another writer won the race.
+        let conflict = HandlerError::Repository(RepositoryError::ConcurrentWrite {
+            id: "agg-1".into(),
+            expected: 1,
+            actual: 2,
+        });
+        assert_eq!(
+            conflict.transport_error_kind(),
+            TransportErrorKind::Retryable
+        );
     }
 
     #[test]

@@ -123,11 +123,12 @@ async fn batch_rejects_duplicate_stream_identity_before_write() {
         .await
         .unwrap_err();
 
-    assert_eq!(
-        err,
-        RepositoryError::DuplicateStreamInBatch {
-            id: "async.alpha:duplicate".into()
-        }
+    assert!(
+        matches!(
+            &err,
+            RepositoryError::DuplicateStreamInBatch { id } if id == "async.alpha:duplicate"
+        ),
+        "unexpected error: {err}"
     );
     assert!(repo.get_stream(&identity).await.unwrap().is_none());
 }

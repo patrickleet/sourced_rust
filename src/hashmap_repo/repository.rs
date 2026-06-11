@@ -544,11 +544,9 @@ mod tests {
             ]))
             .await
             .unwrap_err();
-        assert_eq!(
-            err,
-            RepositoryError::DuplicateStreamInBatch {
-                id: identity("same-id").to_string(),
-            }
+        assert!(
+            matches!(&err, RepositoryError::DuplicateStreamInBatch { id } if *id == identity("same-id").to_string()),
+            "unexpected error: {err}"
         );
 
         assert!(repo

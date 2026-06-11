@@ -733,9 +733,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(
-            err,
-            RepositoryError::Model("injected async batch failure".into())
+        assert!(
+            matches!(&err, RepositoryError::Model(message) if message == "injected async batch failure"),
+            "unexpected error: {err}"
         );
         assert_eq!(agg.entity().committed_version(), 0);
         assert_eq!(agg.entity().new_events().len(), 1);

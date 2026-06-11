@@ -260,11 +260,13 @@ async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
         .await
         .unwrap_err();
 
-    assert_eq!(
-        err,
-        RepositoryError::DuplicateStreamInBatch {
-            id: format!("{}:{id}", Counter::aggregate_type())
-        }
+    assert!(
+        matches!(
+            &err,
+            RepositoryError::DuplicateStreamInBatch { id: dup }
+                if *dup == format!("{}:{id}", Counter::aggregate_type())
+        ),
+        "unexpected error: {err}"
     );
     assert!(repo.get_stream(&identity).await.unwrap().is_none());
 }
@@ -327,10 +329,20 @@ async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
         })
         .await
         .expect_err("a mid-plan constraint violation must fail the commit");
+    // A read-model CHECK-constraint violation is a deterministic, non-retryable
+    // fault, so it surfaces as the permanent `Storage` variant (not `Model`):
+    // re-running the identical write cannot change the outcome.
     assert!(
-        matches!(err, RepositoryError::Model(_)),
-        "expected a Model error from the constraint violation, got {err:?}"
+        matches!(
+            &err,
+            RepositoryError::Storage {
+                retryable: false,
+                ..
+            }
+        ),
+        "expected a permanent Storage error from the constraint violation, got {err:?}"
     );
+    assert!(!err.is_retryable());
 
     // 1. Aggregate event absent.
     assert!(
@@ -591,8 +603,20 @@ async fn unsupported_codec_rows_fail_on_read() {
     let err = repo.get_stream(&identity).await.unwrap_err();
 
     assert!(
-        matches!(err, RepositoryError::Model(message) if message.contains("unsupported payload codec"))
+        matches!(
+            &err,
+            RepositoryError::Storage {
+                retryable: false,
+                ..
+            }
+        ),
+        "unexpected error: {err}"
     );
+    assert!(
+        err.to_string().contains("unsupported payload codec"),
+        "unexpected error: {err}"
+    );
+    assert!(!err.is_retryable());
 }
 
 #[tokio::test]

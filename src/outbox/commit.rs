@@ -283,7 +283,10 @@ mod tests {
 
         let err = repo.outbox(event).commit(&mut aggregate).await.unwrap_err();
 
-        assert_eq!(err, RepositoryError::Model("outbox write failed".into()));
+        assert!(
+            matches!(&err, RepositoryError::Model(message) if message == "outbox write failed"),
+            "unexpected error: {err}"
+        );
         assert_eq!(aggregate.entity.committed_version(), 0);
         assert_eq!(aggregate.entity.new_events().len(), 1);
         assert_eq!(
