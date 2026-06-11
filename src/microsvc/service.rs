@@ -5,6 +5,8 @@
 //!
 //! ## Example
 //!
+//! The handler closure returns a future, and `dispatch` is awaited:
+//!
 //! ```ignore
 //! use distributed::microsvc;
 //! use serde_json::json;
@@ -12,11 +14,13 @@
 //! let service = microsvc::Service::new()
 //!     .command("order.create")
 //!     .handle(|ctx| {
-//!         let input = ctx.input::<CreateOrderInput>()?;
-//!         Ok(json!({ "id": input.id }))
+//!         let input = ctx.input::<CreateOrderInput>();
+//!         async move { Ok(json!({ "id": input?.id })) }
 //!     });
 //!
-//! let result = service.dispatch("order.create", json!({"id": "1"}), Session::new());
+//! let result = service
+//!     .dispatch("order.create", json!({"id": "1"}), Session::new())
+//!     .await?;
 //! ```
 
 use std::collections::HashMap;

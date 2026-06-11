@@ -1,4 +1,5 @@
 #![allow(clippy::module_inception)]
+#![doc = include_str!("../README.md")]
 
 // Allow proc-macros to reference this crate by name even when used internally
 extern crate self as distributed;
@@ -15,8 +16,8 @@ mod hashmap_repo;
 pub mod lock;
 pub mod manifest;
 pub mod microsvc;
-mod outbox;
-mod outbox_worker;
+pub mod outbox;
+pub mod outbox_worker;
 #[cfg(feature = "postgres")]
 pub mod postgres_repo;
 pub mod queued_repo;
@@ -64,11 +65,14 @@ pub use lock::{PostgresLock, PostgresLockManager};
 #[cfg(feature = "sqlite")]
 pub use lock::{SqliteLock, SqliteLockManager};
 
-// Outbox: commit concerns (aggregate + outbox in one commit)
+// Outbox: commit concerns (aggregate + outbox in one commit).
+//
+// Low-level row plumbing (`outbox_message_insert_plan`, `outbox_message_row_values`)
+// stays reachable under `distributed::outbox::*` and is intentionally NOT re-exported
+// at the crate root — it is an adapter-authoring detail, not part of the quick-start API.
 pub use outbox::{
-    outbox_message_insert_plan, outbox_message_key, outbox_message_row_values,
-    outbox_message_schema, AggregateCommit, CommitReceipt, OutboxMessage, OutboxMessageStatus,
-    OutboxPublishHook, OutboxPublisherConfig, OUTBOX_MESSAGES_TABLE,
+    outbox_message_key, outbox_message_schema, AggregateCommit, CommitReceipt, OutboxMessage,
+    OutboxMessageStatus, OutboxPublishHook, OutboxPublisherConfig, OUTBOX_MESSAGES_TABLE,
 };
 
 // Outbox Worker: drain and publish concerns
@@ -123,16 +127,10 @@ pub use read_model::{
     DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
 
-// Neutral table/row primitives shared by read models and operational tables.
-pub use table::{
-    generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
-    DeleteTableRowMutation, PatchTableRowMutation, TableAdapterCapabilities, TableColumn,
-    TableCommitOutcome, TableIndex, TableMigrationArtifact, TableModel, TableMutation,
-    TableRowMutation, TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities,
-    TableSchemaBootstrap, TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry,
-    TableSchemaRegistryExt, TableSchemaVerification, TableSqlDialect, TableSqlSchemaAdapter,
-    TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
-};
+// Neutral table/row primitives shared by read models and operational tables stay
+// reachable under their module path (`distributed::table::*`). They are low-level
+// schema/adapter plumbing, not part of the quick-start surface, so they are not
+// re-exported at the crate root.
 
 pub use manifest::{
     DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,

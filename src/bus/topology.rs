@@ -1,11 +1,21 @@
 use super::router::MessageRouter;
 use super::TransportError;
 
-pub(crate) const DEFAULT_BUS_NAMESPACE: &str = "default";
-pub(crate) const MAX_TOPOLOGY_NAME_LEN: usize = 128;
+/// Default broker namespace applied when a transport is constructed without an
+/// explicit one.
+pub const DEFAULT_BUS_NAMESPACE: &str = "default";
+/// Maximum byte length accepted for a consumer group or namespace name.
+pub const MAX_TOPOLOGY_NAME_LEN: usize = 128;
 
+/// Consumer-group and namespace topology for a broker-backed bus.
+///
+/// Third-party transports can reuse this to apply the same portable naming
+/// rules (`group`/`namespace` validation) the built-in transports use, instead
+/// of reimplementing them. Construct via [`BusTopologyConfig::default`] and
+/// refine with [`group`](Self::group) / [`namespace`](Self::namespace), then
+/// [`validate_for`](Self::validate_for) before touching broker topology.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BusTopologyConfig {
+pub struct BusTopologyConfig {
     group: Option<String>,
     namespace: String,
 }
@@ -20,25 +30,31 @@ impl Default for BusTopologyConfig {
 }
 
 impl BusTopologyConfig {
-    pub(crate) fn default_namespace() -> &'static str {
+    /// The default namespace used when none is set.
+    pub fn default_namespace() -> &'static str {
         DEFAULT_BUS_NAMESPACE
     }
 
-    pub(crate) fn group(mut self, group: impl Into<String>) -> Self {
+    /// Set the durable consumer group.
+    pub fn group(mut self, group: impl Into<String>) -> Self {
         self.group = Some(group.into());
         self
     }
 
-    pub(crate) fn namespace(mut self, namespace: impl Into<String>) -> Self {
+    /// Set the broker namespace/prefix.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
         self
     }
 
-    pub(crate) fn namespace_unchecked(&self) -> &str {
+    /// The configured namespace without re-validating it.
+    pub fn namespace_unchecked(&self) -> &str {
         &self.namespace
     }
 
-    pub(crate) fn resolve_consumer_group<R: MessageRouter>(
+    /// Resolve the effective consumer group, falling back to the router's
+    /// identity, validating the result.
+    pub fn resolve_consumer_group<R: MessageRouter>(
         &self,
         router: &R,
         transport: &str,
@@ -46,11 +62,13 @@ impl BusTopologyConfig {
         resolve_consumer_group(self.group.as_deref(), router, transport)
     }
 
-    pub(crate) fn namespace_for(&self, transport: &str) -> Result<String, TransportError> {
+    /// Validate and return the namespace for the given transport.
+    pub fn namespace_for(&self, transport: &str) -> Result<String, TransportError> {
         validate_namespace(&self.namespace, transport)
     }
 
-    pub(crate) fn validate_for(self, transport: &str) -> Result<Self, TransportError> {
+    /// Validate both group and namespace, returning a checked config.
+    pub fn validate_for(self, transport: &str) -> Result<Self, TransportError> {
         let group = self
             .group
             .map(|group| validate_consumer_group(&group, transport))
@@ -79,18 +97,19 @@ impl TopologyNameKind {
     }
 }
 
-pub(crate) fn validate_consumer_group(
-    value: &str,
-    transport: &str,
-) -> Result<String, TransportError> {
+/// Validate a consumer-group name against the portable topology rules.
+pub fn validate_consumer_group(value: &str, transport: &str) -> Result<String, TransportError> {
     validate_topology_name(value, TopologyNameKind::ConsumerGroup, transport)
 }
 
-pub(crate) fn validate_namespace(value: &str, transport: &str) -> Result<String, TransportError> {
+/// Validate a namespace name against the portable topology rules (dots allowed).
+pub fn validate_namespace(value: &str, transport: &str) -> Result<String, TransportError> {
     validate_topology_name(value, TopologyNameKind::Namespace, transport)
 }
 
-pub(crate) fn resolve_consumer_group<R: MessageRouter>(
+/// Resolve a consumer group from an explicit value or the router identity,
+/// validating the result.
+pub fn resolve_consumer_group<R: MessageRouter>(
     explicit: Option<&str>,
     router: &R,
     transport: &str,

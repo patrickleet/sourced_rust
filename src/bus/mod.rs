@@ -148,4 +148,7 @@ pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{AsyncMessageSource, ReceivedMessage};
 pub use stable_id::{validate_stable_message_id, StableMessageIdError, MAX_STABLE_MESSAGE_ID_LEN};
-pub(crate) use topology::BusTopologyConfig;
+pub use topology::{
+    resolve_consumer_group, validate_consumer_group, validate_namespace, BusTopologyConfig,
+    DEFAULT_BUS_NAMESPACE, MAX_TOPOLOGY_NAME_LEN,
+};

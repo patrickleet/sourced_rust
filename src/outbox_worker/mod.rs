@@ -1,10 +1,20 @@
 //! Outbox Worker - Drains and publishes outbox messages.
 //!
-//! This module provides the worker infrastructure for processing outbox messages:
+//! This module provides the worker infrastructure for processing outbox messages.
+//!
+//! There are two drain paths:
+//! - **Production / extension point**: the async `OutboxDispatcher` +
+//!   `AsyncMessagePublisher` (`BusPublisher` over a `Bus`), wired by
+//!   `service.with_bus(bus)`.
+//! - **Dev/test**: the synchronous `OutboxWorker` + `OutboxPublisher` +
+//!   `LogPublisher` trio — no async runtime, no real transport.
+//!
+//! Items:
 //! - `OutboxStore` - Store operations for claiming and completing messages
-//! - `OutboxWorker` - Synchronous message processor
-//! - `OutboxPublisher` - Trait for publishing to external systems
-//! - `LogPublisher` - Simple logging publisher for testing
+//! - `OutboxDispatcher` / `BusPublisher` - the async production drain path
+//! - `OutboxWorker` - synchronous dev/test message processor
+//! - `OutboxPublisher` - synchronous dev/test publish trait
+//! - `LogPublisher` - simple logging publisher for tests
 //! - `LocalEmitterPublisher` - In-process event emitter (requires `emitter` feature)
 //!
 //! ## Separation of Concerns

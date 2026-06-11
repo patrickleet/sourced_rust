@@ -48,6 +48,7 @@ impl std::str::FromStr for OutboxMessageStatus {
 /// It is not an aggregate stream; repositories store it in their outbox storage
 /// and workers update delivery state directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OutboxMessage {
     pub id: String,
     pub event_type: String,

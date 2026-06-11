@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
+use distributed::table::TableSchemaRegistry;
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
     OutboxMessage, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    SnapshotStore, SqliteRepository, StreamIdentity, StreamWrite, TableSchemaRegistry,
-    TransactionalCommit, OUTBOX_MESSAGES_TABLE,
+    SnapshotStore, SqliteRepository, StreamIdentity, StreamWrite, TransactionalCommit,
+    OUTBOX_MESSAGES_TABLE,
 };
 use serde::{Deserialize, Serialize};
 

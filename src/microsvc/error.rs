@@ -9,6 +9,7 @@ use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HandlerError {
     /// No handler registered for this command name.
     UnknownCommand(String),
