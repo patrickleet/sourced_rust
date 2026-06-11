@@ -1,0 +1,7 @@
+error: unexpected end of input, #[sourced] requires the entity field name, e.g. `#[sourced(entity)]`
+ --> tests/compile_fail/sourced_missing_entity.rs:8:1
+  |
+8 | #[sourced()]
+  | ^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `sourced` (in Nightly builds, run with -Z macro-backtrace for more info)

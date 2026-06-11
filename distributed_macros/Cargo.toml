@@ -13,3 +13,10 @@ proc-macro = true
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+
+[dev-dependencies]
+trybuild = "1.0"
+# Dev-only cycle: `distributed` depends on this crate, but trybuild fixtures
+# need the runtime crate to type-check generated `distributed::...` code.
+# Cargo permits dev-dependency cycles.
+distributed = { path = ".." }
