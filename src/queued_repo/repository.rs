@@ -149,6 +149,22 @@ where
             self.inner.get_streams(identities).await
         }
     }
+
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            // Acquire and HOLD the per-stream lock across the load, exactly like
+            // `get_stream` — the snapshot tail load is still a load and must
+            // serialize against concurrent writers. Released by `commit_batch`
+            // on success, or by `unlock`/`abort`.
+            let lock = self.ensure_lock(&identity.storage_key())?;
+            lock.lock().await?;
+            self.inner.get_stream_tail(identity, after_version).await
+        }
+    }
 }
 
 impl<R, L> TransactionalCommit for QueuedRepository<R, L>

@@ -41,8 +41,13 @@ pub(crate) struct SnapshotPolicy<R, A> {
     frequency: u64,
     /// Build a snapshot cache record for the aggregate when one is due.
     record: fn(&A, u64) -> Result<Option<SnapshotRecord>, RepositoryError>,
-    /// Load the cache record (if any) and hydrate the aggregate from it.
+    /// Hydrate an already-loaded entity from the cache record (if any). Used on
+    /// load paths that have the full stream in hand (batch loads, locked reads).
     hydrate: HydrateFn<R, A>,
+    /// Own the whole load: read the snapshot first, then fetch only the tail of
+    /// the stream (skipping already-snapshotted I/O), falling back to a full
+    /// load on a cache miss. Used by the single-aggregate `get` hot path.
+    load: LoadFn<R, A>,
 }
 
 type HydrateFn<R, A> =
@@ -52,18 +57,27 @@ type HydrateFn<R, A> =
         Entity,
     ) -> Pin<Box<dyn Future<Output = Result<A, RepositoryError>> + Send + 'a>>;
 
+type LoadFn<R, A> = for<'a> fn(
+    &'a R,
+    &'a StreamIdentity,
+) -> Pin<
+    Box<dyn Future<Output = Result<Option<A>, RepositoryError>> + Send + 'a>,
+>;
+
 impl<R, A> SnapshotPolicy<R, A> {
     /// Construct a policy from its captured hooks. Called by `with_snapshots`,
-    /// which carries the `Snapshottable`/`SnapshotStore` bounds.
+    /// which carries the `Snapshottable`/`SnapshotStore`/`GetStream` bounds.
     pub(crate) fn new(
         frequency: u64,
         record: fn(&A, u64) -> Result<Option<SnapshotRecord>, RepositoryError>,
         hydrate: HydrateFn<R, A>,
+        load: LoadFn<R, A>,
     ) -> Self {
         Self {
             frequency,
             record,
             hydrate,
+            load,
         }
     }
 }
@@ -174,11 +188,19 @@ where
 {
     pub async fn get(&self, id: &str) -> Result<Option<A>, RepositoryError> {
         let identity = stream_identity_for::<A>(id)?;
-        let entity = self.repo.get_stream(&identity).await?;
-        let Some(entity) = entity else {
-            return Ok(None);
-        };
-        Ok(Some(self.hydrate_entity(&identity, entity).await?))
+        // With a snapshot policy, the policy owns the load so it can read the
+        // snapshot first and fetch only the post-snapshot tail (skipping the I/O
+        // and decode of already-snapshotted events). Without one, a plain full
+        // stream load. Same hydrated aggregate either way.
+        match &self.snapshot {
+            Some(policy) => (policy.load)(&self.repo, &identity).await,
+            None => {
+                let Some(entity) = self.repo.get_stream(&identity).await? else {
+                    return Ok(None);
+                };
+                Ok(Some(hydrate::<A>(entity)?))
+            }
+        }
     }
 
     /// Load existing aggregates for the provided ids.

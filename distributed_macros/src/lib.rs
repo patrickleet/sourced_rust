@@ -1353,6 +1353,10 @@ pub fn derive_read_model(input: TokenStream) -> TokenStream {
 /// Options:
 /// - `#[snapshot(id = "sku")]` — use a struct field as the ID key instead of synthesizing `id`
 /// - `#[snapshot(entity = "my_entity")]` — override the entity field name (default: `entity`)
+/// - `#[snapshot(version = N)]` — set `Snapshottable::SNAPSHOT_VERSION` (default: 1).
+///   Bump this whenever the snapshot layout changes incompatibly; on load a
+///   stored snapshot whose version differs is treated as a cache miss and the
+///   aggregate is rebuilt by replay rather than mis-decoded.
 /// - Fields with `#[serde(skip)]` are automatically excluded
 #[proc_macro_derive(Snapshot, attributes(snapshot))]
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {

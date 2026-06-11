@@ -401,7 +401,6 @@ fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode
         TodoV2::aggregate_type(),
         "t1",
         1,
-        std::any::type_name::<aggregate::TodoV2Snapshot>(),
         1,
         bitcode::serialize(&aggregate::TodoV2Snapshot {
             id: "t1".to_string(),
