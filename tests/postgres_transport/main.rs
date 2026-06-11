@@ -456,12 +456,18 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
     let producer = PostgresBus::new(pool.clone());
     producer.ensure_tables().await.expect("ensure tables");
 
+    // Layout (by seq): poison, ok, poison. The trailing poison is the highest
+    // seq, so a consumer that *silently skips* corrupt entries (matching only by
+    // name) would stop its offset at the healthy `ok` entry and never reach the
+    // last seq — the offset would fall short of max_seq and this test would fail.
+    // Reaching max_seq proves the corrupt entries were settled through the policy
+    // (offset advanced past them), not skipped because their name no longer matched.
     producer
         .publish_message(
             Message::new("order.initialized", MessageKind::Event, b"{}".to_vec()).with_id("poison"),
         )
         .await
-        .expect("publish poison");
+        .expect("publish leading poison");
     corrupt_latest_log_name(&pool).await;
     producer
         .publish_message(
@@ -469,6 +475,14 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         )
         .await
         .expect("publish ok");
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                .with_id("poison-tail"),
+        )
+        .await
+        .expect("publish trailing poison");
+    corrupt_latest_log_name(&pool).await;
 
     let rec = Arc::new(Mutex::new(Vec::new()));
     PostgresBus::new(pool.clone())
@@ -478,10 +492,10 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
             RunOptions::idempotent(),
         )
         .await
-        .expect("subscribe drains past the corrupt entry");
+        .expect("subscribe drains past the corrupt entries");
 
-    // The healthy event after the poison entry was handled — the consumer did not
-    // get stuck on the corrupt row, and the corrupt row was not dispatched as an
+    // The healthy event between the poison entries was handled — the consumer did
+    // not get stuck on a corrupt row, and no corrupt row was dispatched as an
     // empty-named message.
     let handled = rec.lock().unwrap().clone();
     assert_eq!(
@@ -490,7 +504,9 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         "only the valid event handled"
     );
 
-    // The offset advanced past both entries (dead-letter advances the log offset).
+    // The offset advanced past every entry, including the trailing corrupt one
+    // (dead-letter advances the log offset). If the corrupt entries were skipped
+    // silently by name, the offset would stop at the `ok` entry, short of max_seq.
     let offset: Option<i64> =
         sqlx::query_scalar("SELECT last_seq FROM bus_offset WHERE consumer = 'projections'")
             .fetch_optional(&pool)
@@ -503,6 +519,6 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
     assert_eq!(
         offset,
         Some(max_seq),
-        "offset advanced past the corrupt entry, not stuck or skipped-silently"
+        "offset advanced past the trailing corrupt entry, not stuck or skipped-silently"
     );
 }

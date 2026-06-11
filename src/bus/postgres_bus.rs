@@ -305,12 +305,20 @@ impl AsyncMessageSource for QueueSource {
     type Received = QueueReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        // Claim the next row whose `name` matches a subscribed command, OR whose
+        // `name` is NULL. A NULL name is un-routable corruption: it belongs to no
+        // consumer, so `name = ANY($2)` would never match it and it would sit in
+        // the queue forever, never claimed, never settled. Claiming it here lets
+        // the runner route it through the failure policy (dead-letter by default,
+        // which deletes the row) instead of leaving a poison row that blocks the
+        // queue from draining. `FOR UPDATE SKIP LOCKED` keeps the claim safe under
+        // competing listeners — only one settles the orphaned row.
         let row = sqlx::query(
             "UPDATE bus_queue SET locked_until = now() + ($1 * interval '1 second'), \
                     attempts = attempts + 1 \
              WHERE seq = ( \
                 SELECT seq FROM bus_queue \
-                WHERE name = ANY($2) AND available_at <= now() \
+                WHERE (name = ANY($2) OR name IS NULL) AND available_at <= now() \
                       AND (locked_until IS NULL OR locked_until < now()) \
                 ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT 1 \
              ) \
@@ -415,9 +423,16 @@ impl AsyncMessageSource for LogSource {
     type Received = LogReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        // Read the next entry past this consumer's offset whose `name` matches a
+        // subscribed event, OR whose `name` is NULL. A NULL name is un-routable
+        // corruption: `name = ANY($1)` would skip past it silently when the offset
+        // jumps to a later healthy entry, dropping the poison record with no trace.
+        // Surfacing it lets the runner route it through the failure policy
+        // (dead-letter by default, which advances the offset past it) so the
+        // corrupt entry is settled, not silently skipped.
         let row = sqlx::query(
             "SELECT seq, name, message_id, kind, payload, content_type, metadata FROM bus_log \
-             WHERE name = ANY($1) \
+             WHERE (name = ANY($1) OR name IS NULL) \
                    AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = $2), 0) \
              ORDER BY seq LIMIT 1",
         )
