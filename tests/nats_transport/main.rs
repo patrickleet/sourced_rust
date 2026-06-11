@@ -17,7 +17,9 @@ use serde_json::json;
 // Shared broker-test helpers (recording_for, run_token, unique, ...).
 #[path = "../transport_conformance/mod.rs"]
 mod conformance;
-use conformance::unique;
+use conformance::{
+    named_recording_for as named_recording_service, recording_for as recording_service, unique,
+};
 
 fn nats_url() -> Option<String> {
     match std::env::var("NATS_URL") {
@@ -125,47 +127,6 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     assert_eq!(got.0.as_deref(), Some("evt-1"));
     assert_eq!(got.1.as_deref(), Some("corr-9"));
     assert_eq!(got.2, br#"{"k":"v"}"#.to_vec());
-}
-
-/// Build a service whose single handler records the message id into `rec`.
-/// `kind` selects command vs event registration.
-fn recording_service(
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
-fn named_recording_service(
-    service_name: &str,
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
 }
 
 /// `send` + `listen`: replicas sharing a `group` compete for the command — each
