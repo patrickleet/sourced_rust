@@ -1,10 +1,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
     Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, RepositoryError, SnapshotRecord,
     SnapshotStore, SnapshotWrite, StreamIdentity, StreamWrite, TransactionalCommit,
 };
+use tokio::sync::Barrier;
 
 use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, SEAT_RESERVED_STATUS};
 use super::checkout_saga::CheckoutSaga;
@@ -371,6 +373,119 @@ where
     );
     assert_eq!(loaded_checkout.snapshot_type, "CheckoutSnapshot");
     assert_eq!(loaded_checkout.payload, vec![2]);
+}
+
+/// Red-team concurrency: `N` tasks each load the **same** aggregate at the same
+/// committed version and race to append a conflicting event, synchronized by a
+/// barrier so the writes overlap as tightly as the runtime allows. Optimistic
+/// concurrency must let **exactly one** win; the rest must observe
+/// `ConcurrentWrite`. Crucially, the surviving stream must be gap-free and
+/// duplicate-free: this exercises the unique `(aggregate, sequence)` PK backstop
+/// behind the read-then-check version window under real concurrency (the
+/// existing `concurrent_writes_detected` test only races sequentially).
+///
+/// `concurrency` must be >= 2 (the test asserts at least one conflict).
+pub async fn racing_commits_one_wins_one_conflicts<R>(repo: R, concurrency: usize)
+where
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
+{
+    assert!(
+        concurrency >= 2,
+        "racing test needs at least two writers to produce a conflict"
+    );
+
+    let seat_id = unique_id("racing-seat");
+    let seat_repo = repo.clone().aggregate::<Seat>();
+
+    // Seed at version 1. Every racer will load this exact state.
+    let mut seed = Seat::default();
+    seed.add(seat_id.clone(), "balcony".into())
+        .expect("seed seat should be valid");
+    seat_repo
+        .commit(&mut seed)
+        .await
+        .expect("seed seat commit should succeed");
+
+    // Each racer loads independently *before* the barrier so all of them hold
+    // a v1 snapshot; the barrier then releases the commits together.
+    let barrier = Arc::new(Barrier::new(concurrency));
+    let mut handles = Vec::with_capacity(concurrency);
+    for index in 0..concurrency {
+        let repo = repo.clone();
+        let barrier = Arc::clone(&barrier);
+        let seat_id = seat_id.clone();
+        handles.push(tokio::spawn(async move {
+            let seat_repo = repo.aggregate::<Seat>();
+            let mut seat = seat_repo
+                .get(&seat_id)
+                .await
+                .expect("racer load should succeed")
+                .expect("racer should see the seeded seat");
+            assert_eq!(
+                seat.entity.committed_version(),
+                1,
+                "every racer must start from the same committed version"
+            );
+            // A reservation is a single new event on top of v1 for every racer,
+            // so they all target sequence 2 — exactly one can land it.
+            seat.reserve(
+                format!("checkout-{index}"),
+                seat_id.clone(),
+                seat.category.clone(),
+            )
+            .expect("reservation should be locally valid");
+
+            // Synchronize the commit attempts as tightly as possible.
+            barrier.wait().await;
+            seat_repo.commit(&mut seat).await
+        }));
+    }
+
+    let mut successes = 0usize;
+    let mut conflicts = 0usize;
+    for handle in handles {
+        match handle.await.expect("racer task should not panic") {
+            Ok(()) => successes += 1,
+            Err(RepositoryError::ConcurrentWrite { .. }) => conflicts += 1,
+            Err(other) => panic!("unexpected racer error: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        successes, 1,
+        "exactly one racer must win the optimistic race"
+    );
+    assert_eq!(
+        conflicts,
+        concurrency - 1,
+        "every other racer must observe ConcurrentWrite"
+    );
+
+    // The surviving stream must be a clean append-only log: versions 1..=2 with
+    // no gaps and no duplicate sequences. A TOCTOU leak would manifest as a
+    // duplicate sequence or a third event here.
+    let identity =
+        StreamIdentity::new(Seat::aggregate_type(), &seat_id).expect("identity should be valid");
+    let entity = repo
+        .get_stream(&identity)
+        .await
+        .expect("final stream lookup should succeed")
+        .expect("final stream should exist");
+    let sequences = entity
+        .events()
+        .iter()
+        .map(|event| event.sequence)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences,
+        vec![1, 2],
+        "winning stream must be exactly two contiguous events with no gaps or duplicates"
+    );
+    assert_eq!(
+        entity.committed_version(),
+        2,
+        "the stream advances by exactly one version despite N racers"
+    );
 }
 
 async fn add_seat<R>(

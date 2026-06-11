@@ -144,3 +144,35 @@ async fn consumer_inbox_rejects_empty_receipt() {
     };
     conformance::inbox::inbox_rejects_empty_receipt(repo).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn racing_commits_one_wins_one_conflicts() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::scenario::racing_commits_one_wins_one_conflicts(repo, 8).await;
+}
+
+#[tokio::test]
+async fn expired_outbox_lease_is_reclaimed_by_second_worker() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::expired_outbox_lease_is_reclaimed_by_second_worker(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn publish_failure_after_commit_retains_outbox_row_until_delivered() {
+    let Some(repo) = repository().await else {
+        return;
+    };
+    conformance::outbox::publish_failure_after_commit_retains_outbox_row_until_delivered(
+        repo.clone(),
+        repo.outbox_store(),
+    )
+    .await;
+}
