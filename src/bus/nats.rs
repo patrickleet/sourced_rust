@@ -74,7 +74,7 @@ impl NatsPublisher {
 }
 
 impl AsyncMessagePublisher for NatsPublisher {
-    async fn publish(&self, message: Message) -> Result<(), TransportError> {
+    async fn publish(&self, mut message: Message) -> Result<(), TransportError> {
         let subject = self.subject(&message);
         let mut headers = async_nats::HeaderMap::new();
         if let Some(id) = message.id() {
@@ -85,10 +85,14 @@ impl AsyncMessagePublisher for NatsPublisher {
             headers.insert(key.as_str(), value.as_str());
         }
 
+        // `message` is owned and dropped here, so move its payload out instead of
+        // cloning. `Bytes::from(Vec<u8>)` takes ownership of the buffer (no copy).
+        let payload = std::mem::take(&mut message.payload).into();
+
         // Publish ack (the durable publish threshold): both awaits must succeed.
         let ack_future = self
             .jetstream
-            .publish_with_headers(subject, headers, message.payload.clone().into())
+            .publish_with_headers(subject, headers, payload)
             .await
             .map_err(|err| retryable("nats publish", err))?;
         ack_future

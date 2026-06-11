@@ -122,33 +122,70 @@ fn hydrate_prepared_snapshot<A: Snapshottable>(
     // Restore aggregate state from snapshot
     agg.restore_from_snapshot(snapshot_payload);
 
-    // Replay only events AFTER the snapshot
-    let post_snapshot: Vec<crate::entity::EventRecord> = agg
-        .entity()
-        .events()
-        .iter()
-        .filter(|e| e.sequence > snapshot.version)
-        .cloned()
-        .collect();
-
-    // Apply upcasters to post-snapshot events
+    // Replay only events AFTER the snapshot. Take the events out of the entity
+    // so we can iterate them while holding a mutable borrow of `agg`, then put
+    // the full history back unchanged (its version/committed_version invariants
+    // must survive: the pre-snapshot prefix is still counted for `new_events`
+    // slicing on the next commit).
+    let history = agg.entity_mut().take_events();
     let upcasters = A::upcasters();
-    let events = if upcasters.is_empty() {
-        post_snapshot
+
+    let replay_result = if upcasters.is_empty() {
+        // Common path: replay straight from a filtered borrow — no clone of the
+        // post-snapshot tail.
+        replay_filtered(&mut agg, &history, snapshot.version)
     } else {
-        upcast_events(post_snapshot, upcasters)
-            .map_err(|err| SnapshotHydrationError::Replay(err.to_string()))?
+        // Upcasters may rewrite the post-snapshot events; build that view (a
+        // clone bounded to the tail) and replay from it.
+        let post_snapshot: Vec<crate::entity::EventRecord> = history
+            .iter()
+            .filter(|e| e.sequence > snapshot.version)
+            .cloned()
+            .collect();
+        match upcast_events(post_snapshot, upcasters) {
+            Ok(events) => replay_events(&mut agg, &events),
+            Err(err) => Err(SnapshotHydrationError::Replay(err.to_string())),
+        }
     };
 
+    // Restore the full history regardless of replay outcome before surfacing it.
+    agg.entity_mut().restore_history(history);
+    replay_result?;
+    Ok(agg)
+}
+
+/// Replay the post-snapshot tail (`sequence > snapshot_version`) directly from a
+/// borrowed history, with no intermediate allocation.
+fn replay_filtered<A: Snapshottable>(
+    agg: &mut A,
+    history: &[crate::entity::EventRecord],
+    snapshot_version: u64,
+) -> Result<(), SnapshotHydrationError> {
     agg.entity_mut().set_replaying(true);
-    for event in &events {
+    for event in history.iter().filter(|e| e.sequence > snapshot_version) {
         if let Err(err) = agg.replay_event(event) {
             agg.entity_mut().set_replaying(false);
             return Err(SnapshotHydrationError::Replay(err.to_string()));
         }
     }
     agg.entity_mut().set_replaying(false);
-    Ok(agg)
+    Ok(())
+}
+
+/// Replay an already-prepared (e.g. upcasted) event slice.
+fn replay_events<A: Snapshottable>(
+    agg: &mut A,
+    events: &[crate::entity::EventRecord],
+) -> Result<(), SnapshotHydrationError> {
+    agg.entity_mut().set_replaying(true);
+    for event in events {
+        if let Err(err) = agg.replay_event(event) {
+            agg.entity_mut().set_replaying(false);
+            return Err(SnapshotHydrationError::Replay(err.to_string()));
+        }
+    }
+    agg.entity_mut().set_replaying(false);
+    Ok(())
 }
 
 fn snapshot_record_for<A: Snapshottable>(aggregate: &A) -> Result<SnapshotRecord, RepositoryError> {

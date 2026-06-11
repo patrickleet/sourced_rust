@@ -245,12 +245,75 @@ impl GetStream for PostgresRepository {
         identities: &'a [StreamIdentity],
     ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a {
         async move {
-            let mut entities = Vec::with_capacity(identities.len());
+            if identities.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Group ids by aggregate type so each type is one `aggregate_id =
+            // ANY($2)` round trip instead of a query per identity. `get_all`
+            // builds single-type batches, so the common case is one query; the
+            // grouping only exists to keep arbitrary mixed-type inputs correct.
+            let mut ids_by_type: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
             for identity in identities {
-                if let Some(entity) = self.get_stream(identity).await? {
-                    entities.push(entity);
+                ids_by_type
+                    .entry(identity.aggregate_type())
+                    .or_default()
+                    .push(identity.aggregate_id());
+            }
+
+            let mut entities = Vec::with_capacity(identities.len());
+            for (aggregate_type, aggregate_ids) in ids_by_type {
+                // Ordering by aggregate_id then sequence lets us slice the flat
+                // result into per-aggregate entities in one pass. Callers of
+                // `get_all` accept storage-order results.
+                let rows = sqlx::query(
+                    r#"
+                    SELECT aggregate_id,
+                           event_name,
+                           event_version,
+                           payload,
+                           payload_codec,
+                           payload_codec_version,
+                           metadata::text AS metadata,
+                           sequence,
+                           EXTRACT(EPOCH FROM recorded_at)::double precision AS recorded_at_epoch
+                    FROM aggregate_events
+                    WHERE aggregate_type = $1 AND aggregate_id = ANY($2)
+                    ORDER BY aggregate_id ASC, sequence ASC
+                    "#,
+                )
+                .bind(aggregate_type)
+                .bind(&aggregate_ids)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|err| repository_storage_error("load streams", err))?;
+
+                let mut current_id: Option<String> = None;
+                let mut current_events: Vec<EventRecord> = Vec::new();
+                for row in rows {
+                    let row_id: String = row
+                        .try_get("aggregate_id")
+                        .map_err(|err| repository_storage_error("decode aggregate id row", err))?;
+                    let event = event_from_row(row)?;
+                    match &current_id {
+                        Some(id) if id == &row_id => current_events.push(event),
+                        _ => {
+                            if let Some(id) = current_id.take() {
+                                entities.push(entity_from_events(
+                                    id,
+                                    std::mem::take(&mut current_events),
+                                ));
+                            }
+                            current_id = Some(row_id);
+                            current_events.push(event);
+                        }
+                    }
+                }
+                if let Some(id) = current_id.take() {
+                    entities.push(entity_from_events(id, current_events));
                 }
             }
+
             Ok(entities)
         }
     }
@@ -349,22 +412,9 @@ impl TransactionalCommit for PostgresRepository {
                 }
             }
 
-            for append in &prepared {
-                for event in &append.events {
-                    insert_event_in_tx(
-                        &self.pool,
-                        &mut tx,
-                        &append.identity,
-                        append.expected_version,
-                        event,
-                    )
-                    .await?;
-                }
-            }
+            insert_events_in_tx(&self.pool, &mut tx, &prepared).await?;
 
-            for message in &batch.outbox_messages {
-                insert_outbox_message_in_tx(&mut tx, message).await?;
-            }
+            insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
 
             for plan in batch.read_model_plans {
                 apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
@@ -1981,156 +2031,257 @@ async fn stream_version_pool(
         .unwrap_or(Ok(0))
 }
 
-async fn insert_event_in_tx(
+/// Insert every event across all prepared appends in a single multi-row INSERT.
+///
+/// Conflict detection is unchanged from the per-row path: the `(aggregate_type,
+/// aggregate_id, sequence)` primary key is the contiguity gate, and a unique
+/// violation still surfaces as `ConcurrentWrite`. Because a failed statement
+/// aborts the transaction, the conflicting stream's actual version is re-read
+/// over the pool (a separate connection), exactly as the per-row path did.
+async fn insert_events_in_tx(
     pool: &PgPool,
     tx: &mut Transaction<'_, Postgres>,
-    identity: &StreamIdentity,
-    expected_version: u64,
-    event: &EventRecord,
+    prepared: &[PreparedEventAppend],
 ) -> Result<(), RepositoryError> {
-    let metadata = serialize_event_metadata(&event.metadata)?;
+    if prepared.iter().all(|append| append.events.is_empty()) {
+        return Ok(());
+    }
 
-    let result = sqlx::query(
-        r#"
-        INSERT INTO aggregate_events (
-          aggregate_type,
-          aggregate_id,
-          sequence,
-          event_name,
-          event_version,
-          payload,
-          payload_codec,
-          payload_codec_version,
-          metadata,
-          recorded_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, to_timestamp($10))
-        "#,
-    )
-    .bind(identity.aggregate_type())
-    .bind(identity.aggregate_id())
-    .bind(sqlx_repository_i64_from_u64(
-        POSTGRES_BACKEND,
-        event.sequence,
-        "sequence",
-        BIGINT_STORAGE,
-    )?)
-    .bind(&event.event_name)
-    .bind(sqlx_repository_i32_from_u64(
-        POSTGRES_BACKEND,
-        event.event_version,
-        "event_version",
-        INTEGER_STORAGE,
-    )?)
-    .bind(&event.payload)
-    .bind(&event.payload_codec)
-    .bind(i32::from(event.payload_codec_version))
-    .bind(metadata)
-    .bind(system_time_to_epoch_secs(event.timestamp)?)
-    .execute(&mut **tx)
-    .await;
+    // Each row carries pre-validated bind values; build them before the query so
+    // any conversion error surfaces before we touch the database.
+    struct EventRow<'a> {
+        aggregate_type: &'a str,
+        aggregate_id: &'a str,
+        sequence: i64,
+        event_name: &'a str,
+        event_version: i32,
+        payload: &'a [u8],
+        payload_codec: &'a str,
+        payload_codec_version: i32,
+        metadata: String,
+        recorded_at: f64,
+    }
+
+    let mut rows = Vec::new();
+    for append in prepared {
+        for event in &append.events {
+            rows.push(EventRow {
+                aggregate_type: append.identity.aggregate_type(),
+                aggregate_id: append.identity.aggregate_id(),
+                sequence: sqlx_repository_i64_from_u64(
+                    POSTGRES_BACKEND,
+                    event.sequence,
+                    "sequence",
+                    BIGINT_STORAGE,
+                )?,
+                event_name: &event.event_name,
+                event_version: sqlx_repository_i32_from_u64(
+                    POSTGRES_BACKEND,
+                    event.event_version,
+                    "event_version",
+                    INTEGER_STORAGE,
+                )?,
+                payload: &event.payload,
+                payload_codec: &event.payload_codec,
+                payload_codec_version: i32::from(event.payload_codec_version),
+                metadata: serialize_event_metadata(&event.metadata)?,
+                recorded_at: system_time_to_epoch_secs(event.timestamp)?,
+            });
+        }
+    }
+
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "INSERT INTO aggregate_events (\
+         aggregate_type, aggregate_id, sequence, event_name, event_version, \
+         payload, payload_codec, payload_codec_version, metadata, recorded_at) ",
+    );
+    builder.push_values(rows, |mut row, event| {
+        row.push_bind(event.aggregate_type)
+            .push_bind(event.aggregate_id)
+            .push_bind(event.sequence)
+            .push_bind(event.event_name)
+            .push_bind(event.event_version)
+            .push_bind(event.payload)
+            .push_bind(event.payload_codec)
+            .push_bind(event.payload_codec_version)
+            .push_bind(event.metadata)
+            .push_unseparated("::jsonb");
+        // recorded_at is stored from epoch seconds via to_timestamp(...).
+        row.push("to_timestamp(")
+            .push_bind_unseparated(event.recorded_at)
+            .push_unseparated(")");
+    });
+
+    let result = builder.build().execute(&mut **tx).await;
 
     match result {
         Ok(_) => Ok(()),
         Err(err) if is_postgres_unique_violation(&err) => {
-            let actual = stream_version_pool(pool, identity).await?;
-            Err(RepositoryError::ConcurrentWrite {
-                id: identity.to_string(),
-                expected: expected_version,
-                actual,
-            })
+            Err(concurrent_write_from_conflict(pool, prepared).await)
         }
-        Err(err) => Err(repository_storage_error("insert event", err)),
+        Err(err) => Err(repository_storage_error("insert events", err)),
     }
 }
 
-async fn insert_outbox_message_in_tx(
+/// After an event-insert unique violation, find the stream whose actual version
+/// no longer matches its expected version and report it as `ConcurrentWrite`.
+/// Falls back to the first append if a concurrent writer's effect cannot be
+/// pinned down (the violation still indicates a conflicting write).
+async fn concurrent_write_from_conflict(
+    pool: &PgPool,
+    prepared: &[PreparedEventAppend],
+) -> RepositoryError {
+    for append in prepared {
+        match stream_version_pool(pool, &append.identity).await {
+            Ok(actual) if actual != append.expected_version => {
+                return RepositoryError::ConcurrentWrite {
+                    id: append.identity.to_string(),
+                    expected: append.expected_version,
+                    actual,
+                };
+            }
+            Ok(_) => {}
+            Err(err) => return err,
+        }
+    }
+
+    let append = &prepared[0];
+    match stream_version_pool(pool, &append.identity).await {
+        Ok(actual) => RepositoryError::ConcurrentWrite {
+            id: append.identity.to_string(),
+            expected: append.expected_version,
+            actual,
+        },
+        Err(err) => err,
+    }
+}
+
+/// Insert every outbox message in a single multi-row INSERT. A unique violation
+/// on `message_id` still maps to `DuplicateOutboxMessageInBatch`.
+async fn insert_outbox_messages_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    message: &OutboxMessage,
+    messages: &[OutboxMessage],
 ) -> Result<(), RepositoryError> {
-    let metadata = serialize_event_metadata(&message.metadata)?;
-    let source_sequence = message
-        .source_sequence
-        .map(|value| {
-            sqlx_repository_i64_from_u64(
+    if messages.is_empty() {
+        return Ok(());
+    }
+
+    struct OutboxRow<'a> {
+        message_id: &'a str,
+        event_type: &'a str,
+        payload: &'a [u8],
+        payload_codec: &'a str,
+        payload_codec_version: i32,
+        destination: Option<&'a str>,
+        metadata: String,
+        status: &'a str,
+        created_at: f64,
+        worker_id: Option<&'a str>,
+        leased_until: Option<f64>,
+        attempts: i32,
+        last_error: Option<&'a str>,
+        source_aggregate_type: Option<&'a str>,
+        source_aggregate_id: Option<&'a str>,
+        source_sequence: Option<i64>,
+        correlation_id: Option<&'a str>,
+        causation_id: Option<&'a str>,
+    }
+
+    let mut rows = Vec::with_capacity(messages.len());
+    for message in messages {
+        rows.push(OutboxRow {
+            message_id: message.id(),
+            event_type: &message.event_type,
+            payload: &message.payload,
+            payload_codec: &message.payload_codec,
+            payload_codec_version: i32::from(message.payload_codec_version),
+            destination: message.destination.as_deref(),
+            metadata: serialize_event_metadata(&message.metadata)?,
+            status: message.status.as_str(),
+            created_at: system_time_to_epoch_secs(message.created_at)?,
+            worker_id: message.worker_id.as_deref(),
+            leased_until: message
+                .leased_until
+                .map(system_time_to_epoch_secs)
+                .transpose()?,
+            attempts: sqlx_repository_i32_from_u64(
                 POSTGRES_BACKEND,
-                value,
-                "outbox source sequence",
-                BIGINT_STORAGE,
-            )
-        })
-        .transpose()?;
-    let result = sqlx::query(
-        r#"
-        INSERT INTO outbox_messages (
-          message_id,
-          event_type,
-          payload,
-          payload_codec,
-          payload_codec_version,
-          destination,
-          metadata,
-          status,
-          created_at,
-          next_available_at,
-          claimed_by,
-          claimed_until,
-          attempts,
-          last_error,
-          source_aggregate_type,
-          source_aggregate_id,
-          source_sequence,
-          correlation_id,
-          causation_id
-        )
-        VALUES (
-          $1, $2, $3, $4, $5, $6, $7::jsonb, $8,
-          to_timestamp($9), to_timestamp($10), $11,
-          to_timestamp($12::double precision), $13, $14,
-          $15, $16, $17, $18, $19
-        )
-        "#,
-    )
-    .bind(message.id())
-    .bind(&message.event_type)
-    .bind(&message.payload)
-    .bind(&message.payload_codec)
-    .bind(i32::from(message.payload_codec_version))
-    .bind(&message.destination)
-    .bind(metadata)
-    .bind(message.status.as_str())
-    .bind(system_time_to_epoch_secs(message.created_at)?)
-    .bind(system_time_to_epoch_secs(message.created_at)?)
-    .bind(&message.worker_id)
-    .bind(
-        message
-            .leased_until
-            .map(system_time_to_epoch_secs)
-            .transpose()?,
-    )
-    .bind(sqlx_repository_i32_from_u64(
-        POSTGRES_BACKEND,
-        u64::from(message.attempts),
-        "outbox attempts",
-        INTEGER_STORAGE,
-    )?)
-    .bind(&message.last_error)
-    .bind(&message.source_aggregate_type)
-    .bind(&message.source_aggregate_id)
-    .bind(source_sequence)
-    .bind(message.correlation_id())
-    .bind(message.causation_id())
-    .execute(&mut **tx)
-    .await;
+                u64::from(message.attempts),
+                "outbox attempts",
+                INTEGER_STORAGE,
+            )?,
+            last_error: message.last_error.as_deref(),
+            source_aggregate_type: message.source_aggregate_type.as_deref(),
+            source_aggregate_id: message.source_aggregate_id.as_deref(),
+            source_sequence: message
+                .source_sequence
+                .map(|value| {
+                    sqlx_repository_i64_from_u64(
+                        POSTGRES_BACKEND,
+                        value,
+                        "outbox source sequence",
+                        BIGINT_STORAGE,
+                    )
+                })
+                .transpose()?,
+            correlation_id: message.correlation_id(),
+            causation_id: message.causation_id(),
+        });
+    }
+
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "INSERT INTO outbox_messages (\
+         message_id, event_type, payload, payload_codec, payload_codec_version, \
+         destination, metadata, status, created_at, next_available_at, \
+         claimed_by, claimed_until, attempts, last_error, source_aggregate_type, \
+         source_aggregate_id, source_sequence, correlation_id, causation_id) ",
+    );
+    builder.push_values(rows, |mut row, message| {
+        row.push_bind(message.message_id)
+            .push_bind(message.event_type)
+            .push_bind(message.payload)
+            .push_bind(message.payload_codec)
+            .push_bind(message.payload_codec_version)
+            .push_bind(message.destination)
+            .push_bind(message.metadata)
+            .push_unseparated("::jsonb")
+            .push_bind(message.status);
+        // created_at and next_available_at share the same epoch-seconds value.
+        row.push("to_timestamp(")
+            .push_bind_unseparated(message.created_at)
+            .push_unseparated(")");
+        row.push("to_timestamp(")
+            .push_bind_unseparated(message.created_at)
+            .push_unseparated(")");
+        row.push_bind(message.worker_id);
+        // claimed_until: NULL stays NULL through to_timestamp, matching the
+        // per-row path's `to_timestamp($n::double precision)`.
+        row.push("to_timestamp(")
+            .push_bind_unseparated(message.leased_until)
+            .push_unseparated("::double precision)");
+        row.push_bind(message.attempts)
+            .push_bind(message.last_error)
+            .push_bind(message.source_aggregate_type)
+            .push_bind(message.source_aggregate_id)
+            .push_bind(message.source_sequence)
+            .push_bind(message.correlation_id)
+            .push_bind(message.causation_id);
+    });
+
+    let result = builder.build().execute(&mut **tx).await;
 
     match result {
         Ok(_) => Ok(()),
         Err(err) if is_postgres_unique_violation(&err) => {
+            // The batch was already deduped (reject_duplicate_outbox_messages),
+            // so a violation means the id collides with a previously committed
+            // row. Report the first message id as the offender, matching the
+            // per-row path's contract.
             Err(RepositoryError::DuplicateOutboxMessageInBatch {
-                id: message.id().to_string(),
+                id: messages[0].id().to_string(),
             })
         }
-        Err(err) => Err(repository_storage_error("insert outbox message", err)),
+        Err(err) => Err(repository_storage_error("insert outbox messages", err)),
     }
 }
 
@@ -2310,6 +2461,13 @@ async fn ensure_outbox_update_applied(
             id: message_id.to_string(),
         })?;
     validate(&message)
+}
+
+fn entity_from_events(aggregate_id: String, events: Vec<EventRecord>) -> Entity {
+    let mut entity = Entity::new();
+    entity.set_id(aggregate_id);
+    entity.load_from_history(events);
+    entity
 }
 
 fn event_from_row(row: PgRow) -> Result<EventRecord, RepositoryError> {

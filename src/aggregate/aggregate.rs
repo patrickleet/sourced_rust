@@ -99,22 +99,40 @@ pub fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
     let mut agg = A::new_empty();
     *agg.entity_mut() = entity;
 
+    // Take the events out of the entity so we can iterate them while holding a
+    // mutable borrow of `agg` during replay. `hydrate` is only ever called with
+    // a full-history entity, so `prefix_version == 0` and restoring via
+    // `load_from_history` reproduces the exact loaded version/committed_version.
+    let history = agg.entity_mut().take_events();
+
     let upcasters = A::upcasters();
     let events = if upcasters.is_empty() {
-        agg.entity().events().to_vec()
+        // Replay directly from `history`; it is restored verbatim below, so no
+        // clone of the stream is needed on the common (no-upcaster) path.
+        replay_into(&mut agg, &history)?;
+        history
     } else {
-        upcast_events(agg.entity().events().to_vec(), upcasters)
-            .map_err(|err| RepositoryError::Replay(err.to_string()))?
+        // Upcasters may rewrite events for replay, but the durable history is
+        // unchanged: replay from the upcasted view, then restore the originals.
+        let upcasted = upcast_events(history.clone(), upcasters)
+            .map_err(|err| RepositoryError::Replay(err.to_string()))?;
+        replay_into(&mut agg, &upcasted)?;
+        history
     };
 
+    agg.entity_mut().load_from_history(events);
+
+    Ok(agg)
+}
+
+fn replay_into<A: Aggregate>(agg: &mut A, events: &[EventRecord]) -> Result<(), RepositoryError> {
     agg.entity_mut().set_replaying(true);
-    for event in &events {
+    for event in events {
         if let Err(err) = agg.replay_event(event) {
             agg.entity_mut().set_replaying(false);
             return Err(RepositoryError::Replay(err.to_string()));
         }
     }
     agg.entity_mut().set_replaying(false);
-
-    Ok(agg)
+    Ok(())
 }
