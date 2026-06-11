@@ -17,9 +17,7 @@ use serde_json::json;
 // Shared broker-test helpers (recording_for, run_token, unique, ...).
 #[path = "../transport_conformance/mod.rs"]
 mod conformance;
-use conformance::{
-    named_recording_for as named_recording_service, recording_for as recording_service, unique,
-};
+use conformance::{named_recording_for, recording_for, unique};
 
 fn nats_url() -> Option<String> {
     match std::env::var("NATS_URL") {
@@ -165,8 +163,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600));
     let bus_b = bus_a.clone();
-    let svc_a = recording_service("order.initialize", MessageKind::Command, rec.clone());
-    let svc_b = recording_service("order.initialize", MessageKind::Command, rec.clone());
+    let svc_a = recording_for("order.initialize", MessageKind::Command, rec.clone());
+    let svc_b = recording_for("order.initialize", MessageKind::Command, rec.clone());
 
     let (ra, rb) = tokio::join!(
         bus_a.listen(svc_a, RunOptions::idempotent()),
@@ -219,7 +217,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
             .with_fetch_timeout(Duration::from_millis(600));
         let rec = Arc::new(Mutex::new(Vec::new()));
         bus.subscribe(
-            recording_service("order.initialized", MessageKind::Event, rec.clone()),
+            recording_for("order.initialized", MessageKind::Event, rec.clone()),
             RunOptions::idempotent(),
         )
         .await
@@ -258,7 +256,7 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600))
         .subscribe(
-            named_recording_service(
+            named_recording_for(
                 "order-projection",
                 "order.initialized",
                 MessageKind::Event,
