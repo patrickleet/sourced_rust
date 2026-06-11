@@ -160,7 +160,10 @@ impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
             }
         };
 
-        // Build session: start with metadata headers, then overlay payload values
+        // Build session: payload values first, then transport metadata wins.
+        // Transport metadata is trusted (injected by a trusted proxy); the
+        // payload is client-controlled and MUST NOT override it. See
+        // [`build_session`] and the `Session` trust-boundary docs.
         let session = build_session(&metadata, req.session_variables);
 
         match self.service.dispatch(&req.command, input, session).await {
@@ -168,10 +171,19 @@ impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
                 status: 200,
                 body: value.to_string(),
             })),
-            Err(e) => Ok(Response::new(GrpcResponse {
-                status: e.status_code() as u32,
-                body: json!({ "error": e.to_string() }).to_string(),
-            })),
+            Err(e) => {
+                // Mirror the HTTP transport: never leak internal error detail
+                // (SQL/driver text) to clients. Server-internal failures are
+                // masked; client-fault errors keep their descriptive message.
+                let status = e.status_code();
+                if status >= 500 {
+                    eprintln!("microsvc command `{}` failed: {e}", req.command);
+                }
+                Ok(Response::new(GrpcResponse {
+                    status: status as u32,
+                    body: json!({ "error": e.client_facing_message() }).to_string(),
+                }))
+            }
         }
     }
 
@@ -196,26 +208,38 @@ impl<D: Send + Sync + 'static> CommandService for GrpcHandler<D> {
 
 /// Build a session from gRPC metadata and payload session variables.
 ///
-/// 1. Start with gRPC metadata headers (lowercased key → value)
-/// 2. Overlay payload `session_variables` (payload takes precedence)
+/// **Trust boundary (security-critical):** transport metadata is TRUSTED —
+/// it is injected by a trusted proxy/gateway that authenticates the caller
+/// and strips any client-supplied `x-hasura-*` headers. The request payload
+/// `session_variables` are CLIENT-CONTROLLED and therefore UNTRUSTED.
+///
+/// Precedence: **metadata wins.** Payload values are applied first, then
+/// metadata overwrites any colliding key. This prevents a client from
+/// spoofing identity (e.g. `x-hasura-user-id` / `x-hasura-role`) via the
+/// request body when behind a trusted gateway. See the [`Session`] docs for
+/// the framework-wide trust model.
+///
+/// Payload-only keys (not present in metadata) still pass through, preserving
+/// the Hasura action use case where Hasura forwards verified claims in the
+/// payload and no transport metadata is injected.
 fn build_session(
     metadata: &tonic::metadata::MetadataMap,
     payload_vars: HashMap<String, String>,
 ) -> Session {
     let mut vars = HashMap::new();
 
-    // Metadata headers
+    // Untrusted payload first.
+    for (k, v) in payload_vars {
+        vars.insert(k, v);
+    }
+
+    // Trusted metadata wins — overwrites any payload-supplied key.
     for kv in metadata.iter() {
         if let tonic::metadata::KeyAndValueRef::Ascii(key, value) = kv {
             if let Ok(v) = value.to_str() {
                 vars.insert(key.as_str().to_string(), v.to_string());
             }
         }
-    }
-
-    // Payload overrides
-    for (k, v) in payload_vars {
-        vars.insert(k, v);
     }
 
     Session::from_map(vars)

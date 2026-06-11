@@ -2,11 +2,12 @@ mod read_model;
 mod snapshot;
 
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
     braced,
-    parse::{Parse, ParseStream},
-    parse_macro_input, Expr, FnArg, Ident, ItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type,
+    parse::{Parse, ParseStream, Parser},
+    Expr, FnArg, Ident, ItemFn, ItemImpl, LitStr, Pat, ReturnType, Token, Type,
 };
 
 // ============================================================================
@@ -330,37 +331,37 @@ fn generate_upcaster_tokens(
 /// }
 /// ```
 ///
+/// With a renamed entity field (used for the replay guard):
+/// ```ignore
+/// #[enqueue("order.initialized", entity = state)]
+/// fn create(&mut self, id: String) {
+///     // uses self.state.is_replaying() instead of self.entity.is_replaying()
+/// }
+/// ```
+///
 /// The macro supports:
 /// - Default emitter field name: `emitter` (can be overridden by specifying field name first)
 /// - `when = condition`: guard that wraps the entire method body
+/// - `entity = field`: entity field used for the `is_replaying()` guard (default: `entity`)
 /// - Methods may omit the return type; the macro expands them to `distributed::SourcedResult<()>`
 #[proc_macro_attribute]
 pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with parse_enqueue_args);
-    let mut func = parse_macro_input!(item as ItemFn);
+    expand_enqueue(attr.into(), item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
 
-    let signature_synthesized = match ensure_sourced_result_signature(&mut func.sig, "enqueue") {
-        Ok(signature_synthesized) => signature_synthesized,
-        Err(err) => return err.to_compile_error().into(),
-    };
+fn expand_enqueue(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
+    let args = parse_enqueue_args.parse2(attr)?;
+    let mut func = syn::parse2::<ItemFn>(item)?;
+
+    let signature_synthesized = ensure_sourced_result_signature(&mut func.sig, "enqueue")?;
 
     let emitter_field = &args.emitter_field;
     let event_name = &args.event_name;
 
     // Use function parameters - serialize as tuple to JSON
-    let param_names: Vec<_> = func
-        .sig
-        .inputs
-        .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some(&pat_ident.ident);
-                }
-            }
-            None
-        })
-        .collect();
+    let param_names = extract_param_names(&func.sig);
 
     let entity_field = &args.entity_field;
 
@@ -395,7 +396,7 @@ pub fn enqueue(attr: TokenStream, item: TokenStream) -> TokenStream {
     );
     *func.block = new_body;
 
-    TokenStream::from(quote! { #func })
+    Ok(quote! { #func })
 }
 
 struct EnqueueArgs {
@@ -420,24 +421,37 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
     };
 
     let mut guard = None;
+    // Defaults to the conventional `entity` field; overridable so a renamed
+    // entity field still produces a correct `is_replaying()` guard.
+    let mut entity_field = format_ident!("entity");
 
-    // Parse optional guard: `when = condition`
-    if input.peek(Token![,]) {
+    // Parse optional keyword arguments: `when = condition`, `entity = field`
+    while input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
-
-        if input.peek(syn::Ident) {
-            let ident: syn::Ident = input.fork().parse()?;
-            if ident == "when" {
-                input.parse::<syn::Ident>()?; // consume "when"
-                input.parse::<Token![=]>()?;
-                guard = Some(input.parse()?);
-            }
+        // Allow (and ignore) a trailing comma.
+        if input.is_empty() {
+            break;
+        }
+        let ident: syn::Ident = input.parse()?;
+        if ident == "when" {
+            input.parse::<Token![=]>()?;
+            guard = Some(input.parse()?);
+        } else if ident == "entity" {
+            input.parse::<Token![=]>()?;
+            entity_field = input.parse()?;
+        } else {
+            return Err(syn::Error::new_spanned(
+                &ident,
+                format!(
+                    "unsupported key `{ident}` in #[enqueue(...)]; expected `when` or `entity`"
+                ),
+            ));
         }
     }
 
     Ok(EnqueueArgs {
         emitter_field,
-        entity_field: format_ident!("entity"),
+        entity_field,
         event_name,
         guard,
     })
@@ -504,13 +518,16 @@ fn parse_enqueue_args(input: syn::parse::ParseStream) -> syn::Result<EnqueueArgs
 /// - `when = condition`: guard that wraps the entire method body
 #[proc_macro_attribute]
 pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with parse_digest_args);
-    let mut func = parse_macro_input!(item as ItemFn);
+    expand_digest(attr.into(), item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
 
-    let signature_synthesized = match ensure_sourced_result_signature(&mut func.sig, "digest") {
-        Ok(signature_synthesized) => signature_synthesized,
-        Err(err) => return err.to_compile_error().into(),
-    };
+fn expand_digest(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
+    let args = parse_digest_args.parse2(attr)?;
+    let mut func = syn::parse2::<ItemFn>(item)?;
+
+    let signature_synthesized = ensure_sourced_result_signature(&mut func.sig, "digest")?;
 
     let param_names = extract_param_names(&func.sig);
     let digest_call = generate_digest_call(
@@ -528,7 +545,7 @@ pub fn digest(attr: TokenStream, item: TokenStream) -> TokenStream {
     );
     *func.block = new_body;
 
-    TokenStream::from(quote! { #func })
+    Ok(quote! { #func })
 }
 
 struct DigestArgs {
@@ -558,18 +575,24 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
     // Parse optional keyword arguments: `when = condition`, `version = N`
     while input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
-
-        if input.peek(syn::Ident) {
-            let ident: syn::Ident = input.fork().parse()?;
-            if ident == "when" {
-                input.parse::<syn::Ident>()?; // consume "when"
-                input.parse::<Token![=]>()?;
-                guard = Some(input.parse()?);
-            } else if ident == "version" {
-                input.parse::<syn::Ident>()?; // consume "version"
-                input.parse::<Token![=]>()?;
-                version = Some(input.parse()?);
-            }
+        // Allow (and ignore) a trailing comma.
+        if input.is_empty() {
+            break;
+        }
+        let ident: syn::Ident = input.parse()?;
+        if ident == "when" {
+            input.parse::<Token![=]>()?;
+            guard = Some(input.parse()?);
+        } else if ident == "version" {
+            input.parse::<Token![=]>()?;
+            version = Some(input.parse()?);
+        } else {
+            return Err(syn::Error::new_spanned(
+                &ident,
+                format!(
+                    "unsupported key `{ident}` in #[digest(...)]; expected `when` or `version`"
+                ),
+            ));
         }
     }
 
@@ -603,7 +626,13 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
 /// Use `=> method` (no parens) to pass all event args to the method.
 #[proc_macro]
 pub fn aggregate(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as AggregateInput);
+    expand_aggregate(input.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+fn expand_aggregate(input: TokenStream2) -> syn::Result<TokenStream2> {
+    let input = syn::parse2::<AggregateInput>(input)?;
 
     let agg_name = &input.agg_name;
     let entity_field = &input.entity_field;
@@ -665,6 +694,11 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
         }
     });
 
+    // ReplayError stays `String`: replay errors are flattened from
+    // heterogeneous sources (per-event `decode()` errors, user method errors of
+    // arbitrary `E`, and unknown-event messages) via `e.to_string()`. A typed
+    // error would have to be generic over each method's error type or erase
+    // them anyway, so `String` is the smaller, honest representation here.
     let expanded = quote! {
         #upcaster_wrappers
 
@@ -696,7 +730,7 @@ pub fn aggregate(input: TokenStream) -> TokenStream {
         }
     };
 
-    TokenStream::from(expanded)
+    Ok(expanded)
 }
 
 struct UpcasterDef {
@@ -867,6 +901,11 @@ struct SourcedArgs {
 }
 
 fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
+    if input.is_empty() {
+        return Err(
+            input.error("#[sourced] requires the entity field name, e.g. `#[sourced(entity)]`")
+        );
+    }
     let entity_field: Ident = input.parse()?;
     let mut enum_name = None;
     let mut aggregate_type = None;
@@ -875,59 +914,64 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
 
     while input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
-        if input.peek(Ident) {
-            let kw: Ident = input.fork().parse()?;
-            if kw == "events" {
-                input.parse::<Ident>()?;
-                input.parse::<Token![=]>()?;
-                enum_name = Some(input.parse::<LitStr>()?);
-            } else if kw == "aggregate_type" {
-                input.parse::<Ident>()?;
-                input.parse::<Token![=]>()?;
-                let lit = input.parse::<LitStr>()?;
-                validate_aggregate_type_literal(&lit)?;
-                aggregate_type = Some(lit);
-            } else if kw == "enqueue" {
-                input.parse::<Ident>()?;
-                // Optional custom emitter field: enqueue(my_emitter)
-                if input.peek(syn::token::Paren) {
-                    let inner;
-                    syn::parenthesized!(inner in input);
-                    enqueue = Some(inner.parse::<Ident>()?);
-                } else {
-                    enqueue = Some(format_ident!("emitter"));
-                }
-            } else if kw == "upcasters" {
-                input.parse::<Ident>()?;
-                let upcaster_content;
-                syn::parenthesized!(upcaster_content in input);
-                while !upcaster_content.is_empty() {
-                    let inner;
-                    syn::parenthesized!(inner in upcaster_content);
-                    let ev_name: LitStr = inner.parse()?;
-                    inner.parse::<Token![,]>()?;
-                    let from_ver: syn::LitInt = inner.parse()?;
-                    inner.parse::<Token![=>]>()?;
-                    let to_ver: syn::LitInt = inner.parse()?;
-                    inner.parse::<Token![,]>()?;
-                    let source_type: syn::Type = inner.parse()?;
-                    inner.parse::<Token![=>]>()?;
-                    let target_type: syn::Type = inner.parse()?;
-                    inner.parse::<Token![,]>()?;
-                    let transform: syn::Path = inner.parse()?;
-                    upcasters.push(UpcasterDef {
-                        event_name: ev_name,
-                        from_version: from_ver,
-                        to_version: to_ver,
-                        source_type,
-                        target_type,
-                        transform_fn: transform,
-                    });
-                    if upcaster_content.peek(Token![,]) {
-                        upcaster_content.parse::<Token![,]>()?;
-                    }
+        // Allow (and ignore) a trailing comma.
+        if input.is_empty() {
+            break;
+        }
+        let kw: Ident = input.parse()?;
+        if kw == "events" {
+            input.parse::<Token![=]>()?;
+            enum_name = Some(input.parse::<LitStr>()?);
+        } else if kw == "aggregate_type" {
+            input.parse::<Token![=]>()?;
+            let lit = input.parse::<LitStr>()?;
+            validate_aggregate_type_literal(&lit)?;
+            aggregate_type = Some(lit);
+        } else if kw == "enqueue" {
+            // Optional custom emitter field: enqueue(my_emitter)
+            if input.peek(syn::token::Paren) {
+                let inner;
+                syn::parenthesized!(inner in input);
+                enqueue = Some(inner.parse::<Ident>()?);
+            } else {
+                enqueue = Some(format_ident!("emitter"));
+            }
+        } else if kw == "upcasters" {
+            let upcaster_content;
+            syn::parenthesized!(upcaster_content in input);
+            while !upcaster_content.is_empty() {
+                let inner;
+                syn::parenthesized!(inner in upcaster_content);
+                let ev_name: LitStr = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                let from_ver: syn::LitInt = inner.parse()?;
+                inner.parse::<Token![=>]>()?;
+                let to_ver: syn::LitInt = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                let source_type: syn::Type = inner.parse()?;
+                inner.parse::<Token![=>]>()?;
+                let target_type: syn::Type = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                let transform: syn::Path = inner.parse()?;
+                upcasters.push(UpcasterDef {
+                    event_name: ev_name,
+                    from_version: from_ver,
+                    to_version: to_ver,
+                    source_type,
+                    target_type,
+                    transform_fn: transform,
+                });
+                if upcaster_content.peek(Token![,]) {
+                    upcaster_content.parse::<Token![,]>()?;
                 }
             }
+        } else {
+            return Err(syn::Error::new_spanned(
+                &kw,
+                format!(
+                    "unsupported key `{kw}` in #[sourced(...)]; expected `events`, `aggregate_type`, `enqueue`, or `upcasters`"
+                ),
+            ));
         }
     }
 
@@ -953,17 +997,22 @@ fn parse_event_args(input: ParseStream) -> syn::Result<EventAttr> {
 
     while input.peek(Token![,]) {
         input.parse::<Token![,]>()?;
-        if input.peek(Ident) {
-            let ident: Ident = input.fork().parse()?;
-            if ident == "when" {
-                input.parse::<Ident>()?;
-                input.parse::<Token![=]>()?;
-                guard = Some(input.parse()?);
-            } else if ident == "version" {
-                input.parse::<Ident>()?;
-                input.parse::<Token![=]>()?;
-                version = Some(input.parse()?);
-            }
+        // Allow (and ignore) a trailing comma.
+        if input.is_empty() {
+            break;
+        }
+        let ident: Ident = input.parse()?;
+        if ident == "when" {
+            input.parse::<Token![=]>()?;
+            guard = Some(input.parse()?);
+        } else if ident == "version" {
+            input.parse::<Token![=]>()?;
+            version = Some(input.parse()?);
+        } else {
+            return Err(syn::Error::new_spanned(
+                &ident,
+                format!("unsupported key `{ident}` in #[event(...)]; expected `when` or `version`"),
+            ));
         }
     }
 
@@ -1030,45 +1079,67 @@ struct EventMethodInfo {
 /// - `#[sourced(entity, upcasters(("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn)))]` - upcasters
 #[proc_macro_attribute]
 pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with parse_sourced_args);
-    let mut impl_block = parse_macro_input!(item as ItemImpl);
+    expand_sourced(attr.into(), item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
+    let args = parse_sourced_args.parse2(attr)?;
+    let mut impl_block = syn::parse2::<ItemImpl>(item)?;
 
     // Extract struct name from self type
     let struct_name = match &*impl_block.self_ty {
-        syn::Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                segment.ident.clone()
-            } else {
-                return syn::Error::new_spanned(
+        syn::Type::Path(type_path) => match type_path.path.segments.last() {
+            Some(segment) => segment.ident.clone(),
+            None => {
+                return Err(syn::Error::new_spanned(
                     &impl_block.self_ty,
                     "#[sourced] requires a named type",
-                )
-                .to_compile_error()
-                .into();
+                ));
             }
-        }
+        },
         _ => {
-            return syn::Error::new_spanned(
+            return Err(syn::Error::new_spanned(
                 &impl_block.self_ty,
                 "#[sourced] requires a named type",
-            )
-            .to_compile_error()
-            .into();
+            ));
         }
     };
 
     // Collect event info and modify methods
     let mut event_methods: Vec<EventMethodInfo> = Vec::new();
+    // Detect duplicate event names so the conflict points at the offending
+    // attribute instead of surfacing as a confusing duplicate match arm later.
+    let mut seen_events: std::collections::HashMap<String, proc_macro2::Span> =
+        std::collections::HashMap::new();
 
     for item in &mut impl_block.items {
         if let syn::ImplItem::Fn(method) = item {
             match find_and_remove_event_attr(&mut method.attrs) {
                 Ok(Some(event_attr)) => {
+                    // Event methods are replayed as `self.method(...)`, so they
+                    // must take a `self` receiver. Reject free associated
+                    // functions up front with a pointed message.
+                    if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(_))) {
+                        return Err(syn::Error::new_spanned(
+                            &method.sig,
+                            "#[event] methods must take a `&mut self` receiver",
+                        ));
+                    }
+
+                    let event_key = event_attr.event_name.value();
+                    if let Some(_prev) =
+                        seen_events.insert(event_key.clone(), event_attr.event_name.span())
+                    {
+                        return Err(syn::Error::new_spanned(
+                            &event_attr.event_name,
+                            format!("duplicate #[event] name `{event_key}` in this #[sourced] impl block"),
+                        ));
+                    }
+
                     let signature_synthesized =
-                        match ensure_sourced_result_signature(&mut method.sig, "event") {
-                            Ok(signature_synthesized) => signature_synthesized,
-                            Err(err) => return err.to_compile_error().into(),
-                        };
+                        ensure_sourced_result_signature(&mut method.sig, "event")?;
 
                     let params = extract_params_with_types(&method.sig);
                     let param_name_refs: Vec<&Ident> =
@@ -1109,7 +1180,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
                     });
                 }
                 Ok(None) => { /* not an event method, skip */ }
-                Err(err) => return err.to_compile_error().into(),
+                Err(err) => return Err(err),
             }
         }
     }
@@ -1240,6 +1311,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     });
 
+    // ReplayError stays `String` — see the rationale on `expand_aggregate`.
     let aggregate_impl = quote! {
         impl distributed::Aggregate for #struct_name {
             type ReplayError = String;
@@ -1278,7 +1350,7 @@ pub fn sourced(attr: TokenStream, item: TokenStream) -> TokenStream {
         #aggregate_impl
     };
 
-    TokenStream::from(expanded)
+    Ok(expanded)
 }
 
 // ============================================================================
@@ -1353,8 +1425,213 @@ pub fn derive_read_model(input: TokenStream) -> TokenStream {
 /// Options:
 /// - `#[snapshot(id = "sku")]` — use a struct field as the ID key instead of synthesizing `id`
 /// - `#[snapshot(entity = "my_entity")]` — override the entity field name (default: `entity`)
+/// - `#[snapshot(version = N)]` — set `Snapshottable::SNAPSHOT_VERSION` (default: 1).
+///   Bump this whenever the snapshot layout changes incompatibly; on load a
+///   stored snapshot whose version differs is treated as a cache miss and the
+///   aggregate is rebuilt by replay rather than mis-decoded.
 /// - Fields with `#[serde(skip)]` are automatically excluded
 #[proc_macro_derive(Snapshot, attributes(snapshot))]
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     snapshot::derive_snapshot(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+    use syn::parse::Parser;
+
+    // ---- digest ----------------------------------------------------------
+
+    #[test]
+    fn expand_digest_inserts_digest_call() {
+        let attr = quote! { "initialized" };
+        let item = quote! {
+            fn initialize(&mut self, id: String) {
+                self.id = id;
+            }
+        };
+        let out = expand_digest(attr, item).unwrap().to_string();
+        assert!(out.contains("digest"), "unexpected output: {out}");
+        assert!(out.contains("\"initialized\""), "unexpected output: {out}");
+    }
+
+    #[test]
+    fn parse_digest_args_rejects_unknown_key() {
+        let attr = quote! { "x", versoin = 2 };
+        let err = parse_digest_args
+            .parse2(attr)
+            .err()
+            .expect("unknown key should error");
+        let msg = err.to_string();
+        assert!(msg.contains("unsupported key `versoin`"), "got: {msg}");
+        assert!(msg.contains("version"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_digest_args_accepts_version_and_when() {
+        let attr = quote! { entity, "renamed", when = true, version = 2 };
+        let args = parse_digest_args.parse2(attr).unwrap();
+        assert_eq!(args.entity_field, "entity");
+        assert!(args.guard.is_some());
+        assert!(args.version.is_some());
+    }
+
+    // ---- enqueue ---------------------------------------------------------
+
+    #[test]
+    fn parse_enqueue_args_defaults_entity_field() {
+        let attr = quote! { "order.initialized" };
+        let args = parse_enqueue_args.parse2(attr).unwrap();
+        assert_eq!(args.emitter_field, "emitter");
+        assert_eq!(args.entity_field, "entity");
+    }
+
+    #[test]
+    fn parse_enqueue_args_overrides_entity_field() {
+        let attr = quote! { "order.initialized", entity = state };
+        let args = parse_enqueue_args.parse2(attr).unwrap();
+        assert_eq!(args.entity_field, "state");
+    }
+
+    #[test]
+    fn expand_enqueue_uses_renamed_entity_field_in_guard() {
+        let attr = quote! { "order.initialized", entity = state };
+        let item = quote! {
+            fn create(&mut self, id: String) {
+                self.id = id;
+            }
+        };
+        let out = expand_enqueue(attr, item).unwrap().to_string();
+        assert!(
+            out.contains("self . state . is_replaying"),
+            "expected renamed entity guard, got: {out}"
+        );
+    }
+
+    #[test]
+    fn parse_enqueue_args_rejects_unknown_key() {
+        let attr = quote! { "x", wen = true };
+        let err = parse_enqueue_args
+            .parse2(attr)
+            .err()
+            .expect("unknown key should error");
+        assert!(
+            err.to_string().contains("unsupported key `wen`"),
+            "got: {err}"
+        );
+    }
+
+    // ---- event (parse) ---------------------------------------------------
+
+    #[test]
+    fn parse_event_args_rejects_unknown_key() {
+        let attr = quote! { "completed", wen = true };
+        let err = parse_event_args
+            .parse2(attr)
+            .err()
+            .expect("unknown key should error");
+        assert!(
+            err.to_string().contains("unsupported key `wen`"),
+            "got: {err}"
+        );
+    }
+
+    // ---- sourced ---------------------------------------------------------
+
+    #[test]
+    fn parse_sourced_args_requires_entity_field() {
+        let attr = quote! {};
+        let err = parse_sourced_args
+            .parse2(attr)
+            .err()
+            .expect("missing entity should error");
+        assert!(
+            err.to_string().contains("requires the entity field name"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_sourced_args_rejects_unknown_key() {
+        let attr = quote! { entity, evnts = "Foo" };
+        let err = parse_sourced_args
+            .parse2(attr)
+            .err()
+            .expect("unknown key should error");
+        assert!(
+            err.to_string().contains("unsupported key `evnts`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_sourced_generates_enum_and_aggregate() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Todo {
+                #[event("initialized")]
+                pub fn initialize(&mut self, id: String) {
+                    self.id = id;
+                }
+            }
+        };
+        let out = expand_sourced(attr, item).unwrap().to_string();
+        assert!(out.contains("enum TodoEvent"), "got: {out}");
+        assert!(
+            out.contains("impl distributed :: Aggregate for Todo"),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn expand_sourced_rejects_duplicate_event_names() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Todo {
+                #[event("done")]
+                pub fn complete(&mut self) {}
+                #[event("done")]
+                pub fn finish(&mut self) {}
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("duplicate should error");
+        assert!(
+            err.to_string().contains("duplicate #[event] name `done`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_sourced_rejects_event_without_receiver() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Todo {
+                #[event("initialized")]
+                pub fn initialize(id: String) {}
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("missing receiver should error");
+        assert!(
+            err.to_string().contains("must take a `&mut self` receiver"),
+            "got: {err}"
+        );
+    }
+
+    // ---- aggregate -------------------------------------------------------
+
+    #[test]
+    fn expand_aggregate_generates_impl() {
+        let input = quote! {
+            Todo, entity {
+                "initialized"(id) => initialize,
+            }
+        };
+        let out = expand_aggregate(input).unwrap().to_string();
+        assert!(
+            out.contains("impl distributed :: Aggregate for Todo"),
+            "got: {out}"
+        );
+        assert!(out.contains("replay_event"), "got: {out}");
+    }
 }

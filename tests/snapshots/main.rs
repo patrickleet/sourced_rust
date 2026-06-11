@@ -73,7 +73,6 @@ async fn snapshot_created_at_frequency_threshold() {
     let snap = snap.unwrap();
     assert_eq!(snap.version, 2);
     assert_eq!(snap.aggregate_type, Todo::aggregate_type());
-    assert!(snap.snapshot_type.ends_with("TodoSnapshot"));
     assert_eq!(snap.payload_codec, distributed::BITCODE_PAYLOAD_CODEC);
 
     // Reload and verify state
@@ -184,14 +183,7 @@ async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
     base_repo
         .save_snapshot(
             &counter_identity,
-            SnapshotRecord::new(
-                ReplayCounter::aggregate_type(),
-                "counter-1",
-                1,
-                std::any::type_name::<ReplayCounterSnapshot>(),
-                1,
-                payload,
-            ),
+            SnapshotRecord::new(ReplayCounter::aggregate_type(), "counter-1", 1, 1, payload),
         )
         .await
         .unwrap();

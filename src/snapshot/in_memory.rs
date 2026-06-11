@@ -89,14 +89,7 @@ mod tests {
     #[tokio::test]
     async fn save_and_get() {
         let store = InMemorySnapshotStore::new();
-        let record = SnapshotRecord::new(
-            "test.aggregate",
-            "agg-1",
-            5,
-            "TestSnapshot",
-            1,
-            vec![1, 2, 3],
-        );
+        let record = SnapshotRecord::new("test.aggregate", "agg-1", 5, 1, vec![1, 2, 3]);
         store
             .save_snapshot(&identity("agg-1"), record)
             .await
@@ -109,7 +102,6 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.version, 5);
         assert_eq!(loaded.payload, vec![1, 2, 3]);
-        assert_eq!(loaded.snapshot_type, "TestSnapshot");
     }
 
     #[tokio::test]
@@ -128,14 +120,14 @@ mod tests {
         store
             .save_snapshot(
                 &identity("agg-1"),
-                SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+                SnapshotRecord::new("test.aggregate", "agg-1", 1, 1, vec![1]),
             )
             .await
             .unwrap();
         store
             .save_snapshot(
                 &identity("agg-1"),
-                SnapshotRecord::new("test.aggregate", "agg-1", 5, "TestSnapshot", 1, vec![5]),
+                SnapshotRecord::new("test.aggregate", "agg-1", 5, 1, vec![5]),
             )
             .await
             .unwrap();
@@ -155,7 +147,7 @@ mod tests {
         store
             .save_snapshot(
                 &identity("agg-1"),
-                SnapshotRecord::new("test.aggregate", "agg-1", 1, "TestSnapshot", 1, vec![1]),
+                SnapshotRecord::new("test.aggregate", "agg-1", 1, 1, vec![1]),
             )
             .await
             .unwrap();
@@ -180,7 +172,7 @@ mod tests {
         store
             .save_snapshot(
                 &identity("agg-1"),
-                SnapshotRecord::new("test.aggregate", "agg-1", 3, "TestSnapshot", 1, vec![3]),
+                SnapshotRecord::new("test.aggregate", "agg-1", 3, 1, vec![3]),
             )
             .await
             .unwrap();

@@ -84,7 +84,7 @@ async fn command_handler<D: Send + Sync + 'static>(
             if status.is_server_error() {
                 eprintln!("microsvc command `{command}` failed: {err}");
             }
-            let body = json!({ "error": err.redacted_message() });
+            let body = json!({ "error": err.client_facing_message() });
             (status, Json(body)).into_response()
         }
     }
@@ -102,7 +102,12 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 
 /// Extract session variables from HTTP headers.
 ///
-/// All headers are lowercased and included as session variables.
+/// **Trust boundary (security-critical):** every request header is copied
+/// verbatim into the [`Session`] — including `x-hasura-user-id` and
+/// `x-hasura-role`. The framework does NOT authenticate. A trusted proxy in
+/// front of this service MUST strip any client-supplied `x-hasura-*` headers
+/// and inject only authenticated ones. Without that proxy, any client can set
+/// these headers and assume any identity/role. See the [`Session`] docs.
 fn session_from_headers(headers: &HeaderMap) -> Session {
     let mut vars = std::collections::HashMap::new();
     for (name, value) in headers.iter() {
@@ -164,21 +169,21 @@ mod tests {
     }
 
     #[test]
-    fn redacted_message_preserves_client_errors() {
+    fn client_facing_message_preserves_client_errors() {
         let error = HandlerError::Rejected("invalid command".into());
 
-        assert_eq!(error.redacted_message(), "rejected: invalid command");
+        assert_eq!(error.client_facing_message(), "rejected: invalid command");
     }
 
     #[test]
-    fn redacted_message_hides_server_errors() {
+    fn client_facing_message_hides_server_errors() {
         let errors = [
             HandlerError::Repository(RepositoryError::Model("store failed".into())),
             HandlerError::Other(Box::new(std::io::Error::other("handler failed"))),
         ];
 
         for error in errors {
-            assert_eq!(error.redacted_message(), "Internal server error");
+            assert_eq!(error.client_facing_message(), "Internal server error");
         }
     }
 }

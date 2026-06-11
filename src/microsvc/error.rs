@@ -93,22 +93,18 @@ impl HandlerError {
         }
     }
 
-    /// Whether this error reflects an internal/server fault (HTTP 5xx) whose
-    /// `Display` text may carry sensitive infrastructure detail (SQL fragments,
-    /// driver messages, internal paths).
-    pub(crate) fn is_internal(&self) -> bool {
-        matches!(self, HandlerError::Repository(_) | HandlerError::Other(_))
-    }
-
-    /// A client-facing message safe to put on the wire.
+    /// Message safe to return to an untrusted client across a transport.
     ///
-    /// Internal/server faults ([`is_internal`](Self::is_internal)) are masked to a
-    /// generic string so SQL/driver/path detail never leaks to a caller; client
-    /// errors (decode, rejection, not-found, auth, guard) keep their explanatory
-    /// `Display` text. Shared by the HTTP and Knative ingresses so both mask
-    /// identically — log the real error server-side, return this to the caller.
-    pub(crate) fn redacted_message(&self) -> String {
-        if self.is_internal() {
+    /// Server-internal failures (status 5xx — repository/driver/other errors)
+    /// are masked to a generic string so SQL text, driver detail, or internal
+    /// paths never leak to callers. Client-fault errors (4xx — unknown command,
+    /// decode, rejection, auth, guard) keep their descriptive message because
+    /// the caller caused them and the detail helps them correct the request.
+    ///
+    /// The HTTP, gRPC, and Knative ingresses route error bodies through this so
+    /// the masking policy lives in exactly one place.
+    pub fn client_facing_message(&self) -> String {
+        if self.status_code() >= 500 {
             "Internal server error".to_string()
         } else {
             self.to_string()

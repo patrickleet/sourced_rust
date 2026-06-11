@@ -156,6 +156,32 @@ async fn headers_flow_to_session() {
     assert_eq!(body, json!({ "user_id": "user-42" }));
 }
 
+/// Documents the HTTP trust boundary: request headers are copied into the
+/// `Session` verbatim and trusted at face value — the framework does NOT
+/// authenticate. A client-supplied `x-hasura-user-id` is reflected straight
+/// through, which is precisely why a trusted proxy must strip/inject these
+/// headers in production. See `session_from_headers` and the `Session` docs.
+#[tokio::test]
+async fn client_supplied_identity_header_is_trusted_verbatim() {
+    let service = counter_service();
+    let base = start_server(service).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/session.identify"))
+        // No proxy in front: the client sets its own identity. The framework
+        // trusts it as-is. In production a trusted proxy must overwrite this.
+        .header("x-hasura-user-id", "client-claimed-id")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body, json!({ "user_id": "client-claimed-id" }));
+}
+
 #[tokio::test]
 async fn missing_session_returns_401() {
     let service = counter_service();

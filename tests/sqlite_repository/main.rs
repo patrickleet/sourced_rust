@@ -4,9 +4,10 @@ use std::collections::HashMap;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
-    OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt,
-    RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord, SnapshotStore, SqliteRepository,
-    StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit, OUTBOX_MESSAGES_TABLE,
+    OutboxMessage, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
+    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
+    SnapshotStore, SqliteRepository, StreamIdentity, StreamWrite, TableSchemaRegistry,
+    TransactionalCommit, OUTBOX_MESSAGES_TABLE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -207,6 +208,123 @@ async fn optimistic_conflict_rolls_back_other_stream_and_read_model_plan() {
 }
 
 #[tokio::test]
+async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
+    // A single commit carries: an aggregate event, an outbox row, and a
+    // read-model plan with TWO mutations. The first mutation is valid; the second
+    // violates a real database constraint (a BEFORE-INSERT trigger that ABORTs on
+    // a negative value — a genuine engine-level failure mid-plan, not an
+    // application pre-check). The whole transaction must roll back: the event,
+    // the outbox row, AND the first (already-applied) read-model mutation must
+    // ALL be absent afterward.
+    let repo = repository().await;
+    bootstrap_relational_counter_table(&repo).await;
+
+    // Install a real DB constraint the read-model schema is unaware of: reject
+    // any row whose `value` is negative. SQLite triggers are enforced by the
+    // engine inside the transaction.
+    sqlx::query(
+        r#"
+        CREATE TRIGGER reject_negative_counter_value
+        BEFORE INSERT ON "local_relational_counter_views"
+        WHEN NEW."value" < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'value must be non-negative');
+        END;
+        "#,
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let good_id = "midplan-good";
+    let bad_id = "midplan-bad";
+    let mut read_models = ReadModelWritePlanBuilder::new();
+    // Mutation 1: valid, applied first within the tx.
+    read_models
+        .upsert(&RelationalCounterView {
+            id: good_id.into(),
+            value: 1,
+            counts: HashMap::new(),
+        })
+        .unwrap();
+    // Mutation 2: violates the trigger — must abort the whole transaction.
+    read_models
+        .upsert(&RelationalCounterView {
+            id: bad_id.into(),
+            value: -1,
+            counts: HashMap::new(),
+        })
+        .unwrap();
+
+    let aggregate_id = "midplan-aggregate";
+    let mut projection = CounterProjection::default();
+    projection.touch(aggregate_id.into()).unwrap();
+    let identity = StreamIdentity::new(CounterProjection::aggregate_type(), aggregate_id).unwrap();
+
+    let outbox_id = "midplan-outbox";
+    let outbox_message =
+        OutboxMessage::create(outbox_id, "counter.touched", b"{}".to_vec()).unwrap();
+
+    let err = repo
+        .commit_batch(CommitBatch {
+            inbox_receipts: Vec::new(),
+            streams: vec![StreamWrite::new(identity.clone(), projection.entity_mut())],
+            outbox_messages: vec![outbox_message],
+            read_model_plans: vec![read_models.into_write_plan().unwrap()],
+            snapshots: Vec::new(),
+        })
+        .await
+        .expect_err("a mid-plan constraint violation must fail the commit");
+    // The constraint failure surfaces as a Model error (read-model storage error).
+    assert!(
+        matches!(err, RepositoryError::Model(_)),
+        "expected a Model error from the constraint violation, got {err:?}"
+    );
+
+    // 1. The aggregate event must be absent.
+    assert!(
+        repo.get_stream(&identity).await.unwrap().is_none(),
+        "the aggregate stream must roll back with the failed read-model plan"
+    );
+
+    // 2. The outbox row must be absent.
+    let outbox = repo.outbox_store();
+    for status in [
+        OutboxMessageStatus::Pending,
+        OutboxMessageStatus::InFlight,
+        OutboxMessageStatus::Published,
+        OutboxMessageStatus::Failed,
+    ] {
+        let rows = outbox.messages_by_status_async(status).await.unwrap();
+        assert!(
+            rows.iter().all(|m| m.id() != outbox_id),
+            "the outbox row must roll back with the failed read-model plan"
+        );
+    }
+
+    // 3. The first (already-applied) read-model mutation must be absent.
+    let good_rows: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "local_relational_counter_views" WHERE "id" = ?"#,
+    )
+    .bind(good_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        good_rows, 0,
+        "the first read-model mutation must roll back when a later one fails"
+    );
+    let bad_rows: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "local_relational_counter_views" WHERE "id" = ?"#,
+    )
+    .bind(bad_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(bad_rows, 0, "the violating row must never be persisted");
+}
+
+#[tokio::test]
 async fn commit_batch_lowers_relational_read_model_plan_into_registered_table() {
     let repo = repository().await;
     bootstrap_relational_counter_table(&repo).await;
@@ -366,27 +484,13 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     repo.save_snapshot(
         &counter,
-        SnapshotRecord::new(
-            "sqlite.counter",
-            "same-id",
-            1,
-            "CounterSnapshot",
-            1,
-            vec![1],
-        ),
+        SnapshotRecord::new("sqlite.counter", "same-id", 1, 1, vec![1]),
     )
     .await
     .unwrap();
     repo.save_snapshot(
         &projection,
-        SnapshotRecord::new(
-            "sqlite.counter_projection",
-            "same-id",
-            2,
-            "ProjectionSnapshot",
-            1,
-            vec![2],
-        ),
+        SnapshotRecord::new("sqlite.counter_projection", "same-id", 2, 1, vec![2]),
     )
     .await
     .unwrap();
@@ -396,14 +500,12 @@ async fn snapshots_persist_by_full_stream_identity() {
 
     assert_eq!(loaded_counter.version, 1);
     assert_eq!(loaded_counter.aggregate_type, "sqlite.counter");
-    assert_eq!(loaded_counter.snapshot_type, "CounterSnapshot");
     assert_eq!(loaded_counter.payload, vec![1]);
     assert_eq!(loaded_projection.version, 2);
     assert_eq!(
         loaded_projection.aggregate_type,
         "sqlite.counter_projection"
     );
-    assert_eq!(loaded_projection.snapshot_type, "ProjectionSnapshot");
     assert_eq!(loaded_projection.payload, vec![2]);
 }
 

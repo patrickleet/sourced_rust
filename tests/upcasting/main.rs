@@ -4,7 +4,7 @@ use aggregate::{TodoV1, TodoV2, TodoV3};
 use distributed::{
     hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AggregateBuilder, Entity,
     EventRecord, EventUpcaster, HashMapRepository, RepositoryError, SnapshotRecord, SnapshotStore,
-    StreamIdentity, UpcastError,
+    StreamIdentity, TransactionalCommit, UpcastError,
 };
 
 fn identity_payload(event: &EventRecord) -> Result<Vec<u8>, UpcastError> {
@@ -395,13 +395,92 @@ async fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     assert!(loaded.completed);
 }
 
+// =============================================================================
+// Unknown event types fail hydration with a clear, named error
+// =============================================================================
+
+#[test]
+fn unknown_event_type_in_stream_fails_hydration_with_clear_error() {
+    // Simulate a stream that contains an event whose name no version of the
+    // aggregate knows how to replay — e.g. a producer wrote an event type that
+    // was later renamed/removed, or a stream was mis-keyed under the wrong
+    // aggregate type. Hydration must fail loudly (not silently skip) with a
+    // Replay error that names the offending event so an operator can diagnose it.
+    let unknown_name = "todo.relabelled_in_a_future_we_never_shipped";
+
+    let mut entity = Entity::with_id("t1");
+    // A valid v1 initialized event so the rest of the stream is well-formed...
+    let init_payload = bitcode::serialize(&(
+        "t1".to_string(),
+        "alice".to_string(),
+        "Buy milk".to_string(),
+    ))
+    .unwrap();
+    let mut events = vec![EventRecord::new("initialized", init_payload, 1)];
+    // ...followed by an event the aggregate has no handler for.
+    let mut unknown = EventRecord::new(unknown_name, vec![], 2);
+    unknown.sequence = 2;
+    events.push(unknown);
+    entity.load_from_history(events);
+
+    match hydrate::<TodoV1>(entity) {
+        Err(RepositoryError::Replay(message)) => {
+            assert!(
+                message.contains(unknown_name),
+                "replay error must name the unknown event, got: {message}"
+            );
+        }
+        Err(other) => panic!("expected a Replay error, got {other:?}"),
+        Ok(_) => panic!("hydration must not silently accept an unknown event type"),
+    }
+}
+
+#[tokio::test]
+async fn unknown_event_type_in_repo_stream_fails_get_with_named_replay_error() {
+    // The same guarantee through the repository load path: a raw stream carrying
+    // an unregistered event name must make `get` fail with a named Replay error,
+    // not panic and not return a half-built aggregate.
+    let unknown_name = "todo.never_registered_event";
+
+    let repo = HashMapRepository::new();
+    let identity = StreamIdentity::new(TodoV1::aggregate_type(), "t-unknown").unwrap();
+    // Build a fresh stream containing a valid v1 event followed by an event with
+    // an unregistered name, and persist it in one append (both events are new).
+    let mut raw = Entity::with_id("t-unknown");
+    raw.digest(
+        "initialized",
+        &(
+            "t-unknown".to_string(),
+            "bob".to_string(),
+            "Walk dog".to_string(),
+        ),
+    )
+    .unwrap();
+    raw.digest_empty(unknown_name).unwrap();
+    repo.commit_batch(distributed::CommitBatch::new(vec![
+        distributed::StreamWrite::new(identity, &mut raw),
+    ]))
+    .await
+    .expect("raw stream with an unknown event name still persists");
+
+    match repo.aggregate::<TodoV1>().get("t-unknown").await {
+        Err(RepositoryError::Replay(message)) => {
+            assert!(
+                message.contains(unknown_name),
+                "replay error must name the unknown event, got: {message}"
+            );
+        }
+        Err(other) => panic!("expected a Replay error, got {other:?}"),
+        Ok(_) => panic!("loading a stream with an unknown event type must fail"),
+    }
+}
+
 #[test]
 fn hydrate_from_snapshot_returns_replay_error_when_post_snapshot_upcaster_decode_fails() {
     let snapshot = SnapshotRecord::new(
         TodoV2::aggregate_type(),
         "t1",
         1,
-        std::any::type_name::<aggregate::TodoV2Snapshot>(),
         1,
         bitcode::serialize(&aggregate::TodoV2Snapshot {
             id: "t1".to_string(),

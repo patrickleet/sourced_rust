@@ -75,10 +75,14 @@ async fn ingress_handler<D: Send + Sync + 'static>(
             // Mask internal faults (the same redaction the HTTP ingress applies):
             // `err.to_string()` can carry SQL/driver/path detail. Log the real
             // error server-side; return only a safe message on the wire.
-            if err.is_internal() {
+            if err.status_code() >= 500 {
                 eprintln!("knative ingress `{}` failed: {err}", message.name());
             }
-            (status, Json(json!({ "error": err.redacted_message() }))).into_response()
+            (
+                status,
+                Json(json!({ "error": err.client_facing_message() })),
+            )
+                .into_response()
         }
     }
 }

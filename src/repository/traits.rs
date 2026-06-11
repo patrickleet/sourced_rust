@@ -88,6 +88,31 @@ pub trait GetStream: Send + Sync {
         &'a self,
         identities: &'a [StreamIdentity],
     ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a;
+
+    /// Load only the events with `sequence > after_version` as a tail-only
+    /// [`Entity`] (see [`Entity::load_tail_from_history`]).
+    ///
+    /// This is the I/O half of snapshot loading: a snapshot covers events up to
+    /// its version, so only the tail must be fetched and decoded. Backends with
+    /// a queryable store (Postgres, SQLite) override this with a `WHERE sequence
+    /// > $after_version` read; the default delegates to [`get_stream`], which
+    /// loads the full history and is always correct, just not optimized.
+    ///
+    /// The returned entity's `version`/`committed_version` reflect the true
+    /// persisted stream position (`after_version + tail.len()`), not the tail
+    /// length, so optimistic concurrency and `new_events()` stay correct.
+    ///
+    /// [`get_stream`]: GetStream::get_stream
+    fn get_stream_tail<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+        after_version: u64,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        // Default: no tail optimization. Loading the full history yields the
+        // same hydrated aggregate; only the I/O is heavier.
+        let _ = after_version;
+        self.get_stream(identity)
+    }
 }
 
 /// Async transactional commit capability for durable persistence backends.

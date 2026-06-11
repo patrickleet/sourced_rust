@@ -6,6 +6,10 @@
 //! (auto-commit disabled) and settles by offset: ack→commit the offset,
 //! nack→seek back so the record is re-read, dead-letter/park→commit (skip).
 //!
+//! Offset commits use `CommitMode::Async` so settling never blocks the tokio
+//! worker; this is at-least-once: a crash before an async commit lands redelivers
+//! the record, so consumers must tolerate duplicates.
+//!
 //! Requires the `kafka` feature (builds `librdkafka` via cmake). Integration-
 //! tested in `tests/kafka_transport` against a broker (see `compose.yaml`).
 
@@ -228,12 +232,21 @@ impl KafkaReceived {
         }
     }
 
+    /// Commit this record's offset (the next offset to read) without blocking the
+    /// async runtime.
+    ///
+    /// Uses [`CommitMode::Async`]: the offset is handed to librdkafka's background
+    /// thread and this returns immediately, rather than blocking the tokio worker
+    /// on a broker round trip as `CommitMode::Sync` does. This keeps at-least-once
+    /// semantics — the runner already acks only after handler effects complete, so
+    /// a crash between effect and the async commit landing simply redelivers the
+    /// record (a duplicate the consumer must tolerate, which it already does).
     fn commit_offset(&self) -> Result<(), TransportError> {
         let mut tpl = TopicPartitionList::new();
         tpl.add_partition_offset(&self.topic, self.partition, Offset::Offset(self.offset + 1))
             .map_err(|err| retryable("kafka offset", err))?;
         self.consumer
-            .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
+            .commit(&tpl, rdkafka::consumer::CommitMode::Async)
             .map_err(|err| retryable("kafka commit", err))
     }
 }
@@ -249,14 +262,27 @@ impl ReceivedMessage for KafkaReceived {
 
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
         // Do not commit; seek back so this record is re-read (redelivery).
-        self.consumer
-            .seek(
-                &self.topic,
-                self.partition,
-                Offset::Offset(self.offset),
+        //
+        // `seek` blocks the calling thread until it takes effect (up to the
+        // timeout) and rdkafka exposes no async variant, so run it on the
+        // blocking pool to avoid stalling the tokio worker. The consumer is
+        // Arc-shared and `seek` takes `&self`, so a clone moves cleanly into the
+        // blocking task.
+        let consumer = self.consumer.clone();
+        let topic = self.topic;
+        let partition = self.partition;
+        let offset = self.offset;
+        tokio::task::spawn_blocking(move || {
+            consumer.seek(
+                &topic,
+                partition,
+                Offset::Offset(offset),
                 Duration::from_secs(5),
             )
-            .map_err(|err| retryable("kafka seek", err))
+        })
+        .await
+        .map_err(|err| retryable("kafka seek task", err))?
+        .map_err(|err| retryable("kafka seek", err))
     }
 
     async fn dead_letter(self, _reason: &str) -> Result<(), TransportError> {
