@@ -9,6 +9,11 @@
 #[path = "../support/postgres.rs"]
 mod postgres;
 
+// Shared broker-test helpers (recording_for, named_recording_for).
+#[path = "../transport_conformance/mod.rs"]
+mod conformance;
+use conformance::{named_recording_for, recording_for};
+
 use std::sync::{Arc, Mutex};
 
 use distributed::bus::{
@@ -193,41 +198,6 @@ async fn dead_letter_marks_row_failed() {
 
 /// Service whose single handler records the message id; `kind` picks command vs
 /// event registration.
-fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
-fn named_recording_for(
-    service_name: &str,
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
 /// `send` + `listen`: the work queue is claimed `FOR UPDATE SKIP LOCKED`, so two
 /// replicas sharing a `group` compete — each command handled exactly once.
 #[tokio::test]

@@ -4,7 +4,6 @@
 //! JetStream-enabled NATS server. Skips when `NATS_URL` is unset.
 #![cfg(feature = "nats")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,19 +14,10 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use serde_json::json;
 
-static SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// A token unique to this process run, so stream/consumer names don't collide
-/// with state left by a previous run against the same server (the `SEQ` counter
-/// resets each process).
-fn run_token() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ u128::from(std::process::id())
-}
+// Shared broker-test helpers (recording_for, run_token, unique, ...).
+#[path = "../transport_conformance/mod.rs"]
+mod conformance;
+use conformance::unique;
 
 fn nats_url() -> Option<String> {
     match std::env::var("NATS_URL") {
@@ -37,16 +27,6 @@ fn nats_url() -> Option<String> {
             None
         }
     }
-}
-
-/// Unique subject/stream/durable per test so JetStream state does not collide,
-/// including across separate runs against a persistent server.
-fn unique(prefix: &str) -> String {
-    format!(
-        "{prefix}_{:x}_{}",
-        run_token(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    )
 }
 
 #[tokio::test]
