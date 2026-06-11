@@ -277,6 +277,14 @@ pub(crate) fn is_sqlx_transient(err: &sqlx::Error) -> bool {
     if is_sqlite_busy(err) {
         return true;
     }
+    // Postgres serialization_failure (40001) / deadlock_detected (40P01): the
+    // transaction lost a write race and should be retried, not handed to the
+    // failure policy. SQLite never carries these SQLSTATEs, so no feature gate.
+    if let sqlx::Error::Database(db_err) = err {
+        if matches!(db_err.code().as_deref(), Some("40001" | "40P01")) {
+            return true;
+        }
+    }
     false
 }
 
