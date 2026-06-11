@@ -131,6 +131,12 @@ pub use read_model::{
 // reachable under their module path (`distributed::table::*`). They are low-level
 // schema/adapter plumbing, not part of the quick-start surface, so they are not
 // re-exported at the crate root.
+//
+// Exception: `TableSchemaRegistry` is the entry point for registering operational
+// table schemas (it is what callers build before bootstrapping migrations), so it
+// is consumed directly by downstream users and integration tests. It stays at the
+// crate root as part of the public surface.
+pub use table::TableSchemaRegistry;
 
 pub use manifest::{
     DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,
