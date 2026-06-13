@@ -24,10 +24,9 @@ use crate::outbox_worker::{
     OutboxPublishFailureAction,
 };
 use crate::read_model::{
-    column_name_for, validate_key, ColumnDef, ColumnType, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelSchema, ReadModelWritePlan,
-    RelationshipKind, RowKey, RowValue, RowValues, Versioned,
+    validate_key, ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelQueryCapabilities, ReadModelWritePlan, RowValue,
 };
 use crate::repository::{
     reject_duplicate_outbox_messages, reject_duplicate_streams,
@@ -38,11 +37,10 @@ use crate::repository::{
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::read_model::{
-    apply_read_model_write_plan_in_tx, begin_read_model_tx, belongs_to_target_column,
-    column_by_name, commit_read_model_tx, empty_string_as_none, push_key_predicates,
-    quote_identifier, remember_read_model_schemas, resolve_registered_read_model_schemas,
-    sql_read_model_capabilities, validate_sql_write_plan, version_column, IncludeSpec,
-    SqlxReadModelBackend,
+    apply_read_model_write_plan_in_tx, begin_read_model_tx, commit_read_model_tx,
+    empty_string_as_none, load_relational_row_by_key, load_relationship_rows, quote_identifier,
+    remember_read_model_schemas, resolve_registered_read_model_schemas,
+    sql_read_model_capabilities, validate_sql_write_plan,
 };
 use crate::sqlx_repo::{
     self, audited_table_schema_sql, deserialize_event_metadata, is_postgres_unique_violation,
@@ -526,7 +524,7 @@ impl RelationalReadModelQueryStore for PostgresRepository {
             validate_key(&root_schema, &request.key)?;
 
             let Some(root) =
-                load_postgres_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
+                load_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
             else {
                 return Ok(ReadModelLoadGraph::default());
             };
@@ -534,8 +532,7 @@ impl RelationalReadModelQueryStore for PostgresRepository {
             let mut includes = BTreeMap::new();
             for spec in include_specs {
                 let loaded_rows =
-                    load_postgres_relationship_rows(&self.pool, &root_schema, &root.data, &spec)
-                        .await?;
+                    load_relationship_rows(&self.pool, &root_schema, &root.data, &spec).await?;
                 includes.insert(
                     spec.name,
                     ReadModelIncludeRows {
@@ -1021,256 +1018,76 @@ impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Postgres {
     fn rows_affected(result: &sqlx::postgres::PgQueryResult) -> u64 {
         result.rows_affected()
     }
-}
-async fn load_postgres_relational_row_by_key(
-    pool: &PgPool,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-) -> Result<Option<Versioned<RowValues>>, ReadModelError> {
-    validate_key(schema, key)?;
-    let mut builder = postgres_relational_row_select(schema)?;
-    push_key_predicates(&mut builder, schema, key)?;
-    let row = builder
-        .build()
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| read_model_storage_error("load relational row", err))?;
-    row.map(|row| postgres_row_to_versioned_values(schema, &row))
-        .transpose()
-}
 
-async fn load_postgres_relationship_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    match spec.relationship.kind {
-        RelationshipKind::HasMany => {
-            load_postgres_has_many_rows(pool, root_schema, root_row, spec).await
+    fn push_select_column(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
+        builder.push(quote_identifier(&column.column_name));
+        if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
+            builder.push("::text");
         }
-        RelationshipKind::BelongsTo => {
-            load_postgres_belongs_to_rows(pool, root_schema, root_row, spec).await
-        }
-        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
-            "many-to-many relationship `{}` includes are not supported yet",
-            spec.relationship.field_name
-        ))),
+        builder.push(" AS ");
+        builder.push(quote_identifier(&column.column_name));
     }
-}
 
-async fn load_postgres_has_many_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let target_column = column_name_for(&spec.target_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` foreign key `{}` is not a target column",
-            spec.relationship.field_name, foreign_key
-        ))
-    })?;
-    let root_column = column_name_for(root_schema, foreign_key)
-        .or_else(|| root_schema.primary_key.columns.first().cloned())
-        .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "relationship `{}` has no root key column",
-                spec.relationship.field_name
-            ))
-        })?;
-    let root_value = root_row.get(&root_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "read model `{}` root row is missing relationship key `{}`",
-            root_schema.model_name, root_column
-        ))
-    })?;
-
-    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, root_value).await
-}
-
-async fn load_postgres_belongs_to_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` foreign key `{}` is not a source column",
-            spec.relationship.field_name, foreign_key
-        ))
-    })?;
-    let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
-    let source_value = root_row.get(&source_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "read model `{}` root row is missing relationship key `{}`",
-            root_schema.model_name, source_column
-        ))
-    })?;
-
-    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, source_value)
-        .await
-}
-
-async fn load_postgres_rows_matching_column(
-    pool: &PgPool,
-    schema: &ReadModelSchema,
-    column_name: &str,
-    value: &RowValue,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let column = column_by_name(schema, column_name)?;
-    let mut builder = postgres_relational_row_select(schema)?;
-    builder.push(" WHERE ");
-    builder.push(quote_identifier(column_name));
-    builder.push(" = ");
-    <Postgres as SqlxReadModelBackend>::push_row_value_bind(&mut builder, value.clone(), column)?;
-    push_postgres_order_by_primary_key(&mut builder, schema);
-
-    let rows = builder
-        .build()
-        .fetch_all(pool)
-        .await
-        .map_err(|err| read_model_storage_error("load relationship rows", err))?;
-
-    rows.iter()
-        .map(|row| postgres_row_to_versioned_values(schema, row))
-        .collect()
-}
-
-fn postgres_relational_row_select(
-    schema: &ReadModelSchema,
-) -> Result<QueryBuilder<Postgres>, ReadModelError> {
-    let version_column = version_column(schema)?;
-    let mut builder = QueryBuilder::<Postgres>::new("SELECT ");
-    for (index, column) in schema.columns.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        push_postgres_select_column(&mut builder, column);
-    }
-    if !schema.columns.is_empty() {
-        builder.push(", ");
-    }
-    builder.push(quote_identifier(version_column));
-    builder.push(" FROM ");
-    builder.push(quote_identifier(&schema.table_name));
-    Ok(builder)
-}
-
-fn push_postgres_select_column(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
-    builder.push(quote_identifier(&column.column_name));
-    if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
-        builder.push("::text");
-    }
-    builder.push(" AS ");
-    builder.push(quote_identifier(&column.column_name));
-}
-
-fn push_postgres_order_by_primary_key(
-    builder: &mut QueryBuilder<Postgres>,
-    schema: &ReadModelSchema,
-) {
-    if schema.primary_key.columns.is_empty() {
-        return;
-    }
-    builder.push(" ORDER BY ");
-    for (index, column) in schema.primary_key.columns.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        builder.push(quote_identifier(column));
-    }
-}
-
-fn postgres_row_to_versioned_values(
-    schema: &ReadModelSchema,
-    row: &PgRow,
-) -> Result<Versioned<RowValues>, ReadModelError> {
-    let mut values = RowValues::new();
-    for column in &schema.columns {
-        values.insert(column.column_name.clone(), postgres_row_value(row, column)?);
-    }
-    let version_column = version_column(schema)?;
-    let version = sqlx_read_model_u64_from_i64(
-        POSTGRES_BACKEND,
-        row.try_get::<i64, _>(version_column)
-            .map_err(|err| read_model_storage_error("decode relational row version", err))?,
-        version_column,
-    )?;
-    Ok(Versioned {
-        data: values,
-        version,
-    })
-}
-
-fn postgres_row_value(row: &PgRow, column: &ColumnDef) -> Result<RowValue, ReadModelError> {
-    Ok(match column.column_type {
-        ColumnType::Text | ColumnType::Timestamp => row
-            .try_get::<Option<String>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational text column", err))?
-            .map(RowValue::String)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Boolean => row
-            .try_get::<Option<bool>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational boolean column", err))?
-            .map(RowValue::Bool)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Integer => row
-            .try_get::<Option<i64>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational integer column", err))?
-            .map(RowValue::I64)
-            .unwrap_or(RowValue::Null),
-        ColumnType::UnsignedInteger => row
-            .try_get::<Option<i64>, _>(column.column_name.as_str())
-            .map_err(|err| {
-                read_model_storage_error("decode relational unsigned integer column", err)
-            })?
-            .map(|value| {
-                sqlx_read_model_u64_from_i64(POSTGRES_BACKEND, value, column.column_name.as_str())
+    fn row_value(row: &PgRow, column: &ColumnDef) -> Result<RowValue, ReadModelError> {
+        Ok(match column.column_type {
+            ColumnType::Text | ColumnType::Timestamp => row
+                .try_get::<Option<String>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational text column", err))?
+                .map(RowValue::String)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Boolean => row
+                .try_get::<Option<bool>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational boolean column", err))?
+                .map(RowValue::Bool)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Integer => row
+                .try_get::<Option<i64>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational integer column", err))?
+                .map(RowValue::I64)
+                .unwrap_or(RowValue::Null),
+            ColumnType::UnsignedInteger => row
+                .try_get::<Option<i64>, _>(column.column_name.as_str())
+                .map_err(|err| {
+                    read_model_storage_error("decode relational unsigned integer column", err)
+                })?
+                .map(|value| {
+                    sqlx_read_model_u64_from_i64(
+                        POSTGRES_BACKEND,
+                        value,
+                        column.column_name.as_str(),
+                    )
                     .map(RowValue::U64)
-            })
-            .transpose()?
-            .unwrap_or(RowValue::Null),
-        ColumnType::Float => row
-            .try_get::<Option<f64>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational float column", err))?
-            .map(RowValue::F64)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Bytes => row
-            .try_get::<Option<Vec<u8>>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational bytes column", err))?
-            .map(RowValue::Bytes)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Json => row
-            .try_get::<Option<String>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational json column", err))?
-            .map(|payload| {
-                serde_json::from_str(&payload)
-                    .map(RowValue::Json)
-                    .map_err(|err| ReadModelError::Serde(err.to_string()))
-            })
-            .transpose()?
-            .unwrap_or(RowValue::Null),
-        ColumnType::Unsupported(ref type_name) => {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` column `{}` has unsupported type `{}`",
-                column.field_name, column.column_name, type_name
-            )));
-        }
-    })
+                })
+                .transpose()?
+                .unwrap_or(RowValue::Null),
+            ColumnType::Float => row
+                .try_get::<Option<f64>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational float column", err))?
+                .map(RowValue::F64)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Bytes => row
+                .try_get::<Option<Vec<u8>>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational bytes column", err))?
+                .map(RowValue::Bytes)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Json => row
+                .try_get::<Option<String>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational json column", err))?
+                .map(|payload| {
+                    serde_json::from_str(&payload)
+                        .map(RowValue::Json)
+                        .map_err(|err| ReadModelError::Serde(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(RowValue::Null),
+            ColumnType::Unsupported(ref type_name) => {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` column `{}` has unsupported type `{}`",
+                    column.field_name, column.column_name, type_name
+                )));
+            }
+        })
+    }
 }
 
 fn push_postgres_type_cast(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {

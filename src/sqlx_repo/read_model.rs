@@ -21,7 +21,7 @@ use crate::read_model::{
     ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
     ReadModelCommitOutcome, ReadModelError, ReadModelLoadRequest, ReadModelMutation,
     ReadModelSchema, ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation,
-    RowValue, RowValues, RowWriteMode,
+    RowValue, RowValues, RowWriteMode, Versioned,
 };
 use crate::table::TableSchemaRegistry;
 
@@ -381,6 +381,16 @@ pub(crate) trait SqlxReadModelBackend: Database {
     /// an inherent method on each backend's `QueryResult`, not via a shared trait,
     /// so the one-line accessor is delegated here.
     fn rows_affected(result: &Self::QueryResult) -> u64;
+
+    /// Render one `SELECT`-list column. Postgres casts JSON/Timestamp to `::text`
+    /// so they decode as `String`; SQLite stores them as text already, so it just
+    /// pushes the quoted column. (Reading is the inverse of `push_row_value_bind`.)
+    fn push_select_column(builder: &mut QueryBuilder<Self>, column: &ColumnDef);
+
+    /// Decode one fetched column into a `RowValue`. The one genuinely dialect-
+    /// specific read: Postgres has a native `BOOLEAN`, SQLite stores booleans as
+    /// `INTEGER` and decodes `value != 0`.
+    fn row_value(row: &Self::Row, column: &ColumnDef) -> Result<RowValue, ReadModelError>;
 }
 
 pub(crate) async fn begin_read_model_tx<DB: SqlxReadModelBackend>(
@@ -855,4 +865,231 @@ pub(crate) fn push_key_predicates<DB: SqlxReadModelBackend>(
         DB::push_row_value_bind(builder, value, column)?;
     }
     Ok(())
+}
+
+/// Build the shared `SELECT <columns>, <version> FROM <table>` prefix used by every
+/// relational read. Per-column rendering is dialect-specific (`push_select_column`).
+pub(crate) fn relational_row_select<DB: SqlxReadModelBackend>(
+    schema: &ReadModelSchema,
+) -> Result<QueryBuilder<DB>, ReadModelError> {
+    let version_column = version_column(schema)?;
+    let mut builder = QueryBuilder::<DB>::new("SELECT ");
+    for (index, column) in schema.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        DB::push_select_column(&mut builder, column);
+    }
+    if !schema.columns.is_empty() {
+        builder.push(", ");
+    }
+    builder.push(quote_identifier(version_column));
+    builder.push(" FROM ");
+    builder.push(quote_identifier(&schema.table_name));
+    Ok(builder)
+}
+
+pub(crate) fn push_order_by_primary_key<DB: SqlxReadModelBackend>(
+    builder: &mut QueryBuilder<DB>,
+    schema: &ReadModelSchema,
+) {
+    if schema.primary_key.columns.is_empty() {
+        return;
+    }
+    builder.push(" ORDER BY ");
+    for (index, column) in schema.primary_key.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push(quote_identifier(column));
+    }
+}
+
+pub(crate) fn row_to_versioned_values<DB>(
+    schema: &ReadModelSchema,
+    row: &DB::Row,
+) -> Result<Versioned<RowValues>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    let mut values = RowValues::new();
+    for column in &schema.columns {
+        values.insert(column.column_name.clone(), DB::row_value(row, column)?);
+    }
+    let version_column = version_column(schema)?;
+    let version = read_model_u64_from_i64(
+        DB::BACKEND,
+        row.try_get::<i64, _>(version_column).map_err(|err| {
+            read_model_storage_error(DB::BACKEND, "decode relational row version", err)
+        })?,
+        version_column,
+    )?;
+    Ok(Versioned {
+        data: values,
+        version,
+    })
+}
+
+pub(crate) async fn load_relational_row_by_key<DB>(
+    pool: &sqlx::Pool<DB>,
+    schema: &ReadModelSchema,
+    key: &RowKey,
+) -> Result<Option<Versioned<RowValues>>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    validate_key(schema, key)?;
+    let mut builder = relational_row_select::<DB>(schema)?;
+    push_key_predicates(&mut builder, schema, key)?;
+    let row = builder
+        .build()
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| read_model_storage_error(DB::BACKEND, "load relational row", err))?;
+    row.map(|row| row_to_versioned_values::<DB>(schema, &row))
+        .transpose()
+}
+
+pub(crate) async fn load_relationship_rows<DB>(
+    pool: &sqlx::Pool<DB>,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    match spec.relationship.kind {
+        RelationshipKind::HasMany => load_has_many_rows(pool, root_schema, root_row, spec).await,
+        RelationshipKind::BelongsTo => {
+            load_belongs_to_rows(pool, root_schema, root_row, spec).await
+        }
+        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
+            "many-to-many relationship `{}` includes are not supported yet",
+            spec.relationship.field_name
+        ))),
+    }
+}
+
+async fn load_has_many_rows<DB>(
+    pool: &sqlx::Pool<DB>,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` must declare a foreign key",
+            spec.relationship.field_name
+        ))
+    })?;
+    let target_column = crate::read_model::column_name_for(&spec.target_schema, foreign_key)
+        .ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "relationship `{}` foreign key `{}` is not a target column",
+                spec.relationship.field_name, foreign_key
+            ))
+        })?;
+    let root_column = crate::read_model::column_name_for(root_schema, foreign_key)
+        .or_else(|| root_schema.primary_key.columns.first().cloned())
+        .ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "relationship `{}` has no root key column",
+                spec.relationship.field_name
+            ))
+        })?;
+    let root_value = root_row.get(&root_column).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "read model `{}` root row is missing relationship key `{}`",
+            root_schema.model_name, root_column
+        ))
+    })?;
+
+    load_rows_matching_column(pool, &spec.target_schema, &target_column, root_value).await
+}
+
+async fn load_belongs_to_rows<DB>(
+    pool: &sqlx::Pool<DB>,
+    root_schema: &ReadModelSchema,
+    root_row: &RowValues,
+    spec: &IncludeSpec,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "relationship `{}` must declare a foreign key",
+            spec.relationship.field_name
+        ))
+    })?;
+    let source_column =
+        crate::read_model::column_name_for(root_schema, foreign_key).ok_or_else(|| {
+            ReadModelError::Metadata(format!(
+                "relationship `{}` foreign key `{}` is not a source column",
+                spec.relationship.field_name, foreign_key
+            ))
+        })?;
+    let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
+    let source_value = root_row.get(&source_column).ok_or_else(|| {
+        ReadModelError::Metadata(format!(
+            "read model `{}` root row is missing relationship key `{}`",
+            root_schema.model_name, source_column
+        ))
+    })?;
+
+    load_rows_matching_column(pool, &spec.target_schema, &target_column, source_value).await
+}
+
+async fn load_rows_matching_column<DB>(
+    pool: &sqlx::Pool<DB>,
+    schema: &ReadModelSchema,
+    column_name: &str,
+    value: &RowValue,
+) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    let column = column_by_name(schema, column_name)?;
+    let mut builder = relational_row_select::<DB>(schema)?;
+    builder.push(" WHERE ");
+    builder.push(quote_identifier(column_name));
+    builder.push(" = ");
+    DB::push_row_value_bind(&mut builder, value.clone(), column)?;
+    push_order_by_primary_key(&mut builder, schema);
+
+    let rows = builder
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|err| read_model_storage_error(DB::BACKEND, "load relationship rows", err))?;
+
+    rows.iter()
+        .map(|row| row_to_versioned_values::<DB>(schema, row))
+        .collect()
 }
