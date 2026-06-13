@@ -87,7 +87,6 @@ pub use outbox_worker::{
     OutboxClaimRef,
     OutboxPublishFailureAction,
     OutboxPublisher,
-    OutboxStore,
     OutboxWorker,
     ProcessOneResult,
 };

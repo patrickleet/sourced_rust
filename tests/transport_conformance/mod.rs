@@ -209,17 +209,20 @@ pub fn event_message(name: &str, id: Option<&str>) -> Message {
     message
 }
 
+fn recording_source(messages: Vec<Message>) -> (Arc<Recorder>, Arc<Service<()>>, FakeSource) {
+    let recorder = Recorder::new();
+    let service = recording_service(&recorder);
+    let source = FakeSource::new(recorder.clone(), messages);
+    (recorder, service, source)
+}
+
 // =============================================================================
 // Source-runner contract
 // =============================================================================
 
 pub async fn source_dispatches_before_ack() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.succeeded", Some("m1"))],
-    );
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.succeeded", Some("m1"))]);
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
@@ -231,12 +234,8 @@ pub async fn source_dispatches_before_ack() {
 }
 
 pub async fn source_retryable_failure_nacks_without_ack() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.retry_requested", Some("m1"))],
-    );
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.retry_requested", Some("m1"))]);
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
@@ -250,12 +249,10 @@ pub async fn source_retryable_failure_nacks_without_ack() {
 }
 
 pub async fn source_permanent_failure_dead_letters_by_default() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.permanently_failed", Some("m1"))],
-    );
+    let (recorder, service, source) = recording_source(vec![event_message(
+        "delivery.permanently_failed",
+        Some("m1"),
+    )]);
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
@@ -266,15 +263,10 @@ pub async fn source_permanent_failure_dead_letters_by_default() {
 }
 
 pub async fn source_permanent_failure_stops_under_stop_policy() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![
-            event_message("delivery.permanently_failed", Some("m1")),
-            event_message("delivery.succeeded", Some("m2")),
-        ],
-    );
+    let (recorder, service, source) = recording_source(vec![
+        event_message("delivery.permanently_failed", Some("m1")),
+        event_message("delivery.succeeded", Some("m2")),
+    ]);
     let outcome = run_source(
         service,
         source,
@@ -290,12 +282,8 @@ pub async fn source_permanent_failure_stops_under_stop_policy() {
 }
 
 pub async fn source_unhandled_message_is_acked_and_ignored() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("unrelated", Some("m1"))],
-    );
+    let (recorder, service, source) =
+        recording_source(vec![event_message("unrelated", Some("m1"))]);
     run_source(service, source, RunOptions::idempotent())
         .await
         .unwrap();
@@ -304,13 +292,9 @@ pub async fn source_unhandled_message_is_acked_and_ignored() {
 }
 
 pub async fn source_inbox_mode_rejects_missing_stable_id() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
     // No id on the message; inbox mode requires a stable id.
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.succeeded", None)],
-    );
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.succeeded", None)]);
     run_source(service, source, RunOptions::inbox(()))
         .await
         .unwrap();
@@ -321,12 +305,8 @@ pub async fn source_inbox_mode_rejects_missing_stable_id() {
 }
 
 pub async fn source_inbox_mode_dispatches_with_stable_id() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.succeeded", Some("m1"))],
-    );
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.succeeded", Some("m1"))]);
     run_source(service, source, RunOptions::inbox(()))
         .await
         .unwrap();
@@ -337,26 +317,18 @@ pub async fn source_inbox_mode_dispatches_with_stable_id() {
 }
 
 pub async fn source_propagates_recv_errors() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.succeeded", Some("m1"))],
-    )
-    .with_recv_error();
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.succeeded", Some("m1"))]);
+    let source = source.with_recv_error();
     let outcome = run_source(service, source, RunOptions::idempotent()).await;
     assert!(outcome.is_err(), "recv errors must not be swallowed");
     assert!(recorder.events().is_empty());
 }
 
 pub async fn source_propagates_settle_errors() {
-    let recorder = Recorder::new();
-    let service = recording_service(&recorder);
-    let source = FakeSource::new(
-        recorder.clone(),
-        vec![event_message("delivery.succeeded", Some("m1"))],
-    )
-    .with_settle_failure();
+    let (recorder, service, source) =
+        recording_source(vec![event_message("delivery.succeeded", Some("m1"))]);
+    let source = source.with_settle_failure();
     let outcome = run_source(service, source, RunOptions::idempotent()).await;
     assert!(outcome.is_err(), "settle errors must not be swallowed");
     // The ack was attempted before the error surfaced.
@@ -378,23 +350,28 @@ async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
     id.to_string()
 }
 
-fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
-    use distributed::OutboxStore;
+async fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
+    use distributed::AsyncOutboxStore;
     let store = repo.outbox_store();
-    [
+    for status in [
         OutboxMessageStatus::Pending,
         OutboxMessageStatus::InFlight,
         OutboxMessageStatus::Published,
         OutboxMessageStatus::Failed,
     ]
     .into_iter()
-    .find(|status| {
-        store
-            .messages_by_status(status.clone())
+    {
+        if store
+            .messages_by_status_async(status.clone())
+            .await
             .unwrap()
             .iter()
             .any(|message| message.id() == id)
-    })
+        {
+            return Some(status);
+        }
+    }
+    None
 }
 
 fn dispatcher(
@@ -426,7 +403,7 @@ pub async fn dispatcher_completes_only_after_publish_success() {
         vec!["evt-1".to_string()]
     );
     assert_eq!(
-        outbox_status(&repo, &id),
+        outbox_status(&repo, &id).await,
         Some(OutboxMessageStatus::Published)
     );
 }
@@ -443,7 +420,7 @@ pub async fn dispatcher_unknown_outcome_stays_retryable() {
     assert_eq!(outcome.published, 0);
     assert_eq!(outcome.released, 1);
     assert_eq!(
-        outbox_status(&repo, &id),
+        outbox_status(&repo, &id).await,
         Some(OutboxMessageStatus::Pending),
         "row must stay retryable"
     );
@@ -462,12 +439,12 @@ pub async fn dispatcher_claims_explicit_ids_before_publish() {
     assert_eq!(outcome.claimed, 1);
     assert_eq!(outcome.published, 1);
     assert_eq!(
-        outbox_status(&repo, &wanted),
+        outbox_status(&repo, &wanted).await,
         Some(OutboxMessageStatus::Published)
     );
     // The unrequested row is untouched (claimed before publish, by id).
     assert_eq!(
-        outbox_status(&repo, &other),
+        outbox_status(&repo, &other).await,
         Some(OutboxMessageStatus::Pending)
     );
 }

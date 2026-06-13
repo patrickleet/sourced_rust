@@ -8,7 +8,7 @@
 //! Registration uses the `register_handlers!` macro.
 
 use distributed::microsvc::{Service, Session};
-use distributed::{AggregateBuilder, HashMapRepository, OutboxStore, Queueable};
+use distributed::{AggregateBuilder, AsyncOutboxStore, HashMapRepository, Queueable};
 use serde_json::json;
 
 use crate::handlers;
@@ -108,7 +108,7 @@ async fn create_persists_outbox_message() {
     assert_eq!(counter.value, 0);
 
     // Outbox message was persisted
-    let pending = inner.outbox_store().pending().unwrap();
+    let pending = inner.outbox_store().pending_async().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "counter.initialized");
 }
@@ -136,7 +136,8 @@ async fn duplicate_create_leaves_single_outbox_message() {
         .repo()
         .inner()
         .outbox_store()
-        .pending()
+        .pending_async()
+        .await
         .unwrap();
     assert_eq!(pending.len(), 1);
 }
@@ -169,7 +170,7 @@ async fn increment_persists_outbox_message() {
 
     // Both outbox messages were persisted
     let inner = service.repo().repo().inner();
-    let pending = inner.outbox_store().pending().unwrap();
+    let pending = inner.outbox_store().pending_async().await.unwrap();
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
     event_types.sort();

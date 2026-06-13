@@ -2,15 +2,8 @@
 //!
 //! This module provides the worker infrastructure for processing outbox messages.
 //!
-//! There are two drain paths:
-//! - **Production / extension point**: the async `OutboxDispatcher` +
-//!   `AsyncMessagePublisher` (`BusPublisher` over a `Bus`), wired by
-//!   `service.with_bus(bus)`.
-//! - **Dev/test**: the synchronous `OutboxWorker` + `OutboxPublisher` +
-//!   `LogPublisher` trio — no async runtime, no real transport.
-//!
 //! Items:
-//! - `OutboxStore` - Store operations for claiming and completing messages
+//! - `AsyncOutboxStore` - Store operations for claiming and completing messages
 //! - `OutboxDispatcher` / `BusPublisher` - the async production drain path
 //! - `OutboxWorker` - synchronous dev/test message processor
 //! - `OutboxPublisher` - synchronous dev/test publish trait
@@ -26,24 +19,16 @@
 //! ## Example
 //!
 //! ```ignore
-//! use distributed::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore, OutboxWorker, LogPublisher};
+//! use distributed::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef};
 //! use std::time::Duration;
 //!
-//! // Claim pending messages
 //! let worker_id = "worker-1";
-//! let messages = outbox.claim(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))?;
-//!
-//! // Process with a worker
-//! let mut worker = OutboxWorker::new(LogPublisher::default()).with_worker_id(worker_id);
-//! for mut msg in messages {
+//! let messages = outbox
+//!     .claim_async(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))
+//!     .await?;
+//! for msg in messages {
 //!     let claim = OutboxClaimRef::from_message(&msg)?;
-//!     let result = worker.process_message(&mut msg)?;
-//!     if result.completed {
-//!         outbox.complete(&claim)?;
-//!     } else if result.released || result.failed {
-//!         let error = msg.last_error.as_deref().unwrap_or("publish failed");
-//!         outbox.record_failure(&claim, error, 3)?;
-//!     }
+//!     outbox.complete_async(&claim).await?;
 //! }
 //! ```
 
@@ -64,7 +49,7 @@ pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use store::ensure_active_claim;
 pub use store::{
-    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore,
+    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction,
 };
 
 // Worker

@@ -1,18 +1,3 @@
-//! Distributed read-model example over an event-driven seat checkout flow.
-//!
-//! Deployment shape:
-//! - the **checkout saga service** owns the `CheckoutSaga` aggregate and its outbox;
-//! - the **seat inventory service** owns the `Seat` aggregate and its outbox;
-//! - coordinator subscribers translate domain events into aggregate method calls;
-//! - the **projection service** consumes the same bus and reconciles normalized
-//!   `checkouts`, `checkout_steps`, and `seats` rows in a shared read store;
-//! - a **query service** reads the projected graph through primary-key loads
-//!   plus `has_many` / `belongs_to` relationship includes.
-//!
-//! Commands are present-tense requests. Events are past-tense facts. The saga
-//! is an aggregate that records checkout-process facts and emits its own events;
-//! it does not directly issue commands to the seat aggregate.
-
 mod checkout;
 mod checkout_saga_service;
 #[cfg(feature = "postgres")]
@@ -85,8 +70,6 @@ fn unique_id(prefix: &str) -> String {
     format!("{prefix}-{nanos}-{sequence}")
 }
 
-// Used by the gated sqlite/postgres flow tests; the matrix uses the per-step
-// helpers directly, so this is unused in a default (no-feature) build.
 #[allow(dead_code)]
 async fn run_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
     checkout_repo: R,
@@ -133,36 +116,13 @@ async fn run_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
         .await
         .expect("checkout read model load should succeed")
         .expect("checkout should be projected");
-    assert_eq!(checkout.seat_id, ids.seat_id);
-    assert_eq!(checkout.seat_category, ids.category);
-    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
-    assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
-    assert_eq!(
-        checkout
-            .seat
-            .as_ref()
-            .expect("checkout should include seat")
-            .status,
-        SEAT_RESERVED
-    );
-
-    let mut steps: Vec<&str> = checkout
-        .steps
-        .iter()
-        .map(|step| step.step.as_str())
-        .collect();
-    steps.sort();
-    assert_eq!(
-        steps,
-        vec!["seat_reservation_completed", "seat_reserved", "started"]
-    );
+    assert_checkout_screen(&checkout, &ids);
 
     let seat = load_seat(&read_repo, &ids.seat_id)
         .await
         .expect("seat read model load should succeed")
         .expect("seat should be projected");
-    assert_eq!(seat.status, SEAT_RESERVED);
-    assert_eq!(seat.checkout_id, ids.checkout_id);
+    assert_projected_seat(&seat, &ids);
 
     let loaded_checkout = checkout_repo
         .clone()
@@ -460,9 +420,36 @@ where
         .map(|root| SeatView::from_row(root.data).expect("seat row should hydrate")))
 }
 
-/// Bridge a HashMap-backed service's pending outbox onto the async bus — the
-/// new-transport equivalent of the old `OutboxWorkerThread`: claim → publish →
-/// complete, so each event is forwarded exactly once.
+fn assert_checkout_screen(checkout: &CheckoutView, ids: &FlowIds) {
+    assert_eq!(checkout.seat_id, ids.seat_id);
+    assert_eq!(checkout.seat_category, ids.category);
+    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
+    assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
+    assert_eq!(
+        checkout
+            .seat
+            .as_ref()
+            .expect("checkout should include seat")
+            .status,
+        SEAT_RESERVED
+    );
+    let mut steps: Vec<&str> = checkout
+        .steps
+        .iter()
+        .map(|step| step.step.as_str())
+        .collect();
+    steps.sort();
+    assert_eq!(
+        steps,
+        vec!["seat_reservation_completed", "seat_reserved", "started"]
+    );
+}
+
+fn assert_projected_seat(seat: &SeatView, ids: &FlowIds) {
+    assert_eq!(seat.status, SEAT_RESERVED);
+    assert_eq!(seat.checkout_id, ids.checkout_id);
+}
+
 async fn publish_pending_outbox(
     outbox: &distributed::HashMapOutboxStore,
     bus: &distributed::bus::InMemoryBus,
@@ -494,14 +481,15 @@ async fn publish_pending_outbox(
     }
 }
 
-/// The original gold-standard choreography, now driven over the async
-/// `InMemoryBus` instead of the legacy `InMemoryQueue` / `OutboxWorkerThread` /
-/// `bus::Subscribable` wiring. Same services, same projection + query, same
-/// assertions — only the transport changed.
 #[tokio::test]
 async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
     use distributed::bus::InMemoryBus;
 
+    let ids = FlowIds {
+        checkout_id: "checkout-1".to_string(),
+        seat_id: "A-7".to_string(),
+        category: "balcony".to_string(),
+    };
     let checkout_store = HashMapRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
@@ -514,13 +502,12 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
 
     let bus = InMemoryBus::new();
 
-    // Commands: add the seat, start the checkout (each writes its own outbox).
     dispatch(
         &seat_service,
         seat_command::ADD,
         AddSeat {
-            seat_id: "A-7".to_string(),
-            category: "balcony".to_string(),
+            seat_id: ids.seat_id.clone(),
+            category: ids.category.clone(),
         },
     )
     .await;
@@ -528,15 +515,13 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         &checkout_service,
         checkout_command::START,
         StartCheckout {
-            checkout_id: "checkout-1".to_string(),
-            seat_id: "A-7".to_string(),
-            seat_category: "balcony".to_string(),
+            checkout_id: ids.checkout_id.clone(),
+            seat_id: ids.seat_id.clone(),
+            seat_category: ids.category.clone(),
         },
     )
     .await;
 
-    // Hop 1: SeatAdded + CheckoutStarted reach the bus; the projection records the
-    // opening state and the seat service reacts to the checkout by reserving.
     publish_pending_outbox(&seat_store.outbox_store(), &bus).await;
     publish_pending_outbox(&checkout_store.outbox_store(), &bus).await;
     bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
@@ -546,7 +531,6 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         .await
         .expect("seat service reacts to the started checkout");
 
-    // Hop 2: SeatReserved reaches the bus; the saga records it; projection updates.
     publish_pending_outbox(&seat_store.outbox_store(), &bus).await;
     bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
         .await
@@ -555,70 +539,46 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         .await
         .expect("saga records the seat reservation");
 
-    // Hop 3: SeatReservationCompleted reaches the bus; the projection finalizes.
     publish_pending_outbox(&checkout_store.outbox_store(), &bus).await;
     bus.subscribe(projection_svc.clone(), RunOptions::idempotent())
         .await
         .expect("projection drains the completion");
 
     let checkout = query_service
-        .checkout_screen("checkout-1")
+        .checkout_screen(&ids.checkout_id)
         .await
         .expect("checkout query should succeed")
         .expect("checkout should be projected");
-    assert_eq!(checkout.seat_id, "A-7");
-    assert_eq!(checkout.seat_category, "balcony");
-    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
-    assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
-    assert_eq!(
-        checkout
-            .seat
-            .as_ref()
-            .expect("checkout should include seat")
-            .status,
-        SEAT_RESERVED
-    );
-
-    let mut steps: Vec<&str> = checkout
-        .steps
-        .iter()
-        .map(|step| step.step.as_str())
-        .collect();
-    steps.sort();
-    assert_eq!(
-        steps,
-        vec!["seat_reservation_completed", "seat_reserved", "started"]
-    );
+    assert_checkout_screen(&checkout, &ids);
 
     let seat = query_service
-        .seat("A-7")
+        .seat(&ids.seat_id)
         .await
         .expect("seat query should succeed")
         .expect("seat should be projected");
-    assert_eq!(seat.status, SEAT_RESERVED);
-    assert_eq!(seat.checkout_id, "checkout-1");
+    assert_projected_seat(&seat, &ids);
 
     let checkout_saga = checkout_store
         .clone()
         .queued()
         .aggregate::<CheckoutSaga>()
-        .peek("checkout-1")
+        .peek(&ids.checkout_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(checkout_saga.status, CHECKOUT_SEAT_RESERVED);
-    assert_eq!(checkout_saga.reserved_seat_id, "A-7");
+    assert_eq!(checkout_saga.reserved_seat_id, ids.seat_id);
 
     let seat = seat_store
         .clone()
         .queued()
         .aggregate::<Seat>()
-        .peek("A-7")
+        .peek(&ids.seat_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(seat.status, SEAT_RESERVED);
-    assert_eq!(seat.checkout_id, "checkout-1");
+    assert_eq!(seat.checkout_id, ids.checkout_id);
 }
 
 #[cfg(feature = "sqlite")]
@@ -757,21 +717,12 @@ async fn checkout_commands_can_be_grpc_service() {
     assert_eq!(saga.status, checkout::CHECKOUT_STARTED);
 }
 
-// ===================================================================
-// Transport × persistence matrix
-//
-// The same seat-checkout scenario over every async bus transport and every
-// persistence backend. No sync path: the domain flow, projection, and query run
-// on the async repository `R`, and the events travel over the `Bus` facade `B`.
-// ===================================================================
-
 use std::collections::HashMap as StdHashMap;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
 use distributed::bus::{Bus, BusConsumer, RunOptions};
 use distributed::microsvc::{Message, MessageKind};
 
-/// The four checkout events in flow (causal) order, by CloudEvent/event type.
 const FLOW_EVENT_TYPES: [&str; 4] = [
     seat_event::ADDED,
     checkout_event::STARTED,
@@ -779,7 +730,6 @@ const FLOW_EVENT_TYPES: [&str; 4] = [
     checkout_event::SEAT_RESERVATION_COMPLETED,
 ];
 
-/// Messages the transport delivered to the projection sink: (name, id, payload).
 type Collected = StdArc<StdMutex<Vec<(String, String, Vec<u8>)>>>;
 
 fn record_message(collected: &Collected, message: &Message) {
@@ -790,8 +740,6 @@ fn record_message(collected: &Collected, message: &Message) {
     ));
 }
 
-/// A subscriber service that records every checkout event it receives — the
-/// transport sink the bus drains into. Subscribes to all four event names.
 fn build_collector() -> (StdArc<Service<()>>, Collected) {
     let collected: Collected = StdArc::new(StdMutex::new(Vec::new()));
     let (c1, c2, c3, c4) = (
@@ -824,10 +772,6 @@ fn build_collector() -> (StdArc<Service<()>>, Collected) {
     (StdArc::new(service), collected)
 }
 
-/// Generic end-to-end matrix cell: run the seat-checkout domain flow + read-model
-/// projection + query on persistence `repo`, routing the events over transport
-/// `bus`. `collector`/`collected` are the bus's projection sink (the caller binds
-/// the subscription first for transports that require it, e.g. RabbitMQ).
 async fn run_checkout_over_bus<B, R>(
     bus: B,
     collector: StdArc<Service<()>>,
@@ -845,7 +789,6 @@ async fn run_checkout_over_bus<B, R>(
         + Sync
         + 'static,
 {
-    // 1. Domain flow on the persistence backend → the four causal events.
     let seat_added = add_seat(&repo, &ids.seat_id, &ids.category).await;
     let checkout_started =
         start_checkout(&repo, &ids.checkout_id, &ids.seat_id, &ids.category).await;
@@ -858,7 +801,6 @@ async fn run_checkout_over_bus<B, R>(
         reservation_completed,
     ];
 
-    // 2. Publish every event over the transport.
     for event in &events {
         let message = Message::new(
             event.event_type.clone(),
@@ -871,16 +813,13 @@ async fn run_checkout_over_bus<B, R>(
             .expect("event should publish over the bus");
     }
 
-    // 3. Drain the transport into the projection sink.
     bus.subscribe(collector, RunOptions::idempotent())
         .await
         .expect("subscriber should drain the bus");
 
-    // 4-5. Project the transport-delivered events in causal order, then assert.
     project_and_assert_checkout(&repo, &ids, &delivered_map(&collected)).await;
 }
 
-/// Collapse the recorded deliveries into a `name -> (id, payload)` map.
 fn delivered_map(collected: &Collected) -> StdHashMap<String, (String, Vec<u8>)> {
     collected
         .lock()
@@ -890,9 +829,6 @@ fn delivered_map(collected: &Collected) -> StdHashMap<String, (String, Vec<u8>)>
         .collect()
 }
 
-/// Project the events the transport delivered (in causal order) into `repo`'s
-/// read models, then query the graph and assert the user-facing checkout screen.
-/// Shared by every transport cell (pull buses and the Knative HTTP path).
 async fn project_and_assert_checkout<R>(
     repo: &R,
     ids: &FlowIds,
@@ -913,35 +849,13 @@ async fn project_and_assert_checkout<R>(
         .await
         .expect("checkout read model load should succeed")
         .expect("checkout should be projected");
-    assert_eq!(checkout.seat_id, ids.seat_id);
-    assert_eq!(checkout.seat_category, ids.category);
-    assert_eq!(checkout.status, CHECKOUT_SEAT_RESERVED);
-    assert_eq!(checkout.screen_message, SEAT_RESERVED_MESSAGE);
-    assert_eq!(
-        checkout
-            .seat
-            .as_ref()
-            .expect("checkout should include seat")
-            .status,
-        SEAT_RESERVED
-    );
-    let mut steps: Vec<&str> = checkout
-        .steps
-        .iter()
-        .map(|step| step.step.as_str())
-        .collect();
-    steps.sort();
-    assert_eq!(
-        steps,
-        vec!["seat_reservation_completed", "seat_reserved", "started"]
-    );
+    assert_checkout_screen(&checkout, ids);
 
     let seat = load_seat(repo, &ids.seat_id)
         .await
         .expect("seat read model load should succeed")
         .expect("seat should be projected");
-    assert_eq!(seat.status, SEAT_RESERVED);
-    assert_eq!(seat.checkout_id, ids.checkout_id);
+    assert_projected_seat(&seat, ids);
 }
 
 fn matrix_ids(tag: &str) -> FlowIds {
@@ -952,22 +866,27 @@ fn matrix_ids(tag: &str) -> FlowIds {
     }
 }
 
-/// In-memory persistence × in-memory transport — the always-on matrix cell.
+async fn run_matrix_cell<B, R>(bus: B, repo: R, tag: &str)
+where
+    B: Bus + BusConsumer,
+    R: Clone
+        + GetStream
+        + ReadModelWritePlanStore
+        + RelationalReadModelQueryStore
+        + TransactionalCommit
+        + Send
+        + Sync
+        + 'static,
+{
+    let (collector, collected) = build_collector();
+    run_checkout_over_bus(bus, collector, collected, repo, matrix_ids(tag)).await;
+}
+
 #[tokio::test]
 async fn matrix_in_memory_persistence_over_in_memory_bus() {
     use distributed::bus::InMemoryBus;
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        InMemoryBus::new(),
-        collector,
-        collected,
-        inmem_matrix_repo(),
-        matrix_ids("inmem-inmem"),
-    )
-    .await;
+    run_matrix_cell(InMemoryBus::new(), inmem_matrix_repo(), "inmem-inmem").await;
 }
-
-// ---- Persistence fixtures (read-model schemas registered/bootstrapped) ----
 
 fn inmem_matrix_repo() -> HashMapRepository {
     let repo = HashMapRepository::new();
@@ -987,12 +906,6 @@ async fn sqlite_matrix_repo() -> SqliteRepository {
     repo
 }
 
-// ---- Knative (HTTP / CloudEvents) transport cell ----
-//
-// Knative produce = POST CloudEvents to a broker-ingress; consume = the platform
-// delivers them over HTTP to `cloud_events_router`. Here a local router serves the
-// projection sink, so the same scenario runs over the Knative transport with no
-// broker. (HTTP/gRPC command ingress is this same Knative surface.)
 #[cfg(feature = "http")]
 async fn run_checkout_over_knative<R>(repo: R, ids: FlowIds)
 where
@@ -1019,7 +932,6 @@ where
             .expect("knative ingress should serve");
     });
 
-    // events_broker "" + namespace "" => POST to the router root ("/").
     let bus = KnativeBus::new(format!("http://{addr}"), "", "matrix-source", "", "");
 
     let seat_added = add_seat(&repo, &ids.seat_id, &ids.category).await;
@@ -1048,23 +960,14 @@ where
     server.abort();
 }
 
-// =================== Matrix cells ===================
-//
-// Transport axis: InMemoryBus, NatsBus, RabbitBus, KafkaBus, PostgresBus, Knative.
-// Persistence axis: HashMapRepository, SqliteRepository, PostgresRepository.
-// Broker/DB cells skip when their env var is unset.
-
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn matrix_sqlite_persistence_over_in_memory_bus() {
     use distributed::bus::InMemoryBus;
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
+    run_matrix_cell(
         InMemoryBus::new(),
-        collector,
-        collected,
         sqlite_matrix_repo().await,
-        matrix_ids("sqlite-inmem"),
+        "sqlite-inmem",
     )
     .await;
 }
@@ -1106,13 +1009,10 @@ async fn matrix_in_memory_persistence_over_nats_bus() {
         return;
     }
     let ns = unique_id("ns").to_lowercase();
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
+    run_matrix_cell(
         nats_matrix_bus(&ns).await,
-        collector,
-        collected,
         inmem_matrix_repo(),
-        matrix_ids("inmem-nats"),
+        "inmem-nats",
     )
     .await;
 }
@@ -1124,13 +1024,10 @@ async fn matrix_sqlite_persistence_over_nats_bus() {
         return;
     }
     let ns = unique_id("ns").to_lowercase();
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
+    run_matrix_cell(
         nats_matrix_bus(&ns).await,
-        collector,
-        collected,
         sqlite_matrix_repo().await,
-        matrix_ids("sqlite-nats"),
+        "sqlite-nats",
     )
     .await;
 }
@@ -1219,13 +1116,10 @@ async fn matrix_in_memory_persistence_over_kafka_bus() {
         return;
     }
     let ns = unique_id("ns");
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
+    run_matrix_cell(
         kafka_matrix_bus(&ns).await,
-        collector,
-        collected,
         inmem_matrix_repo(),
-        matrix_ids("inmem-kafka"),
+        "inmem-kafka",
     )
     .await;
 }
@@ -1237,13 +1131,10 @@ async fn matrix_sqlite_persistence_over_kafka_bus() {
         return;
     }
     let ns = unique_id("ns");
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
+    run_matrix_cell(
         kafka_matrix_bus(&ns).await,
-        collector,
-        collected,
         sqlite_matrix_repo().await,
-        matrix_ids("sqlite-kafka"),
+        "sqlite-kafka",
     )
     .await;
 }
@@ -1263,15 +1154,7 @@ async fn matrix_in_memory_persistence_over_postgres_bus() {
     let bus_pool = schema.repository().await.pool().clone();
     let bus = PostgresBus::new(bus_pool).group("matrix");
     bus.ensure_tables().await.expect("postgres bus tables");
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        bus,
-        collector,
-        collected,
-        inmem_matrix_repo(),
-        matrix_ids("inmem-pgbus"),
-    )
-    .await;
+    run_matrix_cell(bus, inmem_matrix_repo(), "inmem-pgbus").await;
 }
 
 #[cfg(feature = "postgres")]
@@ -1291,18 +1174,8 @@ async fn matrix_postgres_persistence_over_in_memory_bus() {
     repo.bootstrap_table_schema_for_dev(&registry)
         .await
         .expect("read-model schema should bootstrap");
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        InMemoryBus::new(),
-        collector,
-        collected,
-        repo,
-        matrix_ids("pg-inmem"),
-    )
-    .await;
+    run_matrix_cell(InMemoryBus::new(), repo, "pg-inmem").await;
 }
-
-// ---- Remaining matrix cells: Postgres persistence + Postgres-bus pairings ----
 
 #[cfg(feature = "postgres")]
 async fn postgres_matrix_repo() -> Option<(
@@ -1342,15 +1215,7 @@ async fn matrix_sqlite_persistence_over_postgres_bus() {
     let Some(bus) = postgres_matrix_bus().await else {
         return;
     };
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        bus,
-        collector,
-        collected,
-        sqlite_matrix_repo().await,
-        matrix_ids("sqlite-pgbus"),
-    )
-    .await;
+    run_matrix_cell(bus, sqlite_matrix_repo().await, "sqlite-pgbus").await;
 }
 
 #[cfg(feature = "postgres")]
@@ -1361,8 +1226,7 @@ async fn matrix_postgres_persistence_over_postgres_bus() {
     else {
         return;
     };
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(bus, collector, collected, repo, matrix_ids("pg-pgbus")).await;
+    run_matrix_cell(bus, repo, "pg-pgbus").await;
 }
 
 #[cfg(all(feature = "postgres", feature = "nats"))]
@@ -1375,15 +1239,7 @@ async fn matrix_postgres_persistence_over_nats_bus() {
         return;
     };
     let ns = unique_id("ns").to_lowercase();
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        nats_matrix_bus(&ns).await,
-        collector,
-        collected,
-        repo,
-        matrix_ids("pg-nats"),
-    )
-    .await;
+    run_matrix_cell(nats_matrix_bus(&ns).await, repo, "pg-nats").await;
 }
 
 #[cfg(all(feature = "postgres", feature = "rabbitmq"))]
@@ -1411,15 +1267,7 @@ async fn matrix_postgres_persistence_over_kafka_bus() {
         return;
     };
     let ns = unique_id("ns");
-    let (collector, collected) = build_collector();
-    run_checkout_over_bus(
-        kafka_matrix_bus(&ns).await,
-        collector,
-        collected,
-        repo,
-        matrix_ids("pg-kafka"),
-    )
-    .await;
+    run_matrix_cell(kafka_matrix_bus(&ns).await, repo, "pg-kafka").await;
 }
 
 #[cfg(all(feature = "postgres", feature = "http"))]

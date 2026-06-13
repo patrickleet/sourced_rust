@@ -215,30 +215,18 @@ pub enum ReadModelMutation {
 
 impl ReadModelMutation {
     pub fn table_name(&self) -> &str {
-        match self {
-            ReadModelMutation::UpsertRow(mutation) => mutation.schema.table_name.as_str(),
-            ReadModelMutation::PatchRow(mutation) => mutation.schema.table_name.as_str(),
-            ReadModelMutation::DeleteRow(mutation) => mutation.schema.table_name.as_str(),
-        }
+        self.schema().table_name.as_str()
     }
 
     pub fn lock_key(&self) -> String {
+        format!("{}:{}", self.table_name(), key_fingerprint(self.key()))
+    }
+
+    fn key(&self) -> &RowKey {
         match self {
-            ReadModelMutation::UpsertRow(mutation) => format!(
-                "{}:{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
-            ReadModelMutation::PatchRow(mutation) => format!(
-                "{}:{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
-            ReadModelMutation::DeleteRow(mutation) => format!(
-                "{}:{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
+            ReadModelMutation::UpsertRow(mutation) => &mutation.key,
+            ReadModelMutation::PatchRow(mutation) => &mutation.key,
+            ReadModelMutation::DeleteRow(mutation) => &mutation.key,
         }
     }
 
@@ -290,23 +278,12 @@ impl ReadModelMutation {
     }
 
     fn sort_key(&self) -> String {
-        match self {
-            ReadModelMutation::UpsertRow(mutation) => format!(
-                "1|{}|{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
-            ReadModelMutation::PatchRow(mutation) => format!(
-                "2|{}|{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
-            ReadModelMutation::DeleteRow(mutation) => format!(
-                "3|{}|{}",
-                mutation.schema.table_name,
-                key_fingerprint(&mutation.key)
-            ),
-        }
+        format!(
+            "{}|{}|{}",
+            self.operation_rank(),
+            self.table_name(),
+            key_fingerprint(self.key())
+        )
     }
 }
 

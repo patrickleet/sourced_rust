@@ -176,7 +176,7 @@ mod tests {
     use crate::bus::{run_source, RunOptions};
     use crate::microsvc::Service;
     use crate::{
-        CommitBatch, HashMapRepository, OutboxMessage, OutboxMessageStatus, OutboxStore,
+        AsyncOutboxStore, CommitBatch, HashMapRepository, OutboxMessage, OutboxMessageStatus,
         TransactionalCommit,
     };
     use serde_json::json;
@@ -218,8 +218,7 @@ mod tests {
         ]
         .into_iter()
         .find(|status| {
-            store
-                .messages_by_status(status.clone())
+            block_on(store.messages_by_status_async(status.clone()))
                 .unwrap()
                 .iter()
                 .any(|m| m.id() == id)

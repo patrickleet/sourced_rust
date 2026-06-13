@@ -20,12 +20,11 @@ use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{
     ensure_active_claim, AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef,
-    OutboxPublishFailureAction,
 };
 use crate::read_model::{
-    validate_key, ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
-    ReadModelQueryCapabilities, ReadModelWritePlan, RowValue,
+    ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
+    RowValue,
 };
 use crate::repository::{
     reject_duplicate_outbox_messages, reject_duplicate_streams,
@@ -36,9 +35,8 @@ use crate::repository::{
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::read_model::{
-    apply_read_model_write_plan_in_tx, begin_read_model_tx, commit_read_model_tx,
-    empty_string_as_none, load_relational_row_by_key, load_relationship_rows, quote_identifier,
-    remember_read_model_schemas, resolve_registered_read_model_schemas,
+    apply_read_model_write_plan_in_tx, commit_read_model_write_plan, empty_string_as_none,
+    load_read_model_graph, quote_identifier, remember_read_model_schemas,
     sql_read_model_capabilities, validate_sql_write_plan,
 };
 use crate::sqlx_repo::{
@@ -478,13 +476,7 @@ impl ReadModelWritePlanStore for SqliteRepository {
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move {
-            validate_sql_write_plan(&plan)?;
-            let mut tx = begin_read_model_tx(&self.pool).await?;
-            let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
-            commit_read_model_tx(tx).await?;
-            Ok(outcome)
-        }
+        async move { commit_read_model_write_plan(&self.pool, plan).await }
     }
 }
 
@@ -498,36 +490,13 @@ impl RelationalReadModelQueryStore for SqliteRepository {
         request: ReadModelLoadRequest,
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
         async move {
-            request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
-
-            let (root_schema, include_specs) =
-                resolve_registered_read_model_schemas(&self.read_model_schemas, &request)?;
-            validate_key(&root_schema, &request.key)?;
-
-            let Some(root) =
-                load_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
-            else {
-                return Ok(ReadModelLoadGraph::default());
-            };
-
-            let mut includes = BTreeMap::new();
-            for spec in include_specs {
-                let loaded_rows =
-                    load_relationship_rows(&self.pool, &root_schema, &root.data, &spec).await?;
-                includes.insert(
-                    spec.name,
-                    ReadModelIncludeRows {
-                        relationship: spec.relationship,
-                        target_schema: spec.target_schema,
-                        rows: loaded_rows,
-                    },
-                );
-            }
-
-            Ok(ReadModelLoadGraph {
-                root: Some(root),
-                includes,
-            })
+            load_read_model_graph(
+                &self.pool,
+                &self.read_model_schemas,
+                request,
+                self.read_model_query_capabilities(),
+            )
+            .await
         }
     }
 }
@@ -831,30 +800,6 @@ impl AsyncOutboxStore for SqliteOutboxStore {
                 |message| ensure_active_claim(message, Some(claim), now),
             )
             .await
-        }
-    }
-
-    fn record_failure_async<'a>(
-        &'a self,
-        claim: &'a OutboxClaimRef,
-        error: &'a str,
-        max_attempts: u32,
-    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
-        async move {
-            let message = outbox_message_by_id_pool(&self.pool, &claim.message_id)
-                .await?
-                .ok_or_else(|| RepositoryError::NotFound {
-                    id: claim.message_id.clone(),
-                })?;
-            ensure_active_claim(&message, Some(claim), SystemTime::now())?;
-
-            if message.attempts >= max_attempts {
-                self.fail_async(claim, error).await?;
-                Ok(OutboxPublishFailureAction::Failed)
-            } else {
-                self.release_async(claim, error).await?;
-                Ok(OutboxPublishFailureAction::Released)
-            }
         }
     }
 }
