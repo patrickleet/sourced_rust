@@ -14,7 +14,7 @@ use crate::bus::{AsyncMessagePublisher, Message};
 use crate::outbox::{OutboxMessage, OutboxPublishHook};
 use crate::repository::RepositoryError;
 
-use super::{AsyncOutboxStore, OutboxClaimRef};
+use super::{OutboxClaimRef, OutboxStore};
 
 /// Publishes committed outbox rows through `publisher` and settles their claims
 /// in `store`. The `store` must be the same outbox store the commit wrote to.
@@ -38,7 +38,7 @@ impl<S, P> BusOutboxPublishHook<S, P> {
 
 impl<S, P> OutboxPublishHook for BusOutboxPublishHook<S, P>
 where
-    S: AsyncOutboxStore,
+    S: OutboxStore,
     P: AsyncMessagePublisher,
 {
     fn publish_claimed<'a>(
@@ -49,10 +49,10 @@ where
             let claim = OutboxClaimRef::from_message(&claimed)?;
             let message = Message::from(&claimed);
             match self.publisher.publish(message).await {
-                Ok(()) => self.store.complete_async(&claim).await,
+                Ok(()) => self.store.complete(&claim).await,
                 Err(error) => self
                     .store
-                    .record_failure_async(&claim, &error.to_string(), self.max_attempts)
+                    .record_failure(&claim, &error.to_string(), self.max_attempts)
                     .await
                     .map(|_action| ()),
             }

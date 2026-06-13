@@ -12,6 +12,7 @@
 //!    one-line-per-method impls — so the SQL-building logic exists once rather than
 //!    being mirrored (and risking silent drift) in `postgres_repo`/`sqlite_repo`.
 
+use std::collections::BTreeMap;
 use std::sync::RwLock;
 
 use sqlx::{Database, Encode, Executor, IntoArguments, QueryBuilder, Row, Transaction, Type};
@@ -19,9 +20,10 @@ use sqlx::{Database, Encode, Executor, IntoArguments, QueryBuilder, Row, Transac
 use crate::read_model::{
     key_fingerprint, validate_key, validate_row_values, ColumnDef, DeleteRowMutation,
     ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelLoadRequest, ReadModelMutation,
-    ReadModelSchema, ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation,
-    RowValue, RowValues, RowWriteMode, Versioned,
+    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
+    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
+    ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation, RowValue,
+    RowValues, RowWriteMode, Versioned,
 };
 use crate::table::TableSchemaRegistry;
 
@@ -407,6 +409,24 @@ pub(crate) async fn commit_read_model_tx<DB: SqlxReadModelBackend>(
     tx.commit()
         .await
         .map_err(|err| read_model_storage_error(DB::BACKEND, "commit transaction", err))
+}
+
+pub(crate) async fn commit_read_model_write_plan<DB>(
+    pool: &sqlx::Pool<DB>,
+    plan: ReadModelWritePlan,
+) -> Result<ReadModelCommitOutcome, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    validate_sql_write_plan(&plan)?;
+    let mut tx = begin_read_model_tx(pool).await?;
+    let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
+    commit_read_model_tx(tx).await?;
+    Ok(outcome)
 }
 
 pub(crate) async fn apply_read_model_write_plan_in_tx<DB>(
@@ -979,6 +999,47 @@ where
             spec.relationship.field_name
         ))),
     }
+}
+
+pub(crate) async fn load_read_model_graph<DB>(
+    pool: &sqlx::Pool<DB>,
+    schemas: &RwLock<TableSchemaRegistry>,
+    request: ReadModelLoadRequest,
+    capabilities: ReadModelQueryCapabilities,
+) -> Result<ReadModelLoadGraph, ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    request.validate_for_query_capabilities(&capabilities)?;
+
+    let (root_schema, include_specs) = resolve_registered_read_model_schemas(schemas, &request)?;
+    validate_key(&root_schema, &request.key)?;
+
+    let Some(root) = load_relational_row_by_key(pool, &root_schema, &request.key).await? else {
+        return Ok(ReadModelLoadGraph::default());
+    };
+
+    let mut includes = BTreeMap::new();
+    for spec in include_specs {
+        let rows = load_relationship_rows(pool, &root_schema, &root.data, &spec).await?;
+        includes.insert(
+            spec.name,
+            ReadModelIncludeRows {
+                relationship: spec.relationship,
+                target_schema: spec.target_schema,
+                rows,
+            },
+        );
+    }
+
+    Ok(ReadModelLoadGraph {
+        root: Some(root),
+        includes,
+    })
 }
 
 async fn load_has_many_rows<DB>(

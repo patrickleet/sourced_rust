@@ -323,19 +323,10 @@ legacy import path. Newly written Postgres rows must always populate
 
 ## Async Posture
 
-Do not hide production Postgres access behind the current synchronous repository
-traits by blocking inside Tokio worker threads. The production Postgres
-repository should be async-first, preferably backed by `sqlx`.
-
-Because the current public traits are synchronous, the Postgres implementation is
-deferred behind async trait work. Acceptable interim choices:
-
-- keep `HashMapRepository` as the synchronous behavioral reference;
-- design async traits that mirror `Get`, `Commit`, `TransactionalCommit`,
-  read-model, snapshot, and outbox operations;
-- add an explicitly named blocking adapter only for tests or transitional use.
-
-The blocking adapter must not be the final production contract.
+Postgres access is async-first through the public repository, read-model,
+snapshot, inbox, lock, and outbox traits. Do not add production Postgres access
+behind blocking adapters or synchronous repository shims; SQL I/O belongs in
+async `sqlx` paths.
 
 ## TypeORM Lineage
 
@@ -398,4 +389,4 @@ Postgres-specific tests should add:
 - Implementing the actual Postgres repository.
 - Designing the final read-model table layout.
 - Designing the outbox message table in detail.
-- Replacing synchronous traits in this document.
+- Changing the established async repository trait surface.

@@ -2,7 +2,7 @@
 //! in-memory, SQLite, and Postgres backends.
 
 use distributed::{
-    AsyncOutboxStore, CommitBatch, InboxReceipt, InboxStore, OutboxMessage, OutboxMessageStatus,
+    CommitBatch, InboxReceipt, InboxStore, OutboxMessage, OutboxMessageStatus, OutboxStore,
     RepositoryError, TransactionalCommit,
 };
 
@@ -15,7 +15,7 @@ fn batch_with(outbox: Vec<OutboxMessage>, receipts: Vec<InboxReceipt>) -> Commit
     batch
 }
 
-async fn outbox_present<S: AsyncOutboxStore + Send + Sync>(outbox: &S, id: &str) -> bool {
+async fn outbox_present<S: OutboxStore + Send + Sync>(outbox: &S, id: &str) -> bool {
     for status in [
         OutboxMessageStatus::Pending,
         OutboxMessageStatus::InFlight,
@@ -23,7 +23,7 @@ async fn outbox_present<S: AsyncOutboxStore + Send + Sync>(outbox: &S, id: &str)
         OutboxMessageStatus::Failed,
     ] {
         let messages = outbox
-            .messages_by_status_async(status)
+            .messages_by_status(status)
             .await
             .expect("outbox status lookup should succeed");
         if messages.iter().any(|m| m.id() == id) {
@@ -40,7 +40,7 @@ async fn outbox_present<S: AsyncOutboxStore + Send + Sync>(outbox: &S, id: &str)
 pub async fn inbox_records_dedupes_and_fences_with_real_effects<R, S>(repo: R, outbox: S)
 where
     R: InboxStore + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let consumer = unique_id("consumer");
     let m1 = unique_id("msg");

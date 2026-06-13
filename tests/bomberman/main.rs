@@ -212,6 +212,7 @@ async fn player_killed_by_bomb() {
     let pending = repo2
         .outbox_store()
         .messages_by_status(OutboxMessageStatus::Pending)
+        .await
         .unwrap();
     assert!(!pending.is_empty());
     assert_eq!(pending[0].event_type, "player.killed");

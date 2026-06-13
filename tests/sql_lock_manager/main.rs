@@ -354,29 +354,33 @@ mod sqlite_backend {
         (db, SqliteLockManager::new(pool))
     }
 
-    #[tokio::test]
-    async fn acquire_contend_release() {
-        let (_db, manager) = manager().await;
-        scenario_acquire_contend_release(&manager).await;
-    }
-
-    #[tokio::test]
-    async fn distinct_keys_do_not_contend() {
-        let (_db, manager) = manager().await;
-        scenario_distinct_keys_do_not_contend(&manager).await;
-    }
-
-    #[tokio::test]
-    async fn same_handle_per_key() {
-        let (_db, manager) = manager().await;
-        scenario_same_handle_per_key(&manager).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_managers_serialize() {
+    async fn managers() -> (TempDb, SqliteLockManager, SqliteLockManager) {
         let db = TempDb::new();
         let m1 = SqliteLockManager::new(db.pool().await);
         let m2 = SqliteLockManager::new(db.pool().await);
+        (db, m1, m2)
+    }
+
+    macro_rules! single_manager_test {
+        ($name:ident, $scenario:ident) => {
+            #[tokio::test]
+            async fn $name() {
+                let (_db, manager) = manager().await;
+                $scenario(&manager).await;
+            }
+        };
+    }
+
+    single_manager_test!(acquire_contend_release, scenario_acquire_contend_release);
+    single_manager_test!(
+        distinct_keys_do_not_contend,
+        scenario_distinct_keys_do_not_contend
+    );
+    single_manager_test!(same_handle_per_key, scenario_same_handle_per_key);
+
+    #[tokio::test]
+    async fn two_managers_serialize() {
+        let (db, m1, m2) = managers().await;
         scenario_two_managers_serialize(m1, m2).await;
         drop(db);
     }
@@ -410,9 +414,7 @@ mod sqlite_backend {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_managers_race_free_key() {
-        let db = TempDb::new();
-        let m1 = SqliteLockManager::new(db.pool().await);
-        let m2 = SqliteLockManager::new(db.pool().await);
+        let (db, m1, m2) = managers().await;
         scenario_two_managers_race_free_key(m1, m2).await;
         drop(db);
     }
@@ -445,9 +447,7 @@ mod sqlite_backend {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_acquire_releases_gate() {
-        let db = TempDb::new();
-        let holder = SqliteLockManager::new(db.pool().await);
-        let other = SqliteLockManager::new(db.pool().await);
+        let (db, holder, other) = managers().await;
         scenario_cancelled_acquire_releases_gate(&holder, &other).await;
         drop(db);
     }
@@ -473,41 +473,43 @@ mod postgres_backend {
         PostgresTestSchema::create_from_env("locks", SKIP).await
     }
 
-    #[tokio::test]
-    async fn acquire_contend_release() {
-        let Some(schema) = schema().await else {
-            return;
-        };
+    async fn manager() -> Option<(PostgresTestSchema, PostgresLockManager)> {
+        let schema = schema().await?;
         let manager = PostgresLockManager::new(schema.repository().await.pool().clone());
-        scenario_acquire_contend_release(&manager).await;
+        Some((schema, manager))
     }
 
-    #[tokio::test]
-    async fn distinct_keys_do_not_contend() {
-        let Some(schema) = schema().await else {
-            return;
-        };
-        let manager = PostgresLockManager::new(schema.repository().await.pool().clone());
-        scenario_distinct_keys_do_not_contend(&manager).await;
-    }
-
-    #[tokio::test]
-    async fn same_handle_per_key() {
-        let Some(schema) = schema().await else {
-            return;
-        };
-        let manager = PostgresLockManager::new(schema.repository().await.pool().clone());
-        scenario_same_handle_per_key(&manager).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_managers_serialize() {
-        let Some(schema) = schema().await else {
-            return;
-        };
-        // Two pools on the same schema = two independent connections (processes).
+    async fn managers() -> Option<(PostgresTestSchema, PostgresLockManager, PostgresLockManager)> {
+        let schema = schema().await?;
         let m1 = PostgresLockManager::new(schema.repository().await.pool().clone());
         let m2 = PostgresLockManager::new(schema.repository().await.pool().clone());
+        Some((schema, m1, m2))
+    }
+
+    macro_rules! single_manager_test {
+        ($name:ident, $scenario:ident) => {
+            #[tokio::test]
+            async fn $name() {
+                let Some((_schema, manager)) = manager().await else {
+                    return;
+                };
+                $scenario(&manager).await;
+            }
+        };
+    }
+
+    single_manager_test!(acquire_contend_release, scenario_acquire_contend_release);
+    single_manager_test!(
+        distinct_keys_do_not_contend,
+        scenario_distinct_keys_do_not_contend
+    );
+    single_manager_test!(same_handle_per_key, scenario_same_handle_per_key);
+
+    #[tokio::test]
+    async fn two_managers_serialize() {
+        let Some((_schema, m1, m2)) = managers().await else {
+            return;
+        };
         scenario_two_managers_serialize(m1, m2).await;
     }
 
@@ -537,20 +539,17 @@ mod postgres_backend {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_abort_releases() {
-        let Some(schema) = schema().await else {
+        let Some((_schema, manager)) = manager().await else {
             return;
         };
-        let manager = PostgresLockManager::new(schema.repository().await.pool().clone());
         scenario_queued_abort_releases(manager).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_managers_race_free_key() {
-        let Some(schema) = schema().await else {
+        let Some((_schema, m1, m2)) = managers().await else {
             return;
         };
-        let m1 = PostgresLockManager::new(schema.repository().await.pool().clone());
-        let m2 = PostgresLockManager::new(schema.repository().await.pool().clone());
         scenario_two_managers_race_free_key(m1, m2).await;
     }
 
@@ -585,11 +584,9 @@ mod postgres_backend {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_acquire_releases_gate() {
-        let Some(schema) = schema().await else {
+        let Some((_schema, holder, other)) = managers().await else {
             return;
         };
-        let holder = PostgresLockManager::new(schema.repository().await.pool().clone());
-        let other = PostgresLockManager::new(schema.repository().await.pool().clone());
         scenario_cancelled_acquire_releases_gate(&holder, &other).await;
     }
 }

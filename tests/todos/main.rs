@@ -3,8 +3,9 @@ mod aggregate;
 use aggregate::{Todo, TodoSnapshot};
 use distributed::{
     AggregateBuilder, AsyncLock, AsyncLockManager, ClaimOutboxMessages, CommitBuilderExt,
-    EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher, OutboxClaimRef,
-    OutboxMessage, OutboxMessageStatus, OutboxStore, OutboxWorker, Queueable, RepositoryError,
+    DrainResult, EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
+    OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher, OutboxStore, OutboxWorker,
+    Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -18,7 +19,48 @@ fn next_id() -> String {
     format!("todo-{}", id)
 }
 
-fn complete_published_outbox(
+fn initialized_todo(user_id: &str, task: &str) -> (Todo, String) {
+    let mut todo = Todo::new();
+    let id = next_id();
+    todo.initialize(id.clone(), user_id.to_string(), task.to_string())
+        .unwrap();
+    (todo, id)
+}
+
+fn todo_outbox_message(
+    id: &str,
+    suffix: &str,
+    event_type: &str,
+    snapshot: &TodoSnapshot,
+) -> OutboxMessage {
+    OutboxMessage::encode(format!("{id}:{suffix}"), event_type, snapshot).unwrap()
+}
+
+async fn claim_and_process<P: OutboxPublisher>(
+    repo: &HashMapRepository,
+    worker: &mut OutboxWorker<P>,
+    worker_id: &str,
+    batch_size: usize,
+) -> (DrainResult, Vec<OutboxMessage>, Vec<OutboxClaimRef>) {
+    let mut claimed = repo
+        .outbox_store()
+        .claim(ClaimOutboxMessages::new(
+            worker_id,
+            batch_size,
+            Duration::from_secs(30),
+        ))
+        .await
+        .unwrap();
+    let claims = claimed
+        .iter()
+        .map(OutboxClaimRef::from_message)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let result = worker.process_batch(&mut claimed).await.unwrap();
+    (result, claimed, claims)
+}
+
+async fn complete_published_outbox(
     repo: &HashMapRepository,
     messages: &[OutboxMessage],
     claims: &[OutboxClaimRef],
@@ -26,12 +68,12 @@ fn complete_published_outbox(
     let store = repo.outbox_store();
     for (message, claim) in messages.iter().zip(claims) {
         if message.is_published() {
-            store.complete(claim).unwrap();
+            store.complete(claim).await.unwrap();
         }
     }
 }
 
-fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
     let store = repo.outbox_store();
     for status in [
         OutboxMessageStatus::Pending,
@@ -41,6 +83,7 @@ fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
     ] {
         if let Some(message) = store
             .messages_by_status(status)
+            .await
             .unwrap()
             .into_iter()
             .find(|message| message.id() == id)
@@ -55,23 +98,8 @@ fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
 async fn todos() {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
-    // Create a new Todo + Outbox messages
-    let mut todo = Todo::new();
-    let id1 = next_id();
-    todo.initialize(
-        id1.clone(),
-        "user1".to_string(),
-        "Buy groceries".to_string(),
-    )
-    .unwrap();
-
-    // Add an outbox event for the initialization
-    let init_message = OutboxMessage::encode(
-        format!("{}:init", id1),
-        "todo.initialized",
-        &todo.snapshot(),
-    )
-    .unwrap();
+    let (mut todo, id1) = initialized_todo("user1", "Buy groceries");
+    let init_message = todo_outbox_message(&id1, "init", "todo.initialized", &todo.snapshot());
 
     // Commit the Todo + Outbox message to the repository
     repo.outbox(init_message)
@@ -81,67 +109,48 @@ async fn todos() {
 
     // Verify the outbox event was captured
     {
-        let pending = repo.repo().inner().outbox_store().pending().unwrap();
+        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "todo.initialized");
     }
 
     // Retrieve the Todo from the repository and complete it, then commit again
-    if let Some(mut retrieved_todo) = repo.get(&id1).await.unwrap() {
-        retrieved_todo.complete().unwrap();
+    let mut retrieved_todo = repo.get(&id1).await.unwrap().expect("Todo not found");
+    retrieved_todo.complete().unwrap();
+    let complete_message = todo_outbox_message(
+        &id1,
+        "complete",
+        "todo.completed",
+        &retrieved_todo.snapshot(),
+    );
 
-        // Add an outbox event for the completion
-        let complete_message = OutboxMessage::encode(
-            format!("{}:complete", id1),
-            "todo.completed",
-            &retrieved_todo.snapshot(),
-        )
-        .unwrap();
+    repo.outbox(complete_message)
+        .commit(&mut retrieved_todo)
+        .await
+        .expect("completed todo outbox commit should succeed");
 
-        repo.outbox(complete_message)
-            .commit(&mut retrieved_todo)
-            .await
-            .expect("completed todo outbox commit should succeed");
-
-        // Verify we now have 2 outbox events
-        {
-            let pending = repo.repo().inner().outbox_store().pending().unwrap();
-            assert_eq!(pending.len(), 2);
-            assert!(pending
-                .iter()
-                .any(|msg| msg.event_type == "todo.initialized"));
-            assert!(pending.iter().any(|msg| msg.event_type == "todo.completed"));
-        }
-
-        if let Some(completed_todo) = repo.get(&id1).await.unwrap() {
-            assert!(completed_todo.snapshot().id == id1);
-            assert!(completed_todo.snapshot().user_id == "user1");
-            assert!(completed_todo.snapshot().task == "Buy groceries");
-            assert!(completed_todo.snapshot().completed);
-
-            repo.abort(&completed_todo).await.unwrap();
-        } else {
-            panic!("Updated Todo not found");
-        }
-    } else {
-        panic!("Todo not found");
+    {
+        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending
+            .iter()
+            .any(|msg| msg.event_type == "todo.initialized"));
+        assert!(pending.iter().any(|msg| msg.event_type == "todo.completed"));
     }
 
-    let mut todo2 = Todo::new();
-    let id2 = next_id();
-    todo2
-        .initialize(id2.clone(), "user1".to_string(), "Buy Sauna".to_string())
-        .unwrap();
+    let completed_todo = repo
+        .get(&id1)
+        .await
+        .unwrap()
+        .expect("Updated Todo not found");
+    assert!(completed_todo.snapshot().id == id1);
+    assert!(completed_todo.snapshot().user_id == "user1");
+    assert!(completed_todo.snapshot().task == "Buy groceries");
+    assert!(completed_todo.snapshot().completed);
+    repo.abort(&completed_todo).await.unwrap();
 
-    let mut todo3 = Todo::new();
-    let id3 = next_id();
-    todo3
-        .initialize(
-            id3.clone(),
-            "user2".to_string(),
-            "Chew bubblegum".to_string(),
-        )
-        .unwrap();
+    let (mut todo2, id2) = initialized_todo("user1", "Buy Sauna");
+    let (mut todo3, id3) = initialized_todo("user2", "Chew bubblegum");
 
     // Commit multiple Todos to the repository
     repo.commit_all(&mut [&mut todo2, &mut todo3])
@@ -160,10 +169,7 @@ async fn todos() {
 #[tokio::test]
 async fn get_commit_roundtrip() {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Roundtrip".to_string())
-        .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Roundtrip");
 
     repo.commit(&mut todo).await.unwrap();
 
@@ -178,25 +184,8 @@ async fn get_commit_roundtrip() {
 async fn get_all_commit_all_roundtrip() {
     let repo = HashMapRepository::new().queued().aggregate::<Todo>();
 
-    let mut todo1 = Todo::new();
-    let id1 = next_id();
-    todo1
-        .initialize(
-            id1.clone(),
-            "user1".to_string(),
-            "todo.first_recorded".to_string(),
-        )
-        .unwrap();
-
-    let mut todo2 = Todo::new();
-    let id2 = next_id();
-    todo2
-        .initialize(
-            id2.clone(),
-            "user2".to_string(),
-            "todo.second_recorded".to_string(),
-        )
-        .unwrap();
+    let (mut todo1, id1) = initialized_todo("user1", "todo.first_recorded");
+    let (mut todo2, id2) = initialized_todo("user2", "todo.second_recorded");
 
     repo.commit_all(&mut [&mut todo1, &mut todo2])
         .await
@@ -232,18 +221,14 @@ async fn get_all_commit_all_roundtrip() {
 #[tokio::test]
 async fn outbox_records_persisted() {
     let repo = HashMapRepository::new();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Outbox demo".to_string())
-        .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Outbox demo");
     let snapshot = todo.snapshot();
-    let message =
-        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
+    let message = todo_outbox_message(&id, "init", "todo.initialized", &snapshot);
 
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Check pending outbox messages
-    let pending = repo.outbox_store().pending().unwrap();
+    let pending = repo.outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "todo.initialized");
 
@@ -257,21 +242,11 @@ async fn outbox_records_persisted() {
 #[tokio::test]
 async fn outbox_worker_log_publisher() {
     let repo = HashMapRepository::new();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(
-        id.clone(),
-        "user1".to_string(),
-        "Outbox log publisher".to_string(),
-    )
-    .unwrap();
-    let snapshot = todo.snapshot();
-    let message =
-        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Outbox log publisher");
+    let message = todo_outbox_message(&id, "init", "todo.initialized", &todo.snapshot());
     let message_id = message.id().to_string();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
-    // Create worker with new API
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
     let mut worker = OutboxWorker::new(publisher)
@@ -279,47 +254,24 @@ async fn outbox_worker_log_publisher() {
         .with_batch_size(10)
         .with_max_attempts(3);
 
-    // Claim pending messages and process
-    let store = repo.outbox_store();
-    let mut claimed = store
-        .claim(ClaimOutboxMessages::new(
-            "logger-1",
-            10,
-            Duration::from_secs(30),
-        ))
-        .unwrap();
-    let claims = claimed
-        .iter()
-        .map(OutboxClaimRef::from_message)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let result = worker.process_batch(&mut claimed).unwrap();
+    let (result, claimed, claims) = claim_and_process(&repo, &mut worker, "logger-1", 10).await;
     assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, &claimed, &claims);
+    complete_published_outbox(&repo, &claimed, &claims).await;
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("todo.initialized"));
 
     // Check record is marked as published
-    let published = load_outbox_message(&repo, &message_id);
+    let published = load_outbox_message(&repo, &message_id).await;
     assert!(published.is_published());
 }
 
 #[tokio::test]
 async fn outbox_worker_local_emitter_publisher() {
     let repo = HashMapRepository::new();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(
-        id.clone(),
-        "user1".to_string(),
-        "Outbox local emitter".to_string(),
-    )
-    .unwrap();
-    let snapshot = todo.snapshot();
-    let message =
-        OutboxMessage::encode(format!("{}:init", id), "todo.initialized", &snapshot).unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Outbox local emitter");
+    let message = todo_outbox_message(&id, "init", "todo.initialized", &todo.snapshot());
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     let mut emitter = EventEmitter::new();
@@ -334,23 +286,9 @@ async fn outbox_worker_local_emitter_publisher() {
         .with_batch_size(10)
         .with_max_attempts(3);
 
-    // Claim pending messages and process
-    let store = repo.outbox_store();
-    let mut claimed = store
-        .claim(ClaimOutboxMessages::new(
-            "emitter-1",
-            10,
-            Duration::from_secs(30),
-        ))
-        .unwrap();
-    let claims = claimed
-        .iter()
-        .map(OutboxClaimRef::from_message)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let result = worker.process_batch(&mut claimed).unwrap();
+    let (result, claimed, claims) = claim_and_process(&repo, &mut worker, "emitter-1", 10).await;
     assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, &claimed, &claims);
+    complete_published_outbox(&repo, &claimed, &claims).await;
 
     // LocalEmitterPublisher converts bytes to lossy string, so we just verify something was received
     let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -360,10 +298,7 @@ async fn outbox_worker_local_emitter_publisher() {
 #[tokio::test]
 async fn abort_releases_lock_after_get() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Abort get".to_string())
-        .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Abort get");
     repo.commit(&mut todo).await.unwrap();
 
     let locked = repo.get(&id).await.unwrap().unwrap();
@@ -389,26 +324,10 @@ async fn abort_releases_lock_after_get() {
 #[tokio::test]
 async fn abort_releases_lock_after_get_all() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
-    let mut todo1 = Todo::new();
-    let id1 = next_id();
-    todo1
-        .initialize(
-            id1.clone(),
-            "user1".to_string(),
-            "Abort get_all 1".to_string(),
-        )
-        .unwrap();
+    let (mut todo1, id1) = initialized_todo("user1", "Abort get_all 1");
     repo.commit(&mut todo1).await.unwrap();
 
-    let mut todo2 = Todo::new();
-    let id2 = next_id();
-    todo2
-        .initialize(
-            id2.clone(),
-            "user2".to_string(),
-            "Abort get_all 2".to_string(),
-        )
-        .unwrap();
+    let (mut todo2, id2) = initialized_todo("user2", "Abort get_all 2");
     repo.commit(&mut todo2).await.unwrap();
 
     let locked = repo.get_all(&[&id1, &id2]).await.unwrap();
@@ -437,21 +356,10 @@ async fn abort_releases_lock_after_get_all() {
 #[tokio::test]
 async fn queued_repo_blocks_get_until_commit() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(id.clone(), "user1".to_string(), "Queue test".to_string())
-        .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Queue test");
     repo.commit(&mut todo).await.unwrap();
 
-    let mut other_todo = Todo::new();
-    let other_id = next_id();
-    other_todo
-        .initialize(
-            other_id.clone(),
-            "user2".to_string(),
-            "Independent queue".to_string(),
-        )
-        .unwrap();
+    let (mut other_todo, other_id) = initialized_todo("user2", "Independent queue");
     repo.commit(&mut other_todo).await.unwrap();
 
     let (tx_started, rx_started) = mpsc::channel();
@@ -555,14 +463,7 @@ async fn manual_lock_reports_failure_when_already_held() {
 #[tokio::test]
 async fn commit_failure_keeps_lock_until_abort() {
     let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(
-        id.clone(),
-        "user1".to_string(),
-        "Commit failure lock".to_string(),
-    )
-    .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Commit failure lock");
     repo.commit(&mut todo).await.unwrap();
 
     let mut locked = repo.get(&id).await.unwrap().unwrap();
@@ -609,23 +510,13 @@ async fn commit_failure_keeps_lock_until_abort() {
 #[tokio::test]
 async fn outbox_worker_process_next_with_commit() {
     let repo = HashMapRepository::new();
-    let mut todo = Todo::new();
-    let id = next_id();
-    todo.initialize(
-        id.clone(),
-        "user1".to_string(),
-        "Process next test".to_string(),
-    )
-    .unwrap();
+    let (mut todo, id) = initialized_todo("user1", "Process next test");
     let snapshot = todo.snapshot();
 
     // Queue 3 messages
-    let message1 =
-        OutboxMessage::encode(format!("{}:1", id), "todo.first_recorded", &snapshot).unwrap();
-    let message2 =
-        OutboxMessage::encode(format!("{}:2", id), "todo.second_recorded", &snapshot).unwrap();
-    let message3 =
-        OutboxMessage::encode(format!("{}:3", id), "todo.third_recorded", &snapshot).unwrap();
+    let message1 = todo_outbox_message(&id, "1", "todo.first_recorded", &snapshot);
+    let message2 = todo_outbox_message(&id, "2", "todo.second_recorded", &snapshot);
+    let message3 = todo_outbox_message(&id, "3", "todo.third_recorded", &snapshot);
 
     let message_ids = vec![
         message1.id().to_string(),
@@ -658,6 +549,7 @@ async fn outbox_worker_process_next_with_commit() {
                 1,
                 Duration::from_secs(30),
             ))
+            .await
             .unwrap();
         if claimed.is_empty() {
             break;
@@ -667,17 +559,17 @@ async fn outbox_worker_process_next_with_commit() {
             .map(OutboxClaimRef::from_message)
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        let result = worker.process_batch(&mut claimed).unwrap();
+        let result = worker.process_batch(&mut claimed).await.unwrap();
         processed += result.completed + result.released + result.failed;
-        complete_published_outbox(&repo, &claimed, &claims);
+        complete_published_outbox(&repo, &claimed, &claims).await;
     }
 
     assert_eq!(processed, 3);
     for id in &message_ids {
-        let message = load_outbox_message(&repo, id);
+        let message = load_outbox_message(&repo, id).await;
         assert!(message.is_published());
     }
-    assert_eq!(repo.outbox_store().pending().unwrap().len(), 0);
+    assert_eq!(repo.outbox_store().pending().await.unwrap().len(), 0);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);
@@ -724,22 +616,10 @@ async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
     let mut worker = OutboxWorker::new(publisher).with_worker_id("meta-worker");
 
-    let store = repo.repo().outbox_store();
-    let mut claimed = store
-        .claim(ClaimOutboxMessages::new(
-            "meta-worker",
-            10,
-            Duration::from_secs(30),
-        ))
-        .unwrap();
-    let claims = claimed
-        .iter()
-        .map(OutboxClaimRef::from_message)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let result = worker.process_batch(&mut claimed).unwrap();
+    let (result, claimed, claims) =
+        claim_and_process(repo.repo(), &mut worker, "meta-worker", 10).await;
     assert_eq!(result.completed, 1);
-    complete_published_outbox(repo.repo(), &claimed, &claims);
+    complete_published_outbox(repo.repo(), &claimed, &claims).await;
 
     // 6. Verify the publisher received metadata
     let lines = buffer.lock().unwrap();

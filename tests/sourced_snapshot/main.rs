@@ -260,7 +260,7 @@ async fn domain_event_commits_with_outbox() {
 
     let loaded = repo.get("t1").await.unwrap().unwrap();
     assert_eq!(loaded.snapshot().task, "Ship it");
-    let pending = repo.repo().outbox_store().pending().unwrap();
+    let pending = repo.repo().outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert!(pending[0].is_pending());
 }

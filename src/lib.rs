@@ -77,7 +77,6 @@ pub use outbox::{
 
 // Outbox Worker: drain and publish concerns
 pub use outbox_worker::{
-    AsyncOutboxStore,
     ClaimOutboxMessages,
     // Worker
     DrainResult,

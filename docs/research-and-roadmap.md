@@ -9,12 +9,12 @@ Based on a review of the Rust ES ecosystem (cqrs-es, disintegrate, esrs, eventua
 ### Core Improvements
 
 #### Async traits
-All competing frameworks are async-first. The original traits (`Repository`, `Commit`, `Get`, etc.) are synchronous, which blocks direct integration with:
+All competing frameworks are async-first. The current public persistence and transport traits are async-first, which supports direct integration with:
 - Async databases (sqlx, sea-orm)
 - Async message brokers (rdkafka, lapin)
 - Async web frameworks (axum handlers)
 
-Foundation status: stream-aware repository/read-model/snapshot traits now form the async-only persistence surface. See [Repository Boundary](repositories.md). The SQL backends implement those traits directly instead of wrapping database I/O behind synchronous repository traits.
+Foundation status: stream-aware repository/read-model/snapshot/outbox traits now form the async-only persistence surface. See [Repository Boundary](repositories.md). The SQL backends implement those traits directly instead of wrapping database I/O behind synchronous repository traits.
 
 ### Later
 

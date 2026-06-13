@@ -1,6 +1,6 @@
 //! Outbox-backed durable receive.
 //!
-//! [`OutboxSource`] turns any [`AsyncOutboxStore`] into an [`AsyncMessageSource`]:
+//! [`OutboxSource`] turns any [`OutboxStore`] into an [`AsyncMessageSource`]:
 //! it claims durable rows (`FOR UPDATE SKIP LOCKED` + lease in the SQL stores),
 //! maps each to a canonical [`Message`], and settles by row status —
 //! ack→complete, nack→release-for-retry, dead-letter/park→fail (the terminal
@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef};
+use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 use crate::bus::{AsyncMessageSource, Message, ReceivedMessage, TransportError};
 use crate::outbox::OutboxMessage;
 
@@ -27,7 +27,7 @@ pub const DEFAULT_OUTBOX_SOURCE_LEASE: Duration = Duration::from_secs(30);
 /// Default number of rows claimed per `recv` refill.
 pub const DEFAULT_OUTBOX_SOURCE_BATCH: usize = 16;
 
-/// An [`AsyncMessageSource`] backed by an [`AsyncOutboxStore`].
+/// An [`AsyncMessageSource`] backed by an [`OutboxStore`].
 pub struct OutboxSource<S> {
     store: Arc<S>,
     worker_id: String,
@@ -40,7 +40,7 @@ pub struct OutboxSource<S> {
 
 impl<S> OutboxSource<S>
 where
-    S: AsyncOutboxStore,
+    S: OutboxStore,
 {
     /// Create a source. `worker_id` scopes claims; `max_attempts` is the
     /// retryable-failure ceiling before a row is failed.
@@ -102,13 +102,13 @@ where
 
 impl<S> AsyncMessageSource for OutboxSource<S>
 where
-    S: AsyncOutboxStore,
+    S: OutboxStore,
 {
     type Received = ReceivedOutboxMessage<S>;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         if self.buffer.is_empty() {
-            let claimed = self.store.claim_async(self.claim_request()).await?;
+            let claimed = self.store.claim(self.claim_request()).await?;
             self.buffer.extend(claimed);
         }
         match self.buffer.pop_front() {
@@ -136,7 +136,7 @@ pub struct ReceivedOutboxMessage<S> {
 
 impl<S> ReceivedMessage for ReceivedOutboxMessage<S>
 where
-    S: AsyncOutboxStore,
+    S: OutboxStore,
 {
     fn message(&self) -> &Message {
         &self.message
@@ -144,28 +144,28 @@ where
 
     /// Complete the row (transport delivery succeeded).
     async fn ack(self) -> Result<(), TransportError> {
-        self.store.complete_async(&self.claim).await?;
+        self.store.complete(&self.claim).await?;
         Ok(())
     }
 
     /// Release for retry, or fail once the attempt ceiling is reached.
     async fn nack(self, reason: &str) -> Result<(), TransportError> {
         self.store
-            .record_failure_async(&self.claim, reason, self.max_attempts)
+            .record_failure(&self.claim, reason, self.max_attempts)
             .await?;
         Ok(())
     }
 
     /// Fail the row terminally (the outbox `Failed` status is the DLQ/archive).
     async fn dead_letter(self, reason: &str) -> Result<(), TransportError> {
-        self.store.fail_async(&self.claim, reason).await?;
+        self.store.fail(&self.claim, reason).await?;
         Ok(())
     }
 
     /// Park terminally for manual inspection (same `Failed` status as dead-letter
     /// in the outbox's state model).
     async fn park(self, reason: &str) -> Result<(), TransportError> {
-        self.store.fail_async(&self.claim, reason).await?;
+        self.store.fail(&self.claim, reason).await?;
         Ok(())
     }
 }
@@ -218,8 +218,7 @@ mod tests {
         ]
         .into_iter()
         .find(|status| {
-            store
-                .messages_by_status(status.clone())
+            block_on(store.messages_by_status(status.clone()))
                 .unwrap()
                 .iter()
                 .any(|m| m.id() == id)

@@ -22,7 +22,7 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use distributed::OutboxSource;
 use distributed::{
-    AsyncOutboxStore, CommitBatch, OutboxMessage, OutboxMessageStatus, PostgresOutboxStore,
+    CommitBatch, OutboxMessage, OutboxMessageStatus, OutboxStore, PostgresOutboxStore,
     PostgresRepository, TransactionalCommit,
 };
 use serde_json::json;
@@ -47,7 +47,7 @@ async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageSt
         OutboxMessageStatus::Failed,
     ] {
         if store
-            .messages_by_status_async(s.clone())
+            .messages_by_status(s.clone())
             .await
             .unwrap()
             .iter()

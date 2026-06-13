@@ -11,7 +11,8 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 > **The framework is async-only.** Aggregates, repositories, handlers, the commit
 > path, and the service bus are all `async`. There is no synchronous repository or
 > bus API. Persistence adapters (Postgres, SQLite) and transports (NATS, RabbitMQ,
-> Kafka, Knative) implement the async traits directly with no blocking shims.
+> Kafka, Knative) expose async traits directly; broker/client blocking primitives,
+> where unavoidable, stay internal to async transport methods.
 
 ## At a Glance
 
@@ -284,7 +285,7 @@ Every infrastructure concern in `distributed` follows the same pattern: an **asy
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
-| Outbox publishing | `AsyncMessagePublisher` (production; the extension point) — sync `OutboxPublisher` is dev/test only | `LogPublisher` (dev/test) | Any `AsyncMessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
+| Outbox publishing | `OutboxStore` + async `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` (dev/test) | Any `AsyncMessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
 | Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.

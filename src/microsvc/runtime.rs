@@ -139,7 +139,7 @@ mod tests {
 
     use crate::bus::{Bus, InMemoryBus, RunOptions};
     use crate::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
-    use crate::outbox_worker::AsyncOutboxStore;
+    use crate::outbox_worker::OutboxStore;
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, OutboxMessage,
         OutboxMessageStatus, Queueable, QueuedRepository, Snapshot,
@@ -180,12 +180,12 @@ mod tests {
         assert_eq!(receipt.outbox_message_ids(), ["evt-1".to_string()]);
 
         let published = store
-            .messages_by_status_async(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published)
             .await
             .unwrap();
         assert_eq!(published.len(), 1, "row should be published at commit time");
         assert_eq!(published[0].id(), "evt-1");
-        assert!(store.pending_async().await.unwrap().is_empty());
+        assert!(store.pending().await.unwrap().is_empty());
     }
 
     type TouchRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Dummy>;
@@ -217,12 +217,12 @@ mod tests {
 
         let store = service.repo().outbox_store();
         let published = store
-            .messages_by_status_async(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published)
             .await
             .unwrap();
         assert_eq!(published.len(), 1, "row should be published immediately");
         assert_eq!(published[0].id(), "evt-1");
-        assert!(store.pending_async().await.unwrap().is_empty());
+        assert!(store.pending().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -244,7 +244,7 @@ mod tests {
         service.run(RunOptions::idempotent()).await.unwrap();
 
         let published = store
-            .messages_by_status_async(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published)
             .await
             .unwrap();
         assert_eq!(
@@ -303,7 +303,7 @@ mod tests {
 
         let store = service.repo().outbox_store();
         let published = store
-            .messages_by_status_async(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published)
             .await
             .unwrap();
         assert_eq!(

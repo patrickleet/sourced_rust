@@ -3,18 +3,14 @@ use std::time::Duration;
 
 use distributed::bus::{AsyncMessagePublisher, Message, TransportError};
 use distributed::{
-    Aggregate, AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, GetStream, OutboxClaimRef,
-    OutboxDispatcher, OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction,
-    RepositoryError, StreamIdentity, TransactionalCommit,
+    Aggregate, AggregateBuilder, ClaimOutboxMessages, GetStream, OutboxClaimRef, OutboxDispatcher,
+    OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction, OutboxStore, RepositoryError,
+    StreamIdentity, TransactionalCommit,
 };
 
 use super::scenario::unique_id;
 use super::seat::Seat;
 
-/// A publisher that fails its first `fail_first` publish attempts (returning a
-/// retryable transport error) and succeeds thereafter, recording every message
-/// id it actually delivered. Used to prove the outbox keeps a row until it is
-/// genuinely delivered, and that it is delivered exactly once.
 struct FlakyPublisher {
     fail_first: usize,
     attempts: Mutex<usize>,
@@ -62,20 +58,11 @@ impl AsyncMessagePublisher for FlakyPublisher {
 pub async fn high_level_outbox_commit_persists_row_without_stream<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let seat_id = unique_id("outbox-seat");
     let message_id = unique_id("outbox-message");
-    let mut seat = added_seat(&seat_id);
-    let message = OutboxMessage::create(&message_id, "seat.added", b"{}".to_vec())
-        .expect("outbox message should be valid");
-
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(message)
-        .commit(&mut seat)
-        .await
-        .expect("aggregate and outbox should commit atomically");
+    commit_outbox_for_seat(&repo, seat_id.clone(), &message_id, "seat.added").await;
 
     let stored = find_outbox_by_id(&outbox, &message_id)
         .await
@@ -106,16 +93,13 @@ where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
 {
     let duplicate_message_id = unique_id("duplicate-outbox");
-    let mut existing_seat = added_seat(&unique_id("existing-seat"));
-    let existing_message =
-        OutboxMessage::create(&duplicate_message_id, "seat.added", b"{}".to_vec())
-            .expect("existing outbox message should be valid");
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(existing_message)
-        .commit(&mut existing_seat)
-        .await
-        .expect("initial outbox commit should succeed");
+    commit_outbox_for_seat(
+        &repo,
+        unique_id("existing-seat"),
+        &duplicate_message_id,
+        "seat.added",
+    )
+    .await;
 
     let rollback_seat_id = unique_id("rollback-seat");
     let rollback_identity = StreamIdentity::new(Seat::aggregate_type(), &rollback_seat_id)
@@ -148,7 +132,7 @@ where
 pub async fn aggregate_conflict_rolls_back_outbox<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let seat_id = unique_id("conflict-outbox-seat");
     let seat_repo = repo.clone().aggregate::<Seat>();
@@ -188,12 +172,10 @@ where
         .expect("winner commit should succeed");
 
     let message_id = unique_id("rollback-outbox-message");
-    let message = OutboxMessage::create(&message_id, "seat.reserved", b"{}".to_vec())
-        .expect("outbox message should be valid");
     let err = repo
         .clone()
         .aggregate::<Seat>()
-        .outbox(message)
+        .outbox(outbox_message(&message_id, "seat.reserved"))
         .commit(&mut stale)
         .await
         .expect_err("stale aggregate should reject the batch");
@@ -205,46 +187,39 @@ where
 pub async fn worker_claim_complete_and_retry_lifecycle<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let complete_message_id = unique_id("complete-outbox");
-    let mut complete_seat = added_seat(&unique_id("complete-seat"));
-    let complete_message =
-        OutboxMessage::create(&complete_message_id, "seat.added", b"{}".to_vec())
-            .expect("complete outbox message should be valid");
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(complete_message)
-        .commit(&mut complete_seat)
-        .await
-        .expect("complete message should be stored");
+    commit_outbox_for_seat(
+        &repo,
+        unique_id("complete-seat"),
+        &complete_message_id,
+        "seat.added",
+    )
+    .await;
 
-    let claimed = outbox
-        .claim_async(ClaimOutboxMessages::new(
-            "worker-a",
-            1,
-            Duration::from_secs(60),
-        ))
-        .await
-        .expect("claim should succeed");
-    assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].id(), complete_message_id);
+    let claimed = claim_one(
+        &outbox,
+        ClaimOutboxMessages::new("worker-a", 1, Duration::from_secs(60)),
+    )
+    .await;
+    assert_eq!(claimed.id(), complete_message_id);
 
     let wrong_claim = OutboxClaimRef {
-        message_id: claimed[0].id().to_string(),
+        message_id: claimed.id().to_string(),
         worker_id: "worker-b".into(),
-        leased_until: claimed[0].leased_until.expect("claim should have lease"),
-        attempt: claimed[0].attempts,
+        leased_until: claimed.leased_until.expect("claim should have lease"),
+        attempt: claimed.attempts,
     };
     let stale_err = outbox
-        .complete_async(&wrong_claim)
+        .complete(&wrong_claim)
         .await
         .expect_err("wrong worker should not complete a claim");
     assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
 
-    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     outbox
-        .complete_async(&claim)
+        .complete(&claim)
         .await
         .expect("owning worker should complete the claim");
     let published = find_outbox_by_id(&outbox, &complete_message_id)
@@ -253,27 +228,22 @@ where
     assert_eq!(published.status, OutboxMessageStatus::Published);
 
     let retry_message_id = unique_id("retry-outbox");
-    let mut retry_seat = added_seat(&unique_id("retry-seat"));
-    let retry_message = OutboxMessage::create(&retry_message_id, "seat.added", b"{}".to_vec())
-        .expect("retry outbox message should be valid");
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(retry_message)
-        .commit(&mut retry_seat)
-        .await
-        .expect("retry message should be stored");
+    commit_outbox_for_seat(
+        &repo,
+        unique_id("retry-seat"),
+        &retry_message_id,
+        "seat.added",
+    )
+    .await;
 
-    let claimed = outbox
-        .claim_async(ClaimOutboxMessages::new(
-            "worker-r",
-            1,
-            Duration::from_secs(60),
-        ))
-        .await
-        .expect("retry claim should succeed");
-    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    let claimed = claim_one(
+        &outbox,
+        ClaimOutboxMessages::new("worker-r", 1, Duration::from_secs(60)),
+    )
+    .await;
+    let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     let action = outbox
-        .record_failure_async(&claim, "first failure", 2)
+        .record_failure(&claim, "first failure", 2)
         .await
         .expect("first failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Released);
@@ -285,22 +255,19 @@ where
     assert_eq!(released.attempts, 1);
     assert_eq!(released.last_error.as_deref(), Some("first failure"));
 
-    let claimed = outbox
-        .claim_async(ClaimOutboxMessages::new(
-            "worker-r",
-            1,
-            Duration::from_secs(60),
-        ))
-        .await
-        .expect("second retry claim should succeed");
+    let claimed = claim_one(
+        &outbox,
+        ClaimOutboxMessages::new("worker-r", 1, Duration::from_secs(60)),
+    )
+    .await;
     let stale_err = outbox
-        .complete_async(&claim)
+        .complete(&claim)
         .await
         .expect_err("stale attempt should not complete a later claim");
     assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
-    let claim = OutboxClaimRef::from_message(&claimed[0]).expect("claim should be valid");
+    let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     let action = outbox
-        .record_failure_async(&claim, "second failure", 2)
+        .record_failure(&claim, "second failure", 2)
         .await
         .expect("second failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Failed);
@@ -316,44 +283,32 @@ where
 pub async fn worker_claim_by_ids_claims_only_requested<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let wanted_id = unique_id("wanted-outbox");
     let other_id = unique_id("other-outbox");
     for (message_id, seat_id) in [(&wanted_id, "wanted-seat"), (&other_id, "other-seat")] {
-        let mut seat = added_seat(&unique_id(seat_id));
-        let message = OutboxMessage::create(message_id, "seat.added", b"{}".to_vec())
-            .expect("outbox message should be valid");
-        repo.clone()
-            .aggregate::<Seat>()
-            .outbox(message)
-            .commit(&mut seat)
-            .await
-            .expect("message should be stored");
+        commit_outbox_for_seat(&repo, unique_id(seat_id), message_id, "seat.added").await;
     }
 
-    // Claiming by explicit id claims only the requested row (claim order among
-    // an explicit id set is unspecified across backends).
-    let claimed = outbox
-        .claim_async(ClaimOutboxMessages::for_ids(
+    let claimed = claim_one(
+        &outbox,
+        ClaimOutboxMessages::for_ids(
             "immediate-worker",
             vec![wanted_id.clone()],
             Duration::from_secs(60),
-        ))
-        .await
-        .expect("claim by id should succeed");
-    assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].id(), wanted_id);
+        ),
+    )
+    .await;
+    assert_eq!(claimed.id(), wanted_id);
 
-    // The unrequested row remains claimable by a normal poll.
     let other = find_outbox_by_id(&outbox, &other_id)
         .await
         .expect("other message should exist");
     assert_eq!(other.status, OutboxMessageStatus::Pending);
 
-    // A raced/missing id yields an empty claim, not an error.
     let empty = outbox
-        .claim_async(ClaimOutboxMessages::for_ids(
+        .claim(ClaimOutboxMessages::for_ids(
             "immediate-worker",
             vec![unique_id("never-stored")],
             Duration::from_secs(60),
@@ -362,11 +317,8 @@ where
         .expect("claiming a missing id should not error");
     assert!(empty.is_empty());
 
-    // A requested id that is leased by another worker must be skipped, not
-    // stolen: this is the claim-safety property of the by-id path (it exercises
-    // the SQLite per-id conditional UPDATE and the Postgres claimability CTE).
     let leased = outbox
-        .claim_async(ClaimOutboxMessages::for_ids(
+        .claim(ClaimOutboxMessages::for_ids(
             "worker-b",
             vec![wanted_id.clone()],
             Duration::from_secs(60),
@@ -384,50 +336,27 @@ where
     assert_eq!(still_owned.worker_id.as_deref(), Some("immediate-worker"));
 }
 
-/// Red-team crash recovery: worker A claims a row with a short lease and then
-/// "crashes" — it never completes or releases the claim. Once the lease expires,
-/// worker B must be able to reclaim the same row (the claim predicate treats an
-/// expired in-flight row as claimable). B then completes it. Finally A's *late*
-/// settle attempts (it woke up with a stale claim) must be fenced: neither
-/// `complete_async` nor `release_async` from the original lease may mutate the
-/// row B now owns/published.
-///
-/// This proves the SQL `claimed_until <= now` expiry predicate end-to-end —
-/// today only the in-memory store has a unit test for lease-expiry reclaim
-/// (`src/outbox_worker/store.rs::claim_includes_expired_in_flight_messages`).
-///
-/// Note: lease expiry is inherently wall-clock based, so this scenario uses a
-/// short real lease and a sleep just past it. There is no barrier/channel
-/// substitute for the passage of lease time through the public store API.
 pub async fn expired_outbox_lease_is_reclaimed_by_second_worker<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let message_id = unique_id("crash-lease-outbox");
-    let mut seat = added_seat(&unique_id("crash-lease-seat"));
-    let message = OutboxMessage::create(&message_id, "seat.added", b"{}".to_vec())
-        .expect("outbox message should be valid");
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(message)
-        .commit(&mut seat)
-        .await
-        .expect("message should be stored");
+    commit_outbox_for_seat(
+        &repo,
+        unique_id("crash-lease-seat"),
+        &message_id,
+        "seat.added",
+    )
+    .await;
 
-    // Worker A claims with a short lease, then "crashes" (never settles).
     let lease = Duration::from_secs(1);
-    let claimed_a = outbox
-        .claim_async(ClaimOutboxMessages::new("worker-a", 1, lease))
-        .await
-        .expect("worker A claim should succeed");
-    assert_eq!(claimed_a.len(), 1, "worker A claims the only pending row");
-    assert_eq!(claimed_a[0].id(), message_id);
-    let stale_claim_a = OutboxClaimRef::from_message(&claimed_a[0]).expect("A's claim is valid");
+    let claimed_a = claim_one(&outbox, ClaimOutboxMessages::new("worker-a", 1, lease)).await;
+    assert_eq!(claimed_a.id(), message_id);
+    let stale_claim_a = OutboxClaimRef::from_message(&claimed_a).expect("A's claim is valid");
 
-    // While the lease is live, worker B must NOT be able to steal the row.
     let live = outbox
-        .claim_async(ClaimOutboxMessages::new("worker-b", 1, lease))
+        .claim(ClaimOutboxMessages::new("worker-b", 1, lease))
         .await
         .expect("worker B poll should not error while the lease is live");
     assert!(
@@ -435,35 +364,23 @@ where
         "an unexpired lease must not be reclaimable by another worker"
     );
 
-    // Let the lease expire (no settle from A — simulated crash).
     tokio::time::sleep(Duration::from_millis(1_200)).await;
 
-    // Worker B reclaims the now-expired in-flight row.
-    let claimed_b = outbox
-        .claim_async(ClaimOutboxMessages::new(
-            "worker-b",
-            1,
-            Duration::from_secs(60),
-        ))
-        .await
-        .expect("worker B claim after expiry should succeed");
-    assert_eq!(
-        claimed_b.len(),
-        1,
-        "the expired lease must be reclaimable by a second worker"
-    );
-    assert_eq!(claimed_b[0].id(), message_id);
-    assert_eq!(claimed_b[0].worker_id.as_deref(), Some("worker-b"));
+    let claimed_b = claim_one(
+        &outbox,
+        ClaimOutboxMessages::new("worker-b", 1, Duration::from_secs(60)),
+    )
+    .await;
+    assert_eq!(claimed_b.id(), message_id);
+    assert_eq!(claimed_b.worker_id.as_deref(), Some("worker-b"));
     assert!(
-        claimed_b[0].attempts > claimed_a[0].attempts,
+        claimed_b.attempts > claimed_a.attempts,
         "reclaim increments the attempt counter (fences A's stale claim)"
     );
-    let claim_b = OutboxClaimRef::from_message(&claimed_b[0]).expect("B's claim is valid");
+    let claim_b = OutboxClaimRef::from_message(&claimed_b).expect("B's claim is valid");
 
-    // Worker A wakes up with its stale lease and tries to settle. Both complete
-    // and release must be rejected — A no longer owns the row.
     let late_complete = outbox
-        .complete_async(&stale_claim_a)
+        .complete(&stale_claim_a)
         .await
         .expect_err("A's late complete must be fenced");
     assert!(
@@ -471,7 +388,7 @@ where
         "stale-worker complete should be InvalidState, got {late_complete:?}"
     );
     let late_release = outbox
-        .release_async(&stale_claim_a, "A woke up late")
+        .release(&stale_claim_a, "A woke up late")
         .await
         .expect_err("A's late release must be fenced");
     assert!(
@@ -479,9 +396,8 @@ where
         "stale-worker release should be InvalidState, got {late_release:?}"
     );
 
-    // Worker B (the rightful owner) completes successfully.
     outbox
-        .complete_async(&claim_b)
+        .complete(&claim_b)
         .await
         .expect("the reclaiming worker should complete the row");
     let published = find_outbox_by_id(&outbox, &message_id)
@@ -494,35 +410,22 @@ where
     );
 }
 
-/// Publish-on-commit durability: a row committed alongside its aggregate must
-/// survive transient publish failures and stay claimable until it is genuinely
-/// delivered, then end Published — and the bus must see exactly one delivery.
-///
-/// The dispatcher runs one pass per `dispatch_ids` call. The first two passes
-/// fail to publish (row goes InFlight on claim → back to Pending on
-/// `record_failure`, attempts incrementing); the third succeeds and the row
-/// becomes Published. This pins the at-least-once-store / exactly-once-delivery
-/// boundary that publish-on-commit relies on.
 pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, S>(
     repo: R,
     outbox: S,
 ) where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync + Clone,
+    S: OutboxStore + Send + Sync + Clone,
 {
     let message_id = unique_id("publish-retry-outbox");
-    let mut seat = added_seat(&unique_id("publish-retry-seat"));
-    let message = OutboxMessage::create(&message_id, "seat.added", b"{}".to_vec())
-        .expect("outbox message should be valid");
-    repo.clone()
-        .aggregate::<Seat>()
-        .outbox(message)
-        .commit(&mut seat)
-        .await
-        .expect("aggregate and outbox should commit atomically");
+    commit_outbox_for_seat(
+        &repo,
+        unique_id("publish-retry-seat"),
+        &message_id,
+        "seat.added",
+    )
+    .await;
 
-    // max_attempts is high enough that the two failures only release (never
-    // permanently fail) the row.
     let dispatcher = OutboxDispatcher::new(
         outbox.clone(),
         FlakyPublisher::new(2),
@@ -532,7 +435,6 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
     );
     let ids = [message_id.clone()];
 
-    // Pass 1: claim → publish fails → released back to Pending, attempts = 1.
     let pass1 = dispatcher
         .dispatch_ids(&ids)
         .await
@@ -550,7 +452,6 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
     );
     assert_eq!(after_1.attempts, 1);
 
-    // Pass 2: same again, attempts = 2.
     let pass2 = dispatcher.dispatch_ids(&ids).await.expect("second pass");
     assert_eq!(pass2.published, 0);
     assert_eq!(pass2.released, 1);
@@ -560,7 +461,6 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
     assert_eq!(after_2.status, OutboxMessageStatus::Pending);
     assert_eq!(after_2.attempts, 2);
 
-    // Pass 3: publish succeeds → Published.
     let pass3 = dispatcher.dispatch_ids(&ids).await.expect("third pass");
     assert_eq!(pass3.published, 1);
     assert_eq!(pass3.released, 0);
@@ -574,7 +474,6 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
         "the row is Published only after a successful delivery"
     );
 
-    // The bus saw exactly one delivery — never the failed attempts, never twice.
     assert_eq!(
         dispatcher.publisher().attempts(),
         3,
@@ -587,6 +486,32 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
     );
 }
 
+async fn commit_outbox_for_seat<R>(repo: &R, seat_id: String, message_id: &str, event_type: &str)
+where
+    R: TransactionalCommit + Clone + Send + Sync + 'static,
+{
+    let mut seat = added_seat(&seat_id);
+    repo.clone()
+        .aggregate::<Seat>()
+        .outbox(outbox_message(message_id, event_type))
+        .commit(&mut seat)
+        .await
+        .expect("aggregate and outbox should commit atomically");
+}
+
+fn outbox_message(id: &str, event_type: &str) -> OutboxMessage {
+    OutboxMessage::create(id, event_type, b"{}".to_vec()).expect("outbox message should be valid")
+}
+
+async fn claim_one<S>(outbox: &S, request: ClaimOutboxMessages) -> OutboxMessage
+where
+    S: OutboxStore + Send + Sync,
+{
+    let claimed = outbox.claim(request).await.expect("claim should succeed");
+    assert_eq!(claimed.len(), 1);
+    claimed.into_iter().next().expect("one claimed message")
+}
+
 fn added_seat(id: &str) -> Seat {
     let mut seat = Seat::default();
     seat.add(id.to_string(), "floor".to_string())
@@ -596,7 +521,7 @@ fn added_seat(id: &str) -> Seat {
 
 async fn find_outbox_by_id<S>(outbox: &S, id: &str) -> Option<OutboxMessage>
 where
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     for status in [
         OutboxMessageStatus::Pending,
@@ -605,7 +530,7 @@ where
         OutboxMessageStatus::Failed,
     ] {
         let messages = outbox
-            .messages_by_status_async(status)
+            .messages_by_status(status)
             .await
             .expect("outbox status lookup should succeed");
         if let Some(message) = messages.into_iter().find(|message| message.id() == id) {

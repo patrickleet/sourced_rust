@@ -93,85 +93,57 @@ impl OutboxClaimRef {
     }
 }
 
-/// Store capability for claiming and updating durable outbox messages.
-pub trait OutboxStore: Send + Sync {
-    /// Return all outbox messages with the given status.
-    fn messages_by_status(
-        &self,
-        status: OutboxMessageStatus,
-    ) -> Result<Vec<OutboxMessage>, RepositoryError>;
-
-    /// Return all pending outbox messages.
-    fn pending(&self) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        self.messages_by_status(OutboxMessageStatus::Pending)
-    }
-
-    /// Claim pending outbox messages for processing.
-    fn claim(&self, request: ClaimOutboxMessages) -> Result<Vec<OutboxMessage>, RepositoryError>;
-
-    /// Mark an outbox message as completed if it is still claimed by this worker.
-    fn complete(&self, claim: &OutboxClaimRef) -> Result<(), RepositoryError>;
-
-    /// Release an outbox message if it is still claimed by this worker.
-    fn release(&self, claim: &OutboxClaimRef, error: &str) -> Result<(), RepositoryError>;
-
-    /// Mark an outbox message as permanently failed if it is still claimed by this worker.
-    fn fail(&self, claim: &OutboxClaimRef, error: &str) -> Result<(), RepositoryError>;
-
-    /// Record a publish failure for a claimed message, releasing it for retry
-    /// or permanently failing it when the attempt ceiling is reached.
-    fn record_failure(
-        &self,
-        claim: &OutboxClaimRef,
-        error: &str,
-        max_attempts: u32,
-    ) -> Result<OutboxPublishFailureAction, RepositoryError>;
-}
-
 /// Async store capability for claiming and updating durable outbox messages.
-pub trait AsyncOutboxStore: Send + Sync {
-    fn messages_by_status_async(
+pub trait OutboxStore: Send + Sync {
+    fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_;
 
-    fn pending_async(
+    fn pending(
         &self,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
-        async move {
-            self.messages_by_status_async(OutboxMessageStatus::Pending)
-                .await
-        }
+        async move { self.messages_by_status(OutboxMessageStatus::Pending).await }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a;
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn release_async<'a>(
-        &'a self,
-        claim: &'a OutboxClaimRef,
-        error: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
-
-    fn fail_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn record_failure_async<'a>(
+    fn fail<'a>(
+        &'a self,
+        claim: &'a OutboxClaimRef,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
+
+    fn record_failure<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
         max_attempts: u32,
-    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a;
+    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
+        async move {
+            if claim.attempt >= max_attempts {
+                self.fail(claim, error).await?;
+                Ok(OutboxPublishFailureAction::Failed)
+            } else {
+                self.release(claim, error).await?;
+                Ok(OutboxPublishFailureAction::Released)
+            }
+        }
+    }
 }
 
 fn outbox_state(message: &OutboxMessage) -> String {
@@ -266,114 +238,13 @@ impl OutboxStore for HashMapOutboxStore {
     fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
-    ) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        let storage = self
-            .storage
-            .read()
-            .map_err(|_| RepositoryError::LockPoisoned("outbox read"))?;
-
-        let mut messages = storage
-            .values()
-            .filter(|message| message.status == status)
-            .cloned()
-            .collect::<Vec<_>>();
-        sort_by_claim_order(&mut messages);
-        Ok(messages)
-    }
-
-    fn claim(&self, request: ClaimOutboxMessages) -> Result<Vec<OutboxMessage>, RepositoryError> {
-        let mut storage = self
-            .storage
-            .write()
-            .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
-
-        if request.batch_size == 0 {
-            return Ok(Vec::new());
-        }
-
-        let now = SystemTime::now();
-        let ids = claim_order_ids(storage.values());
-        let mut claimed = Vec::new();
-        for id in ids {
-            if !request.selects(&id) {
-                continue;
-            }
-
-            let Some(message) = storage.get_mut(&id) else {
-                continue;
-            };
-
-            if message.is_claimable_at(now) {
-                if let Some(destination) = request.destination.as_deref() {
-                    if message.destination.as_deref() != Some(destination) {
-                        continue;
-                    }
-                }
-                message.claim_at(&request.worker_id, request.lease, now)?;
-                claimed.push(message.clone());
-            }
-
-            if claimed.len() >= request.batch_size {
-                break;
-            }
-        }
-
-        Ok(claimed)
-    }
-
-    fn complete(&self, claim: &OutboxClaimRef) -> Result<(), RepositoryError> {
-        self.update_outbox_message(&claim.message_id, |message| {
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.complete()?;
-            Ok(())
-        })
-    }
-
-    fn release(&self, claim: &OutboxClaimRef, error: &str) -> Result<(), RepositoryError> {
-        self.update_outbox_message(&claim.message_id, |message| {
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.release(error.to_string())?;
-            Ok(())
-        })
-    }
-
-    fn fail(&self, claim: &OutboxClaimRef, error: &str) -> Result<(), RepositoryError> {
-        self.update_outbox_message(&claim.message_id, |message| {
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.fail(error.to_string())?;
-            Ok(())
-        })
-    }
-
-    fn record_failure(
-        &self,
-        claim: &OutboxClaimRef,
-        error: &str,
-        max_attempts: u32,
-    ) -> Result<OutboxPublishFailureAction, RepositoryError> {
-        self.update_outbox_message(&claim.message_id, |message| {
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            if message.attempts >= max_attempts {
-                message.fail(error.to_string())?;
-                Ok(OutboxPublishFailureAction::Failed)
-            } else {
-                message.release(error.to_string())?;
-                Ok(OutboxPublishFailureAction::Released)
-            }
-        })
-    }
-}
-
-impl AsyncOutboxStore for HashMapOutboxStore {
-    fn messages_by_status_async(
-        &self,
-        status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
         async move {
             let storage = self
                 .storage
                 .read()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox read"))?;
+                .map_err(|_| RepositoryError::LockPoisoned("outbox read"))?;
+
             let mut messages = storage
                 .values()
                 .filter(|message| message.status == status)
@@ -384,22 +255,22 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
         async move {
+            let mut storage = self
+                .storage
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
+
             if request.batch_size == 0 {
                 return Ok(Vec::new());
             }
 
             let now = SystemTime::now();
-            let mut storage = self
-                .storage
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
             let ids = claim_order_ids(storage.values());
-
             let mut claimed = Vec::new();
             for id in ids {
                 if !request.selects(&id) {
@@ -410,18 +281,15 @@ impl AsyncOutboxStore for HashMapOutboxStore {
                     continue;
                 };
 
-                if !message.is_claimable_at(now) {
-                    continue;
-                }
-
-                if let Some(destination) = request.destination.as_deref() {
-                    if message.destination.as_deref() != Some(destination) {
-                        continue;
+                if message.is_claimable_at(now) {
+                    if let Some(destination) = request.destination.as_deref() {
+                        if message.destination.as_deref() != Some(destination) {
+                            continue;
+                        }
                     }
+                    message.claim_at(&request.worker_id, request.lease, now)?;
+                    claimed.push(message.clone());
                 }
-
-                message.claim_at(&request.worker_id, request.lease, now)?;
-                claimed.push(message.clone());
 
                 if claimed.len() >= request.batch_size {
                     break;
@@ -432,96 +300,44 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            let mut storage = self
-                .storage
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
-            let message =
-                storage
-                    .get_mut(&claim.message_id)
-                    .ok_or_else(|| RepositoryError::NotFound {
-                        id: claim.message_id.clone(),
-                    })?;
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.complete()?;
-            Ok(())
+            self.update_outbox_message(&claim.message_id, |message| {
+                ensure_active_claim(message, Some(claim), SystemTime::now())?;
+                message.complete()?;
+                Ok(())
+            })
         }
     }
 
-    fn release_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            let mut storage = self
-                .storage
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
-            let message =
-                storage
-                    .get_mut(&claim.message_id)
-                    .ok_or_else(|| RepositoryError::NotFound {
-                        id: claim.message_id.clone(),
-                    })?;
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.release(error.to_string())?;
-            Ok(())
-        }
-    }
-
-    fn fail_async<'a>(
-        &'a self,
-        claim: &'a OutboxClaimRef,
-        error: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
-        async move {
-            let mut storage = self
-                .storage
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
-            let message =
-                storage
-                    .get_mut(&claim.message_id)
-                    .ok_or_else(|| RepositoryError::NotFound {
-                        id: claim.message_id.clone(),
-                    })?;
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            message.fail(error.to_string())?;
-            Ok(())
-        }
-    }
-
-    fn record_failure_async<'a>(
-        &'a self,
-        claim: &'a OutboxClaimRef,
-        error: &'a str,
-        max_attempts: u32,
-    ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
-        async move {
-            let mut storage = self
-                .storage
-                .write()
-                .map_err(|_| RepositoryError::LockPoisoned("async outbox write"))?;
-            let message =
-                storage
-                    .get_mut(&claim.message_id)
-                    .ok_or_else(|| RepositoryError::NotFound {
-                        id: claim.message_id.clone(),
-                    })?;
-            ensure_active_claim(message, Some(claim), SystemTime::now())?;
-            if message.attempts >= max_attempts {
-                message.fail(error.to_string())?;
-                Ok(OutboxPublishFailureAction::Failed)
-            } else {
+            self.update_outbox_message(&claim.message_id, |message| {
+                ensure_active_claim(message, Some(claim), SystemTime::now())?;
                 message.release(error.to_string())?;
-                Ok(OutboxPublishFailureAction::Released)
-            }
+                Ok(())
+            })
+        }
+    }
+
+    fn fail<'a>(
+        &'a self,
+        claim: &'a OutboxClaimRef,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            self.update_outbox_message(&claim.message_id, |message| {
+                ensure_active_claim(message, Some(claim), SystemTime::now())?;
+                message.fail(error.to_string())?;
+                Ok(())
+            })
         }
     }
 }
@@ -566,6 +382,7 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
 
         assert_eq!(claimed.len(), 1);
@@ -594,6 +411,7 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
 
         assert!(claimed.is_empty());
@@ -619,6 +437,7 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
 
         assert_eq!(claimed[0].id(), "msg-z");
@@ -650,6 +469,7 @@ mod tests {
                 vec!["msg-b".to_string(), "msg-c".to_string()],
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
 
         let mut claimed_ids = claimed
@@ -680,6 +500,7 @@ mod tests {
                 vec!["msg-a".to_string(), "missing".to_string()],
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
 
         assert!(claimed.is_empty());
@@ -720,25 +541,25 @@ mod tests {
 
         let worker_a = thread::spawn(move || {
             barrier_a.wait();
-            store_a
-                .claim(ClaimOutboxMessages::new(
-                    "worker-a",
-                    1,
-                    Duration::from_secs(60),
-                ))
-                .unwrap()
-                .len()
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(store_a.claim(ClaimOutboxMessages::new(
+                "worker-a",
+                1,
+                Duration::from_secs(60),
+            )))
+            .unwrap()
+            .len()
         });
         let worker_b = thread::spawn(move || {
             barrier_b.wait();
-            store_b
-                .claim(ClaimOutboxMessages::new(
-                    "worker-b",
-                    1,
-                    Duration::from_secs(60),
-                ))
-                .unwrap()
-                .len()
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(store_b.claim(ClaimOutboxMessages::new(
+                "worker-b",
+                1,
+                Duration::from_secs(60),
+            )))
+            .unwrap()
+            .len()
         });
 
         barrier.wait();
@@ -763,9 +584,13 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        let action = store.record_failure(&claim, "first failure", 2).unwrap();
+        let action = store
+            .record_failure(&claim, "first failure", 2)
+            .await
+            .unwrap();
         assert_eq!(action, OutboxPublishFailureAction::Released);
 
         let stored = load_message(&repo, &id);
@@ -779,9 +604,13 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        let action = store.record_failure(&claim, "second failure", 2).unwrap();
+        let action = store
+            .record_failure(&claim, "second failure", 2)
+            .await
+            .unwrap();
         assert_eq!(action, OutboxPublishFailureAction::Failed);
 
         let stored = load_message(&repo, &id);
@@ -790,8 +619,8 @@ mod tests {
         assert_eq!(stored.last_error.as_deref(), Some("second failure"));
     }
 
-    #[test]
-    fn missing_message_updates_return_not_found() {
+    #[tokio::test]
+    async fn missing_message_updates_return_not_found() {
         let store = HashMapOutboxStore {
             storage: Default::default(),
         };
@@ -803,9 +632,11 @@ mod tests {
         };
 
         let is_missing = |err: RepositoryError| matches!(&err, RepositoryError::NotFound { id } if id == "missing");
-        assert!(is_missing(store.complete(&claim).unwrap_err()));
-        assert!(is_missing(store.release(&claim, "error").unwrap_err()));
-        assert!(is_missing(store.fail(&claim, "error").unwrap_err()));
+        assert!(is_missing(store.complete(&claim).await.unwrap_err()));
+        assert!(is_missing(
+            store.release(&claim, "error").await.unwrap_err()
+        ));
+        assert!(is_missing(store.fail(&claim, "error").await.unwrap_err()));
     }
 
     #[tokio::test]
@@ -821,10 +652,11 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let mut claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
         claim.worker_id = "worker-2".into();
-        let err = store.complete(&claim).unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
 
         let mut expired = OutboxMessage::create("msg-2", "Event", b"{}".to_vec()).unwrap();
@@ -834,7 +666,7 @@ mod tests {
         let expired_id = store_message(&repo, expired).await;
         let expired = load_message(&repo, &expired_id);
         let claim = OutboxClaimRef::from_message(&expired).unwrap();
-        let err = store.complete(&claim).unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
     }
 
@@ -851,9 +683,10 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let stale_claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        store.release(&stale_claim, "retry").unwrap();
+        store.release(&stale_claim, "retry").await.unwrap();
 
         let claimed = store
             .claim(ClaimOutboxMessages::new(
@@ -861,12 +694,13 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let current_claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
 
-        let err = store.complete(&stale_claim).unwrap_err();
+        let err = store.complete(&stale_claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
-        store.complete(&current_claim).unwrap();
+        store.complete(&current_claim).await.unwrap();
     }
 
     #[tokio::test]
@@ -882,11 +716,12 @@ mod tests {
                 1,
                 Duration::from_secs(60),
             ))
+            .await
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        store.complete(&claim).unwrap();
+        store.complete(&claim).await.unwrap();
 
-        let err = store.complete(&claim).unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
     }
 }
