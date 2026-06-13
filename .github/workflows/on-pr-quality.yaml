@@ -22,3 +22,6 @@ jobs:
 
   kafka:
     uses: ./.github/workflows/integration-kafka.yaml
+
+  distributed-cli:
+    uses: ./.github/workflows/integration-distributed-cli.yaml
