@@ -19,6 +19,7 @@ use distributed::bus::{
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
+use tokio::sync::Notify;
 
 static DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -64,9 +65,11 @@ impl Drop for TempDb {
         let _ = std::fs::remove_file(&self.path);
         for suffix in ["-wal", "-shm"] {
             let mut sidecar = self.path.clone();
-            let name = format!("{}{suffix}", sidecar.file_name().unwrap().to_string_lossy());
-            sidecar.set_file_name(name);
-            let _ = std::fs::remove_file(sidecar);
+            if let Some(file_name) = sidecar.file_name() {
+                let name = format!("{}{suffix}", file_name.to_string_lossy());
+                sidecar.set_file_name(name);
+                let _ = std::fs::remove_file(sidecar);
+            }
         }
     }
 }
@@ -118,6 +121,7 @@ async fn recreate_nullable_queue_table(pool: &SqlitePool) {
         r#"
         CREATE TABLE bus_queue (
             seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_token  TEXT,
             name         TEXT,
             message_id   TEXT,
             kind         TEXT NOT NULL,
@@ -154,7 +158,7 @@ async fn recreate_nullable_log_table(pool: &SqlitePool) {
             message_id   TEXT,
             kind         TEXT NOT NULL,
             payload      BLOB NOT NULL,
-            content_type TEXT NOT NULL DEFAULT 'application/json',
+            content_type TEXT DEFAULT 'application/json',
             metadata     TEXT NOT NULL DEFAULT '[]',
             appended_at  REAL NOT NULL DEFAULT (unixepoch('now','subsec'))
         )
@@ -176,11 +180,43 @@ async fn corrupt_latest_queue_name(pool: &SqlitePool) {
         .expect("null out queue name");
 }
 
+async fn corrupt_latest_queue_kind(pool: &SqlitePool) {
+    sqlx::query("UPDATE bus_queue SET kind = 'bogus' WHERE seq = (SELECT max(seq) FROM bus_queue)")
+        .execute(pool)
+        .await
+        .expect("corrupt queue kind");
+}
+
 async fn corrupt_latest_log_name(pool: &SqlitePool) {
     sqlx::query("UPDATE bus_log SET name = NULL WHERE seq = (SELECT max(seq) FROM bus_log)")
         .execute(pool)
         .await
         .expect("null out log name");
+}
+
+async fn corrupt_latest_log_kind(pool: &SqlitePool) {
+    sqlx::query("UPDATE bus_log SET kind = 'bogus' WHERE seq = (SELECT max(seq) FROM bus_log)")
+        .execute(pool)
+        .await
+        .expect("corrupt log kind");
+}
+
+async fn corrupt_latest_log_metadata(pool: &SqlitePool) {
+    sqlx::query(
+        "UPDATE bus_log SET metadata = 'not-json' WHERE seq = (SELECT max(seq) FROM bus_log)",
+    )
+    .execute(pool)
+    .await
+    .expect("corrupt log metadata");
+}
+
+async fn corrupt_latest_log_content_type(pool: &SqlitePool) {
+    sqlx::query(
+        "UPDATE bus_log SET content_type = NULL WHERE seq = (SELECT max(seq) FROM bus_log)",
+    )
+    .execute(pool)
+    .await
+    .expect("corrupt log content type");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -338,6 +374,35 @@ async fn retryable_event_failure_does_not_advance_offset() {
     assert_eq!(offset, Some(1), "offset advanced only after success");
 }
 
+#[tokio::test]
+async fn bus_schema_rejects_unsupported_message_kind() {
+    let (_db, pool, _bus) = bus().await;
+
+    let queue_err = sqlx::query("INSERT INTO bus_queue (name, kind, payload) VALUES (?, ?, ?)")
+        .bind(COMMAND_NAME)
+        .bind("bogus")
+        .bind(PAYLOAD.to_vec())
+        .execute(&pool)
+        .await
+        .expect_err("queue kind check rejects unsupported message kind");
+    assert!(
+        queue_err.to_string().contains("CHECK"),
+        "unexpected queue kind error: {queue_err}"
+    );
+
+    let log_err = sqlx::query("INSERT INTO bus_log (name, kind, payload) VALUES (?, ?, ?)")
+        .bind(EVENT_NAME)
+        .bind("bogus")
+        .bind(PAYLOAD.to_vec())
+        .execute(&pool)
+        .await
+        .expect_err("log kind check rejects unsupported message kind");
+    assert!(
+        log_err.to_string().contains("CHECK"),
+        "unexpected log kind error: {log_err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn busy_or_locked_writer_contention_is_retryable() {
     let db = TempDb::new();
@@ -382,6 +447,10 @@ async fn bus_listen_dead_letters_corrupt_queue_row_not_silently() {
         .await
         .expect("send poison");
     corrupt_latest_queue_name(&pool).await;
+    bus.send_message(command("poison-kind"))
+        .await
+        .expect("send poison kind");
+    corrupt_latest_queue_kind(&pool).await;
     bus.send_message(command("ok")).await.expect("send ok");
 
     let rec = Arc::new(Mutex::new(Vec::new()));
@@ -421,6 +490,18 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         .await
         .expect("publish trailing poison");
     corrupt_latest_log_name(&pool).await;
+    bus.publish_message(event("poison-kind"))
+        .await
+        .expect("publish corrupt kind");
+    corrupt_latest_log_kind(&pool).await;
+    bus.publish_message(event("poison-metadata"))
+        .await
+        .expect("publish corrupt metadata");
+    corrupt_latest_log_metadata(&pool).await;
+    bus.publish_message(event("poison-content-type"))
+        .await
+        .expect("publish corrupt content type");
+    corrupt_latest_log_content_type(&pool).await;
 
     let rec = Arc::new(Mutex::new(Vec::new()));
     SqliteBus::new(pool.clone())
@@ -451,4 +532,87 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         Some(max_seq),
         "offset advanced past corrupt entries through the failure policy"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_queue_claim_cannot_be_settled_by_stale_worker() {
+    let (_db, pool, bus) = bus().await;
+    let bus = bus.with_lease(Duration::from_millis(250));
+    bus.send_message(command("c1")).await.expect("send command");
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_claimed = Arc::new(Notify::new());
+    let second_claimed = Arc::new(Notify::new());
+    let allow_second_finish = Arc::new(Notify::new());
+
+    let handlers = Arc::new({
+        let attempts = attempts.clone();
+        let first_claimed = first_claimed.clone();
+        let second_claimed = second_claimed.clone();
+        let allow_second_finish = allow_second_finish.clone();
+        Handlers::new().on_command(COMMAND_NAME, move |_: &Message| {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            let first_claimed = first_claimed.clone();
+            let second_claimed = second_claimed.clone();
+            let allow_second_finish = allow_second_finish.clone();
+            async move {
+                match attempt {
+                    0 => {
+                        first_claimed.notify_one();
+                        tokio::time::sleep(Duration::from_millis(420)).await;
+                        Ok(())
+                    }
+                    1 => {
+                        second_claimed.notify_one();
+                        allow_second_finish.notified().await;
+                        Err(TransportError::retryable("second claim releases for retry"))
+                    }
+                    _ => Ok(()),
+                }
+            }
+        })
+    });
+
+    let first = tokio::spawn({
+        let bus = bus.clone();
+        let handlers = handlers.clone();
+        async move { bus.listen(handlers, RunOptions::idempotent()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), first_claimed.notified())
+        .await
+        .expect("first worker claimed the command");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let second = tokio::spawn({
+        let bus = bus.clone();
+        let handlers = handlers.clone();
+        async move { bus.listen(handlers, RunOptions::idempotent()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), second_claimed.notified())
+        .await
+        .expect("second worker reclaimed the expired lease");
+
+    tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("stale first worker finished")
+        .expect("first worker joined")
+        .expect("first listener drains");
+
+    allow_second_finish.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), second)
+        .await
+        .expect("second worker finished")
+        .expect("second worker joined")
+        .expect("second listener drains");
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "stale ack did not delete the newer claim before it could be retried"
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM bus_queue")
+        .fetch_one(&pool)
+        .await
+        .expect("count queue");
+    assert_eq!(remaining, 0, "retried command was eventually acked");
 }

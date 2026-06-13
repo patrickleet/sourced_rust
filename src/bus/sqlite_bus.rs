@@ -36,6 +36,7 @@ const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS bus_queue (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_token  TEXT,
     name         TEXT NOT NULL,
     message_id   TEXT,
     kind         TEXT NOT NULL,
@@ -45,8 +46,9 @@ CREATE TABLE IF NOT EXISTS bus_queue (
     available_at REAL NOT NULL DEFAULT (unixepoch('now','subsec')),
     locked_until REAL,
     attempts     INTEGER NOT NULL DEFAULT 0,
+    CHECK (claim_token IS NULL OR claim_token <> ''),
     CHECK (name <> ''),
-    CHECK (kind <> ''),
+    CHECK (kind IN ('command', 'event')),
     CHECK (content_type <> ''),
     CHECK (attempts >= 0)
 );
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS bus_log (
     metadata     TEXT NOT NULL DEFAULT '[]',
     appended_at  REAL NOT NULL DEFAULT (unixepoch('now','subsec')),
     CHECK (name <> ''),
-    CHECK (kind <> ''),
+    CHECK (kind IN ('command', 'event')),
     CHECK (content_type <> '')
 );
 CREATE INDEX IF NOT EXISTS bus_log_name_seq_idx ON bus_log (name, seq);
@@ -97,38 +99,65 @@ fn metadata_json(message: &Message) -> String {
     serde_json::to_string(&message.metadata).unwrap_or_else(|_| "[]".into())
 }
 
+fn corrupt_row(message: impl Into<String>) -> TransportError {
+    TransportError::permanent(format!("sqlite bus corrupt row: {}", message.into()))
+}
+
+fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
+    corrupt_row(format!(
+        "required column '{column}' failed to decode: {err}"
+    ))
+}
+
+fn parse_message_kind(value: &str) -> Result<MessageKind, TransportError> {
+    match value {
+        "command" => Ok(MessageKind::Command),
+        "event" => Ok(MessageKind::Event),
+        _ => Err(corrupt_row(format!(
+            "required column 'kind' has unsupported value {value:?}"
+        ))),
+    }
+}
+
+fn parse_metadata(value: &str) -> Result<Vec<(String, String)>, TransportError> {
+    serde_json::from_str(value).map_err(|err| {
+        corrupt_row(format!(
+            "required column 'metadata' failed to parse as JSON metadata: {err}"
+        ))
+    })
+}
+
 /// Reconstruct a [`Message`] from a claimed `bus_queue`/`bus_log` row.
 ///
-/// Required-column decode failures are permanent corruption. The row has already
-/// been selected or claimed, so callers surface the error through
+/// Required-column decode/parsing failures are permanent corruption. The row has
+/// already been selected or claimed, so callers surface the error through
 /// [`ReceivedMessage::decode_error`] and let the runner settle it through the
 /// configured failure policy.
 fn message_from_row(row: &SqliteRow) -> Result<Message, TransportError> {
-    fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
-        TransportError::permanent(format!(
-            "sqlite bus corrupt row: required column '{column}' failed to decode: {err}"
-        ))
-    }
-
     let name: String = row.try_get("name").map_err(|err| decode_err("name", err))?;
     let kind: String = row.try_get("kind").map_err(|err| decode_err("kind", err))?;
     let payload: Vec<u8> = row
         .try_get("payload")
         .map_err(|err| decode_err("payload", err))?;
+    let content_type: String = row
+        .try_get("content_type")
+        .map_err(|err| decode_err("content_type", err))?;
+    if content_type.is_empty() {
+        return Err(corrupt_row("required column 'content_type' is empty"));
+    }
+    let metadata_json: String = row
+        .try_get("metadata")
+        .map_err(|err| decode_err("metadata", err))?;
+    let metadata = parse_metadata(&metadata_json)?;
 
-    let metadata_json: String = row.try_get("metadata").unwrap_or_else(|_| "[]".to_string());
-    let metadata =
-        serde_json::from_str::<Vec<(String, String)>>(&metadata_json).unwrap_or_default();
     Ok(Message {
         id: row
             .try_get::<Option<String>, _>("message_id")
             .unwrap_or(None),
         name,
-        kind: MessageKind::from_str_lossy(&kind),
+        kind: parse_message_kind(&kind)?,
         payload,
-        content_type: row
-            .try_get("content_type")
-            .unwrap_or_else(|_| "application/json".to_string()),
+        content_type,
         metadata,
     })
 }
@@ -339,7 +368,8 @@ impl AsyncMessageSource for QueueSource {
         );
         query.push_bind(self.lease_secs);
         query.push(
-            ", attempts = attempts + 1 \
+            ", claim_token = lower(hex(randomblob(16))), \
+                attempts = attempts + 1 \
              WHERE seq = ( \
                 SELECT seq FROM bus_queue \
                 WHERE ",
@@ -350,7 +380,7 @@ impl AsyncMessageSource for QueueSource {
               AND (locked_until IS NULL OR locked_until <= unixepoch('now','subsec')) \
               ORDER BY seq LIMIT 1 \
              ) \
-             RETURNING seq, name, message_id, kind, payload, content_type, metadata",
+             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
         );
 
         let row = query
@@ -359,10 +389,18 @@ impl AsyncMessageSource for QueueSource {
             .await
             .map_err(|err| db_err("claim", err))?;
 
-        Ok(row.map(|row| SqliteQueueReceived {
-            pool: self.pool.clone(),
-            row: ReceivedRow::from_row(&row),
-        }))
+        if let Some(row) = row {
+            let claim_token = row
+                .try_get("claim_token")
+                .map_err(|err| db_err("claim token", err))?;
+            Ok(Some(SqliteQueueReceived {
+                pool: self.pool.clone(),
+                row: ReceivedRow::from_row(&row),
+                claim_token,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -383,12 +421,14 @@ fn decode_or_placeholder(row: &SqliteRow) -> (Message, Option<TransportError>) {
 pub struct SqliteQueueReceived {
     pool: SqlitePool,
     row: ReceivedRow,
+    claim_token: String,
 }
 
 impl SqliteQueueReceived {
     async fn delete(&self) -> Result<(), TransportError> {
-        sqlx::query("DELETE FROM bus_queue WHERE seq = ?")
+        sqlx::query("DELETE FROM bus_queue WHERE seq = ? AND claim_token = ?")
             .bind(self.row.seq)
+            .bind(&self.claim_token)
             .execute(&self.pool)
             .await
             .map_err(|err| db_err("delete", err))?;
@@ -410,11 +450,16 @@ impl ReceivedMessage for SqliteQueueReceived {
     }
 
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
-        sqlx::query("UPDATE bus_queue SET locked_until = NULL WHERE seq = ?")
-            .bind(self.row.seq)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| db_err("nack", err))?;
+        sqlx::query(
+            "UPDATE bus_queue \
+             SET locked_until = NULL, claim_token = NULL \
+             WHERE seq = ? AND claim_token = ?",
+        )
+        .bind(self.row.seq)
+        .bind(&self.claim_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| db_err("nack", err))?;
         Ok(())
     }
 
