@@ -24,12 +24,9 @@ use crate::outbox_worker::{
     OutboxPublishFailureAction,
 };
 use crate::read_model::{
-    column_name_for, key_fingerprint, validate_key, validate_row_values, ColumnDef, ColumnType,
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation, RowValue,
-    RowValues, RowWriteMode, Versioned,
+    validate_key, ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
+    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelQueryCapabilities, ReadModelWritePlan, RowValue,
 };
 use crate::repository::{
     reject_duplicate_outbox_messages, reject_duplicate_streams,
@@ -39,6 +36,12 @@ use crate::repository::{
     SnapshotStore, SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
+use crate::sqlx_repo::read_model::{
+    apply_read_model_write_plan_in_tx, begin_read_model_tx, commit_read_model_tx,
+    empty_string_as_none, load_relational_row_by_key, load_relationship_rows, quote_identifier,
+    remember_read_model_schemas, resolve_registered_read_model_schemas,
+    sql_read_model_capabilities, validate_sql_write_plan,
+};
 use crate::sqlx_repo::{
     self, audited_table_schema_sql, deserialize_event_metadata, is_postgres_unique_violation,
     read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
@@ -521,7 +524,7 @@ impl RelationalReadModelQueryStore for PostgresRepository {
             validate_key(&root_schema, &request.key)?;
 
             let Some(root) =
-                load_postgres_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
+                load_relational_row_by_key(&self.pool, &root_schema, &request.key).await?
             else {
                 return Ok(ReadModelLoadGraph::default());
             };
@@ -529,8 +532,7 @@ impl RelationalReadModelQueryStore for PostgresRepository {
             let mut includes = BTreeMap::new();
             for spec in include_specs {
                 let loaded_rows =
-                    load_postgres_relationship_rows(&self.pool, &root_schema, &root.data, &spec)
-                        .await?;
+                    load_relationship_rows(&self.pool, &root_schema, &root.data, &spec).await?;
                 includes.insert(
                     spec.name,
                     ReadModelIncludeRows {
@@ -910,113 +912,6 @@ impl SnapshotStore for PostgresRepository {
     }
 }
 
-#[derive(Clone)]
-struct IncludeSpec {
-    name: String,
-    relationship: RelationshipDef,
-    target_schema: ReadModelSchema,
-}
-
-fn remember_read_model_schemas(
-    stored: &RwLock<TableSchemaRegistry>,
-    registry: &TableSchemaRegistry,
-) -> Result<(), ReadModelError> {
-    let mut stored = stored
-        .write()
-        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
-
-    for schema in registry.schemas() {
-        if let Some(existing) = stored.schema_for_table(&schema.table_name) {
-            if existing != schema {
-                return Err(ReadModelError::Metadata(format!(
-                    "read-model schema registry already contains table `{}` with different metadata",
-                    schema.table_name
-                )));
-            }
-            continue;
-        }
-        stored.register_schema(schema.clone())?;
-    }
-
-    Ok(())
-}
-
-fn resolve_registered_read_model_schemas(
-    registry: &RwLock<TableSchemaRegistry>,
-    request: &ReadModelLoadRequest,
-) -> Result<(ReadModelSchema, Vec<IncludeSpec>), ReadModelError> {
-    if request.includes.is_empty() {
-        return Ok((request.schema.clone(), Vec::new()));
-    }
-
-    let registry = registry
-        .read()
-        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
-    let root_schema = registry
-        .schema_for_model(&request.schema.model_name)
-        .cloned()
-        .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` is not registered for relationship includes",
-                request.schema.model_name
-            ))
-        })?;
-    if root_schema != request.schema {
-        return Err(ReadModelError::Metadata(format!(
-            "read model `{}` load request does not match registered schema",
-            request.schema.model_name
-        )));
-    }
-
-    let mut include_specs = Vec::with_capacity(request.includes.len());
-    for include_name in &request.includes {
-        let relationship = root_schema
-            .relationships
-            .iter()
-            .find(|relationship| relationship.field_name == *include_name)
-            .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
-                    "read model `{}` has no relationship `{}`",
-                    root_schema.model_name, include_name
-                ))
-            })?;
-        if matches!(relationship.kind, RelationshipKind::ManyToMany) {
-            return Err(ReadModelError::Metadata(format!(
-                "many-to-many relationship `{}` includes are not supported until join metadata declares source and target keys",
-                relationship.field_name
-            )));
-        }
-        let target_schema = registry
-            .schema_for_model(&relationship.target_model)
-            .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
-                    "read model `{}` relationship `{}` targets unregistered model `{}`",
-                    root_schema.model_name, relationship.field_name, relationship.target_model
-                ))
-            })?;
-
-        include_specs.push(IncludeSpec {
-            name: include_name.clone(),
-            relationship: relationship.clone(),
-            target_schema: target_schema.clone(),
-        });
-    }
-
-    Ok((root_schema, include_specs))
-}
-
-fn sql_read_model_capabilities() -> ReadModelAdapterCapabilities {
-    ReadModelAdapterCapabilities {
-        relational_rows: true,
-        sparse_patches: true,
-        deletes: true,
-    }
-}
-
-fn validate_sql_write_plan(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
-    plan.validate_for(&sql_read_model_capabilities())
-}
-
 /// Record a consumer inbox receipt in the commit transaction. The
 /// `(consumer, message_id)` primary key is the dedupe gate: a unique violation
 /// means the message was already processed, so the whole batch rolls back and the
@@ -1046,923 +941,153 @@ async fn insert_inbox_receipt_in_tx(
     }
 }
 
-async fn begin_read_model_tx(pool: &PgPool) -> Result<Transaction<'_, Postgres>, ReadModelError> {
-    pool.begin()
-        .await
-        .map_err(|err| read_model_storage_error("begin transaction", err))
-}
+impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Postgres {
+    const BACKEND: &'static str = POSTGRES_BACKEND;
+    const INTEGER_STORAGE: &'static str = BIGINT_STORAGE;
 
-async fn commit_read_model_tx(tx: Transaction<'_, Postgres>) -> Result<(), ReadModelError> {
-    tx.commit()
-        .await
-        .map_err(|err| read_model_storage_error("commit transaction", err))
-}
-
-async fn apply_read_model_write_plan_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    plan: ReadModelWritePlan,
-) -> Result<ReadModelCommitOutcome, ReadModelError> {
-    validate_sql_write_plan(&plan)?;
-
-    for mutation in plan.mutations {
-        match mutation {
-            ReadModelMutation::UpsertRow(mutation) => {
-                upsert_relational_row_in_tx(tx, mutation).await?;
+    fn push_row_value_bind(
+        builder: &mut QueryBuilder<Postgres>,
+        value: RowValue,
+        column: &ColumnDef,
+    ) -> Result<(), ReadModelError> {
+        match value {
+            RowValue::Null => Self::push_null_bind(builder, column)?,
+            RowValue::Bool(value) => {
+                builder.push_bind(value);
             }
-            ReadModelMutation::PatchRow(mutation) => {
-                patch_relational_row_in_tx(tx, mutation).await?;
+            RowValue::I64(value) => {
+                builder.push_bind(value);
             }
-            ReadModelMutation::DeleteRow(mutation) => {
-                delete_relational_row_in_tx(tx, mutation).await?;
+            RowValue::U64(value) => {
+                builder.push_bind(sqlx_read_model_i64_from_u64(
+                    POSTGRES_BACKEND,
+                    value,
+                    &column.column_name,
+                    BIGINT_STORAGE,
+                )?);
             }
-        }
-    }
-
-    Ok(ReadModelCommitOutcome::applied())
-}
-
-async fn upsert_relational_row_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    mutation: RowMutation,
-) -> Result<(), ReadModelError> {
-    validate_key(&mutation.schema, &mutation.key)?;
-    validate_row_values(&mutation.schema, &mutation.values, true)?;
-    validate_values_match_key(&mutation.schema, &mutation.key, &mutation.values)?;
-
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
-    validate_row_expected_version(
-        &mutation.schema,
-        &mutation.key,
-        &mutation.expected_version,
-        current_version,
-    )?;
-    if matches!(mutation.mode, RowWriteMode::Insert) && current_version.is_some() {
-        return Err(row_concurrency_conflict(
-            &mutation.schema,
-            &mutation.key,
-            0,
-            current_version.unwrap_or_default(),
-        ));
-    }
-
-    match current_version {
-        Some(expected_version) => {
-            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
-            let rows_affected = update_relational_row_values_in_tx(
-                tx,
-                &mutation.schema,
-                &mutation.key,
-                &mutation.values,
-                expected_version,
-                new_version,
-            )
-            .await?;
-            if rows_affected == 0 {
-                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
-                    .await?
-                    .unwrap_or(expected_version);
-                return Err(row_concurrency_conflict(
-                    &mutation.schema,
-                    &mutation.key,
-                    expected_version,
-                    actual,
-                ));
+            RowValue::F64(value) => {
+                builder.push_bind(value);
+            }
+            RowValue::String(value) => {
+                builder.push_bind(value);
+            }
+            RowValue::Bytes(value) => {
+                builder.push_bind(value);
+            }
+            RowValue::Json(value) => {
+                let payload = serde_json::to_string(&value)
+                    .map_err(|err| ReadModelError::Serde(err.to_string()))?;
+                builder.push_bind(payload);
             }
         }
-        None => {
-            insert_relational_row_in_tx(
-                tx,
-                &mutation.schema,
-                &mutation.values,
-                initial_row_version(),
-            )
-            .await?;
-        }
+        push_postgres_type_cast(builder, column);
+        Ok(())
     }
 
-    Ok(())
-}
-
-async fn patch_relational_row_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    mutation: PatchRowMutation,
-) -> Result<(), ReadModelError> {
-    validate_key(&mutation.schema, &mutation.key)?;
-
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
-    validate_row_expected_version(
-        &mutation.schema,
-        &mutation.key,
-        &mutation.expected_version,
-        current_version,
-    )?;
-
-    match current_version {
-        Some(expected_version) => {
-            let patch_values =
-                patch_values_preserving_key(&mutation.schema, &mutation.key, mutation.patch)?;
-            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
-            let rows_affected = update_relational_patch_in_tx(
-                tx,
-                &mutation.schema,
-                &mutation.key,
-                patch_values,
-                expected_version,
-                new_version,
-            )
-            .await?;
-            if rows_affected == 0 {
-                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
-                    .await?
-                    .unwrap_or(expected_version);
-                return Err(row_concurrency_conflict(
-                    &mutation.schema,
-                    &mutation.key,
-                    expected_version,
-                    actual,
-                ));
+    fn push_null_bind(
+        builder: &mut QueryBuilder<Postgres>,
+        column: &ColumnDef,
+    ) -> Result<(), ReadModelError> {
+        match &column.column_type {
+            ColumnType::Text | ColumnType::Json | ColumnType::Timestamp => {
+                builder.push_bind(Option::<String>::None);
+            }
+            ColumnType::Boolean => {
+                builder.push_bind(Option::<bool>::None);
+            }
+            ColumnType::Integer | ColumnType::UnsignedInteger => {
+                builder.push_bind(Option::<i64>::None);
+            }
+            ColumnType::Float => {
+                builder.push_bind(Option::<f64>::None);
+            }
+            ColumnType::Bytes => {
+                builder.push_bind(Option::<Vec<u8>>::None);
+            }
+            ColumnType::Unsupported(type_name) => {
+                return Err(ReadModelError::Metadata(format!(
+                    "read model `{}` column `{}` has unsupported type `{}`",
+                    column.field_name, column.column_name, type_name
+                )));
             }
         }
-        None if matches!(mutation.mode, PatchMode::InsertMissing) => {
-            let values =
-                row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
-            insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
-                .await?;
-        }
-        None => {
-            return Err(ReadModelError::NotFound {
-                collection: mutation.schema.table_name,
-                id: key_fingerprint(&mutation.key),
-            });
-        }
+        Ok(())
     }
 
-    Ok(())
-}
-
-async fn delete_relational_row_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    mutation: DeleteRowMutation,
-) -> Result<(), ReadModelError> {
-    validate_key(&mutation.schema, &mutation.key)?;
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
-    validate_row_expected_version(
-        &mutation.schema,
-        &mutation.key,
-        &mutation.expected_version,
-        current_version,
-    )?;
-
-    let rows_affected = delete_relational_row_where_current_in_tx(
-        tx,
-        &mutation.schema,
-        &mutation.key,
-        current_version,
-    )
-    .await?;
-    if rows_affected == 0 {
-        if let Some(expected_version) = current_version {
-            let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
-                .await?
-                .unwrap_or(expected_version);
-            return Err(row_concurrency_conflict(
-                &mutation.schema,
-                &mutation.key,
-                expected_version,
-                actual,
-            ));
-        }
+    fn rows_affected(result: &sqlx::postgres::PgQueryResult) -> u64 {
+        result.rows_affected()
     }
 
-    Ok(())
-}
-
-async fn row_version_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-) -> Result<Option<u64>, ReadModelError> {
-    let version_column = version_column(schema)?;
-    let mut builder = QueryBuilder::<Postgres>::new("SELECT ");
-    builder.push(quote_identifier(version_column));
-    builder.push(" FROM ");
-    builder.push(quote_identifier(&schema.table_name));
-    push_postgres_key_predicates(&mut builder, schema, key)?;
-
-    let row = builder
-        .build()
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|err| read_model_storage_error("load relational row version", err))?;
-
-    row.map(|row| {
-        sqlx_read_model_u64_from_i64(
-            POSTGRES_BACKEND,
-            row.try_get::<i64, _>(version_column)
-                .map_err(|err| read_model_storage_error("decode relational row version", err))?,
-            version_column,
-        )
-    })
-    .transpose()
-}
-
-async fn insert_relational_row_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    values: &RowValues,
-    version: u64,
-) -> Result<(), ReadModelError> {
-    let version_column = version_column(schema)?;
-    let write_values = row_write_values(schema, values)?;
-    let has_write_values = !write_values.is_empty();
-    let mut builder = QueryBuilder::<Postgres>::new("INSERT INTO ");
-    builder.push(quote_identifier(&schema.table_name));
-    builder.push(" (");
-    for (index, (column, _)) in write_values.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
+    fn push_select_column(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
+        builder.push(quote_identifier(&column.column_name));
+        if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
+            builder.push("::text");
         }
+        builder.push(" AS ");
         builder.push(quote_identifier(&column.column_name));
     }
-    if has_write_values {
-        builder.push(", ");
-    }
-    builder.push(quote_identifier(version_column));
-    builder.push(") VALUES (");
-    for (index, (column, value)) in write_values.into_iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        push_postgres_row_value_bind(&mut builder, value, column)?;
-    }
-    if has_write_values {
-        builder.push(", ");
-    }
-    builder.push_bind(sqlx_read_model_i64_from_u64(
-        POSTGRES_BACKEND,
-        version,
-        version_column,
-        BIGINT_STORAGE,
-    )?);
-    builder.push(")");
 
-    builder
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| read_model_storage_error("insert relational row", err))?;
-
-    Ok(())
-}
-
-async fn update_relational_row_values_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    values: &RowValues,
-    expected_version: u64,
-    version: u64,
-) -> Result<u64, ReadModelError> {
-    let mut write_values = row_write_values(schema, values)?;
-    write_values.retain(|(column, _)| !column.primary_key);
-    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
-}
-
-async fn update_relational_patch_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    write_values: Vec<(&ColumnDef, RowValue)>,
-    expected_version: u64,
-    version: u64,
-) -> Result<u64, ReadModelError> {
-    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
-}
-
-async fn update_relational_columns_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    write_values: Vec<(&ColumnDef, RowValue)>,
-    expected_version: u64,
-    version: u64,
-) -> Result<u64, ReadModelError> {
-    let version_column = version_column(schema)?;
-    let mut builder = QueryBuilder::<Postgres>::new("UPDATE ");
-    builder.push(quote_identifier(&schema.table_name));
-    builder.push(" SET ");
-    let mut wrote_set = false;
-    for (column, value) in write_values {
-        if wrote_set {
-            builder.push(", ");
-        }
-        builder.push(quote_identifier(&column.column_name));
-        builder.push(" = ");
-        push_postgres_row_value_bind(&mut builder, value, column)?;
-        wrote_set = true;
-    }
-    if wrote_set {
-        builder.push(", ");
-    }
-    builder.push(quote_identifier(version_column));
-    builder.push(" = ");
-    builder.push_bind(sqlx_read_model_i64_from_u64(
-        POSTGRES_BACKEND,
-        version,
-        version_column,
-        BIGINT_STORAGE,
-    )?);
-    push_postgres_key_predicates(&mut builder, schema, key)?;
-    builder.push(" AND ");
-    builder.push(quote_identifier(version_column));
-    builder.push(" = ");
-    builder.push_bind(sqlx_read_model_i64_from_u64(
-        POSTGRES_BACKEND,
-        expected_version,
-        "expected version",
-        BIGINT_STORAGE,
-    )?);
-
-    let result = builder
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| read_model_storage_error("update relational row", err))?;
-    Ok(result.rows_affected())
-}
-
-async fn delete_relational_row_where_current_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    current_version: Option<u64>,
-) -> Result<u64, ReadModelError> {
-    let mut builder = QueryBuilder::<Postgres>::new("DELETE FROM ");
-    builder.push(quote_identifier(&schema.table_name));
-    push_postgres_key_predicates(&mut builder, schema, key)?;
-    if let Some(version) = current_version {
-        let version_column = version_column(schema)?;
-        builder.push(" AND ");
-        builder.push(quote_identifier(version_column));
-        builder.push(" = ");
-        builder.push_bind(sqlx_read_model_i64_from_u64(
-            POSTGRES_BACKEND,
-            version,
-            "expected version",
-            BIGINT_STORAGE,
-        )?);
-    }
-
-    let result = builder
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| read_model_storage_error("delete relational row", err))?;
-    Ok(result.rows_affected())
-}
-
-async fn load_postgres_relational_row_by_key(
-    pool: &PgPool,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-) -> Result<Option<Versioned<RowValues>>, ReadModelError> {
-    validate_key(schema, key)?;
-    let mut builder = postgres_relational_row_select(schema)?;
-    push_postgres_key_predicates(&mut builder, schema, key)?;
-    let row = builder
-        .build()
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| read_model_storage_error("load relational row", err))?;
-    row.map(|row| postgres_row_to_versioned_values(schema, &row))
-        .transpose()
-}
-
-async fn load_postgres_relationship_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    match spec.relationship.kind {
-        RelationshipKind::HasMany => {
-            load_postgres_has_many_rows(pool, root_schema, root_row, spec).await
-        }
-        RelationshipKind::BelongsTo => {
-            load_postgres_belongs_to_rows(pool, root_schema, root_row, spec).await
-        }
-        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
-            "many-to-many relationship `{}` includes are not supported yet",
-            spec.relationship.field_name
-        ))),
-    }
-}
-
-async fn load_postgres_has_many_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let target_column = column_name_for(&spec.target_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` foreign key `{}` is not a target column",
-            spec.relationship.field_name, foreign_key
-        ))
-    })?;
-    let root_column = column_name_for(root_schema, foreign_key)
-        .or_else(|| root_schema.primary_key.columns.first().cloned())
-        .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "relationship `{}` has no root key column",
-                spec.relationship.field_name
-            ))
-        })?;
-    let root_value = root_row.get(&root_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "read model `{}` root row is missing relationship key `{}`",
-            root_schema.model_name, root_column
-        ))
-    })?;
-
-    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, root_value).await
-}
-
-async fn load_postgres_belongs_to_rows(
-    pool: &PgPool,
-    root_schema: &ReadModelSchema,
-    root_row: &RowValues,
-    spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` must declare a foreign key",
-            spec.relationship.field_name
-        ))
-    })?;
-    let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "relationship `{}` foreign key `{}` is not a source column",
-            spec.relationship.field_name, foreign_key
-        ))
-    })?;
-    let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
-    let source_value = root_row.get(&source_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "read model `{}` root row is missing relationship key `{}`",
-            root_schema.model_name, source_column
-        ))
-    })?;
-
-    load_postgres_rows_matching_column(pool, &spec.target_schema, &target_column, source_value)
-        .await
-}
-
-async fn load_postgres_rows_matching_column(
-    pool: &PgPool,
-    schema: &ReadModelSchema,
-    column_name: &str,
-    value: &RowValue,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
-    let column = column_by_name(schema, column_name)?;
-    let mut builder = postgres_relational_row_select(schema)?;
-    builder.push(" WHERE ");
-    builder.push(quote_identifier(column_name));
-    builder.push(" = ");
-    push_postgres_row_value_bind(&mut builder, value.clone(), column)?;
-    push_postgres_order_by_primary_key(&mut builder, schema);
-
-    let rows = builder
-        .build()
-        .fetch_all(pool)
-        .await
-        .map_err(|err| read_model_storage_error("load relationship rows", err))?;
-
-    rows.iter()
-        .map(|row| postgres_row_to_versioned_values(schema, row))
-        .collect()
-}
-
-fn postgres_relational_row_select(
-    schema: &ReadModelSchema,
-) -> Result<QueryBuilder<Postgres>, ReadModelError> {
-    let version_column = version_column(schema)?;
-    let mut builder = QueryBuilder::<Postgres>::new("SELECT ");
-    for (index, column) in schema.columns.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        push_postgres_select_column(&mut builder, column);
-    }
-    if !schema.columns.is_empty() {
-        builder.push(", ");
-    }
-    builder.push(quote_identifier(version_column));
-    builder.push(" FROM ");
-    builder.push(quote_identifier(&schema.table_name));
-    Ok(builder)
-}
-
-fn push_postgres_select_column(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
-    builder.push(quote_identifier(&column.column_name));
-    if matches!(column.column_type, ColumnType::Json | ColumnType::Timestamp) {
-        builder.push("::text");
-    }
-    builder.push(" AS ");
-    builder.push(quote_identifier(&column.column_name));
-}
-
-fn push_postgres_order_by_primary_key(
-    builder: &mut QueryBuilder<Postgres>,
-    schema: &ReadModelSchema,
-) {
-    if schema.primary_key.columns.is_empty() {
-        return;
-    }
-    builder.push(" ORDER BY ");
-    for (index, column) in schema.primary_key.columns.iter().enumerate() {
-        if index > 0 {
-            builder.push(", ");
-        }
-        builder.push(quote_identifier(column));
-    }
-}
-
-fn postgres_row_to_versioned_values(
-    schema: &ReadModelSchema,
-    row: &PgRow,
-) -> Result<Versioned<RowValues>, ReadModelError> {
-    let mut values = RowValues::new();
-    for column in &schema.columns {
-        values.insert(column.column_name.clone(), postgres_row_value(row, column)?);
-    }
-    let version_column = version_column(schema)?;
-    let version = sqlx_read_model_u64_from_i64(
-        POSTGRES_BACKEND,
-        row.try_get::<i64, _>(version_column)
-            .map_err(|err| read_model_storage_error("decode relational row version", err))?,
-        version_column,
-    )?;
-    Ok(Versioned {
-        data: values,
-        version,
-    })
-}
-
-fn postgres_row_value(row: &PgRow, column: &ColumnDef) -> Result<RowValue, ReadModelError> {
-    Ok(match column.column_type {
-        ColumnType::Text | ColumnType::Timestamp => row
-            .try_get::<Option<String>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational text column", err))?
-            .map(RowValue::String)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Boolean => row
-            .try_get::<Option<bool>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational boolean column", err))?
-            .map(RowValue::Bool)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Integer => row
-            .try_get::<Option<i64>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational integer column", err))?
-            .map(RowValue::I64)
-            .unwrap_or(RowValue::Null),
-        ColumnType::UnsignedInteger => row
-            .try_get::<Option<i64>, _>(column.column_name.as_str())
-            .map_err(|err| {
-                read_model_storage_error("decode relational unsigned integer column", err)
-            })?
-            .map(|value| {
-                sqlx_read_model_u64_from_i64(POSTGRES_BACKEND, value, column.column_name.as_str())
+    fn row_value(row: &PgRow, column: &ColumnDef) -> Result<RowValue, ReadModelError> {
+        Ok(match column.column_type {
+            ColumnType::Text | ColumnType::Timestamp => row
+                .try_get::<Option<String>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational text column", err))?
+                .map(RowValue::String)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Boolean => row
+                .try_get::<Option<bool>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational boolean column", err))?
+                .map(RowValue::Bool)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Integer => row
+                .try_get::<Option<i64>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational integer column", err))?
+                .map(RowValue::I64)
+                .unwrap_or(RowValue::Null),
+            ColumnType::UnsignedInteger => row
+                .try_get::<Option<i64>, _>(column.column_name.as_str())
+                .map_err(|err| {
+                    read_model_storage_error("decode relational unsigned integer column", err)
+                })?
+                .map(|value| {
+                    sqlx_read_model_u64_from_i64(
+                        POSTGRES_BACKEND,
+                        value,
+                        column.column_name.as_str(),
+                    )
                     .map(RowValue::U64)
-            })
-            .transpose()?
-            .unwrap_or(RowValue::Null),
-        ColumnType::Float => row
-            .try_get::<Option<f64>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational float column", err))?
-            .map(RowValue::F64)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Bytes => row
-            .try_get::<Option<Vec<u8>>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational bytes column", err))?
-            .map(RowValue::Bytes)
-            .unwrap_or(RowValue::Null),
-        ColumnType::Json => row
-            .try_get::<Option<String>, _>(column.column_name.as_str())
-            .map_err(|err| read_model_storage_error("decode relational json column", err))?
-            .map(|payload| {
-                serde_json::from_str(&payload)
-                    .map(RowValue::Json)
-                    .map_err(|err| ReadModelError::Serde(err.to_string()))
-            })
-            .transpose()?
-            .unwrap_or(RowValue::Null),
-        ColumnType::Unsupported(ref type_name) => {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` column `{}` has unsupported type `{}`",
-                column.field_name, column.column_name, type_name
-            )));
-        }
-    })
-}
-
-fn belongs_to_target_column(
-    target_schema: &ReadModelSchema,
-    source_column: &str,
-) -> Result<String, ReadModelError> {
-    if target_schema.primary_key.columns.len() != 1 {
-        return Err(ReadModelError::Metadata(format!(
-            "belongs_to target `{}` must have a single-column primary key to load from `{}`",
-            target_schema.model_name, source_column
-        )));
-    }
-
-    Ok(target_schema.primary_key.columns[0].clone())
-}
-
-fn initial_row_version() -> u64 {
-    1
-}
-
-fn next_row_version(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    current_version: Option<u64>,
-) -> Result<u64, ReadModelError> {
-    match current_version {
-        Some(version) => version.checked_add(1).ok_or_else(|| {
-            ReadModelError::Storage(format!(
-                "read model version overflow for {}:{}",
-                schema.table_name,
-                key_fingerprint(key)
-            ))
-        }),
-        None => Ok(initial_row_version()),
-    }
-}
-
-fn validate_row_expected_version(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    expected_version: &ExpectedVersion,
-    current_version: Option<u64>,
-) -> Result<(), ReadModelError> {
-    match (expected_version, current_version) {
-        (ExpectedVersion::Any, _) => Ok(()),
-        (ExpectedVersion::Exact(expected), Some(actual)) if expected == &actual => Ok(()),
-        (ExpectedVersion::Exact(expected), Some(actual)) => {
-            Err(row_concurrency_conflict(schema, key, *expected, actual))
-        }
-        (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
-            collection: schema.table_name.clone(),
-            id: key_fingerprint(key),
-        }),
-        (ExpectedVersion::NotExists, None) => Ok(()),
-        (ExpectedVersion::NotExists, Some(actual)) => {
-            Err(row_concurrency_conflict(schema, key, 0, actual))
-        }
-    }
-}
-
-fn row_concurrency_conflict(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    expected: u64,
-    actual: u64,
-) -> ReadModelError {
-    ReadModelError::ConcurrencyConflict {
-        collection: schema.table_name.clone(),
-        id: key_fingerprint(key),
-        expected,
-        actual,
-    }
-}
-
-fn row_values_from_key_and_patch(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    patch: crate::read_model::RowPatch,
-) -> Result<RowValues, ReadModelError> {
-    let mut values = RowValues::new();
-    for (column, value) in key.iter() {
-        values.insert(column.to_string(), value.clone());
-    }
-    for (column, value) in patch.into_values() {
-        if schema
-            .primary_key
-            .columns
-            .iter()
-            .any(|primary_key| primary_key == &column)
-        {
-            let key_value = key.get(&column).ok_or_else(|| {
-                ReadModelError::Metadata(format!(
-                    "read model `{}` row key is missing primary-key column `{}`",
-                    schema.model_name, column
-                ))
-            })?;
-            if key_value != &value {
+                })
+                .transpose()?
+                .unwrap_or(RowValue::Null),
+            ColumnType::Float => row
+                .try_get::<Option<f64>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational float column", err))?
+                .map(RowValue::F64)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Bytes => row
+                .try_get::<Option<Vec<u8>>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational bytes column", err))?
+                .map(RowValue::Bytes)
+                .unwrap_or(RowValue::Null),
+            ColumnType::Json => row
+                .try_get::<Option<String>, _>(column.column_name.as_str())
+                .map_err(|err| read_model_storage_error("decode relational json column", err))?
+                .map(|payload| {
+                    serde_json::from_str(&payload)
+                        .map(RowValue::Json)
+                        .map_err(|err| ReadModelError::Serde(err.to_string()))
+                })
+                .transpose()?
+                .unwrap_or(RowValue::Null),
+            ColumnType::Unsupported(ref type_name) => {
                 return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` patch cannot change primary-key column `{}`",
-                    schema.model_name, column
+                    "read model `{}` column `{}` has unsupported type `{}`",
+                    column.field_name, column.column_name, type_name
                 )));
             }
-        }
-        values.insert(column, value);
-    }
-    validate_row_values(schema, &values, true)?;
-    validate_values_match_key(schema, key, &values)?;
-    Ok(values)
-}
-
-fn patch_values_preserving_key<'schema>(
-    schema: &'schema ReadModelSchema,
-    key: &RowKey,
-    patch: crate::read_model::RowPatch,
-) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
-    let mut values = Vec::new();
-    for (column_name, value) in patch.into_values() {
-        let column = column_by_name(schema, &column_name)?;
-        if column.primary_key {
-            let key_value = key.get(&column_name).ok_or_else(|| {
-                ReadModelError::Metadata(format!(
-                    "read model `{}` row key is missing primary-key column `{}`",
-                    schema.model_name, column_name
-                ))
-            })?;
-            if key_value != &value {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` patch cannot change primary-key column `{}`",
-                    schema.model_name, column_name
-                )));
-            }
-            continue;
-        }
-        values.push((column, value));
-    }
-    Ok(values)
-}
-
-fn validate_values_match_key(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    values: &RowValues,
-) -> Result<(), ReadModelError> {
-    for column in &schema.primary_key.columns {
-        let key_value = key.get(column).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` row key is missing primary-key column `{}`",
-                schema.model_name, column
-            ))
-        })?;
-        let row_value = values.get(column).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` row is missing primary-key column `{}`",
-                schema.model_name, column
-            ))
-        })?;
-        if row_value != key_value {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` row values cannot change primary-key column `{}`",
-                schema.model_name, column
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn row_write_values<'schema>(
-    schema: &'schema ReadModelSchema,
-    values: &RowValues,
-) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
-    values
-        .iter()
-        .map(|(column_name, value)| Ok((column_by_name(schema, column_name)?, value.clone())))
-        .collect()
-}
-
-fn column_by_name<'schema>(
-    schema: &'schema ReadModelSchema,
-    column_name: &str,
-) -> Result<&'schema ColumnDef, ReadModelError> {
-    schema
-        .columns
-        .iter()
-        .find(|column| column.column_name == column_name)
-        .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` write references missing column `{}`",
-                schema.model_name, column_name
-            ))
         })
-}
-
-fn version_column(schema: &ReadModelSchema) -> Result<&str, ReadModelError> {
-    schema.version_column.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
-            "read model `{}` requires a version column for SQL write-plan persistence",
-            schema.model_name
-        ))
-    })
-}
-
-fn push_postgres_key_predicates(
-    builder: &mut QueryBuilder<Postgres>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-) -> Result<(), ReadModelError> {
-    builder.push(" WHERE ");
-    for (index, column_name) in schema.primary_key.columns.iter().enumerate() {
-        if index > 0 {
-            builder.push(" AND ");
-        }
-        let column = column_by_name(schema, column_name)?;
-        let value = key.get(column_name).cloned().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` row key is missing primary-key column `{}`",
-                schema.model_name, column_name
-            ))
-        })?;
-        builder.push(quote_identifier(column_name));
-        builder.push(" = ");
-        push_postgres_row_value_bind(builder, value, column)?;
     }
-    Ok(())
-}
-
-fn push_postgres_row_value_bind(
-    builder: &mut QueryBuilder<Postgres>,
-    value: RowValue,
-    column: &ColumnDef,
-) -> Result<(), ReadModelError> {
-    match value {
-        RowValue::Null => push_postgres_null_bind(builder, column)?,
-        RowValue::Bool(value) => {
-            builder.push_bind(value);
-        }
-        RowValue::I64(value) => {
-            builder.push_bind(value);
-        }
-        RowValue::U64(value) => {
-            builder.push_bind(sqlx_read_model_i64_from_u64(
-                POSTGRES_BACKEND,
-                value,
-                &column.column_name,
-                BIGINT_STORAGE,
-            )?);
-        }
-        RowValue::F64(value) => {
-            builder.push_bind(value);
-        }
-        RowValue::String(value) => {
-            builder.push_bind(value);
-        }
-        RowValue::Bytes(value) => {
-            builder.push_bind(value);
-        }
-        RowValue::Json(value) => {
-            let payload = serde_json::to_string(&value)
-                .map_err(|err| ReadModelError::Serde(err.to_string()))?;
-            builder.push_bind(payload);
-        }
-    }
-    push_postgres_type_cast(builder, column);
-    Ok(())
-}
-
-fn push_postgres_null_bind(
-    builder: &mut QueryBuilder<Postgres>,
-    column: &ColumnDef,
-) -> Result<(), ReadModelError> {
-    match &column.column_type {
-        ColumnType::Text | ColumnType::Json | ColumnType::Timestamp => {
-            builder.push_bind(Option::<String>::None);
-        }
-        ColumnType::Boolean => {
-            builder.push_bind(Option::<bool>::None);
-        }
-        ColumnType::Integer | ColumnType::UnsignedInteger => {
-            builder.push_bind(Option::<i64>::None);
-        }
-        ColumnType::Float => {
-            builder.push_bind(Option::<f64>::None);
-        }
-        ColumnType::Bytes => {
-            builder.push_bind(Option::<Vec<u8>>::None);
-        }
-        ColumnType::Unsupported(type_name) => {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` column `{}` has unsupported type `{}`",
-                column.field_name, column.column_name, type_name
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn push_postgres_type_cast(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {
@@ -1975,10 +1100,6 @@ fn push_postgres_type_cast(builder: &mut QueryBuilder<Postgres>, column: &Column
         }
         _ => {}
     }
-}
-
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 async fn stream_version_in_tx(
@@ -2435,14 +1556,6 @@ fn outbox_message_from_row(row: PgRow) -> Result<OutboxMessage, RepositoryError>
         })?,
         source_sequence,
     })
-}
-
-fn empty_string_as_none(value: &str) -> Option<&str> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 async fn ensure_outbox_update_applied(
