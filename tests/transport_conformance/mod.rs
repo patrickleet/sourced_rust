@@ -471,3 +471,83 @@ pub async fn dispatcher_claims_explicit_ids_before_publish() {
         Some(OutboxMessageStatus::Pending)
     );
 }
+
+// ============================================================================
+// Broker-test helpers
+// ============================================================================
+//
+// Shared by the real-broker test mains (kafka/nats/rabbitmq/postgres), which
+// include this module the same way the in-memory harness does. The
+// per-transport scenarios stay in their own files — only the genuinely
+// identical scaffolding lives here.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-process sequence counter feeding [`unique`], so names do not collide
+/// between tests in the same run.
+static SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// A `Service` whose single handler records each message's id into `rec`;
+/// `kind` selects command vs event registration.
+pub fn recording_for(
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new();
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
+/// Like [`recording_for`], but names the service so consumer-group / queue
+/// identity is explicit (used where two replicas share a group).
+pub fn named_recording_for(
+    service_name: &str,
+    name: &str,
+    kind: MessageKind,
+    rec: Arc<Mutex<Vec<String>>>,
+) -> Arc<Service<()>> {
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    let builder = Service::new().named(service_name.to_string());
+    let registered = match kind {
+        MessageKind::Command => builder.command(leaked),
+        MessageKind::Event => builder.event(leaked),
+    };
+    Arc::new(registered.handle(move |ctx: &Context<()>| {
+        rec.lock()
+            .unwrap()
+            .push(ctx.message().id().unwrap_or_default().to_string());
+        async move { Ok(json!({})) }
+    }))
+}
+
+/// A per-process token mixing wall-clock nanos with the pid, so names are unique
+/// even across separate runs against a persistent broker.
+pub fn run_token() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+        ^ u128::from(std::process::id())
+}
+
+/// A unique subject/queue/stream name: `{prefix}_{run_token:x}_{seq}`. Both the
+/// run token and the sequence are included so names collide neither within a
+/// run nor across runs against persistent broker state.
+pub fn unique(prefix: &str) -> String {
+    format!(
+        "{prefix}_{:x}_{}",
+        run_token(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    )
+}

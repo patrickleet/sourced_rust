@@ -19,17 +19,13 @@ use async_nats::jetstream::{self, AckKind};
 use futures::StreamExt;
 
 use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{AsyncMessagePublisher, TransportError};
-use super::{Message, MessageKind};
+use super::{retryable, AsyncMessagePublisher, TransportError};
+use super::{strip_address_prefix, Message, MessageKind};
 
 /// Header carrying the stable message id (and JetStream dedup key).
 const MESSAGE_ID_HEADER: &str = "Nats-Msg-Id";
 /// Header carrying the canonical message kind.
 const MESSAGE_KIND_HEADER: &str = "X-Sourced-Kind";
-
-fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
-    TransportError::retryable(format!("{context}: {err}"))
-}
 
 /// Publishes canonical messages to a NATS JetStream subject.
 ///
@@ -80,7 +76,7 @@ impl AsyncMessagePublisher for NatsPublisher {
         if let Some(id) = message.id() {
             headers.insert(MESSAGE_ID_HEADER, id);
         }
-        headers.insert(MESSAGE_KIND_HEADER, kind_str(message.kind));
+        headers.insert(MESSAGE_KIND_HEADER, message.kind.as_str());
         for (key, value) in &message.metadata {
             headers.insert(key.as_str(), value.as_str());
         }
@@ -214,14 +210,7 @@ pub struct NatsReceived {
 
 impl NatsReceived {
     fn from_jetstream(raw: jetstream::Message, strip_prefix: Option<&str>) -> Self {
-        let subject = raw.subject.to_string();
-        let name = match strip_prefix {
-            Some(prefix) => subject
-                .strip_prefix(prefix)
-                .map(str::to_string)
-                .unwrap_or(subject),
-            None => subject,
-        };
+        let name = strip_address_prefix(raw.subject.to_string(), strip_prefix);
         let payload = raw.payload.to_vec();
         let mut id = None;
         let mut kind = MessageKind::Event;
@@ -233,7 +222,7 @@ impl NatsReceived {
                     let value = value.to_string();
                     match key.as_str() {
                         MESSAGE_ID_HEADER => id = Some(value),
-                        MESSAGE_KIND_HEADER => kind = kind_from_str(&value),
+                        MESSAGE_KIND_HEADER => kind = MessageKind::from_str_lossy(&value),
                         _ => metadata.push((key, value)),
                     }
                 }
@@ -283,19 +272,5 @@ impl ReceivedMessage for NatsReceived {
 
     async fn park(self, _reason: &str) -> Result<(), TransportError> {
         self.settle(AckKind::Term).await
-    }
-}
-
-fn kind_str(kind: MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Command => "command",
-        MessageKind::Event => "event",
-    }
-}
-
-fn kind_from_str(value: &str) -> MessageKind {
-    match value {
-        "command" => MessageKind::Command,
-        _ => MessageKind::Event,
     }
 }

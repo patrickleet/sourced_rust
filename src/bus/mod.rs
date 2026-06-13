@@ -134,10 +134,14 @@ pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 
 pub use bus::{Bus, BusConsumer};
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};
+#[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
+pub(crate) use error::retryable;
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
 pub use handlers::{AsyncMessageHandler, Handlers};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
+#[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
+pub(crate) use message::strip_address_prefix;
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use message_name::{validate_message_name, MessageNameError, MAX_MESSAGE_NAME_LEN};
 #[cfg(feature = "postgres")]

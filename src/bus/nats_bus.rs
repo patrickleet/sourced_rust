@@ -29,16 +29,12 @@ use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
 use super::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, BusTopologyConfig, MessageRouter,
-    RunOptions, TransportError,
+    retryable, run_source, AsyncMessagePublisher, Bus, BusConsumer, BusTopologyConfig,
+    MessageRouter, RunOptions, TransportError,
 };
 use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
-
-fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
-    TransportError::retryable(format!("{context}: {err}"))
-}
 
 /// NATS JetStream [`Bus`] + [`BusConsumer`]. Cheap to clone.
 #[derive(Clone)]

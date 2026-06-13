@@ -604,6 +604,55 @@ fn parse_digest_args(input: syn::parse::ParseStream) -> syn::Result<DigestArgs> 
     })
 }
 
+/// Emit the `impl distributed::Aggregate` block shared by `aggregate!` and
+/// `#[sourced]`.
+///
+/// Both entry points produce a byte-identical impl: same associated
+/// `ReplayError = String`, same `entity`/`entity_mut`/`replay_event` bodies, and
+/// the same optional `aggregate_type` and upcasters methods. Only the replay
+/// match arms differ in how they are built upstream, so this helper takes them
+/// (already rendered) along with the type name and entity field. Keeping one
+/// emitter prevents the replay semantics of the two macros from drifting.
+///
+/// It emits only the `impl` block; callers still place `#upcaster_wrappers`
+/// (the free upcaster fns) where they already do.
+fn aggregate_impl_tokens(
+    type_name: &Ident,
+    entity_field: &Ident,
+    aggregate_type_method: &Option<TokenStream2>,
+    replay_arms: &[TokenStream2],
+    upcasters_method: &TokenStream2,
+) -> TokenStream2 {
+    quote! {
+        impl distributed::Aggregate for #type_name {
+            type ReplayError = String;
+
+            #aggregate_type_method
+
+            fn entity(&self) -> &distributed::Entity {
+                &self.#entity_field
+            }
+
+            fn entity_mut(&mut self) -> &mut distributed::Entity {
+                &mut self.#entity_field
+            }
+
+            fn replay_event(
+                &mut self,
+                event: &distributed::EventRecord,
+            ) -> Result<(), Self::ReplayError> {
+                match event.event_name.as_str() {
+                    #(#replay_arms)*
+                    _ => return Err(format!("Unknown event: {}", event.event_name)),
+                }
+                Ok(())
+            }
+
+            #upcasters_method
+        }
+    }
+}
+
 // ============================================================================
 // aggregate! proc-macro
 // ============================================================================
@@ -638,51 +687,55 @@ fn expand_aggregate(input: TokenStream2) -> syn::Result<TokenStream2> {
     let entity_field = &input.entity_field;
 
     // Generate replay match arms - deserialize and call method directly
-    let replay_arms = input.events.iter().map(|evt| {
-        let event_name = &evt.event_name;
-        let method_name = &evt.method_name;
-        let args = &evt.args;
+    let replay_arms: Vec<_> = input
+        .events
+        .iter()
+        .map(|evt| {
+            let event_name = &evt.event_name;
+            let method_name = &evt.method_name;
+            let args = &evt.args;
 
-        // Determine what args to pass to the method
-        let call_args: Vec<_> = match &evt.method_args {
-            Some(method_args) => method_args.clone(),
-            None => args.clone(),
-        };
+            // Determine what args to pass to the method
+            let call_args: Vec<_> = match &evt.method_args {
+                Some(method_args) => method_args.clone(),
+                None => args.clone(),
+            };
 
-        if args.is_empty() {
-            // No payload
-            quote! {
-                #event_name => {
-                    self.#method_name().map_err(|e| e.to_string())?;
+            if args.is_empty() {
+                // No payload
+                quote! {
+                    #event_name => {
+                        self.#method_name().map_err(|e| e.to_string())?;
+                    }
+                }
+            } else if call_args.is_empty() {
+                // Event has payload but method takes no args
+                quote! {
+                    #event_name => {
+                        self.#method_name().map_err(|e| e.to_string())?;
+                    }
+                }
+            } else if args.len() == 1 {
+                // Single-element tuple needs trailing comma: (x,) not (x)
+                let arg = &args[0];
+                let call_arg = &call_args[0];
+                quote! {
+                    #event_name => {
+                        let (#arg,) = event.decode().map_err(|e| e.to_string())?;
+                        self.#method_name(#call_arg).map_err(|e| e.to_string())?;
+                    }
+                }
+            } else {
+                // Multi-element tuple
+                quote! {
+                    #event_name => {
+                        let (#(#args),*) = event.decode().map_err(|e| e.to_string())?;
+                        self.#method_name(#(#call_args),*).map_err(|e| e.to_string())?;
+                    }
                 }
             }
-        } else if call_args.is_empty() {
-            // Event has payload but method takes no args
-            quote! {
-                #event_name => {
-                    self.#method_name().map_err(|e| e.to_string())?;
-                }
-            }
-        } else if args.len() == 1 {
-            // Single-element tuple needs trailing comma: (x,) not (x)
-            let arg = &args[0];
-            let call_arg = &call_args[0];
-            quote! {
-                #event_name => {
-                    let (#arg,) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#call_arg).map_err(|e| e.to_string())?;
-                }
-            }
-        } else {
-            // Multi-element tuple
-            quote! {
-                #event_name => {
-                    let (#(#args),*) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#(#call_args),*).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    });
+        })
+        .collect();
 
     let (upcaster_wrappers, upcasters_method) =
         generate_upcaster_tokens(agg_name, &input.upcasters);
@@ -699,35 +752,17 @@ fn expand_aggregate(input: TokenStream2) -> syn::Result<TokenStream2> {
     // arbitrary `E`, and unknown-event messages) via `e.to_string()`. A typed
     // error would have to be generic over each method's error type or erase
     // them anyway, so `String` is the smaller, honest representation here.
+    let aggregate_impl = aggregate_impl_tokens(
+        agg_name,
+        entity_field,
+        &aggregate_type_method,
+        &replay_arms,
+        &upcasters_method,
+    );
     let expanded = quote! {
         #upcaster_wrappers
 
-        impl distributed::Aggregate for #agg_name {
-            type ReplayError = String;
-
-            #aggregate_type_method
-
-            fn entity(&self) -> &distributed::Entity {
-                &self.#entity_field
-            }
-
-            fn entity_mut(&mut self) -> &mut distributed::Entity {
-                &mut self.#entity_field
-            }
-
-            fn replay_event(
-                &mut self,
-                event: &distributed::EventRecord,
-            ) -> Result<(), Self::ReplayError> {
-                match event.event_name.as_str() {
-                    #(#replay_arms)*
-                    _ => return Err(format!("Unknown event: {}", event.event_name)),
-                }
-                Ok(())
-            }
-
-            #upcasters_method
-        }
+        #aggregate_impl
     };
 
     Ok(expanded)
@@ -1273,33 +1308,36 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
 
     // Generate impl Aggregate
     let entity_field = &args.entity_field;
-    let replay_arms = event_methods.iter().map(|e| {
-        let event_name_str = &e.event_name;
-        let method_name = &e.method_name;
-        if e.params.is_empty() {
-            quote! {
-                #event_name_str => {
-                    self.#method_name().map_err(|e| e.to_string())?;
+    let replay_arms: Vec<_> = event_methods
+        .iter()
+        .map(|e| {
+            let event_name_str = &e.event_name;
+            let method_name = &e.method_name;
+            if e.params.is_empty() {
+                quote! {
+                    #event_name_str => {
+                        self.#method_name().map_err(|e| e.to_string())?;
+                    }
+                }
+            } else if e.params.len() == 1 {
+                let (name, _) = &e.params[0];
+                quote! {
+                    #event_name_str => {
+                        let (#name,) = event.decode().map_err(|e| e.to_string())?;
+                        self.#method_name(#name).map_err(|e| e.to_string())?;
+                    }
+                }
+            } else {
+                let names: Vec<_> = e.params.iter().map(|(n, _)| n).collect();
+                quote! {
+                    #event_name_str => {
+                        let (#(#names),*) = event.decode().map_err(|e| e.to_string())?;
+                        self.#method_name(#(#names),*).map_err(|e| e.to_string())?;
+                    }
                 }
             }
-        } else if e.params.len() == 1 {
-            let (name, _) = &e.params[0];
-            quote! {
-                #event_name_str => {
-                    let (#name,) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#name).map_err(|e| e.to_string())?;
-                }
-            }
-        } else {
-            let names: Vec<_> = e.params.iter().map(|(n, _)| n).collect();
-            quote! {
-                #event_name_str => {
-                    let (#(#names),*) = event.decode().map_err(|e| e.to_string())?;
-                    self.#method_name(#(#names),*).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-    });
+        })
+        .collect();
 
     let (upcaster_wrappers, upcasters_method) =
         generate_upcaster_tokens(&struct_name, &args.upcasters);
@@ -1312,34 +1350,13 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
     });
 
     // ReplayError stays `String` — see the rationale on `expand_aggregate`.
-    let aggregate_impl = quote! {
-        impl distributed::Aggregate for #struct_name {
-            type ReplayError = String;
-
-            #aggregate_type_method
-
-            fn entity(&self) -> &distributed::Entity {
-                &self.#entity_field
-            }
-
-            fn entity_mut(&mut self) -> &mut distributed::Entity {
-                &mut self.#entity_field
-            }
-
-            fn replay_event(
-                &mut self,
-                event: &distributed::EventRecord,
-            ) -> Result<(), Self::ReplayError> {
-                match event.event_name.as_str() {
-                    #(#replay_arms)*
-                    _ => return Err(format!("Unknown event: {}", event.event_name)),
-                }
-                Ok(())
-            }
-
-            #upcasters_method
-        }
-    };
+    let aggregate_impl = aggregate_impl_tokens(
+        &struct_name,
+        entity_field,
+        &aggregate_type_method,
+        &replay_arms,
+        &upcasters_method,
+    );
 
     let expanded = quote! {
         #impl_block

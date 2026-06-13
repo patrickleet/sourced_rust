@@ -4,7 +4,6 @@
 //! `RabbitSource` (`basic_get`) against a broker. Skips when `AMQP_URL` is unset.
 #![cfg(feature = "rabbitmq")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use distributed::bus::{
@@ -14,18 +13,10 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use serde_json::json;
 
-static SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// A token unique to this process run, so durable queue/exchange names don't
-/// collide with state left by a previous run against the same broker.
-fn run_token() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ u128::from(std::process::id())
-}
+// Shared broker-test helpers (recording_for, named_recording_for, unique, ...).
+#[path = "../transport_conformance/mod.rs"]
+mod conformance;
+use conformance::{named_recording_for, recording_for, unique};
 
 fn amqp_url() -> Option<String> {
     match std::env::var("AMQP_URL") {
@@ -35,51 +26,6 @@ fn amqp_url() -> Option<String> {
             None
         }
     }
-}
-
-fn unique(prefix: &str) -> String {
-    format!(
-        "{prefix}_{:x}_{}",
-        run_token(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    )
-}
-
-/// Service whose single handler records the message id; `kind` picks command vs
-/// event registration.
-fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
-fn named_recording_for(
-    service_name: &str,
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
 }
 
 #[tokio::test]

@@ -16,44 +16,14 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use serde_json::json;
 
+// Shared broker-test helpers (recording_for, named_recording_for). Kafka keeps
+// its own `unique` below: it persists topics across runs and needs a nanos
+// component, unlike the run-token scheme the other transports share.
+#[path = "../transport_conformance/mod.rs"]
+mod conformance;
+use conformance::{named_recording_for, recording_for};
+
 static SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// Service whose single handler records the message id; `kind` picks command vs
-/// event registration.
-fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
-fn named_recording_for(
-    service_name: &str,
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
 
 fn brokers() -> Option<String> {
     match std::env::var("KAFKA_BROKERS") {

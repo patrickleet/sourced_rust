@@ -32,22 +32,22 @@ use crate::read_model::{
     RowValues, RowWriteMode, Versioned,
 };
 use crate::repository::{
-    CommitBatch, GetStream, InboxReceipt, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
-    TransactionalCommit,
+    reject_duplicate_outbox_messages, reject_duplicate_streams,
+    validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
+    validate_supported_event_codec, CommitBatch, GetStream, InboxReceipt, InboxStore,
+    PreparedEventAppend, ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError,
+    SnapshotStore, SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
 use crate::sqlx_repo::{
     self, audited_table_schema_sql, deserialize_event_metadata, is_postgres_unique_violation,
     read_model_i64_from_u64 as sqlx_read_model_i64_from_u64,
-    read_model_u64_from_i64 as sqlx_read_model_u64_from_i64, reject_duplicate_outbox_messages,
-    reject_duplicate_streams, repository_i32_from_u64 as sqlx_repository_i32_from_u64,
+    read_model_u64_from_i64 as sqlx_read_model_u64_from_i64,
+    repository_i32_from_u64 as sqlx_repository_i32_from_u64,
     repository_i64_from_u64 as sqlx_repository_i64_from_u64,
     repository_u16_from_i32 as sqlx_repository_u16_from_i32,
     repository_u64_from_i32 as sqlx_repository_u64_from_i32,
     repository_u64_from_i64 as sqlx_repository_u64_from_i64, serialize_event_metadata,
-    validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
-    validate_supported_event_codec,
 };
 use crate::table::{
     generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,

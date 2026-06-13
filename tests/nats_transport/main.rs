@@ -4,7 +4,6 @@
 //! JetStream-enabled NATS server. Skips when `NATS_URL` is unset.
 #![cfg(feature = "nats")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,19 +14,10 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use serde_json::json;
 
-static SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// A token unique to this process run, so stream/consumer names don't collide
-/// with state left by a previous run against the same server (the `SEQ` counter
-/// resets each process).
-fn run_token() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ u128::from(std::process::id())
-}
+// Shared broker-test helpers (recording_for, run_token, unique, ...).
+#[path = "../transport_conformance/mod.rs"]
+mod conformance;
+use conformance::{named_recording_for, recording_for, unique};
 
 fn nats_url() -> Option<String> {
     match std::env::var("NATS_URL") {
@@ -37,16 +27,6 @@ fn nats_url() -> Option<String> {
             None
         }
     }
-}
-
-/// Unique subject/stream/durable per test so JetStream state does not collide,
-/// including across separate runs against a persistent server.
-fn unique(prefix: &str) -> String {
-    format!(
-        "{prefix}_{:x}_{}",
-        run_token(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    )
 }
 
 #[tokio::test]
@@ -147,47 +127,6 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     assert_eq!(got.2, br#"{"k":"v"}"#.to_vec());
 }
 
-/// Build a service whose single handler records the message id into `rec`.
-/// `kind` selects command vs event registration.
-fn recording_service(
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
-fn named_recording_service(
-    service_name: &str,
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
-    let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
-    };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
-}
-
 /// `send` + `listen`: replicas sharing a `group` compete for the command — each
 /// message is handled exactly once across the pool (point-to-point).
 #[tokio::test]
@@ -224,8 +163,8 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600));
     let bus_b = bus_a.clone();
-    let svc_a = recording_service("order.initialize", MessageKind::Command, rec.clone());
-    let svc_b = recording_service("order.initialize", MessageKind::Command, rec.clone());
+    let svc_a = recording_for("order.initialize", MessageKind::Command, rec.clone());
+    let svc_b = recording_for("order.initialize", MessageKind::Command, rec.clone());
 
     let (ra, rb) = tokio::join!(
         bus_a.listen(svc_a, RunOptions::idempotent()),
@@ -278,7 +217,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
             .with_fetch_timeout(Duration::from_millis(600));
         let rec = Arc::new(Mutex::new(Vec::new()));
         bus.subscribe(
-            recording_service("order.initialized", MessageKind::Event, rec.clone()),
+            recording_for("order.initialized", MessageKind::Event, rec.clone()),
             RunOptions::idempotent(),
         )
         .await
@@ -317,7 +256,7 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
         .unwrap()
         .with_fetch_timeout(Duration::from_millis(600))
         .subscribe(
-            named_recording_service(
+            named_recording_for(
                 "order-projection",
                 "order.initialized",
                 MessageKind::Event,

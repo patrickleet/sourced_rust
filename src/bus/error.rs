@@ -103,6 +103,17 @@ impl TransportError {
     }
 }
 
+/// Build a retryable [`TransportError`] from an operation `context` and the
+/// failing error, formatted as `"{context}: {err}"`.
+///
+/// Transport adapters call this at every fallible step (publish, ack, decode,
+/// subscribe) so the redelivery-vs-policy decision and the message format stay
+/// consistent across NATS, Kafka, and RabbitMQ.
+#[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
+pub(crate) fn retryable(context: &str, err: impl fmt::Display) -> TransportError {
+    TransportError::retryable(format!("{context}: {err}"))
+}
+
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self.kind {

@@ -79,20 +79,6 @@ fn db_err(context: &str, err: sqlx::Error) -> TransportError {
     TransportError::retryable(format!("postgres bus {context}: {err}"))
 }
 
-fn kind_str(kind: MessageKind) -> &'static str {
-    match kind {
-        MessageKind::Command => "command",
-        MessageKind::Event => "event",
-    }
-}
-
-fn kind_from_str(value: &str) -> MessageKind {
-    match value {
-        "command" => MessageKind::Command,
-        _ => MessageKind::Event,
-    }
-}
-
 /// Reconstruct a [`Message`] from a claimed `bus_queue`/`bus_log` row.
 ///
 /// A row that fails to decode a **required** column (`name`, `kind`, `payload`)
@@ -127,7 +113,7 @@ fn message_from_row(row: &sqlx::postgres::PgRow) -> Result<Message, TransportErr
             .try_get::<Option<String>, _>("message_id")
             .unwrap_or(None),
         name,
-        kind: kind_from_str(&kind),
+        kind: MessageKind::from_str_lossy(&kind),
         payload,
         content_type: row
             .try_get("content_type")
@@ -204,7 +190,7 @@ impl PostgresBus {
         )
         .bind(&message.name)
         .bind(&message.id)
-        .bind(kind_str(message.kind))
+        .bind(message.kind.as_str())
         .bind(&message.payload)
         .bind(&message.content_type)
         .bind(metadata)
@@ -222,7 +208,7 @@ impl PostgresBus {
         )
         .bind(&message.name)
         .bind(&message.id)
-        .bind(kind_str(message.kind))
+        .bind(message.kind.as_str())
         .bind(&message.payload)
         .bind(&message.content_type)
         .bind(metadata)

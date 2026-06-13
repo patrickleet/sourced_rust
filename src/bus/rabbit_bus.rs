@@ -36,13 +36,10 @@ use lapin::{Channel, ExchangeKind};
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
 use super::source::AsyncMessageSource;
 use super::{
-    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
+    retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions,
+    TransportError,
 };
-use super::{validate_message_name, Message, MessageKind};
-
-fn retryable(context: &str, err: impl std::fmt::Display) -> TransportError {
-    TransportError::retryable(format!("{context}: {err}"))
-}
+use super::{strip_address_prefix, validate_message_name, Message, MessageKind};
 
 /// Reject a routing/binding name a wildcard would mis-bind. A `#`/`*` in a
 /// RabbitMQ topic binding key is a subscription wildcard, so an unvalidated
@@ -370,13 +367,7 @@ impl AsyncMessageSource for RabbitBusSource {
                 .map_err(|err| retryable("amqp basic_get", err))?;
             if let Some(get) = got {
                 let routing_key = get.delivery.routing_key.to_string();
-                let name = match &self.strip_prefix {
-                    Some(prefix) => routing_key
-                        .strip_prefix(prefix.as_str())
-                        .unwrap_or(&routing_key)
-                        .to_string(),
-                    None => routing_key,
-                };
+                let name = strip_address_prefix(routing_key, self.strip_prefix.as_deref());
                 return Ok(Some(RabbitReceived::from_delivery_with_name(
                     get.delivery,
                     name,
