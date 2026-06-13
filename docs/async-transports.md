@@ -208,9 +208,10 @@ on push to `main`.
 ## Status
 
 Implemented and verified: the core contracts, the source runner, the publisher /
-outbox dispatcher, the conformance harness, the Postgres / NATS / RabbitMQ /
-Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
-`BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `RabbitBus` /
-`KafkaBus` / `KnativeBus`, each with real-broker competing-vs-fan-out tests).
+outbox dispatcher, the conformance harness, the Postgres / SQLite / NATS /
+RabbitMQ / Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
+`BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `SqliteBus` /
+`RabbitBus` / `KafkaBus` / `KnativeBus`, each with competing-vs-fan-out
+integration tests against its broker or local database).
 Still open: migrating the in-repo examples to showcase these APIs. See
 `tasks/transport-docs-examples-cutover`.
