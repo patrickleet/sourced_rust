@@ -6,6 +6,9 @@
 //!
 //! ## Quick Start
 //!
+//! Dispatch is **async** — `dispatch`, `handle`, and the commit path all return
+//! futures and are awaited.
+//!
 //! ```ignore
 //! use std::sync::Arc;
 //! use distributed::{microsvc, HashMapRepository};
@@ -15,13 +18,15 @@
 //!     microsvc::Service::new().with_repo(HashMapRepository::new())
 //!         .command("order.create")
 //!         .handle(|ctx| {
-//!             let input = ctx.input::<CreateOrderInput>()?;
-//!             Ok(json!({ "id": input.id }))
+//!             let input = ctx.input::<CreateOrderInput>();
+//!             async move { Ok(json!({ "id": input?.id })) }
 //!         })
 //! );
 //!
-//! // Direct dispatch
-//! let result = service.dispatch("order.create", json!({ "id": "o1" }), microsvc::Session::new());
+//! // Direct dispatch (async)
+//! let result = service
+//!     .dispatch("order.create", json!({ "id": "o1" }), microsvc::Session::new())
+//!     .await?;
 //!
 //! // HTTP transport (requires "http" feature)
 //! // microsvc::serve(service, "0.0.0.0:3000").await?;
@@ -29,26 +34,22 @@
 //!
 //! ## Handler Convention
 //!
-//! Each handler file follows this convention:
+//! Each handler file follows this convention. `handle` is **async**:
 //!
 //! ```ignore
 //! // src/handlers/order_create.rs
 //!
 //! pub const COMMAND: &str = "order.create";
 //!
-//! pub fn guard<D>(ctx: &microsvc::Context<D>) -> bool {
+//! pub fn guard(ctx: &microsvc::Context<Repo>) -> bool {
 //!     ctx.has_fields(&["id", "product_id"])
 //! }
 //!
-//! pub fn handle<D>(ctx: &microsvc::Context<D>) -> Result<Value, microsvc::HandlerError>
-//! where
-//!     D: microsvc::HasRepo,
-//!     D::Repo: CommitAggregate,
-//! {
+//! pub async fn handle(ctx: &microsvc::Context<'_, Repo>) -> Result<Value, microsvc::HandlerError> {
 //!     let input = ctx.input::<CreateOrderInput>()?;
 //!     let mut order = Order::default();
-//!     order.create(input.id);
-//!     ctx.repo().commit_aggregate(&mut order)?;
+//!     order.create(input.id)?;
+//!     ctx.repo().commit(&mut order).await?;
 //!     Ok(json!({ "id": order.entity().id() }))
 //! }
 //! ```

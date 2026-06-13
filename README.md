@@ -39,7 +39,7 @@ A domain model is a plain Rust struct with an embedded `Entity`. `#[sourced]` tu
 its command methods into recorded, replayable events; `#[derive(Snapshot)]` adds a
 hydration cache for long streams.
 
-```rust
+```rust,ignore
 use serde::Deserialize;
 use distributed::{sourced, Entity, Snapshot};
 
@@ -84,7 +84,7 @@ Each handler is a module exporting a `COMMAND` name, a `guard`, and an **async**
 `handle`. It loads/creates the aggregate, runs a command, and commits the resulting
 events — optionally alongside a durable outbox message in the same transaction.
 
-```rust
+```rust,ignore
 // handlers/todo_create.rs
 use serde_json::{json, Value};
 use distributed::microsvc::{Context, HandlerError};
@@ -120,7 +120,7 @@ Build the service fluently from `Service::new()`, register handlers with
 `register_handlers!`, then expose the exact same service over direct dispatch,
 HTTP, gRPC, or the bus. Handlers are written once and are transport-agnostic.
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use distributed::microsvc::{self, Service, Session};
 use distributed::bus::{InMemoryBus, RunOptions};
@@ -162,7 +162,7 @@ Everything above is in-memory. Moving to production is a **constructor change**,
 a handler change — every infrastructure concern is an async trait with an in-memory
 default you replace with a durable adapter.
 
-```rust
+```rust,ignore
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 let service = distributed::register_handlers!(
@@ -284,7 +284,7 @@ Every infrastructure concern in `distributed` follows the same pattern: an **asy
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
-| Outbox publishing | `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` | Any transport publisher |
+| Outbox publishing | `AsyncMessagePublisher` (production; the extension point) — sync `OutboxPublisher` is dev/test only | `LogPublisher` (dev/test) | Any `AsyncMessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
 | Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.
@@ -297,7 +297,7 @@ Event methods are rewritten to return `SourcedResult`, even when the source meth
 
 ### Basic Usage
 
-```rust
+```rust,ignore
 use distributed::{sourced, Entity};
 
 #[derive(Default)]
@@ -326,7 +326,7 @@ impl Todo {
 
 This generates:
 
-```rust
+```rust,ignore
 // Typed event enum with named fields from method parameters
 #[derive(Debug, Clone, PartialEq)]
 pub enum TodoEvent {
@@ -349,7 +349,7 @@ impl Aggregate for Todo { /* ... */ }
 
 `Aggregate::aggregate_type()` provides the type component of a persistence stream's identity (the pair `(aggregate_type, aggregate_id)`). The default uses Rust's type name for development convenience, but **production persistence should set an explicit, stable durable name**:
 
-```rust
+```rust,ignore
 #[sourced(entity, aggregate_type = "todo")]
 impl Todo {
     // events are stored under the durable stream type "todo"
@@ -360,7 +360,7 @@ impl Todo {
 
 The generated enum enables exhaustive matching — if you add or remove an event, the compiler tells you everywhere that needs updating:
 
-```rust
+```rust,ignore
 use distributed::EventRecord;
 
 fn print_todo_event(record: &EventRecord) -> Result<(), String> {
@@ -377,7 +377,7 @@ fn print_todo_event(record: &EventRecord) -> Result<(), String> {
 
 ### Custom Enum Name
 
-```rust
+```rust,ignore
 #[sourced(entity, events = "TodoCommand")]
 impl Todo {
     // generates TodoCommand enum instead of TodoEvent
@@ -388,7 +388,7 @@ impl Todo {
 
 Create events at a specific version for [upcasting](#event-upcasting--versioning):
 
-```rust
+```rust,ignore
 type InitV1 = (String, String);
 type InitV2 = (String, String, u8);
 
@@ -414,7 +414,7 @@ impl TodoV2 {
 
 ### Custom Entity Field
 
-```rust
+```rust,ignore
 #[sourced(my_entity)]
 impl MyAggregate {
     #[event("initialized")]
@@ -428,7 +428,7 @@ impl MyAggregate {
 
 Add `enqueue` to `#[sourced]` to automatically queue events for in-process emission alongside digest. Every `#[event]` method both records to the entity stream and enqueues for emission:
 
-```rust
+```rust,ignore
 use distributed::{sourced, Entity};
 use distributed::emitter::EntityEmitter;
 
@@ -456,7 +456,7 @@ impl Order {
 
 **Custom emitter field** — when your emitter field isn't named `emitter`:
 
-```rust
+```rust,ignore
 #[sourced(entity, enqueue(my_emitter))]
 impl Notifier {
     #[event("sent")]
@@ -473,7 +473,7 @@ The `#[digest]` and `aggregate!()` macros are the lower-level building blocks th
 
 ### The `#[digest]` Macro
 
-```rust
+```rust,ignore
 // Basic — captures function parameters
 #[digest("initialized")]
 fn initialize(&mut self, id: String, user_id: String, task: String) {
@@ -501,7 +501,7 @@ fn create(&mut self, name: String) { /* uses self.my_entity */ }
 
 Generates the `Aggregate` trait implementation with replay logic:
 
-```rust
+```rust,ignore
 aggregate!(Todo, entity, aggregate_type = "todo" {
     "initialized"(id, user_id, task) => initialize,
     "completed"() => complete(),
@@ -510,7 +510,7 @@ aggregate!(Todo, entity, aggregate_type = "todo" {
 
 With [upcasters](#event-upcasting--versioning) for event schema evolution:
 
-```rust
+```rust,ignore
 type InitV1 = (String, String);
 type InitV2 = (String, String, u8);
 
@@ -534,7 +534,7 @@ Metadata lets you attach cross-cutting context — correlation IDs, causation ID
 
 Set metadata on the entity before calling command methods. Every event produced by `#[event]` or `#[digest]` automatically inherits it:
 
-```rust
+```rust,ignore
 let mut todo = Todo::default();
 
 todo.entity.set_correlation_id("req-abc-123");
@@ -552,7 +552,7 @@ Entity metadata is **transient** — it is not serialized with the entity. It is
 
 Use `encode_for_entity` to create outbox messages that automatically inherit the entity's metadata context:
 
-```rust
+```rust,ignore
 let outbox = OutboxMessage::encode_for_entity(
     format!("{}:created", order.entity.id()),
     "order.initialized",
@@ -577,7 +577,7 @@ Framework-derived metadata (codec, destination, source aggregate) is namespaced 
 
 ### Reading Metadata
 
-```rust
+```rust,ignore
 // On EventRecord (event store)
 event_record.correlation_id()  // Option<&str>
 event_record.causation_id()
@@ -596,7 +596,7 @@ The `emitter` feature (enabled by default) adds in-process event-driven choreogr
 
 Every `#[event]` method automatically records to the entity stream (for replay) and enqueues for in-process emission:
 
-```rust
+```rust,ignore
 use serde::{Deserialize, Serialize};
 use distributed::{sourced, Entity};
 use distributed::emitter::EntityEmitter;
@@ -630,7 +630,7 @@ impl OrderSaga {
 
 Queued events are held until you explicitly emit them after a successful commit:
 
-```rust
+```rust,ignore
 let mut saga = OrderSaga::default();
 saga.start("order-1".into())?;
 
@@ -643,7 +643,7 @@ saga.emitter.emit_queued();
 
 ### Registering Listeners
 
-```rust
+```rust,ignore
 let shared_state = Arc::new(Mutex::new(Vec::new()));
 let state = Arc::clone(&shared_state);
 
@@ -660,7 +660,7 @@ This pattern is useful for reactive workflows within the same process. For cross
 
 Per-entity async locking for serialized workflows. `get` acquires the lock, `commit` releases it:
 
-```rust
+```rust,ignore
 use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
 let repo = HashMapRepository::new().queued().aggregate::<Todo>();
@@ -683,7 +683,7 @@ on restart. For **cross-process** serialization, back the queue with a durable
 SQLx lease lock (feature `postgres` or `sqlite`). It implements the same
 `AsyncLockManager` trait, so it's a drop-in via `queued_with`:
 
-```rust
+```rust,ignore
 use distributed::{PostgresLockManager, PostgresRepository};
 
 let repo = PostgresRepository::connect_and_migrate(&database_url).await?;
@@ -708,7 +708,7 @@ event streams, relational read-model write plans, processed-message marks,
 snapshots, and outbox rows — staging everything through one SQL transaction when
 committed via `CommitBatch`.
 
-```rust
+```rust,ignore
 // SQLite — local persistence and conformance (requires `sqlite`)
 let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
 
@@ -728,7 +728,7 @@ read models, the outbox, **and** the durable transport (`PostgresBus`). See
 
 Each outbox message is a durable delivery row committed alongside your domain entity. Aggregate event records are write-side replay history; they become domain events, integration events, commands, or transport messages only when application code creates an `OutboxMessage` for that purpose.
 
-```rust
+```rust,ignore
 use distributed::OutboxMessage;
 
 let mut todo = Todo::default();
@@ -744,7 +744,7 @@ repo.outbox(message).commit(&mut todo).await?;
 
 For custom payloads or IDs, use `encode_for_entity`:
 
-```rust
+```rust,ignore
 let message = OutboxMessage::encode_for_entity(
     format!("{}:init", todo.entity.id()),
     "todo.initialized",
@@ -769,7 +769,7 @@ The polling worker is the durable backstop in both cases. It is the same
 `OutboxDispatcher` primitive composed with your runtime's timer — run it in the
 service process or as a separate worker, against the same outbox store:
 
-```rust
+```rust,ignore
 use distributed::{BusPublisher, OutboxDispatcher};
 use std::{sync::Arc, time::Duration};
 
@@ -803,7 +803,7 @@ two messaging patterns through two traits:
 A concrete `*Bus` implements both, so the **application surface is identical across
 transports; only the constructor line changes.**
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 
@@ -868,7 +868,7 @@ role-based `Broker` + per-name `Trigger` YAML, and the service mounts
 carries a `FailurePolicy` controlling what happens to a **permanent** handler
 failure — `Retry`, `DeadLetter`, `Park`, `LogAndAck`, or `Stop`:
 
-```rust
+```rust,ignore
 use distributed::bus::{FailurePolicy, RunOptions};
 
 bus.listen(
@@ -895,7 +895,7 @@ A `Service<D>` is generic over a dependency type `D` that handlers read via `ctx
 
 Handlers are registered with a fluent builder. `.command(name)` / `.event(name)` start a registration; `.handle(closure)` adds an unguarded handler and `.guarded(guard, closure)` adds a guarded one. The handler closure receives `&Context<D>` and returns a future:
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use distributed::microsvc::{Context, HandlerError, Service, Session};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
@@ -938,7 +938,7 @@ let _result = service
 
 `.guarded(guard, handler)` runs the guard before the handler — if it returns `false`, the command is rejected:
 
-```rust
+```rust,ignore
 service
     .command("admin.reset")
     .guarded(
@@ -951,7 +951,7 @@ service
 
 For larger services, organize handlers into separate files. Each handler module exports a `COMMAND` (or `EVENT` / `EVENTS`) name, a `guard`, and an async `handle`:
 
-```rust
+```rust,ignore
 // src/handlers/counter_create.rs
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -989,7 +989,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
 Register them with the `register_handlers!` macro:
 
-```rust
+```rust,ignore
 let service = distributed::register_handlers!(
     Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
     command handlers::counter_create,
@@ -1003,7 +1003,7 @@ Event projection handlers use `EVENT` / `EVENTS` and `event handlers::...` in th
 
 The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session` verbatim — including `x-hasura-*` identity headers, which the framework does **not** authenticate. Deploy behind a trusted proxy that strips client-supplied identity headers and injects authenticated ones (see [Security / Trust Boundary](#security--trust-boundary)).
 
-```rust
+```rust,ignore
 use std::sync::Arc;
 use distributed::microsvc;
 
@@ -1034,7 +1034,7 @@ curl http://localhost:3000/health
 
 The `grpc` feature adds a tonic-based gRPC transport using standard protobuf wire format (no `.proto` file needed):
 
-```rust
+```rust,ignore
 // Get a CommandServiceServer to compose with other tonic routes
 let grpc_svc = microsvc::grpc_server(service.clone());
 
@@ -1109,7 +1109,7 @@ Read models are query-optimized relational projections derived from aggregates, 
 
 ### Defining a Read Model
 
-```rust
+```rust,ignore
 use serde::{Deserialize, Serialize};
 use distributed::ReadModel;
 
@@ -1129,7 +1129,7 @@ pub struct GameView {
 
 When the response to a command must include the fully consistent, updated view, commit the aggregate and read model together in one transaction:
 
-```rust
+```rust,ignore
 use distributed::{ReadModelWritePlanCommitExt, ReadModelWritePlanBuilder};
 
 // Player submits a move
@@ -1148,7 +1148,7 @@ repo.read_models(read_models).commit(&mut game).await?;
 
 For related rows, build the same structured write plan:
 
-```rust
+```rust,ignore
 let mut read_models = ReadModelWritePlanBuilder::new();
 read_models.upsert(&player_view)?;
 read_models.upsert_related(&player_view, "weapons", &weapon_view)?;
@@ -1161,7 +1161,7 @@ This is a deliberate consistency tradeoff: the read model is in sync with the ag
 
 Distributed projectors subscribe to published messages and commit read-model rows through a workspace, marking the message processed in the same adapter transaction for SQL idempotency:
 
-```rust
+```rust,ignore
 use distributed::ReadModelWorkspaceExt;
 
 let mut workspace = ctx.read_model_store().workspace();
@@ -1171,7 +1171,7 @@ workspace.commit().await?;
 
 ### Loading
 
-```rust
+```rust,ignore
 use distributed::{ReadModelWorkspaceExt, RowKey, RowValue};
 
 let loaded = repo
@@ -1191,7 +1191,7 @@ As aggregates accumulate events, replaying from scratch gets expensive. The fram
 
 Add `#[derive(Snapshot)]` to your aggregate struct. This generates a state snapshot payload DTO (e.g. `TodoSnapshot`), a `fn snapshot()` method, and the full `impl Snapshottable`:
 
-```rust
+```rust,ignore
 use distributed::{Entity, Snapshot};
 
 #[derive(Default, Snapshot)]
@@ -1207,7 +1207,7 @@ Fields with `#[serde(skip)]` (like `emitter: EntityEmitter`) are automatically e
 
 **Custom ID key** — when the entity ID maps to a domain field like `sku`:
 
-```rust
+```rust,ignore
 #[derive(Default, Snapshot)]
 #[snapshot(id = "sku")]
 struct Inventory {
@@ -1219,7 +1219,7 @@ struct Inventory {
 
 **Custom entity field name**:
 
-```rust
+```rust,ignore
 #[derive(Default, Snapshot)]
 #[snapshot(entity = "my_entity")]
 struct Widget {
@@ -1232,7 +1232,7 @@ struct Widget {
 
 Chain `.with_snapshots(frequency)` onto any aggregate repository. The frequency is how many events between automatic snapshots:
 
-```rust
+```rust,ignore
 use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
 
 let repo = HashMapRepository::new()
@@ -1265,7 +1265,7 @@ Event schemas evolve over time. When you add a field to an event (e.g., `priorit
 
 An upcaster is a plain function that converts a typed payload from one version to the next. The crate handles payload decoding and encoding:
 
-```rust
+```rust,ignore
 type InitV1 = (String, String);
 type InitV2 = (String, String, u8);
 
@@ -1279,7 +1279,7 @@ fn upcast_init_v1_v2((id, task): InitV1) -> InitV2 {
 
 With `#[sourced]`, add upcasters directly in the attribute:
 
-```rust
+```rust,ignore
 #[sourced(entity, upcasters(
     ("initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
 ))]
@@ -1304,7 +1304,7 @@ Old events stored as `(id, task)` at v1 are transparently upcast to `(id, task, 
 
 Upcasters chain automatically. Each transforms one version to the next (v1→v2→v3):
 
-```rust
+```rust,ignore
 #[sourced(entity, upcasters(
     ("initialized", 1 => 2, InitV1 => InitV2, upcast_init_v1_v2),
     ("initialized", 2 => 3, InitV2 => InitV3, upcast_init_v2_v3),
@@ -1340,7 +1340,7 @@ dsvc schema --dialect postgres           # render migration SQL
 entrypoint (override with `--entrypoint`), which registers the [read
 models](#read-models) and tables that define the schema:
 
-```rust
+```rust,ignore
 pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
     distributed::DistributedProjectManifest::new("orders").read_model::<OrderView>()
 }
@@ -1364,7 +1364,7 @@ reference: [`distributed_cli/README.md`](distributed_cli/README.md).
 
 ## Project Structure
 
-```
+```text
 src/
   aggregate/      # Aggregate trait, hydration, async aggregate repository helpers
   commit_builder/ # Async transactional batches for aggregates, outbox, and read models

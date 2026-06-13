@@ -51,6 +51,7 @@ pub struct Versioned<T> {
 
 /// Error type for read model store operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReadModelError {
     /// Optimistic concurrency conflict.
     ConcurrencyConflict {

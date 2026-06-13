@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    generate_table_migration_artifacts, table_schema_statements, ReadModelError,
-    ReadModelMigrationArtifact, RelationalReadModel, TableSchema, TableSchemaRegistry,
+use crate::table::{
+    generate_table_migration_artifacts, table_schema_statements, TableSchema, TableSchemaRegistry,
     TableSqlDialect,
 };
+use crate::{ReadModelError, ReadModelMigrationArtifact, RelationalReadModel};
 
 pub const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
 

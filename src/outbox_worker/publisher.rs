@@ -5,7 +5,31 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "emitter")]
 use crate::EventEmitter;
 
-/// Trait for publishing outbox records to external systems.
+/// Synchronous publisher trait used by the in-process [`OutboxWorker`] — a
+/// **dev/test** drain loop.
+///
+/// # Which publisher path to use
+///
+/// This crate has two outbox-publishing paths, and they are not parallel
+/// hierarchies — they sit at different layers:
+///
+/// - **Production / the extension point: [`AsyncMessagePublisher`]**. The async
+///   [`OutboxDispatcher`] drains durable rows and publishes them through an
+///   `AsyncMessagePublisher`. [`BusPublisher`] adapts any [`Bus`] into one, and
+///   `service.with_bus(bus)` wires this path automatically so
+///   `repo.outbox(msg).commit(agg)` publishes on commit. Implement
+///   `AsyncMessagePublisher` to plug in a custom transport.
+/// - **Dev/test only: this trait + [`OutboxWorker`] + [`LogPublisher`]**. A
+///   synchronous, in-process processor with no async runtime and no real
+///   transport. Useful in unit tests and examples that just need to observe
+///   that rows drain; not the production drain path.
+///
+/// [`AsyncMessagePublisher`]: crate::bus::AsyncMessagePublisher
+/// [`OutboxDispatcher`]: crate::OutboxDispatcher
+/// [`BusPublisher`]: crate::BusPublisher
+/// [`Bus`]: crate::bus::Bus
+/// [`OutboxWorker`]: crate::OutboxWorker
+/// [`LogPublisher`]: crate::LogPublisher
 pub trait OutboxPublisher {
     type Error: fmt::Display;
 
@@ -35,7 +59,13 @@ impl fmt::Display for LogPublisherError {
 
 impl std::error::Error for LogPublisherError {}
 
-/// A simple publisher that logs events to stdout or a buffer.
+/// A simple **dev/test** publisher that logs events to stdout or a buffer.
+///
+/// It is the in-memory default for the synchronous [`OutboxPublisher`] /
+/// [`OutboxWorker`] processor. For production publishing implement
+/// [`AsyncMessagePublisher`](crate::bus::AsyncMessagePublisher) (or use
+/// [`BusPublisher`](crate::BusPublisher) over a real [`Bus`](crate::bus::Bus));
+/// see [`OutboxPublisher`] for the full comparison of the two paths.
 pub struct LogPublisher {
     buffer: Option<Arc<Mutex<Vec<String>>>>,
 }

@@ -28,10 +28,21 @@ pub struct ProcessOneResult {
     pub failed: bool,
 }
 
-/// Worker for processing outbox messages.
+/// Synchronous, in-process worker for processing outbox messages — a **dev/test**
+/// drain loop.
 ///
 /// The repository is responsible for claiming pending messages. The worker
-/// processes messages that are already loaded and (optionally) claimed.
+/// processes messages that are already loaded and (optionally) claimed via a
+/// synchronous [`OutboxPublisher`].
+///
+/// For the production drain path use the async [`OutboxDispatcher`] with an
+/// [`AsyncMessagePublisher`] (e.g. [`BusPublisher`] over a real [`Bus`]); see
+/// [`OutboxPublisher`] for the full comparison.
+///
+/// [`OutboxDispatcher`]: crate::OutboxDispatcher
+/// [`AsyncMessagePublisher`]: crate::bus::AsyncMessagePublisher
+/// [`BusPublisher`]: crate::BusPublisher
+/// [`Bus`]: crate::bus::Bus
 pub struct OutboxWorker<P> {
     publisher: P,
     worker_id: String,

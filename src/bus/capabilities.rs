@@ -12,6 +12,7 @@
 /// How a consumer acknowledges successful handler execution back to its
 /// transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum ConsumerAckKind {
     /// Complete / delete / archive a durable table row (Postgres).
     TableRow,
@@ -29,6 +30,7 @@ pub enum ConsumerAckKind {
 
 /// How a transport integrates with Knative Eventing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum KnativeIntegrationKind {
     /// First-class Knative Eventing path (Kafka and RabbitMQ Broker/Source,
     /// Knative HTTP CloudEvents).
@@ -54,6 +56,7 @@ pub enum KnativeIntegrationKind {
 /// owns retry, backoff, and dead-lettering) from direct transports where the
 /// adapter and this crate own that operational contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct TransportCapabilities {
     /// The transport durably stores received messages until acknowledged (a
     /// table, queue, stream, or broker), rather than relying on a live process
@@ -72,6 +75,30 @@ pub struct TransportCapabilities {
 }
 
 impl TransportCapabilities {
+    /// Build a custom capability profile for a third-party transport.
+    ///
+    /// The named constructors below cover the transports this crate ships;
+    /// `new` lets an external adapter declare its own profile. It is the
+    /// supported construction path now that the struct is `#[non_exhaustive]`
+    /// (an external crate can no longer use a struct literal). New optional
+    /// dimensions added later default to a conservative value through this
+    /// constructor rather than breaking callers.
+    pub const fn new(
+        durable_receive: bool,
+        publish_confirm: bool,
+        platform_managed_retry: bool,
+        consumer_ack: ConsumerAckKind,
+        knative_integration: KnativeIntegrationKind,
+    ) -> Self {
+        Self {
+            durable_receive,
+            publish_confirm,
+            platform_managed_retry,
+            consumer_ack,
+            knative_integration,
+        }
+    }
+
     /// Postgres: durable table-backed transport, transaction-commit publish
     /// confirmation, app-owned retry, row-completion ack, custom Knative bridge.
     pub const fn postgres() -> Self {

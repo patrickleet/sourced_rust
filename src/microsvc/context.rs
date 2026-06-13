@@ -21,12 +21,13 @@ use crate::bus::Message;
 /// ## Example
 ///
 /// ```ignore
-/// pub fn handle<D: HasRepo>(
-///     ctx: &Context<D>,
+/// pub async fn handle(
+///     ctx: &Context<'_, Repo>,
 /// ) -> Result<Value, HandlerError> {
 ///     let user_id = ctx.user_id()?;
 ///     let input = ctx.input::<CreateOrderInput>()?;
 ///     let repo = ctx.repo();
+///     // ... commit via repo.commit(&mut agg).await? ...
 /// }
 /// ```
 pub struct Context<'a, D> {
