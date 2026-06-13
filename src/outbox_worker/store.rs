@@ -94,44 +94,41 @@ impl OutboxClaimRef {
 }
 
 /// Async store capability for claiming and updating durable outbox messages.
-pub trait AsyncOutboxStore: Send + Sync {
-    fn messages_by_status_async(
+pub trait OutboxStore: Send + Sync {
+    fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_;
 
-    fn pending_async(
+    fn pending(
         &self,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
-        async move {
-            self.messages_by_status_async(OutboxMessageStatus::Pending)
-                .await
-        }
+        async move { self.messages_by_status(OutboxMessageStatus::Pending).await }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a;
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn release_async<'a>(
-        &'a self,
-        claim: &'a OutboxClaimRef,
-        error: &'a str,
-    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
-
-    fn fail_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
-    fn record_failure_async<'a>(
+    fn fail<'a>(
+        &'a self,
+        claim: &'a OutboxClaimRef,
+        error: &'a str,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
+
+    fn record_failure<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
@@ -139,10 +136,10 @@ pub trait AsyncOutboxStore: Send + Sync {
     ) -> impl Future<Output = Result<OutboxPublishFailureAction, RepositoryError>> + Send + 'a {
         async move {
             if claim.attempt >= max_attempts {
-                self.fail_async(claim, error).await?;
+                self.fail(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Failed)
             } else {
-                self.release_async(claim, error).await?;
+                self.release(claim, error).await?;
                 Ok(OutboxPublishFailureAction::Released)
             }
         }
@@ -237,8 +234,8 @@ impl HashMapOutboxStore {
     }
 }
 
-impl AsyncOutboxStore for HashMapOutboxStore {
-    fn messages_by_status_async(
+impl OutboxStore for HashMapOutboxStore {
+    fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
@@ -258,7 +255,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
@@ -303,7 +300,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
@@ -316,7 +313,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn release_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
@@ -330,7 +327,7 @@ impl AsyncOutboxStore for HashMapOutboxStore {
         }
     }
 
-    fn fail_async<'a>(
+    fn fail<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
@@ -380,7 +377,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-2",
                 1,
                 Duration::from_secs(60),
@@ -409,7 +406,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-2",
                 1,
                 Duration::from_secs(60),
@@ -435,7 +432,7 @@ mod tests {
 
         let claimed = repo
             .outbox_store()
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -467,7 +464,7 @@ mod tests {
 
         let claimed = repo
             .outbox_store()
-            .claim_async(ClaimOutboxMessages::for_ids(
+            .claim(ClaimOutboxMessages::for_ids(
                 "worker-1",
                 vec!["msg-b".to_string(), "msg-c".to_string()],
                 Duration::from_secs(60),
@@ -498,7 +495,7 @@ mod tests {
         // not an error.
         let claimed = repo
             .outbox_store()
-            .claim_async(ClaimOutboxMessages::for_ids(
+            .claim(ClaimOutboxMessages::for_ids(
                 "worker-1",
                 vec!["msg-a".to_string(), "missing".to_string()],
                 Duration::from_secs(60),
@@ -545,7 +542,7 @@ mod tests {
         let worker_a = thread::spawn(move || {
             barrier_a.wait();
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(store_a.claim_async(ClaimOutboxMessages::new(
+            rt.block_on(store_a.claim(ClaimOutboxMessages::new(
                 "worker-a",
                 1,
                 Duration::from_secs(60),
@@ -556,7 +553,7 @@ mod tests {
         let worker_b = thread::spawn(move || {
             barrier_b.wait();
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(store_b.claim_async(ClaimOutboxMessages::new(
+            rt.block_on(store_b.claim(ClaimOutboxMessages::new(
                 "worker-b",
                 1,
                 Duration::from_secs(60),
@@ -582,7 +579,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -591,7 +588,7 @@ mod tests {
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
         let action = store
-            .record_failure_async(&claim, "first failure", 2)
+            .record_failure(&claim, "first failure", 2)
             .await
             .unwrap();
         assert_eq!(action, OutboxPublishFailureAction::Released);
@@ -602,7 +599,7 @@ mod tests {
         assert_eq!(stored.last_error.as_deref(), Some("first failure"));
 
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -611,7 +608,7 @@ mod tests {
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
         let action = store
-            .record_failure_async(&claim, "second failure", 2)
+            .record_failure(&claim, "second failure", 2)
             .await
             .unwrap();
         assert_eq!(action, OutboxPublishFailureAction::Failed);
@@ -635,13 +632,11 @@ mod tests {
         };
 
         let is_missing = |err: RepositoryError| matches!(&err, RepositoryError::NotFound { id } if id == "missing");
-        assert!(is_missing(store.complete_async(&claim).await.unwrap_err()));
+        assert!(is_missing(store.complete(&claim).await.unwrap_err()));
         assert!(is_missing(
-            store.release_async(&claim, "error").await.unwrap_err()
+            store.release(&claim, "error").await.unwrap_err()
         ));
-        assert!(is_missing(
-            store.fail_async(&claim, "error").await.unwrap_err()
-        ));
+        assert!(is_missing(store.fail(&claim, "error").await.unwrap_err()));
     }
 
     #[tokio::test]
@@ -652,7 +647,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -661,7 +656,7 @@ mod tests {
             .unwrap();
         let mut claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
         claim.worker_id = "worker-2".into();
-        let err = store.complete_async(&claim).await.unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
 
         let mut expired = OutboxMessage::create("msg-2", "Event", b"{}".to_vec()).unwrap();
@@ -671,7 +666,7 @@ mod tests {
         let expired_id = store_message(&repo, expired).await;
         let expired = load_message(&repo, &expired_id);
         let claim = OutboxClaimRef::from_message(&expired).unwrap();
-        let err = store.complete_async(&claim).await.unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
     }
 
@@ -683,7 +678,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -691,10 +686,10 @@ mod tests {
             .await
             .unwrap();
         let stale_claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        store.release_async(&stale_claim, "retry").await.unwrap();
+        store.release(&stale_claim, "retry").await.unwrap();
 
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -703,9 +698,9 @@ mod tests {
             .unwrap();
         let current_claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
 
-        let err = store.complete_async(&stale_claim).await.unwrap_err();
+        let err = store.complete(&stale_claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
-        store.complete_async(&current_claim).await.unwrap();
+        store.complete(&current_claim).await.unwrap();
     }
 
     #[tokio::test]
@@ -716,7 +711,7 @@ mod tests {
 
         let store = repo.outbox_store();
         let claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "worker-1",
                 1,
                 Duration::from_secs(60),
@@ -724,9 +719,9 @@ mod tests {
             .await
             .unwrap();
         let claim = OutboxClaimRef::from_message(&claimed[0]).unwrap();
-        store.complete_async(&claim).await.unwrap();
+        store.complete(&claim).await.unwrap();
 
-        let err = store.complete_async(&claim).await.unwrap_err();
+        let err = store.complete(&claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
     }
 }

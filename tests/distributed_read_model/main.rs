@@ -26,7 +26,7 @@ use distributed::microsvc::{Context, Service, Session};
 #[cfg(feature = "sqlite")]
 use distributed::SqliteRepository;
 use distributed::{
-    AggregateBuilder, AsyncOutboxStore, CommitBuilderExt, GetStream, OutboxMessage, ReadModelError,
+    AggregateBuilder, CommitBuilderExt, GetStream, OutboxMessage, OutboxStore, ReadModelError,
     ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
     RelationalReadModelIncludes, RelationalReadModelQueryStore, TransactionalCommit,
 };
@@ -87,8 +87,8 @@ async fn run_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(
         + Send
         + Sync
         + 'static,
-    CheckoutOutbox: AsyncOutboxStore + Send + Sync,
-    SeatOutbox: AsyncOutboxStore + Send + Sync,
+    CheckoutOutbox: OutboxStore + Send + Sync,
+    SeatOutbox: OutboxStore + Send + Sync,
 {
     let seat_added = add_seat(&seat_repo, &ids.seat_id, &ids.category).await;
     assert_pending(&seat_outbox, &seat_added).await;
@@ -367,10 +367,10 @@ where
 #[allow(dead_code)]
 async fn assert_pending<S>(store: &S, message: &OutboxMessage)
 where
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let pending = store
-        .pending_async()
+        .pending()
         .await
         .expect("pending outbox messages should load");
     assert!(
@@ -455,7 +455,7 @@ async fn publish_pending_outbox(
     bus: &distributed::bus::InMemoryBus,
 ) {
     let claimed = outbox
-        .claim_async(distributed::ClaimOutboxMessages::new(
+        .claim(distributed::ClaimOutboxMessages::new(
             "matrix-outbox-bridge",
             64,
             Duration::from_secs(60),
@@ -475,7 +475,7 @@ async fn publish_pending_outbox(
         let claim = distributed::OutboxClaimRef::from_message(&message)
             .expect("claimed message should yield a claim ref");
         outbox
-            .complete_async(&claim)
+            .complete(&claim)
             .await
             .expect("forwarded outbox message should complete");
     }

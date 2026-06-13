@@ -2,10 +2,10 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use distributed::{
-    AggregateBuilder, AsyncLock, AsyncLockManager, AsyncOutboxStore, ClaimOutboxMessages,
-    CommitBuilderExt, DrainResult, EventEmitter, HashMapRepository, LocalEmitterPublisher,
-    LogPublisher, OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher,
-    OutboxWorker, Queueable, RepositoryError,
+    AggregateBuilder, AsyncLock, AsyncLockManager, ClaimOutboxMessages, CommitBuilderExt,
+    DrainResult, EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
+    OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher, OutboxStore, OutboxWorker,
+    Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -44,7 +44,7 @@ async fn claim_and_process<P: OutboxPublisher>(
 ) -> (DrainResult, Vec<OutboxMessage>, Vec<OutboxClaimRef>) {
     let mut claimed = repo
         .outbox_store()
-        .claim_async(ClaimOutboxMessages::new(
+        .claim(ClaimOutboxMessages::new(
             worker_id,
             batch_size,
             Duration::from_secs(30),
@@ -56,7 +56,7 @@ async fn claim_and_process<P: OutboxPublisher>(
         .map(OutboxClaimRef::from_message)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let result = worker.process_batch(&mut claimed).unwrap();
+    let result = worker.process_batch(&mut claimed).await.unwrap();
     (result, claimed, claims)
 }
 
@@ -68,7 +68,7 @@ async fn complete_published_outbox(
     let store = repo.outbox_store();
     for (message, claim) in messages.iter().zip(claims) {
         if message.is_published() {
-            store.complete_async(claim).await.unwrap();
+            store.complete(claim).await.unwrap();
         }
     }
 }
@@ -82,7 +82,7 @@ async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessag
         OutboxMessageStatus::Failed,
     ] {
         if let Some(message) = store
-            .messages_by_status_async(status)
+            .messages_by_status(status)
             .await
             .unwrap()
             .into_iter()
@@ -109,13 +109,7 @@ async fn todos() {
 
     // Verify the outbox event was captured
     {
-        let pending = repo
-            .repo()
-            .inner()
-            .outbox_store()
-            .pending_async()
-            .await
-            .unwrap();
+        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "todo.initialized");
     }
@@ -136,13 +130,7 @@ async fn todos() {
         .expect("completed todo outbox commit should succeed");
 
     {
-        let pending = repo
-            .repo()
-            .inner()
-            .outbox_store()
-            .pending_async()
-            .await
-            .unwrap();
+        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
         assert_eq!(pending.len(), 2);
         assert!(pending
             .iter()
@@ -240,7 +228,7 @@ async fn outbox_records_persisted() {
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Check pending outbox messages
-    let pending = repo.outbox_store().pending_async().await.unwrap();
+    let pending = repo.outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "todo.initialized");
 
@@ -556,7 +544,7 @@ async fn outbox_worker_process_next_with_commit() {
     loop {
         let store = repo.outbox_store();
         let mut claimed = store
-            .claim_async(ClaimOutboxMessages::new(
+            .claim(ClaimOutboxMessages::new(
                 "safe-worker",
                 1,
                 Duration::from_secs(30),
@@ -571,7 +559,7 @@ async fn outbox_worker_process_next_with_commit() {
             .map(OutboxClaimRef::from_message)
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        let result = worker.process_batch(&mut claimed).unwrap();
+        let result = worker.process_batch(&mut claimed).await.unwrap();
         processed += result.completed + result.released + result.failed;
         complete_published_outbox(&repo, &claimed, &claims).await;
     }
@@ -581,7 +569,7 @@ async fn outbox_worker_process_next_with_commit() {
         let message = load_outbox_message(&repo, id).await;
         assert!(message.is_published());
     }
-    assert_eq!(repo.outbox_store().pending_async().await.unwrap().len(), 0);
+    assert_eq!(repo.outbox_store().pending().await.unwrap().len(), 0);
 
     let lines = buffer.lock().unwrap();
     assert_eq!(lines.len(), 3);

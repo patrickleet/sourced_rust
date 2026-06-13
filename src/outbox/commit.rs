@@ -208,7 +208,7 @@ impl<R, A> AggregateRepository<R, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sourced, AggregateBuilder, AsyncOutboxStore, Entity, HashMapRepository};
+    use crate::{sourced, AggregateBuilder, Entity, HashMapRepository, OutboxStore};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -267,7 +267,7 @@ mod tests {
         assert!(receipt.has_outbox_messages());
         assert_eq!(receipt.outbox_message_ids(), ["msg-1".to_string()]);
 
-        let pending = repo.repo().outbox_store().pending_async().await.unwrap();
+        let pending = repo.repo().outbox_store().pending().await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "msg-1");
     }
@@ -404,7 +404,7 @@ mod tests {
         );
 
         // 2) outbox row present (pending — no bus attached here)
-        let pending = repo.repo().outbox_store().pending_async().await.unwrap();
+        let pending = repo.repo().outbox_store().pending().await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "evt-c1");
 

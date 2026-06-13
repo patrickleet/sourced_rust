@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use distributed::table::TableSchemaRegistry;
 use distributed::{
-    sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
-    OutboxMessage, OutboxMessageStatus, ReadModel, ReadModelWritePlanBuilder,
+    sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
+    OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
     SnapshotStore, SqliteRepository, StreamIdentity, StreamWrite, TransactionalCommit,
     OUTBOX_MESSAGES_TABLE,
@@ -305,7 +305,7 @@ async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
         OutboxMessageStatus::Published,
         OutboxMessageStatus::Failed,
     ] {
-        let rows = outbox.messages_by_status_async(status).await.unwrap();
+        let rows = outbox.messages_by_status(status).await.unwrap();
         assert!(
             rows.iter().all(|m| m.id() != outbox_id),
             "the outbox row must roll back with the failed read-model plan"
@@ -596,7 +596,7 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     let stored = repo
         .outbox_store()
-        .messages_by_status_async(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending)
         .await
         .unwrap()
         .into_iter()

@@ -28,16 +28,7 @@ pub struct ProcessOneResult {
     pub failed: bool,
 }
 
-/// Synchronous, in-process worker for processing outbox messages — a **dev/test**
-/// drain loop.
-///
-/// The repository is responsible for claiming pending messages. The worker
-/// processes messages that are already loaded and (optionally) claimed via a
-/// synchronous [`OutboxPublisher`].
-///
-/// For the production drain path use the async [`OutboxDispatcher`] with an
-/// [`AsyncMessagePublisher`] (e.g. [`BusPublisher`] over a real [`Bus`]); see
-/// [`OutboxPublisher`] for the full comparison.
+/// Async worker for processing loaded outbox messages through an [`OutboxPublisher`].
 ///
 /// [`OutboxDispatcher`]: crate::OutboxDispatcher
 /// [`AsyncMessagePublisher`]: crate::bus::AsyncMessagePublisher
@@ -104,7 +95,7 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
     /// If the message is pending, it will be claimed by this worker before
     /// publishing. Store-backed worker loops should persist the outcome with
     /// the outbox store completion or failure APIs.
-    pub fn process_message(
+    pub async fn process_message(
         &mut self,
         message: &mut OutboxMessage,
     ) -> SourcedResult<ProcessOneResult> {
@@ -122,51 +113,54 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
             return Ok(ProcessOneResult::default());
         }
 
-        let result =
-            match self
-                .publisher
-                .publish(&message.event_type, &message.payload, &message.metadata)
-            {
-                Ok(()) => {
-                    message.complete()?;
+        let result = match self
+            .publisher
+            .publish(&message.event_type, &message.payload, &message.metadata)
+            .await
+        {
+            Ok(()) => {
+                message.complete()?;
+                ProcessOneResult {
+                    did_work: true,
+                    claimed,
+                    completed: true,
+                    ..Default::default()
+                }
+            }
+            Err(err) => {
+                let error_msg = err.to_string();
+                if message.attempts >= self.max_attempts {
+                    message.fail(error_msg)?;
                     ProcessOneResult {
                         did_work: true,
                         claimed,
-                        completed: true,
+                        failed: true,
+                        ..Default::default()
+                    }
+                } else {
+                    message.release(error_msg)?;
+                    ProcessOneResult {
+                        did_work: true,
+                        claimed,
+                        released: true,
                         ..Default::default()
                     }
                 }
-                Err(err) => {
-                    let error_msg = err.to_string();
-                    if message.attempts >= self.max_attempts {
-                        message.fail(error_msg)?;
-                        ProcessOneResult {
-                            did_work: true,
-                            claimed,
-                            failed: true,
-                            ..Default::default()
-                        }
-                    } else {
-                        message.release(error_msg)?;
-                        ProcessOneResult {
-                            did_work: true,
-                            claimed,
-                            released: true,
-                            ..Default::default()
-                        }
-                    }
-                }
-            };
+            }
+        };
 
         Ok(result)
     }
 
     /// Process a batch of outbox messages.
-    pub fn process_batch(&mut self, messages: &mut [OutboxMessage]) -> SourcedResult<DrainResult> {
+    pub async fn process_batch(
+        &mut self,
+        messages: &mut [OutboxMessage],
+    ) -> SourcedResult<DrainResult> {
         let mut result = DrainResult::default();
 
         for message in messages.iter_mut().take(self.batch_size) {
-            let processed = self.process_message(message)?;
+            let processed = self.process_message(message).await?;
             if processed.claimed {
                 result.claimed += 1;
             }
@@ -204,19 +198,19 @@ mod tests {
         assert_eq!(worker.max_attempts, 2);
     }
 
-    #[test]
-    fn process_message_noop_for_published() {
+    #[tokio::test]
+    async fn process_message_noop_for_published() {
         let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
         message.claim_for("worker", Duration::from_secs(1)).unwrap();
         message.complete().unwrap();
 
         let mut worker = OutboxWorker::new(LogPublisher::default());
-        let result = worker.process_message(&mut message).unwrap();
+        let result = worker.process_message(&mut message).await.unwrap();
         assert!(!result.did_work);
     }
 
-    #[test]
-    fn process_message_passes_metadata_to_publisher() {
+    #[tokio::test]
+    async fn process_message_passes_metadata_to_publisher() {
         use std::sync::{Arc, Mutex};
 
         let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -226,7 +220,7 @@ mod tests {
         let mut message = OutboxMessage::create("msg-1", "UserCreated", b"{}".to_vec()).unwrap();
         message.set_correlation_id("req-abc");
 
-        let result = worker.process_message(&mut message).unwrap();
+        let result = worker.process_message(&mut message).await.unwrap();
         assert!(result.completed);
 
         let logs = buffer.lock().unwrap();
@@ -234,19 +228,19 @@ mod tests {
         assert!(logs[0].contains("req-abc"));
     }
 
-    #[test]
-    fn process_batch_counts_pending_messages_claimed_by_this_call() {
+    #[tokio::test]
+    async fn process_batch_counts_pending_messages_claimed_by_this_call() {
         let mut messages = vec![OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap()];
         let mut worker = OutboxWorker::new(LogPublisher::default());
 
-        let result = worker.process_batch(&mut messages).unwrap();
+        let result = worker.process_batch(&mut messages).await.unwrap();
 
         assert_eq!(result.claimed, 1);
         assert_eq!(result.completed, 1);
     }
 
-    #[test]
-    fn process_batch_does_not_count_already_in_flight_messages_as_claimed() {
+    #[tokio::test]
+    async fn process_batch_does_not_count_already_in_flight_messages_as_claimed() {
         let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
         message
             .claim_for("other-worker", Duration::from_secs(1))
@@ -254,7 +248,7 @@ mod tests {
         let mut messages = vec![message];
         let mut worker = OutboxWorker::new(LogPublisher::default());
 
-        let result = worker.process_batch(&mut messages).unwrap();
+        let result = worker.process_batch(&mut messages).await.unwrap();
 
         assert_eq!(result.claimed, 0);
         assert_eq!(result.completed, 1);

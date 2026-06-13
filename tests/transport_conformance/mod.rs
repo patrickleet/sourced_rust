@@ -6,7 +6,7 @@
 //!
 //! Concrete adapters reuse the pieces here: a real *source* adapter can be
 //! exercised against [`FakePublisher`], a real *publisher* adapter against
-//! [`FakeSource`], and any [`AsyncOutboxStore`] against the dispatcher contract.
+//! [`FakeSource`], and any [`OutboxStore`] against the dispatcher contract.
 //! Other test targets include this module with
 //! `#[path = "../transport_conformance/mod.rs"] mod conformance;`.
 #![allow(dead_code)]
@@ -351,7 +351,7 @@ async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
 }
 
 async fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
-    use distributed::AsyncOutboxStore;
+    use distributed::OutboxStore;
     let store = repo.outbox_store();
     for status in [
         OutboxMessageStatus::Pending,
@@ -362,7 +362,7 @@ async fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessa
     .into_iter()
     {
         if store
-            .messages_by_status_async(status.clone())
+            .messages_by_status(status.clone())
             .await
             .unwrap()
             .iter()

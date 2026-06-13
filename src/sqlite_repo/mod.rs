@@ -18,9 +18,7 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{
-    ensure_active_claim, AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef,
-};
+use crate::outbox_worker::{ensure_active_claim, ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 use crate::read_model::{
     ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
     ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
@@ -501,8 +499,8 @@ impl RelationalReadModelQueryStore for SqliteRepository {
     }
 }
 
-impl AsyncOutboxStore for SqliteOutboxStore {
-    fn messages_by_status_async(
+impl OutboxStore for SqliteOutboxStore {
+    fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
@@ -528,7 +526,7 @@ impl AsyncOutboxStore for SqliteOutboxStore {
         }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
@@ -649,7 +647,7 @@ impl AsyncOutboxStore for SqliteOutboxStore {
         }
     }
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
@@ -698,7 +696,7 @@ impl AsyncOutboxStore for SqliteOutboxStore {
         }
     }
 
-    fn release_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
@@ -751,7 +749,7 @@ impl AsyncOutboxStore for SqliteOutboxStore {
         }
     }
 
-    fn fail_async<'a>(
+    fn fail<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,

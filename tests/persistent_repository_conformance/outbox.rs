@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use distributed::bus::{AsyncMessagePublisher, Message, TransportError};
 use distributed::{
-    Aggregate, AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, GetStream, OutboxClaimRef,
-    OutboxDispatcher, OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction,
-    RepositoryError, StreamIdentity, TransactionalCommit,
+    Aggregate, AggregateBuilder, ClaimOutboxMessages, GetStream, OutboxClaimRef, OutboxDispatcher,
+    OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction, OutboxStore, RepositoryError,
+    StreamIdentity, TransactionalCommit,
 };
 
 use super::scenario::unique_id;
@@ -58,7 +58,7 @@ impl AsyncMessagePublisher for FlakyPublisher {
 pub async fn high_level_outbox_commit_persists_row_without_stream<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let seat_id = unique_id("outbox-seat");
     let message_id = unique_id("outbox-message");
@@ -132,7 +132,7 @@ where
 pub async fn aggregate_conflict_rolls_back_outbox<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let seat_id = unique_id("conflict-outbox-seat");
     let seat_repo = repo.clone().aggregate::<Seat>();
@@ -187,7 +187,7 @@ where
 pub async fn worker_claim_complete_and_retry_lifecycle<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let complete_message_id = unique_id("complete-outbox");
     commit_outbox_for_seat(
@@ -212,14 +212,14 @@ where
         attempt: claimed.attempts,
     };
     let stale_err = outbox
-        .complete_async(&wrong_claim)
+        .complete(&wrong_claim)
         .await
         .expect_err("wrong worker should not complete a claim");
     assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
 
     let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     outbox
-        .complete_async(&claim)
+        .complete(&claim)
         .await
         .expect("owning worker should complete the claim");
     let published = find_outbox_by_id(&outbox, &complete_message_id)
@@ -243,7 +243,7 @@ where
     .await;
     let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     let action = outbox
-        .record_failure_async(&claim, "first failure", 2)
+        .record_failure(&claim, "first failure", 2)
         .await
         .expect("first failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Released);
@@ -261,13 +261,13 @@ where
     )
     .await;
     let stale_err = outbox
-        .complete_async(&claim)
+        .complete(&claim)
         .await
         .expect_err("stale attempt should not complete a later claim");
     assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
     let claim = OutboxClaimRef::from_message(&claimed).expect("claim should be valid");
     let action = outbox
-        .record_failure_async(&claim, "second failure", 2)
+        .record_failure(&claim, "second failure", 2)
         .await
         .expect("second failure should be recorded");
     assert_eq!(action, OutboxPublishFailureAction::Failed);
@@ -283,7 +283,7 @@ where
 pub async fn worker_claim_by_ids_claims_only_requested<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let wanted_id = unique_id("wanted-outbox");
     let other_id = unique_id("other-outbox");
@@ -308,7 +308,7 @@ where
     assert_eq!(other.status, OutboxMessageStatus::Pending);
 
     let empty = outbox
-        .claim_async(ClaimOutboxMessages::for_ids(
+        .claim(ClaimOutboxMessages::for_ids(
             "immediate-worker",
             vec![unique_id("never-stored")],
             Duration::from_secs(60),
@@ -318,7 +318,7 @@ where
     assert!(empty.is_empty());
 
     let leased = outbox
-        .claim_async(ClaimOutboxMessages::for_ids(
+        .claim(ClaimOutboxMessages::for_ids(
             "worker-b",
             vec![wanted_id.clone()],
             Duration::from_secs(60),
@@ -339,7 +339,7 @@ where
 pub async fn expired_outbox_lease_is_reclaimed_by_second_worker<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     let message_id = unique_id("crash-lease-outbox");
     commit_outbox_for_seat(
@@ -356,7 +356,7 @@ where
     let stale_claim_a = OutboxClaimRef::from_message(&claimed_a).expect("A's claim is valid");
 
     let live = outbox
-        .claim_async(ClaimOutboxMessages::new("worker-b", 1, lease))
+        .claim(ClaimOutboxMessages::new("worker-b", 1, lease))
         .await
         .expect("worker B poll should not error while the lease is live");
     assert!(
@@ -380,7 +380,7 @@ where
     let claim_b = OutboxClaimRef::from_message(&claimed_b).expect("B's claim is valid");
 
     let late_complete = outbox
-        .complete_async(&stale_claim_a)
+        .complete(&stale_claim_a)
         .await
         .expect_err("A's late complete must be fenced");
     assert!(
@@ -388,7 +388,7 @@ where
         "stale-worker complete should be InvalidState, got {late_complete:?}"
     );
     let late_release = outbox
-        .release_async(&stale_claim_a, "A woke up late")
+        .release(&stale_claim_a, "A woke up late")
         .await
         .expect_err("A's late release must be fenced");
     assert!(
@@ -397,7 +397,7 @@ where
     );
 
     outbox
-        .complete_async(&claim_b)
+        .complete(&claim_b)
         .await
         .expect("the reclaiming worker should complete the row");
     let published = find_outbox_by_id(&outbox, &message_id)
@@ -415,7 +415,7 @@ pub async fn publish_failure_after_commit_retains_outbox_row_until_delivered<R, 
     outbox: S,
 ) where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
-    S: AsyncOutboxStore + Send + Sync + Clone,
+    S: OutboxStore + Send + Sync + Clone,
 {
     let message_id = unique_id("publish-retry-outbox");
     commit_outbox_for_seat(
@@ -505,12 +505,9 @@ fn outbox_message(id: &str, event_type: &str) -> OutboxMessage {
 
 async fn claim_one<S>(outbox: &S, request: ClaimOutboxMessages) -> OutboxMessage
 where
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
-    let claimed = outbox
-        .claim_async(request)
-        .await
-        .expect("claim should succeed");
+    let claimed = outbox.claim(request).await.expect("claim should succeed");
     assert_eq!(claimed.len(), 1);
     claimed.into_iter().next().expect("one claimed message")
 }
@@ -524,7 +521,7 @@ fn added_seat(id: &str) -> Seat {
 
 async fn find_outbox_by_id<S>(outbox: &S, id: &str) -> Option<OutboxMessage>
 where
-    S: AsyncOutboxStore + Send + Sync,
+    S: OutboxStore + Send + Sync,
 {
     for status in [
         OutboxMessageStatus::Pending,
@@ -533,7 +530,7 @@ where
         OutboxMessageStatus::Failed,
     ] {
         let messages = outbox
-            .messages_by_status_async(status)
+            .messages_by_status(status)
             .await
             .expect("outbox status lookup should succeed");
         if let Some(message) = messages.into_iter().find(|message| message.id() == id) {

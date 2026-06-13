@@ -20,8 +20,8 @@ use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
 use distributed::{
-    AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
-    InMemoryReadModelStore, OutboxClaimRef, Queueable,
+    AggregateBuilder, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    InMemoryReadModelStore, OutboxClaimRef, OutboxStore, Queueable,
 };
 use projections_service::{load_board, service as build_projection};
 use query_service::BoardQueryService;
@@ -49,7 +49,7 @@ where
 /// (bitcode), and the projection decodes them with `BitcodePayloadCodec`.
 async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) {
     let claimed = outbox
-        .claim_async(ClaimOutboxMessages::new(
+        .claim(ClaimOutboxMessages::new(
             "board-outbox-bridge",
             64,
             Duration::from_secs(60),
@@ -69,7 +69,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
         .expect("board event should publish to the bus");
         let claim = OutboxClaimRef::from_message(&message).expect("claimed message yields a ref");
         outbox
-            .complete_async(&claim)
+            .complete(&claim)
             .await
             .expect("forwarded event should complete");
     }

@@ -3,10 +3,10 @@
 //! This module provides the worker infrastructure for processing outbox messages.
 //!
 //! Items:
-//! - `AsyncOutboxStore` - Store operations for claiming and completing messages
+//! - `OutboxStore` - Store operations for claiming and completing messages
 //! - `OutboxDispatcher` / `BusPublisher` - the async production drain path
-//! - `OutboxWorker` - synchronous dev/test message processor
-//! - `OutboxPublisher` - synchronous dev/test publish trait
+//! - `OutboxWorker` - async loaded-message processor
+//! - `OutboxPublisher` - async loaded-message publish trait
 //! - `LogPublisher` - simple logging publisher for tests
 //! - `LocalEmitterPublisher` - In-process event emitter (requires `emitter` feature)
 //!
@@ -19,16 +19,16 @@
 //! ## Example
 //!
 //! ```ignore
-//! use distributed::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef};
+//! use distributed::{OutboxStore, ClaimOutboxMessages, OutboxClaimRef};
 //! use std::time::Duration;
 //!
 //! let worker_id = "worker-1";
 //! let messages = outbox
-//!     .claim_async(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))
+//!     .claim(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))
 //!     .await?;
 //! for msg in messages {
 //!     let claim = OutboxClaimRef::from_message(&msg)?;
-//!     outbox.complete_async(&claim).await?;
+//!     outbox.complete(&claim).await?;
 //! }
 //! ```
 
@@ -48,9 +48,7 @@ pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 // Repository helpers
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use store::ensure_active_claim;
-pub use store::{
-    AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction,
-};
+pub use store::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
 
 // Worker
 pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};

@@ -19,9 +19,7 @@ use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 use crate::entity::Entity;
 use crate::entity::EventRecord;
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{
-    ensure_active_claim, AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef,
-};
+use crate::outbox_worker::{ensure_active_claim, ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 use crate::read_model::{
     ColumnDef, ColumnType, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
     ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
@@ -520,8 +518,8 @@ impl RelationalReadModelQueryStore for PostgresRepository {
     }
 }
 
-impl AsyncOutboxStore for PostgresOutboxStore {
-    fn messages_by_status_async(
+impl OutboxStore for PostgresOutboxStore {
+    fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
@@ -536,7 +534,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
         }
     }
 
-    fn claim_async<'a>(
+    fn claim<'a>(
         &'a self,
         request: ClaimOutboxMessages,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a {
@@ -627,7 +625,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
         }
     }
 
-    fn complete_async<'a>(
+    fn complete<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
@@ -676,7 +674,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
         }
     }
 
-    fn release_async<'a>(
+    fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,
@@ -728,7 +726,7 @@ impl AsyncOutboxStore for PostgresOutboxStore {
         }
     }
 
-    fn fail_async<'a>(
+    fn fail<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
         error: &'a str,

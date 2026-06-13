@@ -208,10 +208,10 @@ async fn player_killed_by_bomb() {
         .contains(&"player:p2".to_string()));
 
     // Verify outbox message was created (PlayerKilled)
-    use distributed::{AsyncOutboxStore, OutboxMessageStatus};
+    use distributed::{OutboxMessageStatus, OutboxStore};
     let pending = repo2
         .outbox_store()
-        .messages_by_status_async(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending)
         .await
         .unwrap();
     assert!(!pending.is_empty());

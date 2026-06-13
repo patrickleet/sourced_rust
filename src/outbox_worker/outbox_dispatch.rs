@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use super::{AsyncOutboxStore, ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction};
+use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
 use crate::bus::{AsyncMessagePublisher, Message, MessageKind, TransportError, TransportErrorKind};
 use crate::outbox::OutboxMessage;
 use crate::repository::RepositoryError;
@@ -149,7 +149,7 @@ pub struct OutboxDispatcher<S, P> {
 
 impl<S, P> OutboxDispatcher<S, P>
 where
-    S: AsyncOutboxStore,
+    S: OutboxStore,
     P: AsyncMessagePublisher,
 {
     /// Create a dispatcher. `worker_id` scopes claims (use a synthetic id such as
@@ -190,7 +190,7 @@ where
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let request =
             ClaimOutboxMessages::for_ids(self.worker_id.clone(), ids.to_vec(), self.lease);
-        let claimed = self.store.claim_async(request).await?;
+        let claimed = self.store.claim(request).await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = ids.len();
         Ok(outcome)
@@ -202,7 +202,7 @@ where
         batch_size: usize,
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let request = ClaimOutboxMessages::new(self.worker_id.clone(), batch_size, self.lease);
-        let claimed = self.store.claim_async(request).await?;
+        let claimed = self.store.claim(request).await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = batch_size;
         Ok(outcome)
@@ -224,13 +224,13 @@ where
             let transport_message = Message::from(&message);
             match self.publisher.publish(transport_message).await {
                 Ok(()) => {
-                    self.store.complete_async(&claim).await?;
+                    self.store.complete(&claim).await?;
                     outcome.published += 1;
                 }
                 Err(publish_error) => {
                     match self
                         .store
-                        .record_failure_async(&claim, &publish_error.to_string(), self.max_attempts)
+                        .record_failure(&claim, &publish_error.to_string(), self.max_attempts)
                         .await?
                     {
                         OutboxPublishFailureAction::Released => outcome.released += 1,

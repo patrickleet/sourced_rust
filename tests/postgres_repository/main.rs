@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
-    sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, CommitBatch, Entity, GetStream,
-    OutboxMessage, OutboxMessageStatus, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
+    sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
+    OutboxMessageStatus, OutboxStore, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
     SnapshotStore, StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit,
 };
@@ -358,7 +358,7 @@ async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
         OutboxMessageStatus::Published,
         OutboxMessageStatus::Failed,
     ] {
-        let rows = outbox.messages_by_status_async(status).await.unwrap();
+        let rows = outbox.messages_by_status(status).await.unwrap();
         assert!(
             rows.iter().all(|m| m.id() != outbox_id),
             "the outbox row must roll back"
@@ -652,7 +652,7 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     let stored = repo
         .outbox_store()
-        .messages_by_status_async(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending)
         .await
         .unwrap()
         .into_iter()

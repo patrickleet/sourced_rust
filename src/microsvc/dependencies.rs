@@ -2,7 +2,6 @@
 
 use crate::aggregate::AggregateRepository;
 use crate::outbox::OutboxPublisherConfig;
-use crate::outbox_worker::AsyncOutboxStore;
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
 
 /// Dependency capability for services that expose an aggregate repository.
@@ -59,7 +58,7 @@ impl<R: HasOutboxStore, S> HasOutboxStore for RepoReadModelDependencies<R, S> {
 /// (`AggregateRepository` -> `QueuedRepository` -> the leaf SQL/in-memory repo).
 pub trait HasOutboxStore {
     /// The concrete outbox store this repository produces.
-    type OutboxStore: AsyncOutboxStore;
+    type OutboxStore: crate::outbox_worker::OutboxStore;
 
     /// Produce a handle to the durable outbox store.
     fn outbox_store(&self) -> Self::OutboxStore;

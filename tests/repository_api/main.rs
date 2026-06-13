@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use distributed::{
-    sourced, Aggregate, AggregateBuilder, AsyncOutboxStore, ClaimOutboxMessages, CommitBatch,
-    Entity, GetStream, HashMapRepository, InMemorySnapshotStore, OutboxMessage, ReadModel,
+    sourced, Aggregate, AggregateBuilder, ClaimOutboxMessages, CommitBatch, Entity, GetStream,
+    HashMapRepository, InMemorySnapshotStore, OutboxMessage, OutboxStore, ReadModel,
     ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelQueryStore, RepositoryError,
     RowKey, RowValue, SnapshotRecord, SnapshotStore, Snapshottable, StreamIdentity, StreamWrite,
     TransactionalCommit, Versioned,
@@ -277,7 +277,7 @@ async fn outbox_repository_delegates_worker_operations() {
         .unwrap();
 
     let claimed = outbox
-        .claim_async(ClaimOutboxMessages::new(
+        .claim(ClaimOutboxMessages::new(
             "worker-1",
             1,
             Duration::from_secs(60),

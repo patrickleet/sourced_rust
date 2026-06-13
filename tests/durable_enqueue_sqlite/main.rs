@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use distributed::bus::{Bus, InMemoryBus, RunOptions};
 use distributed::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
 use distributed::{
-    sourced, AggregateBuilder, AggregateRepository, AsyncOutboxStore, Entity, OutboxMessage,
-    OutboxMessageStatus, Queueable, QueuedRepository, SqliteRepository,
+    sourced, AggregateBuilder, AggregateRepository, Entity, OutboxMessage, OutboxMessageStatus,
+    OutboxStore, Queueable, QueuedRepository, SqliteRepository,
 };
 
 #[derive(Default)]
@@ -66,13 +66,13 @@ async fn commit_publishes_immediately_over_sqlite() {
 
     let store = service.repo().outbox_store();
     let published = store
-        .messages_by_status_async(OutboxMessageStatus::Published)
+        .messages_by_status(OutboxMessageStatus::Published)
         .await
         .unwrap();
     assert_eq!(published.len(), 1, "row should be published immediately");
     assert_eq!(published[0].id(), "evt-c1");
     assert!(
-        store.pending_async().await.unwrap().is_empty(),
+        store.pending().await.unwrap().is_empty(),
         "nothing should be left for the poller"
     );
 }
@@ -93,7 +93,7 @@ async fn run_consumes_command_and_publishes_over_sqlite() {
     service.run(RunOptions::idempotent()).await.unwrap();
 
     let published = store
-        .messages_by_status_async(OutboxMessageStatus::Published)
+        .messages_by_status(OutboxMessageStatus::Published)
         .await
         .unwrap();
     assert_eq!(published.len(), 1);
