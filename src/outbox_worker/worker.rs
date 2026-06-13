@@ -183,6 +183,23 @@ impl<P: OutboxPublisher> OutboxWorker<P> {
 mod tests {
     use super::*;
     use crate::LogPublisher;
+    use std::collections::HashMap;
+    use std::future::Future;
+
+    struct FailingPublisher;
+
+    impl OutboxPublisher for FailingPublisher {
+        type Error = &'static str;
+
+        fn publish<'a>(
+            &'a mut self,
+            _event_type: &'a str,
+            _payload: &'a [u8],
+            _metadata: &'a HashMap<String, String>,
+        ) -> impl Future<Output = Result<(), Self::Error>> + 'a {
+            async { Err("publish failed") }
+        }
+    }
 
     #[test]
     fn worker_builder() {
@@ -252,5 +269,23 @@ mod tests {
 
         assert_eq!(result.claimed, 0);
         assert_eq!(result.completed, 1);
+    }
+
+    #[tokio::test]
+    async fn process_message_fails_when_claimed_attempt_reaches_max_attempts() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        let mut worker = OutboxWorker::new(FailingPublisher).with_max_attempts(2);
+
+        let first = worker.process_message(&mut message).await.unwrap();
+        assert!(first.released);
+        assert!(!first.failed);
+        assert!(message.is_pending());
+        assert_eq!(message.attempts, 1);
+
+        let second = worker.process_message(&mut message).await.unwrap();
+        assert!(!second.released);
+        assert!(second.failed);
+        assert!(message.is_failed());
+        assert_eq!(message.attempts, 2);
     }
 }

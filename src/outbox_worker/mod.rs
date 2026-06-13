@@ -19,17 +19,12 @@
 //! ## Example
 //!
 //! ```ignore
-//! use distributed::{OutboxStore, ClaimOutboxMessages, OutboxClaimRef};
+//! use distributed::OutboxDispatcher;
 //! use std::time::Duration;
 //!
-//! let worker_id = "worker-1";
-//! let messages = outbox
-//!     .claim(ClaimOutboxMessages::new(worker_id, 10, Duration::from_secs(60)))
-//!     .await?;
-//! for msg in messages {
-//!     let claim = OutboxClaimRef::from_message(&msg)?;
-//!     outbox.complete(&claim).await?;
-//! }
+//! let dispatcher =
+//!     OutboxDispatcher::new(outbox, publisher, "worker-1", Duration::from_secs(60), 3);
+//! let outcome = dispatcher.dispatch_batch(10).await?;
 //! ```
 
 mod bus_publisher;
