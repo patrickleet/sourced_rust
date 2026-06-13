@@ -11,7 +11,8 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 > **The framework is async-only.** Aggregates, repositories, handlers, the commit
 > path, and the service bus are all `async`. There is no synchronous repository or
 > bus API. Persistence adapters (Postgres, SQLite) and transports (NATS, RabbitMQ,
-> Kafka, Knative) implement the async traits directly with no blocking shims.
+> Kafka, Knative) expose async traits directly; broker/client blocking primitives,
+> where unavoidable, stay internal to async transport methods.
 
 ## At a Glance
 

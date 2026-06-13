@@ -24,12 +24,9 @@ aggregate_type = "...")`, `aggregate!(..., aggregate_type = "..." { ... })`, or
   identity. The record envelope carries stream identity, covered event version,
   snapshot payload type/version, payload codec metadata, cache metadata, and
   timestamp.
-- `AsyncOutboxStore` exposes async claim/update operations for durable outbox
+- `OutboxStore` exposes async claim/update operations for durable outbox
   table stores. Aggregate repositories commit outbox rows transactionally, but
   workers do not hydrate outbox messages through aggregate repositories.
-
-`AsyncOutboxStore` keeps its prefix because `OutboxStore` remains the synchronous
-worker-facing API for in-memory/local publisher workflows.
 
 ## In-Memory Reference
 

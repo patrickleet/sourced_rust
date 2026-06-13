@@ -1,8 +1,8 @@
 # Async Microservice Transports
 
-Distributed (published from the `distributed` crate) keeps the synchronous
-in-memory bus intact and adds an async transport layer under
-`bus`. The design line is:
+Distributed (published from the `distributed` crate) exposes an async-only
+transport layer under `bus`. The in-memory bus is the dev/test implementation of
+the same async contracts. The design line is:
 
 - **`microsvc`** owns handler registration, guards, typed input decoding,
   dispatch, and handler metadata;
@@ -202,6 +202,5 @@ outbox dispatcher, the conformance harness, the Postgres / NATS / RabbitMQ /
 Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
 `BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `RabbitBus` /
 `KafkaBus` / `KnativeBus`, each with real-broker competing-vs-fan-out tests).
-Still open: migrating the in-repo examples to showcase these APIs and removing the
-legacy synchronous bus paths (a breaking change). See
+Still open: migrating the in-repo examples to showcase these APIs. See
 `tasks/transport-docs-examples-cutover`.
