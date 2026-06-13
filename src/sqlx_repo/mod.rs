@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use crate::read_model::ReadModelError;
 use crate::repository::RepositoryError;
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) mod read_model;
+
 pub(crate) fn serialize_event_metadata(
     metadata: &HashMap<String, String>,
 ) -> Result<String, RepositoryError> {
