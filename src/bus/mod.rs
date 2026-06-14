@@ -112,6 +112,8 @@ mod router;
 mod run_options;
 mod runner;
 mod source;
+#[cfg(feature = "sqlite")]
+mod sqlite_bus;
 mod stable_id;
 mod topology;
 
@@ -151,6 +153,8 @@ pub use router::MessageRouter;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
 pub use source::{AsyncMessageSource, ReceivedMessage};
+#[cfg(feature = "sqlite")]
+pub use sqlite_bus::{SqliteBus, SqliteLogReceived, SqliteQueueReceived};
 pub use stable_id::{validate_stable_message_id, StableMessageIdError, MAX_STABLE_MESSAGE_ID_LEN};
 pub use topology::{
     resolve_consumer_group, validate_consumer_group, validate_namespace, BusTopologyConfig,

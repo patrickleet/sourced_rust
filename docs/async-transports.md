@@ -126,6 +126,7 @@ bus.subscribe(service.clone(), RunOptions::idempotent()).await?;  // fan-out
 let namespace = "orders-prod";
 //   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
 //   let bus = PostgresBus::new(pool);
+//   let bus = SqliteBus::new(pool);
 //   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
 //   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
 ```
@@ -137,8 +138,9 @@ of one service deployment use the same value; independent event consumers use
 different values so each gets its own event copy. Direct `Handlers` or manual
 `listen`/`subscribe` calls can set the group with `bus.group(..)` or
 `Handlers::named(..)`. `namespace` scopes streams, subjects, topics, queues, or
-exchanges on a shared broker. `PostgresBus` does not take `namespace` because the
-database/schema behind `pool` already scopes its bus tables.
+exchanges on a shared broker. `PostgresBus` and `SqliteBus` do not take
+`namespace` because the database/schema/file behind `pool` already scopes their
+bus tables.
 
 Topology names are validated before broker use. Keep groups/service names to
 portable deployment IDs (`A-Z`, `a-z`, `0-9`, `_`, `-`); namespaces may also use
@@ -155,6 +157,7 @@ handlers use distinct `group`s when each service needs its own copy:
 | `InMemoryBus` | (always) | named queue, popped once | retained log + per-subscriber cursor |
 | `NatsBus` | `nats` | shared durable `{group}_cmd` on the stream | durable `{group}_evt` per group |
 | `PostgresBus` | `postgres` | `bus_queue`, `FOR UPDATE SKIP LOCKED` | `bus_log` + `bus_offset` per `group` (Kafka-style) |
+| `SqliteBus` | `sqlite` | `bus_queue`, atomic `UPDATE ... RETURNING` lease claim | `bus_log` + `bus_offset` per `group` |
 | `RabbitBus` | `rabbitmq` | default exchange → durable queue `{ns}.cmd.{name}` | topic exchange → queue `{ns}.evt.{group}` per group |
 | `KafkaBus` | `kafka` | shared consumer group `{ns}.{group}.cmd` | consumer group per service `{ns}.{group}.evt` |
 | `KnativeBus` | `http` | POST CloudEvent → `{target}-commands` broker-ingress | POST → own `{source}-events` broker; consume via generated Triggers |
@@ -171,6 +174,12 @@ the uniform drain-to-idle `run_source` model the facade shares; its `bus_log` +
 `bus_offset` fan-out gives single-DB transactional effectively-once (the offset
 advances with the effects). See `specs/transport-bus-facade`.
 
+`SqliteBus` is the same single-database pattern scaled down to a local SQLite
+file: `bus_queue` is claimed with a conditional `UPDATE ... RETURNING` because
+SQLite has no `FOR UPDATE SKIP LOCKED`, and `bus_log`/`bus_offset` provide
+fan-out. It is intended for local durable transport, tests, demos, and small
+single-node deployments, not as a high-throughput broker replacement.
+
 ## Testing
 
 The reusable conformance harness (`tests/transport_conformance/`) proves the
@@ -183,6 +192,7 @@ docker compose up -d   # postgres, rabbitmq, kafka, nats (see compose.yaml)
 
 DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
   cargo test --test postgres_transport --features postgres
+cargo test --test sqlite_transport --features sqlite
 NATS_URL=nats://localhost:4222   cargo test --test nats_transport --features nats
 AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
   cargo test --test rabbitmq_transport --features rabbitmq
@@ -198,9 +208,10 @@ on push to `main`.
 ## Status
 
 Implemented and verified: the core contracts, the source runner, the publisher /
-outbox dispatcher, the conformance harness, the Postgres / NATS / RabbitMQ /
-Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
-`BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `RabbitBus` /
-`KafkaBus` / `KnativeBus`, each with real-broker competing-vs-fan-out tests).
+outbox dispatcher, the conformance harness, the Postgres / SQLite / NATS /
+RabbitMQ / Kafka adapters, the Knative ingress, and the **bus facade** (`Bus` +
+`BusConsumer` with `InMemoryBus` / `NatsBus` / `PostgresBus` / `SqliteBus` /
+`RabbitBus` / `KafkaBus` / `KnativeBus`, each with competing-vs-fan-out
+integration tests against its broker or local database).
 Still open: migrating the in-repo examples to showcase these APIs. See
 `tasks/transport-docs-examples-cutover`.

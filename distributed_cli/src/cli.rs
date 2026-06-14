@@ -723,7 +723,7 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
     let envelope = distributed::DistributedManifestEnvelope::new(manifest);
     let statements = envelope
         .project
-        .sql_statements(distributed::TableSqlDialect::{dialect})
+        .sql_statements(distributed::table::TableSqlDialect::{dialect})
         .expect("manifest SQL should render");
     if !statements.is_empty() {{
         println!("{{}}", statements.join("\n\n"));
@@ -1029,6 +1029,23 @@ mod tests {
 
         assert!(cargo_toml.contains("\n[workspace]\n"));
         assert!(cargo_toml.contains("name = \"dsvc-manifest-harness-schema-postgres\""));
+    }
+
+    #[test]
+    fn schema_harness_uses_public_table_module_sql_dialect() {
+        let main_rs = harness_main_rs(
+            "orders_service::distributed_manifest",
+            HarnessMode::SchemaSql(SchemaDialect::Postgres),
+        );
+
+        assert!(
+            main_rs.contains("distributed::table::TableSqlDialect::Postgres"),
+            "main.rs: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("distributed::TableSqlDialect"),
+            "main.rs: {main_rs}"
+        );
     }
 
     #[test]
