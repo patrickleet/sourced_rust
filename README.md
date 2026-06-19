@@ -10,7 +10,7 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 
 > **The framework is async-only.** Aggregates, repositories, handlers, the commit
 > path, and the service bus are all `async`. There is no synchronous repository or
-> bus API. Persistence adapters (Postgres, SQLite) and transports (NATS, RabbitMQ,
+> bus API. Persistence adapters and transports (SQLite, Postgres, NATS, RabbitMQ,
 > Kafka, Knative) expose async traits directly; broker/client blocking primitives,
 > where unavoidable, stay internal to async transport methods.
 
@@ -25,7 +25,7 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 | Outbox | Durable publication records committed atomically with aggregates. |
 | Read models | Query-optimized relational projections, committed atomically or updated eventually. |
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
-| Transports | In-memory, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
+| Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
 | Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, or direct dispatch. |
 | Pluggable infrastructure | Async traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
 
@@ -179,6 +179,7 @@ let service = distributed::register_handlers!(
 let namespace = "todos-prod"; // broker namespace/prefix for this app/environment
 //   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
 //   let bus = PostgresBus::new(pool);
+//   let bus = SqliteBus::new(pool);
 //   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
 //   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
 service.with_bus(bus).run(RunOptions::idempotent()).await?;
@@ -194,8 +195,8 @@ passes them to the transport.
   `bus.listen(..)` / `bus.subscribe(..)` consumers that are not a `Service`, set
   the group with `bus.group("todo-projections")`.
 - `namespace` scopes streams, subjects, topics, queues, or exchanges on a shared
-  broker. `PostgresBus` does not take `namespace` because the database/schema
-  behind `pool` already scopes its bus tables.
+  broker. `PostgresBus` and `SqliteBus` do not take `namespace` because the
+  database/schema/file behind `pool` already scopes their bus tables.
 - Topology names are validated before broker use. Keep groups/service names to
   portable deployment IDs (`A-Z`, `a-z`, `0-9`, `_`, `-`); namespaces may also
   use `.`. Blank names, whitespace, control characters, path separators, broker
@@ -204,7 +205,7 @@ passes them to the transport.
 | Concern | In-memory default | Swap in for production |
 |---|---|---|
 | Storage | `HashMapRepository` | `PostgresRepository`, `SqliteRepository` |
-| Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
+| Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Locking | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `AsyncLockManager` (Redis, …) |
 
 The rest of this README is the reference guide for each of these pieces.
@@ -240,13 +241,14 @@ network servers.
 | `http` | No | Axum HTTP transport for `microsvc` + the Knative/CloudEvents ingress router. |
 | `grpc` | No | Tonic gRPC transport for `microsvc`. |
 | `postgres` | No | `PostgresRepository` and the Postgres outbox/transport (`PostgresBus`). |
-| `sqlite` | No | `SqliteRepository` async SQL adapter for local persistence and conformance. |
+| `sqlite` | No | `SqliteRepository` async SQL adapter and local durable transport (`SqliteBus`). |
 | `nats` | No | `NatsBus` (NATS JetStream source/publisher). |
 | `rabbitmq` | No | `RabbitBus` (RabbitMQ source/publisher). |
 | `kafka` | No | `KafkaBus` (Kafka source/publisher). |
 
-> The `InMemoryBus` and `PostgresBus` need no broker feature beyond `postgres` for
-> Postgres; the in-memory bus is always available for dev and tests.
+> The `InMemoryBus`, `PostgresBus`, and `SqliteBus` need no separate broker
+> feature. SQL-backed bus support comes from the matching `postgres` or `sqlite`
+> feature; the in-memory bus is always available for dev and tests.
 
 ## Core Concepts
 
@@ -282,7 +284,7 @@ Every infrastructure concern in `distributed` follows the same pattern: an **asy
 | Concern | Async trait(s) | In-memory default | Swap in for production |
 |---|---|---|---|
 | Storage | `GetStream` + `TransactionalCommit` | `HashMapRepository` | `PostgresRepository`, `SqliteRepository`, … |
-| Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
+| Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
 | Outbox publishing | `OutboxStore` + async `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` (dev/test) | Any `AsyncMessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
@@ -707,10 +709,11 @@ The optional `sqlite` and `postgres` features add async, SQL-backed repositories
 that implement the same async traits as `HashMapRepository`. They persist aggregate
 event streams, relational read-model write plans, processed-message marks,
 snapshots, and outbox rows — staging everything through one SQL transaction when
-committed via `CommitBatch`.
+committed via `CommitBatch`. They also enable SQL-backed bus transports over the
+same database connection (`SqliteBus` / `PostgresBus`).
 
 ```rust,ignore
-// SQLite — local persistence and conformance (requires `sqlite`)
+// SQLite — local persistence, conformance, and bus tables (requires `sqlite`)
 let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:").await?;
 
 // Postgres — the production SQL event-store path (requires `postgres`)
@@ -721,8 +724,11 @@ let repo = distributed::PostgresRepository::connect_and_migrate(database_url).aw
 `connect` from an existing pool does **not** create tables implicitly, so
 applications can control bootstrap order.
 
-Postgres is the low-ops starter: a single Postgres cluster can back repositories,
-read models, the outbox, **and** the durable transport (`PostgresBus`). See
+SQLite is the no-extra-process local durable path: one SQLite database can back
+repositories, read models, the outbox, locks, and `SqliteBus` for tests, demos,
+and small single-node deployments. Postgres is the low-ops starter for production:
+a single Postgres cluster can back repositories, read models, the outbox, **and**
+the durable transport (`PostgresBus`). See
 [`docs/repositories.md`](docs/repositories.md) for the full guide.
 
 ## Outbox Pattern
@@ -824,6 +830,7 @@ bus.subscribe(service.clone(), RunOptions::idempotent()).await?;  // fan-out
 let namespace = "orders-prod";
 //   let bus = NatsBus::connect("nats://localhost:4222").namespace(namespace).await?;
 //   let bus = PostgresBus::new(pool);
+//   let bus = SqliteBus::new(pool);
 //   let bus = RabbitBus::connect("amqp://localhost:5672/%2f").namespace(namespace).await?;
 //   let bus = KafkaBus::connect("localhost:9092").namespace(namespace).await?;
 ```
@@ -853,10 +860,17 @@ are rejected before broker topology is created.
 |---|---|---|---|
 | `InMemoryBus` | (always) | named queue, popped once | retained log + per-subscriber cursor |
 | `PostgresBus` | `postgres` | `bus_queue`, `FOR UPDATE SKIP LOCKED` | `bus_log` + `bus_offset` per group (Kafka-style) |
+| `SqliteBus` | `sqlite` | `bus_queue`, atomic `UPDATE ... RETURNING` lease claim | `bus_log` + `bus_offset` per group |
 | `NatsBus` | `nats` | shared durable `{group}_cmd` on the stream | durable `{group}_evt` per group |
 | `RabbitBus` | `rabbitmq` | default exchange → durable queue `{ns}.cmd.{name}` | topic exchange → queue `{ns}.evt.{group}` per group |
 | `KafkaBus` | `kafka` | shared consumer group `{ns}.{group}.cmd` | consumer group per service `{ns}.{group}.evt` |
 | `KnativeBus` | `http` | POST CloudEvent → `{target}-commands` broker ingress | POST → `{source}-events` broker; consume via generated Triggers |
+
+`SqliteBus` uses the same single-database pattern scaled down to SQLite:
+`bus_queue` is claimed with a conditional `UPDATE ... RETURNING` lease because
+SQLite has no `FOR UPDATE SKIP LOCKED`, and `bus_log` / `bus_offset` provide
+fan-out. It is intended for local durable transport, tests, demos, and small
+single-node deployments, not as a high-throughput broker replacement.
 
 `KnativeBus` implements only `Bus` (produce → broker-ingress POST). It has no
 in-process consume loop: `KnativeBus::manifests(&plan, &subscriptions)` renders the
@@ -1368,13 +1382,13 @@ reference: [`distributed_cli/README.md`](distributed_cli/README.md).
 ```text
 src/
   aggregate/      # Aggregate trait, hydration, async aggregate repository helpers
+  bus/            # Bus facade + adapters (in-memory, sqlite, postgres, nats, rabbitmq, kafka, knative)
   commit_builder/ # Async transactional batches for aggregates, outbox, and read models
   emitter/        # In-process event emitter helpers (feature = "emitter")
   entity/         # Entity, event records, metadata, upcasting codecs
   hashmap_repo/   # In-memory repository (implements every async trait)
   lock/           # Async lock + lock manager traits, in-memory locks
   microsvc/       # Command/event handler framework: service, context, session
-    transport/    # Bus facade + adapters (in-memory, postgres, nats, rabbitmq, kafka, knative)
   outbox/         # Durable outbox message + commit extension
   outbox_worker/  # Outbox claiming, publishing, workers
   postgres_repo/  # Postgres async SQL repository (feature = "postgres")
@@ -1406,15 +1420,18 @@ make test                 # starts compose and runs full local coverage
 cargo test --all-features   # all features; broker tests skip without env vars
 ```
 
-### Real-Broker Integration Tests
+### Transport Integration Tests
 
-The transport adapters have integration tests against real brokers. They are feature-gated and **skip when their env var is unset**:
+The transport adapters have integration tests against real brokers or a local
+SQLite database. Broker tests are feature-gated and **skip when their env var is
+unset**; SQLite uses a temporary database file and needs no Docker service.
 
 ```bash
 docker compose up -d   # postgres, rabbitmq, kafka, nats (see compose.yaml)
 
 DATABASE_URL=postgres://sourced:sourced@localhost:5432/distributed \
   cargo test --test postgres_transport --features postgres
+cargo test --test sqlite_transport --features sqlite
 NATS_URL=nats://localhost:4222 \
   cargo test --test nats_transport --features nats
 AMQP_URL=amqp://guest:guest@localhost:5672/%2f \
@@ -1423,7 +1440,8 @@ KAFKA_BROKERS=127.0.0.1:9092 \
   cargo test --test kafka_transport --features kafka
 ```
 
-Each broker has a matching reusable GitHub Actions job (`.github/workflows/integration-*.yaml`) that runs on PRs and on push to `main`.
+Each external broker has a matching reusable GitHub Actions job
+(`.github/workflows/integration-*.yaml`) that runs on PRs and on push to `main`.
 
 ## Coverage Reporting
 
@@ -1452,7 +1470,7 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 - `tests/microsvc/` — async handlers, dispatch, session, convention, HTTP, gRPC, and bus transports
 - `tests/sagas/` — saga orchestration and choreography with the outbox pattern
 - `tests/sqlite_repository/`, `tests/postgres_repository/` — durable SQL adapters
-- `tests/transport_conformance/`, `tests/{nats,rabbitmq,kafka,postgres}_transport/`, `tests/knative_cloudevents/` — transport adapters and the shared conformance harness
+- `tests/transport_conformance/`, `tests/{nats,rabbitmq,kafka,postgres,sqlite}_transport/`, `tests/knative_cloudevents/` — transport adapters and the shared conformance harness
 
 ## License
 
