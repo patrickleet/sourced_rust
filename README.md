@@ -8,12 +8,6 @@ The core idea is explicit boundaries: aggregate event records are the write-side
 
 It is built with stateless vertical and horizontal scaling in cloud-native environments in mind. You can start with a single in-memory service and split it later into partitioned services backed by Postgres and a real broker — without rewriting the domain model.
 
-> **The framework is async-only.** Aggregates, repositories, handlers, the commit
-> path, and the service bus are all `async`. There is no synchronous repository or
-> bus API. Persistence adapters and transports (SQLite, Postgres, NATS, RabbitMQ,
-> Kafka, Knative) expose async traits directly; broker/client blocking primitives,
-> where unavoidable, stay internal to async transport methods.
-
 ## At a Glance
 
 | Capability | What it gives you |
@@ -27,7 +21,7 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
 | Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
 | Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, or direct dispatch. |
-| Pluggable infrastructure | Async traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
+| Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
 
 ## Quick Start
 
@@ -206,7 +200,7 @@ passes them to the transport.
 |---|---|---|
 | Storage | `HashMapRepository` | `PostgresRepository`, `SqliteRepository` |
 | Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
-| Locking | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `AsyncLockManager` (Redis, …) |
+| Locking | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `LockManager` (Redis, …) |
 
 The rest of this README is the reference guide for each of these pieces.
 
@@ -279,16 +273,16 @@ The existing names and serialized fields such as `EventRecord::event_name` remai
 
 ## Pluggable by Default
 
-Every infrastructure concern in `distributed` follows the same pattern: an **async trait** defines the contract, an **in-memory implementation** ships out of the box for testing and development, and you swap in your own for production.
+Every infrastructure concern in `distributed` follows the same pattern: a **trait** defines the contract, an **in-memory implementation** ships out of the box for testing and development, and you swap in your own for production.
 
-| Concern | Async trait(s) | In-memory default | Swap in for production |
+| Concern | Trait(s) | In-memory default | Swap in for production |
 |---|---|---|---|
 | Storage | `GetStream` + `TransactionalCommit` | `HashMapRepository` | `PostgresRepository`, `SqliteRepository`, … |
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
-| Outbox publishing | `OutboxStore` + async `AsyncMessagePublisher` / `OutboxPublisher` | `LogPublisher` (dev/test) | Any `AsyncMessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
-| Locking | `AsyncLock` + `AsyncLockManager` | `InMemoryAsyncLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
+| Outbox publishing | `OutboxStore` + async `MessagePublisher` / `OutboxPublisher` | `LogPublisher` (dev/test) | Any `MessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
+| Locking | `Lock` + `LockManager` | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.
 
@@ -681,10 +675,10 @@ repo.abort(&todo).await?;
 let _ = repo.peek("todo-1").await?;
 ```
 
-By default, locking is in-memory (`InMemoryAsyncLockManager`) — process-local, lost
+By default, locking is in-memory (`InMemoryLockManager`) — process-local, lost
 on restart. For **cross-process** serialization, back the queue with a durable
 SQLx lease lock (feature `postgres` or `sqlite`). It implements the same
-`AsyncLockManager` trait, so it's a drop-in via `queued_with`:
+`LockManager` trait, so it's a drop-in via `queued_with`:
 
 ```rust,ignore
 use distributed::{PostgresLockManager, PostgresRepository};
@@ -701,7 +695,7 @@ guarantee** — the event store's `(aggregate_type, aggregate_id, sequence)` pri
 key remains the authoritative concurrency boundary. v1 has **no lease renewal**, so
 set the lease TTL above your longest critical section. Tune with `with_lease_ttl`,
 `with_retry_interval`, and `with_max_wait`; reclaim rows from crashed holders with
-`sweep_expired`. Any custom `AsyncLockManager` (e.g. Redis) plugs in the same way.
+`sweep_expired`. Any custom `LockManager` (e.g. Redis) plugs in the same way.
 
 ## Persistent Repositories
 
@@ -895,9 +889,9 @@ bus.listen(
 Retryable failures (e.g. transient `NotFound`) are nacked for redelivery; the runner
 never silently acks a handler error.
 
-See [`docs/async-transports.md`](docs/async-transports.md) for the full transport
+See [`docs/transports.md`](docs/transports.md) for the full transport
 layer, the two confirmation thresholds (producer publish vs consumer ack), and the
-low-level `AsyncMessageSource` / `AsyncMessagePublisher` / `run_source` boundary the
+low-level `MessageSource` / `MessagePublisher` / `run_source` boundary the
 facade is built on.
 
 ## Microservice Framework (`microsvc`)
@@ -1383,16 +1377,16 @@ reference: [`distributed_cli/README.md`](distributed_cli/README.md).
 src/
   aggregate/      # Aggregate trait, hydration, async aggregate repository helpers
   bus/            # Bus facade + adapters (in-memory, sqlite, postgres, nats, rabbitmq, kafka, knative)
-  commit_builder/ # Async transactional batches for aggregates, outbox, and read models
+  commit_builder/ # Transactional batches for aggregates, outbox, and read models
   emitter/        # In-process event emitter helpers (feature = "emitter")
   entity/         # Entity, event records, metadata, upcasting codecs
   hashmap_repo/   # In-memory repository (implements every async trait)
-  lock/           # Async lock + lock manager traits, in-memory locks
+  lock/           # Lock + lock manager traits, in-memory locks
   microsvc/       # Command/event handler framework: service, context, session
   outbox/         # Durable outbox message + commit extension
   outbox_worker/  # Outbox claiming, publishing, workers
   postgres_repo/  # Postgres async SQL repository (feature = "postgres")
-  queued_repo/    # Async queue-based locking repository wrapper
+  queued_repo/    # Queue-based locking repository wrapper
   read_model/     # Read model store traits, in-memory store, schema metadata
   snapshot/       # Snapshot store traits, in-memory store, snapshot repository
   sqlite_repo/    # SQLite async SQL repository (feature = "sqlite")
@@ -1402,7 +1396,7 @@ distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
 docs/
   repositories.md
-  async-transports.md
+  transports.md
   read-models.md
   postgres-event-store.md
   research-and-roadmap.md

@@ -37,14 +37,14 @@ type HandlerFn = dyn for<'a> Fn(&'a Message) -> HandlerFuture<'a> + Send + Sync;
 /// directly as a handler. The higher-ranked bound ties the returned future's
 /// lifetime to the borrowed [`Message`], which a plain generic future parameter
 /// cannot express (the same shape `microsvc::Service` uses for `Context`).
-pub trait AsyncMessageHandler<'a>: Send + Sync {
+pub trait MessageHandler<'a>: Send + Sync {
     /// The future returned by the handler for a message borrowed for `'a`.
     type Future: Future<Output = Result<(), TransportError>> + Send + 'a;
     /// Run the handler against the borrowed message.
     fn call(&self, message: &'a Message) -> Self::Future;
 }
 
-impl<'a, F, Fut> AsyncMessageHandler<'a> for F
+impl<'a, F, Fut> MessageHandler<'a> for F
 where
     F: Fn(&'a Message) -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), TransportError>> + Send + 'a,
@@ -57,7 +57,7 @@ where
 
 fn boxed_handler<F>(handler: F) -> Arc<HandlerFn>
 where
-    F: for<'a> AsyncMessageHandler<'a> + 'static,
+    F: for<'a> MessageHandler<'a> + 'static,
 {
     Arc::new(move |message| Box::pin(handler.call(message)) as HandlerFuture<'_>)
 }
@@ -88,7 +88,7 @@ impl Handlers {
     /// Register a command handler (point-to-point / competing-consumer via `listen`).
     pub fn on_command<F>(self, name: impl Into<String>, handler: F) -> Self
     where
-        F: for<'a> AsyncMessageHandler<'a> + 'static,
+        F: for<'a> MessageHandler<'a> + 'static,
     {
         self.with(MessageKind::Command, name, handler)
     }
@@ -96,14 +96,14 @@ impl Handlers {
     /// Register an event handler (fan-out via `subscribe`).
     pub fn on_event<F>(self, name: impl Into<String>, handler: F) -> Self
     where
-        F: for<'a> AsyncMessageHandler<'a> + 'static,
+        F: for<'a> MessageHandler<'a> + 'static,
     {
         self.with(MessageKind::Event, name, handler)
     }
 
     fn with<F>(mut self, kind: MessageKind, name: impl Into<String>, handler: F) -> Self
     where
-        F: for<'a> AsyncMessageHandler<'a> + 'static,
+        F: for<'a> MessageHandler<'a> + 'static,
     {
         self.handlers
             .insert((kind, name.into()), boxed_handler(handler));

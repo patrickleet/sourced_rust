@@ -1,4 +1,4 @@
-# Async Microservice Transports
+# Microservice Transports
 
 Distributed (published from the `distributed` crate) exposes an async-only
 transport layer under `bus`. The in-memory bus is the dev/test implementation of
@@ -36,9 +36,9 @@ Producing and consuming have *separate* completion thresholds:
   silently acks a handler error — retryable failures redeliver, permanent
   failures go through the `FailurePolicy`.
 
-## Receiving: `AsyncMessageSource` + `run_source`
+## Receiving: `MessageSource` + `run_source`
 
-Direct transports implement `AsyncMessageSource` (pull a message) and
+Direct transports implement `MessageSource` (pull a message) and
 `ReceivedMessage` (settle it). `run_source` drives the loop, dispatching through
 `Service::dispatch_message` and settling only after the handler completes:
 
@@ -54,9 +54,9 @@ no registered handler (so fan-out transports can over-deliver), stops gracefully
 when the source drains, and never swallows receive/settle errors. Inbox mode
 (`RunOptions::inbox(hook)`) enforces a stable message id before dispatch.
 
-## Publishing: `AsyncMessagePublisher` + outbox
+## Publishing: `MessagePublisher` + outbox
 
-`AsyncMessagePublisher` is the single publish boundary; each adapter documents
+`MessagePublisher` is the single publish boundary; each adapter documents
 its publish threshold. `OutboxDispatcher` bridges durable outbox rows to a
 publisher, sharing one claim → publish → complete path between background polling
 (`dispatch_batch`) and after-commit immediate dispatch (`dispatch_ids`):
@@ -85,7 +85,7 @@ metadata (codec, destination, source aggregate) is namespaced under the reserved
 
 Postgres is the low-ops starter: one Postgres cluster can back repositories,
 read models, outbox, and durable transport. (`sqlxmq` was evaluated but its
-push-based `JobRegistry` does not fit the pull-based `AsyncMessageSource` /
+push-based `JobRegistry` does not fit the pull-based `MessageSource` /
 `run_source` boundary, so the proven durable-queue patterns were borrowed rather
 than the crate — see `tasks/postgres-transport-adapter-first-pass`.)
 

@@ -13,7 +13,7 @@ use crate::EventEmitter;
 
 /// Publisher trait used by [`OutboxWorker`] to process loaded outbox messages.
 ///
-/// [`AsyncMessagePublisher`]: crate::bus::AsyncMessagePublisher
+/// [`MessagePublisher`]: crate::bus::MessagePublisher
 /// [`OutboxWorker`]: crate::OutboxWorker
 /// [`LogPublisher`]: crate::LogPublisher
 pub trait OutboxPublisher {

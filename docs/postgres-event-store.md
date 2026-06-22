@@ -289,8 +289,8 @@ sequence and one fails.
 For workflows that want to *serialize* per-aggregate read/modify/write (rather
 than let a stale writer fail and retry), `QueuedRepository` can be backed by a
 durable lock manager instead of the default process-local
-`InMemoryAsyncLockManager`. `PostgresLockManager` (and `SqliteLockManager`)
-implement `AsyncLockManager` over an `aggregate_locks` lease table:
+`InMemoryLockManager`. `PostgresLockManager` (and `SqliteLockManager`)
+implement `LockManager` over an `aggregate_locks` lease table:
 
 - a held key is a row carrying an `owner_token` and an `expires_at` computed from
   the database clock (one authoritative clock, so no cross-process skew);
@@ -321,7 +321,7 @@ Rows without payload codec metadata should be interpreted only by an explicit
 legacy import path. Newly written Postgres rows must always populate
 `payload_codec` and `payload_codec_version`.
 
-## Async Posture
+## Runtime Posture
 
 Postgres access is async-first through the public repository, read-model,
 snapshot, inbox, lock, and outbox traits. Do not add production Postgres access

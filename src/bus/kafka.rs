@@ -22,8 +22,8 @@ use rdkafka::message::{Header, Headers, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message as KafkaMessageTrait, Offset, TopicPartitionList};
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{retryable, AsyncMessagePublisher, TransportError};
+use super::source::{MessageSource, ReceivedMessage};
+use super::{retryable, MessagePublisher, TransportError};
 use super::{strip_address_prefix, Message, MessageKind};
 
 const MESSAGE_ID_HEADER: &str = "x-sourced-id";
@@ -77,7 +77,7 @@ fn owned_headers(message: &Message) -> OwnedHeaders {
     headers
 }
 
-impl AsyncMessagePublisher for KafkaPublisher {
+impl MessagePublisher for KafkaPublisher {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         let topic = message.name().to_string();
         let key = message.id().unwrap_or(message.name()).to_string();
@@ -146,7 +146,7 @@ impl KafkaSource {
     }
 }
 
-impl AsyncMessageSource for KafkaSource {
+impl MessageSource for KafkaSource {
     type Received = KafkaReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

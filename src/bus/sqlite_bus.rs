@@ -24,7 +24,7 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::sqlx_repo::is_sqlx_transient;
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
+use super::source::{MessageSource, ReceivedMessage};
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
     TransportErrorKind,
@@ -358,7 +358,7 @@ struct QueueSource {
     lease_secs: f64,
 }
 
-impl AsyncMessageSource for QueueSource {
+impl MessageSource for QueueSource {
     type Received = SqliteQueueReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
@@ -479,7 +479,7 @@ struct LogSource {
     consumer: String,
 }
 
-impl AsyncMessageSource for LogSource {
+impl MessageSource for LogSource {
     type Received = SqliteLogReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

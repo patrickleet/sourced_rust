@@ -34,7 +34,7 @@ use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, ExchangeKind};
 
 use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
-use super::source::AsyncMessageSource;
+use super::source::MessageSource;
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions,
     TransportError,
@@ -352,7 +352,7 @@ struct RabbitBusSource {
     strip_prefix: Option<String>,
 }
 
-impl AsyncMessageSource for RabbitBusSource {
+impl MessageSource for RabbitBusSource {
     type Received = RabbitReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

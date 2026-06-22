@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AggregateRepository, Entity, GetStream,
-    HashMapRepository, InMemoryAsyncLockManager, Queueable, StreamIdentity,
+    HashMapRepository, InMemoryLockManager, Queueable, StreamIdentity,
 };
 use tokio::sync::Barrier;
 
@@ -34,7 +34,7 @@ impl Counter {
 }
 
 type QueuedCounterRepo = AggregateRepository<
-    distributed::QueuedRepository<HashMapRepository, InMemoryAsyncLockManager>,
+    distributed::QueuedRepository<HashMapRepository, InMemoryLockManager>,
     Counter,
 >;
 

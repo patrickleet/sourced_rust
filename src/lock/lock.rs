@@ -15,7 +15,7 @@ use super::LockError;
 ///
 /// All returned futures are `Send` so an async `QueuedRepository` built on this
 /// lock keeps its repository futures `Send` (required by the async repo traits).
-pub trait AsyncLock: Send + Sync {
+pub trait Lock: Send + Sync {
     /// Acquire the lock, awaiting until it becomes available.
     fn lock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_;
 

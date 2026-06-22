@@ -16,12 +16,12 @@ fn identity(id: &str) -> StreamIdentity {
     StreamIdentity::new(AGGREGATE_TYPE, id).unwrap()
 }
 
-/// Async equivalent of the old `repo.get_one(id)`.
+/// Equivalent of the old `repo.get_one(id)`.
 async fn get_one(repo: &HashMapRepository, id: &str) -> Option<Entity> {
     repo.get_stream(&identity(id)).await.unwrap()
 }
 
-/// Async equivalent of the old `repo.commit(&mut entity)` for a single entity.
+/// Equivalent of the old `repo.commit(&mut entity)` for a single entity.
 async fn commit_one(
     repo: &HashMapRepository,
     entity: &mut Entity,
@@ -31,7 +31,7 @@ async fn commit_one(
     repo.commit_batch(CommitBatch::new(vec![stream])).await
 }
 
-/// Async equivalent of the old `repo.commit(&mut [&mut a, &mut b])` for many entities.
+/// Equivalent of the old `repo.commit(&mut [&mut a, &mut b])` for many entities.
 async fn commit_many(
     repo: &HashMapRepository,
     entities: &mut [&mut Entity],
@@ -181,7 +181,7 @@ async fn concurrent_writes_detected() {
             expected,
             actual,
         } => {
-            // Async stream commits key by full stream identity, so the
+            // Stream commits key by full stream identity, so the
             // conflict id is reported as "<aggregate_type>:<id>".
             assert_eq!(id, format!("{}:e1", AGGREGATE_TYPE));
             assert_eq!(expected, 1); // reader2 loaded at version 1
@@ -220,7 +220,7 @@ async fn partial_conflict_rolls_back_entire_commit() {
         .unwrap_err();
     match err {
         distributed::RepositoryError::ConcurrentWrite { id, .. } => {
-            // Async stream commits report the conflicting stream by full identity.
+            // Stream commits report the conflicting stream by full identity.
             assert_eq!(id, format!("{}:e2", AGGREGATE_TYPE));
         }
         other => panic!("expected ConcurrentWrite, got: {:?}", other),

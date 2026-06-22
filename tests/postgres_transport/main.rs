@@ -17,7 +17,7 @@ use conformance::{named_recording_for, recording_for};
 use std::sync::{Arc, Mutex};
 
 use distributed::bus::{
-    run_source, AsyncMessageSource, Bus, BusConsumer, PostgresBus, ReceivedMessage, RunOptions,
+    run_source, Bus, BusConsumer, MessageSource, PostgresBus, ReceivedMessage, RunOptions,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use distributed::OutboxSource;

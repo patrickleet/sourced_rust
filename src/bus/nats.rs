@@ -18,8 +18,8 @@ use async_nats::jetstream::stream::Config as StreamConfig;
 use async_nats::jetstream::{self, AckKind};
 use futures::StreamExt;
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{retryable, AsyncMessagePublisher, TransportError};
+use super::source::{MessageSource, ReceivedMessage};
+use super::{retryable, MessagePublisher, TransportError};
 use super::{strip_address_prefix, Message, MessageKind};
 
 /// Header carrying the stable message id (and JetStream dedup key).
@@ -69,7 +69,7 @@ impl NatsPublisher {
     }
 }
 
-impl AsyncMessagePublisher for NatsPublisher {
+impl MessagePublisher for NatsPublisher {
     async fn publish(&self, mut message: Message) -> Result<(), TransportError> {
         let subject = self.subject(&message);
         let mut headers = async_nats::HeaderMap::new();
@@ -178,7 +178,7 @@ impl NatsJetStreamSource {
     }
 }
 
-impl AsyncMessageSource for NatsJetStreamSource {
+impl MessageSource for NatsJetStreamSource {
     type Received = NatsReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

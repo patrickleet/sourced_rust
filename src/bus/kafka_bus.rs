@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
 use super::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, BusTopologyConfig, MessageRouter,
-    RunOptions, TransportError,
+    run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter, RunOptions,
+    TransportError,
 };
 use super::{Message, MessageKind};
 

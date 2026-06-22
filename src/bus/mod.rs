@@ -8,7 +8,7 @@
 //!
 //! The direct-transport receive path lives here too:
 //!
-//! - [`AsyncMessageSource`] / [`ReceivedMessage`] — pull a message from a direct
+//! - [`MessageSource`] / [`ReceivedMessage`] — pull a message from a direct
 //!   transport (Postgres, RabbitMQ, Kafka, NATS, in-memory) and settle it;
 //! - [`MessageRouter`] — the consume seam a runner dispatches to, implemented by
 //!   `microsvc::Service` and the dependency-free [`Handlers`] builder;
@@ -17,7 +17,7 @@
 //!
 //! The producer-side publish path lives here too:
 //!
-//! - [`AsyncMessagePublisher`] — the single publish boundary, with each adapter's
+//! - [`MessagePublisher`] — the single publish boundary, with each adapter's
 //!   durable publish threshold documented;
 //! - [`OutboxDispatcher`](crate::OutboxDispatcher) / [`OutboxDispatchOutcome`](crate::OutboxDispatchOutcome) — map durable outbox rows to
 //!   `Message` and dispatch them, sharing one claim → publish → complete path
@@ -140,7 +140,7 @@ pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabil
 pub(crate) use error::retryable;
 pub use error::{TransportError, TransportErrorKind};
 pub use failure_policy::{FailureAction, FailurePolicy};
-pub use handlers::{AsyncMessageHandler, Handlers};
+pub use handlers::{Handlers, MessageHandler};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 #[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
 pub(crate) use message::strip_address_prefix;
@@ -148,11 +148,11 @@ pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use message_name::{validate_message_name, MessageNameError, MAX_MESSAGE_NAME_LEN};
 #[cfg(feature = "postgres")]
 pub use postgres_bus::{LogReceived, PostgresBus, QueueReceived};
-pub use publisher::AsyncMessagePublisher;
+pub use publisher::MessagePublisher;
 pub use router::MessageRouter;
 pub use run_options::{ConsumerDeliveryMode, InboxHook, NoInbox, RunOptions};
 pub use runner::run_source;
-pub use source::{AsyncMessageSource, ReceivedMessage};
+pub use source::{MessageSource, ReceivedMessage};
 #[cfg(feature = "sqlite")]
 pub use sqlite_bus::{SqliteBus, SqliteLogReceived, SqliteQueueReceived};
 pub use stable_id::{validate_stable_message_id, StableMessageIdError, MAX_STABLE_MESSAGE_ID_LEN};

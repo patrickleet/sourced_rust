@@ -23,7 +23,7 @@
 //! sqlxmq owns an always-on, push-based `JobRunner` loop, which does not compose
 //! with the facade's uniform *drain-to-idle* [`run_source`] model that every other
 //! `*Bus` (in-memory, NATS, RabbitMQ, Kafka) and their tests share — a claim-lease
-//! [`AsyncMessageSource`] returns `Ok(None)` when the queue is empty and stops
+//! [`MessageSource`] returns `Ok(None)` when the queue is empty and stops
 //! cleanly. sqlxmq remains a viable future backend for its mature NOTIFY/backoff;
 //! revisit if those are needed. See [[tasks/build-transport-bus-facade]].
 //!
@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use sqlx::{PgPool, Row};
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
+use super::source::{MessageSource, ReceivedMessage};
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
 };
@@ -287,7 +287,7 @@ struct QueueSource {
     lease_secs: f64,
 }
 
-impl AsyncMessageSource for QueueSource {
+impl MessageSource for QueueSource {
     type Received = QueueReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
@@ -405,7 +405,7 @@ struct LogSource {
     consumer: String,
 }
 
-impl AsyncMessageSource for LogSource {
+impl MessageSource for LogSource {
     type Received = LogReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

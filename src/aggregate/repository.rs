@@ -82,7 +82,7 @@ impl<R, A> SnapshotPolicy<R, A> {
     }
 }
 
-/// Async repository wrapper for a specific aggregate type.
+/// Repository wrapper for a specific aggregate type.
 ///
 /// Snapshots are an optional, transparent optimization: `with_snapshots(n)`
 /// configures snapshot caching on this same type, and every method behaves

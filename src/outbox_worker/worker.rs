@@ -28,10 +28,10 @@ pub struct ProcessOneResult {
     pub failed: bool,
 }
 
-/// Async worker for processing loaded outbox messages through an [`OutboxPublisher`].
+/// Worker for processing loaded outbox messages through an [`OutboxPublisher`].
 ///
 /// [`OutboxDispatcher`]: crate::OutboxDispatcher
-/// [`AsyncMessagePublisher`]: crate::bus::AsyncMessagePublisher
+/// [`MessagePublisher`]: crate::bus::MessagePublisher
 /// [`BusPublisher`]: crate::BusPublisher
 /// [`Bus`]: crate::bus::Bus
 pub struct OutboxWorker<P> {

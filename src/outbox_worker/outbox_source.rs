@@ -1,6 +1,6 @@
 //! Outbox-backed durable receive.
 //!
-//! [`OutboxSource`] turns any [`OutboxStore`] into an [`AsyncMessageSource`]:
+//! [`OutboxSource`] turns any [`OutboxStore`] into a [`MessageSource`]:
 //! it claims durable rows (`FOR UPDATE SKIP LOCKED` + lease in the SQL stores),
 //! maps each to a canonical [`Message`], and settles by row status —
 //! ack→complete, nack→release-for-retry, dead-letter/park→fail (the terminal
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
-use crate::bus::{AsyncMessageSource, Message, ReceivedMessage, TransportError};
+use crate::bus::{Message, MessageSource, ReceivedMessage, TransportError};
 use crate::outbox::OutboxMessage;
 
 /// Default lease held on a claimed row while it is being dispatched.
@@ -27,7 +27,7 @@ pub const DEFAULT_OUTBOX_SOURCE_LEASE: Duration = Duration::from_secs(30);
 /// Default number of rows claimed per `recv` refill.
 pub const DEFAULT_OUTBOX_SOURCE_BATCH: usize = 16;
 
-/// An [`AsyncMessageSource`] backed by an [`OutboxStore`].
+/// A [`MessageSource`] backed by an [`OutboxStore`].
 pub struct OutboxSource<S> {
     store: Arc<S>,
     worker_id: String,
@@ -100,7 +100,7 @@ where
     }
 }
 
-impl<S> AsyncMessageSource for OutboxSource<S>
+impl<S> MessageSource for OutboxSource<S>
 where
     S: OutboxStore,
 {

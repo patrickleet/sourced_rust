@@ -1,7 +1,7 @@
 //! Direct-transport receive traits.
 //!
 //! A direct broker client (Postgres, RabbitMQ, Kafka, NATS, or the in-memory
-//! dev/test adapter) pulls messages with [`AsyncMessageSource`] and settles each
+//! dev/test adapter) pulls messages with [`MessageSource`] and settles each
 //! one through [`ReceivedMessage`]. The [`run_source`](super::run_source) runner
 //! drives that loop: it dispatches through `Service::dispatch_message` and only
 //! then asks the adapter to acknowledge.
@@ -24,7 +24,7 @@ use super::{Message, TransportError};
 ///   than swallowed.
 ///
 /// The future is `Send` so the runner can be driven on multi-threaded executors.
-pub trait AsyncMessageSource: Send {
+pub trait MessageSource: Send {
     /// The settle handle for a received message.
     type Received: ReceivedMessage;
 

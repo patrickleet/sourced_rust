@@ -8,11 +8,11 @@ Based on a review of the Rust ES ecosystem (cqrs-es, disintegrate, esrs, eventua
 
 ### Core Improvements
 
-#### Async traits
+#### Trait support
 All competing frameworks are async-first. The current public persistence and transport traits are async-first, which supports direct integration with:
-- Async databases (sqlx, sea-orm)
-- Async message brokers (rdkafka, lapin)
-- Async web frameworks (axum handlers)
+- async databases (sqlx, sea-orm)
+- async message brokers (rdkafka, lapin)
+- async web frameworks (axum handlers)
 
 Foundation status: stream-aware repository/read-model/snapshot/outbox traits now form the async-only persistence surface. See [Repository Boundary](repositories.md). The SQL backends implement those traits directly instead of wrapping database I/O behind synchronous repository traits.
 
@@ -39,7 +39,7 @@ Foundation status: stream-aware repository/read-model/snapshot/outbox traits now
 | Service bus (pub/sub + P2P) | Yes | No | No | No | No |
 | Saga support | Via aggregates | Via handlers | Via EventListener | Via handlers | Via Subscription |
 | Event upcasting | **No** | **Yes** | No | No | Partial |
-| Async | Partial | Yes | Yes | Yes | Yes |
+| Native async | Partial | Yes | Yes | Yes | Yes |
 | Testing framework | N/A (simple code) | Given-When-Then | In-memory store | Manual | AggregateRootBuilder |
 | Optimistic concurrency | Yes | Yes | Yes (+ validation queries) | Yes (+ pessimistic) | Yes |
 | Pessimistic locking | Yes (QueuedRepo) | No | No | Yes (lock_and_load) | No |

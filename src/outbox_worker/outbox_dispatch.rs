@@ -1,7 +1,7 @@
 //! Outbox → transport bridge.
 //!
 //! Maps durable [`OutboxMessage`] rows to the canonical [`Message`] and dispatches
-//! them through an [`AsyncMessagePublisher`]. The same claim → map → publish →
+//! them through a [`MessagePublisher`]. The same claim → map → publish →
 //! settle path is shared by background worker polling ([`dispatch_batch`]) and
 //! after-commit immediate dispatch ([`dispatch_ids`]), so the two cannot diverge
 //! and cannot publish the same row concurrently — both go through the outbox
@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
-use crate::bus::{AsyncMessagePublisher, Message, MessageKind, TransportError, TransportErrorKind};
+use crate::bus::{Message, MessageKind, MessagePublisher, TransportError, TransportErrorKind};
 use crate::outbox::OutboxMessage;
 use crate::repository::RepositoryError;
 
@@ -129,7 +129,7 @@ pub struct OutboxDispatchOutcome {
     pub failed: usize,
 }
 
-/// Bridges outbox claims to an [`AsyncMessagePublisher`], shared by immediate
+/// Bridges outbox claims to a [`MessagePublisher`], shared by immediate
 /// after-commit dispatch and background worker polling.
 ///
 /// Publish failures are not errors — they are reflected in
@@ -150,7 +150,7 @@ pub struct OutboxDispatcher<S, P> {
 impl<S, P> OutboxDispatcher<S, P>
 where
     S: OutboxStore,
-    P: AsyncMessagePublisher,
+    P: MessagePublisher,
 {
     /// Create a dispatcher. `worker_id` scopes claims (use a synthetic id such as
     /// `immediate:<process>` for after-commit dispatch); `max_attempts` is the
@@ -287,7 +287,7 @@ mod tests {
         }
     }
 
-    impl AsyncMessagePublisher for RecordingPublisher {
+    impl MessagePublisher for RecordingPublisher {
         async fn publish(&self, message: Message) -> Result<(), TransportError> {
             if self.fail {
                 // Unknown outcome: surface as a retryable error.

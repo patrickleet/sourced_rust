@@ -2,10 +2,10 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use distributed::{
-    AggregateBuilder, AsyncLock, AsyncLockManager, ClaimOutboxMessages, CommitBuilderExt,
-    DrainResult, EventEmitter, HashMapRepository, LocalEmitterPublisher, LogPublisher,
-    OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher, OutboxStore, OutboxWorker,
-    Queueable, RepositoryError,
+    AggregateBuilder, ClaimOutboxMessages, CommitBuilderExt, DrainResult, EventEmitter,
+    HashMapRepository, LocalEmitterPublisher, Lock, LockManager, LogPublisher, OutboxClaimRef,
+    OutboxMessage, OutboxMessageStatus, OutboxPublisher, OutboxStore, OutboxWorker, Queueable,
+    RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};

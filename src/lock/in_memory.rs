@@ -4,15 +4,15 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use super::{AsyncLock, AsyncLockManager, LockError};
+use super::{Lock, LockError, LockManager};
 
 #[derive(Default)]
-struct AsyncLockState {
+struct LockState {
     locked: bool,
     waiters: VecDeque<Waker>,
 }
 
-/// In-memory [`AsyncLock`] backed by a `Mutex<{ locked, waiters }>`.
+/// In-memory [`Lock`] backed by a `Mutex<{ locked, waiters }>`.
 ///
 /// The std `Mutex` is held only for the brief state check/update — never across
 /// an `.await` — so it never blocks the executor. Acquisition returns a future
@@ -20,21 +20,21 @@ struct AsyncLockState {
 /// `Pending`; `unlock` wakes all registered waiters so they re-contend (one
 /// wins, the rest re-register). Runtime-agnostic: no dependency on any async
 /// runtime, matching the rest of the crate's RPITIT async surface.
-pub struct InMemoryAsyncLock {
-    state: Mutex<AsyncLockState>,
+pub struct InMemoryLock {
+    state: Mutex<LockState>,
 }
 
-impl InMemoryAsyncLock {
+impl InMemoryLock {
     pub fn new() -> Self {
-        InMemoryAsyncLock {
-            state: Mutex::new(AsyncLockState::default()),
+        InMemoryLock {
+            state: Mutex::new(LockState::default()),
         }
     }
 
-    /// Synchronous core of [`try_lock`](AsyncLock::try_lock).
+    /// Synchronous core of [`try_lock`](Lock::try_lock).
     ///
     /// In-memory acquisition is pure state mutation, so the real work lives in a
-    /// private synchronous helper and the public `AsyncLock::try_lock` runs it
+    /// private synchronous helper and the public `Lock::try_lock` runs it
     /// inside its (lazy) future — there is no parallel sync *API*, only this
     /// internal detail. The synchronous core also lets the regression tests
     /// exercise acquisition from inside a `Waker`, which cannot `.await`.
@@ -51,7 +51,7 @@ impl InMemoryAsyncLock {
         }
     }
 
-    /// Synchronous core of [`unlock`](AsyncLock::unlock).
+    /// Synchronous core of [`unlock`](Lock::unlock).
     ///
     /// Drains waiters UNDER the guard (keeping register/drain mutually exclusive
     /// so no wakeup is lost), then releases the guard BEFORE waking.
@@ -83,20 +83,20 @@ impl InMemoryAsyncLock {
     }
 }
 
-impl Default for InMemoryAsyncLock {
+impl Default for InMemoryLock {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Future returned by [`InMemoryAsyncLock::lock`].
+/// Future returned by [`InMemoryLock::lock`].
 ///
 /// Borrows the lock for its lifetime; resolves once the lock is acquired.
-pub struct InMemoryAsyncLockFuture<'a> {
-    lock: &'a InMemoryAsyncLock,
+pub struct InMemoryLockFuture<'a> {
+    lock: &'a InMemoryLock,
 }
 
-impl Future for InMemoryAsyncLockFuture<'_> {
+impl Future for InMemoryLockFuture<'_> {
     type Output = Result<(), LockError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -123,9 +123,9 @@ impl Future for InMemoryAsyncLockFuture<'_> {
     }
 }
 
-impl AsyncLock for InMemoryAsyncLock {
+impl Lock for InMemoryLock {
     fn lock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_ {
-        InMemoryAsyncLockFuture { lock: self }
+        InMemoryLockFuture { lock: self }
     }
 
     // Lazy: the side effect runs when the future is polled, not at call time, so
@@ -141,39 +141,39 @@ impl AsyncLock for InMemoryAsyncLock {
     }
 }
 
-/// In-memory [`AsyncLockManager`] backed by a `HashMap<String, Arc<InMemoryAsyncLock>>`.
+/// In-memory [`LockManager`] backed by a `HashMap<String, Arc<InMemoryLock>>`.
 ///
-/// Lazily creates one [`InMemoryAsyncLock`] per unique key and returns the same
+/// Lazily creates one [`InMemoryLock`] per unique key and returns the same
 /// `Arc` for repeated lookups.
-pub struct InMemoryAsyncLockManager {
-    locks: Mutex<HashMap<String, Arc<InMemoryAsyncLock>>>,
+pub struct InMemoryLockManager {
+    locks: Mutex<HashMap<String, Arc<InMemoryLock>>>,
 }
 
-impl InMemoryAsyncLockManager {
+impl InMemoryLockManager {
     pub fn new() -> Self {
-        InMemoryAsyncLockManager {
+        InMemoryLockManager {
             locks: Mutex::new(HashMap::new()),
         }
     }
 }
 
-impl Default for InMemoryAsyncLockManager {
+impl Default for InMemoryLockManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AsyncLockManager for InMemoryAsyncLockManager {
-    type Lock = InMemoryAsyncLock;
+impl LockManager for InMemoryLockManager {
+    type Lock = InMemoryLock;
 
-    fn get_lock(&self, id: &str) -> Result<Arc<InMemoryAsyncLock>, LockError> {
+    fn get_lock(&self, id: &str) -> Result<Arc<InMemoryLock>, LockError> {
         let mut locks = self
             .locks
             .lock()
-            .map_err(|_| LockError::Poisoned("async lock manager map poisoned".into()))?;
+            .map_err(|_| LockError::Poisoned("lock manager map poisoned".into()))?;
         Ok(locks
             .entry(id.to_string())
-            .or_insert_with(|| Arc::new(InMemoryAsyncLock::new()))
+            .or_insert_with(|| Arc::new(InMemoryLock::new()))
             .clone())
     }
 }
@@ -189,25 +189,25 @@ mod tests {
     /// A `Waker` whose `wake()` re-enters the given lock via `try_lock_core()`,
     /// modeling an inline-polling executor. (`wake` is synchronous, so it calls
     /// the synchronous core rather than the `async` trait method.) The data
-    /// pointer is an `Arc<InMemoryAsyncLock>`.
-    fn reentrant_waker(lock: Arc<InMemoryAsyncLock>) -> Waker {
+    /// pointer is an `Arc<InMemoryLock>`.
+    fn reentrant_waker(lock: Arc<InMemoryLock>) -> Waker {
         unsafe fn clone(data: *const ()) -> RawWaker {
-            let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
+            let arc = unsafe { Arc::from_raw(data as *const InMemoryLock) };
             let cloned = Arc::clone(&arc);
             std::mem::forget(arc);
             RawWaker::new(Arc::into_raw(cloned) as *const (), &REENTRANT_VTABLE)
         }
         unsafe fn wake(data: *const ()) {
-            let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
+            let arc = unsafe { Arc::from_raw(data as *const InMemoryLock) };
             let _ = arc.try_lock_core(); // re-enter from inside wake(): must not deadlock
         }
         unsafe fn wake_by_ref(data: *const ()) {
-            let arc = unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) };
+            let arc = unsafe { Arc::from_raw(data as *const InMemoryLock) };
             let _ = arc.try_lock_core();
             std::mem::forget(arc);
         }
         unsafe fn drop_fn(data: *const ()) {
-            drop(unsafe { Arc::from_raw(data as *const InMemoryAsyncLock) });
+            drop(unsafe { Arc::from_raw(data as *const InMemoryLock) });
         }
         static REENTRANT_VTABLE: RawWakerVTable =
             RawWakerVTable::new(clone, wake, wake_by_ref, drop_fn);
@@ -233,7 +233,7 @@ mod tests {
     }
 
     /// Park `waker` on the held `lock` by polling one acquire future to `Pending`.
-    fn park_waker(lock: &InMemoryAsyncLock, waker: &Waker) {
+    fn park_waker(lock: &InMemoryLock, waker: &Waker) {
         let mut cx = Context::from_waker(waker);
         let mut fut = std::pin::pin!(lock.lock());
         assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Pending));
@@ -241,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_lock_reflects_state() {
-        let lock = InMemoryAsyncLock::new();
+        let lock = InMemoryLock::new();
         assert!(lock.try_lock().await.unwrap()); // free → acquired
         assert!(!lock.try_lock().await.unwrap()); // held → fails
         lock.unlock().await.unwrap();
@@ -250,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn lock_resolves_immediately_when_free() {
-        let lock = InMemoryAsyncLock::new();
+        let lock = InMemoryLock::new();
         lock.lock().await.unwrap();
         assert!(!lock.try_lock().await.unwrap()); // now held
         lock.unlock().await.unwrap();
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_acquire_waits_until_unlock() {
-        let lock = Arc::new(InMemoryAsyncLock::new());
+        let lock = Arc::new(InMemoryLock::new());
         lock.lock().await.unwrap();
 
         let order = Arc::new(AtomicUsize::new(0));
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn manager_returns_same_arc_per_key() {
-        let manager = InMemoryAsyncLockManager::new();
+        let manager = InMemoryLockManager::new();
         let a1 = manager.get_lock("agg-1").unwrap();
         let a2 = manager.get_lock("agg-1").unwrap();
         let b = manager.get_lock("agg-2").unwrap();
@@ -297,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_keys_do_not_contend() {
-        let manager = InMemoryAsyncLockManager::new();
+        let manager = InMemoryLockManager::new();
         let a = manager.get_lock("agg-1").unwrap();
         let b = manager.get_lock("agg-2").unwrap();
         a.lock().await.unwrap();
@@ -313,7 +313,7 @@ mod tests {
     // failure instead of wedging the suite.
     #[test]
     fn unlock_does_not_deadlock_with_reentrant_waker() {
-        let lock = Arc::new(InMemoryAsyncLock::new());
+        let lock = Arc::new(InMemoryLock::new());
         assert!(lock.try_lock_core().unwrap()); // hold the lock
         park_waker(&lock, &reentrant_waker(Arc::clone(&lock)));
 
@@ -333,7 +333,7 @@ mod tests {
     // still usable (and was released).
     #[test]
     fn unlock_does_not_poison_when_a_waker_panics() {
-        let lock = Arc::new(InMemoryAsyncLock::new());
+        let lock = Arc::new(InMemoryLock::new());
         assert!(lock.try_lock_core().unwrap()); // hold the lock
         park_waker(&lock, &panicking_waker());
 
