@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use distributed::bus::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, RabbitBus, RabbitPublisher, RabbitSource,
+    run_source, Bus, BusConsumer, MessagePublisher, RabbitBus, RabbitPublisher, RabbitSource,
     RunOptions,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Service};

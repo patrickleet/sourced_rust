@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use distributed::bus::{AsyncMessagePublisher, Message, TransportError};
+use distributed::bus::{Message, MessagePublisher, TransportError};
 use distributed::{
     Aggregate, AggregateBuilder, ClaimOutboxMessages, GetStream, OutboxClaimRef, OutboxDispatcher,
     OutboxMessage, OutboxMessageStatus, OutboxPublishFailureAction, OutboxStore, RepositoryError,
@@ -35,7 +35,7 @@ impl FlakyPublisher {
     }
 }
 
-impl AsyncMessagePublisher for FlakyPublisher {
+impl MessagePublisher for FlakyPublisher {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         let attempt = {
             let mut attempts = self.attempts.lock().expect("attempts lock");

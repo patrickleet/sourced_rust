@@ -8,7 +8,7 @@
 //!
 //! ## Model
 //!
-//! Each per-key lock layers an **in-process async gate** ([`InMemoryAsyncLock`])
+//! Each per-key lock layers an **in-process async gate** ([`InMemoryLock`])
 //! over a **durable DB lease** (a row in `aggregate_locks`). The gate serializes
 //! same-process tasks with true wakeups (no DB polling between them); only the
 //! local gate winner contends on the database, and only against *other
@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{AsyncLock, InMemoryAsyncLock, LockError};
+use super::{InMemoryLock, Lock, LockError};
 
 /// Tunables for a lease lock manager. Shared by every per-key lock it hands out.
 #[derive(Debug, Clone)]
@@ -61,11 +61,11 @@ impl Default for LeaseConfig {
 /// `QueuedRepository` acquires on a locking `get` and releases from a *different*
 /// `get_lock(key)` handle on commit/abort; the manager returns the same cached
 /// `Arc`, so the gate and the owner token must live here, not in transient
-/// handle locals — mirroring `InMemoryAsyncLock`'s manager-owned state.
+/// handle locals — mirroring `InMemoryLock`'s manager-owned state.
 pub(crate) struct LockShared {
     /// In-process gate: same-process tasks serialize here (true wakeups, no DB
     /// polling) so only one local task contends on the DB lease at a time.
-    pub gate: InMemoryAsyncLock,
+    pub gate: InMemoryLock,
     /// The owner token of the lease currently held by this process, if any.
     pub token: Mutex<Option<String>>,
 }
@@ -73,7 +73,7 @@ pub(crate) struct LockShared {
 impl LockShared {
     pub fn new() -> Self {
         Self {
-            gate: InMemoryAsyncLock::new(),
+            gate: InMemoryLock::new(),
             token: Mutex::new(None),
         }
     }
@@ -103,12 +103,12 @@ pub(crate) trait LeaseBackend: Send + Sync {
 /// it uses the gate's synchronous `unlock_core`. On the success path the holder
 /// keeps the gate, so [`disarm`](Self::disarm) suppresses the release.
 struct GateGuard<'a> {
-    gate: &'a InMemoryAsyncLock,
+    gate: &'a InMemoryLock,
     armed: bool,
 }
 
 impl<'a> GateGuard<'a> {
-    fn new(gate: &'a InMemoryAsyncLock) -> Self {
+    fn new(gate: &'a InMemoryLock) -> Self {
         Self { gate, armed: true }
     }
 

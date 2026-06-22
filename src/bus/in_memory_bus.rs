@@ -13,7 +13,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
+use super::source::{MessageSource, ReceivedMessage};
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
 use super::{Message, MessageKind};
 
@@ -113,7 +113,7 @@ struct QueueSource {
     names: Vec<String>,
 }
 
-impl AsyncMessageSource for QueueSource {
+impl MessageSource for QueueSource {
     type Received = InMemoryReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
@@ -135,7 +135,7 @@ struct TopicSource {
     cursors: HashMap<String, usize>,
 }
 
-impl AsyncMessageSource for TopicSource {
+impl MessageSource for TopicSource {
     type Received = InMemoryReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {

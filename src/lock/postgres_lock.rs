@@ -1,4 +1,4 @@
-//! Postgres-backed durable [`AsyncLockManager`] — a per-stream lease in the
+//! Postgres-backed durable [`LockManager`] — a per-stream lease in the
 //! `aggregate_locks` table. Drop it into a `QueuedRepository` with
 //! `.queued_with(PostgresLockManager::new(pool))` to serialize aggregate
 //! access across processes. See [`super::sqlx_common`] for the lease model.
@@ -15,7 +15,7 @@ use super::sqlx_common::{
     default_owner_id, lease_acquire_error, lease_lock, lease_release_error, lease_try_lock,
     lease_unlock, mint_token, LeaseBackend, LeaseConfig, LockShared,
 };
-use super::{AsyncLock, AsyncLockManager, LockError};
+use super::{Lock, LockError, LockManager};
 
 /// Inline lease-table DDL for standalone [`PostgresLockManager::migrate`]. The
 /// same table is created by `PostgresRepository`'s migrations; both are
@@ -31,10 +31,10 @@ CREATE TABLE IF NOT EXISTS aggregate_locks (\
 );\
 CREATE INDEX IF NOT EXISTS aggregate_locks_expires_at_idx ON aggregate_locks (expires_at);";
 
-/// Postgres-backed [`AsyncLockManager`]. Hands out one cached [`PostgresLock`]
-/// per key (like `InMemoryAsyncLockManager`).
+/// Postgres-backed [`LockManager`]. Hands out one cached [`PostgresLock`]
+/// per key (like `InMemoryLockManager`).
 ///
-/// Apply the `with_*` tunables **before the first [`get_lock`](AsyncLockManager::get_lock)**:
+/// Apply the `with_*` tunables **before the first [`get_lock`](LockManager::get_lock)**:
 /// each per-key lock captures the configuration at creation time, so reconfiguring
 /// after locks have been handed out would not affect the already-cached ones.
 #[derive(Clone)]
@@ -114,7 +114,7 @@ impl PostgresLockManager {
     }
 }
 
-impl AsyncLockManager for PostgresLockManager {
+impl LockManager for PostgresLockManager {
     type Lock = PostgresLock;
 
     fn get_lock(&self, id: &str) -> Result<Arc<PostgresLock>, LockError> {
@@ -200,7 +200,7 @@ impl LeaseBackend for PostgresLock {
     }
 }
 
-impl AsyncLock for PostgresLock {
+impl Lock for PostgresLock {
     fn lock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_ {
         lease_lock(self)
     }

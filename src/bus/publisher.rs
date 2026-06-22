@@ -1,7 +1,7 @@
 //! The shared async publish boundary.
 //!
 //! Producing is more uniform than consuming, so outbox dispatch and any other
-//! producer uses a single [`AsyncMessagePublisher`]. Each adapter documents its
+//! producer uses a single [`MessagePublisher`]. Each adapter documents its
 //! durable *publish threshold* — the point `publish` may resolve `Ok`:
 //!
 //! - Postgres: the outbox-backed bus row committed, or a committed insert into a
@@ -26,7 +26,7 @@ use super::{Message, TransportError};
 /// reached; any failure or unknown outcome is `Err`. The error's
 /// [retryability](TransportError) lets the caller (the outbox dispatcher) decide
 /// whether to keep the row retryable.
-pub trait AsyncMessagePublisher: Send + Sync {
+pub trait MessagePublisher: Send + Sync {
     /// Publish a single message.
     fn publish(
         &self,
@@ -86,7 +86,7 @@ mod tests {
         fail_at: Option<usize>,
     }
 
-    impl AsyncMessagePublisher for CountingPublisher {
+    impl MessagePublisher for CountingPublisher {
         async fn publish(&self, message: Message) -> Result<(), TransportError> {
             let mut published = self.published.lock().unwrap();
             if self.fail_at == Some(published.len()) {

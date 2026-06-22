@@ -1,6 +1,6 @@
 //! Durable SQLx lease-lock conformance: `PostgresLockManager` / `SqliteLockManager`.
 //!
-//! The generic `scenario_*` helpers run against any `AsyncLockManager`. The
+//! The generic `scenario_*` helpers run against any `LockManager`. The
 //! SQLite suite runs unconditionally (temp-file databases, no server). The
 //! Postgres suite skips when `DATABASE_URL` is unset, mirroring the existing
 //! Postgres integration tests.
@@ -13,8 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use distributed::{
-    sourced, AggregateBuilder, AsyncLock, AsyncLockManager, Entity, HashMapRepository, LockError,
-    Queueable,
+    sourced, AggregateBuilder, Entity, HashMapRepository, Lock, LockError, LockManager, Queueable,
 };
 
 #[derive(Default)]
@@ -45,11 +44,11 @@ async fn within<T>(fut: impl Future<Output = T>) -> T {
 }
 
 // ===========================================================================
-// Generic scenarios — run against any AsyncLockManager backend.
+// Generic scenarios — run against any LockManager backend.
 // ===========================================================================
 
 /// Acquire holds the key; a second handle cannot acquire until release.
-async fn scenario_acquire_contend_release<M: AsyncLockManager>(manager: &M) {
+async fn scenario_acquire_contend_release<M: LockManager>(manager: &M) {
     let a = manager.get_lock("agg-1").unwrap();
     within(a.lock()).await.unwrap();
 
@@ -68,7 +67,7 @@ async fn scenario_acquire_contend_release<M: AsyncLockManager>(manager: &M) {
 }
 
 /// Distinct keys never contend.
-async fn scenario_distinct_keys_do_not_contend<M: AsyncLockManager>(manager: &M) {
+async fn scenario_distinct_keys_do_not_contend<M: LockManager>(manager: &M) {
     let a = manager.get_lock("agg-1").unwrap();
     let b = manager.get_lock("agg-2").unwrap();
     within(a.lock()).await.unwrap();
@@ -79,7 +78,7 @@ async fn scenario_distinct_keys_do_not_contend<M: AsyncLockManager>(manager: &M)
 }
 
 /// `get_lock` returns the same cached handle for the same key.
-async fn scenario_same_handle_per_key<M: AsyncLockManager>(manager: &M) {
+async fn scenario_same_handle_per_key<M: LockManager>(manager: &M) {
     let a1 = manager.get_lock("agg-1").unwrap();
     let a2 = manager.get_lock("agg-1").unwrap();
     let b = manager.get_lock("agg-2").unwrap();
@@ -91,7 +90,7 @@ async fn scenario_same_handle_per_key<M: AsyncLockManager>(manager: &M) {
 /// blocks on the held DB lease until the first releases.
 async fn scenario_two_managers_serialize<M>(m1: M, m2: M)
 where
-    M: AsyncLockManager + 'static,
+    M: LockManager + 'static,
 {
     let l1 = m1.get_lock("shared").unwrap();
     within(l1.lock()).await.unwrap();
@@ -134,11 +133,7 @@ const EXPIRY_MARGIN: Duration = Duration::from_millis(700);
 /// An expired lease (crashed/overran holder) becomes reclaimable by another
 /// manager. `m_holder` must be configured with lease TTL `ttl` (passed in so the
 /// wait scales with it).
-async fn scenario_expired_lease_reclaim<M: AsyncLockManager>(
-    m_holder: &M,
-    m_other: &M,
-    ttl: Duration,
-) {
+async fn scenario_expired_lease_reclaim<M: LockManager>(m_holder: &M, m_other: &M, ttl: Duration) {
     let l1 = m_holder.get_lock("expiring").unwrap();
     within(l1.lock()).await.unwrap(); // acquired, never released
 
@@ -159,7 +154,7 @@ async fn scenario_expired_lease_reclaim<M: AsyncLockManager>(
 
 /// Release is owner-token scoped: after a lease is stolen on expiry, the original
 /// holder's `unlock` is a no-op and does not free the new holder's lease.
-async fn scenario_release_is_owner_scoped<M: AsyncLockManager>(m1: &M, m2: &M, ttl: Duration) {
+async fn scenario_release_is_owner_scoped<M: LockManager>(m1: &M, m2: &M, ttl: Duration) {
     let l1 = m1.get_lock("stolen").unwrap();
     within(l1.lock()).await.unwrap(); // m1 holds with TTL `ttl`, never releases cleanly
 
@@ -186,7 +181,7 @@ async fn scenario_release_is_owner_scoped<M: AsyncLockManager>(m1: &M, m2: &M, t
 /// `abort` releases the held lease.
 async fn scenario_queued_abort_releases<M>(manager: M)
 where
-    M: AsyncLockManager + 'static,
+    M: LockManager + 'static,
 {
     let repo = HashMapRepository::new()
         .queued_with(manager)
@@ -215,7 +210,7 @@ where
 /// the lease collision at the database level, not just the in-process gate.
 async fn scenario_two_managers_race_free_key<M>(m1: M, m2: M)
 where
-    M: AsyncLockManager + 'static,
+    M: LockManager + 'static,
 {
     let l1 = m1.get_lock("race").unwrap();
     let l2 = m2.get_lock("race").unwrap();
@@ -242,7 +237,7 @@ where
 
 /// `lock()` on a manager configured with `max_wait` returns `AcquireFailed`
 /// (rather than blocking forever) when the lease stays held past the deadline.
-async fn scenario_max_wait_timeout<M: AsyncLockManager>(holder: &M, waiter: &M) {
+async fn scenario_max_wait_timeout<M: LockManager>(holder: &M, waiter: &M) {
     let held = holder.get_lock("busy").unwrap();
     within(held.lock()).await.unwrap(); // held with the default (long) TTL
 
@@ -261,7 +256,7 @@ async fn scenario_max_wait_timeout<M: AsyncLockManager>(holder: &M, waiter: &M) 
 /// Cancellation safety: if an in-progress `lock()` is dropped while it holds the
 /// in-process gate and is polling the (held) DB lease, the gate must still be
 /// released — otherwise the key wedges for every later same-process acquire.
-async fn scenario_cancelled_acquire_releases_gate<M: AsyncLockManager>(holder: &M, other: &M) {
+async fn scenario_cancelled_acquire_releases_gate<M: LockManager>(holder: &M, other: &M) {
     let h = holder.get_lock("cancelme").unwrap();
     within(h.lock()).await.unwrap(); // holder owns the DB lease
 

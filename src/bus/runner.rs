@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
+use super::source::{MessageSource, ReceivedMessage};
 use super::Message;
 use super::{FailureAction, MessageRouter, RunOptions, TransportError};
 
@@ -50,7 +50,7 @@ pub async fn run_source<R, S, I>(
 ) -> Result<(), TransportError>
 where
     R: MessageRouter,
-    S: AsyncMessageSource,
+    S: MessageSource,
     I: Send,
 {
     while let Some(received) = source.recv().await? {
@@ -233,7 +233,7 @@ mod tests {
         decode_error: bool,
     }
 
-    impl AsyncMessageSource for FakeSource {
+    impl MessageSource for FakeSource {
         type Received = FakeReceived;
         async fn recv(&mut self) -> Result<Option<FakeReceived>, TransportError> {
             if self.recv_error {

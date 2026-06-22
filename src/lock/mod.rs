@@ -19,7 +19,7 @@
 //!          │                  │                     │
 //!          ▼                  ▼                     ▼
 //! ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-//! │ InMemoryAsyncLock│  │   PostgresLock   │  │    SqliteLock    │
+//! │  InMemoryLock   │  │   PostgresLock   │  │    SqliteLock    │
 //! │   (process-local)│  │ (durable lease,  │  │ (durable lease,  │
 //! │                  │  │  feature=postgres│  │  feature=sqlite) │
 //! └──────────────────┘  └──────────────────┘  └──────────────────┘
@@ -29,10 +29,10 @@
 //! the `aggregate_locks` table so a `QueuedRepository` can serialize aggregate
 //! access across processes.
 
-mod async_in_memory;
-mod async_lock;
-mod async_lock_manager;
 mod error;
+mod in_memory;
+mod lock;
+mod manager;
 #[cfg(feature = "postgres")]
 mod postgres_lock;
 #[cfg(feature = "sqlite")]
@@ -40,10 +40,10 @@ mod sqlite_lock;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_common;
 
-pub use async_in_memory::{InMemoryAsyncLock, InMemoryAsyncLockFuture, InMemoryAsyncLockManager};
-pub use async_lock::AsyncLock;
-pub use async_lock_manager::AsyncLockManager;
 pub use error::{LockError, RetryClass};
+pub use in_memory::{InMemoryLock, InMemoryLockFuture, InMemoryLockManager};
+pub use lock::Lock;
+pub use manager::LockManager;
 #[cfg(feature = "postgres")]
 pub use postgres_lock::{PostgresLock, PostgresLockManager};
 #[cfg(feature = "sqlite")]

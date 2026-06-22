@@ -10,7 +10,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::bus::{AsyncMessagePublisher, Message};
+use crate::bus::{Message, MessagePublisher};
 use crate::outbox::{OutboxMessage, OutboxPublishHook};
 use crate::repository::RepositoryError;
 
@@ -39,7 +39,7 @@ impl<S, P> BusOutboxPublishHook<S, P> {
 impl<S, P> OutboxPublishHook for BusOutboxPublishHook<S, P>
 where
     S: OutboxStore,
-    P: AsyncMessagePublisher,
+    P: MessagePublisher,
 {
     fn publish_claimed<'a>(
         &'a self,

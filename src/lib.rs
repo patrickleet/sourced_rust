@@ -56,8 +56,7 @@ pub use sqlite_repo::{SqliteOutboxStore, SqliteRepository};
 
 // Re-export lock traits and types at crate root for convenience
 pub use lock::{
-    AsyncLock, AsyncLockManager, InMemoryAsyncLock, InMemoryAsyncLockFuture,
-    InMemoryAsyncLockManager, LockError,
+    InMemoryLock, InMemoryLockFuture, InMemoryLockManager, Lock, LockError, LockManager,
 };
 // Durable SQLx lease-table lock managers (feature-gated like the SQLx repos).
 #[cfg(feature = "postgres")]

@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::bus::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, NatsBus, NatsJetStreamSource,
-    NatsPublisher, RunOptions,
+    run_source, Bus, BusConsumer, MessagePublisher, NatsBus, NatsJetStreamSource, NatsPublisher,
+    RunOptions,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Service};
 use serde_json::json;

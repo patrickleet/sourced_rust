@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::entity::Entity;
-use crate::lock::{AsyncLock, AsyncLockManager, InMemoryAsyncLockManager};
+use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::read_model::{
     ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelLoadGraph,
     ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
@@ -49,7 +49,7 @@ impl ReadOpts {
 /// Commit releases held locks only after the inner repository succeeds. On
 /// commit errors, locks remain held so callers can inspect state, retry, or
 /// explicitly abort.
-pub struct QueuedRepository<R, L = InMemoryAsyncLockManager> {
+pub struct QueuedRepository<R, L = InMemoryLockManager> {
     inner: R,
     lock_manager: Arc<L>,
 }
@@ -67,7 +67,7 @@ impl<R> QueuedRepository<R> {
     pub fn new(inner: R) -> Self {
         QueuedRepository {
             inner,
-            lock_manager: Arc::new(InMemoryAsyncLockManager::new()),
+            lock_manager: Arc::new(InMemoryLockManager::new()),
         }
     }
 }
@@ -89,7 +89,7 @@ impl<R, L> QueuedRepository<R, L> {
 // serializes per-aggregate `get`/`commit` with the configured async lock manager.
 // ============================================================================
 
-impl<R, L: AsyncLockManager> QueuedRepository<R, L> {
+impl<R, L: LockManager> QueuedRepository<R, L> {
     /// Create a `QueuedRepository` with a custom async lock manager.
     pub fn with_lock_manager(inner: R, lock_manager: L) -> Self {
         QueuedRepository {
@@ -121,7 +121,7 @@ impl<R, L: AsyncLockManager> QueuedRepository<R, L> {
 impl<R, L> GetStream for QueuedRepository<R, L>
 where
     R: GetStream,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn get_stream<'a>(
         &'a self,
@@ -170,7 +170,7 @@ where
 impl<R, L> TransactionalCommit for QueuedRepository<R, L>
 where
     R: TransactionalCommit,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn commit_batch<'a>(
         &'a self,
@@ -210,7 +210,7 @@ where
 impl<R, L> SnapshotStore for QueuedRepository<R, L>
 where
     R: SnapshotStore,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn get_snapshot<'a>(
         &'a self,
@@ -238,7 +238,7 @@ where
 impl<R, L> ReadModelWritePlanStore for QueuedRepository<R, L>
 where
     R: ReadModelWritePlanStore,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
         self.inner.read_model_capabilities()
@@ -255,7 +255,7 @@ where
 impl<R, L> RelationalReadModelQueryStore for QueuedRepository<R, L>
 where
     R: RelationalReadModelQueryStore,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
         self.inner.read_model_query_capabilities()
@@ -272,7 +272,7 @@ where
 impl<R, L> InboxStore for QueuedRepository<R, L>
 where
     R: InboxStore,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn inbox_contains<'a>(
         &'a self,
@@ -292,7 +292,7 @@ where
     }
 }
 
-/// Async opt-out reads for a queued repository — the async counterpart to
+/// Opt-out reads for a queued repository — the counterpart to
 /// [`GetWithOpts`]. `ReadOpts::no_lock()` reads without acquiring the lock.
 pub trait GetWithOpts {
     fn get_stream_with<'a>(
@@ -302,7 +302,7 @@ pub trait GetWithOpts {
     ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a;
 }
 
-/// Async opt-out multi-reads — the async counterpart to [`GetAllWithOpts`].
+/// Opt-out multi-reads — the counterpart to [`GetAllWithOpts`].
 pub trait GetAllWithOpts {
     fn get_streams_with<'a>(
         &'a self,
@@ -314,7 +314,7 @@ pub trait GetAllWithOpts {
 impl<R, L> GetWithOpts for QueuedRepository<R, L>
 where
     R: GetStream,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn get_stream_with<'a>(
         &'a self,
@@ -334,7 +334,7 @@ where
 impl<R, L> GetAllWithOpts for QueuedRepository<R, L>
 where
     R: GetStream,
-    L: AsyncLockManager,
+    L: LockManager,
 {
     fn get_streams_with<'a>(
         &'a self,
@@ -355,7 +355,7 @@ where
 
 /// Releasing a held lock for an aborted load over the async repository surface.
 ///
-/// Release is `async` because a durable [`AsyncLock`] (e.g. the SQLx lease-table
+/// Release is `async` because a durable [`Lock`] (e.g. the SQLx lease-table
 /// locks) releases by talking to its backing store; the in-memory lock resolves
 /// immediately. It is a separate trait because coherence cannot prove a type is
 /// not both several lock-manager kinds at once.
@@ -378,7 +378,7 @@ pub trait UnlockableRepository: Send + Sync {
     }
 }
 
-impl<R, L: AsyncLockManager> UnlockableRepository for QueuedRepository<R, L>
+impl<R, L: LockManager> UnlockableRepository for QueuedRepository<R, L>
 where
     R: Send + Sync,
 {
@@ -398,12 +398,12 @@ pub trait Queueable: Sized {
     /// Wrap with the default async lock manager. Pair with
     /// `.aggregate::<T>()` for per-aggregate serialization over the async
     /// repository surface.
-    fn queued(self) -> QueuedRepository<Self, InMemoryAsyncLockManager> {
-        QueuedRepository::with_lock_manager(self, InMemoryAsyncLockManager::new())
+    fn queued(self) -> QueuedRepository<Self, InMemoryLockManager> {
+        QueuedRepository::with_lock_manager(self, InMemoryLockManager::new())
     }
 
     /// Wrap with a custom async lock manager.
-    fn queued_with<L: AsyncLockManager>(self, lock_manager: L) -> QueuedRepository<Self, L> {
+    fn queued_with<L: LockManager>(self, lock_manager: L) -> QueuedRepository<Self, L> {
         QueuedRepository::with_lock_manager(self, lock_manager)
     }
 }

@@ -1,6 +1,6 @@
 //! Transport error classification.
 //!
-//! Async transport adapters and the runner that drives them need a shared way
+//! Transport adapters and the runner that drives them need a shared way
 //! to say whether a failure is worth retrying. [`TransportError`] carries that
 //! classification so the runner can decide between negative-acknowledging a
 //! message for redelivery (retryable) and handing it to the configured

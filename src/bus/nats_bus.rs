@@ -29,8 +29,8 @@ use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
 use super::{
-    retryable, run_source, AsyncMessagePublisher, Bus, BusConsumer, BusTopologyConfig,
-    MessageRouter, RunOptions, TransportError,
+    retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter,
+    RunOptions, TransportError,
 };
 use super::{Message, MessageKind};
 

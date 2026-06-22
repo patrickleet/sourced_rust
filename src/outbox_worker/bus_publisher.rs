@@ -1,6 +1,6 @@
-//! `Bus` → `AsyncMessagePublisher` adapter.
+//! `Bus` → `MessagePublisher` adapter.
 //!
-//! The outbox dispatcher publishes through a single [`AsyncMessagePublisher`],
+//! The outbox dispatcher publishes through a single [`MessagePublisher`],
 //! but the command-vs-event topology split lives in the [`Bus`] as two methods
 //! (`send_message` for point-to-point commands, `publish_message` for fan-out
 //! events) backed by different publishers/topologies. This adapter bridges them
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use crate::bus::{AsyncMessagePublisher, Bus, Message, MessageKind, TransportError};
+use crate::bus::{Bus, Message, MessageKind, MessagePublisher, TransportError};
 
 /// Publishes outbox-derived [`Message`]s through a [`Bus`], routing by kind:
 /// commands to `send_message` (point-to-point), events to `publish_message`
@@ -22,7 +22,7 @@ pub struct BusPublisher<B> {
 }
 
 impl<B> BusPublisher<B> {
-    /// Wrap a shared bus as an [`AsyncMessagePublisher`].
+    /// Wrap a shared bus as a [`MessagePublisher`].
     pub fn new(bus: Arc<B>) -> Self {
         Self { bus }
     }
@@ -41,7 +41,7 @@ impl<B> Clone for BusPublisher<B> {
     }
 }
 
-impl<B: Bus> AsyncMessagePublisher for BusPublisher<B> {
+impl<B: Bus> MessagePublisher for BusPublisher<B> {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         match message.kind {
             MessageKind::Command => self.bus.send_message(message).await,

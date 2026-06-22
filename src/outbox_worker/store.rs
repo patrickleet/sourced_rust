@@ -93,7 +93,7 @@ impl OutboxClaimRef {
     }
 }
 
-/// Async store capability for claiming and updating durable outbox messages.
+/// Store capability for claiming and updating durable outbox messages.
 pub trait OutboxStore: Send + Sync {
     fn messages_by_status(
         &self,

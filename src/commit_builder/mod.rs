@@ -74,7 +74,7 @@ impl StagedOutboxSource {
     }
 }
 
-/// Async builder for chaining multiple items into one transactional commit batch.
+/// Builder for chaining multiple items into one transactional commit batch.
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     streams: Vec<StreamWrite<'a>>,
@@ -94,7 +94,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         }
     }
 
-    /// Add a read-model write plan builder to the async commit.
+    /// Add a read-model write plan builder to the commit.
     pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
         if self.error.is_some() {
             return self;
@@ -107,13 +107,13 @@ impl<'a, R> CommitBuilder<'a, R> {
         self
     }
 
-    /// Add an outbox message to the async commit.
+    /// Add an outbox message to the commit.
     pub fn outbox(mut self, msg: OutboxMessage) -> Self {
         self.outbox_messages.push(msg);
         self
     }
 
-    /// Stage an aggregate and switch to a no-argument staged async commit builder.
+    /// Stage an aggregate and switch to a no-argument staged commit builder.
     pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
         let source = OutboxSource::from_aggregate(aggregate);
         let mut builder = StagedCommitBuilder::from_builder(self);
@@ -140,7 +140,7 @@ impl<'a, R> CommitBuilder<'a, R> {
         self.commit_streams().await
     }
 
-    /// Commit multiple aggregates of the same type in one async batch.
+    /// Commit multiple aggregates of the same type in one batch.
     pub async fn commit_many<A: Aggregate + Send>(
         mut self,
         aggregates: &mut [&mut A],
@@ -189,7 +189,7 @@ impl<'a, R> CommitBuilder<'a, R> {
     }
 }
 
-/// Async builder returned after one or more aggregates are staged explicitly.
+/// Builder returned after one or more aggregates are staged explicitly.
 pub struct StagedCommitBuilder<'a, R> {
     repo: &'a R,
     streams: Vec<StreamWrite<'a>>,

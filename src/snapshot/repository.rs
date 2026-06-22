@@ -304,11 +304,11 @@ where
     Box::pin(async move {
         let Some(snapshot) = repo.get_snapshot(identity).await? else {
             // No snapshot: a plain full load (same as a snapshotless repo).
-            return Ok(repo
+            return repo
                 .get_stream(identity)
                 .await?
                 .map(hydrate::<A>)
-                .transpose()?);
+                .transpose();
         };
 
         // Fetch only events after the snapshot. The returned entity records the

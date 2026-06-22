@@ -13,8 +13,8 @@
 //!   ingress, so it implements only [`Bus`].
 //!
 //! A concrete `*Bus` implements both, so `bus.send/listen/publish/subscribe` all
-//! work on it. `send`/`publish` lower to the transport's [`AsyncMessagePublisher`];
-//! `listen`/`subscribe` build the transport's [`AsyncMessageSource`] with the
+//! work on it. `send`/`publish` lower to the transport's [`MessagePublisher`];
+//! `listen`/`subscribe` build the transport's [`MessageSource`] with the
 //! right topology and run it through the shared [`run_source`](super::run_source).
 
 use std::future::Future;

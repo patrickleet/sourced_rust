@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::bus::{
-    run_source, AsyncMessagePublisher, Bus, BusConsumer, KafkaBus, KafkaPublisher, KafkaSource,
+    run_source, Bus, BusConsumer, KafkaBus, KafkaPublisher, KafkaSource, MessagePublisher,
     RunOptions,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Service};

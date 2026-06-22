@@ -529,7 +529,7 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
     );
 }
 
-// --- Async workspace parity -----------------------------------------------
+// --- Workspace parity ------------------------------------------------------
 //
 // `InMemoryReadModelStore` implements the async store traits, so the same
 // workspace ergonomic is available over `workspace()` /

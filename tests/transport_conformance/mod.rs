@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::bus::{
-    run_source, AsyncMessagePublisher, AsyncMessageSource, FailurePolicy, ReceivedMessage,
-    RunOptions, TransportError,
+    run_source, FailurePolicy, MessagePublisher, MessageSource, ReceivedMessage, RunOptions,
+    TransportError,
 };
 use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Service};
 use distributed::OutboxDispatcher;
@@ -119,7 +119,7 @@ impl FakeSource {
     }
 }
 
-impl AsyncMessageSource for FakeSource {
+impl MessageSource for FakeSource {
     type Received = FakeReceived;
     async fn recv(&mut self) -> Result<Option<FakeReceived>, TransportError> {
         if self.recv_error {
@@ -159,7 +159,7 @@ impl FakePublisher {
     }
 }
 
-impl AsyncMessagePublisher for FakePublisher {
+impl MessagePublisher for FakePublisher {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         match self.mode {
             PublishMode::Succeed => {

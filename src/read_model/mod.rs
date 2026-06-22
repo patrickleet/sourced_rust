@@ -11,7 +11,7 @@
 //! repo.read_models(read_models).commit(&mut aggregate).await?;
 //! ```
 //!
-//! Async persistent repositories expose the staging shape through
+//! Persistent repositories expose the staging shape through
 //! `ReadModelWritePlanCommitExt::read_models`, returning a future
 //! from `commit`.
 //!

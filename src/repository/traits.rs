@@ -77,7 +77,7 @@ impl PreparedEventAppend {
     }
 }
 
-/// Async stream-aware aggregate loading.
+/// Stream-aware aggregate loading.
 pub trait GetStream: Send + Sync {
     fn get_stream<'a>(
         &'a self,
@@ -94,9 +94,10 @@ pub trait GetStream: Send + Sync {
     ///
     /// This is the I/O half of snapshot loading: a snapshot covers events up to
     /// its version, so only the tail must be fetched and decoded. Backends with
-    /// a queryable store (Postgres, SQLite) override this with a `WHERE sequence
-    /// > $after_version` read; the default delegates to [`get_stream`], which
-    /// loads the full history and is always correct, just not optimized.
+    /// a queryable store (Postgres, SQLite) override this with a
+    /// `WHERE sequence > $after_version` read; the default delegates to
+    /// [`get_stream`], which loads the full history and is always correct, just
+    /// not optimized.
     ///
     /// The returned entity's `version`/`committed_version` reflect the true
     /// persisted stream position (`after_version + tail.len()`), not the tail
@@ -115,7 +116,7 @@ pub trait GetStream: Send + Sync {
     }
 }
 
-/// Async transactional commit capability for durable persistence backends.
+/// Transactional commit capability for durable persistence backends.
 pub trait TransactionalCommit: Send + Sync {
     fn commit_batch<'a>(
         &'a self,
@@ -158,12 +159,12 @@ pub trait InboxStore: Send + Sync {
     ) -> impl Future<Output = Result<u64, RepositoryError>> + Send;
 }
 
-/// Repository trait for types that implement async stream reads and commits.
+/// Repository trait for types that implement stream reads and commits.
 pub trait Repository: GetStream + TransactionalCommit {}
 
 impl<T> Repository for T where T: GetStream + TransactionalCommit {}
 
-/// Async adapter contract for committing read-model write plans.
+/// Adapter contract for committing read-model write plans.
 pub trait ReadModelWritePlanStore: Send + Sync {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities;
 
@@ -173,7 +174,7 @@ pub trait ReadModelWritePlanStore: Send + Sync {
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_;
 }
 
-/// Async primary-key relational read-model query contract.
+/// Primary-key relational read-model query contract.
 pub trait RelationalReadModelQueryStore: Send + Sync {
     fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities;
 
@@ -183,7 +184,7 @@ pub trait RelationalReadModelQueryStore: Send + Sync {
     ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_;
 }
 
-/// Async snapshot persistence keyed by full stream identity.
+/// Snapshot persistence keyed by full stream identity.
 pub trait SnapshotStore: Send + Sync {
     fn get_snapshot<'a>(
         &'a self,

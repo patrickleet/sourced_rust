@@ -18,8 +18,8 @@ use lapin::options::{
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 
-use super::source::{AsyncMessageSource, ReceivedMessage};
-use super::{retryable, AsyncMessagePublisher, TransportError};
+use super::source::{MessageSource, ReceivedMessage};
+use super::{retryable, MessagePublisher, TransportError};
 use super::{Message, MessageKind};
 
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
@@ -87,7 +87,7 @@ pub(super) fn message_properties(message: &Message) -> BasicProperties {
     properties
 }
 
-impl AsyncMessagePublisher for RabbitPublisher {
+impl MessagePublisher for RabbitPublisher {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         let confirm = self
             .channel
@@ -145,7 +145,7 @@ impl RabbitSource {
     }
 }
 
-impl AsyncMessageSource for RabbitSource {
+impl MessageSource for RabbitSource {
     type Received = RabbitReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
