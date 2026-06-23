@@ -111,28 +111,28 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 
 ### 3. Serve it
 
-Build the service fluently from `Service::new()`, register handlers with
-`register_handlers!`, then expose the exact same service over direct dispatch,
-HTTP, gRPC, or the bus. Handlers are written once and are transport-agnostic.
+Build typed route bundles with `Routes::new()`, register handler modules with
+`routes!`, then collect those bundles into a deployment-level `Service`. Expose
+the exact same service over direct dispatch, HTTP, gRPC, or the bus. Handlers
+are written once and are transport-agnostic.
 
 ```rust,ignore
 use std::sync::Arc;
-use distributed::microsvc::{self, Service, Session};
+use distributed::microsvc::{self, Routes, Service, Session};
 use distributed::bus::{InMemoryBus, RunOptions};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(
-            HashMapRepository::new()
-                .queued()
-                .aggregate::<Todo>()
+    let routes = distributed::routes!(
+        Routes::new().with_repo(
+            HashMapRepository::new().queued().aggregate::<Todo>()
         ),
         command handlers::todo_create,
         command handlers::todo_complete,
     );
+    let service = Service::new().routes(routes);
 
     // Attach a bus and run. `with_bus` closes the loop from step 2: that
     // `outbox(..).commit(..)` now publishes on commit, and `run` consumes the
@@ -160,13 +160,12 @@ default you replace with a durable adapter.
 ```rust,ignore
 // Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
-let service = distributed::register_handlers!(
-    Service::new()
-        .named("todo-api")
-        .with_repo(repo.queued().aggregate::<Todo>()),
+let routes = distributed::routes!(
+    Routes::new().with_repo(repo.queued().aggregate::<Todo>()),
     command handlers::todo_create,
     command handlers::todo_complete,
 );
+let service = Service::new().named("todo-api").routes(routes);
 
 // Transport: InMemoryBus → a real broker. The handlers and the
 // `with_bus(..).run(..)` wiring are unchanged; only this constructor line differs.
@@ -180,9 +179,9 @@ service.with_bus(bus).run(RunOptions::idempotent()).await?;
 ```
 
 `group` and `namespace` are broker topology names, not the command/event names
-your service handles. `register_handlers!` gives the service its command/event
-names; `with_bus(bus).run(..)` reads those names through `subscription_plan()` and
-passes them to the transport.
+your service handles. `routes!` gives each route bundle its command/event names;
+`Service::routes(..)` aggregates them, and `with_bus(bus).run(..)` reads those
+names through `subscription_plan()` and passes them to the transport.
 
 - `Service::named("todo-api")` supplies the default durable consumer `group`.
   Use the same service name for every replica of one deployment. For direct
@@ -896,46 +895,46 @@ facade is built on.
 
 ## Microservice Framework (`microsvc`)
 
-The `microsvc` module provides a convention-based async command/event handler framework. Register handlers on a `Service<D>`, then expose them over HTTP, gRPC, the bus, or direct dispatch.
+The `microsvc` module provides a convention-based async command/event handler framework. Register handlers on typed `Routes<D>` bundles, collect them into a non-generic `Service`, then expose that service over HTTP, gRPC, the bus, or direct dispatch.
 
 ### Defining a Service
 
-A `Service<D>` is generic over a dependency type `D` that handlers read via `ctx`. Build one fluently from `Service::new()`: add `.with_repo(repo)` for aggregate command handlers, `.with_read_model_store(store)` for projection handlers (chain both when a handler needs both), and `.with_bus(bus)` to consume from / publish to a transport.
+A `Routes<D>` bundle is generic over a dependency type `D` that handlers read via `ctx`. Build one fluently from `Routes::new()`: add `.with_repo(repo)` for aggregate command handlers, `.with_read_model_store(store)` for projection handlers (chain both when a handler needs both), or `.with_dependencies(deps)` for custom dependencies. Add one or more route bundles to `Service::new()` with `.routes(routes)`, then use `.with_bus(bus)` to consume from / publish to a transport.
 
 Handlers are registered with a fluent builder. `.command(name)` / `.event(name)` start a registration; `.handle(closure)` adds an unguarded handler and `.guarded(guard, closure)` adds a guarded one. The handler closure receives `&Context<D>` and returns a future:
 
 ```rust,ignore
 use std::sync::Arc;
-use distributed::microsvc::{Context, HandlerError, Service, Session};
+use distributed::microsvc::{Context, HandlerError, Routes, Service, Session};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
-let service = Arc::new(
-    Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
-        .command("counter.initialize")
-        .handle(|ctx: &Context<Repo>| {
-            let input = ctx.input::<CreateCounter>();
-            async move {
-                let input = input?;
-                let mut counter = Counter::default();
-                counter.create(input.id.clone())?;
-                ctx.repo().commit(&mut counter).await?;
-                Ok(json!({ "id": input.id }))
-            }
-        })
-        .command("counter.increment")
-        .handle(|ctx: &Context<Repo>| {
-            let input = ctx.input::<IncrementCounter>();
-            async move {
-                let input = input?;
-                let mut counter = ctx.repo().get(&input.id).await?
-                    .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
-                counter.increment(input.amount)?;
-                ctx.repo().commit(&mut counter).await?;
-                Ok(json!({ "value": counter.value }))
-            }
-        })
-);
+let routes = Routes::new()
+    .with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+    .command("counter.initialize")
+    .handle(|ctx: &Context<Repo>| {
+        let input = ctx.input::<CreateCounter>();
+        async move {
+            let input = input?;
+            let mut counter = Counter::default();
+            counter.create(input.id.clone())?;
+            ctx.repo().commit(&mut counter).await?;
+            Ok(json!({ "id": input.id }))
+        }
+    })
+    .command("counter.increment")
+    .handle(|ctx: &Context<Repo>| {
+        let input = ctx.input::<IncrementCounter>();
+        async move {
+            let input = input?;
+            let mut counter = ctx.repo().get(&input.id).await?
+                .ok_or_else(|| HandlerError::NotFound(input.id.clone()))?;
+            counter.increment(input.amount)?;
+            ctx.repo().commit(&mut counter).await?;
+            Ok(json!({ "value": counter.value }))
+        }
+    });
+let service = Arc::new(Service::new().routes(routes));
 
 // Direct dispatch
 let _result = service
@@ -948,7 +947,7 @@ let _result = service
 `.guarded(guard, handler)` runs the guard before the handler — if it returns `false`, the command is rejected:
 
 ```rust,ignore
-service
+let routes = routes
     .command("admin.reset")
     .guarded(
         |ctx: &Context<Repo>| ctx.role() == Some("admin"),
@@ -996,14 +995,15 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 }
 ```
 
-Register them with the `register_handlers!` macro:
+Register them with the `routes!` macro:
 
 ```rust,ignore
-let service = distributed::register_handlers!(
-    Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+let routes = distributed::routes!(
+    Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
     command handlers::counter_create,
     command handlers::counter_increment,
 );
+let service = Service::new().routes(routes);
 ```
 
 Event projection handlers use `EVENT` / `EVENTS` and `event handlers::...` in the same way; inside the handler, `ctx.message()` gives the raw transport `Message` and `ctx.input::<T>()` decodes its payload.

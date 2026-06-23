@@ -11,7 +11,7 @@ use distributed::bus::{
     run_source, Bus, BusConsumer, MessagePublisher, NatsBus, NatsJetStreamSource, NatsPublisher,
     RunOptions,
 };
-use distributed::microsvc::{Context, Message, MessageKind, Service};
+use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
 use serde_json::json;
 
 // Shared broker-test helpers (recording_for, run_token, unique, ...).
@@ -58,15 +58,18 @@ async fn publish_then_consume_round_trips_through_jetstream() {
     let h = handled.clone();
     let subject_for_handler = subject.clone();
     let service = Arc::new(
-        Service::new()
-            .event(Box::leak(subject.clone().into_boxed_str()))
-            .handle(move |ctx: &Context<()>| {
-                assert_eq!(ctx.message().name(), subject_for_handler);
-                h.lock()
-                    .unwrap()
-                    .push(ctx.message().id().unwrap_or_default().to_string());
-                async move { Ok(json!({})) }
-            }),
+        Service::new().routes(
+            Routes::new()
+                .with_dependencies(())
+                .event(Box::leak(subject.clone().into_boxed_str()))
+                .handle(move |ctx: &Context<()>| {
+                    assert_eq!(ctx.message().name(), subject_for_handler);
+                    h.lock()
+                        .unwrap()
+                        .push(ctx.message().id().unwrap_or_default().to_string());
+                    async move { Ok(json!({})) }
+                }),
+        ),
     );
 
     run_source(service, source, RunOptions::idempotent())
@@ -104,18 +107,21 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     let observed = Arc::new(Mutex::new(None));
     let o = observed.clone();
     let service = Arc::new(
-        Service::new()
-            .event(Box::leak(subject.clone().into_boxed_str()))
-            .handle(move |ctx: &Context<()>| {
-                let m = ctx.message();
-                let recorded = Some((
-                    m.id().map(str::to_string),
-                    m.correlation_id().map(str::to_string),
-                    m.payload().to_vec(),
-                ));
-                *o.lock().unwrap() = recorded;
-                async move { Ok(json!({})) }
-            }),
+        Service::new().routes(
+            Routes::new()
+                .with_dependencies(())
+                .event(Box::leak(subject.clone().into_boxed_str()))
+                .handle(move |ctx: &Context<()>| {
+                    let m = ctx.message();
+                    let recorded = Some((
+                        m.id().map(str::to_string),
+                        m.correlation_id().map(str::to_string),
+                        m.payload().to_vec(),
+                    ));
+                    *o.lock().unwrap() = recorded;
+                    async move { Ok(json!({})) }
+                }),
+        ),
     );
     run_source(service, source, RunOptions::idempotent())
         .await

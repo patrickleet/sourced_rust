@@ -1,7 +1,9 @@
-//! Service — handler registry and dispatch for microsvc.
+//! Routes and service dispatch for microsvc.
 //!
-//! `Service<D>` holds service dependencies and a set of named command/event handlers.
-//! Each handler receives a `Context<D>` and returns `Result<Value, HandlerError>`.
+//! `Routes<D>` holds one dependency value and its command/event handlers.
+//! `Service` is the deployment-level router that collects one or more route
+//! bundles. Each handler receives a `Context<D>` and returns
+//! `Result<Value, HandlerError>`.
 //!
 //! ## Example
 //!
@@ -11,12 +13,14 @@
 //! use distributed::microsvc;
 //! use serde_json::json;
 //!
-//! let service = microsvc::Service::new()
+//! let routes = microsvc::Routes::new()
+//!     .with_dependencies(())
 //!     .command("order.create")
 //!     .handle(|ctx| {
 //!         let input = ctx.input::<CreateOrderInput>();
 //!         async move { Ok(json!({ "id": input?.id })) }
 //!     });
+//! let service = microsvc::Service::new().routes(routes);
 //!
 //! let result = service
 //!     .dispatch("order.create", json!({"id": "1"}), Session::new())
@@ -27,23 +31,27 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use super::context::Context;
-use super::dependencies::{HasReadModelStore, HasRepo, RepoReadModelDependencies};
+use super::dependencies::{
+    ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore, HasRepo,
+    RepoReadModelDependencies,
+};
 use super::error::HandlerError;
 use super::session::Session;
-use crate::bus::{Message, MessageKind, RunOptions, SubscriptionPlan, TransportError};
+use crate::bus::{
+    Bus, Message, MessageKind, MessagePublisher, RunOptions, SubscriptionPlan, TransportError,
+};
+use crate::outbox::OutboxPublisherConfig;
+use crate::outbox_worker::BusOutboxPublishHook;
 
-/// The bus run behavior captured by [`Service::with_bus`], type-erased so that
-/// attaching a bus does not change the service's type. Given the service (as the
-/// transport router) and run options, it consumes the registered command/event
-/// names. Stored on the service so `with_bus` stays a plain builder step and
-/// `run` can drive it.
-pub(crate) type ServiceRunner<D> = Box<
+/// The bus run behavior captured by [`Service::with_bus`](crate::microsvc::Service::with_bus).
+pub(crate) type ServiceRunner = Box<
     dyn Fn(
-            Arc<Service<D>>,
+            Arc<Service>,
             RunOptions,
         ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
         + Send
@@ -158,74 +166,329 @@ struct RegisteredHandler<D> {
     handle: Arc<HandlerFn<D>>,
 }
 
-/// Builder returned by [`Service::command`], [`Service::event`],
-/// [`Service::events`], and [`Service::handler`].
-pub struct HandlerBuilder<D> {
-    service: Service<D>,
+type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32);
+
+trait ErasedRoutes: Send + Sync {
+    fn handler_specs(&self) -> &[HandlerSpec];
+
+    fn dispatch<'a>(
+        &'a self,
+        message: Message,
+        input: Value,
+        session: Session,
+    ) -> HandlerFuture<'a>;
+
+    fn configure_outbox_publisher(
+        &mut self,
+        publisher: DynBusPublisher,
+        worker_id: String,
+        lease: Duration,
+        max_attempts: u32,
+    );
+}
+
+trait DynPublish: Send + Sync {
+    fn publish<'a>(
+        &'a self,
+        message: Message,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
+}
+
+struct BusDynPublisher<B> {
+    bus: Arc<B>,
+}
+
+impl<B: Bus> DynPublish for BusDynPublisher<B> {
+    fn publish<'a>(
+        &'a self,
+        message: Message,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            match message.kind {
+                MessageKind::Command => self.bus.send_message(message).await,
+                MessageKind::Event => self.bus.publish_message(message).await,
+            }
+        })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DynBusPublisher {
+    inner: Arc<dyn DynPublish>,
+}
+
+impl DynBusPublisher {
+    pub(crate) fn new<B>(bus: Arc<B>) -> Self
+    where
+        B: Bus + 'static,
+    {
+        Self {
+            inner: Arc::new(BusDynPublisher { bus }),
+        }
+    }
+}
+
+impl MessagePublisher for DynBusPublisher {
+    fn publish(
+        &self,
+        message: Message,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send + '_ {
+        self.inner.publish(message)
+    }
+}
+
+fn configure_outbox_for<D>(
+    dependencies: &mut D,
+    publisher: DynBusPublisher,
+    worker_id: String,
+    lease: Duration,
+    max_attempts: u32,
+) where
+    D: HasOutboxStore + ConfigurableOutboxPublisher,
+    D::OutboxStore: 'static,
+{
+    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts);
+    dependencies.configure_outbox_publisher(OutboxPublisherConfig::new(
+        Arc::new(hook),
+        worker_id,
+        lease,
+    ));
+}
+
+/// Builder returned by [`Routes::command`], [`Routes::event`],
+/// [`Routes::events`], and [`Routes::handler`].
+pub struct RouteBuilder<D> {
+    routes: Routes<D>,
     spec: HandlerSpec,
 }
 
-impl<D: Send + Sync + 'static> HandlerBuilder<D> {
+/// Backwards-compatible type alias for the handler registration builder.
+pub type HandlerBuilder<D> = RouteBuilder<D>;
+
+impl<D: Send + Sync + 'static> RouteBuilder<D> {
     /// Register an async handler without a guard.
-    pub fn handle<F>(self, handler: F) -> Service<D>
+    pub fn handle<F>(self, handler: F) -> Routes<D>
     where
         F: for<'a> Handler<'a, D> + 'static,
     {
-        self.service
+        self.routes
             .register_handler(self.spec, None, boxed_handler(handler))
     }
 
     /// Register an async handler with a (synchronous) guard.
-    pub fn guarded<G, F>(self, guard: G, handler: F) -> Service<D>
+    pub fn guarded<G, F>(self, guard: G, handler: F) -> Routes<D>
     where
         G: Fn(&Context<D>) -> bool + Send + Sync + 'static,
         F: for<'a> Handler<'a, D> + 'static,
     {
-        self.service
+        self.routes
             .register_handler(self.spec, Some(Arc::new(guard)), boxed_handler(handler))
     }
 }
 
-/// A microservice that routes commands to handler functions.
-///
-/// Generic over `D`, the service dependency type. Build one fluently from
-/// [`Service::new`], adding dependencies and a bus with the `with_*` steps:
-/// `Service::new().with_repo(repo).with_read_model_store(store).with_bus(bus)`.
-pub struct Service<D> {
-    name: Option<String>,
+/// A typed bundle of command/event handlers and the dependency value they use.
+pub struct Routes<D> {
     dependencies: D,
     handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
     handler_specs: Vec<HandlerSpec>,
-    runner: Option<ServiceRunner<D>>,
+    outbox_configurator: Option<OutboxConfigurator<D>>,
 }
 
-impl<D: Send + Sync + 'static> Service<D> {
-    /// Build a service around an already-assembled dependency value.
+impl<D: Send + Sync + 'static> Routes<D> {
+    /// Build routes around an already-assembled dependency value.
     pub(crate) fn from_dependencies(dependencies: D) -> Self {
         Self {
-            name: None,
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
-            runner: None,
+            outbox_configurator: None,
         }
     }
 
-    fn map_dependencies<N>(self, map: impl FnOnce(D) -> N) -> Service<N> {
-        let Service {
-            name, dependencies, ..
-        } = self;
-        Service {
-            name,
-            dependencies: map(dependencies),
-            handlers: HashMap::new(),
+    fn with_outbox_configurator(mut self, configurator: OutboxConfigurator<D>) -> Self {
+        self.outbox_configurator = Some(configurator);
+        self
+    }
+
+    /// Fail fast if handlers are already registered. Dependency builders
+    /// reconstruct the route bundle around a new dependency type, which would
+    /// otherwise silently drop previously registered handlers.
+    fn assert_no_registrations(&self, builder: &str) {
+        assert!(
+            self.handlers.is_empty() && self.handler_specs.is_empty(),
+            "Routes::{builder} must be called before registering handlers"
+        );
+    }
+
+    /// Get a reference to the route dependencies.
+    pub fn dependencies(&self) -> &D {
+        &self.dependencies
+    }
+
+    /// Get the aggregate repository for routes whose dependencies expose one.
+    pub fn repo(&self) -> &D::Repo
+    where
+        D: HasRepo,
+    {
+        self.dependencies.repo()
+    }
+
+    /// Get the read-model store for routes whose dependencies expose one.
+    pub fn read_model_store(&self) -> &D::ReadModelStore
+    where
+        D: HasReadModelStore,
+    {
+        self.dependencies.read_model_store()
+    }
+
+    /// Start registering a command handler that consumes JSON payload input.
+    pub fn command(self, name: &'static str) -> RouteBuilder<D> {
+        self.handler(HandlerSpec::command(name))
+    }
+
+    /// Start registering an event handler that consumes JSON payload input.
+    pub fn event(self, name: &'static str) -> RouteBuilder<D> {
+        self.handler(HandlerSpec::event(name))
+    }
+
+    /// Start registering an event handler for several event names that consume JSON
+    /// payload input.
+    pub fn events(self, names: &'static [&'static str]) -> RouteBuilder<D> {
+        self.handler(HandlerSpec::events(names))
+    }
+
+    /// Start registering a handler from a transport-visible spec.
+    pub fn handler(self, spec: HandlerSpec) -> RouteBuilder<D> {
+        RouteBuilder { routes: self, spec }
+    }
+
+    fn register_handler(
+        mut self,
+        spec: HandlerSpec,
+        guard: Option<Arc<GuardFn<D>>>,
+        handle: Arc<HandlerFn<D>>,
+    ) -> Self {
+        let mut keys = Vec::new();
+        for name in spec.names() {
+            let key = handler_key(spec.kind, name);
+            assert!(
+                !self.handlers.contains_key(&key) && !keys.contains(&key),
+                "duplicate route registration for {:?} `{}`",
+                spec.kind,
+                name
+            );
+            keys.push(key);
+        }
+
+        for key in keys {
+            self.handlers.insert(
+                key,
+                RegisteredHandler {
+                    guard: guard.clone(),
+                    handle: handle.clone(),
+                },
+            );
+        }
+        self.handler_specs.push(spec);
+        self
+    }
+
+    fn registered_keys(&self) -> Vec<(MessageKind, String)> {
+        self.handlers.keys().cloned().collect()
+    }
+
+    async fn invoke(
+        &self,
+        message: Message,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
+        // Clone the handler/guard Arcs so the handler map is not borrowed across
+        // the (awaited) handler future.
+        let (guard, handle) = {
+            let handler = self
+                .handlers
+                .get(&handler_key(message.kind, &message.name))
+                .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
+            (handler.guard.clone(), handler.handle.clone())
+        };
+        let name = message.name.clone();
+        let ctx = Context::new(message, input, session, &self.dependencies);
+
+        // Run guard (synchronous) if present.
+        if let Some(guard) = &guard {
+            if !guard(&ctx) {
+                return Err(HandlerError::GuardRejected(name));
+            }
+        }
+
+        handle(&ctx).await
+    }
+}
+
+impl<D> ErasedRoutes for Routes<D>
+where
+    D: Send + Sync + 'static,
+{
+    fn handler_specs(&self) -> &[HandlerSpec] {
+        &self.handler_specs
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        message: Message,
+        input: Value,
+        session: Session,
+    ) -> HandlerFuture<'a> {
+        Box::pin(self.invoke(message, input, session))
+    }
+
+    fn configure_outbox_publisher(
+        &mut self,
+        publisher: DynBusPublisher,
+        worker_id: String,
+        lease: Duration,
+        max_attempts: u32,
+    ) {
+        if let Some(configurator) = self.outbox_configurator {
+            configurator(
+                &mut self.dependencies,
+                publisher,
+                worker_id,
+                lease,
+                max_attempts,
+            );
+        }
+    }
+}
+
+/// A microservice deployment that routes messages to one or more route bundles.
+pub struct Service {
+    name: Option<String>,
+    routes: Vec<Box<dyn ErasedRoutes>>,
+    index: HashMap<(MessageKind, String), usize>,
+    handler_specs: Vec<HandlerSpec>,
+    runner: Option<ServiceRunner>,
+}
+
+impl Service {
+    /// Start building a deployment-level service.
+    pub fn new() -> Self {
+        Self {
+            name: None,
+            routes: Vec::new(),
+            index: HashMap::new(),
             handler_specs: Vec::new(),
             runner: None,
         }
     }
 
-    fn replace_dependencies<N>(self, dependencies: N) -> Service<N> {
-        self.map_dependencies(|_| dependencies)
+    /// Build a service from a single route bundle.
+    pub fn route<D>(routes: Routes<D>) -> Self
+    where
+        D: Send + Sync + 'static,
+    {
+        Self::new().routes(routes)
     }
 
     /// Assign a stable service/deployment identity.
@@ -244,74 +507,45 @@ impl<D: Send + Sync + 'static> Service<D> {
         self.name.as_deref()
     }
 
-    /// Fail fast if handlers, specs, or a runner are already registered. The
-    /// dependency builders (`with_repo`, `with_read_model_store`) reconstruct the
-    /// service around a new dependency type, which would otherwise silently drop
-    /// anything registered earlier and leave an empty router with no error.
-    fn assert_no_registrations(&self, builder: &str) {
-        assert!(
-            self.handlers.is_empty() && self.handler_specs.is_empty() && self.runner.is_none(),
-            "Service::{builder} must be called before registering handlers or attaching a bus"
-        );
-    }
-
-    /// Mutable access to the dependencies, used by `with_bus` to install the
-    /// outbox publisher on the repository before the service is shared.
-    pub(crate) fn dependencies_mut(&mut self) -> &mut D {
-        &mut self.dependencies
-    }
-
     /// Install the bus run behavior (used by `with_bus`).
-    pub(crate) fn set_runner(&mut self, runner: ServiceRunner<D>) {
+    pub(crate) fn set_runner(&mut self, runner: ServiceRunner) {
         self.runner = Some(runner);
     }
 
     /// Take the installed bus run behavior (used by `run`).
-    pub(crate) fn take_runner(&mut self) -> Option<ServiceRunner<D>> {
+    pub(crate) fn take_runner(&mut self) -> Option<ServiceRunner> {
         self.runner.take()
     }
 
-    /// Start registering a command handler that consumes JSON payload input.
-    pub fn command(self, name: &'static str) -> HandlerBuilder<D> {
-        self.handler(HandlerSpec::command(name))
+    /// Add a typed route bundle to this service.
+    pub fn routes<D>(mut self, routes: Routes<D>) -> Self
+    where
+        D: Send + Sync + 'static,
+    {
+        self.add_routes(routes);
+        self
     }
 
-    /// Start registering an event handler that consumes JSON payload input.
-    pub fn event(self, name: &'static str) -> HandlerBuilder<D> {
-        self.handler(HandlerSpec::event(name))
-    }
-
-    /// Start registering an event handler for several event names that consume JSON
-    /// payload input.
-    pub fn events(self, names: &'static [&'static str]) -> HandlerBuilder<D> {
-        self.handler(HandlerSpec::events(names))
-    }
-
-    /// Start registering a handler from a transport-visible spec.
-    pub fn handler(self, spec: HandlerSpec) -> HandlerBuilder<D> {
-        HandlerBuilder {
-            service: self,
-            spec,
-        }
-    }
-
-    fn register_handler(
-        mut self,
-        spec: HandlerSpec,
-        guard: Option<Arc<GuardFn<D>>>,
-        handle: Arc<HandlerFn<D>>,
-    ) -> Self {
-        for name in spec.names() {
-            self.handlers.insert(
-                handler_key(spec.kind, name),
-                RegisteredHandler {
-                    guard: guard.clone(),
-                    handle: handle.clone(),
-                },
+    fn add_routes<D>(&mut self, routes: Routes<D>)
+    where
+        D: Send + Sync + 'static,
+    {
+        let keys = routes.registered_keys();
+        for (kind, name) in &keys {
+            assert!(
+                !self.index.contains_key(&handler_key(*kind, name)),
+                "duplicate route registration for {:?} `{}`",
+                kind,
+                name
             );
         }
-        self.handler_specs.push(spec);
-        self
+
+        let route_index = self.routes.len();
+        for key in keys {
+            self.index.insert(key, route_index);
+        }
+        self.handler_specs.extend_from_slice(routes.handler_specs());
+        self.routes.push(Box::new(routes));
     }
 
     /// Dispatch a command by name.
@@ -386,26 +620,14 @@ impl<D: Send + Sync + 'static> Service<D> {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
-        // Clone the handler/guard Arcs so the handler map is not borrowed across
-        // the (awaited) handler future.
-        let (guard, handle) = {
-            let handler = self
-                .handlers
-                .get(&handler_key(message.kind, &message.name))
-                .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
-            (handler.guard.clone(), handler.handle.clone())
-        };
-        let name = message.name.clone();
-        let ctx = Context::new(message, input, session, &self.dependencies);
-
-        // Run guard (synchronous) if present.
-        if let Some(guard) = &guard {
-            if !guard(&ctx) {
-                return Err(HandlerError::GuardRejected(name));
-            }
-        }
-
-        handle(&ctx).await
+        let route_index = self
+            .index
+            .get(&handler_key(message.kind, &message.name))
+            .copied()
+            .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
+        self.routes[route_index]
+            .dispatch(message, input, session)
+            .await
     }
 
     /// List registered command names.
@@ -444,14 +666,14 @@ impl<D: Send + Sync + 'static> Service<D> {
 
     /// Return whether this service has a handler for the message name.
     pub fn handles(&self, name: &str) -> bool {
-        self.handlers
+        self.index
             .keys()
             .any(|(_, registered_name)| registered_name == name)
     }
 
     /// Return whether this service has a handler for this message kind and name.
     pub fn handles_message(&self, kind: MessageKind, name: &str) -> bool {
-        self.handlers.contains_key(&handler_key(kind, name))
+        self.index.contains_key(&handler_key(kind, name))
     }
 
     /// Return whether this service has an event handler for the message name.
@@ -459,86 +681,95 @@ impl<D: Send + Sync + 'static> Service<D> {
         self.handles_message(MessageKind::Event, name)
     }
 
-    /// Get a reference to the service dependencies.
-    pub fn dependencies(&self) -> &D {
-        &self.dependencies
-    }
-
-    /// Get the aggregate repository for services whose dependencies expose one.
-    pub fn repo(&self) -> &D::Repo
-    where
-        D: HasRepo,
-    {
-        self.dependencies.repo()
-    }
-
-    /// Get the read-model store for services whose dependencies expose one.
-    pub fn read_model_store(&self) -> &D::ReadModelStore
-    where
-        D: HasReadModelStore,
-    {
-        self.dependencies.read_model_store()
+    /// Configure every route bundle that supports immediate outbox publishing.
+    pub(crate) fn configure_outbox_publishers(
+        &mut self,
+        publisher: DynBusPublisher,
+        worker_id: String,
+        lease: Duration,
+        max_attempts: u32,
+    ) {
+        for route in &mut self.routes {
+            route.configure_outbox_publisher(
+                publisher.clone(),
+                worker_id.clone(),
+                lease,
+                max_attempts,
+            );
+        }
     }
 }
 
-// =============================================================================
-// Dependency builder: `Service::new().with_repo(..).with_read_model_store(..)`
-// =============================================================================
-
-impl Default for Service<()> {
+impl Default for Service {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Service<()> {
-    /// Start building a service. Add dependencies and a bus with the `with_*`
-    /// builder steps, then register handlers:
-    ///
-    /// ```ignore
-    /// Service::new()
-    ///     .with_repo(repo)
-    ///     .with_read_model_store(store)
-    ///     .with_bus(bus)
-    ///     .command("x").handle(handler)
-    ///     .run(opts).await?;
-    /// ```
+// =============================================================================
+// Dependency builders: `Routes::new().with_repo(..)`
+// =============================================================================
+
+impl Default for Routes<()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Routes<()> {
+    /// Start building a typed route bundle.
     pub fn new() -> Self {
         Self::from_dependencies(())
     }
 
-    /// Use an aggregate repository as the service's dependency.
-    pub fn with_repo<R>(self, repo: R) -> Service<R>
+    /// Use any custom dependency value for this route bundle.
+    pub fn with_dependencies<D>(self, dependencies: D) -> Routes<D>
     where
-        R: HasRepo + Send + Sync + 'static,
+        D: Send + Sync + 'static,
     {
-        self.assert_no_registrations("with_repo");
-        self.replace_dependencies(repo)
+        self.assert_no_registrations("with_dependencies");
+        Routes::from_dependencies(dependencies)
     }
 
-    /// Use a read-model store as the service's dependency.
-    pub fn with_read_model_store<S>(self, read_model_store: S) -> Service<S>
+    /// Use an aggregate repository as the route bundle's dependency.
+    pub fn with_repo<R>(self, repo: R) -> Routes<R>
+    where
+        R: HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
+    {
+        self.assert_no_registrations("with_repo");
+        Routes::from_dependencies(repo).with_outbox_configurator(configure_outbox_for::<R>)
+    }
+
+    /// Use a read-model store as the route bundle's dependency.
+    pub fn with_read_model_store<S>(self, read_model_store: S) -> Routes<S>
     where
         S: HasReadModelStore + Send + Sync + 'static,
     {
         self.assert_no_registrations("with_read_model_store");
-        self.replace_dependencies(read_model_store)
+        Routes::from_dependencies(read_model_store)
     }
 }
 
-impl<R: HasRepo + Send + Sync + 'static> Service<R> {
+impl<R> Routes<R>
+where
+    R: HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
+{
     /// Add a read-model store alongside the aggregate repository, so handlers can
     /// reach both via `ctx.repo()` and `ctx.read_model_store()`. Call after
     /// `with_repo`.
     pub fn with_read_model_store<S>(
         self,
         read_model_store: S,
-    ) -> Service<RepoReadModelDependencies<R, S>>
+    ) -> Routes<RepoReadModelDependencies<R, S>>
     where
         S: HasReadModelStore + Send + Sync + 'static,
     {
         self.assert_no_registrations("with_read_model_store");
-        self.map_dependencies(|repo| RepoReadModelDependencies::new(repo, read_model_store))
+        Routes::from_dependencies(RepoReadModelDependencies::new(
+            self.dependencies,
+            read_model_store,
+        ))
+        .with_outbox_configurator(configure_outbox_for::<RepoReadModelDependencies<R, S>>)
     }
 }
 
@@ -587,16 +818,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn test_service() -> Service<()> {
-        Service::new()
+    fn test_routes() -> Routes<()> {
+        Routes::new().with_dependencies(())
+    }
+
+    fn test_service(routes: Routes<()>) -> Service {
+        Service::new().routes(routes)
     }
 
     #[test]
-    fn named_service_preserves_identity_across_dependency_builders() {
-        let service = Service::new()
-            .named("todo-api")
-            .with_repo(crate::HashMapRepository::new())
-            .with_read_model_store(crate::HashMapRepository::new());
+    fn named_service_preserves_identity_with_route_bundles() {
+        let routes = Routes::new().with_read_model_store(crate::HashMapRepository::new());
+        let service = Service::new().named("todo-api").routes(routes);
 
         assert_eq!(service.name(), Some("todo-api"));
         assert_eq!(
@@ -606,10 +839,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn service_collects_route_bundles_with_different_dependencies() {
+        let service = Service::new()
+            .routes(
+                Routes::new()
+                    .with_dependencies(String::from("orders"))
+                    .command("string.dep")
+                    .handle(|ctx: &Context<String>| {
+                        let dep = ctx.dependencies().clone();
+                        async move { Ok(json!({ "dependency": dep })) }
+                    }),
+            )
+            .routes(
+                Routes::new()
+                    .with_dependencies(7_u32)
+                    .event("number.dep")
+                    .handle(|ctx: &Context<u32>| {
+                        let dep = *ctx.dependencies();
+                        async move { Ok(json!({ "dependency": dep })) }
+                    }),
+            );
+
+        let command = service
+            .dispatch("string.dep", json!({}), Session::new())
+            .await
+            .unwrap();
+        let event = service
+            .dispatch_message(&Message::new(
+                "number.dep",
+                MessageKind::Event,
+                br#"{}"#.to_vec(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(command, json!({ "dependency": "orders" }));
+        assert_eq!(event, json!({ "dependency": 7 }));
+        assert_eq!(
+            service.subscription_plan(),
+            SubscriptionPlan {
+                commands: vec!["string.dep".to_string()],
+                events: vec!["number.dep".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_route_names_within_bundle_are_rejected() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _routes = test_routes()
+                .command("same")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) })
+                .command("same")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) });
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn duplicate_route_bundle_add_is_rejected_atomically() {
+        let mut service = Service::new().routes(
+            test_routes()
+                .command("same")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) }),
+        );
+        let conflicting = Routes::new()
+            .with_dependencies(7_u32)
+            .command("same")
+            .handle(|_: &Context<u32>| async move { Ok(json!({})) })
+            .command("new")
+            .handle(|_: &Context<u32>| async move { Ok(json!({})) });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            service.add_routes(conflicting);
+        }));
+
+        assert!(result.is_err());
+        assert!(service.handles_message(MessageKind::Command, "same"));
+        assert!(!service.handles_message(MessageKind::Command, "new"));
+        assert_eq!(service.routes.len(), 1);
+        assert_eq!(service.command_names(), vec!["same"]);
+    }
+
+    #[tokio::test]
     async fn dispatch_returns_handler_result() {
-        let service = test_service()
-            .command("ping")
-            .handle(|_ctx: &Context<()>| async move { Ok(json!({ "pong": true })) });
+        let service = test_service(
+            test_routes()
+                .command("ping")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({ "pong": true })) }),
+        );
         let result = service
             .dispatch("ping", json!({}), Session::new())
             .await
@@ -619,18 +938,20 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_command() {
-        let service = test_service()
-            .command("ping")
-            .handle(|_ctx: &Context<()>| async move { Ok(json!({})) });
+        let service = test_service(
+            test_routes()
+                .command("ping")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({})) }),
+        );
         let result = service.dispatch("unknown", json!({}), Session::new()).await;
         assert!(matches!(result, Err(HandlerError::UnknownCommand(ref s)) if s == "unknown"));
     }
 
     #[tokio::test]
     async fn handler_error_propagates() {
-        let service = test_service()
-            .command("fail")
-            .handle(|_ctx: &Context<()>| async move { Err(HandlerError::Rejected("nope".into())) });
+        let service = test_service(test_routes().command("fail").handle(
+            |_ctx: &Context<()>| async move { Err(HandlerError::Rejected("nope".into())) },
+        ));
         let result = service.dispatch("fail", json!({}), Session::new()).await;
         assert!(matches!(result, Err(HandlerError::Rejected(ref s)) if s == "nope"));
     }
@@ -642,13 +963,13 @@ mod tests {
             _name: String,
         }
 
-        let service = test_service().command("typed").handle(|ctx: &Context<()>| {
+        let service = test_service(test_routes().command("typed").handle(|ctx: &Context<()>| {
             let input = ctx.input::<Input>();
             async move {
                 let _input = input?;
                 Ok(json!({}))
             }
-        });
+        }));
         let result = service
             .dispatch("typed", json!({ "wrong": 1 }), Session::new())
             .await;
@@ -657,11 +978,13 @@ mod tests {
 
     #[test]
     fn command_names_list() {
-        let service = test_service()
-            .command("a")
-            .handle(|_: &Context<()>| async move { Ok(json!({})) })
-            .command("b")
-            .handle(|_: &Context<()>| async move { Ok(json!({})) });
+        let service = test_service(
+            test_routes()
+                .command("a")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) })
+                .command("b")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) }),
+        );
         let mut cmds = service.command_names();
         cmds.sort();
         assert_eq!(cmds, vec!["a", "b"]);
@@ -671,11 +994,13 @@ mod tests {
     fn subscription_plan_separates_commands_and_events() {
         const EVENTS: &[&str] = &["checkout.started", "seat.reserved"];
 
-        let service = test_service()
-            .command("checkout.start")
-            .handle(|_: &Context<()>| async move { Ok(json!({})) })
-            .events(EVENTS)
-            .guarded(|_| true, |_: &Context<()>| async move { Ok(json!({})) });
+        let service = test_service(
+            test_routes()
+                .command("checkout.start")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) })
+                .events(EVENTS)
+                .guarded(|_| true, |_: &Context<()>| async move { Ok(json!({})) }),
+        );
 
         assert_eq!(
             service.subscription_plan(),
@@ -690,11 +1015,13 @@ mod tests {
     fn event_conveniences_record_event_names() {
         const EVENTS: &[&str] = &["seat.added", "seat.reserved"];
 
-        let service = test_service()
-            .event("checkout.started")
-            .handle(|_: &Context<()>| async move { Ok(json!({})) })
-            .events(EVENTS)
-            .handle(|_: &Context<()>| async move { Ok(json!({})) });
+        let service = test_service(
+            test_routes()
+                .event("checkout.started")
+                .handle(|_: &Context<()>| async move { Ok(json!({})) })
+                .events(EVENTS)
+                .handle(|_: &Context<()>| async move { Ok(json!({})) }),
+        );
 
         let mut events = service.event_names();
         events.sort();
@@ -706,17 +1033,19 @@ mod tests {
 
     #[tokio::test]
     async fn command_and_event_handlers_can_share_a_name() {
-        let service = test_service()
-            .command("shared")
-            .handle(|ctx: &Context<()>| {
-                let kind = format!("{:?}", ctx.message().kind);
-                async move { Ok(json!({ "kind": kind })) }
-            })
-            .event("shared")
-            .handle(|ctx: &Context<()>| {
-                let event_id = ctx.message().id().map(|s| s.to_string());
-                async move { Ok(json!({ "event_id": event_id })) }
-            });
+        let service = test_service(
+            test_routes()
+                .command("shared")
+                .handle(|ctx: &Context<()>| {
+                    let kind = format!("{:?}", ctx.message().kind);
+                    async move { Ok(json!({ "kind": kind })) }
+                })
+                .event("shared")
+                .handle(|ctx: &Context<()>| {
+                    let event_id = ctx.message().id().map(|s| s.to_string());
+                    async move { Ok(json!({ "event_id": event_id })) }
+                }),
+        );
         let event_message =
             Message::new("shared", MessageKind::Event, br#"{}"#.to_vec()).with_id("evt-1");
 
@@ -734,9 +1063,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_message_delivers_payload_json_by_default() {
-        let service = test_service()
-            .event("checkout.started")
-            .handle(|ctx: &Context<()>| {
+        let service = test_service(test_routes().event("checkout.started").handle(
+            |ctx: &Context<()>| {
                 let has_checkout_id = ctx.has_fields(&["checkout_id"]);
                 let event_id = ctx.message().id().map(|s| s.to_string());
                 let checkout_id = ctx.raw_input()["checkout_id"]
@@ -754,7 +1082,8 @@ mod tests {
                         "user_id": user_id?,
                     }))
                 }
-            });
+            },
+        ));
         let message = Message {
             id: Some("evt-1".to_string()),
             name: "checkout.started".to_string(),
@@ -774,7 +1103,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_message_always_exposes_message_metadata() {
-        let service = test_service().event("seat.reserved").guarded(
+        let service = test_service(test_routes().event("seat.reserved").guarded(
             |ctx| ctx.message().id().is_some(),
             |ctx: &Context<()>| {
                 let input: Result<Value, _> = ctx.input();
@@ -792,7 +1121,7 @@ mod tests {
                     }))
                 }
             },
-        );
+        ));
         let message = Message {
             id: Some("evt-2".to_string()),
             name: "seat.reserved".to_string(),
@@ -817,13 +1146,13 @@ mod tests {
 
     #[tokio::test]
     async fn guard_passes() {
-        let service = test_service().command("greet").guarded(
+        let service = test_service(test_routes().command("greet").guarded(
             |ctx| ctx.has_fields(&["name"]),
             |ctx: &Context<()>| {
                 let name = ctx.raw_input()["name"].as_str().map(|s| s.to_string());
                 async move { Ok(json!({ "hello": name.unwrap() })) }
             },
-        );
+        ));
         let result = service
             .dispatch("greet", json!({ "name": "Pat" }), Session::new())
             .await
@@ -833,14 +1162,14 @@ mod tests {
 
     #[tokio::test]
     async fn guard_rejects() {
-        let service = test_service().command("greet").guarded(
+        let service = test_service(test_routes().command("greet").guarded(
             |ctx| ctx.has_fields(&["name"]),
             |_ctx: &Context<()>| async move {
                 panic!("handler should not run");
                 #[allow(unreachable_code)]
                 Ok(json!({}))
             },
-        );
+        ));
         let result = service
             .dispatch("greet", json!({ "wrong": 1 }), Session::new())
             .await;
@@ -849,10 +1178,10 @@ mod tests {
 
     #[tokio::test]
     async fn guard_checks_session() {
-        let service = test_service().command("admin").guarded(
+        let service = test_service(test_routes().command("admin").guarded(
             |ctx| ctx.role() == Some("admin"),
             |_ctx: &Context<()>| async move { Ok(json!({ "ok": true })) },
-        );
+        ));
 
         // No role
         assert!(service
@@ -868,9 +1197,11 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_request_success() {
-        let service = test_service()
-            .command("ping")
-            .handle(|_ctx: &Context<()>| async move { Ok(json!({ "pong": true })) });
+        let service = test_service(
+            test_routes()
+                .command("ping")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({ "pong": true })) }),
+        );
         let request = CommandRequest {
             command: "ping".to_string(),
             input: json!({}),
@@ -883,17 +1214,19 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_request_error_codes() {
-        let service = test_service()
-            .command("reject")
-            .handle(|_: &Context<()>| async move { Err(HandlerError::Rejected("no".into())) })
-            .command("unauth")
-            .handle(|ctx: &Context<()>| {
-                let user_id = ctx.user_id().map(|s| s.to_string());
-                async move {
-                    let _ = user_id?;
-                    Ok(json!({}))
-                }
-            });
+        let service = test_service(
+            test_routes()
+                .command("reject")
+                .handle(|_: &Context<()>| async move { Err(HandlerError::Rejected("no".into())) })
+                .command("unauth")
+                .handle(|ctx: &Context<()>| {
+                    let user_id = ctx.user_id().map(|s| s.to_string());
+                    async move {
+                        let _ = user_id?;
+                        Ok(json!({}))
+                    }
+                }),
+        );
 
         let resp = service
             .dispatch_request(&CommandRequest {
@@ -925,15 +1258,13 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_request_passes_session() {
-        let service = test_service()
-            .command("whoami")
-            .handle(|ctx: &Context<()>| {
-                let user_id = ctx.user_id().map(|s| s.to_string());
-                async move {
-                    let user_id = user_id?;
-                    Ok(json!({ "user_id": user_id }))
-                }
-            });
+        let service = test_service(test_routes().command("whoami").handle(|ctx: &Context<()>| {
+            let user_id = ctx.user_id().map(|s| s.to_string());
+            async move {
+                let user_id = user_id?;
+                Ok(json!({ "user_id": user_id }))
+            }
+        }));
         let mut vars = HashMap::new();
         vars.insert("x-hasura-user-id".to_string(), "user-99".to_string());
         let request = CommandRequest {

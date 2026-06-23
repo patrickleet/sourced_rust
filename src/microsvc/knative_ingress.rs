@@ -42,7 +42,7 @@ const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 /// Both dispatch by the parsed CloudEvent `type` (the path segment is for routing
 /// alignment only), so a Knative Trigger can target either a single shared `ref`
 /// (`/`) or the per-type subscriber URI `KnativeBus` emits (`/cloudevent/<type>`).
-pub fn cloud_events_router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
+pub fn cloud_events_router(service: Arc<Service>) -> Router {
     Router::new()
         .route("/", axum::routing::post(ingress_handler))
         .route("/cloudevent/{type}", axum::routing::post(ingress_handler))
@@ -52,8 +52,8 @@ pub fn cloud_events_router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -
         .with_state(service)
 }
 
-async fn ingress_handler<D: Send + Sync + 'static>(
-    State(service): State<Arc<Service<D>>>,
+async fn ingress_handler(
+    State(service): State<Arc<Service>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {

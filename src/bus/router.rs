@@ -2,8 +2,8 @@
 //! and the [`BusConsumer`](super::BusConsumer) adapters depend on instead of the
 //! concrete `microsvc::Service`.
 //!
-//! Implemented by `microsvc::Service<D>` (the rich, dependency-carrying registry)
-//! and — once it lands — the dependency-free `Handlers` builder. Splitting the
+//! Implemented by `microsvc::Service` (the rich registry backed by typed route
+//! bundles) and the dependency-free `Handlers` builder. Splitting the
 //! consume path behind this trait is what lets the bus become a standalone module
 //! that does not name `Service`. See `specs/bus-module-decomposition`.
 

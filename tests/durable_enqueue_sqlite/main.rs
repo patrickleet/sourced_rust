@@ -9,7 +9,7 @@
 use serde_json::{json, Value};
 
 use distributed::bus::{Bus, InMemoryBus, RunOptions};
-use distributed::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
+use distributed::microsvc::{Context, HandlerError, HasOutboxStore, Routes, Service, Session};
 use distributed::{
     sourced, AggregateBuilder, AggregateRepository, Entity, OutboxMessage, OutboxMessageStatus,
     OutboxStore, Queueable, QueuedRepository, SqliteRepository,
@@ -51,10 +51,15 @@ async fn service() -> Repo {
 
 #[tokio::test]
 async fn commit_publishes_immediately_over_sqlite() {
+    let repo = service().await;
+    let store = repo.outbox_store();
     let service = Service::new()
-        .with_repo(service().await)
-        .command("counter.touch")
-        .handle(handle_touch)
+        .routes(
+            Routes::new()
+                .with_repo(repo)
+                .command("counter.touch")
+                .handle(handle_touch),
+        )
         .with_bus(InMemoryBus::new());
 
     // The handler claims the outbox row in the SQL transaction, then publishes
@@ -64,7 +69,6 @@ async fn commit_publishes_immediately_over_sqlite() {
         .await
         .unwrap();
 
-    let store = service.repo().outbox_store();
     let published = store
         .messages_by_status(OutboxMessageStatus::Published)
         .await
@@ -80,12 +84,16 @@ async fn commit_publishes_immediately_over_sqlite() {
 #[tokio::test]
 async fn run_consumes_command_and_publishes_over_sqlite() {
     let bus = InMemoryBus::new();
+    let repo = service().await;
+    let store = repo.outbox_store();
     let service = Service::new()
-        .with_repo(service().await)
-        .command("counter.touch")
-        .handle(handle_touch)
+        .routes(
+            Routes::new()
+                .with_repo(repo)
+                .command("counter.touch")
+                .handle(handle_touch),
+        )
         .with_bus(bus.clone());
-    let store = service.repo().outbox_store();
 
     // Enqueue a command, then run: listen is derived from the registered command,
     // drains it, and the handler publishes its outbox row through the bus.

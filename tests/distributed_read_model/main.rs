@@ -22,7 +22,7 @@ use checkout::{
     SEAT_AVAILABLE,
 };
 use checkout_saga_service::CheckoutSaga;
-use distributed::microsvc::{Context, Service, Session};
+use distributed::microsvc::{Context, Routes, Service, Session};
 #[cfg(feature = "sqlite")]
 use distributed::SqliteRepository;
 use distributed::{
@@ -38,9 +38,8 @@ use read_models::{CheckoutStepView, SeatView};
 use seat_inventory_service::Seat;
 use serde::Serialize;
 
-async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
+async fn dispatch<C>(service: &Service, command: &str, input: C)
 where
-    D: Send + Sync + 'static,
     C: Serialize,
 {
     service
@@ -675,8 +674,9 @@ async fn checkout_commands_can_be_http_service() {
         .expect("HTTP checkout service should accept start request");
     assert_eq!(started.status(), 200);
 
-    let saga = checkout_service
-        .repo()
+    let saga = checkout_store
+        .queued()
+        .aggregate::<CheckoutSaga>()
         .peek("checkout-http")
         .await
         .expect("HTTP write-side load should succeed")
@@ -708,8 +708,9 @@ async fn checkout_commands_can_be_grpc_service() {
         .into_inner();
     assert_eq!(started.status, 200);
 
-    let saga = checkout_service
-        .repo()
+    let saga = checkout_store
+        .queued()
+        .aggregate::<CheckoutSaga>()
         .peek("checkout-grpc")
         .await
         .expect("gRPC write-side load should succeed")
@@ -740,7 +741,7 @@ fn record_message(collected: &Collected, message: &Message) {
     ));
 }
 
-fn build_collector() -> (StdArc<Service<()>>, Collected) {
+fn build_collector() -> (StdArc<Service>, Collected) {
     let collected: Collected = StdArc::new(StdMutex::new(Vec::new()));
     let (c1, c2, c3, c4) = (
         collected.clone(),
@@ -748,33 +749,36 @@ fn build_collector() -> (StdArc<Service<()>>, Collected) {
         collected.clone(),
         collected.clone(),
     );
-    let service = Service::new()
-        .event(seat_event::ADDED)
-        .handle(move |ctx: &Context<()>| {
-            record_message(&c1, ctx.message());
-            async { Ok(serde_json::Value::Null) }
-        })
-        .event(checkout_event::STARTED)
-        .handle(move |ctx: &Context<()>| {
-            record_message(&c2, ctx.message());
-            async { Ok(serde_json::Value::Null) }
-        })
-        .event(seat_event::RESERVED)
-        .handle(move |ctx: &Context<()>| {
-            record_message(&c3, ctx.message());
-            async { Ok(serde_json::Value::Null) }
-        })
-        .event(checkout_event::SEAT_RESERVATION_COMPLETED)
-        .handle(move |ctx: &Context<()>| {
-            record_message(&c4, ctx.message());
-            async { Ok(serde_json::Value::Null) }
-        });
+    let service = Service::new().routes(
+        Routes::new()
+            .with_dependencies(())
+            .event(seat_event::ADDED)
+            .handle(move |ctx: &Context<()>| {
+                record_message(&c1, ctx.message());
+                async { Ok(serde_json::Value::Null) }
+            })
+            .event(checkout_event::STARTED)
+            .handle(move |ctx: &Context<()>| {
+                record_message(&c2, ctx.message());
+                async { Ok(serde_json::Value::Null) }
+            })
+            .event(seat_event::RESERVED)
+            .handle(move |ctx: &Context<()>| {
+                record_message(&c3, ctx.message());
+                async { Ok(serde_json::Value::Null) }
+            })
+            .event(checkout_event::SEAT_RESERVATION_COMPLETED)
+            .handle(move |ctx: &Context<()>| {
+                record_message(&c4, ctx.message());
+                async { Ok(serde_json::Value::Null) }
+            }),
+    );
     (StdArc::new(service), collected)
 }
 
 async fn run_checkout_over_bus<B, R>(
     bus: B,
-    collector: StdArc<Service<()>>,
+    collector: StdArc<Service>,
     collected: Collected,
     repo: R,
     ids: FlowIds,
@@ -1038,10 +1042,7 @@ fn amqp_url() -> Option<String> {
 }
 
 #[cfg(feature = "rabbitmq")]
-async fn rabbit_matrix_bus(
-    ns: &str,
-    collector: &StdArc<Service<()>>,
-) -> distributed::bus::RabbitBus {
+async fn rabbit_matrix_bus(ns: &str, collector: &StdArc<Service>) -> distributed::bus::RabbitBus {
     let url = amqp_url().expect("AMQP_URL set");
     let bus = distributed::bus::RabbitBus::connect(&url)
         .group("matrix")

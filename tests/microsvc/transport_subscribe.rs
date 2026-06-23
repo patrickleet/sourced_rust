@@ -6,34 +6,36 @@
 use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
-use distributed::microsvc::{Message, MessageKind, Service};
+use distributed::microsvc::{Message, MessageKind, Routes, Service};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 
 use crate::handlers;
-use crate::handlers::Repo;
 use crate::models::counter::Counter;
 
-fn counter_service() -> Arc<Service<Repo>> {
+fn counter_service(store: HashMapRepository) -> Arc<Service> {
     Arc::new(
-        Service::new()
-            .with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
-            .event(handlers::counter_create::COMMAND)
-            .guarded(
-                handlers::counter_create::guard,
-                handlers::counter_create::handle,
-            )
-            .event(handlers::counter_increment::COMMAND)
-            .guarded(
-                handlers::counter_increment::guard,
-                handlers::counter_increment::handle,
-            ),
+        Service::new().routes(
+            Routes::new()
+                .with_repo(store.queued().aggregate::<Counter>())
+                .event(handlers::counter_create::COMMAND)
+                .guarded(
+                    handlers::counter_create::guard,
+                    handlers::counter_create::handle,
+                )
+                .event(handlers::counter_increment::COMMAND)
+                .guarded(
+                    handlers::counter_increment::guard,
+                    handlers::counter_increment::handle,
+                ),
+        ),
     )
 }
 
 #[tokio::test]
 async fn dispatches_from_pubsub() {
     let bus = InMemoryBus::new();
-    let service = counter_service();
+    let store = HashMapRepository::new();
+    let service = counter_service(store.clone());
 
     for (id, name, payload) in [
         ("evt-1", handlers::counter_create::COMMAND, r#"{"id":"c1"}"#),
@@ -60,6 +62,12 @@ async fn dispatches_from_pubsub() {
         .await
         .expect("subscriber should drain the bus");
 
-    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 15);
 }

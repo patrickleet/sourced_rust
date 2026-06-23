@@ -5,9 +5,9 @@
 //! - `guard(ctx) -> bool` — input validation
 //! - `handle(ctx) -> Result<Value, HandlerError>` — the handler
 //!
-//! Registration uses the `register_handlers!` macro.
+//! Registration uses the `routes!` macro.
 
-use distributed::microsvc::{Service, Session};
+use distributed::microsvc::{Routes, Service, Session};
 use distributed::{AggregateBuilder, HashMapRepository, OutboxStore, Queueable};
 use serde_json::json;
 
@@ -19,12 +19,13 @@ use crate::models::counter::Counter;
 // ============================================================================
 
 #[tokio::test]
-async fn register_handlers_and_dispatch() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+async fn routes_macro_registers_handlers_and_dispatches() {
+    let store = HashMapRepository::new();
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
-    );
+    ));
 
     let mut cmds = service.command_names();
     cmds.sort();
@@ -49,16 +50,22 @@ async fn register_handlers_and_dispatch() {
     assert_eq!(result, json!({ "id": "c1", "value": 10 }));
 
     // Verify state via repo
-    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 10);
 }
 
 #[tokio::test]
 async fn guard_rejects_bad_input() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
-    );
+    ));
 
     let result = service
         .dispatch("counter.initialize", json!({ "wrong": 1 }), Session::new())
@@ -68,10 +75,10 @@ async fn guard_rejects_bad_input() {
 
 #[tokio::test]
 async fn handler_rejects_duplicate_create() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
-    );
+    ));
 
     service
         .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
@@ -90,10 +97,11 @@ async fn handler_rejects_duplicate_create() {
 
 #[tokio::test]
 async fn create_persists_outbox_message() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    let store = HashMapRepository::new();
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
-    );
+    ));
 
     let result = service
         .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
@@ -101,24 +109,30 @@ async fn create_persists_outbox_message() {
         .unwrap();
     assert_eq!(result, json!({ "id": "c1" }));
 
-    let inner = service.repo().repo().inner();
-
     // Aggregate was persisted
-    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .clone()
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 0);
 
     // Outbox message was persisted
-    let pending = inner.outbox_store().pending().await.unwrap();
+    let pending = store.outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "counter.initialized");
 }
 
 #[tokio::test]
 async fn duplicate_create_leaves_single_outbox_message() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    let store = HashMapRepository::new();
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
-    );
+    ));
 
     service
         .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
@@ -131,24 +145,18 @@ async fn duplicate_create_leaves_single_outbox_message() {
         .await;
     assert!(result.is_err());
 
-    let pending = service
-        .repo()
-        .repo()
-        .inner()
-        .outbox_store()
-        .pending()
-        .await
-        .unwrap();
+    let pending = store.outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 1);
 }
 
 #[tokio::test]
 async fn increment_persists_outbox_message() {
-    let service = distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    let store = HashMapRepository::new();
+    let service = Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
-    );
+    ));
 
     service
         .dispatch("counter.initialize", json!({ "id": "c1" }), Session::new())
@@ -165,12 +173,18 @@ async fn increment_persists_outbox_message() {
         .unwrap();
 
     // Aggregate state is correct
-    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .clone()
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 7);
 
     // Both outbox messages were persisted
-    let inner = service.repo().repo().inner();
-    let pending = inner.outbox_store().pending().await.unwrap();
+    let pending = store.outbox_store().pending().await.unwrap();
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
     event_types.sort();

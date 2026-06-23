@@ -10,21 +10,20 @@
 use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
-use distributed::microsvc::{Message, MessageKind, Service, Session};
+use distributed::microsvc::{Message, MessageKind, Routes, Service, Session};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 
 use crate::handlers;
-use crate::handlers::Repo;
 use crate::models::counter::Counter;
 
-fn counter_service() -> Arc<Service<Repo>> {
-    Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+fn counter_service(store: HashMapRepository) -> Arc<Service> {
+    Arc::new(Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
-    ))
+    )))
 }
 
 fn command(name: &str, id: &str, payload: &str) -> Message {
@@ -34,7 +33,8 @@ fn command(name: &str, id: &str, payload: &str) -> Message {
 #[tokio::test]
 async fn dispatches_from_queue() {
     let bus = InMemoryBus::new();
-    let service = counter_service();
+    let store = HashMapRepository::new();
+    let service = counter_service(store.clone());
 
     bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
         .await
@@ -52,14 +52,21 @@ async fn dispatches_from_queue() {
         .await
         .expect("listen should drain the command queues");
 
-    let counter: Counter = service.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 10);
 }
 
 #[tokio::test]
 async fn tolerates_handler_failures_and_keeps_processing() {
     let bus = InMemoryBus::new();
-    let service = counter_service();
+    let store = HashMapRepository::new();
+    let service = counter_service(store.clone());
 
     // A failing message (increment a counter that was never created → NotFound)
     // must not wedge the consumer: it should drain and still process the rest.
@@ -95,14 +102,21 @@ async fn tolerates_handler_failures_and_keeps_processing() {
 
     // The good aggregate was still created and incremented, proving the failure
     // did not stop the consumer.
-    let c2: Counter = service.repo().get("c2").await.unwrap().unwrap();
+    let c2: Counter = store
+        .queued()
+        .aggregate::<Counter>()
+        .get("c2")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(c2.value, 7);
 }
 
 #[tokio::test]
 async fn coexists_with_direct_dispatch() {
     let bus = InMemoryBus::new();
-    let service = counter_service();
+    let store = HashMapRepository::new();
+    let service = counter_service(store.clone());
 
     // c1 created via the bus.
     bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
@@ -118,8 +132,9 @@ async fn coexists_with_direct_dispatch() {
         .await
         .expect("direct dispatch should create c2");
 
-    let c1: Counter = service.repo().get("c1").await.unwrap().unwrap();
-    let c2: Counter = service.repo().get("c2").await.unwrap().unwrap();
+    let repo = store.queued().aggregate::<Counter>();
+    let c1: Counter = repo.get("c1").await.unwrap().unwrap();
+    let c2: Counter = repo.get("c2").await.unwrap().unwrap();
     assert_eq!(c1.value, 0);
     assert_eq!(c2.value, 0);
 }
@@ -127,7 +142,7 @@ async fn coexists_with_direct_dispatch() {
 #[tokio::test]
 async fn metadata_becomes_session() {
     let bus = InMemoryBus::new();
-    let service = counter_service();
+    let service = counter_service(HashMapRepository::new());
 
     // `whoami` reads `ctx.user_id()`, which the runner derives from the message
     // metadata (`message_to_session` lowercases keys into session variables).
@@ -168,14 +183,14 @@ async fn multiple_services_on_different_queues() {
     let bus = InMemoryBus::new();
     let store = HashMapRepository::new();
 
-    let service_a = Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(store.clone().queued().aggregate::<Counter>()),
+    let service_a = Arc::new(Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
-    ));
-    let service_b = Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(store.queued().aggregate::<Counter>()),
+    )));
+    let service_b = Arc::new(Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_increment,
-    ));
+    )));
 
     // Each service drains only its own command queue from the shared bus, so the
     // two never compete: service_a takes `counter.initialize`, service_b takes
@@ -198,6 +213,12 @@ async fn multiple_services_on_different_queues() {
         .await
         .expect("service B should drain the increment queue");
 
-    let counter: Counter = service_a.repo().get("c1").await.unwrap().unwrap();
+    let counter: Counter = store
+        .queued()
+        .aggregate::<Counter>()
+        .get("c1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(counter.value, 42);
 }

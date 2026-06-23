@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use distributed::microsvc::Service;
+use distributed::microsvc::{Routes, Service};
 
 use super::{handlers, CheckoutRepo};
 
-pub fn service(repo: CheckoutRepo) -> Arc<Service<CheckoutRepo>> {
-    Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(repo),
+pub fn service(repo: CheckoutRepo) -> Arc<Service> {
+    Arc::new(Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(repo),
         command handlers::start,
         event handlers::record_seat_reserved,
-    ))
+    )))
 }
 
 #[cfg(feature = "http")]
-pub async fn start_http_service(service: Arc<Service<CheckoutRepo>>) -> String {
+pub async fn start_http_service(service: Arc<Service>) -> String {
     let app = distributed::microsvc::router(service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -33,7 +33,7 @@ pub async fn start_http_service(service: Arc<Service<CheckoutRepo>>) -> String {
 
 #[cfg(feature = "grpc")]
 pub async fn start_grpc_service(
-    service: Arc<Service<CheckoutRepo>>,
+    service: Arc<Service>,
 ) -> distributed::microsvc::grpc::CommandServiceClient<tonic::transport::Channel> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
