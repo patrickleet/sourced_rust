@@ -192,17 +192,3 @@ macro_rules! __routes_continue {
         $crate::__routes!($routes, $($rest)+)
     };
 }
-
-/// Compatibility alias for the pre-routes convention macro.
-///
-/// New code should use [`routes!`](crate::routes) and pass the resulting
-/// `Routes<D>` bundle to [`Service::routes`].
-#[macro_export]
-macro_rules! register_handlers {
-    ($routes:expr $(,)?) => {
-        $crate::routes!($routes)
-    };
-    ($routes:expr, $($rest:tt)+) => {
-        $crate::routes!($routes, $($rest)+)
-    };
-}
