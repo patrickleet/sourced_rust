@@ -16,7 +16,7 @@ mod read_models;
 
 use std::time::Duration;
 
-use board_service::{AddCard, MoveCard, OpenBoard, RemoveCard};
+use board_service::{AddCard, Board, MoveCard, OpenBoard, RemoveCard};
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
 use distributed::{
@@ -28,9 +28,8 @@ use query_service::BoardQueryService;
 use read_models::register_schemas;
 use serde::Serialize;
 
-async fn dispatch<D, C>(service: &Service<D>, command: &str, input: C)
+async fn dispatch<C>(service: &Service, command: &str, input: C)
 where
-    D: Send + Sync + 'static,
     C: Serialize,
 {
     service
@@ -79,7 +78,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 async fn board_service_feeds_a_normalized_card_read_model() {
     let board_store = HashMapRepository::new();
     let board_outbox = board_store.outbox_store();
-    let board_service = board_service::model_service(board_store.queued().aggregate());
+    let board_service = board_service::model_service(board_store.clone().queued().aggregate());
 
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
@@ -191,8 +190,9 @@ async fn board_service_feeds_a_normalized_card_read_model() {
         .expect("query should succeed")
         .is_none());
 
-    let write_side = board_service
-        .repo()
+    let write_side = board_store
+        .queued()
+        .aggregate::<Board>()
         .peek("board-1")
         .await
         .expect("write-side load should succeed")

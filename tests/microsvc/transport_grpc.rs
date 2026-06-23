@@ -7,29 +7,26 @@ use std::sync::Arc;
 use distributed::microsvc::grpc::{
     CommandServiceClient, GrpcRequest, GrpcServeError, HealthRequest,
 };
-use distributed::microsvc::Service;
+use distributed::microsvc::{Routes, Service};
 use distributed::{AggregateBuilder, HashMapRepository, Queueable};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 
 use crate::handlers;
-use crate::handlers::Repo;
 use crate::models::counter::Counter;
 
-fn counter_service() -> Arc<Service<Repo>> {
-    Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+fn counter_service() -> Arc<Service> {
+    Arc::new(Service::new().routes(distributed::routes!(
+        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
-    ))
+    )))
 }
 
 /// Bind to port 0, spawn the gRPC server, and return a connected client.
-async fn start_server(
-    service: Arc<Service<Repo>>,
-) -> CommandServiceClient<tonic::transport::Channel> {
+async fn start_server(service: Arc<Service>) -> CommandServiceClient<tonic::transport::Channel> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 

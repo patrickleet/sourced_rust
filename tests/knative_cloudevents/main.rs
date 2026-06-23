@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use distributed::bus::{Bus, KnativeBus};
 use distributed::microsvc::cloud_events_router;
 use distributed::microsvc::{
-    Context, HandlerError, Message, MessageKind, Service, SubscriptionPlan,
+    Context, HandlerError, Message, MessageKind, Routes, Service, SubscriptionPlan,
 };
 use serde_json::json;
 
@@ -18,32 +18,35 @@ async fn spawn_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let handled = Arc::new(Mutex::new(Vec::<String>::new()));
     let h = handled.clone();
     let service = Arc::new(
-        Service::new()
-            .event("order.initialized")
-            .handle(move |ctx: &Context<()>| {
-                h.lock()
-                    .unwrap()
-                    .push(ctx.message().id().unwrap_or_default().to_string());
-                async move { Ok(json!({"ok": true})) }
-            })
-            .event("order.temporarily_failed")
-            .handle(|_ctx: &Context<()>| async move {
-                // A transient storage outage (connection refused / pool timeout):
-                // the same message may succeed on redelivery, so it must classify
-                // retryable. A deterministic `Model` fault would (correctly) be
-                // permanent — that is the `order.rejected` path below.
-                let io = std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "connection refused",
-                );
-                Err(HandlerError::Repository(
-                    distributed::RepositoryError::retryable_storage("load stream", io),
-                ))
-            })
-            .event("order.rejected")
-            .handle(|_ctx: &Context<()>| async move {
-                Err(HandlerError::Rejected("order.permanently_failed".into()))
-            }),
+        Service::new().routes(
+            Routes::new()
+                .with_dependencies(())
+                .event("order.initialized")
+                .handle(move |ctx: &Context<()>| {
+                    h.lock()
+                        .unwrap()
+                        .push(ctx.message().id().unwrap_or_default().to_string());
+                    async move { Ok(json!({"ok": true})) }
+                })
+                .event("order.temporarily_failed")
+                .handle(|_ctx: &Context<()>| async move {
+                    // A transient storage outage (connection refused / pool timeout):
+                    // the same message may succeed on redelivery, so it must classify
+                    // retryable. A deterministic `Model` fault would (correctly) be
+                    // permanent — that is the `order.rejected` path below.
+                    let io = std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "connection refused",
+                    );
+                    Err(HandlerError::Repository(
+                        distributed::RepositoryError::retryable_storage("load stream", io),
+                    ))
+                })
+                .event("order.rejected")
+                .handle(|_ctx: &Context<()>| async move {
+                    Err(HandlerError::Rejected("order.permanently_failed".into()))
+                }),
+        ),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

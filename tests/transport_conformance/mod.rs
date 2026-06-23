@@ -19,7 +19,7 @@ use distributed::bus::{
     run_source, FailurePolicy, MessagePublisher, MessageSource, ReceivedMessage, RunOptions,
     TransportError,
 };
-use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Service};
+use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Routes, Service};
 use distributed::OutboxDispatcher;
 use distributed::{
     CommitBatch, HashMapOutboxStore, HashMapRepository, OutboxMessage, OutboxMessageStatus,
@@ -177,27 +177,30 @@ impl MessagePublisher for FakePublisher {
 /// A service with conventional handlers: `ok` succeeds, `retryable` fails with a
 /// retryable error, `permanent` fails with a permanent error. Each records that
 /// it ran so tests can assert dispatch-before-ack ordering.
-pub fn recording_service(recorder: &Arc<Recorder>) -> Arc<Service<()>> {
+pub fn recording_service(recorder: &Arc<Recorder>) -> Arc<Service> {
     let ok = recorder.clone();
     let retryable = recorder.clone();
     let permanent = recorder.clone();
     Arc::new(
-        Service::new()
-            .event("delivery.succeeded")
-            .handle(move |ctx: &Context<()>| {
-                ok.push(Event::Handled(ctx.message().name().to_string()));
-                async move { Ok(json!({})) }
-            })
-            .event("delivery.retry_requested")
-            .handle(move |ctx: &Context<()>| {
-                retryable.push(Event::Handled(ctx.message().name().to_string()));
-                async move { Err(HandlerError::Other("infra".into())) }
-            })
-            .event("delivery.permanently_failed")
-            .handle(move |ctx: &Context<()>| {
-                permanent.push(Event::Handled(ctx.message().name().to_string()));
-                async move { Err(HandlerError::Rejected("nope".into())) }
-            }),
+        Service::new().routes(
+            Routes::new()
+                .with_dependencies(())
+                .event("delivery.succeeded")
+                .handle(move |ctx: &Context<()>| {
+                    ok.push(Event::Handled(ctx.message().name().to_string()));
+                    async move { Ok(json!({})) }
+                })
+                .event("delivery.retry_requested")
+                .handle(move |ctx: &Context<()>| {
+                    retryable.push(Event::Handled(ctx.message().name().to_string()));
+                    async move { Err(HandlerError::Other("infra".into())) }
+                })
+                .event("delivery.permanently_failed")
+                .handle(move |ctx: &Context<()>| {
+                    permanent.push(Event::Handled(ctx.message().name().to_string()));
+                    async move { Err(HandlerError::Rejected("nope".into())) }
+                }),
+        ),
     )
 }
 
@@ -209,7 +212,7 @@ pub fn event_message(name: &str, id: Option<&str>) -> Message {
     message
 }
 
-fn recording_source(messages: Vec<Message>) -> (Arc<Recorder>, Arc<Service<()>>, FakeSource) {
+fn recording_source(messages: Vec<Message>) -> (Arc<Recorder>, Arc<Service>, FakeSource) {
     let recorder = Recorder::new();
     let service = recording_service(&recorder);
     let source = FakeSource::new(recorder.clone(), messages);
@@ -466,23 +469,21 @@ static SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// A `Service` whose single handler records each message's id into `rec`;
 /// `kind` selects command vs event registration.
-pub fn recording_for(
-    name: &str,
-    kind: MessageKind,
-    rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
+pub fn recording_for(name: &str, kind: MessageKind, rec: Arc<Mutex<Vec<String>>>) -> Arc<Service> {
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new();
+    let routes = Routes::new().with_dependencies(());
     let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
+        MessageKind::Command => routes.command(leaked),
+        MessageKind::Event => routes.event(leaked),
     };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
+    Arc::new(
+        Service::new().routes(registered.handle(move |ctx: &Context<()>| {
+            rec.lock()
+                .unwrap()
+                .push(ctx.message().id().unwrap_or_default().to_string());
+            async move { Ok(json!({})) }
+        })),
+    )
 }
 
 /// Like [`recording_for`], but names the service so consumer-group / queue
@@ -492,19 +493,23 @@ pub fn named_recording_for(
     name: &str,
     kind: MessageKind,
     rec: Arc<Mutex<Vec<String>>>,
-) -> Arc<Service<()>> {
+) -> Arc<Service> {
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    let builder = Service::new().named(service_name.to_string());
+    let routes = Routes::new().with_dependencies(());
     let registered = match kind {
-        MessageKind::Command => builder.command(leaked),
-        MessageKind::Event => builder.event(leaked),
+        MessageKind::Command => routes.command(leaked),
+        MessageKind::Event => routes.event(leaked),
     };
-    Arc::new(registered.handle(move |ctx: &Context<()>| {
-        rec.lock()
-            .unwrap()
-            .push(ctx.message().id().unwrap_or_default().to_string());
-        async move { Ok(json!({})) }
-    }))
+    Arc::new(
+        Service::new()
+            .named(service_name.to_string())
+            .routes(registered.handle(move |ctx: &Context<()>| {
+                rec.lock()
+                    .unwrap()
+                    .push(ctx.message().id().unwrap_or_default().to_string());
+                async move { Ok(json!({})) }
+            })),
+    )
 }
 
 /// A per-process token mixing wall-clock nanos with the pid, so names are unique

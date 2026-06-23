@@ -1,4 +1,4 @@
-//! `microsvc::Service<D>` as a transport [`MessageRouter`].
+//! `microsvc::Service` as a transport [`MessageRouter`].
 //!
 //! This is the bridge that lets the bus consume side run a service without the
 //! bus naming `Service`. Handler-error classification into the transport's
@@ -8,7 +8,7 @@
 use crate::bus::{MessageRouter, TransportError};
 use crate::microsvc::{Message, MessageKind, Service, SubscriptionPlan};
 
-impl<D: Send + Sync + 'static> MessageRouter for Service<D> {
+impl MessageRouter for Service {
     fn consumer_group(&self) -> Option<&str> {
         self.name()
     }

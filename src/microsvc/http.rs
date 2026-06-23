@@ -14,9 +14,12 @@
 //! use distributed::{microsvc, HashMapRepository};
 //!
 //! let service = Arc::new(
-//!     microsvc::Service::new().with_repo(HashMapRepository::new())
-//!         .command("counter.create")
-//!         .handle(|ctx| { /* ... */ })
+//!     microsvc::Service::new().routes(
+//!         microsvc::Routes::new()
+//!             .with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+//!             .command("counter.create")
+//!             .handle(|ctx| { /* ... */ })
+//!     )
 //! );
 //!
 //! // Get the router to compose with other axum routes
@@ -41,7 +44,7 @@ use super::session::Session;
 use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
-pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
+pub fn router(service: Arc<Service>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/{command}", axum::routing::post(command_handler))
@@ -52,26 +55,21 @@ pub fn router<D: Send + Sync + 'static>(service: Arc<Service<D>>) -> Router {
 }
 
 /// Serve the service over HTTP at the given address (e.g. `"0.0.0.0:3000"`).
-pub async fn serve<D: Send + Sync + 'static>(
-    service: Arc<Service<D>>,
-    addr: &str,
-) -> Result<(), std::io::Error> {
+pub async fn serve(service: Arc<Service>, addr: &str) -> Result<(), std::io::Error> {
     let app = router(service);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }
 
 /// `GET /health` — returns `{ "ok": true, "commands": [...] }`.
-async fn health_handler<D: Send + Sync + 'static>(
-    State(service): State<Arc<Service<D>>>,
-) -> impl IntoResponse {
+async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     let commands: Vec<&str> = service.command_names();
     Json(json!({ "ok": true, "commands": commands }))
 }
 
 /// `POST /{command}` — dispatch a command with JSON body and headers as session.
-async fn command_handler<D: Send + Sync + 'static>(
-    State(service): State<Arc<Service<D>>>,
+async fn command_handler(
+    State(service): State<Arc<Service>>,
     Path(command): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Value>,

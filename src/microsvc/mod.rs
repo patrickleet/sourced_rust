@@ -1,8 +1,9 @@
 //! microsvc — Convention-based microservice command handler framework.
 //!
-//! Build microservices by registering command and event handlers on a `Service`.
-//! Each handler receives a `Context<D>` with access to the input payload,
-//! session variables, and the service dependencies.
+//! Build microservices by registering command and event handlers on typed
+//! `Routes<D>` bundles, then adding those bundles to a deployment-level
+//! `Service`. Each handler receives a `Context<D>` with access to the input
+//! payload, session variables, and its route dependencies.
 //!
 //! ## Quick Start
 //!
@@ -14,14 +15,14 @@
 //! use distributed::{microsvc, HashMapRepository};
 //! use serde_json::json;
 //!
-//! let service = Arc::new(
-//!     microsvc::Service::new().with_repo(HashMapRepository::new())
-//!         .command("order.create")
-//!         .handle(|ctx| {
-//!             let input = ctx.input::<CreateOrderInput>();
-//!             async move { Ok(json!({ "id": input?.id })) }
-//!         })
-//! );
+//! let routes = microsvc::Routes::new()
+//!     .with_repo(HashMapRepository::new().queued().aggregate::<Order>())
+//!     .command("order.create")
+//!     .handle(|ctx| {
+//!         let input = ctx.input::<CreateOrderInput>();
+//!         async move { Ok(json!({ "id": input?.id })) }
+//!     });
+//! let service = Arc::new(microsvc::Service::new().routes(routes));
 //!
 //! // Direct dispatch (async)
 //! let result = service
@@ -72,7 +73,7 @@ pub use error::HandlerError;
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
-    Service,
+    RouteBuilder, Routes, Service,
 };
 pub use session::Session;
 
@@ -106,7 +107,7 @@ pub mod grpc;
 #[cfg(feature = "grpc")]
 pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 
-/// Register handler modules with a service using the convention pattern.
+/// Register handler modules with a route bundle using the convention pattern.
 ///
 /// Each handler entry must be prefixed with `command`, `event`, or `events`.
 ///
@@ -122,71 +123,72 @@ pub use grpc::{grpc_server, serve_grpc, GrpcServeError};
 ///
 /// # Example
 /// ```ignore
-/// let service = distributed::register_handlers!(
-///     microsvc::Service::new().with_repo(HashMapRepository::new()),
+/// let routes = distributed::routes!(
+///     microsvc::Routes::new().with_repo(repo),
 ///     command handlers::counter_create,
 ///     command handlers::counter_increment,
 ///     event handlers::counter_rebuilt,
 ///     events handlers::counter_projection,
 /// );
+/// let service = microsvc::Service::new().routes(routes);
 /// ```
 #[macro_export]
-macro_rules! register_handlers {
-    ($service:expr $(,)?) => {
-        $service
+macro_rules! routes {
+    ($routes:expr $(,)?) => {
+        $routes
     };
-    ($service:expr, $($rest:tt)+) => {
-        $crate::__register_handlers!($service, $($rest)+)
+    ($routes:expr, $($rest:tt)+) => {
+        $crate::__routes!($routes, $($rest)+)
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __register_handlers {
-    ($service:expr, command $($seg:ident)::+ $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.command($($seg)::+::COMMAND).guarded(
+macro_rules! __routes {
+    ($routes:expr, command $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__routes_continue!(
+            $routes.command($($seg)::+::COMMAND).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
             $(, $($rest)*)?
         )
     };
-    ($service:expr, event $($seg:ident)::+ $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.event($($seg)::+::EVENT).guarded(
+    ($routes:expr, event $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__routes_continue!(
+            $routes.event($($seg)::+::EVENT).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
             $(, $($rest)*)?
         )
     };
-    ($service:expr, events $($seg:ident)::+ $(, $($rest:tt)*)?) => {
-        $crate::__register_handlers_continue!(
-            $service.events($($seg)::+::EVENTS).guarded(
+    ($routes:expr, events $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+        $crate::__routes_continue!(
+            $routes.events($($seg)::+::EVENTS).guarded(
                 $($seg)::+::guard,
                 $($seg)::+::handle,
             )
             $(, $($rest)*)?
         )
     };
-    ($service:expr, $($seg:ident)::+ $(, $($rest:tt)*)?) => {
+    ($routes:expr, $($seg:ident)::+ $(, $($rest:tt)*)?) => {
         compile_error!(
-            "register_handlers! entries must be prefixed with `command`, `event`, or `events`"
+            "routes! entries must be prefixed with `command`, `event`, or `events`"
         )
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __register_handlers_continue {
-    ($service:expr) => {
-        $service
+macro_rules! __routes_continue {
+    ($routes:expr) => {
+        $routes
     };
-    ($service:expr,) => {
-        $service
+    ($routes:expr,) => {
+        $routes
     };
-    ($service:expr, $($rest:tt)+) => {
-        $crate::__register_handlers!($service, $($rest)+)
+    ($routes:expr, $($rest:tt)+) => {
+        $crate::__routes!($routes, $($rest)+)
     };
 }

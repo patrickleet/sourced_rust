@@ -12,11 +12,9 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use super::dependencies::{ConfigurableOutboxPublisher, HasOutboxStore};
+use super::service::DynBusPublisher;
 use super::Service;
 use crate::bus::{Bus, BusConsumer, RunOptions, TransportError};
-use crate::outbox::OutboxPublisherConfig;
-use crate::outbox_worker::{BusOutboxPublishHook, BusPublisher};
 
 /// Default lease for an immediate after-commit outbox publish. Short by design:
 /// it only needs to cover commit → publish, so a crash before the publish
@@ -26,10 +24,7 @@ pub const DEFAULT_PUBLISH_LEASE: Duration = Duration::from_secs(5);
 /// Default publish-failure ceiling before an outbox row is permanently failed.
 pub const DEFAULT_MAX_PUBLISH_ATTEMPTS: u32 = 5;
 
-impl<D> Service<D>
-where
-    D: Send + Sync + 'static + HasOutboxStore + ConfigurableOutboxPublisher,
-{
+impl Service {
     /// Attach a bus — a builder step that returns the same [`Service`].
     ///
     /// Two effects, both composing with the rest of the builder:
@@ -46,29 +41,22 @@ where
     {
         let bus = Arc::new(bus);
 
-        let hook = BusOutboxPublishHook::new(
-            self.dependencies().outbox_store(),
-            BusPublisher::new(Arc::clone(&bus)),
+        self.configure_outbox_publishers(
+            DynBusPublisher::new(Arc::clone(&bus)),
+            format!("microsvc-immediate:{}", std::process::id()),
+            DEFAULT_PUBLISH_LEASE,
             DEFAULT_MAX_PUBLISH_ATTEMPTS,
         );
-        self.dependencies_mut()
-            .configure_outbox_publisher(OutboxPublisherConfig::new(
-                Arc::new(hook),
-                format!("microsvc-immediate:{}", std::process::id()),
-                DEFAULT_PUBLISH_LEASE,
-            ));
 
         self.set_runner(Box::new(
-            move |service: Arc<Service<D>>, options: RunOptions| {
+            move |service: Arc<Service>, options: RunOptions| {
                 let bus = Arc::clone(&bus);
                 Box::pin(async move { run_consumers(&*bus, service, options).await })
             },
         ));
         self
     }
-}
 
-impl<D: Send + Sync + 'static> Service<D> {
     /// Run against the bus attached with [`with_bus`](Self::with_bus): consume
     /// the registered command names (competing `listen`) and event names
     /// (fan-out `subscribe`) concurrently on the caller's runtime. Returns when
@@ -94,13 +82,12 @@ type ConsumerFuture<'b> = Pin<Box<dyn Future<Output = Result<(), TransportError>
 /// Drive a service's command/event consumers concurrently on the caller's
 /// runtime — no spawn, no timer. Returns on the first error; finishes when all
 /// consumers stop.
-async fn run_consumers<'b, D, B>(
+async fn run_consumers<'b, B>(
     bus: &'b B,
-    service: Arc<Service<D>>,
+    service: Arc<Service>,
     options: RunOptions,
 ) -> Result<(), TransportError>
 where
-    D: Send + Sync + 'static,
     B: Bus + BusConsumer,
 {
     let plan = service.subscription_plan();
@@ -138,7 +125,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use crate::bus::{Bus, InMemoryBus, RunOptions};
-    use crate::microsvc::{Context, HandlerError, HasOutboxStore, Service, Session};
+    use crate::microsvc::{Context, HandlerError, Routes, Service, Session};
     use crate::outbox_worker::OutboxStore;
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, OutboxMessage,
@@ -161,31 +148,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_commit_publishes_immediately_when_bus_is_attached() {
+    async fn with_bus_configures_outbox_for_all_eligible_route_bundles() {
+        let repo_a = HashMapRepository::new();
+        let store_a = repo_a.outbox_store();
+        let repo_b = HashMapRepository::new();
+        let store_b = repo_b.outbox_store();
         let service = Service::new()
-            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
+            .routes(
+                Routes::new()
+                    .with_repo(repo_a.queued().aggregate::<Dummy>())
+                    .command("dummy.touch.a")
+                    .handle(touch_and_publish),
+            )
+            .routes(
+                Routes::new()
+                    .with_repo(repo_b.queued().aggregate::<Dummy>())
+                    .command("dummy.touch.b")
+                    .handle(touch_and_publish),
+            )
             .with_bus(InMemoryBus::new());
-        let store = service.repo().outbox_store();
 
-        // The plain commit API publishes immediately because a bus is attached.
-        let mut dummy = Dummy::default();
-        dummy.touch().unwrap();
-        let message = OutboxMessage::create("evt-1", "dummy.touched", b"{}".to_vec()).unwrap();
-        let receipt = service
-            .repo()
-            .outbox(message)
-            .commit(&mut dummy)
+        service
+            .dispatch("dummy.touch.a", json!({}), Session::new())
             .await
             .unwrap();
-        assert_eq!(receipt.outbox_message_ids(), ["evt-1".to_string()]);
+        service
+            .dispatch("dummy.touch.b", json!({}), Session::new())
+            .await
+            .unwrap();
 
-        let published = store
+        let published_a = store_a
             .messages_by_status(OutboxMessageStatus::Published)
             .await
             .unwrap();
-        assert_eq!(published.len(), 1, "row should be published at commit time");
-        assert_eq!(published[0].id(), "evt-1");
-        assert!(store.pending().await.unwrap().is_empty());
+        assert_eq!(
+            published_a.len(),
+            1,
+            "first route bundle should publish at commit time"
+        );
+        assert_eq!(published_a[0].id(), "evt-1");
+        assert!(store_a.pending().await.unwrap().is_empty());
+
+        let published_b = store_b
+            .messages_by_status(OutboxMessageStatus::Published)
+            .await
+            .unwrap();
+        assert_eq!(
+            published_b.len(),
+            1,
+            "second route bundle should publish at commit time"
+        );
+        assert_eq!(published_b[0].id(), "evt-1");
+        assert!(store_b.pending().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_bus_keeps_non_outbox_route_bundles_runnable() {
+        let service = Service::new()
+            .routes(
+                Routes::new()
+                    .with_dependencies(String::from("pong"))
+                    .command("ping")
+                    .handle(|ctx: &Context<String>| {
+                        let reply = ctx.dependencies().clone();
+                        async move { Ok(json!({ "reply": reply })) }
+                    }),
+            )
+            .with_bus(InMemoryBus::new());
+
+        let result = service
+            .dispatch("ping", json!({}), Session::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result, json!({ "reply": "pong" }));
     }
 
     type TouchRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Dummy>;
@@ -202,10 +238,15 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_through_a_handler_publishes_immediately() {
+        let repo = HashMapRepository::new();
+        let store = repo.outbox_store();
         let service = Service::new()
-            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
-            .command("dummy.touch")
-            .handle(touch_and_publish)
+            .routes(
+                Routes::new()
+                    .with_repo(repo.queued().aggregate::<Dummy>())
+                    .command("dummy.touch")
+                    .handle(touch_and_publish),
+            )
             .with_bus(InMemoryBus::new());
 
         // The handler runs `outbox().commit()`: claim-in-transaction, then
@@ -215,7 +256,6 @@ mod tests {
             .await
             .unwrap();
 
-        let store = service.repo().outbox_store();
         let published = store
             .messages_by_status(OutboxMessageStatus::Published)
             .await
@@ -228,14 +268,16 @@ mod tests {
     #[tokio::test]
     async fn run_consumes_registered_commands_from_the_bus() {
         let bus = InMemoryBus::new();
+        let repo = HashMapRepository::new();
+        let store = repo.outbox_store();
         let service = Service::new()
-            .with_repo(HashMapRepository::new().queued().aggregate::<Dummy>())
-            .command("dummy.touch")
-            .handle(touch_and_publish)
+            .routes(
+                Routes::new()
+                    .with_repo(repo.queued().aggregate::<Dummy>())
+                    .command("dummy.touch")
+                    .handle(touch_and_publish),
+            )
             .with_bus(bus.clone());
-        // The store shares state with the repo, so it stays inspectable after
-        // `run` consumes the service.
-        let store = service.repo().outbox_store();
 
         // Enqueue a command on the bus, then run: `listen` is derived from the
         // registered command, drains the message, and the handler publishes.
@@ -285,15 +327,15 @@ mod tests {
         // `outbox().commit()` must work for a snapshot-backed repository too: the
         // outbox row and the snapshot commit together in one transaction, then
         // the row publishes immediately.
+        let repo = HashMapRepository::new();
+        let store = repo.outbox_store();
         let service = Service::new()
-            .with_repo(
-                HashMapRepository::new()
-                    .queued()
-                    .aggregate::<SnapCounter>()
-                    .with_snapshots(1),
+            .routes(
+                Routes::new()
+                    .with_repo(repo.queued().aggregate::<SnapCounter>().with_snapshots(1))
+                    .command("snap.touch")
+                    .handle(touch_snap),
             )
-            .command("snap.touch")
-            .handle(touch_snap)
             .with_bus(InMemoryBus::new());
 
         service
@@ -301,7 +343,6 @@ mod tests {
             .await
             .unwrap();
 
-        let store = service.repo().outbox_store();
         let published = store
             .messages_by_status(OutboxMessageStatus::Published)
             .await

@@ -2,7 +2,7 @@
 //!
 //! The standalone, `Service`-free way to consume the bus: register a closure per
 //! `(kind, name)` and run it with `bus.listen`/`bus.subscribe`. It is the second
-//! implementation of [`MessageRouter`] (the first being `microsvc::Service<D>`),
+//! implementation of [`MessageRouter`] (the first being `microsvc::Service`),
 //! and the analog of the Node `bus.listen('seat.reserved', handler)` ergonomic.
 //!
 //! ```ignore
@@ -15,11 +15,12 @@
 //! Deliberately minimal: handlers take `&Message` (no `Context`, dependencies,
 //! guards, or sessions) and the registry is idempotent-only. The rich path —
 //! typed input, guards, `Session`, dependencies, the inbox hook — stays on
-//! `microsvc::Service<D>`. A handler returns `Ok(())` to ack, `Err` to nack
-//! (the runner classifies retryable vs permanent via the [`TransportError`]).
+//! `microsvc::Service` plus typed route bundles. A handler returns `Ok(())` to
+//! ack, `Err` to nack (the runner classifies retryable vs permanent via the
+//! [`TransportError`]).
 //!
-//! The win over `Service<()>` is dropping `D`/`Context` and not depending on
-//! `microsvc` at all — a `Service<()>` facade is impossible here, because the bus
+//! The win over unit `Routes<()>` is dropping `Context` and not depending on
+//! `microsvc` at all — a `Service` facade is impossible here, because the bus
 //! cannot depend up into `microsvc` where `Service` lives.
 
 use std::collections::HashMap;

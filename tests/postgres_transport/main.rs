@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use distributed::bus::{
     run_source, Bus, BusConsumer, MessageSource, PostgresBus, ReceivedMessage, RunOptions,
 };
-use distributed::microsvc::{Context, Message, MessageKind, Service};
+use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
 use distributed::OutboxSource;
 use distributed::{
     CommitBatch, OutboxMessage, OutboxMessageStatus, OutboxStore, PostgresOutboxStore,
@@ -59,17 +59,20 @@ async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageSt
     None
 }
 
-fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service<()>> {
+fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service> {
     Arc::new(
-        Service::new()
-            .event("order.initialized")
-            .handle(move |ctx: &Context<()>| {
-                handled
-                    .lock()
-                    .unwrap()
-                    .push(ctx.message().id().unwrap_or_default().to_string());
-                async move { Ok(json!({})) }
-            }),
+        Service::new().routes(
+            Routes::new()
+                .with_dependencies(())
+                .event("order.initialized")
+                .handle(move |ctx: &Context<()>| {
+                    handled
+                        .lock()
+                        .unwrap()
+                        .push(ctx.message().id().unwrap_or_default().to_string());
+                    async move { Ok(json!({})) }
+                }),
+        ),
     )
 }
 
