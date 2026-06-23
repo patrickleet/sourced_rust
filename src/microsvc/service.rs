@@ -816,7 +816,28 @@ fn message_to_session(message: &Message) -> Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, Queueable,
+        QueuedRepository,
+    };
     use serde_json::json;
+
+    #[derive(Default)]
+    struct RouteComboAggregate {
+        entity: Entity,
+    }
+
+    #[sourced(entity)]
+    impl RouteComboAggregate {
+        #[event("created")]
+        fn create(&mut self) {
+            self.entity.set_id("route-combo");
+        }
+    }
+
+    type RouteComboRepo =
+        AggregateRepository<QueuedRepository<HashMapRepository>, RouteComboAggregate>;
+    type RouteComboDeps = RepoReadModelDependencies<RouteComboRepo, HashMapRepository>;
 
     fn test_routes() -> Routes<()> {
         Routes::new().with_dependencies(())
@@ -880,6 +901,88 @@ mod tests {
             SubscriptionPlan {
                 commands: vec!["string.dep".to_string()],
                 events: vec!["number.dep".to_string()],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn service_dispatches_all_route_dependency_builder_combinations() {
+        let repo_only = HashMapRepository::new().queued().aggregate();
+        let combo_repo = HashMapRepository::new().queued().aggregate();
+        let service = Service::new()
+            .routes(
+                Routes::new()
+                    .with_dependencies(String::from("custom"))
+                    .command("custom.route")
+                    .handle(|ctx: &Context<String>| {
+                        let dependency = ctx.dependencies().clone();
+                        async move { Ok(json!({ "route": dependency })) }
+                    }),
+            )
+            .routes(
+                Routes::new()
+                    .with_repo(repo_only)
+                    .command("repo.route")
+                    .handle(|ctx: &Context<RouteComboRepo>| {
+                        let _ = ctx.repo();
+                        async move { Ok(json!({ "route": "repo" })) }
+                    }),
+            )
+            .routes(
+                Routes::new()
+                    .with_read_model_store(HashMapRepository::new())
+                    .event("read.route")
+                    .handle(|ctx: &Context<HashMapRepository>| {
+                        let _ = ctx.read_model_store();
+                        async move { Ok(json!({ "route": "read" })) }
+                    }),
+            )
+            .routes(
+                Routes::new()
+                    .with_repo(combo_repo)
+                    .with_read_model_store(HashMapRepository::new())
+                    .command("repo-read.route")
+                    .handle(|ctx: &Context<RouteComboDeps>| {
+                        let _ = ctx.repo();
+                        let _ = ctx.read_model_store();
+                        async move { Ok(json!({ "route": "repo-read" })) }
+                    }),
+            );
+
+        let custom = service
+            .dispatch("custom.route", json!({}), Session::new())
+            .await
+            .unwrap();
+        let repo = service
+            .dispatch("repo.route", json!({}), Session::new())
+            .await
+            .unwrap();
+        let read = service
+            .dispatch_message(&Message::new(
+                "read.route",
+                MessageKind::Event,
+                br#"{}"#.to_vec(),
+            ))
+            .await
+            .unwrap();
+        let repo_read = service
+            .dispatch("repo-read.route", json!({}), Session::new())
+            .await
+            .unwrap();
+
+        assert_eq!(custom, json!({ "route": "custom" }));
+        assert_eq!(repo, json!({ "route": "repo" }));
+        assert_eq!(read, json!({ "route": "read" }));
+        assert_eq!(repo_read, json!({ "route": "repo-read" }));
+        assert_eq!(
+            service.subscription_plan(),
+            SubscriptionPlan {
+                commands: vec![
+                    "custom.route".to_string(),
+                    "repo.route".to_string(),
+                    "repo-read.route".to_string(),
+                ],
+                events: vec!["read.route".to_string()],
             }
         );
     }
