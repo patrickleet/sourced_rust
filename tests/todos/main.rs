@@ -2,11 +2,12 @@ mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
 use distributed::{
-    AggregateBuilder, ClaimOutboxMessages, CommitBuilderExt, DrainResult, EventEmitter,
-    HashMapRepository, LocalEmitterPublisher, Lock, LockManager, LogPublisher, OutboxClaimRef,
-    OutboxMessage, OutboxMessageStatus, OutboxPublisher, OutboxStore, OutboxWorker, Queueable,
-    RepositoryError,
+    AggregateBuilder, ClaimOutboxMessages, CommitBuilderExt, DrainResult, HashMapRepository, Lock,
+    LockManager, LogPublisher, OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher,
+    OutboxStore, OutboxWorker, Queueable, RepositoryError,
 };
+#[cfg(feature = "emitter")]
+use distributed::{EventEmitter, LocalEmitterPublisher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -268,6 +269,7 @@ async fn outbox_worker_log_publisher() {
 }
 
 #[tokio::test]
+#[cfg(feature = "emitter")]
 async fn outbox_worker_local_emitter_publisher() {
     let repo = HashMapRepository::new();
     let (mut todo, id) = initialized_todo("user1", "Outbox local emitter");

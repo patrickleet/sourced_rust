@@ -230,7 +230,7 @@ network servers.
 
 | Feature | Default | Adds |
 |---|---:|---|
-| `emitter` | Yes | In-process event emission and `#[enqueue]`. |
+| `emitter` | No | In-process event emission and `#[enqueue]`. |
 | `http` | No | Axum HTTP transport for `microsvc` + the Knative/CloudEvents ingress router. |
 | `grpc` | No | Tonic gRPC transport for `microsvc`. |
 | `postgres` | No | `PostgresRepository` and the Postgres outbox/transport (`PostgresBus`). |
@@ -586,7 +586,7 @@ message.meta("trace_id")
 
 ## In-Process Event Choreography (requires `emitter` feature)
 
-The `emitter` feature (enabled by default) adds in-process event-driven choreography — queue local events during commands and emit them after commit for reactive workflows within a single process.
+The `emitter` feature adds in-process event-driven choreography — queue local events during commands and emit them after commit for reactive workflows within a single process.
 
 ### With `#[sourced(entity, enqueue)]`
 
@@ -1407,7 +1407,8 @@ compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tes
 ## Running Tests
 
 ```bash
-cargo test                  # default features (`emitter`)
+cargo test                  # default feature set
+cargo test --features emitter
 cargo test --features http
 cargo test --features grpc
 make test                 # starts compose and runs full local coverage
@@ -1455,7 +1456,7 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 
 - `tests/sourced/` — `#[sourced]` macro with typed event enum, `TryFrom`, and aggregate hydration
 - `tests/sourced_upcasting/` — `#[sourced]` with upcasters (v1→v2→v3 chains)
-- `tests/sourced_enqueue/` — `#[sourced(entity, enqueue)]` integrated choreography
+- `tests/sourced_enqueue/` — `#[sourced(entity, enqueue)]` integrated choreography (`--features emitter`)
 - `tests/sourced_snapshot/` — `#[derive(Snapshot)]` with custom ID keys, `serde(skip)` exclusion, and custom entity fields
 - `tests/snapshots/` — snapshot creation, loading, and partial replay
 - `tests/upcasting/` — event versioning with v1→v2→v3 upcasters, chaining, and snapshot integration
