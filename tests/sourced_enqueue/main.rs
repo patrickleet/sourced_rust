@@ -1,3 +1,5 @@
+#![cfg(feature = "emitter")]
+
 mod aggregate;
 
 use aggregate::{Notifier, NotifierEvent, Order, OrderEvent};

@@ -27,7 +27,7 @@ categories = ["data-structures", "database"]
 path = "src/lib.rs"
 
 [features]
-default = ["emitter"]
+default = []
 emitter = ["dep:event-emitter-rs"]
 http = ["dep:axum", "dep:reqwest", "dep:tokio"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]

@@ -1,5 +1,14 @@
-use distributed::emitter::EntityEmitter;
-use distributed::{enqueue, Entity};
+use distributed_macros::enqueue;
+
+struct Entity;
+
+struct EntityEmitter;
+
+impl EntityEmitter {
+    fn enqueue_with<T>(&mut self, _: &str, _: &T) -> distributed::SourcedResult<()> {
+        Ok(())
+    }
+}
 
 // The entity field is named `state`, not `entity`. Without telling `#[enqueue]`
 // about the rename (via `entity = state`), the generated replay guard references
