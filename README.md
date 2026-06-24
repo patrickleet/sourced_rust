@@ -21,7 +21,100 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
 | Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
 | Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, or direct dispatch. |
+| Service CLI | `dctl` scaffolds service crates, describes manifests, and renders SQL or Atlas schema artifacts. |
 | Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
+
+## Use as a Dependency
+
+The recommended shape is one shared crate per bounded context, plus one or more
+service crates that use those types. Put aggregate models, event payload types,
+command input DTOs, read models, and manifest registration helpers in the shared
+crate. Then import that crate from the command/aggregate service, projection
+service, API service, tests, or any other crate that needs the same domain types.
+
+```text
+crates/
+  ordering/              # shared bounded-context types
+  ordering-api/          # command/aggregate service
+  ordering-projections/  # projection/read-model service
+```
+
+The aggregate service imports the aggregate types and command DTOs; projection
+services import the event/read-model DTOs and `ReadModel` types; API or test
+crates can use the same shared types without redefining them.
+
+The shared bounded-context crate usually depends on `distributed` with the empty
+default feature set. It needs macros and traits, not HTTP servers, SQL adapters,
+or broker clients:
+
+```toml
+# crates/ordering/Cargo.toml
+[dependencies]
+distributed = "0.1"
+serde = { version = "1", features = ["derive"] }
+```
+
+Executable service crates depend on the bounded-context crate and enable the
+runtime features they need:
+
+```toml
+# crates/ordering-api/Cargo.toml
+[dependencies]
+ordering = { path = "../ordering" }
+distributed = { version = "0.1", features = ["postgres", "http", "nats"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+For local development against a checkout of this repository, use a path
+dependency instead:
+
+```toml
+[dependencies]
+distributed = { path = "../distributed" }
+```
+
+In a multi-crate workspace, put the dependency in the workspace root and inherit
+it from member crates. Keep the root dependency feature-light, then enable
+service-specific features only in the service crates:
+
+```toml
+# workspace Cargo.toml
+[workspace.dependencies]
+distributed = "0.1"
+ordering = { path = "crates/ordering" }
+
+# crates/ordering/Cargo.toml
+[dependencies]
+distributed.workspace = true
+
+# crates/ordering-api/Cargo.toml
+[dependencies]
+ordering.workspace = true
+distributed = { workspace = true, features = ["postgres", "http", "nats"] }
+```
+
+Enable persistence, transports, and servers with crate features:
+
+```toml
+[dependencies]
+# HTTP service endpoints
+distributed = { version = "0.1", features = ["http"] }
+
+# Durable SQL repository + SQL-backed bus
+distributed = { version = "0.1", features = ["postgres"] }
+
+# Service using Postgres plus NATS JetStream transport
+distributed = { version = "0.1", features = ["postgres", "nats"] }
+```
+
+Most application crates should depend on `distributed` only. The proc macros
+(`#[sourced]`, `#[digest]`, `#[derive(ReadModel)]`, `#[derive(Snapshot)]`) are
+re-exported from `distributed`; do not add `distributed_macros` directly unless
+you are working on the macro crate itself. The `distributed_cli` crate installs
+the `dctl` tooling and is not needed as a runtime dependency unless you are
+embedding the CLI in another command such as `hops service`.
 
 ## Quick Start
 
@@ -1330,20 +1423,59 @@ A v1 event automatically chains through v1→v2→v3; a v2 event only goes throu
 - **No stored data modified**: Upcasters are read-time transformations.
 - **Zero overhead when unused**: Aggregates with no upcasters take the fast hydration path.
 
-## Service CLI (`dsvc`)
+## Service CLI (`dctl`)
 
-The [`distributed_cli`](distributed_cli/) crate ships `dsvc` — tooling to scaffold
+The [`distributed_cli`](distributed_cli/) crate ships `dctl` — tooling to scaffold
 services, inspect a service's project manifest, and render schema artifacts. It is
 also a library, so `hops` mounts the same commands under `hops service` (anything
-below as `dsvc <cmd>` works as `hops service <cmd>`).
+below as `dctl <cmd>` works as `hops service <cmd>`).
+
+The CLI exists to keep the generated and handwritten parts of a back-end service
+separate. A Distributed service should usually reduce to a small custom surface:
+aggregate models, command/event handlers, read models, and the occasional
+handwritten integration. The framework, macros, manifest, and CLI generate the
+repeatable wiring around that surface.
+
+That boundary matters for AI-assisted development. AI generation is
+probabilistic, so Distributed tries to make the AI-authored surface small and
+make the surrounding structure deterministic. Event storming produces commands,
+past-tense events, aggregates, policies, and read models. Those names map
+directly onto Distributed conventions, so an AI assistant can generate or revise
+a smaller target: model fields, event methods, handler bodies, and projection
+shapes. Boilerplate service setup, manifest discovery, schema output, and GitOps
+artifacts stay deterministic.
 
 ```bash
-cargo install distributed_cli            # installs `dsvc`
+cargo install distributed_cli            # installs `dctl`
 
-dsvc scaffold orders --store postgres --gitops    # generate a service crate
-dsvc describe                            # print the project manifest as JSON
-dsvc schema --dialect postgres           # render migration SQL
+dctl scaffold orders \
+  --model order \
+  --read-models \
+  --command order.submit \
+  --event order.submitted \
+  --store postgres \
+  --transport http \
+  --bus nats \
+  --gitops
+
+cd orders
+cargo test
+dctl describe                  # print the project manifest as JSON
+dctl schema --dialect postgres # render migration SQL from read models
 ```
+
+Use the event-storming board as the input:
+
+- Aggregates become `--model <name>`.
+- Commands become `--command <aggregate.action>`.
+- Events and policy/projection subscriptions become `--event <fact.happened>`.
+- Query views become `--read-models`, then concrete `#[derive(ReadModel)]`
+  structs in the generated service.
+
+The scaffold is intentionally a starting point. Replace placeholder aggregate
+fields, event methods, guards, handler bodies, and read model columns with the
+domain behavior discovered in the session. If a service needs custom code outside
+those conventions, write normal Rust and keep the generated manifest updated.
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
 entrypoint (override with `--entrypoint`), which registers the [read
@@ -1357,14 +1489,14 @@ pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
 
 ### Apply schema in-cluster with Atlas
 
-`dsvc schema --format atlas` wraps the desired-state SQL into an `AtlasSchema`
+`dctl schema --format atlas` wraps the desired-state SQL into an `AtlasSchema`
 (`db.atlasgo.io/v1alpha1`) for the [ariga atlas-operator](https://github.com/ariga/atlas-operator),
 so migrations apply declaratively in-cluster. The resource is written to
 **stdout** — redirect it wherever you keep schema manifests (a file, or a separate
-GitOps repo); `dsvc` does not choose a location for it.
+GitOps repo); `dctl` does not choose a location for it.
 
 ```bash
-dsvc schema --format atlas --name orders --db-secret orders-db > orders.schema.yaml
+dctl schema --format atlas --name orders --db-secret orders-db > orders.schema.yaml
 ```
 
 Use `--db-secret`/`--db-secret-key` for a Secret reference (GitOps-friendly) or

@@ -17,7 +17,7 @@ jobs:
       manifest_path: distributed_macros/Cargo.toml
       cargo_publish_args: "--locked"
 
-  # distributed_cli (the `dsvc` binary + generation library) has no internal
+  # distributed_cli (the `dctl` binary + generation library) has no internal
   # workspace dependencies, so it publishes independently of the macros/core crates.
   publish-cli:
     uses: unbounded-tech/workflows-rust/.github/workflows/publish.yaml@feat/cargo-publish
