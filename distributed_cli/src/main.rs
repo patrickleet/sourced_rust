@@ -1,10 +1,10 @@
 use clap::Parser;
 use distributed_cli::ServiceArgs;
 
-/// The `dsvc` CLI: scaffold Distributed services, describe their manifest, and
+/// The `dctl` CLI: scaffold Distributed services, describe their manifest, and
 /// render schema artifacts (SQL or Atlas Operator resources).
 #[derive(Parser, Debug)]
-#[command(name = "dsvc", version, about, long_about = None)]
+#[command(name = "dctl", version, about, long_about = None)]
 struct Cli {
     #[command(flatten)]
     args: ServiceArgs,

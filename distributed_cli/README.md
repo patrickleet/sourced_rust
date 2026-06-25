@@ -1,24 +1,24 @@
-# distributed_cli (`dsvc`)
+# distributed_cli (`dctl`)
 
-Service tooling for [Distributed](https://crates.io/crates/distributed): a `dsvc`
+Service tooling for [Distributed](https://crates.io/crates/distributed): a `dctl`
 binary — and a library — that scaffolds service crates, inspects a service's
 project manifest, and renders schema artifacts (SQL or an Atlas Operator
 resource).
 
 ```bash
-cargo install distributed_cli   # installs the `dsvc` binary
+cargo install distributed_cli   # installs the `dctl` binary
 ```
 
 It is also a library, so another CLI can mount its commands instead of
 reimplementing them. `hops`, for example, exposes the same surface under
 `hops service` by depending on this crate and dispatching with
-`distributed_cli::run`. **Everything below documented as `dsvc <cmd>` is also
+`distributed_cli::run`. **Everything below documented as `dctl <cmd>` is also
 available as `hops service <cmd>`.**
 
-## `dsvc scaffold <name>` — generate a service crate
+## `dctl scaffold <name>` — generate a service crate
 
 ```bash
-dsvc scaffold orders --store postgres --transport http --gitops
+dctl scaffold orders --store postgres --transport http --gitops
 ```
 
 Writes a ready-to-build Distributed service under `./<name>` (override with
@@ -26,7 +26,7 @@ Writes a ready-to-build Distributed service under `./<name>` (override with
 <http|knative>`, `--model <name>` (repeatable), `--read-models`, `--command` /
 `--event` (repeatable), `--bus <rabbitmq|kafka|psql|nats>`, `--gitops`,
 `--gitops-promote <argo|flux>`, `--github OWNER/REPO`, `--force`. See
-`dsvc scaffold --help` for the full list.
+`dctl scaffold --help` for the full list.
 
 ## The project manifest entrypoint
 
@@ -56,17 +56,17 @@ compile the target crate, they need the local `distributed` crate to be
 resolvable — found automatically from the workspace, or pass `--distributed-path`
 / set `DISTRIBUTED_PATH`.
 
-## `dsvc describe` — manifest as JSON
+## `dctl describe` — manifest as JSON
 
 ```bash
-dsvc describe                       # current directory
-dsvc describe --manifest-path path/to/Cargo.toml --package orders-service
+dctl describe                       # current directory
+dctl describe --manifest-path path/to/Cargo.toml --package orders-service
 ```
 
 Prints the versioned manifest envelope (schemas, services, transports) as JSON —
 a stable contract for other tooling.
 
-## `dsvc schema` — schema artifacts
+## `dctl schema` — schema artifacts
 
 Renders the **desired-state** schema for the manifest's read models and
 operational tables. Output goes to stdout by default (or `--out <file>`).
@@ -74,7 +74,7 @@ operational tables. Output goes to stdout by default (or `--out <file>`).
 ### SQL (default)
 
 ```bash
-dsvc schema --dialect postgres      # or --dialect sqlite
+dctl schema --dialect postgres      # or --dialect sqlite
 ```
 
 ### Atlas Operator resource (`--format atlas`)
@@ -83,12 +83,12 @@ Wraps the desired-state SQL into an `AtlasSchema` (`db.atlasgo.io/v1alpha1`) for
 the [ariga atlas-operator](https://github.com/ariga/atlas-operator), so the
 operator diffs the live database against it and applies the migration in-cluster.
 
-The resource is written to **stdout** — `dsvc` deliberately does not pick a
+The resource is written to **stdout** — `dctl` deliberately does not pick a
 location for it. Redirect it wherever you keep schema manifests: a file in the
 service repo, or a separate GitOps/schema repo.
 
 ```bash
-dsvc schema --format atlas \
+dctl schema --format atlas \
   --name orders \
   --namespace data \
   --db-secret orders-db \

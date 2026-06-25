@@ -1,4 +1,4 @@
-//! Minimal Distributed service fixture for `dsvc` manifest-harness integration
+//! Minimal Distributed service fixture for `dctl` manifest-harness integration
 //! tests: one read model (→ an `orders` table) registered in the project manifest.
 
 use distributed::{DistributedProjectManifest, ReadModel};
@@ -12,7 +12,7 @@ pub struct OrderView {
     pub status: String,
 }
 
-/// The entrypoint `dsvc describe`/`dsvc schema` call by default
+/// The entrypoint `dctl describe`/`dctl schema` call by default
 /// (`<crate>::distributed_manifest`).
 pub fn distributed_manifest() -> DistributedProjectManifest {
     DistributedProjectManifest::new("orders").read_model::<OrderView>()

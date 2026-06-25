@@ -1,4 +1,4 @@
-//! The `dsvc` CLI for Distributed services — both a binary and a library.
+//! The `dctl` CLI for Distributed services — both a binary and a library.
 //!
 //! It bundles two things in one crate so there is no cross-repo coordination:
 //!
@@ -12,7 +12,7 @@
 //!   dispatcher that own the filesystem / process side effects (writing files,
 //!   running `gh`, compiling the manifest harness).
 //!
-//! The `dsvc` binary parses [`ServiceArgs`] and calls [`run`]. Another CLI (e.g.
+//! The `dctl` binary parses [`ServiceArgs`] and calls [`run`]. Another CLI (e.g.
 //! `hops`) can depend on this crate, mount [`ServiceArgs`] under its own
 //! subcommand, and dispatch with [`run`] — re-exporting the commands rather than
 //! reimplementing them.

@@ -1,4 +1,4 @@
-//! Integration test for `dsvc scaffold`: drive the real binary and assert the
+//! Integration test for `dctl scaffold`: drive the real binary and assert the
 //! generated project tree. Pure generation + filesystem, so it is fast and needs
 //! no nested compilation.
 
@@ -19,7 +19,7 @@ fn scaffold_generates_a_service_tree() {
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scaffold-orders");
     let _ = fs::remove_dir_all(&out_dir);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_dsvc"))
+    let status = Command::new(env!("CARGO_BIN_EXE_dctl"))
         .args([
             "scaffold",
             "orders",
@@ -32,8 +32,8 @@ fn scaffold_generates_a_service_tree() {
             distributed_root().to_str().unwrap(),
         ])
         .status()
-        .expect("dsvc should run");
-    assert!(status.success(), "dsvc scaffold failed");
+        .expect("dctl should run");
+    assert!(status.success(), "dctl scaffold failed");
 
     for expected in [
         "Cargo.toml",

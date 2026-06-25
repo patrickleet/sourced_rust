@@ -17,20 +17,20 @@ fn fixture_manifest() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/orders-service/Cargo.toml")
 }
 
-/// Run `dsvc <args...>` against the fixture, returning stdout. Always passes
+/// Run `dctl <args...>` against the fixture, returning stdout. Always passes
 /// `--manifest-path` and `--distributed-path` so resolution is deterministic.
-fn dsvc(args: &[&str]) -> String {
+fn dctl(args: &[&str]) -> String {
     let root = distributed_root();
     let manifest = fixture_manifest();
-    let output = Command::new(env!("CARGO_BIN_EXE_dsvc"))
+    let output = Command::new(env!("CARGO_BIN_EXE_dctl"))
         .args(args)
         .args(["--manifest-path", manifest.to_str().unwrap()])
         .args(["--distributed-path", root.to_str().unwrap()])
         .output()
-        .expect("dsvc should run");
+        .expect("dctl should run");
     assert!(
         output.status.success(),
-        "dsvc {args:?} failed:\n{}",
+        "dctl {args:?} failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -39,7 +39,7 @@ fn dsvc(args: &[&str]) -> String {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn describe_emits_manifest_json() {
-    let json = dsvc(&["describe"]);
+    let json = dctl(&["describe"]);
     assert!(json.contains("\"schema_version\""), "json: {json}");
     assert!(json.contains("\"orders\""), "json: {json}");
 }
@@ -47,7 +47,7 @@ fn describe_emits_manifest_json() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_postgres_sql() {
-    let sql = dsvc(&["schema", "--dialect", "postgres"]);
+    let sql = dctl(&["schema", "--dialect", "postgres"]);
     assert!(sql.contains("CREATE TABLE"), "sql: {sql}");
     assert!(sql.contains("orders"), "sql: {sql}");
 }
@@ -55,7 +55,7 @@ fn schema_renders_postgres_sql() {
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_atlas_resource() {
-    let yaml = dsvc(&[
+    let yaml = dctl(&[
         "schema",
         "--format",
         "atlas",

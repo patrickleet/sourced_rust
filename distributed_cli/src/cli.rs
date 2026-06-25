@@ -1,4 +1,4 @@
-//! The `dsvc` command surface: clap types plus the [`run`] dispatcher. Generation
+//! The `dctl` command surface: clap types plus the [`run`] dispatcher. Generation
 //! lives in the crate's `generate`/`atlas` modules; this module maps flags onto
 //! those types and owns the filesystem / process side effects (writing files,
 //! running `gh`, compiling the manifest harness).
@@ -282,7 +282,7 @@ impl From<GitopsPromote> for GitopsPromoteTarget {
     }
 }
 
-/// Dispatch a parsed service command. The `dsvc` binary and any host CLI (e.g.
+/// Dispatch a parsed service command. The `dctl` binary and any host CLI (e.g.
 /// `hops service`) both call this.
 pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
@@ -623,13 +623,13 @@ fn run_manifest_harness(
         .unwrap_or_else(|| Ok(format!("{crate_ident}::distributed_manifest")))?;
     validate_rust_path(&entrypoint)?;
 
-    let harness_root = package.directory.join("target/dsvc-manifest-harness");
+    let harness_root = package.directory.join("target/dctl-manifest-harness");
     let harness_dir = harness_root.join(mode.cache_key());
     fs::create_dir_all(harness_dir.join("src"))?;
     fs::write(
         harness_dir.join("Cargo.toml"),
         harness_cargo_toml(
-            &format!("dsvc-manifest-harness-{}", mode.cache_key()),
+            &format!("dctl-manifest-harness-{}", mode.cache_key()),
             &crate_ident,
             &package.name,
             &package.directory,
@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn harness_is_standalone_inside_cached_target_directory() {
         let cargo_toml = harness_cargo_toml(
-            "dsvc-manifest-harness-schema-postgres",
+            "dctl-manifest-harness-schema-postgres",
             "todo_model",
             "todo-model",
             Path::new("/tmp/todo-model"),
@@ -1028,7 +1028,7 @@ mod tests {
         );
 
         assert!(cargo_toml.contains("\n[workspace]\n"));
-        assert!(cargo_toml.contains("name = \"dsvc-manifest-harness-schema-postgres\""));
+        assert!(cargo_toml.contains("name = \"dctl-manifest-harness-schema-postgres\""));
     }
 
     #[test]

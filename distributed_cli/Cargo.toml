@@ -1,6 +1,6 @@
 [package]
 name = "distributed_cli"
-description = "The `dsvc` CLI for Distributed services: scaffold projects, describe their manifest, and render schema artifacts (SQL or Atlas Operator resources). Also a library so other CLIs (e.g. hops) can mount its commands."
+description = "The `dctl` CLI for Distributed services: scaffold projects, describe their manifest, and render schema artifacts (SQL or Atlas Operator resources). Also a library so other CLIs (e.g. hops) can mount its commands."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [[bin]]
-name = "dsvc"
+name = "dctl"
 path = "src/main.rs"
 
 [dependencies]
