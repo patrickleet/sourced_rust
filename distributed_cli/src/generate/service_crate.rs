@@ -4,7 +4,7 @@
 
 use super::names::{message_owner, rust_string, toml_string, MessageHandler, ModelScaffold};
 use super::Scaffold;
-use crate::{ServiceTransport, StoreTarget};
+use crate::{MetricsTarget, ServiceTransport, StoreTarget};
 
 impl Scaffold {
     pub(super) fn cargo_toml(&self) -> String {
@@ -51,6 +51,9 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
             StoreTarget::Postgres => features.push("postgres"),
             StoreTarget::Sqlite => features.push("sqlite"),
             StoreTarget::InMemory => {}
+        }
+        if self.metrics == Some(MetricsTarget::Prometheus) {
+            features.push("metrics");
         }
         features
     }

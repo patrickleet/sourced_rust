@@ -181,6 +181,10 @@ impl NatsJetStreamSource {
 impl MessageSource for NatsJetStreamSource {
     type Received = NatsReceived;
 
+    fn transport_name(&self) -> &'static str {
+        "nats"
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         let mut batch = self
             .consumer

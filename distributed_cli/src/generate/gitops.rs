@@ -8,7 +8,7 @@ use super::names::{
     command_broker_for_message, event_broker_for_message, k8s_name, KnativeTrigger,
 };
 use super::{file, Scaffold};
-use crate::{GeneratedFile, GitopsPromoteTarget, ServiceTransport};
+use crate::{GeneratedFile, GitopsPromoteTarget, MetricsTarget, ServiceTransport};
 
 impl Scaffold {
     /// The `.gitops/deploy` (and optional `.gitops/promote`) files. The deploy
@@ -40,6 +40,16 @@ impl Scaffold {
                         ".gitops/deploy/templates/service.yaml",
                         self.gitops_http_service_yaml(),
                     ));
+                    if self.metrics == Some(MetricsTarget::Prometheus) {
+                        files.push(file(
+                            ".gitops/deploy/templates/servicemonitor.yaml",
+                            self.gitops_service_monitor_yaml(),
+                        ));
+                        files.push(file(
+                            ".gitops/deploy/templates/prometheusrule.yaml",
+                            self.gitops_prometheus_rule_yaml(),
+                        ));
+                    }
                 }
                 ServiceTransport::Knative => {
                     files.push(file(
@@ -174,13 +184,28 @@ appVersion: "0.1.0"
             .bus
             .map(|bus| format!("bus:\n  kind: {}\n", bus.kind()))
             .unwrap_or_default();
+        let metrics = if self.metrics == Some(MetricsTarget::Prometheus) {
+            r#"metrics:
+  enabled: true
+  path: /metrics
+  portName: http
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+prometheusRule:
+  enabled: false
+"#
+        } else {
+            ""
+        };
         format!(
             r#"image:
   repository: {image_repository}
   tag: latest
 service:
   port: 3000
-{bus}
+{bus}{metrics}
 "#,
             image_repository = self.image_repository(),
         )
@@ -236,6 +261,75 @@ spec:
       port: 80
       targetPort: 3000
 "#,
+        )
+    }
+
+    fn gitops_service_monitor_yaml(&self) -> String {
+        let name = k8s_name(&self.names.package_name);
+        format!(
+            r#"{{{{- if .Values.serviceMonitor.enabled }}}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {name}
+  labels:
+    app.kubernetes.io/name: {name}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {name}
+  endpoints:
+    - port: {{{{ .Values.metrics.portName }}}}
+      path: {{{{ .Values.metrics.path }}}}
+      interval: {{{{ .Values.serviceMonitor.interval }}}}
+      scrapeTimeout: {{{{ .Values.serviceMonitor.scrapeTimeout }}}}
+{{{{- end }}}}
+"#
+        )
+    }
+
+    fn gitops_prometheus_rule_yaml(&self) -> String {
+        let name = k8s_name(&self.names.package_name);
+        format!(
+            r#"{{{{- if .Values.prometheusRule.enabled }}}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {name}
+  labels:
+    app.kubernetes.io/name: {name}
+spec:
+  groups:
+    - name: {name}.distributed
+      rules:
+        - alert: DistributedMicrosvcDispatchErrorsHigh
+          expr: |
+            (
+              sum(rate(distributed_microsvc_dispatch_total{{service="{name}",status!="success"}}[5m]))
+              /
+              clamp_min(sum(rate(distributed_microsvc_dispatch_total{{service="{name}"}}[5m])), 1)
+            ) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} has elevated dispatch errors
+        - alert: DistributedOutboxOldestPendingHigh
+          expr: distributed_outbox_oldest_pending_age_seconds{{service="{name}"}} > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} has old pending outbox messages
+        - alert: DistributedTransportRetrying
+          expr: sum(rate(distributed_transport_failures_total{{service="{name}",failure_class="retryable"}}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} is retrying transport work
+{{{{- end }}}}
+"#
         )
     }
 

@@ -386,6 +386,10 @@ struct SqlQueueSource<B> {
 impl<B: SqlBusDialect> MessageSource for SqlQueueSource<B> {
     type Received = SqlQueueReceived<B>;
 
+    fn transport_name(&self) -> &'static str {
+        B::BACKEND
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         if self.buffer.is_empty() {
             let mut claimed = self
@@ -472,6 +476,10 @@ struct SqlLogSource<B> {
 
 impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
     type Received = SqlLogReceived<B>;
+
+    fn transport_name(&self) -> &'static str {
+        B::BACKEND
+    }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         if let Some(last) = self.last_delivered {

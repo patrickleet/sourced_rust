@@ -105,9 +105,9 @@ mod nats_bus;
 mod postgres_bus;
 mod publisher;
 #[cfg(feature = "rabbitmq")]
-mod rabbitmq_bus;
-#[cfg(feature = "rabbitmq")]
 mod rabbitmq;
+#[cfg(feature = "rabbitmq")]
+mod rabbitmq_bus;
 mod router;
 mod run_options;
 mod runner;
@@ -132,9 +132,9 @@ pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "nats")]
 pub use nats_bus::{NatsBus, NatsBusConnect};
 #[cfg(feature = "rabbitmq")]
-pub use rabbitmq_bus::{RabbitBus, RabbitBusConnect};
-#[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
+#[cfg(feature = "rabbitmq")]
+pub use rabbitmq_bus::{RabbitBus, RabbitBusConnect};
 
 pub use bus::{Bus, BusConsumer};
 pub use capabilities::{ConsumerAckKind, KnativeIntegrationKind, TransportCapabilities};

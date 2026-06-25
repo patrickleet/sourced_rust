@@ -29,6 +29,7 @@ path = "src/lib.rs"
 [features]
 default = []
 emitter = ["dep:event-emitter-rs"]
+metrics = []
 http = ["dep:axum", "dep:reqwest", "dep:tokio"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
 postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/migrate", "sqlx/runtime-tokio"]

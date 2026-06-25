@@ -28,10 +28,10 @@ use crate::aggregate::Aggregate;
 use crate::entity::Entity;
 use crate::outbox::OutboxMessage;
 use crate::read_model::ReadModelWritePlanBuilder;
-use crate::table::TableWritePlan;
 use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
+use crate::table::TableWritePlan;
 
 /// The source-aggregate fields stamped onto outbox messages at commit time.
 #[derive(Clone, Debug, PartialEq, Eq)]

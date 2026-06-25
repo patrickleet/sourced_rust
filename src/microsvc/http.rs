@@ -6,6 +6,7 @@
 //!
 //! - `POST /{command}` — dispatch a command. Body = JSON input, request headers → Session.
 //! - `GET /health` — health check returning `{ "ok": true, "commands": [...] }`.
+//! - `GET /metrics` — Prometheus text metrics (requires the `metrics` feature).
 //!
 //! ## Example
 //!
@@ -45,9 +46,13 @@ use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
 pub fn router(service: Arc<Service>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health_handler))
-        .route("/{command}", axum::routing::post(command_handler))
+        .route("/{command}", axum::routing::post(command_handler));
+    #[cfg(feature = "metrics")]
+    let router = router.route("/metrics", get(metrics_handler));
+
+    router
         // Pin the body limit explicitly rather than relying on axum's default;
         // the command handler buffers the JSON body into memory.
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
@@ -65,6 +70,12 @@ pub async fn serve(service: Arc<Service>, addr: &str) -> Result<(), std::io::Err
 async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     let commands: Vec<&str> = service.command_names();
     Json(json!({ "ok": true, "commands": commands }))
+}
+
+/// `GET /metrics` — returns Prometheus text metrics.
+#[cfg(feature = "metrics")]
+async fn metrics_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
+    crate::metrics::prometheus_response(service.name())
 }
 
 /// `POST /{command}` — dispatch a command with JSON body and headers as session.

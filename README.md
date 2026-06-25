@@ -1456,7 +1456,8 @@ dctl scaffold orders \
   --store postgres \
   --transport http \
   --bus nats \
-  --gitops
+  --gitops \
+  --metrics prometheus
 
 cd orders
 cargo test
@@ -1476,6 +1477,14 @@ The scaffold is intentionally a starting point. Replace placeholder aggregate
 fields, event methods, guards, handler bodies, and read model columns with the
 domain behavior discovered in the session. If a service needs custom code outside
 those conventions, write normal Rust and keep the generated manifest updated.
+
+The `--metrics prometheus` scaffold option enables Distributed's `/metrics`
+endpoint and, when paired with `--gitops`, emits Prometheus Operator
+`ServiceMonitor` and `PrometheusRule` templates for HTTP services. The generated
+values keep those CRDs disabled until an environment explicitly enables them.
+Bus-only and worker services can expose the same registry on a side port with
+`distributed::metrics::serve_http`. See [`docs/metrics.md`](docs/metrics.md) for
+metric names, label rules, and GitOps details.
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
 entrypoint (override with `--entrypoint`), which registers the [read

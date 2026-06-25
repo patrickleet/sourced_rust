@@ -32,6 +32,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "metrics")]
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -160,13 +162,42 @@ impl HandlerSpec {
     }
 }
 
+#[cfg(feature = "metrics")]
+const UNKNOWN_COMMAND_MESSAGE_LABEL: &str = "unknown";
+
+#[cfg(feature = "metrics")]
+fn handler_error_metric_status(error: &HandlerError) -> &'static str {
+    match error {
+        HandlerError::UnknownCommand(_) => "unknown_command",
+        HandlerError::DecodeFailed(_) => "decode_failed",
+        HandlerError::Rejected(_) => "rejected",
+        HandlerError::NotFound(_) => "not_found",
+        HandlerError::Unauthorized(_) => "unauthorized",
+        HandlerError::Repository(_) => "repository_error",
+        HandlerError::GuardRejected(_) => "guard_rejected",
+        HandlerError::Other(_) => "other_error",
+    }
+}
+
+#[cfg(feature = "metrics")]
+fn handler_message_metric_label<'a>(
+    message: &'a str,
+    result: &Result<Value, HandlerError>,
+) -> &'a str {
+    if matches!(result, Err(HandlerError::UnknownCommand(_))) {
+        UNKNOWN_COMMAND_MESSAGE_LABEL
+    } else {
+        message
+    }
+}
+
 /// A registered handler with optional guard.
 struct RegisteredHandler<D> {
     guard: Option<Arc<GuardFn<D>>>,
     handle: Arc<HandlerFn<D>>,
 }
 
-type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32);
+type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32, Option<String>);
 
 trait ErasedRoutes: Send + Sync {
     fn handler_specs(&self) -> &[HandlerSpec];
@@ -184,6 +215,7 @@ trait ErasedRoutes: Send + Sync {
         worker_id: String,
         lease: Duration,
         max_attempts: u32,
+        service_name: Option<String>,
     );
 }
 
@@ -243,11 +275,13 @@ fn configure_outbox_for<D>(
     worker_id: String,
     lease: Duration,
     max_attempts: u32,
+    service_name: Option<String>,
 ) where
     D: HasOutboxStore + ConfigurableOutboxPublisher,
     D::OutboxStore: 'static,
 {
-    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts);
+    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts)
+        .with_service(service_name);
     dependencies.configure_outbox_publisher(OutboxPublisherConfig::new(
         Arc::new(hook),
         worker_id,
@@ -451,6 +485,7 @@ where
         worker_id: String,
         lease: Duration,
         max_attempts: u32,
+        service_name: Option<String>,
     ) {
         if let Some(configurator) = self.outbox_configurator {
             configurator(
@@ -459,6 +494,7 @@ where
                 worker_id,
                 lease,
                 max_attempts,
+                service_name,
             );
         }
     }
@@ -563,6 +599,30 @@ impl Service {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
+        #[cfg(feature = "metrics")]
+        let started = Instant::now();
+        let result = self.dispatch_command_inner(command, input, session).await;
+        #[cfg(feature = "metrics")]
+        crate::metrics::record_microsvc_dispatch(
+            self.name(),
+            MessageKind::Command,
+            handler_message_metric_label(command, &result),
+            result
+                .as_ref()
+                .err()
+                .map(handler_error_metric_status)
+                .unwrap_or("success"),
+            started.elapsed(),
+        );
+        result
+    }
+
+    async fn dispatch_command_inner(
+        &self,
+        command: &str,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
         if !self.handles_message(MessageKind::Command, command) {
             return Err(HandlerError::UnknownCommand(command.to_string()));
         }
@@ -607,6 +667,25 @@ impl Service {
 
     /// Dispatch a transport message.
     pub async fn dispatch_message(&self, message: &Message) -> Result<Value, HandlerError> {
+        #[cfg(feature = "metrics")]
+        let started = Instant::now();
+        let result = self.dispatch_message_inner(message).await;
+        #[cfg(feature = "metrics")]
+        crate::metrics::record_microsvc_dispatch(
+            self.name(),
+            message.kind,
+            handler_message_metric_label(message.name(), &result),
+            result
+                .as_ref()
+                .err()
+                .map(handler_error_metric_status)
+                .unwrap_or("success"),
+            started.elapsed(),
+        );
+        result
+    }
+
+    async fn dispatch_message_inner(&self, message: &Message) -> Result<Value, HandlerError> {
         if !self.handles_message(message.kind, &message.name) {
             return Err(HandlerError::UnknownCommand(message.name.clone()));
         }
@@ -703,12 +782,14 @@ impl Service {
         lease: Duration,
         max_attempts: u32,
     ) {
+        let service_name = self.name.clone();
         for route in &mut self.routes {
             route.configure_outbox_publisher(
                 publisher.clone(),
                 worker_id.clone(),
                 lease,
                 max_attempts,
+                service_name.clone(),
             );
         }
     }
@@ -1070,6 +1151,36 @@ mod tests {
         );
         let result = service.dispatch("unknown", json!({}), Session::new()).await;
         assert!(matches!(result, Err(HandlerError::UnknownCommand(ref s)) if s == "unknown"));
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_bucket_unknown_command_under_fixed_message_label() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let service = test_service(
+            test_routes()
+                .command("ping")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({})) }),
+        );
+
+        let result = service
+            .dispatch("attacker-controlled-path", json!({}), Session::new())
+            .await;
+        assert!(matches!(result, Err(HandlerError::UnknownCommand(_))));
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_microsvc_dispatch_total{service=\"unnamed\",message_kind=\"command\",message=\"unknown\",status=\"unknown_command\"} 1"
+            ),
+            "unknown commands should use a bounded message label:\n{text}"
+        );
+        assert!(
+            !text.contains("attacker-controlled-path"),
+            "unknown command input must not become a metric label:\n{text}"
+        );
     }
 
     #[tokio::test]

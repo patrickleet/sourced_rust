@@ -43,13 +43,22 @@ const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 /// alignment only), so a Knative Trigger can target either a single shared `ref`
 /// (`/`) or the per-type subscriber URI `KnativeBus` emits (`/cloudevent/<type>`).
 pub fn cloud_events_router(service: Arc<Service>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", axum::routing::post(ingress_handler))
-        .route("/cloudevent/{type}", axum::routing::post(ingress_handler))
+        .route("/cloudevent/{type}", axum::routing::post(ingress_handler));
+    #[cfg(feature = "metrics")]
+    let router = router.route("/metrics", axum::routing::get(metrics_handler));
+
+    router
         // Pin the body limit explicitly rather than relying on axum's default,
         // since the handler buffers the whole body into memory.
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(service)
+}
+
+#[cfg(feature = "metrics")]
+async fn metrics_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
+    crate::metrics::prometheus_response(service.name())
 }
 
 async fn ingress_handler(

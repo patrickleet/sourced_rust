@@ -106,6 +106,10 @@ where
 {
     type Received = ReceivedOutboxMessage<S>;
 
+    fn transport_name(&self) -> &'static str {
+        "outbox"
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         if self.buffer.is_empty() {
             let claimed = self.store.claim(self.claim_request()).await?;

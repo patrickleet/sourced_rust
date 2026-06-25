@@ -22,7 +22,11 @@ fn counter_service() -> Arc<Service> {
 
 /// Bind to port 0 and return the actual address.
 async fn start_server(service: Arc<Service>) -> String {
-    let app = microsvc::router(service);
+    start_app(microsvc::router(service)).await
+}
+
+/// Bind an axum app to port 0 and return the actual address.
+async fn start_app(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -64,6 +68,61 @@ async fn create_counter() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body, json!({ "id": "c1" }));
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn metrics_endpoint_exposes_dispatch_counters() {
+    let service = counter_service();
+    let base = start_server(service).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/counter.initialize"))
+        .json(&json!({ "id": "metrics-c1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client.get(format!("{base}/metrics")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("distributed_microsvc_dispatch_total"),
+        "metrics body should include dispatch counters:\n{body}"
+    );
+    assert!(
+        body.contains("message=\"counter.initialize\""),
+        "metrics body should include the dispatched command label:\n{body}"
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn standalone_metrics_router_exposes_worker_metrics() {
+    distributed::metrics::record_outbox_message(Some("orders-worker"), "published");
+    let base = start_app(distributed::metrics::http_router_for_service(
+        "orders-worker",
+    ))
+    .await;
+    let client = reqwest::Client::new();
+
+    let resp = client.get(format!("{base}/metrics")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("distributed_service_info{service=\"orders-worker\""),
+        "metrics body should include the worker service label:\n{body}"
+    );
+    assert!(
+        body.contains(
+            "distributed_outbox_messages_total{service=\"orders-worker\",outcome=\"published\"}"
+        ),
+        "metrics body should include worker outbox metrics:\n{body}"
+    );
 }
 
 #[tokio::test]

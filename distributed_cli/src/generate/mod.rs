@@ -22,8 +22,8 @@ use names::{
 };
 
 use crate::{
-    BusTarget, GeneratedFile, GeneratedProject, GithubRepo, GitopsPromoteTarget, PostCreateAction,
-    ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
+    BusTarget, GeneratedFile, GeneratedProject, GithubRepo, GitopsPromoteTarget, MetricsTarget,
+    PostCreateAction, ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
 /// Generate a Distributed service project from a spec. The public entry point.
@@ -48,6 +48,7 @@ pub(crate) struct Scaffold {
     pub(crate) transport: ServiceTransport,
     pub(crate) store: StoreTarget,
     pub(crate) bus: Option<BusTarget>,
+    pub(crate) metrics: Option<MetricsTarget>,
     pub(crate) include_read_models: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
@@ -91,6 +92,7 @@ impl Scaffold {
             transport: spec.transport,
             store: spec.store,
             bus: spec.bus,
+            metrics: spec.metrics,
             include_read_models: spec.read_models,
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
@@ -168,7 +170,7 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 #[cfg(test)]
 mod tests {
     use crate::{
-        generate_service_scaffold, GeneratedProject, GithubRepo, PostCreateAction,
+        generate_service_scaffold, GeneratedProject, GithubRepo, MetricsTarget, PostCreateAction,
         ServiceScaffoldSpec, ServiceTransport, StoreTarget,
     };
 
@@ -178,6 +180,7 @@ mod tests {
             transport: ServiceTransport::Http,
             store: StoreTarget::Postgres,
             bus: None,
+            metrics: None,
             models: Vec::new(),
             read_models: false,
             commands: Vec::new(),
@@ -374,7 +377,50 @@ mod tests {
         assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/service.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
         assert!(!paths.iter().any(|p| p.contains("knative")));
+    }
+
+    #[test]
+    fn gitops_http_metrics_emits_prometheus_operator_resources() {
+        let mut s = spec("orders");
+        s.gitops = true;
+        s.metrics = Some(MetricsTarget::Prometheus);
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
+
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(cargo.contains("\"metrics\""));
+
+        let service = contents(&project, "src/service.rs");
+        assert!(service.contains(".named(\"orders\")"));
+
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(values.contains("metrics:"));
+        assert!(values.contains("serviceMonitor:"));
+        assert!(values.contains("serviceMonitor:\n  enabled: false"));
+        assert!(values.contains("prometheusRule:"));
+        assert!(values.contains("prometheusRule:\n  enabled: false"));
+
+        let monitor = contents(&project, ".gitops/deploy/templates/servicemonitor.yaml");
+        assert!(monitor.contains("apiVersion: monitoring.coreos.com/v1"));
+        assert!(monitor.contains("kind: ServiceMonitor"));
+        assert!(monitor.contains("path: {{ .Values.metrics.path }}"));
+    }
+
+    #[test]
+    fn knative_metrics_does_not_emit_service_monitor() {
+        let mut s = spec("orders");
+        s.transport = ServiceTransport::Knative;
+        s.gitops = true;
+        s.metrics = Some(MetricsTarget::Prometheus);
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
     }
 
     #[test]

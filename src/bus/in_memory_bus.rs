@@ -108,6 +108,10 @@ struct QueueSource {
 impl MessageSource for QueueSource {
     type Received = InMemoryReceived;
 
+    fn transport_name(&self) -> &'static str {
+        "in_memory"
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         let mut queues = self.queues.lock().map_err(|_| lock_poisoned("queue"))?;
         for name in &self.names {
@@ -129,6 +133,10 @@ struct TopicSource {
 
 impl MessageSource for TopicSource {
     type Received = InMemoryReceived;
+
+    fn transport_name(&self) -> &'static str {
+        "in_memory"
+    }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         let topics = self.topics.lock().map_err(|_| lock_poisoned("topic"))?;

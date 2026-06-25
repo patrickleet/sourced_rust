@@ -24,8 +24,8 @@ mod manifest_harness;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, ScaffoldArgs, SchemaArgs,
-    SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands, Store, Transport,
+    run, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, Metrics, ScaffoldArgs,
+    SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands, Store, Transport,
 };
 pub use generate::{generate_service_scaffold, package_name};
 
@@ -44,6 +44,8 @@ pub struct ServiceScaffoldSpec {
     pub store: StoreTarget,
     /// Optional message bus backend.
     pub bus: Option<BusTarget>,
+    /// Optional generated metrics integration.
+    pub metrics: Option<MetricsTarget>,
     /// Aggregate model names to scaffold (raw; may be empty).
     pub models: Vec<String>,
     /// Generate placeholder read-model modules and register them in the manifest.
@@ -113,6 +115,13 @@ impl BusTarget {
             BusTarget::Nats => "nats",
         }
     }
+}
+
+/// Metrics integration to scaffold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricsTarget {
+    /// Prometheus text exposition and optional Prometheus Operator resources.
+    Prometheus,
 }
 
 /// GitOps promotion flavor.

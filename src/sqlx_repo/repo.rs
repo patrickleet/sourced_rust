@@ -31,11 +31,6 @@ use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{ensure_active_claim, ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
-use crate::table::{
-    TableAdapterCapabilities as ReadModelAdapterCapabilities,
-    TableCommitOutcome as ReadModelCommitOutcome, TableStoreError as ReadModelError,
-    TableWritePlan as ReadModelWritePlan,
-};
 use crate::repository::{
     validate_commit_batch, validate_snapshot_identity, validate_supported_event_codec, CommitBatch,
     GetStream, InboxReceipt, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
@@ -56,6 +51,11 @@ use crate::table::{
     generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
     TableMigrationArtifact, TableSchemaBootstrap, TableSchemaRegistry, TableSqlDialect,
     TableSqlSchemaAdapter, TableStoreError,
+};
+use crate::table::{
+    TableAdapterCapabilities as ReadModelAdapterCapabilities,
+    TableCommitOutcome as ReadModelCommitOutcome, TableStoreError as ReadModelError,
+    TableWritePlan as ReadModelWritePlan,
 };
 
 /// Build an embedded migrator from statically included migration files

@@ -76,6 +76,49 @@ fn scaffold_generates_a_service_tree() {
 
     let cargo = read(&out_dir, "Cargo.toml");
     assert!(cargo.contains("\"postgres\""), "Cargo.toml: {cargo}");
+    assert!(
+        !out_dir
+            .join(".gitops/deploy/templates/servicemonitor.yaml")
+            .exists(),
+        "plain --gitops should not emit Prometheus Operator CRDs"
+    );
+}
+
+#[test]
+fn scaffold_metrics_prometheus_emits_operator_resources() {
+    let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scaffold-orders-metrics");
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let status = Command::new(env!("CARGO_BIN_EXE_dctl"))
+        .args([
+            "scaffold",
+            "orders",
+            "--path",
+            out_dir.to_str().unwrap(),
+            "--store",
+            "postgres",
+            "--gitops",
+            "--metrics",
+            "prometheus",
+            "--distributed-path",
+            distributed_root().to_str().unwrap(),
+        ])
+        .status()
+        .expect("dctl should run");
+    assert!(status.success(), "dctl scaffold failed");
+
+    for expected in [
+        ".gitops/deploy/templates/servicemonitor.yaml",
+        ".gitops/deploy/templates/prometheusrule.yaml",
+    ] {
+        assert!(
+            out_dir.join(expected).exists(),
+            "missing generated file: {expected}"
+        );
+    }
+
+    let cargo = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
+    assert!(cargo.contains("\"metrics\""), "Cargo.toml: {cargo}");
 }
 
 #[test]

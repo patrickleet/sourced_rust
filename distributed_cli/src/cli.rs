@@ -18,7 +18,7 @@ use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions}
 use crate::{
     generate_service_scaffold, package_name, render_atlas_schema, AtlasDatabaseUrl,
     AtlasSchemaSpec, BusTarget, FileMode, GeneratedFile, GithubRepo, GitopsPromoteTarget,
-    PostCreateAction, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
+    MetricsTarget, PostCreateAction, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
@@ -77,6 +77,9 @@ pub struct ScaffoldArgs {
     /// Message bus backend to scaffold.
     #[arg(long, value_enum)]
     pub bus: Option<Bus>,
+    /// Metrics integration to scaffold.
+    #[arg(long, value_enum)]
+    pub metrics: Option<Metrics>,
     /// Generate a Helm deploy chart under .gitops/deploy.
     #[arg(long)]
     pub gitops: bool,
@@ -216,6 +219,19 @@ pub enum Bus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Metrics {
+    Prometheus,
+}
+
+impl From<Metrics> for MetricsTarget {
+    fn from(value: Metrics) -> Self {
+        match value {
+            Metrics::Prometheus => MetricsTarget::Prometheus,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Store {
     Postgres,
     Sqlite,
@@ -329,6 +345,7 @@ fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
         transport: transport.into(),
         store: args.store.into(),
         bus: args.bus.map(Into::into),
+        metrics: args.metrics.map(Into::into),
         models: args.model.clone(),
         read_models: args.read_models,
         commands: args.command.clone(),

@@ -31,7 +31,7 @@ use distributed::{
     RelationalReadModelIncludes, RelationalReadModelQueryStore, TableStoreError,
     TransactionalCommit,
 };
-use distributed::{InMemoryRepository, InMemoryReadModelStore, Queueable};
+use distributed::{InMemoryReadModelStore, InMemoryRepository, Queueable};
 use projection_service::service as projection_service;
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};

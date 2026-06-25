@@ -15,6 +15,8 @@ pub mod emitter;
 mod in_memory_repo;
 pub mod lock;
 pub mod manifest;
+#[cfg(feature = "metrics")]
+pub mod metrics;
 pub mod microsvc;
 pub mod outbox;
 pub mod outbox_worker;

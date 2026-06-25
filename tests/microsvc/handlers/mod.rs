@@ -1,4 +1,4 @@
-use distributed::{AggregateRepository, InMemoryRepository, InMemoryLockManager, QueuedRepository};
+use distributed::{AggregateRepository, InMemoryLockManager, InMemoryRepository, QueuedRepository};
 
 use crate::models::counter::Counter;
 
