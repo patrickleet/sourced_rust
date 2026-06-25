@@ -55,6 +55,9 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
         if self.metrics == Some(MetricsTarget::Prometheus) {
             features.push("metrics");
         }
+        if self.tracing {
+            features.push("otel");
+        }
         features
     }
 
@@ -145,6 +148,18 @@ pub fn service_manifest() -> ServiceManifest {{
     }
 
     pub(super) fn service_rs(&self) -> String {
+        let mut manifest_imports = vec![
+            "microsvc::{Routes, Service}",
+            "InMemoryRepository",
+            "ServiceManifest",
+        ];
+        if self.metrics == Some(MetricsTarget::Prometheus) {
+            manifest_imports.push("MetricsEndpointManifest");
+        }
+        if self.tracing {
+            manifest_imports.push("TracingManifest");
+        }
+        let manifest_imports = manifest_imports.join(", ");
         let registrations = self
             .commands
             .iter()
@@ -179,14 +194,21 @@ pub fn service_manifest() -> ServiceManifest {{
             ServiceTransport::Http => "http",
             ServiceTransport::Knative => "knative",
         };
+        let manifest_metrics = if self.metrics == Some(MetricsTarget::Prometheus) {
+            "        .metrics(MetricsEndpointManifest::prometheus_default())\n"
+        } else {
+            ""
+        };
+        let manifest_tracing = if self.tracing {
+            "        .tracing(TracingManifest::otlp())\n"
+        } else {
+            ""
+        };
 
         format!(
             r#"use std::sync::Arc;
 
-use distributed::{{
-    microsvc::{{Routes, Service}},
-    InMemoryRepository, ServiceManifest,
-}};
+use distributed::{{{manifest_imports}}};
 
 use crate::handlers;
 
@@ -205,7 +227,7 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
 
 pub fn manifest() -> ServiceManifest {{
     ServiceManifest::new({service_name})
-{manifest_commands}{manifest_events}        .transport({transport})
+{manifest_commands}{manifest_events}{manifest_metrics}{manifest_tracing}        .transport({transport})
 }}
 "#,
             service_name = rust_string(&self.names.package_name),

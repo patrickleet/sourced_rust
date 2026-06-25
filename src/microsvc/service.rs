@@ -644,7 +644,8 @@ impl Service {
             metadata,
         };
 
-        self.invoke(&message, input, session).await
+        self.invoke_with_dispatch_span(&message, input, session)
+            .await
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -701,7 +702,29 @@ impl Service {
             Err(err) => return Err(err),
         };
         let session = message_to_session(message);
-        self.invoke(message, input, session).await
+        self.invoke_with_dispatch_span(message, input, session)
+            .await
+    }
+
+    async fn invoke_with_dispatch_span(
+        &self,
+        message: &Message,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
+        #[cfg(feature = "otel")]
+        {
+            use tracing::Instrument as _;
+
+            let span = microsvc_dispatch_span(message);
+            crate::trace_context::set_span_parent_from_metadata(&span, &message.metadata);
+            return self.invoke(message, input, session).instrument(span).await;
+        }
+
+        #[cfg(not(feature = "otel"))]
+        {
+            self.invoke(message, input, session).await
+        }
     }
 
     async fn invoke(
@@ -716,9 +739,21 @@ impl Service {
             .and_then(|by_name| by_name.get(message.name.as_str()))
             .copied()
             .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
-        self.routes[route_index]
-            .dispatch(message, input, session)
-            .await
+        #[cfg(feature = "otel")]
+        let handler_span = microsvc_handler_span(message);
+        let dispatch = self.routes[route_index].dispatch(message, input, session);
+
+        #[cfg(feature = "otel")]
+        {
+            use tracing::Instrument as _;
+
+            return dispatch.instrument(handler_span).await;
+        }
+
+        #[cfg(not(feature = "otel"))]
+        {
+            dispatch.await
+        }
     }
 
     /// List registered command names.
@@ -896,6 +931,26 @@ fn is_json_content_type(content_type: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     essence == "application/json" || essence.ends_with("+json")
+}
+
+#[cfg(feature = "otel")]
+fn microsvc_dispatch_span(message: &Message) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.microsvc.dispatch",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or("")
+    )
+}
+
+#[cfg(feature = "otel")]
+fn microsvc_handler_span(message: &Message) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.handler",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or("")
+    )
 }
 
 fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
@@ -1418,6 +1473,36 @@ mod tests {
                 "correlation_id": "checkout-1",
                 "seat_id": "A-7",
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_exposes_trace_context_from_session_metadata() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let service = test_service(test_routes().command("checkout.start").handle(
+            |ctx: &Context<()>| {
+                let trace_context = ctx.message().trace_context();
+                async move {
+                    Ok(json!({
+                        "traceparent": trace_context.traceparent,
+                        "tracestate": trace_context.tracestate,
+                    }))
+                }
+            },
+        ));
+        let session = Session::from_map(HashMap::from([
+            ("traceparent".to_string(), traceparent.to_string()),
+            ("tracestate".to_string(), "vendor=value".to_string()),
+        ]));
+
+        let result = service
+            .dispatch("checkout.start", json!({}), session)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({ "traceparent": traceparent, "tracestate": "vendor=value" })
         );
     }
 

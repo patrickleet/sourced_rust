@@ -244,10 +244,39 @@ async fn dispatch<R: MessageRouter, I>(
     options: &RunOptions<I>,
     message: &Message,
 ) -> Result<(), TransportError> {
-    options
-        .validate_message_id(message)
-        .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
-    router.dispatch(message).await
+    #[cfg(feature = "otel")]
+    {
+        use tracing::Instrument as _;
+
+        let span = transport_receive_span(message);
+        crate::trace_context::set_span_parent_from_metadata(&span, &message.metadata);
+        return async {
+            options
+                .validate_message_id(message)
+                .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
+            router.dispatch(message).await
+        }
+        .instrument(span)
+        .await;
+    }
+
+    #[cfg(not(feature = "otel"))]
+    {
+        options
+            .validate_message_id(message)
+            .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
+        router.dispatch(message).await
+    }
+}
+
+#[cfg(feature = "otel")]
+fn transport_receive_span(message: &Message) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.transport.receive",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or("")
+    )
 }
 
 fn record_transport_message(

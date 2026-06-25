@@ -50,6 +50,8 @@ pub struct ServiceScaffoldSpec {
     pub models: Vec<String>,
     /// Generate placeholder read-model modules and register them in the manifest.
     pub read_models: bool,
+    /// Enable Distributed's optional tracing span feature and GitOps OTLP env metadata.
+    pub tracing: bool,
     /// Command handler message names (raw; empty → a default command is derived).
     pub commands: Vec<String>,
     /// Event handler message names (raw; may be empty).

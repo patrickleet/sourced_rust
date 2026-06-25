@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use distributed::{
     Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, RepositoryError, SnapshotRecord,
-    SnapshotStore, SnapshotWrite, StreamIdentity, StreamWrite, TransactionalCommit,
+    SnapshotStore, SnapshotWrite, StreamIdentity, StreamWrite, TraceContext, TransactionalCommit,
 };
 use tokio::sync::Barrier;
 
@@ -246,6 +246,11 @@ where
     let mut seat = Seat::default();
     seat.entity.set_correlation_id("corr-conformance");
     seat.entity.set_causation_id("cmd-conformance");
+    let trace_context = TraceContext {
+        traceparent: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string()),
+        tracestate: Some("vendor=value".to_string()),
+    };
+    seat.entity.set_trace_context(&trace_context);
     seat.add(id.clone(), "gallery".into())
         .expect("seat should be valid");
 
@@ -268,6 +273,7 @@ where
         .expect("metadata stream should contain one event");
     assert_eq!(event.correlation_id(), Some("corr-conformance"));
     assert_eq!(event.causation_id(), Some("cmd-conformance"));
+    assert_eq!(event.trace_context(), trace_context);
 }
 
 pub async fn unsupported_codec_is_rejected_on_write<R>(repo: R)

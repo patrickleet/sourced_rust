@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID};
 use crate::SourcedResult;
 
 use super::{BitcodePayloadCodec, EventRecord, EventRecordError, PayloadCodec};
@@ -198,12 +199,22 @@ impl Entity {
 
     /// Set the correlation ID for subsequent events.
     pub fn set_correlation_id(&mut self, id: impl Into<String>) {
-        self.set_meta("correlation_id", id);
+        self.set_meta(CORRELATION_ID, id);
     }
 
     /// Set the causation ID for subsequent events.
     pub fn set_causation_id(&mut self, id: impl Into<String>) {
-        self.set_meta("causation_id", id);
+        self.set_meta(CAUSATION_ID, id);
+    }
+
+    /// Set W3C trace context for subsequent events.
+    pub fn set_trace_context(&mut self, context: &TraceContext) {
+        context.inject_map(&mut self.metadata);
+    }
+
+    /// Get the current W3C trace context.
+    pub fn trace_context(&self) -> TraceContext {
+        TraceContext::from_metadata(self.metadata.iter())
     }
 
     /// Get the current metadata context.
@@ -539,6 +550,23 @@ mod tests {
         assert_eq!(record.correlation_id(), Some("req-abc"));
         assert_eq!(record.causation_id(), Some("cmd-xyz"));
         assert_eq!(record.meta("user_id"), Some("u-42"));
+    }
+
+    #[test]
+    fn digest_propagates_trace_context_to_event_record() {
+        let mut entity = Entity::new();
+        let context = TraceContext {
+            traceparent: Some(
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+            ),
+            tracestate: Some("vendor=value".to_string()),
+        };
+        entity.set_trace_context(&context);
+
+        entity.digest("e1", &"payload").unwrap();
+
+        let record = &entity.events()[0];
+        assert_eq!(record.trace_context(), context);
     }
 
     #[test]

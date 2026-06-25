@@ -50,6 +50,7 @@ pub(crate) struct Scaffold {
     pub(crate) bus: Option<BusTarget>,
     pub(crate) metrics: Option<MetricsTarget>,
     pub(crate) include_read_models: bool,
+    pub(crate) tracing: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
     pub(crate) github: Option<GithubRepo>,
@@ -94,6 +95,7 @@ impl Scaffold {
             bus: spec.bus,
             metrics: spec.metrics,
             include_read_models: spec.read_models,
+            tracing: spec.tracing,
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
             github: spec.github,
@@ -183,6 +185,7 @@ mod tests {
             metrics: None,
             models: Vec::new(),
             read_models: false,
+            tracing: false,
             commands: Vec::new(),
             events: Vec::new(),
             distributed_dependency_path: "../distributed".to_string(),
@@ -422,6 +425,31 @@ mod tests {
         assert!(!values.contains("metrics:"), "values.yaml: {values}");
         assert!(!values.contains("serviceMonitor:"), "values.yaml: {values}");
         assert!(!values.contains("prometheusRule:"), "values.yaml: {values}");
+    }
+
+    #[test]
+    fn tracing_scaffold_enables_otel_feature_and_gitops_env_values() {
+        let mut s = spec("orders");
+        s.tracing = true;
+        s.gitops = true;
+
+        let project = generate_service_scaffold(s).unwrap();
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(cargo.contains("\"otel\""));
+
+        let service = contents(&project, "src/service.rs");
+        assert!(service.contains(".tracing(TracingManifest::otlp())"));
+
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(values.contains("enabled: true"));
+        assert!(values.contains("otlpEndpoint: \"\""));
+
+        let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(deployment.contains("OTEL_SERVICE_NAME"));
+        assert!(deployment.contains("value: \"orders\""));
+        assert!(!deployment.contains(".Chart.Name"));
+        assert!(deployment.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
+        assert!(deployment.contains(".Values.observability.tracing.otlpEndpoint"));
     }
 
     #[test]
