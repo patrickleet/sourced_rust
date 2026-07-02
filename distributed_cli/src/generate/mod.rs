@@ -224,14 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn service_uses_the_new_builder_api() {
+    fn service_uses_the_route_bundle_api() {
         let project = generate_service_scaffold(spec("orders")).unwrap();
         let service = contents(&project, "src/service.rs");
         assert!(
-            service.contains("Service::new().with_repo(repo)"),
-            "service.rs should use the new builder API:\n{service}"
+            service.contains("distributed::routes!("),
+            "service.rs should register handlers with routes!:\n{service}"
         );
-        assert!(!service.contains("Service::with_repo("));
+        assert!(
+            service.contains("Routes::new().with_dependencies(repo)"),
+            "service.rs should build a typed route bundle:\n{service}"
+        );
+        // `Service` is no longer generic and `register_handlers!` no longer exists.
+        assert!(!service.contains("Service<"));
+        assert!(!service.contains("register_handlers!"));
     }
 
     #[test]
