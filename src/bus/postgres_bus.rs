@@ -34,11 +34,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+
+use crate::sqlx_repo::is_sqlx_transient;
 
 use super::source::{MessageSource, ReceivedMessage};
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
+    TransportErrorKind,
 };
 use super::{Message, MessageKind};
 
@@ -47,6 +51,7 @@ const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS bus_queue (
     seq          BIGSERIAL PRIMARY KEY,
+    claim_token  TEXT,
     name         TEXT NOT NULL,
     message_id   TEXT,
     kind         TEXT NOT NULL,
@@ -55,9 +60,15 @@ CREATE TABLE IF NOT EXISTS bus_queue (
     metadata     TEXT NOT NULL DEFAULT '[]',
     available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     locked_until TIMESTAMPTZ,
-    attempts     INTEGER NOT NULL DEFAULT 0
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    CHECK (claim_token IS NULL OR claim_token <> ''),
+    CHECK (name <> ''),
+    CHECK (kind IN ('command', 'event')),
+    CHECK (content_type <> ''),
+    CHECK (attempts >= 0)
 );
-CREATE INDEX IF NOT EXISTS bus_queue_claim_idx ON bus_queue (name, available_at, seq);
+CREATE INDEX IF NOT EXISTS bus_queue_claim_idx
+    ON bus_queue (name, available_at, locked_until, seq);
 CREATE TABLE IF NOT EXISTS bus_log (
     seq          BIGSERIAL PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -66,60 +77,119 @@ CREATE TABLE IF NOT EXISTS bus_log (
     payload      BYTEA NOT NULL,
     content_type TEXT NOT NULL DEFAULT 'application/json',
     metadata     TEXT NOT NULL DEFAULT '[]',
-    appended_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    appended_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (name <> ''),
+    CHECK (kind IN ('command', 'event')),
+    CHECK (content_type <> '')
 );
 CREATE INDEX IF NOT EXISTS bus_log_name_seq_idx ON bus_log (name, seq);
 CREATE TABLE IF NOT EXISTS bus_offset (
     consumer TEXT PRIMARY KEY,
-    last_seq BIGINT NOT NULL DEFAULT 0
+    last_seq BIGINT NOT NULL DEFAULT 0,
+    CHECK (consumer <> ''),
+    CHECK (last_seq >= 0)
 )";
 
 fn db_err(context: &str, err: sqlx::Error) -> TransportError {
-    // Database errors are transient from the transport's view; the runner retries.
-    TransportError::retryable(format!("postgres bus {context}: {err}"))
+    let kind = if is_sqlx_transient(&err) {
+        TransportErrorKind::Retryable
+    } else {
+        TransportErrorKind::Permanent
+    };
+    TransportError::new(kind, format!("postgres bus {context}: {err}")).with_source(err)
+}
+
+fn metadata_json(message: &Message) -> String {
+    serde_json::to_string(&message.metadata).unwrap_or_else(|_| "[]".into())
+}
+
+fn corrupt_row(message: impl Into<String>) -> TransportError {
+    TransportError::permanent(format!("postgres bus corrupt row: {}", message.into()))
+}
+
+fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
+    corrupt_row(format!(
+        "required column '{column}' failed to decode: {err}"
+    ))
+}
+
+fn parse_message_kind(value: &str) -> Result<MessageKind, TransportError> {
+    match value {
+        "command" => Ok(MessageKind::Command),
+        "event" => Ok(MessageKind::Event),
+        _ => Err(corrupt_row(format!(
+            "required column 'kind' has unsupported value {value:?}"
+        ))),
+    }
+}
+
+fn parse_metadata(value: &str) -> Result<Vec<(String, String)>, TransportError> {
+    serde_json::from_str(value).map_err(|err| {
+        corrupt_row(format!(
+            "required column 'metadata' failed to parse as JSON metadata: {err}"
+        ))
+    })
 }
 
 /// Reconstruct a [`Message`] from a claimed `bus_queue`/`bus_log` row.
 ///
-/// A row that fails to decode a **required** column (`name`, `kind`, `payload`)
-/// is corrupt and can never be handled: returning a placeholder `Message` with an
-/// empty name would route it to the runner's ack-and-ignore path, silently
-/// deleting the row (queue) or advancing the offset past it (log) with no trace.
-/// Instead this returns a **permanent** [`TransportError`] so the caller surfaces
-/// it as a decode failure and the runner routes the claimed row through the
-/// failure policy (dead-letter by default) like any other permanent failure.
-///
-/// `message_id`, `content_type`, and `metadata` keep tolerant defaults: they are
-/// optional or have schema defaults, so a missing/garbled value there does not
-/// make the message unhandleable.
-fn message_from_row(row: &sqlx::postgres::PgRow) -> Result<Message, TransportError> {
-    fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
-        TransportError::permanent(format!(
-            "postgres bus corrupt row: required column '{column}' failed to decode: {err}"
-        ))
-    }
-
+/// Required-column decode/parsing failures are permanent corruption. The row has
+/// already been selected or claimed, so callers surface the error through
+/// [`ReceivedMessage::decode_error`] and let the runner settle it through the
+/// configured failure policy.
+fn message_from_row(row: &PgRow) -> Result<Message, TransportError> {
     let name: String = row.try_get("name").map_err(|err| decode_err("name", err))?;
     let kind: String = row.try_get("kind").map_err(|err| decode_err("kind", err))?;
     let payload: Vec<u8> = row
         .try_get("payload")
         .map_err(|err| decode_err("payload", err))?;
+    let content_type: String = row
+        .try_get("content_type")
+        .map_err(|err| decode_err("content_type", err))?;
+    if content_type.is_empty() {
+        return Err(corrupt_row("required column 'content_type' is empty"));
+    }
+    let metadata_json: String = row
+        .try_get("metadata")
+        .map_err(|err| decode_err("metadata", err))?;
+    let metadata = parse_metadata(&metadata_json)?;
 
-    let metadata_json: String = row.try_get("metadata").unwrap_or_else(|_| "[]".to_string());
-    let metadata =
-        serde_json::from_str::<Vec<(String, String)>>(&metadata_json).unwrap_or_default();
     Ok(Message {
         id: row
             .try_get::<Option<String>, _>("message_id")
             .unwrap_or(None),
         name,
-        kind: MessageKind::from_str_lossy(&kind),
+        kind: parse_message_kind(&kind)?,
         payload,
-        content_type: row
-            .try_get("content_type")
-            .unwrap_or_else(|_| "application/json".to_string()),
+        content_type,
         metadata,
     })
+}
+
+struct ReceivedRow {
+    seq: i64,
+    message: Message,
+    decode_error: Option<TransportError>,
+}
+
+impl ReceivedRow {
+    fn from_row(row: &PgRow) -> Self {
+        let seq = row.try_get("seq").unwrap_or_default();
+        let (message, decode_error) = decode_or_placeholder(row);
+        Self {
+            seq,
+            message,
+            decode_error,
+        }
+    }
+
+    fn message(&self) -> &Message {
+        &self.message
+    }
+
+    fn decode_error(&self) -> Option<&TransportError> {
+        self.decode_error.as_ref()
+    }
 }
 
 /// Postgres [`Bus`] + [`BusConsumer`]. Cheap to clone (the pool is an `Arc`).
@@ -183,38 +253,42 @@ impl PostgresBus {
     }
 
     async fn enqueue(&self, message: Message) -> Result<(), TransportError> {
-        let metadata = serde_json::to_string(&message.metadata).unwrap_or_else(|_| "[]".into());
-        sqlx::query(
+        self.insert_message(
             "INSERT INTO bus_queue (name, message_id, kind, payload, content_type, metadata) \
              VALUES ($1, $2, $3, $4, $5, $6)",
+            "enqueue",
+            message,
         )
-        .bind(&message.name)
-        .bind(&message.id)
-        .bind(message.kind.as_str())
-        .bind(&message.payload)
-        .bind(&message.content_type)
-        .bind(metadata)
-        .execute(&self.pool)
         .await
-        .map_err(|err| db_err("enqueue", err))?;
-        Ok(())
     }
 
     async fn append(&self, message: Message) -> Result<(), TransportError> {
-        let metadata = serde_json::to_string(&message.metadata).unwrap_or_else(|_| "[]".into());
-        sqlx::query(
+        self.insert_message(
             "INSERT INTO bus_log (name, message_id, kind, payload, content_type, metadata) \
              VALUES ($1, $2, $3, $4, $5, $6)",
+            "append",
+            message,
         )
-        .bind(&message.name)
-        .bind(&message.id)
-        .bind(message.kind.as_str())
-        .bind(&message.payload)
-        .bind(&message.content_type)
-        .bind(metadata)
-        .execute(&self.pool)
         .await
-        .map_err(|err| db_err("append", err))?;
+    }
+
+    async fn insert_message(
+        &self,
+        sql: &'static str,
+        context: &'static str,
+        message: Message,
+    ) -> Result<(), TransportError> {
+        let metadata = metadata_json(&message);
+        sqlx::query(sql)
+            .bind(&message.name)
+            .bind(&message.id)
+            .bind(message.kind.as_str())
+            .bind(&message.payload)
+            .bind(&message.content_type)
+            .bind(metadata)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| db_err(context, err))?;
         Ok(())
     }
 }
@@ -299,16 +373,22 @@ impl MessageSource for QueueSource {
         // which deletes the row) instead of leaving a poison row that blocks the
         // queue from draining. `FOR UPDATE SKIP LOCKED` keeps the claim safe under
         // competing listeners — only one settles the orphaned row.
+        //
+        // Each claim mints a fresh `claim_token`; settlement is scoped to
+        // `seq AND claim_token`, so a worker whose lease expired (and whose row
+        // was reclaimed by another worker under a new token) cannot delete or
+        // release the newer claim.
         let row = sqlx::query(
             "UPDATE bus_queue SET locked_until = now() + ($1 * interval '1 second'), \
+                    claim_token = gen_random_uuid()::text, \
                     attempts = attempts + 1 \
              WHERE seq = ( \
                 SELECT seq FROM bus_queue \
                 WHERE (name = ANY($2) OR name IS NULL) AND available_at <= now() \
-                      AND (locked_until IS NULL OR locked_until < now()) \
+                      AND (locked_until IS NULL OR locked_until <= now()) \
                 ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT 1 \
              ) \
-             RETURNING seq, name, message_id, kind, payload, content_type, metadata",
+             RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
         )
         .bind(self.lease_secs)
         .bind(&self.names)
@@ -316,16 +396,18 @@ impl MessageSource for QueueSource {
         .await
         .map_err(|err| db_err("claim", err))?;
 
-        Ok(row.map(|row| {
-            let seq: i64 = row.try_get("seq").unwrap_or_default();
-            let (message, decode_error) = decode_or_placeholder(&row);
-            QueueReceived {
+        if let Some(row) = row {
+            let claim_token = row
+                .try_get("claim_token")
+                .map_err(|err| db_err("claim token", err))?;
+            Ok(Some(QueueReceived {
                 pool: self.pool.clone(),
-                seq,
-                message,
-                decode_error,
-            }
-        }))
+                row: ReceivedRow::from_row(&row),
+                claim_token,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -336,7 +418,7 @@ impl MessageSource for QueueSource {
 /// runner sees `decode_error()` first and routes the claim through the failure
 /// policy. The placeholder name is deliberately empty — the decode error carries
 /// the diagnostic.
-fn decode_or_placeholder(row: &sqlx::postgres::PgRow) -> (Message, Option<TransportError>) {
+fn decode_or_placeholder(row: &PgRow) -> (Message, Option<TransportError>) {
     match message_from_row(row) {
         Ok(message) => (message, None),
         Err(error) => (
@@ -347,18 +429,20 @@ fn decode_or_placeholder(row: &sqlx::postgres::PgRow) -> (Message, Option<Transp
 }
 
 /// A claimed `bus_queue` row: `ack` deletes it (done); `nack` makes it available
-/// again (redelivery); `dead_letter`/`park` delete it (stop redelivery).
+/// again (redelivery); `dead_letter`/`park` delete it (stop redelivery). Every
+/// settlement is fenced by the claim token, so a stale worker cannot settle a
+/// row that was reclaimed after its lease expired.
 pub struct QueueReceived {
     pool: PgPool,
-    seq: i64,
-    message: Message,
-    decode_error: Option<TransportError>,
+    row: ReceivedRow,
+    claim_token: String,
 }
 
 impl QueueReceived {
     async fn delete(&self) -> Result<(), TransportError> {
-        sqlx::query("DELETE FROM bus_queue WHERE seq = $1")
-            .bind(self.seq)
+        sqlx::query("DELETE FROM bus_queue WHERE seq = $1 AND claim_token = $2")
+            .bind(self.row.seq)
+            .bind(&self.claim_token)
             .execute(&self.pool)
             .await
             .map_err(|err| db_err("delete", err))?;
@@ -368,11 +452,11 @@ impl QueueReceived {
 
 impl ReceivedMessage for QueueReceived {
     fn message(&self) -> &Message {
-        &self.message
+        self.row.message()
     }
 
     fn decode_error(&self) -> Option<&TransportError> {
-        self.decode_error.as_ref()
+        self.row.decode_error()
     }
 
     async fn ack(self) -> Result<(), TransportError> {
@@ -380,11 +464,16 @@ impl ReceivedMessage for QueueReceived {
     }
 
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
-        sqlx::query("UPDATE bus_queue SET locked_until = NULL WHERE seq = $1")
-            .bind(self.seq)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| db_err("nack", err))?;
+        sqlx::query(
+            "UPDATE bus_queue \
+             SET locked_until = NULL, claim_token = NULL \
+             WHERE seq = $1 AND claim_token = $2",
+        )
+        .bind(self.row.seq)
+        .bind(&self.claim_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| db_err("nack", err))?;
         Ok(())
     }
 
@@ -428,16 +517,10 @@ impl MessageSource for LogSource {
         .await
         .map_err(|err| db_err("log read", err))?;
 
-        Ok(row.map(|row| {
-            let seq: i64 = row.try_get("seq").unwrap_or_default();
-            let (message, decode_error) = decode_or_placeholder(&row);
-            LogReceived {
-                pool: self.pool.clone(),
-                consumer: self.consumer.clone(),
-                seq,
-                message,
-                decode_error,
-            }
+        Ok(row.map(|row| LogReceived {
+            pool: self.pool.clone(),
+            consumer: self.consumer.clone(),
+            row: ReceivedRow::from_row(&row),
         }))
     }
 }
@@ -448,9 +531,7 @@ impl MessageSource for LogSource {
 pub struct LogReceived {
     pool: PgPool,
     consumer: String,
-    seq: i64,
-    message: Message,
-    decode_error: Option<TransportError>,
+    row: ReceivedRow,
 }
 
 impl LogReceived {
@@ -461,7 +542,7 @@ impl LogReceived {
              WHERE bus_offset.last_seq < EXCLUDED.last_seq",
         )
         .bind(&self.consumer)
-        .bind(self.seq)
+        .bind(self.row.seq)
         .execute(&self.pool)
         .await
         .map_err(|err| db_err("advance offset", err))?;
@@ -471,11 +552,11 @@ impl LogReceived {
 
 impl ReceivedMessage for LogReceived {
     fn message(&self) -> &Message {
-        &self.message
+        self.row.message()
     }
 
     fn decode_error(&self) -> Option<&TransportError> {
-        self.decode_error.as_ref()
+        self.row.decode_error()
     }
 
     async fn ack(self) -> Result<(), TransportError> {

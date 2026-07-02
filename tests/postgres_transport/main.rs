@@ -14,10 +14,13 @@ mod postgres;
 mod conformance;
 use conformance::{named_recording_for, recording_for};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use distributed::bus::{
-    run_source, Bus, BusConsumer, MessageSource, PostgresBus, ReceivedMessage, RunOptions,
+    run_source, Bus, BusConsumer, Handlers, MessageSource, PostgresBus, ReceivedMessage,
+    RunOptions, TransportError,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
 use distributed::OutboxSource;
@@ -26,6 +29,7 @@ use distributed::{
     PostgresRepository, TransactionalCommit,
 };
 use serde_json::json;
+use tokio::sync::Notify;
 
 const SKIP: &str = "skipping postgres transport test";
 
@@ -331,30 +335,154 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
 
 // ---- corrupt-row handling: a row that fails to decode must NOT vanish ----
 
-/// Make the most recently enqueued `bus_queue` row corrupt by nulling its
-/// required `name` column, so `try_get::<String>` fails with `UnexpectedNull`
-/// when the source claims it — the exact decode failure a real corruption (a
-/// migration mishap, a manual edit, a driver/type mismatch) produces.
-async fn corrupt_latest_queue_name(pool: &sqlx::PgPool) {
-    sqlx::query("ALTER TABLE bus_queue ALTER COLUMN name DROP NOT NULL")
+/// Recreate `bus_queue` without the schema's NOT NULL / CHECK guards so tests
+/// can simulate corruption (a migration mishap, a manual edit, a driver/type
+/// mismatch) that a hardened schema would otherwise reject at write time.
+async fn recreate_permissive_queue_table(pool: &sqlx::PgPool) {
+    sqlx::query("DROP TABLE IF EXISTS bus_queue")
         .execute(pool)
         .await
-        .expect("drop not null");
+        .expect("drop bus_queue");
+    sqlx::query(
+        r#"
+        CREATE TABLE bus_queue (
+            seq          BIGSERIAL PRIMARY KEY,
+            claim_token  TEXT,
+            name         TEXT,
+            message_id   TEXT,
+            kind         TEXT NOT NULL,
+            payload      BYTEA NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'application/json',
+            metadata     TEXT NOT NULL DEFAULT '[]',
+            available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            locked_until TIMESTAMPTZ,
+            attempts     INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("create permissive bus_queue");
+    sqlx::query(
+        "CREATE INDEX bus_queue_claim_idx ON bus_queue (name, available_at, locked_until, seq)",
+    )
+    .execute(pool)
+    .await
+    .expect("create queue index");
+}
+
+/// Recreate `bus_log` without the schema's NOT NULL / CHECK guards (see
+/// [`recreate_permissive_queue_table`]).
+async fn recreate_permissive_log_table(pool: &sqlx::PgPool) {
+    sqlx::query("DROP TABLE IF EXISTS bus_log")
+        .execute(pool)
+        .await
+        .expect("drop bus_log");
+    sqlx::query(
+        r#"
+        CREATE TABLE bus_log (
+            seq          BIGSERIAL PRIMARY KEY,
+            name         TEXT,
+            message_id   TEXT,
+            kind         TEXT NOT NULL,
+            payload      BYTEA NOT NULL,
+            content_type TEXT DEFAULT 'application/json',
+            metadata     TEXT NOT NULL DEFAULT '[]',
+            appended_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("create permissive bus_log");
+    sqlx::query("CREATE INDEX bus_log_name_seq_idx ON bus_log (name, seq)")
+        .execute(pool)
+        .await
+        .expect("create log index");
+}
+
+async fn corrupt_latest_queue_name(pool: &sqlx::PgPool) {
     sqlx::query("UPDATE bus_queue SET name = NULL WHERE seq = (SELECT max(seq) FROM bus_queue)")
         .execute(pool)
         .await
-        .expect("null out name");
+        .expect("null out queue name");
+}
+
+async fn corrupt_latest_queue_kind(pool: &sqlx::PgPool) {
+    sqlx::query("UPDATE bus_queue SET kind = 'bogus' WHERE seq = (SELECT max(seq) FROM bus_queue)")
+        .execute(pool)
+        .await
+        .expect("corrupt queue kind");
 }
 
 async fn corrupt_latest_log_name(pool: &sqlx::PgPool) {
-    sqlx::query("ALTER TABLE bus_log ALTER COLUMN name DROP NOT NULL")
-        .execute(pool)
-        .await
-        .expect("drop not null");
     sqlx::query("UPDATE bus_log SET name = NULL WHERE seq = (SELECT max(seq) FROM bus_log)")
         .execute(pool)
         .await
-        .expect("null out name");
+        .expect("null out log name");
+}
+
+async fn corrupt_latest_log_kind(pool: &sqlx::PgPool) {
+    sqlx::query("UPDATE bus_log SET kind = 'bogus' WHERE seq = (SELECT max(seq) FROM bus_log)")
+        .execute(pool)
+        .await
+        .expect("corrupt log kind");
+}
+
+async fn corrupt_latest_log_metadata(pool: &sqlx::PgPool) {
+    sqlx::query(
+        "UPDATE bus_log SET metadata = 'not-json' WHERE seq = (SELECT max(seq) FROM bus_log)",
+    )
+    .execute(pool)
+    .await
+    .expect("corrupt log metadata");
+}
+
+async fn corrupt_latest_log_content_type(pool: &sqlx::PgPool) {
+    sqlx::query(
+        "UPDATE bus_log SET content_type = NULL WHERE seq = (SELECT max(seq) FROM bus_log)",
+    )
+    .execute(pool)
+    .await
+    .expect("corrupt log content type");
+}
+
+/// The hardened schema rejects unsupported message kinds at write time, so a
+/// `kind` CHECK violation never reaches a consumer as a corrupt row.
+#[tokio::test]
+async fn bus_schema_rejects_unsupported_message_kind() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_kind_check", SKIP).await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let bus = PostgresBus::new(pool.clone());
+    bus.ensure_tables().await.expect("ensure tables");
+
+    let queue_err = sqlx::query("INSERT INTO bus_queue (name, kind, payload) VALUES ($1, $2, $3)")
+        .bind("order.initialize")
+        .bind("bogus")
+        .bind(b"{}".to_vec())
+        .execute(&pool)
+        .await
+        .expect_err("queue kind check rejects unsupported message kind");
+    assert!(
+        queue_err.to_string().contains("check"),
+        "unexpected queue kind error: {queue_err}"
+    );
+
+    let log_err = sqlx::query("INSERT INTO bus_log (name, kind, payload) VALUES ($1, $2, $3)")
+        .bind("order.initialized")
+        .bind("bogus")
+        .bind(b"{}".to_vec())
+        .execute(&pool)
+        .await
+        .expect_err("log kind check rejects unsupported message kind");
+    assert!(
+        log_err.to_string().contains("check"),
+        "unexpected log kind error: {log_err}"
+    );
 }
 
 /// A corrupt `bus_queue` row is routed through the failure policy (dead-letter by
@@ -371,14 +499,22 @@ async fn bus_listen_dead_letters_corrupt_queue_row_not_silently() {
     let pool = repo.pool().clone();
     let bus = PostgresBus::new(pool.clone()).group("orders");
     bus.ensure_tables().await.expect("ensure tables");
+    recreate_permissive_queue_table(&pool).await;
 
-    // A poison row (name will be nulled) and a healthy row.
+    // Poison rows (nulled name, bogus kind) and a healthy row.
     bus.send_message(
         Message::new("order.initialize", MessageKind::Command, b"{}".to_vec()).with_id("poison"),
     )
     .await
     .expect("send poison");
     corrupt_latest_queue_name(&pool).await;
+    bus.send_message(
+        Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
+            .with_id("poison-kind"),
+    )
+    .await
+    .expect("send poison kind");
+    corrupt_latest_queue_kind(&pool).await;
     bus.send_message(
         Message::new("order.initialize", MessageKind::Command, b"{}".to_vec()).with_id("ok"),
     )
@@ -428,13 +564,15 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
     let pool = repo.pool().clone();
     let producer = PostgresBus::new(pool.clone());
     producer.ensure_tables().await.expect("ensure tables");
+    recreate_permissive_log_table(&pool).await;
 
-    // Layout (by seq): poison, ok, poison. The trailing poison is the highest
-    // seq, so a consumer that *silently skips* corrupt entries (matching only by
-    // name) would stop its offset at the healthy `ok` entry and never reach the
-    // last seq — the offset would fall short of max_seq and this test would fail.
-    // Reaching max_seq proves the corrupt entries were settled through the policy
-    // (offset advanced past them), not skipped because their name no longer matched.
+    // Layout (by seq): poison, ok, then trailing poison entries. The trailing
+    // poisons are the highest seqs, so a consumer that *silently skips* corrupt
+    // entries (matching only by name) would stop its offset at the healthy `ok`
+    // entry and never reach the last seq — the offset would fall short of max_seq
+    // and this test would fail. Reaching max_seq proves the corrupt entries were
+    // settled through the policy (offset advanced past them), not skipped because
+    // their name no longer matched.
     producer
         .publish_message(
             Message::new("order.initialized", MessageKind::Event, b"{}".to_vec()).with_id("poison"),
@@ -456,6 +594,30 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         .await
         .expect("publish trailing poison");
     corrupt_latest_log_name(&pool).await;
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                .with_id("poison-kind"),
+        )
+        .await
+        .expect("publish corrupt kind");
+    corrupt_latest_log_kind(&pool).await;
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                .with_id("poison-metadata"),
+        )
+        .await
+        .expect("publish corrupt metadata");
+    corrupt_latest_log_metadata(&pool).await;
+    producer
+        .publish_message(
+            Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
+                .with_id("poison-content-type"),
+        )
+        .await
+        .expect("publish corrupt content type");
+    corrupt_latest_log_content_type(&pool).await;
 
     let rec = Arc::new(Mutex::new(Vec::new()));
     PostgresBus::new(pool.clone())
@@ -494,4 +656,102 @@ async fn bus_subscribe_dead_letters_corrupt_log_row_not_silently() {
         Some(max_seq),
         "offset advanced past the trailing corrupt entry, not stuck or skipped-silently"
     );
+}
+
+/// Claim-token fencing: after a lease expires and the command is reclaimed by a
+/// second worker (new claim token), the stale first worker's ack must not settle
+/// the row out from under the newer claim. Mirrors the sqlite_transport test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_queue_claim_cannot_be_settled_by_stale_worker() {
+    let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_stale", SKIP).await
+    else {
+        return;
+    };
+    let repo = schema.repository().await;
+    let pool = repo.pool().clone();
+    let bus = PostgresBus::new(pool.clone())
+        .group("orders")
+        .with_lease(Duration::from_millis(250));
+    bus.ensure_tables().await.expect("ensure tables");
+    bus.send_message(
+        Message::new("order.initialize", MessageKind::Command, b"{}".to_vec()).with_id("c1"),
+    )
+    .await
+    .expect("send command");
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_claimed = Arc::new(Notify::new());
+    let second_claimed = Arc::new(Notify::new());
+    let allow_second_finish = Arc::new(Notify::new());
+
+    let handlers = Arc::new({
+        let attempts = attempts.clone();
+        let first_claimed = first_claimed.clone();
+        let second_claimed = second_claimed.clone();
+        let allow_second_finish = allow_second_finish.clone();
+        Handlers::new().on_command("order.initialize", move |_: &distributed::bus::Message| {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            let first_claimed = first_claimed.clone();
+            let second_claimed = second_claimed.clone();
+            let allow_second_finish = allow_second_finish.clone();
+            async move {
+                match attempt {
+                    0 => {
+                        first_claimed.notify_one();
+                        tokio::time::sleep(Duration::from_millis(420)).await;
+                        Ok(())
+                    }
+                    1 => {
+                        second_claimed.notify_one();
+                        allow_second_finish.notified().await;
+                        Err(TransportError::retryable("second claim releases for retry"))
+                    }
+                    _ => Ok(()),
+                }
+            }
+        })
+    });
+
+    let first = tokio::spawn({
+        let bus = bus.clone();
+        let handlers = handlers.clone();
+        async move { bus.listen(handlers, RunOptions::idempotent()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), first_claimed.notified())
+        .await
+        .expect("first worker claimed the command");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let second = tokio::spawn({
+        let bus = bus.clone();
+        let handlers = handlers.clone();
+        async move { bus.listen(handlers, RunOptions::idempotent()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), second_claimed.notified())
+        .await
+        .expect("second worker reclaimed the expired lease");
+
+    tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("stale first worker finished")
+        .expect("first worker joined")
+        .expect("first listener drains");
+
+    allow_second_finish.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), second)
+        .await
+        .expect("second worker finished")
+        .expect("second worker joined")
+        .expect("second listener drains");
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "stale ack did not delete the newer claim before it could be retried"
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM bus_queue")
+        .fetch_one(&pool)
+        .await
+        .expect("count queue");
+    assert_eq!(remaining, 0, "retried command was eventually acked");
 }
