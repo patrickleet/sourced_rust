@@ -30,6 +30,8 @@ mod outbox_dispatch;
 mod outbox_source;
 mod publish_hook;
 mod store;
+#[cfg(test)]
+mod testing;
 
 // Repository helpers
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
