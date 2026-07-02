@@ -14,32 +14,32 @@ use syn::{
 // Shared helpers
 // ============================================================================
 
-/// Extract parameter names from a method signature (excludes `self`).
-fn extract_param_names(sig: &syn::Signature) -> Vec<&Ident> {
-    sig.inputs
-        .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some(&pat_ident.ident);
-                }
-            }
-            None
-        })
-        .collect()
-}
-
 /// Extract parameter names and types from a method signature (excludes `self`).
-fn extract_params_with_types(sig: &syn::Signature) -> Vec<(Ident, syn::Type)> {
+///
+/// Every parameter must be a plain identifier: its name is recorded in the
+/// event payload and used to call the method again on replay. A pattern like
+/// `(a, b): (u8, u8)` or `_: String` has no single name, so silently skipping
+/// it would drop the parameter from the payload and make the generated replay
+/// arm call the method with too few arguments — an arity error pointing at
+/// generated code, far from the cause. Reject it here with a spanned error.
+fn extract_params_with_types(
+    sig: &syn::Signature,
+    attr_name: &str,
+) -> syn::Result<Vec<(Ident, syn::Type)>> {
     sig.inputs
         .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
-                }
-            }
-            None
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .map(|pat_type| match &*pat_type.pat {
+            Pat::Ident(pat_ident) => Ok((pat_ident.ident.clone(), (*pat_type.ty).clone())),
+            other => Err(syn::Error::new_spanned(
+                other,
+                format!(
+                    "unsupported parameter pattern in #[{attr_name}] method — use a plain identifier"
+                ),
+            )),
         })
         .collect()
 }
@@ -361,7 +361,8 @@ fn expand_enqueue(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
     let event_name = &args.event_name;
 
     // Use function parameters - serialize as tuple to JSON
-    let param_names = extract_param_names(&func.sig);
+    let params = extract_params_with_types(&func.sig, "enqueue")?;
+    let param_names: Vec<&Ident> = params.iter().map(|(name, _)| name).collect();
 
     let entity_field = &args.entity_field;
 
@@ -529,7 +530,8 @@ fn expand_digest(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStr
 
     let signature_synthesized = ensure_sourced_result_signature(&mut func.sig, "digest")?;
 
-    let param_names = extract_param_names(&func.sig);
+    let params = extract_params_with_types(&func.sig, "digest")?;
+    let param_names: Vec<&Ident> = params.iter().map(|(name, _)| name).collect();
     let digest_call = generate_digest_call(
         &args.entity_field,
         &args.event_name,
@@ -777,6 +779,53 @@ struct UpcasterDef {
     transform_fn: syn::Path,
 }
 
+impl Parse for UpcasterDef {
+    /// Parses one upcaster entry:
+    /// `("event.name", from => to, SourceType => TargetType, transform_fn)`.
+    ///
+    /// Shared by `aggregate!` and `#[sourced(..., upcasters(...))]` so the
+    /// upcaster grammar cannot drift between the two entry points.
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let inner;
+        syn::parenthesized!(inner in input);
+
+        let event_name: LitStr = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let from_version: syn::LitInt = inner.parse()?;
+        inner.parse::<Token![=>]>()?;
+        let to_version: syn::LitInt = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let source_type: syn::Type = inner.parse()?;
+        inner.parse::<Token![=>]>()?;
+        let target_type: syn::Type = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let transform_fn: syn::Path = inner.parse()?;
+
+        Ok(UpcasterDef {
+            event_name,
+            from_version,
+            to_version,
+            source_type,
+            target_type,
+            transform_fn,
+        })
+    }
+}
+
+/// Parse a sequence of parenthesized upcaster entries with optional trailing
+/// commas, until `content` is exhausted.
+fn parse_upcaster_list(content: ParseStream) -> syn::Result<Vec<UpcasterDef>> {
+    let mut upcasters = Vec::new();
+    while !content.is_empty() {
+        upcasters.push(content.parse::<UpcasterDef>()?);
+        // Optional trailing comma between upcaster entries
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(upcasters)
+}
+
 struct AggregateInput {
     agg_name: Ident,
     entity_field: Ident,
@@ -879,38 +928,7 @@ impl Parse for AggregateInput {
 
             let upcaster_content;
             syn::bracketed!(upcaster_content in input);
-
-            while !upcaster_content.is_empty() {
-                // Parse: ("initialized", from => to, SourceType => TargetType, transform_fn)
-                let inner;
-                syn::parenthesized!(inner in upcaster_content);
-
-                let event_name: LitStr = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let from_version: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let to_version: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let source_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let target_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let transform_fn: syn::Path = inner.parse()?;
-
-                upcasters.push(UpcasterDef {
-                    event_name,
-                    from_version,
-                    to_version,
-                    source_type,
-                    target_type,
-                    transform_fn,
-                });
-
-                // Optional trailing comma between upcaster entries
-                if upcaster_content.peek(Token![,]) {
-                    upcaster_content.parse::<Token![,]>()?;
-                }
-            }
+            upcasters = parse_upcaster_list(&upcaster_content)?;
         }
 
         Ok(AggregateInput {
@@ -974,32 +992,7 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
         } else if kw == "upcasters" {
             let upcaster_content;
             syn::parenthesized!(upcaster_content in input);
-            while !upcaster_content.is_empty() {
-                let inner;
-                syn::parenthesized!(inner in upcaster_content);
-                let ev_name: LitStr = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let from_ver: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let to_ver: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let source_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let target_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let transform: syn::Path = inner.parse()?;
-                upcasters.push(UpcasterDef {
-                    event_name: ev_name,
-                    from_version: from_ver,
-                    to_version: to_ver,
-                    source_type,
-                    target_type,
-                    transform_fn: transform,
-                });
-                if upcaster_content.peek(Token![,]) {
-                    upcaster_content.parse::<Token![,]>()?;
-                }
-            }
+            upcasters = parse_upcaster_list(&upcaster_content)?;
         } else {
             return Err(syn::Error::new_spanned(
                 &kw,
@@ -1146,7 +1139,13 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
     let mut event_methods: Vec<EventMethodInfo> = Vec::new();
     // Detect duplicate event names so the conflict points at the offending
     // attribute instead of surfacing as a confusing duplicate match arm later.
-    let mut seen_events: std::collections::HashMap<String, proc_macro2::Span> =
+    let mut seen_events: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Distinct event names can still derive the same enum variant because only
+    // the last `.`-segment is PascalCased (`user.completed` and
+    // `admin.completed` both become `Completed`). Track the derived idents so
+    // the collision is reported here, naming both event strings, instead of as
+    // a duplicate-variant error inside the generated enum.
+    let mut seen_variants: std::collections::HashMap<String, LitStr> =
         std::collections::HashMap::new();
 
     for item in &mut impl_block.items {
@@ -1164,19 +1163,29 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
                     }
 
                     let event_key = event_attr.event_name.value();
-                    if let Some(_prev) =
-                        seen_events.insert(event_key.clone(), event_attr.event_name.span())
-                    {
+                    if !seen_events.insert(event_key.clone()) {
                         return Err(syn::Error::new_spanned(
                             &event_attr.event_name,
                             format!("duplicate #[event] name `{event_key}` in this #[sourced] impl block"),
                         ));
                     }
 
+                    let variant = event_variant_ident(&event_attr.event_name);
+                    if let Some(prev) = seen_variants.get(&variant.to_string()) {
+                        return Err(syn::Error::new_spanned(
+                            &event_attr.event_name,
+                            format!(
+                                "#[event] names `{}` and `{event_key}` both derive the enum variant `{variant}`; rename one so the variant names are distinct",
+                                prev.value()
+                            ),
+                        ));
+                    }
+                    seen_variants.insert(variant.to_string(), event_attr.event_name.clone());
+
                     let signature_synthesized =
                         ensure_sourced_result_signature(&mut method.sig, "event")?;
 
-                    let params = extract_params_with_types(&method.sig);
+                    let params = extract_params_with_types(&method.sig, "event")?;
                     let param_name_refs: Vec<&Ident> =
                         params.iter().map(|(name, _)| name).collect();
 
@@ -1620,6 +1629,74 @@ mod tests {
     }
 
     #[test]
+    fn expand_sourced_rejects_variant_ident_collisions() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Workflow {
+                #[event("user.completed")]
+                pub fn user_completed(&mut self) {}
+                #[event("admin.completed")]
+                pub fn admin_completed(&mut self) {}
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("variant collision should error");
+        let msg = err.to_string();
+        assert!(msg.contains("`user.completed`"), "got: {msg}");
+        assert!(msg.contains("`admin.completed`"), "got: {msg}");
+        assert!(msg.contains("`Completed`"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_sourced_rejects_tuple_parameter_pattern() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Point {
+                #[event("moved")]
+                pub fn moved(&mut self, (x, y): (u8, u8)) {
+                    self.x = x;
+                    self.y = y;
+                }
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("tuple pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[event] method"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_digest_rejects_wildcard_parameter_pattern() {
+        let attr = quote! { "initialized" };
+        let item = quote! {
+            fn initialize(&mut self, _: String) {}
+        };
+        let err = expand_digest(attr, item).expect_err("wildcard pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[digest] method"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_enqueue_rejects_struct_parameter_pattern() {
+        let attr = quote! { "order.initialized" };
+        let item = quote! {
+            fn create(&mut self, Payload { id }: Payload) {
+                let _ = id;
+            }
+        };
+        let err = expand_enqueue(attr, item).expect_err("struct pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[enqueue] method"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn expand_sourced_rejects_event_without_receiver() {
         let attr = quote! { entity };
         let item = quote! {
@@ -1633,6 +1710,50 @@ mod tests {
             err.to_string().contains("must take a `&mut self` receiver"),
             "got: {err}"
         );
+    }
+
+    // ---- upcasters -------------------------------------------------------
+
+    /// Both `aggregate!` and `#[sourced]` route through the same
+    /// `UpcasterDef` parser, so one grammar check covers both entry points.
+    #[test]
+    fn upcaster_def_parses_full_entry() {
+        let input = quote! { ("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn) };
+        let def: UpcasterDef = syn::parse2(input).unwrap();
+        assert_eq!(def.event_name.value(), "initialized");
+        assert_eq!(def.from_version.base10_parse::<u64>().unwrap(), 1);
+        assert_eq!(def.to_version.base10_parse::<u64>().unwrap(), 2);
+    }
+
+    #[test]
+    fn upcaster_def_rejects_missing_transform_fn() {
+        let input = quote! { ("initialized", 1 => 2, OldPayload => NewPayload) };
+        assert!(syn::parse2::<UpcasterDef>(input).is_err());
+    }
+
+    #[test]
+    fn parse_sourced_args_accepts_upcasters() {
+        let attr = quote! {
+            entity,
+            upcasters(("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn))
+        };
+        let args = parse_sourced_args.parse2(attr).unwrap();
+        assert_eq!(args.upcasters.len(), 1);
+    }
+
+    #[test]
+    fn expand_aggregate_accepts_upcasters_block() {
+        let input = quote! {
+            Todo, entity {
+                "initialized"(id) => initialize,
+            }
+            upcasters [
+                ("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn),
+            ]
+        };
+        let out = expand_aggregate(input).unwrap().to_string();
+        assert!(out.contains("upcasters"), "got: {out}");
+        assert!(out.contains("upcast_fn"), "got: {out}");
     }
 
     // ---- aggregate -------------------------------------------------------

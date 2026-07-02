@@ -1,0 +1,7 @@
+error: snapshot entity field `entity` must match a named struct field; available fields: task
+ --> tests/compile_fail/snapshot_missing_entity_field.rs:6:10
+  |
+6 | #[derive(Snapshot)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `Snapshot` (in Nightly builds, run with -Z macro-backtrace for more info)

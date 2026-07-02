@@ -1,0 +1,5 @@
+error: Snapshot derive requires named fields
+ --> tests/compile_fail/snapshot_tuple_struct.rs:6:12
+  |
+6 | struct Todo(String);
+  |            ^^^^^^^^

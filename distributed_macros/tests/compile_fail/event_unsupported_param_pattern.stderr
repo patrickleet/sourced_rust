@@ -1,0 +1,5 @@
+error: unsupported parameter pattern in #[event] method — use a plain identifier
+  --> tests/compile_fail/event_unsupported_param_pattern.rs:15:29
+   |
+15 |     pub fn moved(&mut self, (x, y): (u8, u8)) {
+   |                             ^^^^^^
