@@ -215,24 +215,23 @@ pub(crate) fn ensure_active_claim(
     Ok(())
 }
 
+/// Claim order: oldest row first, message id as the deterministic tiebreaker.
+/// The single definition both claim-order helpers sort by.
+fn claim_order_key(message: &OutboxMessage) -> (SystemTime, &str) {
+    (message.created_at, message.id())
+}
+
 fn sort_by_claim_order(messages: &mut [OutboxMessage]) {
-    messages.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id().cmp(right.id()))
-    });
+    messages.sort_by(|left, right| claim_order_key(left).cmp(&claim_order_key(right)));
 }
 
 fn claim_order_ids<'a>(messages: impl Iterator<Item = &'a OutboxMessage>) -> Vec<String> {
-    let mut entries = messages
-        .map(|message| (message.created_at, message.id().to_string()))
-        .collect::<Vec<_>>();
-    entries.sort_by(|(left_time, left_id), (right_time, right_id)| {
-        left_time
-            .cmp(right_time)
-            .then_with(|| left_id.cmp(right_id))
-    });
-    entries.into_iter().map(|(_, id)| id).collect()
+    let mut messages: Vec<&OutboxMessage> = messages.collect();
+    messages.sort_by(|left, right| claim_order_key(left).cmp(&claim_order_key(right)));
+    messages
+        .into_iter()
+        .map(|message| message.id().to_string())
+        .collect()
 }
 
 impl HashMapOutboxStore {
