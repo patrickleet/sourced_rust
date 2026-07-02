@@ -22,9 +22,10 @@
 //!
 //! Requires the `rabbitmq` feature. Integration-tested in `tests/rabbitmq_transport`.
 
+use std::collections::HashSet;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lapin::options::{
     BasicGetOptions, BasicPublishOptions, ConfirmSelectOptions, ExchangeDeclareOptions,
@@ -55,6 +56,11 @@ pub struct RabbitBus {
     uri: String,
     channel: Channel,
     topology: BusTopologyConfig,
+    /// Queue/exchange names this process has already declared. Declarations are
+    /// idempotent but cost a broker round-trip, so `send`/`publish` declare each
+    /// name once instead of on every call. A benign race (two tasks declaring
+    /// the same name) just declares twice.
+    declared: Mutex<HashSet<String>>,
 }
 
 /// Awaitable builder returned by [`RabbitBus::connect`].
@@ -128,11 +134,18 @@ impl RabbitBus {
             .confirm_select(ConfirmSelectOptions::default())
             .await
             .map_err(|err| retryable("amqp confirm_select", err))?;
-        Ok(Self {
+        let bus = Self {
             uri,
             channel,
             topology,
-        })
+            declared: Mutex::new(HashSet::new()),
+        };
+        // Declare the events exchange once up front so the common publish path
+        // never pays a declare round-trip.
+        let exchange = bus.events_exchange()?;
+        bus.declare_events_exchange(&bus.channel, &exchange).await?;
+        bus.mark_declared(&exchange);
+        Ok(bus)
     }
 
     /// Set an explicit event subscription group on an already-built bus.
@@ -165,6 +178,43 @@ impl RabbitBus {
 
     fn group_queue(&self, group: &str) -> Result<String, TransportError> {
         Ok(format!("{}.evt.{group}", self.validated_namespace()?))
+    }
+
+    /// Whether this process already declared `name`. Never poisoned in
+    /// practice (the guarded section runs no user code); recover defensively.
+    fn already_declared(&self, name: &str) -> bool {
+        self.declared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(name)
+    }
+
+    fn mark_declared(&self, name: &str) {
+        self.declared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(name.to_string());
+    }
+
+    /// Declare the command queue once per process; later sends skip the
+    /// broker round-trip.
+    async fn ensure_command_queue(&self, queue: &str) -> Result<(), TransportError> {
+        if !self.already_declared(queue) {
+            self.declare_queue(&self.channel, queue).await?;
+            self.mark_declared(queue);
+        }
+        Ok(())
+    }
+
+    /// Declare the events exchange once per process (re-declared only when
+    /// [`namespace`](Self::namespace) changes the exchange name after connect).
+    async fn ensure_events_exchange(&self, exchange: &str) -> Result<(), TransportError> {
+        if !self.already_declared(exchange) {
+            self.declare_events_exchange(&self.channel, exchange)
+                .await?;
+            self.mark_declared(exchange);
+        }
+        Ok(())
     }
 
     async fn declare_queue(&self, channel: &Channel, queue: &str) -> Result<(), TransportError> {
@@ -243,8 +293,7 @@ impl RabbitBus {
         }
         let group = self.topology.resolve_consumer_group(router, "rabbitmq")?;
         let exchange = self.events_exchange()?;
-        self.declare_events_exchange(&self.channel, &exchange)
-            .await?;
+        self.ensure_events_exchange(&exchange).await?;
         let queue = self.group_queue(&group)?;
         self.declare_queue(&self.channel, &queue).await?;
         for name in &plan.events {
@@ -268,9 +317,9 @@ impl Bus for RabbitBus {
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
         checked_name(message.name())?;
         // Default exchange routes by routing key == queue name; declare the queue
-        // so the command is retained until a listener consumes it.
+        // (once per process) so the command is retained until a listener consumes it.
         let queue = self.command_queue(message.name())?;
-        self.declare_queue(&self.channel, &queue).await?;
+        self.ensure_command_queue(&queue).await?;
         message.name = queue.clone();
         self.publish_confirmed("", &queue, &message).await
     }
@@ -278,8 +327,7 @@ impl Bus for RabbitBus {
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
         checked_name(message.name())?;
         let exchange = self.events_exchange()?;
-        self.declare_events_exchange(&self.channel, &exchange)
-            .await?;
+        self.ensure_events_exchange(&exchange).await?;
         let routing_key = message.name().to_string();
         self.publish_confirmed(&exchange, &routing_key, &message)
             .await
@@ -307,6 +355,7 @@ impl BusConsumer for RabbitBus {
             channel,
             queues,
             strip_prefix: Some(self.command_prefix()?),
+            current: 0,
         };
         run_source(router, source, options).await
     }
@@ -329,6 +378,7 @@ impl BusConsumer for RabbitBus {
             queues: vec![self.group_queue(&group)?],
             // Events are published with routing key == the bare event name.
             strip_prefix: None,
+            current: 0,
         };
         run_source(router, source, options).await
     }
@@ -336,26 +386,37 @@ impl BusConsumer for RabbitBus {
 
 /// Polls one or more queues with `basic_get`, resolving the message name from the
 /// delivery's routing key (stripping `strip_prefix` for command queues).
+///
+/// Polling is *sticky*: each `recv` starts at the queue that last yielded a
+/// message, so draining a busy queue costs one `basic_get` per message instead
+/// of re-polling every just-empty queue each time. A full empty cycle over all
+/// queues is still required before returning `Ok(None)`, preserving the
+/// drain-to-idle contract. (`basic_consume` with prefetch would push messages
+/// with no broker-side "drained" signal, so `basic_get` stays.)
 struct RabbitBusSource {
     channel: Channel,
     queues: Vec<String>,
     strip_prefix: Option<String>,
+    /// Index of the queue that most recently yielded a message.
+    current: usize,
 }
 
 impl MessageSource for RabbitBusSource {
     type Received = RabbitReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        for queue in &self.queues {
+        for offset in 0..self.queues.len() {
+            let index = (self.current + offset) % self.queues.len();
             let got = self
                 .channel
                 .basic_get(
-                    ShortString::from(queue.as_str()),
+                    ShortString::from(self.queues[index].as_str()),
                     BasicGetOptions::default(),
                 )
                 .await
                 .map_err(|err| retryable("amqp basic_get", err))?;
             if let Some(get) = got {
+                self.current = index;
                 let routing_key = get.delivery.routing_key.to_string();
                 let name = strip_address_prefix(routing_key, self.strip_prefix.as_deref());
                 return Ok(Some(RabbitReceived::from_delivery_with_name(
