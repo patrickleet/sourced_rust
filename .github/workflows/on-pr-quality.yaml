@@ -11,6 +11,9 @@ jobs:
       cargo_test_args: "--verbose"
       cargo_incremental: true
 
+  all-features:
+    uses: ./.github/workflows/test-all-features.yaml
+
   postgres:
     uses: ./.github/workflows/integration-postgres.yaml
 
