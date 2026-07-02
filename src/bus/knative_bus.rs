@@ -24,7 +24,7 @@ use std::collections::HashSet;
 
 use super::knative::unique_k8s_name;
 use super::{Bus, TransportError};
-use super::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, SubscriptionPlan};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -222,16 +222,6 @@ impl KnativeBus {
 }
 
 impl Bus for KnativeBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.send_message(Message::new(name, MessageKind::Command, payload))
-            .await
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.publish_message(Message::new(name, MessageKind::Event, payload))
-            .await
-    }
-
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
         self.post_cloud_event(&self.commands_broker, &message).await
     }

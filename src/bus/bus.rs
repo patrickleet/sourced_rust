@@ -20,23 +20,33 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use super::{Message, MessageRouter, RunOptions, TransportError};
+use super::{Message, MessageKind, MessageRouter, RunOptions, TransportError};
 
 /// Produce side of the bus — uniform across every transport.
 pub trait Bus: Send + Sync {
     /// Send a point-to-point command (1:1, competing consumers).
+    ///
+    /// Provided: wraps the payload in a [`MessageKind::Command`] message and
+    /// delegates to [`send_message`](Self::send_message).
     fn send(
         &self,
         name: &str,
         payload: Vec<u8>,
-    ) -> impl Future<Output = Result<(), TransportError>> + Send;
+    ) -> impl Future<Output = Result<(), TransportError>> + Send {
+        self.send_message(Message::new(name, MessageKind::Command, payload))
+    }
 
     /// Publish a fan-out event (1:N).
+    ///
+    /// Provided: wraps the payload in a [`MessageKind::Event`] message and
+    /// delegates to [`publish_message`](Self::publish_message).
     fn publish(
         &self,
         name: &str,
         payload: Vec<u8>,
-    ) -> impl Future<Output = Result<(), TransportError>> + Send;
+    ) -> impl Future<Output = Result<(), TransportError>> + Send {
+        self.publish_message(Message::new(name, MessageKind::Event, payload))
+    }
 
     /// Send a fully-formed command message (explicit id/metadata/content-type).
     fn send_message(

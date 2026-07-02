@@ -28,11 +28,11 @@ use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
+use super::Message;
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter,
     RunOptions, TransportError,
 };
-use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -236,16 +236,6 @@ impl NatsBus {
 }
 
 impl Bus for NatsBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.send_message(Message::new(name, MessageKind::Command, payload))
-            .await
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.publish_message(Message::new(name, MessageKind::Event, payload))
-            .await
-    }
-
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
         self.validated_namespace()?;
         self.cmd_publisher.publish(message).await

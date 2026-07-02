@@ -14,8 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::source::{MessageSource, ReceivedMessage};
+use super::Message;
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
-use super::{Message, MessageKind};
 
 type Queues = Arc<Mutex<HashMap<String, VecDeque<Message>>>>;
 type Topics = Arc<Mutex<HashMap<String, Vec<Message>>>>;
@@ -61,14 +61,6 @@ impl InMemoryBus {
 }
 
 impl Bus for InMemoryBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.enqueue(Message::new(name, MessageKind::Command, payload))
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.append(Message::new(name, MessageKind::Event, payload))
-    }
-
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
         self.enqueue(message)
     }
@@ -176,7 +168,7 @@ impl ReceivedMessage for InMemoryReceived {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::Handlers;
+    use crate::bus::{Handlers, MessageKind};
     use std::future::Future;
 
     fn block_on<F: Future>(future: F) -> F::Output {

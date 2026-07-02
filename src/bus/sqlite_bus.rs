@@ -291,16 +291,6 @@ impl SqliteBus {
 }
 
 impl Bus for SqliteBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.enqueue(Message::new(name, MessageKind::Command, payload))
-            .await
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.append(Message::new(name, MessageKind::Event, payload))
-            .await
-    }
-
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
         self.enqueue(message).await
     }
