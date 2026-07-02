@@ -1,0 +1,8 @@
+error: ReadModel derive requires a field named `id` or a field marked with #[readmodel(id)]
+ --> tests/compile_fail/read_model_missing_id.rs:6:1
+  |
+6 | / struct CounterView {
+7 | |     name: String,
+8 | |     value: i32,
+9 | | }
+  | |_^

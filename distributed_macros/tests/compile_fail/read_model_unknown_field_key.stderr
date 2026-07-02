@@ -1,0 +1,5 @@
+error: unknown readmodel field attribute
+ --> tests/compile_fail/read_model_unknown_field_key.rs:7:17
+  |
+7 |     #[readmodel(indexd)]
+  |                 ^^^^^^
