@@ -112,6 +112,8 @@ mod router;
 mod run_options;
 mod runner;
 mod source;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+mod sql_bus_common;
 #[cfg(feature = "sqlite")]
 mod sqlite_bus;
 mod stable_id;

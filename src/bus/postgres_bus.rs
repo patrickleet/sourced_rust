@@ -15,6 +15,12 @@
 //!   offset advances in the same database as the effects — the cleanest path to
 //!   transactional effectively-once of any transport (the offset is the inbox).
 //!
+//! The bus model itself (builders, sources, settlement, corruption handling) is
+//! shared with the SQLite bus in `sql_bus_common`; this
+//! module contributes only the Postgres dialect: `$n` placeholders, the `now()`
+//! clock, `= ANY` array binding for name lists, and `gen_random_uuid()` claim
+//! tokens.
+//!
 //! ## Why claim-lease, not sqlxmq (implementation note)
 //!
 //! Decision #8 of the locked spec names `sqlxmq` as the recommended work-queue
@@ -29,24 +35,18 @@
 //!
 //! Requires the `postgres` feature. Integration-tested in `tests/postgres_transport`.
 //!
+//! [`Bus`]: super::Bus
+//! [`BusConsumer`]: super::BusConsumer
+//! [`MessageSource`]: super::MessageSource
 //! [`run_source`]: super::run_source
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 
-use crate::sqlx_repo::is_sqlx_transient;
-
-use super::source::{MessageSource, ReceivedMessage};
-use super::{
-    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
-    TransportErrorKind,
+use super::sql_bus_common::{
+    db_err as sql_db_err, metadata_json, ClaimedRow, ReceivedRow, SqlBus, SqlBusDialect,
+    SqlLogReceived, SqlQueueReceived,
 };
-use super::{Message, MessageKind};
-
-const DEFAULT_LEASE: Duration = Duration::from_secs(30);
+use super::{Message, TransportError};
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS bus_queue (
@@ -91,114 +91,22 @@ CREATE TABLE IF NOT EXISTS bus_offset (
 )";
 
 fn db_err(context: &str, err: sqlx::Error) -> TransportError {
-    let kind = if is_sqlx_transient(&err) {
-        TransportErrorKind::Retryable
-    } else {
-        TransportErrorKind::Permanent
-    };
-    TransportError::new(kind, format!("postgres bus {context}: {err}")).with_source(err)
+    sql_db_err(PostgresBusDialect::BACKEND, context, err)
 }
 
-fn metadata_json(message: &Message) -> String {
-    serde_json::to_string(&message.metadata).unwrap_or_else(|_| "[]".into())
-}
+/// Postgres [`Bus`](super::Bus) + [`BusConsumer`](super::BusConsumer). Cheap to
+/// clone (the pool is an `Arc`).
+pub type PostgresBus = SqlBus<PostgresBusDialect>;
 
-fn corrupt_row(message: impl Into<String>) -> TransportError {
-    TransportError::permanent(format!("postgres bus corrupt row: {}", message.into()))
-}
+/// A claimed Postgres `bus_queue` row: `ack` deletes it (done); `nack` makes it
+/// available again (redelivery); `dead_letter`/`park` delete it (stop
+/// redelivery). Settlement is fenced by the claim token.
+pub type QueueReceived = SqlQueueReceived<PostgresBusDialect>;
 
-fn decode_err(column: &str, err: sqlx::Error) -> TransportError {
-    corrupt_row(format!(
-        "required column '{column}' failed to decode: {err}"
-    ))
-}
-
-fn parse_message_kind(value: &str) -> Result<MessageKind, TransportError> {
-    match value {
-        "command" => Ok(MessageKind::Command),
-        "event" => Ok(MessageKind::Event),
-        _ => Err(corrupt_row(format!(
-            "required column 'kind' has unsupported value {value:?}"
-        ))),
-    }
-}
-
-fn parse_metadata(value: &str) -> Result<Vec<(String, String)>, TransportError> {
-    serde_json::from_str(value).map_err(|err| {
-        corrupt_row(format!(
-            "required column 'metadata' failed to parse as JSON metadata: {err}"
-        ))
-    })
-}
-
-/// Reconstruct a [`Message`] from a claimed `bus_queue`/`bus_log` row.
-///
-/// Required-column decode/parsing failures are permanent corruption. The row has
-/// already been selected or claimed, so callers surface the error through
-/// [`ReceivedMessage::decode_error`] and let the runner settle it through the
-/// configured failure policy.
-fn message_from_row(row: &PgRow) -> Result<Message, TransportError> {
-    let name: String = row.try_get("name").map_err(|err| decode_err("name", err))?;
-    let kind: String = row.try_get("kind").map_err(|err| decode_err("kind", err))?;
-    let payload: Vec<u8> = row
-        .try_get("payload")
-        .map_err(|err| decode_err("payload", err))?;
-    let content_type: String = row
-        .try_get("content_type")
-        .map_err(|err| decode_err("content_type", err))?;
-    if content_type.is_empty() {
-        return Err(corrupt_row("required column 'content_type' is empty"));
-    }
-    let metadata_json: String = row
-        .try_get("metadata")
-        .map_err(|err| decode_err("metadata", err))?;
-    let metadata = parse_metadata(&metadata_json)?;
-
-    Ok(Message {
-        id: row
-            .try_get::<Option<String>, _>("message_id")
-            .unwrap_or(None),
-        name,
-        kind: parse_message_kind(&kind)?,
-        payload,
-        content_type,
-        metadata,
-    })
-}
-
-struct ReceivedRow {
-    seq: i64,
-    message: Message,
-    decode_error: Option<TransportError>,
-}
-
-impl ReceivedRow {
-    fn from_row(row: &PgRow) -> Self {
-        let seq = row.try_get("seq").unwrap_or_default();
-        let (message, decode_error) = decode_or_placeholder(row);
-        Self {
-            seq,
-            message,
-            decode_error,
-        }
-    }
-
-    fn message(&self) -> &Message {
-        &self.message
-    }
-
-    fn decode_error(&self) -> Option<&TransportError> {
-        self.decode_error.as_ref()
-    }
-}
-
-/// Postgres [`Bus`] + [`BusConsumer`]. Cheap to clone (the pool is an `Arc`).
-#[derive(Clone)]
-pub struct PostgresBus {
-    pool: PgPool,
-    topology: BusTopologyConfig,
-    lease: Duration,
-}
+/// A Postgres `bus_log` entry: `ack` advances this consumer's offset to its
+/// `seq`; `nack` leaves the offset (redelivery); `dead_letter`/`park` advance
+/// past it (skip, don't get stuck).
+pub type LogReceived = SqlLogReceived<PostgresBusDialect>;
 
 impl PostgresBus {
     /// Build a bus over an existing pool.
@@ -210,75 +118,29 @@ impl PostgresBus {
     /// `bus_queue` by message name, so command replicas compete by listening to the
     /// same registered command names.
     pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            topology: BusTopologyConfig::default(),
-            lease: DEFAULT_LEASE,
-        }
+        SqlBus::from_dialect(PostgresBusDialect { pool })
     }
 
     /// Build a bus with an explicit group for direct/low-level use.
     pub fn new_with_group(pool: PgPool, group: impl Into<String>) -> Self {
         Self::new(pool).group(group)
     }
+}
 
-    /// Set an explicit durable event subscription group.
-    pub fn group(mut self, group: impl Into<String>) -> Self {
-        self.topology = self.topology.group(group);
-        self
-    }
+/// The Postgres [`SqlBusDialect`].
+#[derive(Clone)]
+pub struct PostgresBusDialect {
+    pool: PgPool,
+}
 
-    /// Override the claim lease for `listen` (how long a claimed command stays
-    /// invisible to other workers before it is eligible for redelivery).
-    pub fn with_lease(mut self, lease: Duration) -> Self {
-        self.lease = lease;
-        self
-    }
-
-    /// Create the bus tables (`bus_queue`, `bus_log`, `bus_offset`) if absent, in
-    /// the pool's current schema. Called by `listen`/`subscribe`; producers must
-    /// ensure the tables exist (here or via migration) before `send`/`publish`.
-    pub async fn ensure_tables(&self) -> Result<(), TransportError> {
-        for statement in SCHEMA.split(';') {
-            let statement = statement.trim();
-            if statement.is_empty() {
-                continue;
-            }
-            sqlx::query(statement)
-                .execute(&self.pool)
-                .await
-                .map_err(|err| db_err("ensure_tables", err))?;
-        }
-        Ok(())
-    }
-
-    async fn enqueue(&self, message: Message) -> Result<(), TransportError> {
-        self.insert_message(
-            "INSERT INTO bus_queue (name, message_id, kind, payload, content_type, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            "enqueue",
-            message,
-        )
-        .await
-    }
-
-    async fn append(&self, message: Message) -> Result<(), TransportError> {
-        self.insert_message(
-            "INSERT INTO bus_log (name, message_id, kind, payload, content_type, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            "append",
-            message,
-        )
-        .await
-    }
-
-    async fn insert_message(
+impl PostgresBusDialect {
+    async fn insert(
         &self,
         sql: &'static str,
         context: &'static str,
-        message: Message,
+        message: &Message,
     ) -> Result<(), TransportError> {
-        let metadata = metadata_json(&message);
+        let metadata = metadata_json(message);
         sqlx::query(sql)
             .bind(&message.name)
             .bind(&message.id)
@@ -293,81 +155,45 @@ impl PostgresBus {
     }
 }
 
-impl Bus for PostgresBus {
-    async fn send_message(&self, message: Message) -> Result<(), TransportError> {
-        self.enqueue(message).await
+impl SqlBusDialect for PostgresBusDialect {
+    const BACKEND: &'static str = "postgres";
+    const SCHEMA: &'static str = SCHEMA;
+
+    async fn execute_ddl(&self, statement: &'static str) -> Result<(), TransportError> {
+        sqlx::query(statement)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| db_err("ensure_tables", err))?;
+        Ok(())
     }
 
-    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
-        self.append(message).await
+    async fn insert_queue(&self, message: &Message) -> Result<(), TransportError> {
+        self.insert(
+            "INSERT INTO bus_queue (name, message_id, kind, payload, content_type, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            "enqueue",
+            message,
+        )
+        .await
     }
-}
 
-impl BusConsumer for PostgresBus {
-    async fn listen<R: MessageRouter>(
+    async fn insert_log(&self, message: &Message) -> Result<(), TransportError> {
+        self.insert(
+            "INSERT INTO bus_log (name, message_id, kind, payload, content_type, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            "append",
+            message,
+        )
+        .await
+    }
+
+    async fn claim(
         &self,
-        router: Arc<R>,
-        options: RunOptions,
-    ) -> Result<(), TransportError> {
-        self.ensure_tables().await?;
-        let names = router.subscription_plan().commands;
-        if names.is_empty() {
-            return Ok(());
-        }
-        let source = QueueSource {
-            pool: self.pool.clone(),
-            names,
-            lease_secs: self.lease.as_secs_f64(),
-        };
-        run_source(router, source, options).await
-    }
-
-    async fn subscribe<R: MessageRouter>(
-        &self,
-        router: Arc<R>,
-        options: RunOptions,
-    ) -> Result<(), TransportError> {
-        self.ensure_tables().await?;
-        let names = router.subscription_plan().events;
-        if names.is_empty() {
-            return Ok(());
-        }
-        let group = self
-            .topology
-            .resolve_consumer_group(router.as_ref(), "postgres")?;
-        let source = LogSource {
-            pool: self.pool.clone(),
-            names,
-            consumer: group,
-        };
-        run_source(router, source, options).await
-    }
-}
-
-/// Competing-consumer source over `bus_queue` (`FOR UPDATE SKIP LOCKED` claim).
-struct QueueSource {
-    pool: PgPool,
-    names: Vec<String>,
-    lease_secs: f64,
-}
-
-impl MessageSource for QueueSource {
-    type Received = QueueReceived;
-
-    async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        // Claim the next row whose `name` matches a subscribed command, OR whose
-        // `name` is NULL. A NULL name is un-routable corruption: it belongs to no
-        // consumer, so `name = ANY($2)` would never match it and it would sit in
-        // the queue forever, never claimed, never settled. Claiming it here lets
-        // the runner route it through the failure policy (dead-letter by default,
-        // which deletes the row) instead of leaving a poison row that blocks the
-        // queue from draining. `FOR UPDATE SKIP LOCKED` keeps the claim safe under
-        // competing listeners — only one settles the orphaned row.
-        //
-        // Each claim mints a fresh `claim_token`; settlement is scoped to
-        // `seq AND claim_token`, so a worker whose lease expired (and whose row
-        // was reclaimed by another worker under a new token) cannot delete or
-        // release the newer claim.
+        names: &[String],
+        lease_secs: f64,
+    ) -> Result<Option<ClaimedRow>, TransportError> {
+        // `FOR UPDATE SKIP LOCKED` keeps the claim safe under competing
+        // listeners — only one claims (and later settles) each row.
         let row = sqlx::query(
             "UPDATE bus_queue SET locked_until = now() + ($1 * interval '1 second'), \
                     claim_token = gen_random_uuid()::text, \
@@ -380,189 +206,81 @@ impl MessageSource for QueueSource {
              ) \
              RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
         )
-        .bind(self.lease_secs)
-        .bind(&self.names)
+        .bind(lease_secs)
+        .bind(names)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| db_err("claim", err))?;
 
-        if let Some(row) = row {
-            let claim_token = row
-                .try_get("claim_token")
-                .map_err(|err| db_err("claim token", err))?;
-            Ok(Some(QueueReceived {
-                pool: self.pool.clone(),
-                row: ReceivedRow::from_row(&row),
-                claim_token,
-            }))
-        } else {
-            Ok(None)
+        match row {
+            Some(row) => {
+                let claim_token = row
+                    .try_get("claim_token")
+                    .map_err(|err| db_err("claim token", err))?;
+                Ok(Some(ClaimedRow {
+                    row: ReceivedRow::from_row(Self::BACKEND, &row),
+                    claim_token,
+                }))
+            }
+            None => Ok(None),
         }
     }
-}
 
-/// Split a decode result into the handle's `(message, decode_error)` fields.
-///
-/// On failure the handle still needs *some* `Message` to return from
-/// [`ReceivedMessage::message`]; this placeholder is never dispatched because the
-/// runner sees `decode_error()` first and routes the claim through the failure
-/// policy. The placeholder name is deliberately empty — the decode error carries
-/// the diagnostic.
-fn decode_or_placeholder(row: &PgRow) -> (Message, Option<TransportError>) {
-    match message_from_row(row) {
-        Ok(message) => (message, None),
-        Err(error) => (
-            Message::new("", MessageKind::Event, Vec::new()),
-            Some(error),
-        ),
-    }
-}
-
-/// A claimed `bus_queue` row: `ack` deletes it (done); `nack` makes it available
-/// again (redelivery); `dead_letter`/`park` delete it (stop redelivery). Every
-/// settlement is fenced by the claim token, so a stale worker cannot settle a
-/// row that was reclaimed after its lease expired.
-pub struct QueueReceived {
-    pool: PgPool,
-    row: ReceivedRow,
-    claim_token: String,
-}
-
-impl QueueReceived {
-    async fn delete(&self) -> Result<(), TransportError> {
-        sqlx::query("DELETE FROM bus_queue WHERE seq = $1 AND claim_token = $2")
-            .bind(self.row.seq)
-            .bind(&self.claim_token)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| db_err("delete", err))?;
-        Ok(())
-    }
-}
-
-impl ReceivedMessage for QueueReceived {
-    fn message(&self) -> &Message {
-        self.row.message()
-    }
-
-    fn decode_error(&self) -> Option<&TransportError> {
-        self.row.decode_error()
-    }
-
-    async fn ack(self) -> Result<(), TransportError> {
-        self.delete().await
-    }
-
-    async fn nack(self, _reason: &str) -> Result<(), TransportError> {
-        sqlx::query(
-            "UPDATE bus_queue \
-             SET locked_until = NULL, claim_token = NULL \
-             WHERE seq = $1 AND claim_token = $2",
-        )
-        .bind(self.row.seq)
-        .bind(&self.claim_token)
-        .execute(&self.pool)
-        .await
-        .map_err(|err| db_err("nack", err))?;
-        Ok(())
-    }
-
-    async fn dead_letter(self, _reason: &str) -> Result<(), TransportError> {
-        self.delete().await
-    }
-
-    async fn park(self, _reason: &str) -> Result<(), TransportError> {
-        self.delete().await
-    }
-}
-
-/// Fan-out source over `bus_log`: reads the next entry past this consumer's
-/// offset for its subscribed names, in `seq` order.
-struct LogSource {
-    pool: PgPool,
-    names: Vec<String>,
-    consumer: String,
-}
-
-impl MessageSource for LogSource {
-    type Received = LogReceived;
-
-    async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        // Read the next entry past this consumer's offset whose `name` matches a
-        // subscribed event, OR whose `name` is NULL. A NULL name is un-routable
-        // corruption: `name = ANY($1)` would skip past it silently when the offset
-        // jumps to a later healthy entry, dropping the poison record with no trace.
-        // Surfacing it lets the runner route it through the failure policy
-        // (dead-letter by default, which advances the offset past it) so the
-        // corrupt entry is settled, not silently skipped.
+    async fn log_read(
+        &self,
+        names: &[String],
+        consumer: &str,
+    ) -> Result<Option<ReceivedRow>, TransportError> {
         let row = sqlx::query(
             "SELECT seq, name, message_id, kind, payload, content_type, metadata FROM bus_log \
              WHERE (name = ANY($1) OR name IS NULL) \
                    AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = $2), 0) \
              ORDER BY seq LIMIT 1",
         )
-        .bind(&self.names)
-        .bind(&self.consumer)
+        .bind(names)
+        .bind(consumer)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| db_err("log read", err))?;
 
-        Ok(row.map(|row| LogReceived {
-            pool: self.pool.clone(),
-            consumer: self.consumer.clone(),
-            row: ReceivedRow::from_row(&row),
-        }))
+        Ok(row.map(|row| ReceivedRow::from_row(Self::BACKEND, &row)))
     }
-}
 
-/// A `bus_log` entry: `ack` advances this consumer's offset to its `seq` (the
-/// effectively-once point); `nack` leaves the offset (redelivery);
-/// `dead_letter`/`park` advance past it (skip, don't get stuck).
-pub struct LogReceived {
-    pool: PgPool,
-    consumer: String,
-    row: ReceivedRow,
-}
+    async fn delete_claimed(&self, seq: i64, claim_token: &str) -> Result<(), TransportError> {
+        sqlx::query("DELETE FROM bus_queue WHERE seq = $1 AND claim_token = $2")
+            .bind(seq)
+            .bind(claim_token)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| db_err("delete", err))?;
+        Ok(())
+    }
 
-impl LogReceived {
-    async fn advance_offset(&self) -> Result<(), TransportError> {
+    async fn release_claim(&self, seq: i64, claim_token: &str) -> Result<(), TransportError> {
+        sqlx::query(
+            "UPDATE bus_queue \
+             SET locked_until = NULL, claim_token = NULL \
+             WHERE seq = $1 AND claim_token = $2",
+        )
+        .bind(seq)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| db_err("nack", err))?;
+        Ok(())
+    }
+
+    async fn advance_offset(&self, consumer: &str, seq: i64) -> Result<(), TransportError> {
         sqlx::query(
             "INSERT INTO bus_offset (consumer, last_seq) VALUES ($1, $2) \
              ON CONFLICT (consumer) DO UPDATE SET last_seq = EXCLUDED.last_seq \
              WHERE bus_offset.last_seq < EXCLUDED.last_seq",
         )
-        .bind(&self.consumer)
-        .bind(self.row.seq)
+        .bind(consumer)
+        .bind(seq)
         .execute(&self.pool)
         .await
         .map_err(|err| db_err("advance offset", err))?;
         Ok(())
-    }
-}
-
-impl ReceivedMessage for LogReceived {
-    fn message(&self) -> &Message {
-        self.row.message()
-    }
-
-    fn decode_error(&self) -> Option<&TransportError> {
-        self.row.decode_error()
-    }
-
-    async fn ack(self) -> Result<(), TransportError> {
-        self.advance_offset().await
-    }
-
-    async fn nack(self, _reason: &str) -> Result<(), TransportError> {
-        // Leave the offset unmoved so the entry is re-read on the next poll.
-        Ok(())
-    }
-
-    async fn dead_letter(self, _reason: &str) -> Result<(), TransportError> {
-        self.advance_offset().await
-    }
-
-    async fn park(self, _reason: &str) -> Result<(), TransportError> {
-        self.advance_offset().await
     }
 }
