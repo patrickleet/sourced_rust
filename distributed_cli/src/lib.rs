@@ -20,6 +20,7 @@
 mod atlas;
 mod cli;
 mod generate;
+mod manifest_harness;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{

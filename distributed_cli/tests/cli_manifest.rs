@@ -54,6 +54,17 @@ fn schema_renders_postgres_sql() {
 
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
+fn schema_renders_sqlite_sql() {
+    let sql = dctl(&["schema", "--dialect", "sqlite"]);
+    assert!(sql.contains("CREATE TABLE"), "sql: {sql}");
+    assert!(sql.contains("orders"), "sql: {sql}");
+    // SQLite renders upper-case storage classes; postgres uses lower-case
+    // `text`, so this distinguishes the dialects.
+    assert!(sql.contains("TEXT"), "sql: {sql}");
+}
+
+#[test]
+#[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_atlas_resource() {
     let yaml = dctl(&[
         "schema",

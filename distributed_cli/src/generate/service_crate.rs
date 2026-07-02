@@ -15,8 +15,10 @@ impl Scaffold {
             .map(toml_string)
             .collect::<Vec<_>>()
             .join(", ");
+        // Keep in lockstep with the `distributed` crate's own axum major: the
+        // Knative main.rs passes distributed's `Router` to this axum's `serve`.
         let axum = if self.transport == ServiceTransport::Knative {
-            "axum = \"0.7\"\n"
+            "axum = \"0.8\"\n"
         } else {
             ""
         };
@@ -178,20 +180,24 @@ pub fn service_manifest() -> ServiceManifest {{
         format!(
             r#"use std::sync::Arc;
 
-use distributed::{{microsvc::Service, HashMapRepository, ServiceManifest}};
+use distributed::{{
+    microsvc::{{Routes, Service}},
+    HashMapRepository, ServiceManifest,
+}};
 
 use crate::handlers;
 
 pub type ServiceRepo = HashMapRepository;
 
-pub fn in_memory() -> Arc<Service<ServiceRepo>> {{
+pub fn in_memory() -> Arc<Service> {{
     build(HashMapRepository::new())
 }}
 
-pub fn build(repo: ServiceRepo) -> Arc<Service<ServiceRepo>> {{
-    Arc::new(distributed::register_handlers!(
-        Service::new().with_repo(repo),
-{registrations}    ))
+pub fn build(repo: ServiceRepo) -> Arc<Service> {{
+    let routes = distributed::routes!(
+        Routes::new().with_dependencies(repo),
+{registrations}    );
+    Arc::new(Service::new().named({service_name}).routes(routes))
 }}
 
 pub fn manifest() -> ServiceManifest {{
