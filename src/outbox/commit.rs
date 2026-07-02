@@ -10,22 +10,23 @@ use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
-/// Publishes an already-committed, claimed outbox row and settles its claim.
+/// Publishes already-committed, claimed outbox rows and settles their claims.
 ///
 /// Implemented by the outbox → bus bridge and installed on an
 /// [`AggregateRepository`] (by `Service::with_bus`) so that
 /// `repo.outbox(msg).commit(agg)` publishes immediately — no separate call. The
-/// hook owns the publisher and the outbox store; it is given the claimed message
-/// the commit just wrote, publishes it, and completes the claim (or releases it
-/// for the polling worker on failure). It is object-safe so the repository can
-/// hold it without naming the transport/store types.
+/// hook owns the publisher and the outbox store; it is given the claimed
+/// messages the commit just wrote (in insertion order), publishes them, and
+/// completes each claim (or releases it for the polling worker on failure). It
+/// is object-safe so the repository can hold it without naming the
+/// transport/store types.
 pub trait OutboxPublishHook: Send + Sync {
-    /// Publish a committed, claimed outbox row and settle its claim. Publish
-    /// failures are absorbed (the row stays retryable for the worker); only a
+    /// Publish committed, claimed outbox rows and settle their claims. Publish
+    /// failures are absorbed (the rows stay retryable for the worker); only a
     /// store error surfaces.
     fn publish_claimed<'a>(
         &'a self,
-        claimed: OutboxMessage,
+        claimed: Vec<OutboxMessage>,
     ) -> Pin<Box<dyn Future<Output = Result<(), RepositoryError>> + Send + 'a>>;
 }
 
@@ -180,12 +181,10 @@ where
             aggregate.entity_mut().set_snapshot_version(version);
         }
 
-        // Best-effort immediate publish. A failure leaves the claimed row for the
-        // polling worker and never fails the already-committed command.
+        // Best-effort immediate publish. A failure leaves the claimed rows for
+        // the polling worker and never fails the already-committed command.
         if let Some(config) = publisher {
-            for message in claimed {
-                let _ = config.hook.publish_claimed(message).await;
-            }
+            let _ = config.hook.publish_claimed(claimed).await;
         }
 
         Ok(CommitReceipt { outbox_message_ids })

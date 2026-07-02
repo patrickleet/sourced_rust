@@ -116,7 +116,7 @@ where
                 let claim = OutboxClaimRef::from_message(&row)?;
                 Ok(Some(ReceivedOutboxMessage {
                     store: self.store.clone(),
-                    message: Message::from(&row),
+                    message: Message::from(row),
                     claim,
                     max_attempts: self.max_attempts,
                 }))
@@ -175,31 +175,12 @@ mod tests {
     use super::*;
     use crate::bus::{run_source, RunOptions};
     use crate::microsvc::Service;
+    use crate::outbox_worker::testing::block_on;
     use crate::{
         CommitBatch, HashMapRepository, OutboxMessage, OutboxMessageStatus, OutboxStore,
         TransactionalCommit,
     };
     use serde_json::json;
-    use std::future::Future;
-
-    fn block_on<F: Future>(future: F) -> F::Output {
-        use std::ptr;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-        let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-                return output;
-            }
-        }
-    }
 
     fn store_row(repo: &HashMapRepository, id: &str, name: &str) {
         let message = OutboxMessage::create(id, name, b"{}".to_vec()).unwrap();

@@ -375,7 +375,7 @@ impl OutboxMessage {
         Ok(message)
     }
 
-    pub fn claim(&mut self, worker_id: String, until_secs: u64) -> SourcedResult {
+    pub fn claim(&mut self, worker_id: String, leased_until: SystemTime) -> SourcedResult {
         if !self.is_claimable() {
             return Err(EventRecordError {
                 message: format!("outbox message `{}` is not claimable", self.id),
@@ -383,15 +383,14 @@ impl OutboxMessage {
         }
         validate_non_empty("outbox worker id", &worker_id)?;
 
-        let until_time = SystemTime::UNIX_EPOCH + Duration::from_secs(until_secs);
         self.status = OutboxMessageStatus::InFlight;
         self.attempts += 1;
         self.worker_id = Some(worker_id);
-        self.leased_until = Some(until_time);
+        self.leased_until = Some(leased_until);
         Ok(())
     }
 
-    /// Claim with a Duration (convenience method that computes until_secs)
+    /// Claim with a Duration (convenience method that computes the deadline)
     pub fn claim_for(&mut self, worker_id: impl Into<String>, lease: Duration) -> SourcedResult {
         self.claim_at(worker_id, lease, SystemTime::now())
     }
@@ -404,26 +403,28 @@ impl OutboxMessage {
         lease: Duration,
         now: SystemTime,
     ) -> SourcedResult {
-        let until_secs = Self::lease_deadline_secs(now, lease)?;
-        self.claim(worker_id.into(), until_secs)
+        let leased_until = Self::lease_deadline(now, lease)?;
+        self.claim(worker_id.into(), leased_until)
     }
 
-    fn lease_deadline_secs(now: SystemTime, lease: Duration) -> SourcedResult<u64> {
+    /// Compute `now + lease` at full `SystemTime` precision. Truncating the
+    /// deadline to whole seconds would shave up to a second off every lease —
+    /// and expire a sub-second lease at birth.
+    fn lease_deadline(now: SystemTime, lease: Duration) -> SourcedResult<SystemTime> {
         let until = now.checked_add(lease).ok_or_else(|| EventRecordError {
             message: "failed to compute outbox lease deadline: timestamp overflow".into(),
         })?;
 
-        let until_secs = until
+        until
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|err| EventRecordError {
                 message: format!(
                     "failed to compute outbox lease deadline before UNIX epoch: {}",
                     err
                 ),
-            })?
-            .as_secs();
+            })?;
 
-        Ok(until_secs)
+        Ok(until)
     }
 
     pub fn complete(&mut self) -> SourcedResult {
@@ -575,12 +576,26 @@ mod tests {
     }
 
     #[test]
+    fn sub_second_lease_keeps_full_precision_and_is_not_expired_at_birth() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700);
+        let lease = Duration::from_millis(400);
+
+        message.claim_at("worker-1", lease, now).unwrap();
+
+        // The deadline is exactly now + lease — no whole-second truncation,
+        // which used to expire a sub-second lease the instant it was taken.
+        assert_eq!(message.leased_until, Some(now + lease));
+        assert!(!message.has_expired_lease_at(now));
+        assert!(!message.has_expired_lease_at(now + Duration::from_millis(399)));
+        assert!(message.has_expired_lease_at(now + lease));
+    }
+
+    #[test]
     fn claim_deadline_overflow_returns_error() {
-        let err = OutboxMessage::lease_deadline_secs(
-            SystemTime::UNIX_EPOCH,
-            Duration::from_secs(u64::MAX),
-        )
-        .unwrap_err();
+        let err =
+            OutboxMessage::lease_deadline(SystemTime::UNIX_EPOCH, Duration::from_secs(u64::MAX))
+                .unwrap_err();
 
         assert!(err
             .message
@@ -592,7 +607,7 @@ mod tests {
         let before_epoch = SystemTime::UNIX_EPOCH
             .checked_sub(Duration::from_secs(1))
             .unwrap();
-        let err = OutboxMessage::lease_deadline_secs(before_epoch, Duration::ZERO).unwrap_err();
+        let err = OutboxMessage::lease_deadline(before_epoch, Duration::ZERO).unwrap_err();
 
         assert!(err
             .message
@@ -602,7 +617,12 @@ mod tests {
     #[test]
     fn initialize_resets_delivery_and_source_state() {
         let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
-        message.claim("worker-1".into(), 1).unwrap();
+        message
+            .claim(
+                "worker-1".into(),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            )
+            .unwrap();
         message.last_error = Some("previous failure".into());
         message.source_aggregate_type = Some("todo".into());
         message.source_aggregate_id = Some("todo-1".into());

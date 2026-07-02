@@ -1,13 +1,11 @@
 mod aggregate;
 
 use aggregate::{Todo, TodoSnapshot};
+use distributed::bus::{Message, MessagePublisher, TransportError};
 use distributed::{
-    AggregateBuilder, ClaimOutboxMessages, CommitBuilderExt, DrainResult, HashMapRepository, Lock,
-    LockManager, LogPublisher, OutboxClaimRef, OutboxMessage, OutboxMessageStatus, OutboxPublisher,
-    OutboxStore, OutboxWorker, Queueable, RepositoryError,
+    AggregateBuilder, CommitBuilderExt, HashMapOutboxStore, HashMapRepository, Lock, LockManager,
+    OutboxDispatcher, OutboxMessage, OutboxMessageStatus, OutboxStore, Queueable, RepositoryError,
 };
-#[cfg(feature = "emitter")]
-use distributed::{EventEmitter, LocalEmitterPublisher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -37,41 +35,37 @@ fn todo_outbox_message(
     OutboxMessage::encode(format!("{id}:{suffix}"), event_type, snapshot).unwrap()
 }
 
-async fn claim_and_process<P: OutboxPublisher>(
-    repo: &HashMapRepository,
-    worker: &mut OutboxWorker<P>,
-    worker_id: &str,
-    batch_size: usize,
-) -> (DrainResult, Vec<OutboxMessage>, Vec<OutboxClaimRef>) {
-    let mut claimed = repo
-        .outbox_store()
-        .claim(ClaimOutboxMessages::new(
-            worker_id,
-            batch_size,
-            Duration::from_secs(30),
-        ))
-        .await
-        .unwrap();
-    let claims = claimed
-        .iter()
-        .map(OutboxClaimRef::from_message)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let result = worker.process_batch(&mut claimed).await.unwrap();
-    (result, claimed, claims)
+/// Publisher that records every published message so tests can assert on what
+/// the outbox dispatcher actually sent through the transport seam.
+#[derive(Default)]
+struct RecordingPublisher {
+    published: Mutex<Vec<Message>>,
 }
 
-async fn complete_published_outbox(
-    repo: &HashMapRepository,
-    messages: &[OutboxMessage],
-    claims: &[OutboxClaimRef],
-) {
-    let store = repo.outbox_store();
-    for (message, claim) in messages.iter().zip(claims) {
-        if message.is_published() {
-            store.complete(claim).await.unwrap();
-        }
+impl RecordingPublisher {
+    fn messages(&self) -> Vec<Message> {
+        self.published.lock().unwrap().clone()
     }
+}
+
+impl MessagePublisher for RecordingPublisher {
+    async fn publish(&self, message: Message) -> Result<(), TransportError> {
+        self.published.lock().unwrap().push(message);
+        Ok(())
+    }
+}
+
+/// Production drain path over the in-memory store: claim → publish → complete.
+fn dispatcher(
+    repo: &HashMapRepository,
+) -> OutboxDispatcher<HashMapOutboxStore, RecordingPublisher> {
+    OutboxDispatcher::new(
+        repo.outbox_store(),
+        RecordingPublisher::default(),
+        "todos-worker",
+        Duration::from_secs(30),
+        3,
+    )
 }
 
 async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
@@ -241,60 +235,25 @@ async fn outbox_records_persisted() {
 }
 
 #[tokio::test]
-async fn outbox_worker_log_publisher() {
+async fn outbox_dispatch_publishes_and_completes_committed_row() {
     let repo = HashMapRepository::new();
-    let (mut todo, id) = initialized_todo("user1", "Outbox log publisher");
+    let (mut todo, id) = initialized_todo("user1", "Outbox dispatch");
     let message = todo_outbox_message(&id, "init", "todo.initialized", &todo.snapshot());
     let message_id = message.id().to_string();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
-    let buffer = Arc::new(Mutex::new(Vec::new()));
-    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
-    let mut worker = OutboxWorker::new(publisher)
-        .with_worker_id("logger-1")
-        .with_batch_size(10)
-        .with_max_attempts(3);
+    let dispatcher = dispatcher(&repo);
+    let outcome = dispatcher.dispatch_batch(10).await.unwrap();
+    assert_eq!(outcome.claimed, 1);
+    assert_eq!(outcome.published, 1);
 
-    let (result, claimed, claims) = claim_and_process(&repo, &mut worker, "logger-1", 10).await;
-    assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, &claimed, &claims).await;
-
-    let lines = buffer.lock().unwrap();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("todo.initialized"));
+    let sent = dispatcher.publisher().messages();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].name(), "todo.initialized");
 
     // Check record is marked as published
     let published = load_outbox_message(&repo, &message_id).await;
     assert!(published.is_published());
-}
-
-#[tokio::test]
-#[cfg(feature = "emitter")]
-async fn outbox_worker_local_emitter_publisher() {
-    let repo = HashMapRepository::new();
-    let (mut todo, id) = initialized_todo("user1", "Outbox local emitter");
-    let message = todo_outbox_message(&id, "init", "todo.initialized", &todo.snapshot());
-    repo.outbox(message).commit(&mut todo).await.unwrap();
-
-    let mut emitter = EventEmitter::new();
-    let (tx, rx) = mpsc::channel::<String>();
-    emitter.on("todo.initialized", move |payload: String| {
-        tx.send(payload).unwrap();
-    });
-
-    let publisher = LocalEmitterPublisher::new(emitter);
-    let mut worker = OutboxWorker::new(publisher)
-        .with_worker_id("emitter-1")
-        .with_batch_size(10)
-        .with_max_attempts(3);
-
-    let (result, claimed, claims) = claim_and_process(&repo, &mut worker, "emitter-1", 10).await;
-    assert_eq!(result.completed, 1);
-    complete_published_outbox(&repo, &claimed, &claims).await;
-
-    // LocalEmitterPublisher converts bytes to lossy string, so we just verify something was received
-    let payload = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(!payload.is_empty());
 }
 
 #[tokio::test]
@@ -510,7 +469,7 @@ async fn commit_failure_keeps_lock_until_abort() {
 }
 
 #[tokio::test]
-async fn outbox_worker_process_next_with_commit() {
+async fn outbox_dispatch_drains_one_row_at_a_time() {
     let repo = HashMapRepository::new();
     let (mut todo, id) = initialized_todo("user1", "Process next test");
     let snapshot = todo.snapshot();
@@ -533,37 +492,17 @@ async fn outbox_worker_process_next_with_commit() {
         .await
         .unwrap();
 
-    let buffer = Arc::new(Mutex::new(Vec::new()));
-    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
-    let mut worker = OutboxWorker::new(publisher)
-        .with_worker_id("safe-worker")
-        .with_batch_size(10)
-        .with_max_attempts(3);
-
-    // Process one at a time with commits
+    // Drain one row per pass: each pass claims, publishes, and settles a single
+    // message through the shared dispatch path.
+    let dispatcher = dispatcher(&repo);
     let mut processed = 0;
 
     loop {
-        let store = repo.outbox_store();
-        let mut claimed = store
-            .claim(ClaimOutboxMessages::new(
-                "safe-worker",
-                1,
-                Duration::from_secs(30),
-            ))
-            .await
-            .unwrap();
-        if claimed.is_empty() {
+        let outcome = dispatcher.dispatch_batch(1).await.unwrap();
+        if outcome.claimed == 0 {
             break;
         }
-        let claims = claimed
-            .iter()
-            .map(OutboxClaimRef::from_message)
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let result = worker.process_batch(&mut claimed).await.unwrap();
-        processed += result.completed + result.released + result.failed;
-        complete_published_outbox(&repo, &claimed, &claims).await;
+        processed += outcome.published + outcome.released + outcome.failed;
     }
 
     assert_eq!(processed, 3);
@@ -572,9 +511,7 @@ async fn outbox_worker_process_next_with_commit() {
         assert!(message.is_published());
     }
     assert_eq!(repo.outbox_store().pending().await.unwrap().len(), 0);
-
-    let lines = buffer.lock().unwrap();
-    assert_eq!(lines.len(), 3);
+    assert_eq!(dispatcher.publisher().messages().len(), 3);
 }
 
 /// Full metadata chain: Entity → EventRecord → OutboxMessage → OutboxWorker → publisher
@@ -613,22 +550,17 @@ async fn metadata_flows_from_entity_through_outbox_to_publisher() {
     let repo = repo.aggregate::<Todo>();
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
-    // 5. Process through outbox worker, verify metadata reaches publisher
-    let buffer = Arc::new(Mutex::new(Vec::new()));
-    let publisher = LogPublisher::with_buffer(Arc::clone(&buffer));
-    let mut worker = OutboxWorker::new(publisher).with_worker_id("meta-worker");
-
-    let (result, claimed, claims) =
-        claim_and_process(repo.repo(), &mut worker, "meta-worker", 10).await;
-    assert_eq!(result.completed, 1);
-    complete_published_outbox(repo.repo(), &claimed, &claims).await;
+    // 5. Dispatch through the production drain path, verify metadata reaches
+    //    the publisher on the canonical transport message
+    let dispatcher = dispatcher(repo.repo());
+    let outcome = dispatcher.dispatch_batch(10).await.unwrap();
+    assert_eq!(outcome.published, 1);
 
     // 6. Verify the publisher received metadata
-    let lines = buffer.lock().unwrap();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("todo.initialized"));
-    assert!(lines[0].contains("correlation_id"));
-    assert!(lines[0].contains("req-abc-123"));
-    assert!(lines[0].contains("cmd-create-todo"));
-    assert!(lines[0].contains("u-42"));
+    let sent = dispatcher.publisher().messages();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].name(), "todo.initialized");
+    assert_eq!(sent[0].correlation_id(), Some("req-abc-123"));
+    assert_eq!(sent[0].causation_id(), Some("cmd-create-todo"));
+    assert_eq!(sent[0].metadata("user_id"), Some("u-42"));
 }

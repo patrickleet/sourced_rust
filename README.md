@@ -348,7 +348,7 @@ network servers.
 - **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
 - **Snapshottable**: Opt-in trait for aggregates that produce state snapshot payload DTOs. Use `#[derive(Snapshot)]` to auto-generate the payload struct and trait impl.
 - **OutboxMessage**: A durable publication work item for a domain event, integration event, command, or generic transport message. Supports optional `destination` for point-to-point routing and metadata propagation.
-- **OutboxDispatcher / OutboxWorker**: Drain durable outbox rows and publish them to a transport, sharing one claim → publish → complete path.
+- **OutboxDispatcher**: Drains durable outbox rows and publishes them to a transport, sharing one claim → publish → complete path.
 - **ReadModel**: Query-optimized relational projection state for UI/API reads. Read models may be updated atomically with a command or eventually from published messages.
 - **Bus / BusConsumer**: The service bus facade — `send`/`publish` (produce) and `listen`/`subscribe` (consume), implemented by a per-transport `*Bus` type.
 - **microsvc::Service**: Convention-based async command/event handler framework with pluggable transports (HTTP, gRPC, bus, direct dispatch).
@@ -373,7 +373,7 @@ Every infrastructure concern in `distributed` follows the same pattern: a **trai
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
-| Outbox publishing | `OutboxStore` + async `MessagePublisher` / `OutboxPublisher` | `LogPublisher` (dev/test) | Any `MessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
+| Outbox publishing | `OutboxStore` + async `MessagePublisher` | `HashMapRepository` outbox store (dev/test) | Any `MessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
 | Locking | `Lock` + `LockManager` | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.

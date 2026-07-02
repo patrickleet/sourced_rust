@@ -116,6 +116,28 @@ pub trait OutboxStore: Send + Sync {
         claim: &'a OutboxClaimRef,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a;
 
+    /// Complete a batch of claims after their rows were published.
+    ///
+    /// Equivalent to calling [`complete`] for each claim; backends override it
+    /// to settle the batch in fewer round trips (one statement/transaction).
+    /// Error semantics match the serial loop: a claim that is no longer
+    /// completable (missing row, stale worker/attempt, expired lease) surfaces
+    /// the same `NotFound`/`InvalidState` error, and other claims in the batch
+    /// may already have been completed when the error is returned.
+    ///
+    /// [`complete`]: OutboxStore::complete
+    fn complete_many<'a>(
+        &'a self,
+        claims: &'a [OutboxClaimRef],
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            for claim in claims {
+                self.complete(claim).await?;
+            }
+            Ok(())
+        }
+    }
+
     fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,
@@ -193,24 +215,23 @@ pub(crate) fn ensure_active_claim(
     Ok(())
 }
 
+/// Claim order: oldest row first, message id as the deterministic tiebreaker.
+/// The single definition both claim-order helpers sort by.
+fn claim_order_key(message: &OutboxMessage) -> (SystemTime, &str) {
+    (message.created_at, message.id())
+}
+
 fn sort_by_claim_order(messages: &mut [OutboxMessage]) {
-    messages.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id().cmp(right.id()))
-    });
+    messages.sort_by(|left, right| claim_order_key(left).cmp(&claim_order_key(right)));
 }
 
 fn claim_order_ids<'a>(messages: impl Iterator<Item = &'a OutboxMessage>) -> Vec<String> {
-    let mut entries = messages
-        .map(|message| (message.created_at, message.id().to_string()))
-        .collect::<Vec<_>>();
-    entries.sort_by(|(left_time, left_id), (right_time, right_id)| {
-        left_time
-            .cmp(right_time)
-            .then_with(|| left_id.cmp(right_id))
-    });
-    entries.into_iter().map(|(_, id)| id).collect()
+    let mut messages: Vec<&OutboxMessage> = messages.collect();
+    messages.sort_by(|left, right| claim_order_key(left).cmp(&claim_order_key(right)));
+    messages
+        .into_iter()
+        .map(|message| message.id().to_string())
+        .collect()
 }
 
 impl HashMapOutboxStore {
@@ -310,6 +331,37 @@ impl OutboxStore for HashMapOutboxStore {
                 message.complete()?;
                 Ok(())
             })
+        }
+    }
+
+    /// Batched complete under a single write lock instead of one lock
+    /// acquisition per claim. Same per-claim validation as [`complete`];
+    /// claims before a failing one stay completed, like the serial loop.
+    ///
+    /// [`complete`]: OutboxStore::complete
+    fn complete_many<'a>(
+        &'a self,
+        claims: &'a [OutboxClaimRef],
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            if claims.is_empty() {
+                return Ok(());
+            }
+            let mut storage = self
+                .storage
+                .write()
+                .map_err(|_| RepositoryError::LockPoisoned("outbox write"))?;
+            let now = SystemTime::now();
+            for claim in claims {
+                let message = storage.get_mut(&claim.message_id).ok_or_else(|| {
+                    RepositoryError::NotFound {
+                        id: claim.message_id.clone(),
+                    }
+                })?;
+                ensure_active_claim(message, Some(claim), now)?;
+                message.complete()?;
+            }
+            Ok(())
         }
     }
 
@@ -701,6 +753,74 @@ mod tests {
         let err = store.complete(&stale_claim).await.unwrap_err();
         assert!(matches!(err, RepositoryError::InvalidState { .. }));
         store.complete(&current_claim).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn complete_many_completes_the_whole_batch() {
+        let repo = HashMapRepository::new();
+        for id in ["msg-1", "msg-2", "msg-3"] {
+            store_message(
+                &repo,
+                OutboxMessage::create(id, "Event", b"{}".to_vec()).unwrap(),
+            )
+            .await;
+        }
+
+        let store = repo.outbox_store();
+        let claimed = store
+            .claim(ClaimOutboxMessages::new(
+                "worker-1",
+                3,
+                Duration::from_secs(60),
+            ))
+            .await
+            .unwrap();
+        let claims = claimed
+            .iter()
+            .map(OutboxClaimRef::from_message)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        store.complete_many(&claims).await.unwrap();
+
+        for id in ["msg-1", "msg-2", "msg-3"] {
+            assert!(load_message(&repo, id).is_published());
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_many_rejects_stale_and_missing_claims() {
+        let repo = HashMapRepository::new();
+        store_message(
+            &repo,
+            OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap(),
+        )
+        .await;
+
+        let store = repo.outbox_store();
+        let claimed = store
+            .claim(ClaimOutboxMessages::new(
+                "worker-1",
+                1,
+                Duration::from_secs(60),
+            ))
+            .await
+            .unwrap();
+        let claims = vec![OutboxClaimRef::from_message(&claimed[0]).unwrap()];
+
+        store.complete_many(&claims).await.unwrap();
+        // Re-settling the now-published row is a stale claim, same as `complete`.
+        let err = store.complete_many(&claims).await.unwrap_err();
+        assert!(matches!(err, RepositoryError::InvalidState { .. }));
+
+        let missing = vec![OutboxClaimRef {
+            message_id: "missing".into(),
+            worker_id: "worker-1".into(),
+            leased_until: SystemTime::now(),
+            attempt: 1,
+        }];
+        let err = store.complete_many(&missing).await.unwrap_err();
+        assert!(matches!(err, RepositoryError::NotFound { id } if id == "missing"));
     }
 
     #[tokio::test]
