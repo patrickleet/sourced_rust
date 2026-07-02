@@ -608,7 +608,13 @@ impl Service {
 
         let input = match message_to_json_input(message) {
             Ok(input) => input,
-            Err(_) => Value::Null,
+            // Binary payloads (bitcode, octet-stream) legitimately fail JSON
+            // parsing: handlers for those read `ctx.message().payload` directly,
+            // so a `Null` input is the intended fallback. A payload that
+            // *claims* to be JSON but does not parse is a decode error — surface
+            // it instead of silently nulling the input.
+            Err(_) if !is_json_content_type(&message.content_type) => Value::Null,
+            Err(err) => return Err(err),
         };
         let session = message_to_session(message);
         self.invoke(message.clone(), input, session).await
@@ -793,6 +799,18 @@ fn names_by_kind(specs: &[HandlerSpec], kind: MessageKind) -> Vec<&str> {
 
 fn handler_key(kind: MessageKind, name: &str) -> (MessageKind, String) {
     (kind, name.to_string())
+}
+
+/// Whether a content type declares a JSON payload (`application/json` or any
+/// `+json` structured suffix), ignoring parameters like `;charset=utf-8`.
+fn is_json_content_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json" || essence.ends_with("+json")
 }
 
 fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
@@ -1202,6 +1220,47 @@ mod tests {
             result,
             json!({ "event_id": "evt-1", "checkout_id": "checkout-1", "user_id": "user-1" })
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_message_surfaces_malformed_json_as_decode_error() {
+        let service = test_service(test_routes().event("checkout.started").handle(
+            |_ctx: &Context<()>| async move { panic!("handler must not run on a decode error") },
+        ));
+        let message = Message::new(
+            "checkout.started",
+            MessageKind::Event,
+            br#"{"checkout_id": oops"#.to_vec(),
+        );
+
+        let err = service.dispatch_message(&message).await.unwrap_err();
+
+        match err {
+            HandlerError::DecodeFailed(detail) => {
+                assert!(
+                    detail.contains("invalid JSON payload") && detail.contains("checkout.started"),
+                    "decode error should carry the parse failure, got: {detail}"
+                );
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_message_nulls_input_for_non_json_payloads() {
+        let service = test_service(test_routes().event("blob.stored").handle(
+            |ctx: &Context<()>| {
+                let input_is_null = ctx.raw_input().is_null();
+                let payload = ctx.message().payload().to_vec();
+                async move { Ok(json!({ "null_input": input_is_null, "len": payload.len() })) }
+            },
+        ));
+        let mut message = Message::new("blob.stored", MessageKind::Event, vec![0, 159, 146, 150]);
+        message.content_type = "application/octet-stream".to_string();
+
+        let result = service.dispatch_message(&message).await.unwrap();
+
+        assert_eq!(result, json!({ "null_input": true, "len": 4 }));
     }
 
     #[tokio::test]
