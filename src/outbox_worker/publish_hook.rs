@@ -50,9 +50,17 @@ where
         claimed: Vec<OutboxMessage>,
     ) -> Pin<Box<dyn Future<Output = Result<(), RepositoryError>> + Send + 'a>> {
         Box::pin(async move {
-            publish_and_settle(&self.store, &self.publisher, claimed, self.max_attempts)
-                .await
-                .map(|_outcome| ())
+            // Concurrency 1: a commit's rows are one aggregate's events, and
+            // their relative order matters to consumers.
+            publish_and_settle(
+                &self.store,
+                &self.publisher,
+                claimed,
+                self.max_attempts,
+                std::num::NonZeroUsize::MIN,
+            )
+            .await
+            .map(|_outcome| ())
         })
     }
 }

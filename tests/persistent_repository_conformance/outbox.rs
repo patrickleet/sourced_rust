@@ -336,6 +336,66 @@ where
     assert_eq!(still_owned.worker_id.as_deref(), Some("immediate-worker"));
 }
 
+pub async fn worker_completes_claims_in_one_batch<R, S>(repo: R, outbox: S)
+where
+    R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,
+    S: OutboxStore + Send + Sync,
+{
+    let message_ids: Vec<String> = (0..3)
+        .map(|index| unique_id(&format!("batch-complete-{index}")))
+        .collect();
+    for (index, message_id) in message_ids.iter().enumerate() {
+        commit_outbox_for_seat(
+            &repo,
+            unique_id(&format!("batch-complete-seat-{index}")),
+            message_id,
+            "seat.added",
+        )
+        .await;
+    }
+
+    let claimed = outbox
+        .claim(ClaimOutboxMessages::for_ids(
+            "batch-worker",
+            message_ids.clone(),
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("claiming the staged rows should succeed");
+    assert_eq!(claimed.len(), message_ids.len());
+    let claims = claimed
+        .iter()
+        .map(OutboxClaimRef::from_message)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("claims should be valid");
+
+    outbox
+        .complete_many(&claims)
+        .await
+        .expect("batched complete should settle every active claim");
+    for message_id in &message_ids {
+        let published = find_outbox_by_id(&outbox, message_id)
+            .await
+            .expect("completed message should still be queryable");
+        assert_eq!(published.status, OutboxMessageStatus::Published);
+        assert_eq!(published.worker_id, None);
+    }
+
+    // Re-settling the now-published rows is a stale batch: same
+    // InvalidState surface as a serial `complete` of a settled row.
+    let stale_err = outbox
+        .complete_many(&claims)
+        .await
+        .expect_err("stale batch should not complete again");
+    assert!(matches!(stale_err, RepositoryError::InvalidState { .. }));
+
+    // An empty batch is a no-op, not an error.
+    outbox
+        .complete_many(&[])
+        .await
+        .expect("empty batch should be a no-op");
+}
+
 pub async fn expired_outbox_lease_is_reclaimed_by_second_worker<R, S>(repo: R, outbox: S)
 where
     R: GetStream + TransactionalCommit + Clone + Send + Sync + 'static,

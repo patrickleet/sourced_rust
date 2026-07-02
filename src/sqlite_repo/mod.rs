@@ -696,6 +696,82 @@ impl OutboxStore for SqliteOutboxStore {
         }
     }
 
+    /// Batched complete: one transaction (one commit/fsync) for the whole
+    /// batch instead of one per row. Rows are still validated per claim with
+    /// the same predicate as [`complete`]; the first claim that does not
+    /// apply stops the loop, the claims already applied are committed (as in
+    /// the serial loop), and the same `NotFound`/`InvalidState` diagnosis is
+    /// surfaced.
+    ///
+    /// [`complete`]: OutboxStore::complete
+    fn complete_many<'a>(
+        &'a self,
+        claims: &'a [OutboxClaimRef],
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            if claims.is_empty() {
+                return Ok(());
+            }
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let published_at = system_time_to_storage(now)?;
+
+            let mut tx = self.pool.begin().await.map_err(|err| {
+                repository_storage_error("begin outbox complete transaction", err)
+            })?;
+            let mut unapplied = None;
+            for claim in claims {
+                let result = sqlx::query(
+                    r#"
+                    UPDATE outbox_messages
+                    SET status = ?,
+                        claimed_by = NULL,
+                        claimed_until = NULL,
+                        published_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE message_id = ?
+                      AND status = ?
+                      AND claimed_by = ?
+                      AND claimed_until IS NOT NULL
+                      AND CAST(claimed_until AS REAL) > ?
+                      AND attempts = ?
+                    "#,
+                )
+                .bind(OutboxMessageStatus::Published.as_str())
+                .bind(&published_at)
+                .bind(&claim.message_id)
+                .bind(OutboxMessageStatus::InFlight.as_str())
+                .bind(&claim.worker_id)
+                .bind(now_epoch)
+                .bind(sqlx_repository_i64_from_u64(
+                    SQLITE_BACKEND,
+                    u64::from(claim.attempt),
+                    "outbox claim attempt",
+                    SIGNED_INTEGER_STORAGE,
+                )?)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| repository_storage_error("complete outbox message", err))?;
+
+                if result.rows_affected() == 0 {
+                    unapplied = Some(claim);
+                    break;
+                }
+            }
+            tx.commit().await.map_err(|err| {
+                repository_storage_error("commit outbox complete transaction", err)
+            })?;
+
+            if let Some(claim) = unapplied {
+                ensure_outbox_update_applied(&self.pool, 0, &claim.message_id, |message| {
+                    ensure_active_claim(message, Some(claim), now)
+                })
+                .await?;
+            }
+            Ok(())
+        }
+    }
+
     fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,

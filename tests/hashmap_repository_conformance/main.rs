@@ -101,6 +101,13 @@ async fn worker_claim_by_ids_claims_only_requested() {
 }
 
 #[tokio::test]
+async fn worker_completes_claims_in_one_batch() {
+    let repo = repository();
+    conformance::outbox::worker_completes_claims_in_one_batch(repo.clone(), repo.outbox_store())
+        .await;
+}
+
+#[tokio::test]
 async fn consumer_inbox_records_dedupes_and_fences_with_real_effects() {
     let repo = repository();
     conformance::inbox::inbox_records_dedupes_and_fences_with_real_effects(

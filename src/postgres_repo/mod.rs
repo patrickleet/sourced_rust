@@ -674,6 +674,83 @@ impl OutboxStore for PostgresOutboxStore {
         }
     }
 
+    /// Batched complete: settles every claim in one `UPDATE ... FROM unnest`
+    /// statement instead of one round trip per row. Per-claim validation
+    /// (worker, unexpired lease, attempt) matches [`complete`]; a claim the
+    /// statement did not apply surfaces the same `NotFound`/`InvalidState`
+    /// error, while the claims that did match stay completed.
+    ///
+    /// [`complete`]: OutboxStore::complete
+    fn complete_many<'a>(
+        &'a self,
+        claims: &'a [OutboxClaimRef],
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        async move {
+            if claims.is_empty() {
+                return Ok(());
+            }
+            let now = SystemTime::now();
+            let now_epoch = system_time_to_epoch_secs(now)?;
+            let mut message_ids = Vec::with_capacity(claims.len());
+            let mut worker_ids = Vec::with_capacity(claims.len());
+            let mut attempts = Vec::with_capacity(claims.len());
+            for claim in claims {
+                message_ids.push(claim.message_id.clone());
+                worker_ids.push(claim.worker_id.clone());
+                attempts.push(sqlx_repository_i32_from_u64(
+                    POSTGRES_BACKEND,
+                    u64::from(claim.attempt),
+                    "outbox claim attempt",
+                    INTEGER_STORAGE,
+                )?);
+            }
+
+            let completed: Vec<String> = sqlx::query_scalar(
+                r#"
+                UPDATE outbox_messages AS message
+                SET status = $1,
+                    claimed_by = NULL,
+                    claimed_until = NULL,
+                    published_at = to_timestamp($2),
+                    updated_at = now()
+                FROM unnest($3::text[], $4::text[], $5::integer[])
+                     AS claim(message_id, worker_id, attempts)
+                WHERE message.message_id = claim.message_id
+                  AND message.status = $6
+                  AND message.claimed_by = claim.worker_id
+                  AND message.claimed_until IS NOT NULL
+                  AND message.claimed_until > to_timestamp($2)
+                  AND message.attempts = claim.attempts
+                RETURNING message.message_id
+                "#,
+            )
+            .bind(OutboxMessageStatus::Published.as_str())
+            .bind(now_epoch)
+            .bind(&message_ids)
+            .bind(&worker_ids)
+            .bind(&attempts)
+            .bind(OutboxMessageStatus::InFlight.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| repository_storage_error("complete outbox messages", err))?;
+
+            if completed.len() == claims.len() {
+                return Ok(());
+            }
+            // Surface the same NotFound/InvalidState error `complete` would
+            // return for each claim the statement did not apply.
+            for claim in claims {
+                if !completed.iter().any(|id| id == &claim.message_id) {
+                    ensure_outbox_update_applied(&self.pool, 0, &claim.message_id, |message| {
+                        ensure_active_claim(message, Some(claim), now)
+                    })
+                    .await?;
+                }
+            }
+            Ok(())
+        }
+    }
+
     fn release<'a>(
         &'a self,
         claim: &'a OutboxClaimRef,

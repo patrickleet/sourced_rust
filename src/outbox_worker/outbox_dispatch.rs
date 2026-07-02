@@ -10,7 +10,10 @@
 //! [`dispatch_batch`]: OutboxDispatcher::dispatch_batch
 //! [`dispatch_ids`]: OutboxDispatcher::dispatch_ids
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
+
+use futures_util::stream::{self, StreamExt};
 
 use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
 use crate::bus::{Message, MessageKind, MessagePublisher, TransportError, TransportErrorKind};
@@ -146,6 +149,7 @@ pub struct OutboxDispatcher<S, P> {
     worker_id: String,
     lease: Duration,
     max_attempts: u32,
+    publish_concurrency: NonZeroUsize,
 }
 
 impl<S, P> OutboxDispatcher<S, P>
@@ -169,7 +173,21 @@ where
             worker_id: worker_id.into(),
             lease,
             max_attempts,
+            publish_concurrency: NonZeroUsize::MIN,
         }
+    }
+
+    /// Set how many publishes may be in flight at once during a dispatch pass.
+    ///
+    /// Defaults to `1`, which publishes strictly in claim (created-at) order —
+    /// the safe choice whenever downstream consumers rely on outbox ordering.
+    /// Raising it overlaps publish round trips for higher throughput, but
+    /// messages may reach the transport out of order, so only raise it when
+    /// consumers are order-independent (or ordering is restored downstream,
+    /// e.g. by per-key partitioning). Settlement is batched either way.
+    pub fn with_publish_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.publish_concurrency = concurrency;
+        self
     }
 
     /// The publisher this dispatcher sends through.
@@ -217,8 +235,14 @@ where
         claimed: Vec<OutboxMessage>,
     ) -> Result<OutboxDispatchOutcome, TransportError> {
         let claimed_count = claimed.len();
-        let settled =
-            publish_and_settle(&self.store, &self.publisher, claimed, self.max_attempts).await?;
+        let settled = publish_and_settle(
+            &self.store,
+            &self.publisher,
+            claimed,
+            self.max_attempts,
+            self.publish_concurrency,
+        )
+        .await?;
         Ok(OutboxDispatchOutcome {
             requested: 0,
             claimed: claimed_count,
@@ -240,9 +264,11 @@ pub(crate) struct SettleOutcome {
     pub failed: usize,
 }
 
-/// Publish already-claimed outbox rows through `publisher` and settle each
-/// claim in `store`: `complete` on publish success, `record_failure`
-/// (release, or fail at the `max_attempts` ceiling) on publish error.
+/// Publish already-claimed outbox rows through `publisher` and settle their
+/// claims in `store`: successes are completed in one batched
+/// [`complete_many`] call after the publish phase, publish failures are
+/// settled individually through `record_failure` (release, or fail at the
+/// `max_attempts` ceiling).
 ///
 /// This is the one publish-then-settle path, shared by the dispatcher
 /// (background polling and after-commit `dispatch_ids`) and by the
@@ -251,27 +277,53 @@ pub(crate) struct SettleOutcome {
 /// claimed inside the commit transaction (re-claiming there would bump
 /// attempts and race the lease).
 ///
+/// `publish_concurrency` bounds how many publishes are in flight at once.
+/// `1` preserves strict claim order; higher values overlap publish round
+/// trips but may deliver out of order.
+///
 /// Publish failures are not errors — they are settled into the outcome. Only
-/// a store failure returns `Err`; rows settled before the failure keep their
-/// settled state.
+/// a store failure returns `Err`. If the batched complete itself fails, the
+/// published-but-unsettled rows stay in flight and are re-published after
+/// lease expiry — the same at-least-once window a crash between publish and
+/// settle always leaves.
+///
+/// [`complete_many`]: OutboxStore::complete_many
 pub(crate) async fn publish_and_settle<S, P>(
     store: &S,
     publisher: &P,
     claimed: Vec<OutboxMessage>,
     max_attempts: u32,
+    publish_concurrency: NonZeroUsize,
 ) -> Result<SettleOutcome, RepositoryError>
 where
     S: OutboxStore,
     P: MessagePublisher,
 {
-    let mut outcome = SettleOutcome::default();
+    let mut work = Vec::with_capacity(claimed.len());
     for message in claimed {
         let claim = OutboxClaimRef::from_message(&message)?;
-        match publisher.publish(Message::from(message)).await {
-            Ok(()) => {
-                store.complete(&claim).await?;
-                outcome.published += 1;
-            }
+        work.push((claim, Message::from(message)));
+    }
+
+    // Publish phase: up to `publish_concurrency` publishes in flight. With the
+    // default of 1 this awaits each publish before starting the next, so rows
+    // go out strictly in claim (created-at) order.
+    let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
+        stream::iter(work.into_iter().map(|(claim, message)| async move {
+            let result = publisher.publish(message).await;
+            (claim, result)
+        }))
+        .buffer_unordered(publish_concurrency.get())
+        .collect()
+        .await;
+
+    // Settle phase: failures are the exception and settle individually;
+    // successes settle in one batched complete.
+    let mut outcome = SettleOutcome::default();
+    let mut published = Vec::with_capacity(results.len());
+    for (claim, result) in results {
+        match result {
+            Ok(()) => published.push(claim),
             Err(publish_error) => {
                 match store
                     .record_failure(&claim, &publish_error.to_string(), max_attempts)
@@ -283,6 +335,8 @@ where
             }
         }
     }
+    store.complete_many(&published).await?;
+    outcome.published = published.len();
     Ok(outcome)
 }
 
@@ -544,5 +598,100 @@ mod tests {
         assert_eq!(drained.claimed, 1, "only evt-2 remains claimable");
         assert_eq!(drained.published, 1);
         assert_eq!(dispatcher.publisher.ids().len(), 2);
+    }
+
+    /// Publisher that fails one specific message id and records the rest.
+    struct SelectiveFailPublisher {
+        fail_id: String,
+        published: Mutex<Vec<String>>,
+    }
+
+    impl MessagePublisher for SelectiveFailPublisher {
+        async fn publish(&self, message: Message) -> Result<(), TransportError> {
+            if message.id() == Some(self.fail_id.as_str()) {
+                return Err(TransportError::retryable("selective publish failure"));
+            }
+            self.published
+                .lock()
+                .unwrap()
+                .push(message.id().unwrap_or_default().to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn mixed_publish_outcomes_settle_successes_batched_and_failures_individually() {
+        let repo = HashMapRepository::new();
+        for id in ["evt-1", "evt-2", "evt-3"] {
+            store_message(&repo, outbox(id));
+        }
+        let dispatcher = OutboxDispatcher::new(
+            repo.outbox_store(),
+            SelectiveFailPublisher {
+                fail_id: "evt-2".to_string(),
+                published: Mutex::new(Vec::new()),
+            },
+            "immediate:test",
+            Duration::from_secs(60),
+            3,
+        );
+
+        let outcome = block_on(dispatcher.dispatch_batch(10)).unwrap();
+
+        assert_eq!(outcome.claimed, 3);
+        assert_eq!(outcome.published, 2);
+        assert_eq!(outcome.released, 1);
+        assert!(load(&repo, "evt-1").is_published());
+        assert!(load(&repo, "evt-3").is_published());
+        // The failed row is released for retry, untouched by the batched complete.
+        let failed = load(&repo, "evt-2");
+        assert!(failed.is_pending());
+        assert_eq!(failed.attempts, 1);
+    }
+
+    #[test]
+    fn publish_concurrency_above_one_still_settles_every_row() {
+        let repo = HashMapRepository::new();
+        for id in ["evt-1", "evt-2", "evt-3"] {
+            store_message(&repo, outbox(id));
+        }
+        let dispatcher =
+            dispatcher(&repo, false, 3).with_publish_concurrency(NonZeroUsize::new(4).unwrap());
+
+        let outcome = block_on(dispatcher.dispatch_batch(10)).unwrap();
+
+        assert_eq!(outcome.claimed, 3);
+        assert_eq!(outcome.published, 3);
+        for id in ["evt-1", "evt-2", "evt-3"] {
+            assert!(load(&repo, id).is_published());
+        }
+        assert_eq!(dispatcher.publisher.ids().len(), 3);
+    }
+
+    #[test]
+    fn default_concurrency_publishes_in_claim_order() {
+        use std::time::SystemTime;
+        let repo = HashMapRepository::new();
+        // Claim order is created-at then id; pin created-at so the id
+        // tiebreaker decides, and store in shuffled id order.
+        for id in ["evt-b", "evt-a", "evt-c"] {
+            let mut message = outbox(id);
+            message.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+            store_message(&repo, message);
+        }
+        let dispatcher = dispatcher(&repo, false, 3);
+
+        block_on(dispatcher.dispatch_batch(10)).unwrap();
+
+        // created_at ties (same timestamp) break by id, and concurrency 1
+        // preserves that claim order on the wire.
+        assert_eq!(
+            dispatcher.publisher.ids(),
+            vec![
+                "evt-a".to_string(),
+                "evt-b".to_string(),
+                "evt-c".to_string()
+            ]
+        );
     }
 }
