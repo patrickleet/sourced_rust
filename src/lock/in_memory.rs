@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
 use super::{Lock, LockError, LockManager};
@@ -10,6 +10,13 @@ use super::{Lock, LockError, LockManager};
 struct LockState {
     locked: bool,
     waiters: VecDeque<Waker>,
+}
+
+/// Back-reference from a manager-owned lock to its entry in the manager's map,
+/// so an idle lock can evict itself on unlock instead of living forever.
+struct LockRegistry {
+    locks: Weak<Mutex<HashMap<String, Arc<InMemoryLock>>>>,
+    key: String,
 }
 
 /// In-memory [`Lock`] backed by a `Mutex<{ locked, waiters }>`.
@@ -22,12 +29,16 @@ struct LockState {
 /// runtime, matching the rest of the crate's RPITIT async surface.
 pub struct InMemoryLock {
     state: Mutex<LockState>,
+    /// `Some` only for locks handed out by [`InMemoryLockManager`]; standalone
+    /// locks never evict.
+    registry: Option<LockRegistry>,
 }
 
 impl InMemoryLock {
     pub fn new() -> Self {
         InMemoryLock {
             state: Mutex::new(LockState::default()),
+            registry: None,
         }
     }
 
@@ -79,7 +90,49 @@ impl InMemoryLock {
         for waker in woken {
             waker.wake();
         }
+        self.evict_if_idle();
         Ok(())
+    }
+
+    /// Remove this lock from its manager's map when nothing else can reach it.
+    ///
+    /// Safe because a lock is only reachable through the map (`get_lock`, which
+    /// serializes on the map mutex we hold here) or through an already-held
+    /// `Arc`. With the map guard held, `strong_count == 2` means exactly the
+    /// map's `Arc` and the one this unlock call came in through remain, so no
+    /// other task can acquire this instance; the idle entry can go. Any parked
+    /// waiter's future borrows a live `Arc`, which keeps the count above 2 and
+    /// the entry alive.
+    ///
+    /// Contract note (documented on [`InMemoryLockManager::get_lock`]): callers
+    /// must not reuse a `get_lock` handle after unlocking it — re-fetch instead.
+    fn evict_if_idle(&self) {
+        let Some(registry) = &self.registry else {
+            return;
+        };
+        let Some(locks) = registry.locks.upgrade() else {
+            return;
+        };
+        let Ok(mut locks) = locks.lock() else {
+            return;
+        };
+        let Some(entry) = locks.get(&registry.key) else {
+            return;
+        };
+        if !std::ptr::eq(Arc::as_ptr(entry), self) || Arc::strong_count(entry) != 2 {
+            return;
+        }
+        // Re-check the lock state under the map guard: a concurrent try_lock
+        // through another handle would have shown up in the strong count, but a
+        // no-op unlock on a still-held lock must not evict it.
+        let idle = self
+            .state
+            .lock()
+            .map(|state| !state.locked && state.waiters.is_empty())
+            .unwrap_or(false);
+        if idle {
+            locks.remove(&registry.key);
+        }
     }
 }
 
@@ -144,15 +197,17 @@ impl Lock for InMemoryLock {
 /// In-memory [`LockManager`] backed by a `HashMap<String, Arc<InMemoryLock>>`.
 ///
 /// Lazily creates one [`InMemoryLock`] per unique key and returns the same
-/// `Arc` for repeated lookups.
+/// `Arc` for repeated lookups. An entry is evicted on unlock once it is idle
+/// and no handle beyond the map's own remains, so the map does not grow
+/// unboundedly with every aggregate id ever locked.
 pub struct InMemoryLockManager {
-    locks: Mutex<HashMap<String, Arc<InMemoryLock>>>,
+    locks: Arc<Mutex<HashMap<String, Arc<InMemoryLock>>>>,
 }
 
 impl InMemoryLockManager {
     pub fn new() -> Self {
         InMemoryLockManager {
-            locks: Mutex::new(HashMap::new()),
+            locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -166,6 +221,11 @@ impl Default for InMemoryLockManager {
 impl LockManager for InMemoryLockManager {
     type Lock = InMemoryLock;
 
+    /// Get (or create) the lock for `id`.
+    ///
+    /// The returned handle is good for one acquire/release cycle: unlocking may
+    /// evict the idle entry, so do not cache the handle across an unlock —
+    /// call `get_lock` again (as `QueuedRepository` does per operation).
     fn get_lock(&self, id: &str) -> Result<Arc<InMemoryLock>, LockError> {
         let mut locks = self
             .locks
@@ -173,7 +233,15 @@ impl LockManager for InMemoryLockManager {
             .map_err(|_| LockError::Poisoned("lock manager map poisoned".into()))?;
         Ok(locks
             .entry(id.to_string())
-            .or_insert_with(|| Arc::new(InMemoryLock::new()))
+            .or_insert_with(|| {
+                Arc::new(InMemoryLock {
+                    state: Mutex::new(LockState::default()),
+                    registry: Some(LockRegistry {
+                        locks: Arc::downgrade(&self.locks),
+                        key: id.to_string(),
+                    }),
+                })
+            })
             .clone())
     }
 }
@@ -293,6 +361,72 @@ mod tests {
         let b = manager.get_lock("agg-2").unwrap();
         assert!(Arc::ptr_eq(&a1, &a2));
         assert!(!Arc::ptr_eq(&a1, &b));
+    }
+
+    #[tokio::test]
+    async fn manager_evicts_idle_entry_on_unlock() {
+        let manager = InMemoryLockManager::new();
+        let lock = manager.get_lock("agg-1").unwrap();
+        lock.lock().await.unwrap();
+        assert_eq!(manager.locks.lock().unwrap().len(), 1);
+
+        lock.unlock().await.unwrap();
+
+        assert!(
+            manager.locks.lock().unwrap().is_empty(),
+            "an idle, otherwise-unreferenced entry is evicted on unlock"
+        );
+        // A later get_lock simply creates a fresh entry.
+        let again = manager.get_lock("agg-1").unwrap();
+        assert!(again.try_lock().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn manager_keeps_entry_while_another_handle_is_held() {
+        let manager = InMemoryLockManager::new();
+        let a = manager.get_lock("agg-1").unwrap();
+        let b = manager.get_lock("agg-1").unwrap();
+
+        a.lock().await.unwrap();
+        a.unlock().await.unwrap();
+
+        // `b` still references the entry, so unlock must not evict it: the next
+        // get_lock returns the same lock `b` points at.
+        let c = manager.get_lock("agg-1").unwrap();
+        assert!(Arc::ptr_eq(&b, &c));
+        assert_eq!(manager.locks.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn manager_keeps_entry_for_a_parked_waiter() {
+        let manager = InMemoryLockManager::new();
+        let holder = manager.get_lock("agg-1").unwrap();
+        holder.lock().await.unwrap();
+
+        // A waiter parks on the held lock, keeping its own Arc alive.
+        let waiter_lock = manager.get_lock("agg-1").unwrap();
+        let waiter = tokio::spawn(async move {
+            waiter_lock.lock().await.unwrap();
+            waiter_lock
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        holder.unlock().await.unwrap();
+        let waiter_lock = waiter.await.unwrap();
+
+        // The waiter's Arc kept the entry alive across the unlock, so it now
+        // holds the same lock the map still serves.
+        let same = manager.get_lock("agg-1").unwrap();
+        assert!(Arc::ptr_eq(&waiter_lock, &same));
+        assert!(!same.try_lock().await.unwrap(), "waiter holds the lock");
+
+        drop(holder);
+        drop(same);
+        waiter_lock.unlock().await.unwrap();
+        assert!(
+            manager.locks.lock().unwrap().is_empty(),
+            "the entry is evicted once the last holder unlocks"
+        );
     }
 
     #[tokio::test]
