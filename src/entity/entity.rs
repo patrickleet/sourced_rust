@@ -164,6 +164,16 @@ impl Entity {
     /// Slices relative to `prefix_version` so it is correct whether the entity
     /// holds the full history (`prefix_version == 0`) or only a snapshot tail.
     pub fn new_events(&self) -> &[EventRecord] {
+        // Invariant (established by `load_from_history`/`load_tail_from_history`
+        // and preserved by `mark_committed`): the committed position never lies
+        // inside the omitted prefix, so this subtraction cannot underflow. In
+        // release builds a violation still fails loudly at the slice below.
+        debug_assert!(
+            self.committed_version >= self.prefix_version,
+            "entity invariant violated: committed_version {} < prefix_version {}",
+            self.committed_version,
+            self.prefix_version
+        );
         let start = (self.committed_version - self.prefix_version) as usize;
         &self.events[start..]
     }

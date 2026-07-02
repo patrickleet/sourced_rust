@@ -65,12 +65,15 @@ impl Service {
     /// Producing is handled on the commit path — `repo.outbox(msg).commit(agg)`
     /// publishes immediately once a bus is attached.
     ///
-    /// # Panics
-    /// If no bus was attached — call [`with_bus`](Self::with_bus) first.
+    /// # Errors
+    /// Returns a permanent [`TransportError`] if no bus was attached — call
+    /// [`with_bus`](Self::with_bus) first.
     pub async fn run(mut self, options: RunOptions) -> Result<(), TransportError> {
-        let runner = self
-            .take_runner()
-            .expect("Service::run requires a bus; call `with_bus` first");
+        let Some(runner) = self.take_runner() else {
+            return Err(TransportError::permanent(
+                "Service::run requires a bus; call `with_bus` first",
+            ));
+        };
         runner(Arc::new(self), options).await
     }
 }
@@ -145,6 +148,21 @@ mod tests {
                 self.entity.set_id("dummy-1");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn run_without_a_bus_is_a_permanent_error_not_a_panic() {
+        let err = Service::new()
+            .run(RunOptions::idempotent())
+            .await
+            .unwrap_err();
+
+        assert!(err.is_permanent());
+        assert!(
+            err.message().contains("with_bus"),
+            "error should point at the missing builder step, got: {}",
+            err.message()
+        );
     }
 
     #[tokio::test]
