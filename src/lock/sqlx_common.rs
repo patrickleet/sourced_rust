@@ -1,10 +1,12 @@
 //! Shared, dialect-neutral machinery for the SQLx lease-table locks.
 //!
-//! The [`PostgresLock`](super::PostgresLock) / [`SqliteLock`](super::SqliteLock)
-//! differ only in their SQL (placeholder style + the database-clock function)
-//! and pool type. Everything else — the in-process gate, owner-token minting,
-//! the acquire poll loop, and release — lives here so both backends share one
-//! implementation.
+//! The Postgres / SQLite backends differ only in their SQL (placeholder style
+//! and the database-clock function). Everything else — the in-process gate,
+//! owner-token minting, the acquire poll loop, release, and the manager that
+//! hands out cached per-key locks — lives here as [`SqlxLockManager`] /
+//! [`SqlxLock`], parameterized by a [`LockDialect`] that supplies the SQL.
+//! `PostgresLockManager` / `SqliteLockManager` are type aliases of
+//! [`SqlxLockManager`] over their dialect.
 //!
 //! ## Model
 //!
@@ -26,12 +28,16 @@
 //! corrupting data. v1 has no lease renewal: set `lease_ttl` above the worst-case
 //! critical section.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{InMemoryLock, Lock, LockError};
+use sqlx::{Database, Encode, FromRow, IntoArguments, Pool, Type};
+
+use super::{InMemoryLock, Lock, LockError, LockManager};
 
 /// Tunables for a lease lock manager. Shared by every per-key lock it hands out.
 #[derive(Debug, Clone)]
@@ -258,4 +264,287 @@ pub(crate) fn lease_acquire_error(err: sqlx::Error) -> LockError {
 /// Map a release query error to a `LockError`.
 pub(crate) fn lease_release_error(err: sqlx::Error) -> LockError {
     LockError::ReleaseFailed(format!("sqlx lease release failed: {err}"))
+}
+
+/// A SQL dialect for the lease lock: the per-backend SQL plus two small hooks.
+/// Everything behavioral lives in [`SqlxLockManager`] / [`SqlxLock`]; a dialect
+/// is a zero-sized marker that only carries these items.
+pub trait LockDialect: Send + Sync + 'static {
+    /// The sqlx driver this dialect targets.
+    type Db: Database;
+
+    /// Prefix for generated owner ids (`"{prefix}-{pid}-{nanos}-{seq}"`).
+    const OWNER_PREFIX: &'static str;
+    /// Idempotent `aggregate_locks` DDL, as `;`-separated statements.
+    const DDL: &'static str;
+    /// One atomic conditional-acquire upsert. Binds `(lock_key, owner_token,
+    /// ttl_secs)` and `RETURNING`s the winning `owner_token` — no row when the
+    /// lease is held by another, unexpired owner.
+    const ACQUIRE_SQL: &'static str;
+    /// Owner-scoped lease delete. Binds `(lock_key, owner_token)`.
+    const RELEASE_SQL: &'static str;
+    /// Expired-lease sweep (no binds).
+    const SWEEP_SQL: &'static str;
+
+    /// Whether an acquire error is a transient busy condition to treat as
+    /// contention (`Ok(false)`, retried) rather than a failure. SQLite maps
+    /// `SQLITE_BUSY` here; Postgres has no equivalent.
+    fn busy_is_contention(_err: &sqlx::Error) -> bool {
+        false
+    }
+
+    /// Rows affected by a statement (sqlx has no dialect-neutral accessor on
+    /// [`Database::QueryResult`]).
+    fn rows_affected(result: <Self::Db as Database>::QueryResult) -> u64;
+}
+
+/// Executes a [`LockDialect`]'s SQL. Blanket-implemented for every dialect
+/// whose database supports the lease bind/decode surface (`&str` and `f64`
+/// binds, one-`String` rows) — identical across our dialects, so the sqlx
+/// bounds live here exactly once and everything else asks for
+/// `D: LeaseQueries`.
+pub trait LeaseQueries: LockDialect {
+    /// One conditional acquire attempt; `Ok(false)` = contended or busy.
+    fn acquire(
+        pool: &Pool<Self::Db>,
+        key: &str,
+        token: &str,
+        ttl_secs: f64,
+    ) -> impl Future<Output = Result<bool, LockError>> + Send;
+
+    /// Release the lease iff it still carries `token` (best-effort).
+    fn release(
+        pool: &Pool<Self::Db>,
+        key: &str,
+        token: &str,
+    ) -> impl Future<Output = Result<(), LockError>> + Send;
+
+    /// Delete all expired lease rows, returning how many were reclaimed.
+    fn sweep(pool: &Pool<Self::Db>) -> impl Future<Output = Result<u64, LockError>> + Send;
+
+    /// Run the idempotent `aggregate_locks` DDL, one statement at a time.
+    fn migrate(pool: &Pool<Self::Db>) -> impl Future<Output = Result<(), LockError>> + Send;
+}
+
+impl<D> LeaseQueries for D
+where
+    D: LockDialect,
+    for<'c> &'c mut <D::Db as Database>::Connection: sqlx::Executor<'c, Database = D::Db>,
+    <D::Db as Database>::Arguments: IntoArguments<D::Db>,
+    str: Type<D::Db>,
+    for<'q> &'q str: Encode<'q, D::Db>,
+    f64: Type<D::Db> + for<'q> Encode<'q, D::Db>,
+    for<'r> (String,): FromRow<'r, <D::Db as Database>::Row>,
+{
+    async fn acquire(
+        pool: &Pool<Self::Db>,
+        key: &str,
+        token: &str,
+        ttl_secs: f64,
+    ) -> Result<bool, LockError> {
+        let outcome = sqlx::query_as::<_, (String,)>(D::ACQUIRE_SQL)
+            .bind(key)
+            .bind(token)
+            .bind(ttl_secs)
+            .fetch_optional(pool)
+            .await;
+        match outcome {
+            Ok(row) => Ok(matches!(row, Some((owner,)) if owner == token)),
+            Err(err) if D::busy_is_contention(&err) => Ok(false),
+            Err(err) => Err(lease_acquire_error(err)),
+        }
+    }
+
+    async fn release(pool: &Pool<Self::Db>, key: &str, token: &str) -> Result<(), LockError> {
+        sqlx::query(D::RELEASE_SQL)
+            .bind(key)
+            .bind(token)
+            .execute(pool)
+            .await
+            .map_err(lease_release_error)?;
+        Ok(())
+    }
+
+    async fn sweep(pool: &Pool<Self::Db>) -> Result<u64, LockError> {
+        let result = sqlx::query(D::SWEEP_SQL)
+            .execute(pool)
+            .await
+            .map_err(lease_release_error)?;
+        Ok(D::rows_affected(result))
+    }
+
+    async fn migrate(pool: &Pool<Self::Db>) -> Result<(), LockError> {
+        for statement in D::DDL.split(';') {
+            let statement = statement.trim();
+            if statement.is_empty() {
+                continue;
+            }
+            sqlx::query(statement).execute(pool).await.map_err(|err| {
+                LockError::Other(format!("migrate aggregate_locks failed: {err}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// Durable SQLx [`LockManager`]: hands out one cached [`SqlxLock`] per key
+/// (like `InMemoryLockManager`), each persisting a per-stream lease in the
+/// `aggregate_locks` table. The dialect `D` supplies the SQL.
+///
+/// Apply the `with_*` tunables **before the first [`get_lock`](LockManager::get_lock)**:
+/// each per-key lock captures the configuration at creation time, so reconfiguring
+/// after locks have been handed out would not affect the already-cached ones.
+pub struct SqlxLockManager<D: LockDialect> {
+    pool: Pool<D::Db>,
+    owner_id: String,
+    config: LeaseConfig,
+    token_seq: Arc<AtomicU64>,
+    locks: Arc<Mutex<HashMap<String, Arc<SqlxLock<D>>>>>,
+}
+
+// Manual impl: `D` is a marker type that never needs to be `Clone` itself.
+impl<D: LockDialect> Clone for SqlxLockManager<D> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            owner_id: self.owner_id.clone(),
+            config: self.config.clone(),
+            token_seq: Arc::clone(&self.token_seq),
+            locks: Arc::clone(&self.locks),
+        }
+    }
+}
+
+impl<D: LockDialect> SqlxLockManager<D> {
+    /// Create a manager over an existing (migrated) pool, with default tunables
+    /// (30s lease TTL, 50ms retry interval, wait indefinitely).
+    pub fn new(pool: Pool<D::Db>) -> Self {
+        Self {
+            pool,
+            owner_id: default_owner_id(D::OWNER_PREFIX),
+            config: LeaseConfig::default(),
+            token_seq: Arc::new(AtomicU64::new(0)),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Set how long an acquired lease stays valid before it becomes stealable.
+    /// Must exceed the worst-case critical section (v1 has no renewal).
+    pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
+        self.config.lease_ttl = ttl;
+        self
+    }
+
+    /// Set the wait between contended acquire attempts.
+    pub fn with_retry_interval(mut self, interval: Duration) -> Self {
+        self.config.retry_interval = interval;
+        self
+    }
+
+    /// Cap how long `lock` waits before failing with `AcquireFailed`. `None`
+    /// (the default) waits indefinitely.
+    pub fn with_max_wait(mut self, max_wait: Option<Duration>) -> Self {
+        self.config.max_wait = max_wait;
+        self
+    }
+
+    /// Override the owner id (otherwise a process-unique id is generated).
+    /// Useful for observability; must stay unique per process.
+    pub fn with_owner_id(mut self, owner_id: impl Into<String>) -> Self {
+        self.owner_id = owner_id.into();
+        self
+    }
+}
+
+impl<D: LeaseQueries> SqlxLockManager<D> {
+    /// Create the `aggregate_locks` table for standalone use (no repository).
+    pub async fn migrate(pool: &Pool<D::Db>) -> Result<(), LockError> {
+        D::migrate(pool).await
+    }
+
+    /// Delete all expired lease rows; returns how many were reclaimed. Optional
+    /// GC for keys that were locked once and never again (acquire already reuses
+    /// the row for live keys).
+    pub async fn sweep_expired(&self) -> Result<u64, LockError> {
+        D::sweep(&self.pool).await
+    }
+}
+
+impl<D: LeaseQueries> LockManager for SqlxLockManager<D> {
+    type Lock = SqlxLock<D>;
+
+    fn get_lock(&self, id: &str) -> Result<Arc<SqlxLock<D>>, LockError> {
+        let mut locks = self
+            .locks
+            .lock()
+            .map_err(|_| LockError::Poisoned("sqlx lock manager map poisoned".into()))?;
+        Ok(locks
+            .entry(id.to_string())
+            .or_insert_with(|| {
+                Arc::new(SqlxLock {
+                    pool: self.pool.clone(),
+                    owner_id: self.owner_id.clone(),
+                    config: self.config.clone(),
+                    token_seq: Arc::clone(&self.token_seq),
+                    key: id.to_string(),
+                    shared: LockShared::new(),
+                    dialect: PhantomData,
+                })
+            })
+            .clone())
+    }
+}
+
+/// A single durable lease lock for one stream key (see the module docs for the
+/// lease model). Handed out — cached — by [`SqlxLockManager::get_lock`].
+pub struct SqlxLock<D: LockDialect> {
+    pool: Pool<D::Db>,
+    owner_id: String,
+    config: LeaseConfig,
+    token_seq: Arc<AtomicU64>,
+    key: String,
+    shared: LockShared,
+    dialect: PhantomData<D>,
+}
+
+impl<D: LeaseQueries> LeaseBackend for SqlxLock<D> {
+    fn shared(&self) -> &LockShared {
+        &self.shared
+    }
+
+    fn config(&self) -> &LeaseConfig {
+        &self.config
+    }
+
+    fn mint_token(&self) -> String {
+        mint_token(&self.owner_id, &self.token_seq)
+    }
+
+    async fn db_acquire(&self, token: &str) -> Result<bool, LockError> {
+        D::acquire(
+            &self.pool,
+            &self.key,
+            token,
+            self.config.lease_ttl.as_secs_f64(),
+        )
+        .await
+    }
+
+    async fn db_release(&self, token: &str) -> Result<(), LockError> {
+        D::release(&self.pool, &self.key, token).await
+    }
+}
+
+impl<D: LeaseQueries> Lock for SqlxLock<D> {
+    fn lock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_ {
+        lease_lock(self)
+    }
+
+    fn try_lock(&self) -> impl Future<Output = Result<bool, LockError>> + Send + '_ {
+        lease_try_lock(self)
+    }
+
+    fn unlock(&self) -> impl Future<Output = Result<(), LockError>> + Send + '_ {
+        lease_unlock(self)
+    }
 }

@@ -45,6 +45,8 @@ pub use in_memory::{InMemoryLock, InMemoryLockFuture, InMemoryLockManager};
 pub use lock::Lock;
 pub use manager::LockManager;
 #[cfg(feature = "postgres")]
-pub use postgres_lock::{PostgresLock, PostgresLockManager};
+pub use postgres_lock::{PostgresDialect, PostgresLock, PostgresLockManager};
 #[cfg(feature = "sqlite")]
-pub use sqlite_lock::{SqliteLock, SqliteLockManager};
+pub use sqlite_lock::{SqliteDialect, SqliteLock, SqliteLockManager};
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub use sqlx_common::{LockDialect, SqlxLock, SqlxLockManager};
