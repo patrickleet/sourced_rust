@@ -30,7 +30,9 @@
 //! the runner settles the claim through the configured failure policy
 //! (dead-letter by default), like any other permanent failure.
 
+use std::collections::VecDeque;
 use std::future::Future;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,6 +48,12 @@ use super::{
 use super::{Message, MessageKind};
 
 pub(crate) const DEFAULT_LEASE: Duration = Duration::from_secs(30);
+
+/// Rows fetched per source refill. Buffering amortizes the claim/offset
+/// subquery across a batch instead of re-running it for every message. Kept
+/// well under the lease: a whole claimed batch must be processable before its
+/// leases start expiring.
+const SOURCE_BATCH: i64 = 16;
 
 /// Classify a database error transient vs permanent (via [`is_sqlx_transient`])
 /// and wrap it as a `"{backend} bus {context}"` transport error. Deterministic
@@ -213,24 +221,28 @@ pub trait SqlBusDialect: Clone + Send + Sync + 'static {
         message: &Message,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
 
-    /// Atomically claim the next available `bus_queue` row whose `name` matches
-    /// one of `names` **or is NULL** (un-routable corruption that must be
-    /// claimed so the failure policy can settle it, not left as a poison row
-    /// blocking the drain), minting a fresh claim token under `lease_secs`.
+    /// Atomically claim up to `limit` available `bus_queue` rows (lowest `seq`
+    /// first) whose `name` matches one of `names` **or is NULL** (un-routable
+    /// corruption that must be claimed so the failure policy can settle it, not
+    /// left as a poison row blocking the drain), minting fresh claim tokens
+    /// under `lease_secs`. Returned rows need not be sorted; the source sorts.
     fn claim(
         &self,
         names: &[String],
         lease_secs: f64,
-    ) -> impl Future<Output = Result<Option<ClaimedRow>, TransportError>> + Send;
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<ClaimedRow>, TransportError>> + Send;
 
-    /// Read the next `bus_log` entry past `consumer`'s offset whose `name`
-    /// matches one of `names` **or is NULL** (surfaced, not silently skipped,
-    /// so the failure policy advances the offset past poison entries).
+    /// Read up to `limit` `bus_log` entries past `consumer`'s offset, in `seq`
+    /// order, whose `name` matches one of `names` **or is NULL** (surfaced, not
+    /// silently skipped, so the failure policy advances the offset past poison
+    /// entries).
     fn log_read(
         &self,
         names: &[String],
         consumer: &str,
-    ) -> impl Future<Output = Result<Option<ReceivedRow>, TransportError>> + Send;
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<ReceivedRow>, TransportError>> + Send;
 
     /// Delete a claimed queue row, fenced by its claim token.
     fn delete_claimed(
@@ -326,6 +338,7 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
             dialect: self.dialect.clone(),
             names,
             lease_secs: self.lease.as_secs_f64(),
+            buffer: VecDeque::new(),
         };
         run_source(router, source, options).await
     }
@@ -347,31 +360,47 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
             dialect: self.dialect.clone(),
             names,
             consumer: group,
+            buffer: VecDeque::new(),
+            last_delivered: None,
+            settled_seq: Arc::new(AtomicI64::new(0)),
         };
         run_source(router, source, options).await
     }
 }
 
 /// Competing-consumer source over `bus_queue` (atomic claim under a lease).
+///
+/// Claims [`SOURCE_BATCH`] rows per query and buffers them, so the claim
+/// subquery is not re-run for every message. Each buffered row carries its own
+/// claim token, so settlement stays per-row: a nacked row is simply re-claimed
+/// on a later refill, and a buffered row whose lease expires while earlier rows
+/// are processed can be reclaimed by another worker (the stale token fences our
+/// settle) — the usual at-least-once trade.
 struct SqlQueueSource<B> {
     dialect: B,
     names: Vec<String>,
     lease_secs: f64,
+    buffer: VecDeque<ClaimedRow>,
 }
 
 impl<B: SqlBusDialect> MessageSource for SqlQueueSource<B> {
     type Received = SqlQueueReceived<B>;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        Ok(self
-            .dialect
-            .claim(&self.names, self.lease_secs)
-            .await?
-            .map(|claimed| SqlQueueReceived {
-                dialect: self.dialect.clone(),
-                row: claimed.row,
-                claim_token: claimed.claim_token,
-            }))
+        if self.buffer.is_empty() {
+            let mut claimed = self
+                .dialect
+                .claim(&self.names, self.lease_secs, SOURCE_BATCH)
+                .await?;
+            // `UPDATE … RETURNING` row order is unspecified; restore seq order.
+            claimed.sort_by_key(|claim| claim.row.seq);
+            self.buffer.extend(claimed);
+        }
+        Ok(self.buffer.pop_front().map(|claimed| SqlQueueReceived {
+            dialect: self.dialect.clone(),
+            row: claimed.row,
+            claim_token: claimed.claim_token,
+        }))
     }
 }
 
@@ -421,25 +450,54 @@ impl<B: SqlBusDialect> ReceivedMessage for SqlQueueReceived<B> {
 
 /// Fan-out source over `bus_log`: reads the next entry past this consumer's
 /// offset for its subscribed names, in `seq` order.
+/// Reads [`SOURCE_BATCH`] entries past the offset per query and buffers them.
+///
+/// Buffered read-ahead must not break the offset contract: entries advance the
+/// offset **in order**, and a nacked entry is re-read before anything after it.
+/// The handles report forward settlement (ack/dead-letter/park) through the
+/// shared `settled_seq`; when the previously delivered entry was *not* settled
+/// forward (a nack — offset unmoved), the buffer is discarded so the next read
+/// starts again from the durable offset. The runner settles each message before
+/// the next `recv`, so this check is race-free.
 struct SqlLogSource<B> {
     dialect: B,
     names: Vec<String>,
     consumer: String,
+    buffer: VecDeque<ReceivedRow>,
+    /// `seq` of the entry most recently handed to the runner.
+    last_delivered: Option<i64>,
+    /// Highest `seq` settled forward by this source's handles.
+    settled_seq: Arc<AtomicI64>,
 }
 
 impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
     type Received = SqlLogReceived<B>;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        Ok(self
-            .dialect
-            .log_read(&self.names, &self.consumer)
-            .await?
-            .map(|row| SqlLogReceived {
+        if let Some(last) = self.last_delivered {
+            if self.settled_seq.load(Ordering::Acquire) < last {
+                // The last entry was nacked: the offset did not move, so the
+                // buffered read-ahead would skip past it. Drop it and re-read
+                // from the durable offset (re-delivering the nacked entry).
+                self.buffer.clear();
+            }
+        }
+        if self.buffer.is_empty() {
+            let rows = self
+                .dialect
+                .log_read(&self.names, &self.consumer, SOURCE_BATCH)
+                .await?;
+            self.buffer.extend(rows);
+        }
+        Ok(self.buffer.pop_front().map(|row| {
+            self.last_delivered = Some(row.seq);
+            SqlLogReceived {
                 dialect: self.dialect.clone(),
                 consumer: self.consumer.clone(),
+                settled_seq: self.settled_seq.clone(),
                 row,
-            }))
+            }
+        }))
     }
 }
 
@@ -449,7 +507,20 @@ impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
 pub struct SqlLogReceived<B> {
     dialect: B,
     consumer: String,
+    settled_seq: Arc<AtomicI64>,
     row: ReceivedRow,
+}
+
+impl<B: SqlBusDialect> SqlLogReceived<B> {
+    /// Advance the durable offset, then record the forward settlement so the
+    /// source knows its buffered read-ahead is still valid.
+    async fn settle_forward(self) -> Result<(), TransportError> {
+        self.dialect
+            .advance_offset(&self.consumer, self.row.seq)
+            .await?;
+        self.settled_seq.store(self.row.seq, Ordering::Release);
+        Ok(())
+    }
 }
 
 impl<B: SqlBusDialect> ReceivedMessage for SqlLogReceived<B> {
@@ -462,9 +533,7 @@ impl<B: SqlBusDialect> ReceivedMessage for SqlLogReceived<B> {
     }
 
     async fn ack(self) -> Result<(), TransportError> {
-        self.dialect
-            .advance_offset(&self.consumer, self.row.seq)
-            .await
+        self.settle_forward().await
     }
 
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
@@ -473,14 +542,10 @@ impl<B: SqlBusDialect> ReceivedMessage for SqlLogReceived<B> {
     }
 
     async fn dead_letter(self, _reason: &str) -> Result<(), TransportError> {
-        self.dialect
-            .advance_offset(&self.consumer, self.row.seq)
-            .await
+        self.settle_forward().await
     }
 
     async fn park(self, _reason: &str) -> Result<(), TransportError> {
-        self.dialect
-            .advance_offset(&self.consumer, self.row.seq)
-            .await
+        self.settle_forward().await
     }
 }

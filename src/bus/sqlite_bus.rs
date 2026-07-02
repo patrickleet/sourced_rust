@@ -188,9 +188,11 @@ impl SqlBusDialect for SqliteBusDialect {
         &self,
         names: &[String],
         lease_secs: f64,
-    ) -> Result<Option<ClaimedRow>, TransportError> {
+        limit: i64,
+    ) -> Result<Vec<ClaimedRow>, TransportError> {
         // SQLite serializes writers, so the `UPDATE ... RETURNING` claim is
         // atomic under competing listeners — only one claims each row.
+        // `randomblob` is non-deterministic: each claimed row gets its own token.
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE bus_queue \
              SET locked_until = unixepoch('now','subsec') + ",
@@ -199,7 +201,7 @@ impl SqlBusDialect for SqliteBusDialect {
         query.push(
             ", claim_token = lower(hex(randomblob(16))), \
                 attempts = attempts + 1 \
-             WHERE seq = ( \
+             WHERE seq IN ( \
                 SELECT seq FROM bus_queue \
                 WHERE ",
         );
@@ -207,36 +209,39 @@ impl SqlBusDialect for SqliteBusDialect {
         query.push(
             " AND available_at <= unixepoch('now','subsec') \
               AND (locked_until IS NULL OR locked_until <= unixepoch('now','subsec')) \
-              ORDER BY seq LIMIT 1 \
-             ) \
+              ORDER BY seq LIMIT ",
+        );
+        query.push_bind(limit);
+        query.push(
+            ") \
              RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
         );
 
-        let row = query
+        let rows = query
             .build()
-            .fetch_optional(&self.pool)
+            .fetch_all(&self.pool)
             .await
             .map_err(|err| db_err("claim", err))?;
 
-        match row {
-            Some(row) => {
+        rows.into_iter()
+            .map(|row| {
                 let claim_token = row
                     .try_get("claim_token")
                     .map_err(|err| db_err("claim token", err))?;
-                Ok(Some(ClaimedRow {
+                Ok(ClaimedRow {
                     row: ReceivedRow::from_row(Self::BACKEND, &row),
                     claim_token,
-                }))
-            }
-            None => Ok(None),
-        }
+                })
+            })
+            .collect()
     }
 
     async fn log_read(
         &self,
         names: &[String],
         consumer: &str,
-    ) -> Result<Option<ReceivedRow>, TransportError> {
+        limit: i64,
+    ) -> Result<Vec<ReceivedRow>, TransportError> {
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT seq, name, message_id, kind, payload, content_type, metadata \
              FROM bus_log \
@@ -245,15 +250,19 @@ impl SqlBusDialect for SqliteBusDialect {
         push_name_filter(&mut query, names);
         query.push(" AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = ");
         query.push_bind(consumer);
-        query.push("), 0) ORDER BY seq LIMIT 1");
+        query.push("), 0) ORDER BY seq LIMIT ");
+        query.push_bind(limit);
 
-        let row = query
+        let rows = query
             .build()
-            .fetch_optional(&self.pool)
+            .fetch_all(&self.pool)
             .await
             .map_err(|err| db_err("log read", err))?;
 
-        Ok(row.map(|row| ReceivedRow::from_row(Self::BACKEND, &row)))
+        Ok(rows
+            .iter()
+            .map(|row| ReceivedRow::from_row(Self::BACKEND, row))
+            .collect())
     }
 
     async fn delete_claimed(&self, seq: i64, claim_token: &str) -> Result<(), TransportError> {
