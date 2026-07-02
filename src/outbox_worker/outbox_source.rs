@@ -116,7 +116,7 @@ where
                 let claim = OutboxClaimRef::from_message(&row)?;
                 Ok(Some(ReceivedOutboxMessage {
                     store: self.store.clone(),
-                    message: Message::from(&row),
+                    message: Message::from(row),
                     claim,
                     max_attempts: self.max_attempts,
                 }))

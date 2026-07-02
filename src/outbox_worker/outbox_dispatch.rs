@@ -37,8 +37,13 @@ const OUTBOX_CONTENT_TYPE: &str = "application/octet-stream";
 /// carry decode/routing semantics and must not be shadowable by user metadata.
 pub const SOURCED_METADATA_PREFIX: &str = "x-sourced-";
 
-impl From<&OutboxMessage> for Message {
+impl From<OutboxMessage> for Message {
     /// Map a durable outbox row to a canonical transport message.
+    ///
+    /// Consumes the row so the payload bytes and metadata strings move instead
+    /// of being cloned — every dispatch path owns its row by the time it maps
+    /// (claims are returned by value, and the after-commit hook is handed the
+    /// claimed clone the commit staged).
     ///
     /// - `id` ← outbox message id (the stable durable id);
     /// - `name` ← `event_type`;
@@ -48,7 +53,7 @@ impl From<&OutboxMessage> for Message {
     ///   framework-derived keys under the reserved [`SOURCED_METADATA_PREFIX`]
     ///   namespace (payload codec, destination, source-aggregate context) so
     ///   decode/routing context can never be shadowed by a user metadata key.
-    fn from(outbox: &OutboxMessage) -> Self {
+    fn from(outbox: OutboxMessage) -> Self {
         let kind = if outbox.destination.is_some() {
             MessageKind::Command
         } else {
@@ -61,37 +66,33 @@ impl From<&OutboxMessage> for Message {
         // and cannot be shadowed on case-insensitive lookup.
         let mut metadata: Vec<(String, String)> = outbox
             .metadata
-            .iter()
+            .into_iter()
             .filter(|(key, _)| {
                 !key.to_ascii_lowercase()
                     .starts_with(SOURCED_METADATA_PREFIX)
             })
-            .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         metadata.push((
             format!("{SOURCED_METADATA_PREFIX}payload-codec"),
-            outbox.payload_codec.clone(),
+            outbox.payload_codec,
         ));
         metadata.push((
             format!("{SOURCED_METADATA_PREFIX}payload-codec-version"),
             outbox.payload_codec_version.to_string(),
         ));
-        if let Some(destination) = &outbox.destination {
-            metadata.push((
-                format!("{SOURCED_METADATA_PREFIX}destination"),
-                destination.clone(),
-            ));
+        if let Some(destination) = outbox.destination {
+            metadata.push((format!("{SOURCED_METADATA_PREFIX}destination"), destination));
         }
-        if let Some(source_type) = &outbox.source_aggregate_type {
+        if let Some(source_type) = outbox.source_aggregate_type {
             metadata.push((
                 format!("{SOURCED_METADATA_PREFIX}source-aggregate-type"),
-                source_type.clone(),
+                source_type,
             ));
         }
-        if let Some(source_id) = &outbox.source_aggregate_id {
+        if let Some(source_id) = outbox.source_aggregate_id {
             metadata.push((
                 format!("{SOURCED_METADATA_PREFIX}source-aggregate-id"),
-                source_id.clone(),
+                source_id,
             ));
         }
         if let Some(sequence) = outbox.source_sequence {
@@ -102,10 +103,10 @@ impl From<&OutboxMessage> for Message {
         }
 
         Message {
-            id: Some(outbox.id().to_string()),
-            name: outbox.event_type.clone(),
+            id: Some(outbox.id),
+            name: outbox.event_type,
             kind,
-            payload: outbox.payload.clone(),
+            payload: outbox.payload,
             content_type: OUTBOX_CONTENT_TYPE.to_string(),
             metadata,
         }
@@ -221,7 +222,7 @@ where
         };
         for message in claimed {
             let claim = OutboxClaimRef::from_message(&message)?;
-            let transport_message = Message::from(&message);
+            let transport_message = Message::from(message);
             match self.publisher.publish(transport_message).await {
                 Ok(()) => {
                     self.store.complete(&claim).await?;
@@ -323,7 +324,7 @@ mod tests {
 
     #[test]
     fn maps_outbox_row_to_canonical_message() {
-        let message = Message::from(&outbox("evt-1"));
+        let message = Message::from(outbox("evt-1"));
         assert_eq!(message.id(), Some("evt-1"));
         assert_eq!(message.name(), "OrderCreated");
         assert_eq!(message.kind, MessageKind::Event);
@@ -351,7 +352,7 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        let message = Message::from(&outbox);
+        let message = Message::from(outbox);
         // The user's reserved-prefix key is dropped; lookup returns the
         // authoritative framework value, and there is exactly one such entry.
         assert_eq!(message.metadata("x-sourced-payload-codec"), Some("bytes"));
@@ -369,7 +370,7 @@ mod tests {
     fn destination_maps_to_command_kind() {
         let outbox =
             OutboxMessage::create_to("cmd-1", "ShipOrder", "shipping", b"{}".to_vec()).unwrap();
-        let message = Message::from(&outbox);
+        let message = Message::from(outbox);
         assert_eq!(message.kind, MessageKind::Command);
         assert_eq!(message.metadata("x-sourced-destination"), Some("shipping"));
     }

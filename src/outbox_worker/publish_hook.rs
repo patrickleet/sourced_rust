@@ -47,7 +47,7 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<(), RepositoryError>> + Send + 'a>> {
         Box::pin(async move {
             let claim = OutboxClaimRef::from_message(&claimed)?;
-            let message = Message::from(&claimed);
+            let message = Message::from(claimed);
             match self.publisher.publish(message).await {
                 Ok(()) => self.store.complete(&claim).await,
                 Err(error) => self
