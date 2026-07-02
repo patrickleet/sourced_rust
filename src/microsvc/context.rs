@@ -31,8 +31,8 @@ use crate::bus::Message;
 /// }
 /// ```
 pub struct Context<'a, D> {
-    /// Message being handled.
-    message: Message,
+    /// Message being handled (borrowed from the dispatch caller — no clone).
+    message: &'a Message,
     /// Raw JSON payload input, when the payload is JSON.
     input: Value,
     /// Session variables (user ID, role, etc.).
@@ -44,7 +44,7 @@ pub struct Context<'a, D> {
 impl<'a, D> Context<'a, D> {
     /// Create a new context.
     pub(crate) fn new(
-        message: Message,
+        message: &'a Message,
         input: Value,
         session: Session,
         dependencies: &'a D,
@@ -79,7 +79,7 @@ impl<'a, D> Context<'a, D> {
 
     /// Get the full message, including id, raw payload bytes, and metadata.
     pub fn message(&self) -> &Message {
-        &self.message
+        self.message
     }
 
     /// Get the session.

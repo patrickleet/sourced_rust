@@ -66,10 +66,13 @@ where
 /// A dependency-free [`MessageRouter`]: a set of `(kind, name)` → async closure
 /// bindings. Build it fluently with [`on_command`](Handlers::on_command) /
 /// [`on_event`](Handlers::on_event), then run it with `bus.listen`/`bus.subscribe`.
+///
+/// Handlers are keyed by kind, then name, so dispatch looks up by `&str`
+/// without allocating a key.
 #[derive(Clone, Default)]
 pub struct Handlers {
     group: Option<String>,
-    handlers: HashMap<(MessageKind, String), Arc<HandlerFn>>,
+    handlers: HashMap<MessageKind, HashMap<String, Arc<HandlerFn>>>,
 }
 
 impl Handlers {
@@ -107,7 +110,9 @@ impl Handlers {
         F: for<'a> MessageHandler<'a> + 'static,
     {
         self.handlers
-            .insert((kind, name.into()), boxed_handler(handler));
+            .entry(kind)
+            .or_default()
+            .insert(name.into(), boxed_handler(handler));
         self
     }
 }
@@ -118,18 +123,22 @@ impl MessageRouter for Handlers {
     }
 
     fn handles(&self, kind: MessageKind, name: &str) -> bool {
-        self.handlers.contains_key(&(kind, name.to_string()))
+        self.handlers
+            .get(&kind)
+            .is_some_and(|by_name| by_name.contains_key(name))
     }
 
     fn subscription_plan(&self) -> SubscriptionPlan {
         let mut plan = SubscriptionPlan::default();
-        for (kind, name) in self.handlers.keys() {
+        for (kind, by_name) in &self.handlers {
             let bucket = match kind {
                 MessageKind::Command => &mut plan.commands,
                 MessageKind::Event => &mut plan.events,
             };
-            if !bucket.iter().any(|existing| existing == name) {
-                bucket.push(name.clone());
+            for name in by_name.keys() {
+                if !bucket.iter().any(|existing| existing == name) {
+                    bucket.push(name.clone());
+                }
             }
         }
         plan
@@ -140,7 +149,8 @@ impl MessageRouter for Handlers {
         // future (mirrors `Service::invoke`).
         let handler = self
             .handlers
-            .get(&(message.kind, message.name().to_string()))
+            .get(&message.kind)
+            .and_then(|by_name| by_name.get(message.name()))
             .cloned();
         match handler {
             Some(handler) => handler(message).await,
