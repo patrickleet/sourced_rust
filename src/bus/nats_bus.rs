@@ -28,11 +28,11 @@ use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::stream::{Config as StreamConfig, Stream};
 
 use super::nats::{NatsJetStreamSource, NatsPublisher};
-use super::Message;
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter,
     RunOptions, TransportError,
 };
+use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -233,6 +233,39 @@ impl NatsBus {
             .with_fetch_timeout(self.fetch_timeout)
             .with_strip_prefix(strip_prefix))
     }
+
+    /// Shared consume path for `listen` (commands) and `subscribe` (events):
+    /// durable `{group}_{cmd|evt}` filtered to `{ns}.{cmd|evt}.{name}` subjects.
+    /// An empty plan returns `Ok(())` before any namespace/group resolution.
+    async fn consume<R: MessageRouter>(
+        &self,
+        router: Arc<R>,
+        options: RunOptions,
+        kind: MessageKind,
+    ) -> Result<(), TransportError> {
+        let plan = router.subscription_plan();
+        let (names, suffix) = match kind {
+            MessageKind::Command => (plan.commands, "cmd"),
+            MessageKind::Event => (plan.events, "evt"),
+        };
+        if names.is_empty() {
+            return Ok(());
+        }
+        let namespace = self.validated_namespace()?;
+        let prefix = format!("{namespace}.{suffix}.");
+        let subjects: Vec<String> = names.iter().map(|name| format!("{prefix}{name}")).collect();
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "nats")?;
+        let source = self
+            .source(
+                &format!("{}_{suffix}", Self::durable_base(&group)),
+                subjects,
+                prefix,
+            )
+            .await?;
+        run_source(router, source, options).await
+    }
 }
 
 impl Bus for NatsBus {
@@ -253,27 +286,7 @@ impl BusConsumer for NatsBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let plan = router.subscription_plan();
-        if plan.commands.is_empty() {
-            return Ok(());
-        }
-        let namespace = self.validated_namespace()?;
-        let subjects: Vec<String> = plan
-            .commands
-            .iter()
-            .map(|name| format!("{namespace}.cmd.{name}"))
-            .collect();
-        let group = self
-            .topology
-            .resolve_consumer_group(router.as_ref(), "nats")?;
-        let source = self
-            .source(
-                &format!("{}_cmd", Self::durable_base(&group)),
-                subjects,
-                format!("{namespace}.cmd."),
-            )
-            .await?;
-        run_source(router, source, options).await
+        self.consume(router, options, MessageKind::Command).await
     }
 
     async fn subscribe<R: MessageRouter>(
@@ -281,26 +294,6 @@ impl BusConsumer for NatsBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let plan = router.subscription_plan();
-        if plan.events.is_empty() {
-            return Ok(());
-        }
-        let namespace = self.validated_namespace()?;
-        let subjects: Vec<String> = plan
-            .events
-            .iter()
-            .map(|name| format!("{namespace}.evt.{name}"))
-            .collect();
-        let group = self
-            .topology
-            .resolve_consumer_group(router.as_ref(), "nats")?;
-        let source = self
-            .source(
-                &format!("{}_evt", Self::durable_base(&group)),
-                subjects,
-                format!("{namespace}.evt."),
-            )
-            .await?;
-        run_source(router, source, options).await
+        self.consume(router, options, MessageKind::Event).await
     }
 }

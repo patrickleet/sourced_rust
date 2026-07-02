@@ -24,11 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
-use super::Message;
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter, RunOptions,
     TransportError,
 };
+use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -151,22 +151,35 @@ impl KafkaBus {
         Ok(format!("{}.evt.", self.validated_namespace()?))
     }
 
-    async fn run<R: MessageRouter>(
+    /// Shared consume path for `listen` (commands) and `subscribe` (events):
+    /// join group `{ns}.{group}.{cmd|evt}` on topics `{ns}.{cmd|evt}.{name}`.
+    /// An empty plan returns `Ok(())` before any namespace/group resolution.
+    async fn consume<R: MessageRouter>(
         &self,
         router: Arc<R>,
-        topics: Vec<String>,
-        group_id: String,
-        strip_prefix: String,
         options: RunOptions,
+        kind: MessageKind,
     ) -> Result<(), TransportError> {
-        if topics.is_empty() {
+        let plan = router.subscription_plan();
+        let (names, suffix) = match kind {
+            MessageKind::Command => (plan.commands, "cmd"),
+            MessageKind::Event => (plan.events, "evt"),
+        };
+        if names.is_empty() {
             return Ok(());
         }
+        let namespace = self.validated_namespace()?;
+        let prefix = format!("{namespace}.{suffix}.");
+        let topics: Vec<String> = names.iter().map(|name| format!("{prefix}{name}")).collect();
+        let group = self
+            .topology
+            .resolve_consumer_group(router.as_ref(), "kafka")?;
+        let group_id = format!("{namespace}.{group}.{suffix}");
         let topic_refs: Vec<&str> = topics.iter().map(String::as_str).collect();
         let source = KafkaSource::connect(&self.brokers, &group_id, &topic_refs)
             .await?
             .with_fetch_timeout(self.fetch_timeout)
-            .with_strip_prefix(strip_prefix);
+            .with_strip_prefix(prefix);
         run_source(router, source, options).await
     }
 }
@@ -190,22 +203,7 @@ impl BusConsumer for KafkaBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let plan = router.subscription_plan();
-        if plan.commands.is_empty() {
-            return Ok(());
-        }
-        let prefix = self.command_prefix()?;
-        let topics: Vec<String> = plan
-            .commands
-            .iter()
-            .map(|name| format!("{prefix}{name}"))
-            .collect();
-        let group = self
-            .topology
-            .resolve_consumer_group(router.as_ref(), "kafka")?;
-        let namespace = self.validated_namespace()?;
-        let group_id = format!("{namespace}.{group}.cmd");
-        self.run(router, topics, group_id, prefix, options).await
+        self.consume(router, options, MessageKind::Command).await
     }
 
     async fn subscribe<R: MessageRouter>(
@@ -213,29 +211,14 @@ impl BusConsumer for KafkaBus {
         router: Arc<R>,
         options: RunOptions,
     ) -> Result<(), TransportError> {
-        let plan = router.subscription_plan();
-        if plan.events.is_empty() {
-            return Ok(());
-        }
-        let prefix = self.event_prefix()?;
-        let topics: Vec<String> = plan
-            .events
-            .iter()
-            .map(|name| format!("{prefix}{name}"))
-            .collect();
-        let group = self
-            .topology
-            .resolve_consumer_group(router.as_ref(), "kafka")?;
-        let namespace = self.validated_namespace()?;
-        let group_id = format!("{namespace}.{group}.evt");
-        self.run(router, topics, group_id, prefix, options).await
+        self.consume(router, options, MessageKind::Event).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{MessageKind, SubscriptionPlan};
+    use crate::bus::SubscriptionPlan;
     use rdkafka::config::ClientConfig;
     use rdkafka::producer::FutureProducer;
 
