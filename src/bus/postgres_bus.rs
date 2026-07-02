@@ -191,59 +191,66 @@ impl SqlBusDialect for PostgresBusDialect {
         &self,
         names: &[String],
         lease_secs: f64,
-    ) -> Result<Option<ClaimedRow>, TransportError> {
+        limit: i64,
+    ) -> Result<Vec<ClaimedRow>, TransportError> {
         // `FOR UPDATE SKIP LOCKED` keeps the claim safe under competing
         // listeners — only one claims (and later settles) each row.
-        let row = sqlx::query(
+        // `gen_random_uuid()` is volatile: each claimed row gets its own token.
+        let rows = sqlx::query(
             "UPDATE bus_queue SET locked_until = now() + ($1 * interval '1 second'), \
                     claim_token = gen_random_uuid()::text, \
                     attempts = attempts + 1 \
-             WHERE seq = ( \
+             WHERE seq IN ( \
                 SELECT seq FROM bus_queue \
                 WHERE (name = ANY($2) OR name IS NULL) AND available_at <= now() \
                       AND (locked_until IS NULL OR locked_until <= now()) \
-                ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT 1 \
+                ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT $3 \
              ) \
              RETURNING seq, claim_token, name, message_id, kind, payload, content_type, metadata",
         )
         .bind(lease_secs)
         .bind(names)
-        .fetch_optional(&self.pool)
+        .bind(limit)
+        .fetch_all(&self.pool)
         .await
         .map_err(|err| db_err("claim", err))?;
 
-        match row {
-            Some(row) => {
+        rows.into_iter()
+            .map(|row| {
                 let claim_token = row
                     .try_get("claim_token")
                     .map_err(|err| db_err("claim token", err))?;
-                Ok(Some(ClaimedRow {
+                Ok(ClaimedRow {
                     row: ReceivedRow::from_row(Self::BACKEND, &row),
                     claim_token,
-                }))
-            }
-            None => Ok(None),
-        }
+                })
+            })
+            .collect()
     }
 
     async fn log_read(
         &self,
         names: &[String],
         consumer: &str,
-    ) -> Result<Option<ReceivedRow>, TransportError> {
-        let row = sqlx::query(
+        limit: i64,
+    ) -> Result<Vec<ReceivedRow>, TransportError> {
+        let rows = sqlx::query(
             "SELECT seq, name, message_id, kind, payload, content_type, metadata FROM bus_log \
              WHERE (name = ANY($1) OR name IS NULL) \
                    AND seq > COALESCE((SELECT last_seq FROM bus_offset WHERE consumer = $2), 0) \
-             ORDER BY seq LIMIT 1",
+             ORDER BY seq LIMIT $3",
         )
         .bind(names)
         .bind(consumer)
-        .fetch_optional(&self.pool)
+        .bind(limit)
+        .fetch_all(&self.pool)
         .await
         .map_err(|err| db_err("log read", err))?;
 
-        Ok(row.map(|row| ReceivedRow::from_row(Self::BACKEND, &row)))
+        Ok(rows
+            .iter()
+            .map(|row| ReceivedRow::from_row(Self::BACKEND, row))
+            .collect())
     }
 
     async fn delete_claimed(&self, seq: i64, claim_token: &str) -> Result<(), TransportError> {
