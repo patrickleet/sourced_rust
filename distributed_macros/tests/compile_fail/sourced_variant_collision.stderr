@@ -1,0 +1,5 @@
+error: #[event] names `user.completed` and `admin.completed` both derive the enum variant `Completed`; rename one so the variant names are distinct
+  --> tests/compile_fail/sourced_variant_collision.rs:15:13
+   |
+15 |     #[event("admin.completed")]
+   |             ^^^^^^^^^^^^^^^^^

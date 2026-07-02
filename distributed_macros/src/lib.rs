@@ -1146,7 +1146,13 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
     let mut event_methods: Vec<EventMethodInfo> = Vec::new();
     // Detect duplicate event names so the conflict points at the offending
     // attribute instead of surfacing as a confusing duplicate match arm later.
-    let mut seen_events: std::collections::HashMap<String, proc_macro2::Span> =
+    let mut seen_events: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Distinct event names can still derive the same enum variant because only
+    // the last `.`-segment is PascalCased (`user.completed` and
+    // `admin.completed` both become `Completed`). Track the derived idents so
+    // the collision is reported here, naming both event strings, instead of as
+    // a duplicate-variant error inside the generated enum.
+    let mut seen_variants: std::collections::HashMap<String, LitStr> =
         std::collections::HashMap::new();
 
     for item in &mut impl_block.items {
@@ -1164,14 +1170,24 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
                     }
 
                     let event_key = event_attr.event_name.value();
-                    if let Some(_prev) =
-                        seen_events.insert(event_key.clone(), event_attr.event_name.span())
-                    {
+                    if !seen_events.insert(event_key.clone()) {
                         return Err(syn::Error::new_spanned(
                             &event_attr.event_name,
                             format!("duplicate #[event] name `{event_key}` in this #[sourced] impl block"),
                         ));
                     }
+
+                    let variant = event_variant_ident(&event_attr.event_name);
+                    if let Some(prev) = seen_variants.get(&variant.to_string()) {
+                        return Err(syn::Error::new_spanned(
+                            &event_attr.event_name,
+                            format!(
+                                "#[event] names `{}` and `{event_key}` both derive the enum variant `{variant}`; rename one so the variant names are distinct",
+                                prev.value()
+                            ),
+                        ));
+                    }
+                    seen_variants.insert(variant.to_string(), event_attr.event_name.clone());
 
                     let signature_synthesized =
                         ensure_sourced_result_signature(&mut method.sig, "event")?;
@@ -1617,6 +1633,24 @@ mod tests {
             err.to_string().contains("duplicate #[event] name `done`"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn expand_sourced_rejects_variant_ident_collisions() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Workflow {
+                #[event("user.completed")]
+                pub fn user_completed(&mut self) {}
+                #[event("admin.completed")]
+                pub fn admin_completed(&mut self) {}
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("variant collision should error");
+        let msg = err.to_string();
+        assert!(msg.contains("`user.completed`"), "got: {msg}");
+        assert!(msg.contains("`admin.completed`"), "got: {msg}");
+        assert!(msg.contains("`Completed`"), "got: {msg}");
     }
 
     #[test]
