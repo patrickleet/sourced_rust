@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use super::session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
+use super::mutation::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 use super::{
     ExpectedVersion, PatchMode, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
     ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,

@@ -25,10 +25,14 @@
 //! let outcome = read_models.commit(&read_store)?;
 //! ```
 
+mod capabilities;
 pub(crate) mod in_memory;
+mod load;
 mod metadata;
+mod mutation;
+mod plan;
 mod schema;
-mod session;
+mod workspace;
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
@@ -104,23 +108,26 @@ impl From<crate::lock::LockError> for ReadModelError {
     }
 }
 
+pub use capabilities::{ReadModelAdapterCapabilities, ReadModelQueryCapabilities};
 pub use in_memory::InMemoryReadModelStore;
+pub use load::{
+    ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelLoadGraph, ReadModelLoadRequest,
+};
 pub use metadata::{
     ColumnDef, ColumnType, ForeignKey, IndexDef, PrimaryKey, ReadModelSchema, RelationalReadModel,
     RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
     DEFAULT_READ_MODEL_VERSION_COLUMN,
 };
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) use mutation::{column_name_for, key_fingerprint, validate_key, validate_row_values};
+pub use mutation::{
+    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelMutation,
+    RowMutation, RowPatch, RowWriteMode,
+};
+pub use plan::{ReadModelCommitOutcome, ReadModelWritePlan, ReadModelWritePlanBuilder};
 pub use schema::{
     ReadModelMigrationArtifact, ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities,
     ReadModelSchemaBootstrap, ReadModelSchemaIssue, ReadModelSchemaIssueKind,
     ReadModelSchemaRegistry, ReadModelSchemaVerification,
 };
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
-pub use session::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace,
-    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder, RowMutation, RowPatch,
-    RowWriteMode,
-};
+pub use workspace::{ReadModelWorkspace, ReadModelWorkspaceExt};
