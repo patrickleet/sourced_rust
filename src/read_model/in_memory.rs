@@ -58,14 +58,14 @@ pub(crate) fn apply_read_model_write_plan(
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
-                    &mutation.schema,
+                    mutation.schema,
                     &mutation.key,
                     &mutation.expected_version,
                     current_version,
                 )?;
                 if matches!(mutation.mode, RowWriteMode::Insert) && current_version.is_some() {
                     return Err(concurrency_conflict(
-                        &mutation.schema,
+                        mutation.schema,
                         &mutation.key,
                         0,
                         current_version.unwrap_or_default(),
@@ -85,7 +85,7 @@ pub(crate) fn apply_read_model_write_plan(
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
-                    &mutation.schema,
+                    mutation.schema,
                     &mutation.key,
                     &mutation.expected_version,
                     current_version,
@@ -94,7 +94,7 @@ pub(crate) fn apply_read_model_write_plan(
                 match staged_rows.get_mut(&key) {
                     Some(row) => {
                         apply_patch_values_preserving_key(
-                            &mutation.schema,
+                            mutation.schema,
                             &mutation.key,
                             &mut row.values,
                             mutation.patch.into_values(),
@@ -103,7 +103,7 @@ pub(crate) fn apply_read_model_write_plan(
                     }
                     None if matches!(mutation.mode, PatchMode::InsertMissing) => {
                         let values = row_values_from_key_and_patch(
-                            &mutation.schema,
+                            mutation.schema,
                             &mutation.key,
                             mutation.patch.into_values(),
                         )?;
@@ -117,7 +117,7 @@ pub(crate) fn apply_read_model_write_plan(
                     }
                     None => {
                         return Err(ReadModelError::NotFound {
-                            collection: mutation.schema.table_name,
+                            collection: mutation.schema.table_name.clone(),
                             id: key_fingerprint(&mutation.key),
                         });
                     }
@@ -127,7 +127,7 @@ pub(crate) fn apply_read_model_write_plan(
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
-                    &mutation.schema,
+                    mutation.schema,
                     &mutation.key,
                     &mutation.expected_version,
                     current_version,
@@ -570,17 +570,19 @@ mod tests {
         RowPatch,
     };
 
-    fn test_row_schema() -> ReadModelSchema {
-        ReadModelSchema {
-            model_name: "TestRow".into(),
-            table_name: "test_rows".into(),
-            columns: vec![ColumnDef::new("id", "id", ColumnType::Text)],
-            primary_key: PrimaryKey::new(["id"]),
-            version_column: None,
-            foreign_keys: Vec::new(),
-            indexes: Vec::new(),
-            relationships: Vec::new(),
-        }
+    fn test_row_schema() -> &'static ReadModelSchema {
+        static SCHEMA: std::sync::LazyLock<ReadModelSchema> =
+            std::sync::LazyLock::new(|| ReadModelSchema {
+                model_name: "TestRow".into(),
+                table_name: "test_rows".into(),
+                columns: vec![ColumnDef::new("id", "id", ColumnType::Text)],
+                primary_key: PrimaryKey::new(["id"]),
+                version_column: None,
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+                relationships: Vec::new(),
+            });
+        &SCHEMA
     }
 
     #[tokio::test]
@@ -594,7 +596,7 @@ mod tests {
         let outcome = store
             .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
                 RowMutation {
-                    schema: schema.clone(),
+                    schema,
                     key: key.clone(),
                     values,
                     expected_version: ExpectedVersion::Any,
@@ -630,7 +632,7 @@ mod tests {
         store
             .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
                 RowMutation {
-                    schema: schema.clone(),
+                    schema,
                     key: key.clone(),
                     values,
                     expected_version: ExpectedVersion::Any,
@@ -642,7 +644,7 @@ mod tests {
         store
             .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
                 PatchRowMutation {
-                    schema: schema.clone(),
+                    schema,
                     key: key.clone(),
                     patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
                     expected_version: ExpectedVersion::Exact(1),
@@ -663,7 +665,7 @@ mod tests {
         store
             .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
                 DeleteRowMutation {
-                    schema: schema.clone(),
+                    schema,
                     key: key.clone(),
                     expected_version: ExpectedVersion::Exact(2),
                 },

@@ -420,7 +420,10 @@ impl IntoIterator for RowValues {
 
 /// Opt-in trait for table-mapped relational read models.
 pub trait RelationalReadModel: Clone + Send + Sync + Sized {
-    fn schema() -> ReadModelSchema;
+    /// The model's schema. Static because a model's schema is fixed at compile
+    /// time; the derive macro backs this with a `LazyLock` so staging mutations
+    /// never rebuilds or clones schema metadata.
+    fn schema() -> &'static ReadModelSchema;
     fn primary_key(&self) -> Result<RowKey, ReadModelError>;
     fn to_row(&self) -> Result<RowValues, ReadModelError>;
     fn from_row(row: RowValues) -> Result<Self, ReadModelError>;
@@ -435,6 +438,9 @@ pub trait RelationalReadModelIncludes: RelationalReadModel {
     ) -> Result<(), ReadModelError>;
 
     fn include_rows(&self, include: &str) -> Result<Vec<RowValues>, ReadModelError>;
+
+    /// Schema of the model targeted by the named relationship.
+    fn include_target_schema(include: &str) -> Result<&'static ReadModelSchema, ReadModelError>;
 }
 
 #[cfg(test)]

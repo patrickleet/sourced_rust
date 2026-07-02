@@ -392,7 +392,7 @@ mod tests {
     fn renders_outbox_table_schema_for_sqlite() {
         let mut registry = TableSchemaRegistry::new();
         registry
-            .register_schema(outbox_message_schema())
+            .register_schema(outbox_message_schema().clone())
             .expect("schema should register");
 
         let artifact = generate_table_migration_artifacts(&registry, TableSqlDialect::Sqlite)
@@ -421,7 +421,7 @@ mod tests {
     fn renders_outbox_table_schema_for_postgres_with_timestamp_columns() {
         let mut registry = TableSchemaRegistry::new();
         registry
-            .register_schema(outbox_message_schema())
+            .register_schema(outbox_message_schema().clone())
             .expect("schema should register");
 
         let artifact = generate_table_migration_artifacts(&registry, TableSqlDialect::Postgres)
@@ -565,7 +565,7 @@ mod tests {
     fn bootstrap_result_lists_registered_tables() {
         let mut registry = TableSchemaRegistry::new();
         registry
-            .register_schema(outbox_message_schema())
+            .register_schema(outbox_message_schema().clone())
             .expect("schema should register");
 
         let result = bootstrap_result(&registry);

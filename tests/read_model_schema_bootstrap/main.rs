@@ -218,7 +218,7 @@ fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
 
     let mut invalid_registry = ReadModelSchemaRegistry::new();
     invalid_registry
-        .register_schema(PlayerWeapon::schema())
+        .register_schema(PlayerWeapon::schema().clone())
         .unwrap();
 
     let err = invalid_registry.validate().unwrap_err();
@@ -230,7 +230,7 @@ fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
 
 #[test]
 fn registry_rejects_relationship_foreign_keys_missing_from_target_model() {
-    let mut player_schema = Player::schema();
+    let mut player_schema = Player::schema().clone();
     player_schema.relationships[0].foreign_key = Some("missing_player_id".into());
     let mut registry = ReadModelSchemaRegistry::new();
     registry

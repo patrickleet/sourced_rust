@@ -29,7 +29,7 @@ pub use sql::{
 
 /// Opt-in trait for non-read-model types that map to a relational table row.
 pub trait TableModel: Clone + Send + Sync + Sized {
-    fn table_schema() -> TableSchema;
+    fn table_schema() -> &'static TableSchema;
     fn table_key(&self) -> Result<RowKey, TableStoreError>;
     fn to_table_row(&self) -> Result<RowValues, TableStoreError>;
 }
@@ -46,6 +46,6 @@ impl TableSchemaRegistryExt for TableSchemaRegistry {
     where
         M: TableModel,
     {
-        self.register_schema(M::table_schema())
+        self.register_schema(M::table_schema().clone())
     }
 }

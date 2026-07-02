@@ -119,6 +119,7 @@ fn expand_relational_read_model(
     let mut relationships = Vec::new();
     let mut hydrate_include_arms = Vec::new();
     let mut include_rows_arms = Vec::new();
+    let mut include_schema_arms = Vec::new();
 
     for (field, attrs) in fields.iter().zip(field_attrs) {
         let ident = field
@@ -129,10 +130,11 @@ fn expand_relational_read_model(
 
         if let Some(relationship) = attrs.relationship_tokens(&field_name)? {
             relationships.push(relationship);
-            let (hydrate_arm, include_rows_arm) =
+            let (hydrate_arm, include_rows_arm, include_schema_arm) =
                 attrs.relationship_include_tokens(field, &field_name)?;
             hydrate_include_arms.push(hydrate_arm);
             include_rows_arms.push(include_rows_arm);
+            include_schema_arms.push(include_schema_arm);
             row_fields.push(quote! { #ident: ::core::default::Default::default() });
             continue;
         }
@@ -231,19 +233,21 @@ fn expand_relational_read_model(
 
     Ok(quote! {
         impl distributed::RelationalReadModel for #name {
-            fn schema() -> distributed::ReadModelSchema {
-                distributed::ReadModelSchema {
-                    model_name: #model_name.to_string(),
-                    table_name: #table_name.to_string(),
-                    columns: vec![#(#column_defs),*],
-                    primary_key: distributed::PrimaryKey {
-                        columns: vec![#(#primary_key_columns),*],
-                    },
-                    version_column: Some(distributed::DEFAULT_READ_MODEL_VERSION_COLUMN.to_string()),
-                    foreign_keys: vec![#(#foreign_keys),*],
-                    indexes: vec![#(#indexes),*],
-                    relationships: vec![#(#relationships),*],
-                }
+            fn schema() -> &'static distributed::ReadModelSchema {
+                static SCHEMA: ::std::sync::LazyLock<distributed::ReadModelSchema> =
+                    ::std::sync::LazyLock::new(|| distributed::ReadModelSchema {
+                        model_name: #model_name.to_string(),
+                        table_name: #table_name.to_string(),
+                        columns: vec![#(#column_defs),*],
+                        primary_key: distributed::PrimaryKey {
+                            columns: vec![#(#primary_key_columns),*],
+                        },
+                        version_column: Some(distributed::DEFAULT_READ_MODEL_VERSION_COLUMN.to_string()),
+                        foreign_keys: vec![#(#foreign_keys),*],
+                        indexes: vec![#(#indexes),*],
+                        relationships: vec![#(#relationships),*],
+                    });
+                &SCHEMA
             }
 
             fn primary_key(&self) -> Result<distributed::RowKey, distributed::ReadModelError> {
@@ -287,6 +291,19 @@ fn expand_relational_read_model(
             ) -> Result<Vec<distributed::RowValues>, distributed::ReadModelError> {
                 match include {
                     #(#include_rows_arms,)*
+                    _ => Err(distributed::ReadModelError::Metadata(format!(
+                        "read model `{}` has no tracked relationship `{}`",
+                        #model_name,
+                        include
+                    ))),
+                }
+            }
+
+            fn include_target_schema(
+                include: &str,
+            ) -> Result<&'static distributed::ReadModelSchema, distributed::ReadModelError> {
+                match include {
+                    #(#include_schema_arms,)*
                     _ => Err(distributed::ReadModelError::Metadata(format!(
                         "read model `{}` has no tracked relationship `{}`",
                         #model_name,
@@ -661,7 +678,11 @@ impl FieldAttrs {
         &self,
         field: &Field,
         field_name: &str,
-    ) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+    ) -> syn::Result<(
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+    )> {
         let relationship = self.relationship.as_ref().ok_or_else(|| {
             syn::Error::new_spanned(field, "field is not a read-model relationship")
         })?;
@@ -700,7 +721,10 @@ impl FieldAttrs {
                         .map(distributed::RelationalReadModel::to_row)
                         .collect::<Result<Vec<_>, distributed::ReadModelError>>()
                 };
-                Ok((hydrate, include_rows))
+                let include_schema = quote! {
+                    #field_name => Ok(<#inner as distributed::RelationalReadModel>::schema())
+                };
+                Ok((hydrate, include_rows, include_schema))
             }
             RelationshipKindAttr::BelongsTo => {
                 let inner = option_inner_type(&field.ty).ok_or_else(|| {
@@ -742,7 +766,10 @@ impl FieldAttrs {
                         Ok(rows)
                     }
                 };
-                Ok((hydrate, include_rows))
+                let include_schema = quote! {
+                    #field_name => Ok(<#inner as distributed::RelationalReadModel>::schema())
+                };
+                Ok((hydrate, include_rows, include_schema))
             }
         }
     }

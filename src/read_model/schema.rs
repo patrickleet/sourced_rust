@@ -18,7 +18,7 @@ impl ReadModelSchemaRegistry {
     where
         M: RelationalReadModel,
     {
-        self.register_schema(M::schema())
+        self.register_schema(M::schema().clone())
     }
 
     pub fn register_schema(

@@ -10,8 +10,8 @@ use crate::table::{
 pub const OUTBOX_MESSAGES_TABLE: &str = "outbox_messages";
 
 /// Schema for the durable outbox delivery table.
-pub fn outbox_message_schema() -> TableSchema {
-    TableSchema {
+pub fn outbox_message_schema() -> &'static TableSchema {
+    static SCHEMA: std::sync::LazyLock<TableSchema> = std::sync::LazyLock::new(|| TableSchema {
         model_name: "OutboxMessage".into(),
         table_name: OUTBOX_MESSAGES_TABLE.into(),
         columns: vec![
@@ -57,7 +57,8 @@ pub fn outbox_message_schema() -> TableSchema {
             named_index("outbox_messages_destination_idx", ["destination", "status"]),
         ],
         relationships: Vec::new(),
-    }
+    });
+    &SCHEMA
 }
 
 pub fn outbox_message_insert_plan(
@@ -133,7 +134,7 @@ pub fn outbox_message_row_values(message: &OutboxMessage) -> Result<RowValues, T
 }
 
 impl TableModel for OutboxMessage {
-    fn table_schema() -> TableSchema {
+    fn table_schema() -> &'static TableSchema {
         outbox_message_schema()
     }
 

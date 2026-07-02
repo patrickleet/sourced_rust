@@ -60,7 +60,7 @@ impl DistributedProjectManifest {
     where
         M: RelationalReadModel,
     {
-        self.try_register_table_schema(M::schema())
+        self.try_register_table_schema(M::schema().clone())
     }
 
     pub fn table_schema(mut self, schema: TableSchema) -> Self {
@@ -192,7 +192,7 @@ mod tests {
     fn manifest_collects_schema_service_metadata_and_renders_sql() {
         let manifest = DistributedProjectManifest::new("checkout")
             .read_model::<OrderView>()
-            .table_schema(outbox_message_schema())
+            .table_schema(outbox_message_schema().clone())
             .service(
                 ServiceManifest::new("checkout-saga")
                     .command("checkout.start")

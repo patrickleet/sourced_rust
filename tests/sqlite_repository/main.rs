@@ -97,7 +97,7 @@ async fn dev_bootstrap_applies_registered_table_schemas() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let mut registry = TableSchemaRegistry::new();
     registry
-        .register_schema(distributed::outbox_message_schema())
+        .register_schema(distributed::outbox_message_schema().clone())
         .unwrap();
 
     let artifacts = repo.generate_table_migration_artifacts(&registry).unwrap();

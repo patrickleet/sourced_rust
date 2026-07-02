@@ -180,7 +180,7 @@ impl RowPatch {
 /// Full relational row insert/upsert mutation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowMutation {
-    pub schema: ReadModelSchema,
+    pub schema: &'static ReadModelSchema,
     pub key: RowKey,
     pub values: RowValues,
     pub expected_version: ExpectedVersion,
@@ -190,7 +190,7 @@ pub struct RowMutation {
 /// Sparse relational row patch mutation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PatchRowMutation {
-    pub schema: ReadModelSchema,
+    pub schema: &'static ReadModelSchema,
     pub key: RowKey,
     pub patch: RowPatch,
     pub expected_version: ExpectedVersion,
@@ -200,7 +200,7 @@ pub struct PatchRowMutation {
 /// Relational row delete mutation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeleteRowMutation {
-    pub schema: ReadModelSchema,
+    pub schema: &'static ReadModelSchema,
     pub key: RowKey,
     pub expected_version: ExpectedVersion,
 }
@@ -238,11 +238,11 @@ impl ReadModelMutation {
         }
     }
 
-    fn schema(&self) -> &ReadModelSchema {
+    fn schema(&self) -> &'static ReadModelSchema {
         match self {
-            ReadModelMutation::UpsertRow(mutation) => &mutation.schema,
-            ReadModelMutation::PatchRow(mutation) => &mutation.schema,
-            ReadModelMutation::DeleteRow(mutation) => &mutation.schema,
+            ReadModelMutation::UpsertRow(mutation) => mutation.schema,
+            ReadModelMutation::PatchRow(mutation) => mutation.schema,
+            ReadModelMutation::DeleteRow(mutation) => mutation.schema,
         }
     }
 
@@ -390,7 +390,7 @@ impl ReadModelWritePlanBuilder {
         S: Into<String>,
     {
         let schema = validated_schema::<M>()?;
-        validate_key(&schema, &key)?;
+        validate_key(schema, &key)?;
         let includes: Vec<String> = includes.into_iter().map(Into::into).collect();
         for include in &includes {
             if !schema
@@ -406,7 +406,7 @@ impl ReadModelWritePlanBuilder {
         }
 
         Ok(ReadModelLoadRequest {
-            schema,
+            schema: schema.clone(),
             key,
             includes,
         })
@@ -428,11 +428,11 @@ impl ReadModelWritePlanBuilder {
         M: RelationalReadModel,
     {
         let schema = validated_schema::<M>()?;
-        validate_key(&schema, &key)?;
-        validate_expected_version(&ExpectedVersion::Exact(expected_version), &schema)?;
+        validate_key(schema, &key)?;
+        validate_expected_version(&ExpectedVersion::Exact(expected_version), schema)?;
         self.expected_versions.insert(
             RowIdentity {
-                table_name: schema.table_name,
+                table_name: schema.table_name.clone(),
                 key: key_fingerprint(&key),
             },
             expected_version,
@@ -507,8 +507,8 @@ impl ReadModelWritePlanBuilder {
         M: RelationalReadModel,
     {
         let schema = validated_schema::<M>()?;
-        validate_key(&schema, &key)?;
-        let expected_version = self.expected_for(&schema, &key);
+        validate_key(schema, &key)?;
+        let expected_version = self.expected_for(schema, &key);
         let mutation = DeleteRowMutation {
             schema,
             key,
@@ -567,8 +567,8 @@ impl ReadModelWritePlanBuilder {
         let schema = validated_schema::<M>()?;
         let key = model.primary_key()?;
         let values = model.to_row()?;
-        validate_key(&schema, &key)?;
-        let expected_version = expected_version.unwrap_or_else(|| self.expected_for(&schema, &key));
+        validate_key(schema, &key)?;
+        let expected_version = expected_version.unwrap_or_else(|| self.expected_for(schema, &key));
         let mutation = RowMutation {
             schema,
             key,
@@ -614,16 +614,16 @@ impl ReadModelWritePlanBuilder {
         let parent_row = parent.to_row()?;
         let mut child_row = child.to_row()?;
         populate_delegated_relationship_values(
-            &parent_schema,
+            parent_schema,
             &parent_row,
             relationship,
-            &child_schema,
+            child_schema,
             &mut child_row,
         )?;
-        let key = key_from_row(&child_schema, &child_row)?;
+        let key = key_from_row(child_schema, &child_row)?;
         let expected_version = match mode {
             RowWriteMode::Insert => ExpectedVersion::NotExists,
-            RowWriteMode::Upsert => self.expected_for(&child_schema, &key),
+            RowWriteMode::Upsert => self.expected_for(child_schema, &key),
         };
         let mutation = RowMutation {
             schema: child_schema,
@@ -646,8 +646,8 @@ impl ReadModelWritePlanBuilder {
         M: RelationalReadModel,
     {
         let schema = validated_schema::<M>()?;
-        validate_key(&schema, &key)?;
-        let expected_version = self.expected_for(&schema, &key);
+        validate_key(schema, &key)?;
+        let expected_version = self.expected_for(schema, &key);
         let mutation = PatchRowMutation {
             schema,
             key,
@@ -687,13 +687,13 @@ struct TrackedRowBaseline {
 #[derive(Clone, Debug)]
 struct TrackedIncludeBaseline {
     relationship: RelationshipDef,
-    target_schema: ReadModelSchema,
+    target_schema: &'static ReadModelSchema,
     rows: BTreeMap<String, TrackedRowBaseline>,
 }
 
 #[derive(Clone, Debug)]
 struct TrackedModelBaseline {
-    root_schema: ReadModelSchema,
+    root_schema: &'static ReadModelSchema,
     root_key: RowKey,
     root_row: RowValues,
     root_version: u64,
@@ -731,7 +731,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
     {
         let schema = validated_schema::<M>()?;
         let key = model.primary_key()?;
-        validate_key(&schema, &key)?;
+        validate_key(schema, &key)?;
         let identity = RowIdentity {
             table_name: schema.table_name.clone(),
             key: key_fingerprint(&key),
@@ -754,7 +754,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
         let root_version = self
             .stage_row_diff(
-                schema.clone(),
+                schema,
                 key.clone(),
                 &baseline.root_row,
                 &current_row,
@@ -766,7 +766,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         for (include_name, include) in &baseline.includes {
             let current_rows = model.include_rows(include_name)?;
             let refreshed_include =
-                self.stage_include_changes(&schema, &current_row, include, current_rows)?;
+                self.stage_include_changes(schema, &current_row, include, current_rows)?;
             refreshed_includes.insert(include_name.clone(), refreshed_include);
         }
 
@@ -868,13 +868,16 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         self.writes.into_write_plan()
     }
 
-    fn track_graph(
+    fn track_graph<M>(
         &mut self,
-        schema: ReadModelSchema,
         root: Versioned<RowValues>,
         includes: BTreeMap<String, ReadModelIncludeRows>,
-    ) -> Result<(), ReadModelError> {
-        let root_key = key_from_row(&schema, &root.data)?;
+    ) -> Result<(), ReadModelError>
+    where
+        M: RelationalReadModel + RelationalReadModelIncludes,
+    {
+        let schema = M::schema();
+        let root_key = key_from_row(schema, &root.data)?;
         let root_identity = RowIdentity {
             table_name: schema.table_name.clone(),
             key: key_fingerprint(&root_key),
@@ -885,9 +888,10 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
         let mut tracked_includes = BTreeMap::new();
         for (include_name, include_rows) in includes {
+            let target_schema = M::include_target_schema(&include_name)?;
             let mut rows = BTreeMap::new();
             for row in include_rows.rows {
-                let key = key_from_row(&include_rows.target_schema, &row.data)?;
+                let key = key_from_row(target_schema, &row.data)?;
                 rows.insert(
                     key_fingerprint(&key),
                     TrackedRowBaseline {
@@ -901,7 +905,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                 include_name,
                 TrackedIncludeBaseline {
                     relationship: include_rows.relationship,
-                    target_schema: include_rows.target_schema,
+                    target_schema,
                     rows,
                 },
             );
@@ -946,7 +950,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                     root_schema,
                     root_row,
                     &baseline.relationship,
-                    &baseline.target_schema,
+                    baseline.target_schema,
                     &mut current_row,
                 )?,
                 RelationshipKind::BelongsTo => {}
@@ -958,13 +962,13 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                 }
             }
 
-            let key = key_from_row(&baseline.target_schema, &current_row)?;
+            let key = key_from_row(baseline.target_schema, &current_row)?;
             let fingerprint = key_fingerprint(&key);
             current_fingerprints.insert(fingerprint.clone());
             if let Some(loaded) = baseline.rows.get(&fingerprint) {
                 let version = self
                     .stage_row_diff(
-                        baseline.target_schema.clone(),
+                        baseline.target_schema,
                         loaded.key.clone(),
                         &loaded.row,
                         &current_row,
@@ -980,11 +984,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                     },
                 );
             } else {
-                self.stage_upsert_row(
-                    baseline.target_schema.clone(),
-                    key.clone(),
-                    current_row.clone(),
-                )?;
+                self.stage_upsert_row(baseline.target_schema, key.clone(), current_row.clone())?;
                 refreshed_rows.insert(
                     fingerprint,
                     TrackedRowBaseline {
@@ -1003,7 +1003,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
             for (fingerprint, loaded) in &baseline.rows {
                 if !current_fingerprints.contains(fingerprint) {
                     self.stage_delete_row(
-                        baseline.target_schema.clone(),
+                        baseline.target_schema,
                         loaded.key.clone(),
                         loaded.version,
                     )?;
@@ -1019,14 +1019,14 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
         Ok(TrackedIncludeBaseline {
             relationship: baseline.relationship.clone(),
-            target_schema: baseline.target_schema.clone(),
+            target_schema: baseline.target_schema,
             rows: refreshed_rows,
         })
     }
 
     fn stage_row_diff(
         &mut self,
-        schema: ReadModelSchema,
+        schema: &'static ReadModelSchema,
         key: RowKey,
         before: &RowValues,
         after: &RowValues,
@@ -1036,7 +1036,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         if patch.is_empty() {
             return Ok(None);
         }
-        let next_version = next_tracked_version(&schema, &key, expected_version)?;
+        let next_version = next_tracked_version(schema, &key, expected_version)?;
 
         let mutation = PatchRowMutation {
             schema,
@@ -1052,7 +1052,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
     fn stage_upsert_row(
         &mut self,
-        schema: ReadModelSchema,
+        schema: &'static ReadModelSchema,
         key: RowKey,
         values: RowValues,
     ) -> Result<(), ReadModelError> {
@@ -1070,7 +1070,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
     fn stage_delete_row(
         &mut self,
-        schema: ReadModelSchema,
+        schema: &'static ReadModelSchema,
         key: RowKey,
         expected_version: u64,
     ) -> Result<(), ReadModelError> {
@@ -1149,8 +1149,7 @@ where
             model.hydrate_include(include_name, rows)?;
         }
 
-        self.unit
-            .track_graph(request.schema, root.clone(), graph.includes)?;
+        self.unit.track_graph::<M>(root.clone(), graph.includes)?;
         Ok(Some(Versioned {
             data: model,
             version: root.version,
@@ -1193,7 +1192,7 @@ fn next_tracked_version(
     })
 }
 
-fn validated_schema<M>() -> Result<ReadModelSchema, ReadModelError>
+fn validated_schema<M>() -> Result<&'static ReadModelSchema, ReadModelError>
 where
     M: RelationalReadModel,
 {
@@ -1204,28 +1203,28 @@ where
 
 fn validate_row_mutation(mutation: &RowMutation) -> Result<(), ReadModelError> {
     mutation.schema.validate()?;
-    validate_key(&mutation.schema, &mutation.key)?;
-    validate_expected_version(&mutation.expected_version, &mutation.schema)?;
-    validate_row_values(&mutation.schema, &mutation.values, true)
+    validate_key(mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, mutation.schema)?;
+    validate_row_values(mutation.schema, &mutation.values, true)
 }
 
 fn validate_patch_mutation(mutation: &PatchRowMutation) -> Result<(), ReadModelError> {
     mutation.schema.validate()?;
-    validate_key(&mutation.schema, &mutation.key)?;
-    validate_expected_version(&mutation.expected_version, &mutation.schema)?;
+    validate_key(mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, mutation.schema)?;
     if mutation.patch.is_empty() {
         return Err(ReadModelError::Metadata(format!(
             "read model `{}` patch must set at least one column",
             mutation.schema.model_name
         )));
     }
-    validate_row_values(&mutation.schema, &mutation.patch.values, false)
+    validate_row_values(mutation.schema, &mutation.patch.values, false)
 }
 
 fn validate_delete_mutation(mutation: &DeleteRowMutation) -> Result<(), ReadModelError> {
     mutation.schema.validate()?;
-    validate_key(&mutation.schema, &mutation.key)?;
-    validate_expected_version(&mutation.expected_version, &mutation.schema)
+    validate_key(mutation.schema, &mutation.key)?;
+    validate_expected_version(&mutation.expected_version, mutation.schema)
 }
 
 fn validate_expected_version(

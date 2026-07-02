@@ -453,9 +453,9 @@ where
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
-    validate_key(&mutation.schema, &mutation.key)?;
-    validate_row_values(&mutation.schema, &mutation.values, true)?;
-    validate_values_match_key(&mutation.schema, &mutation.key, &mutation.values)?;
+    validate_key(mutation.schema, &mutation.key)?;
+    validate_row_values(mutation.schema, &mutation.values, true)?;
+    validate_values_match_key(mutation.schema, &mutation.key, &mutation.values)?;
 
     // The common case — upsert without an optimistic-version check — is a single
     // `INSERT ... ON CONFLICT (pk) DO UPDATE` round trip. Only version-checked
@@ -463,20 +463,20 @@ where
     if matches!(mutation.mode, RowWriteMode::Upsert)
         && matches!(mutation.expected_version, ExpectedVersion::Any)
     {
-        return upsert_relational_row_on_conflict_in_tx(tx, &mutation.schema, &mutation.values)
+        return upsert_relational_row_on_conflict_in_tx(tx, mutation.schema, &mutation.values)
             .await;
     }
 
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+    let current_version = row_version_in_tx(tx, mutation.schema, &mutation.key).await?;
     validate_row_expected_version(
-        &mutation.schema,
+        mutation.schema,
         &mutation.key,
         &mutation.expected_version,
         current_version,
     )?;
     if matches!(mutation.mode, RowWriteMode::Insert) && current_version.is_some() {
         return Err(row_concurrency_conflict(
-            &mutation.schema,
+            mutation.schema,
             &mutation.key,
             0,
             current_version.unwrap_or_default(),
@@ -487,18 +487,18 @@ where
         Some(expected_version) => {
             let rows_affected = update_relational_row_values_in_tx(
                 tx,
-                &mutation.schema,
+                mutation.schema,
                 &mutation.key,
                 &mutation.values,
                 Some(expected_version),
             )
             .await?;
             if rows_affected == 0 {
-                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
+                let actual = row_version_in_tx(tx, mutation.schema, &mutation.key)
                     .await?
                     .unwrap_or(expected_version);
                 return Err(row_concurrency_conflict(
-                    &mutation.schema,
+                    mutation.schema,
                     &mutation.key,
                     expected_version,
                     actual,
@@ -508,7 +508,7 @@ where
         None => {
             insert_relational_row_in_tx(
                 tx,
-                &mutation.schema,
+                mutation.schema,
                 &mutation.values,
                 initial_row_version(),
             )
@@ -530,28 +530,27 @@ where
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
-    validate_key(&mutation.schema, &mutation.key)?;
+    validate_key(mutation.schema, &mutation.key)?;
 
     // `NotExists` is the only shape that has to observe the row before writing;
     // `Any`/`Exact` run the UPDATE directly and only re-read on a miss to tell
     // "not found" apart from a version conflict.
     if matches!(mutation.expected_version, ExpectedVersion::NotExists) {
-        let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+        let current_version = row_version_in_tx(tx, mutation.schema, &mutation.key).await?;
         validate_row_expected_version(
-            &mutation.schema,
+            mutation.schema,
             &mutation.key,
             &mutation.expected_version,
             current_version,
         )?;
         if !matches!(mutation.mode, PatchMode::InsertMissing) {
             return Err(ReadModelError::NotFound {
-                collection: mutation.schema.table_name,
+                collection: mutation.schema.table_name.clone(),
                 id: key_fingerprint(&mutation.key),
             });
         }
-        let values =
-            row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
-        return insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
+        let values = row_values_from_key_and_patch(mutation.schema, &mutation.key, mutation.patch)?;
+        return insert_relational_row_in_tx(tx, mutation.schema, &values, initial_row_version())
             .await;
     }
 
@@ -560,10 +559,10 @@ where
         _ => None,
     };
     let patch_values =
-        patch_values_preserving_key(&mutation.schema, &mutation.key, &mutation.patch)?;
+        patch_values_preserving_key(mutation.schema, &mutation.key, &mutation.patch)?;
     let rows_affected = update_relational_columns_in_tx(
         tx,
-        &mutation.schema,
+        mutation.schema,
         &mutation.key,
         patch_values,
         expected_version,
@@ -571,27 +570,27 @@ where
     .await?;
     if rows_affected == 0 {
         if let Some(expected_version) = expected_version {
-            return match row_version_in_tx(tx, &mutation.schema, &mutation.key).await? {
+            return match row_version_in_tx(tx, mutation.schema, &mutation.key).await? {
                 Some(actual) => Err(row_concurrency_conflict(
-                    &mutation.schema,
+                    mutation.schema,
                     &mutation.key,
                     expected_version,
                     actual,
                 )),
                 None => Err(ReadModelError::NotFound {
-                    collection: mutation.schema.table_name,
+                    collection: mutation.schema.table_name.clone(),
                     id: key_fingerprint(&mutation.key),
                 }),
             };
         }
         if matches!(mutation.mode, PatchMode::InsertMissing) {
             let values =
-                row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
-            insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
+                row_values_from_key_and_patch(mutation.schema, &mutation.key, mutation.patch)?;
+            insert_relational_row_in_tx(tx, mutation.schema, &values, initial_row_version())
                 .await?;
         } else {
             return Err(ReadModelError::NotFound {
-                collection: mutation.schema.table_name,
+                collection: mutation.schema.table_name.clone(),
                 id: key_fingerprint(&mutation.key),
             });
         }
@@ -611,14 +610,14 @@ where
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
-    validate_key(&mutation.schema, &mutation.key)?;
+    validate_key(mutation.schema, &mutation.key)?;
 
     match mutation.expected_version {
         // The row must not exist: nothing to delete, but surface a conflict if it does.
         ExpectedVersion::NotExists => {
-            let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+            let current_version = row_version_in_tx(tx, mutation.schema, &mutation.key).await?;
             validate_row_expected_version(
-                &mutation.schema,
+                mutation.schema,
                 &mutation.key,
                 &mutation.expected_version,
                 current_version,
@@ -627,7 +626,7 @@ where
         }
         // No version check: one DELETE; deleting a missing row is a no-op.
         ExpectedVersion::Any => {
-            delete_relational_row_where_version_in_tx(tx, &mutation.schema, &mutation.key, None)
+            delete_relational_row_where_version_in_tx(tx, mutation.schema, &mutation.key, None)
                 .await?;
             Ok(())
         }
@@ -636,21 +635,21 @@ where
         ExpectedVersion::Exact(expected_version) => {
             let rows_affected = delete_relational_row_where_version_in_tx(
                 tx,
-                &mutation.schema,
+                mutation.schema,
                 &mutation.key,
                 Some(expected_version),
             )
             .await?;
             if rows_affected == 0 {
-                return match row_version_in_tx(tx, &mutation.schema, &mutation.key).await? {
+                return match row_version_in_tx(tx, mutation.schema, &mutation.key).await? {
                     Some(actual) => Err(row_concurrency_conflict(
-                        &mutation.schema,
+                        mutation.schema,
                         &mutation.key,
                         expected_version,
                         actual,
                     )),
                     None => Err(ReadModelError::NotFound {
-                        collection: mutation.schema.table_name,
+                        collection: mutation.schema.table_name.clone(),
                         id: key_fingerprint(&mutation.key),
                     }),
                 };
