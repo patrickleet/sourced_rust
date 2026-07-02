@@ -145,7 +145,7 @@ pub use failure_policy::{FailureAction, FailurePolicy};
 pub use handlers::{Handlers, MessageHandler};
 pub use in_memory_bus::{InMemoryBus, InMemoryReceived};
 #[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
-pub(crate) use message::strip_address_prefix;
+pub(crate) use message::{message_from_wire, strip_address_prefix};
 pub use message::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
 pub use message_name::{validate_message_name, MessageNameError, MAX_MESSAGE_NAME_LEN};
 #[cfg(feature = "postgres")]

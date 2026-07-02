@@ -19,8 +19,8 @@ use async_nats::jetstream::{self, AckKind};
 use futures::StreamExt;
 
 use super::source::{MessageSource, ReceivedMessage};
+use super::{message_from_wire, strip_address_prefix, Message};
 use super::{retryable, MessagePublisher, TransportError};
-use super::{strip_address_prefix, Message, MessageKind};
 
 /// Header carrying the stable message id (and JetStream dedup key).
 const MESSAGE_ID_HEADER: &str = "Nats-Msg-Id";
@@ -212,25 +212,24 @@ impl NatsReceived {
     fn from_jetstream(raw: jetstream::Message, strip_prefix: Option<&str>) -> Self {
         let name = strip_address_prefix(raw.subject.to_string(), strip_prefix);
         let payload = raw.payload.to_vec();
-        let mut id = None;
-        let mut kind = MessageKind::Event;
-        let mut metadata = Vec::new();
-        if let Some(headers) = raw.headers.as_ref() {
-            for (key, values) in headers.iter() {
-                let key = key.to_string();
-                if let Some(value) = values.last() {
-                    let value = value.to_string();
-                    match key.as_str() {
-                        MESSAGE_ID_HEADER => id = Some(value),
-                        MESSAGE_KIND_HEADER => kind = MessageKind::from_str_lossy(&value),
-                        _ => metadata.push((key, value)),
-                    }
-                }
-            }
-        }
-        let mut message = Message::new(name, kind, payload);
-        message.id = id;
-        message.metadata = metadata;
+        let headers: Vec<(String, String)> = raw
+            .headers
+            .as_ref()
+            .into_iter()
+            .flat_map(|headers| headers.iter())
+            .filter_map(|(key, values)| {
+                values
+                    .last()
+                    .map(|value| (key.to_string(), value.to_string()))
+            })
+            .collect();
+        let message = message_from_wire(
+            name,
+            payload,
+            Some(MESSAGE_ID_HEADER),
+            MESSAGE_KIND_HEADER,
+            headers,
+        );
         Self { raw, message }
     }
 

@@ -23,8 +23,8 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message as KafkaMessageTrait, Offset, TopicPartitionList};
 
 use super::source::{MessageSource, ReceivedMessage};
+use super::{message_from_wire, strip_address_prefix, Message};
 use super::{retryable, MessagePublisher, TransportError};
-use super::{strip_address_prefix, Message, MessageKind};
 
 const MESSAGE_ID_HEADER: &str = "x-sourced-id";
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
@@ -197,25 +197,25 @@ impl KafkaReceived {
         let payload = borrowed.payload().map(|p| p.to_vec()).unwrap_or_default();
         let topic = borrowed.topic().to_string();
         let name = strip_address_prefix(topic.clone(), strip_prefix);
-        let mut id = None;
-        let mut kind = MessageKind::Event;
-        let mut metadata = Vec::new();
-        if let Some(headers) = borrowed.headers() {
-            for header in headers.iter() {
+        let headers: Vec<(String, String)> = borrowed
+            .headers()
+            .into_iter()
+            .flat_map(|headers| headers.iter())
+            .map(|header| {
                 let value = header
                     .value
                     .map(|v| String::from_utf8_lossy(v).into_owned())
                     .unwrap_or_default();
-                match header.key {
-                    MESSAGE_ID_HEADER => id = Some(value),
-                    MESSAGE_KIND_HEADER => kind = MessageKind::from_str_lossy(&value),
-                    other => metadata.push((other.to_string(), value)),
-                }
-            }
-        }
-        let mut message = Message::new(name, kind, payload);
-        message.id = id;
-        message.metadata = metadata;
+                (header.key.to_string(), value)
+            })
+            .collect();
+        let message = message_from_wire(
+            name,
+            payload,
+            Some(MESSAGE_ID_HEADER),
+            MESSAGE_KIND_HEADER,
+            headers,
+        );
         Self {
             consumer,
             topic,
