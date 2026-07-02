@@ -526,8 +526,14 @@ impl ReadModelWritePlanBuilder {
     }
 
     pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
-        let mut mutations = self.mutations;
-        mutations.sort_by(|left, right| {
+        // Precompute each mutation's sort key once; building the formatted key
+        // inside the comparator would allocate two Strings per comparison.
+        let mut mutations = self
+            .mutations
+            .into_iter()
+            .map(|staged| (staged.mutation.sort_key(), staged))
+            .collect::<Vec<_>>();
+        mutations.sort_by(|(left_key, left), (right_key, right)| {
             left.mutation
                 .operation_rank()
                 .cmp(&right.mutation.operation_rank())
@@ -536,12 +542,12 @@ impl ReadModelWritePlanBuilder {
                         .dependency_order(&right.mutation)
                         .unwrap_or(Ordering::Equal)
                 })
-                .then_with(|| left.mutation.sort_key().cmp(&right.mutation.sort_key()))
+                .then_with(|| left_key.cmp(right_key))
                 .then(left.sequence.cmp(&right.sequence))
         });
         let mutations = mutations
             .into_iter()
-            .map(|staged| staged.mutation)
+            .map(|(_, staged)| staged.mutation)
             .collect::<Vec<_>>();
         let plan = ReadModelWritePlan::new(mutations);
         plan.validate()?;
