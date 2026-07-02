@@ -1,103 +1,17 @@
-//! Deterministic read-model write plans and the detached builder that stages them.
+//! Detached builder that stages read-model mutations into a write plan.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::repository::ReadModelWritePlanStore;
-
-use super::mutation::{
-    column_name_for, key_fingerprint, key_from_row, validate_delete_mutation,
-    validate_expected_version, validate_key, validate_patch_mutation, validate_row_mutation,
-};
-use super::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelError, ReadModelLoadRequest, ReadModelMutation, ReadModelSchema, RelationalReadModel,
-    RelationshipDef, RowKey, RowMutation, RowPatch, RowValues, RowWriteMode, Versioned,
+use crate::table::{
+    column_name_for, key_fingerprint, key_from_row, validate_expected_version, validate_key,
+    DeleteTableRowMutation, ExpectedVersion, PatchMode, PatchTableRowMutation, RelationshipDef,
+    RowKey, RowPatch, RowValues, RowWriteMode, TableCommitOutcome, TableMutation, TableRowMutation,
+    TableSchema, TableStoreError, TableWritePlan,
 };
 
-/// Result of applying a standalone read-model write plan.
-///
-/// This is intentionally a stub: it carries no skipped/replay state and
-/// [`was_applied`](Self::was_applied) is always `true`. The earlier
-/// `read_model_processed_messages` dedupe table and `skipped_duplicate` outcome
-/// were **deliberately removed** (see `specs/consumer-inbox-design.md`, decision
-/// 2026-05-28) because coupling delivery-level dedupe to the read-model
-/// projection contract was the wrong boundary. Replay safety is now a projection
-/// convention — handlers make their writes idempotent so a redelivered event
-/// re-converges (plus per-row `ExpectedVersion` optimistic concurrency). A
-/// first-class replay barrier returns with the consumer inbox (an operational
-/// `consumer_inbox` table committed as a `CommitBatch` participant), tracked
-/// under `tasks/build-transport-bus-facade`; the variant set will grow then.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ReadModelCommitOutcome;
-
-impl ReadModelCommitOutcome {
-    /// The write plan was applied. Currently the only outcome (see the type docs).
-    pub fn applied() -> Self {
-        Self
-    }
-
-    /// Always `true` today — see the type docs for why there is no skipped variant.
-    pub fn was_applied(&self) -> bool {
-        true
-    }
-}
-
-/// Deterministic unit-of-work output for relational read-model adapters.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ReadModelWritePlan {
-    pub mutations: Vec<ReadModelMutation>,
-}
-
-impl ReadModelWritePlan {
-    pub fn new(mutations: Vec<ReadModelMutation>) -> Self {
-        Self { mutations }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.mutations.is_empty()
-    }
-
-    pub fn validate(&self) -> Result<(), ReadModelError> {
-        self.validate_for(&ReadModelAdapterCapabilities::default())
-    }
-
-    pub fn validate_for(
-        &self,
-        capabilities: &ReadModelAdapterCapabilities,
-    ) -> Result<(), ReadModelError> {
-        for mutation in &self.mutations {
-            match mutation {
-                ReadModelMutation::UpsertRow(mutation) => {
-                    if !capabilities.relational_rows {
-                        return Err(ReadModelError::Metadata(
-                            "read-model adapter does not support relational row writes".into(),
-                        ));
-                    }
-                    validate_row_mutation(mutation)?;
-                }
-                ReadModelMutation::PatchRow(mutation) => {
-                    if !capabilities.relational_rows || !capabilities.sparse_patches {
-                        return Err(ReadModelError::Metadata(
-                            "read-model adapter does not support sparse row patches".into(),
-                        ));
-                    }
-                    validate_patch_mutation(mutation)?;
-                }
-                ReadModelMutation::DeleteRow(mutation) => {
-                    if !capabilities.relational_rows || !capabilities.deletes {
-                        return Err(ReadModelError::Metadata(
-                            "read-model adapter does not support row deletes".into(),
-                        ));
-                    }
-                    validate_delete_mutation(mutation)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
+use super::{ReadModelLoadRequest, RelationalReadModel, Versioned};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct RowIdentity {
@@ -108,7 +22,7 @@ pub(super) struct RowIdentity {
 #[derive(Clone, Debug)]
 struct StagedMutation {
     sequence: u64,
-    mutation: ReadModelMutation,
+    mutation: TableMutation,
 }
 
 /// Detached builder for read-model write plans that are applied at commit.
@@ -128,7 +42,7 @@ impl ReadModelWritePlanBuilder {
         self.mutations.is_empty()
     }
 
-    pub fn load<M>(&self, key: RowKey) -> Result<ReadModelLoadRequest, ReadModelError>
+    pub fn load<M>(&self, key: RowKey) -> Result<ReadModelLoadRequest, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -139,7 +53,7 @@ impl ReadModelWritePlanBuilder {
         &self,
         key: RowKey,
         includes: I,
-    ) -> Result<ReadModelLoadRequest, ReadModelError>
+    ) -> Result<ReadModelLoadRequest, TableStoreError>
     where
         M: RelationalReadModel,
         I: IntoIterator<Item = S>,
@@ -154,7 +68,7 @@ impl ReadModelWritePlanBuilder {
                 .iter()
                 .any(|relationship| relationship.field_name == *include)
             {
-                return Err(ReadModelError::Metadata(format!(
+                return Err(TableStoreError::Metadata(format!(
                     "read model `{}` has no relationship `{}`",
                     schema.model_name, include
                 )));
@@ -168,7 +82,10 @@ impl ReadModelWritePlanBuilder {
         })
     }
 
-    pub fn track_loaded<M>(&mut self, versioned: &Versioned<M>) -> Result<&mut Self, ReadModelError>
+    pub fn track_loaded<M>(
+        &mut self,
+        versioned: &Versioned<M>,
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -179,7 +96,7 @@ impl ReadModelWritePlanBuilder {
         &mut self,
         key: RowKey,
         expected_version: u64,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -196,7 +113,7 @@ impl ReadModelWritePlanBuilder {
         Ok(self)
     }
 
-    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -207,7 +124,7 @@ impl ReadModelWritePlanBuilder {
         )
     }
 
-    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -219,7 +136,7 @@ impl ReadModelWritePlanBuilder {
         parent: &P,
         relationship_field: &str,
         child: &C,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         P: RelationalReadModel,
         C: RelationalReadModel,
@@ -232,7 +149,7 @@ impl ReadModelWritePlanBuilder {
         parent: &P,
         relationship_field: &str,
         child: &C,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         P: RelationalReadModel,
         C: RelationalReadModel,
@@ -240,7 +157,7 @@ impl ReadModelWritePlanBuilder {
         self.stage_related_row(parent, relationship_field, child, RowWriteMode::Upsert)
     }
 
-    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, ReadModelError>
+    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -251,37 +168,37 @@ impl ReadModelWritePlanBuilder {
         &mut self,
         key: RowKey,
         patch: RowPatch,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
         self.stage_patch::<M>(key, patch, PatchMode::InsertMissing)
     }
 
-    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, ReadModelError>
+    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
         let schema = validated_schema::<M>()?;
         validate_key(schema, &key)?;
         let expected_version = self.expected_for(schema, &key);
-        let mutation = DeleteRowMutation {
+        let mutation = DeleteTableRowMutation {
             schema,
             key,
             expected_version,
         };
-        self.push(ReadModelMutation::DeleteRow(mutation));
+        self.push(TableMutation::DeleteRow(mutation));
         Ok(self)
     }
 
-    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
         self.delete::<M>(model.primary_key()?)
     }
 
-    pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
+    pub fn into_write_plan(self) -> Result<TableWritePlan, TableStoreError> {
         // Precompute each mutation's sort key once; building the formatted key
         // inside the comparator would allocate two Strings per comparison.
         let mut mutations = self
@@ -305,12 +222,12 @@ impl ReadModelWritePlanBuilder {
             .into_iter()
             .map(|(_, staged)| staged.mutation)
             .collect::<Vec<_>>();
-        let plan = ReadModelWritePlan::new(mutations);
+        let plan = TableWritePlan::new(mutations);
         plan.validate()?;
         Ok(plan)
     }
 
-    pub async fn commit<S>(self, store: &S) -> Result<ReadModelCommitOutcome, ReadModelError>
+    pub async fn commit<S>(self, store: &S) -> Result<TableCommitOutcome, TableStoreError>
     where
         S: ReadModelWritePlanStore + ?Sized,
     {
@@ -322,7 +239,7 @@ impl ReadModelWritePlanBuilder {
         model: &M,
         mode: RowWriteMode,
         expected_version: Option<ExpectedVersion>,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -331,14 +248,14 @@ impl ReadModelWritePlanBuilder {
         let values = model.to_row()?;
         validate_key(schema, &key)?;
         let expected_version = expected_version.unwrap_or_else(|| self.expected_for(schema, &key));
-        let mutation = RowMutation {
+        let mutation = TableRowMutation {
             schema,
             key,
             values,
             expected_version,
             mode,
         };
-        self.push(ReadModelMutation::UpsertRow(mutation));
+        self.push(TableMutation::UpsertRow(mutation));
         Ok(self)
     }
 
@@ -348,7 +265,7 @@ impl ReadModelWritePlanBuilder {
         relationship_field: &str,
         child: &C,
         mode: RowWriteMode,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         P: RelationalReadModel,
         C: RelationalReadModel,
@@ -360,14 +277,14 @@ impl ReadModelWritePlanBuilder {
             .iter()
             .find(|relationship| relationship.field_name == relationship_field)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` has no relationship `{}`",
                     parent_schema.model_name, relationship_field
                 ))
             })?;
 
         if relationship.target_model != child_schema.model_name {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "relationship `{}` targets `{}`, not `{}`",
                 relationship.field_name, relationship.target_model, child_schema.model_name
             )));
@@ -387,14 +304,14 @@ impl ReadModelWritePlanBuilder {
             RowWriteMode::Insert => ExpectedVersion::NotExists,
             RowWriteMode::Upsert => self.expected_for(child_schema, &key),
         };
-        let mutation = RowMutation {
+        let mutation = TableRowMutation {
             schema: child_schema,
             key,
             values: child_row,
             expected_version,
             mode,
         };
-        self.push(ReadModelMutation::UpsertRow(mutation));
+        self.push(TableMutation::UpsertRow(mutation));
         Ok(self)
     }
 
@@ -403,31 +320,31 @@ impl ReadModelWritePlanBuilder {
         key: RowKey,
         patch: RowPatch,
         mode: PatchMode,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
         let schema = validated_schema::<M>()?;
         validate_key(schema, &key)?;
         let expected_version = self.expected_for(schema, &key);
-        let mutation = PatchRowMutation {
+        let mutation = PatchTableRowMutation {
             schema,
             key,
             patch,
             expected_version,
             mode,
         };
-        self.push(ReadModelMutation::PatchRow(mutation));
+        self.push(TableMutation::PatchRow(mutation));
         Ok(self)
     }
 
-    pub(super) fn push(&mut self, mutation: ReadModelMutation) {
+    pub(super) fn push(&mut self, mutation: TableMutation) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.mutations.push(StagedMutation { sequence, mutation });
     }
 
-    fn expected_for(&self, schema: &ReadModelSchema, key: &RowKey) -> ExpectedVersion {
+    fn expected_for(&self, schema: &TableSchema, key: &RowKey) -> ExpectedVersion {
         self.expected_versions
             .get(&RowIdentity {
                 table_name: schema.table_name.clone(),
@@ -439,7 +356,7 @@ impl ReadModelWritePlanBuilder {
     }
 }
 
-pub(super) fn validated_schema<M>() -> Result<&'static ReadModelSchema, ReadModelError>
+pub(super) fn validated_schema<M>() -> Result<&'static TableSchema, TableStoreError>
 where
     M: RelationalReadModel,
 {
@@ -449,12 +366,12 @@ where
 }
 
 pub(super) fn populate_delegated_relationship_values(
-    parent_schema: &ReadModelSchema,
+    parent_schema: &TableSchema,
     parent_row: &RowValues,
     relationship: &RelationshipDef,
-    child_schema: &ReadModelSchema,
+    child_schema: &TableSchema,
     child_row: &mut RowValues,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     let mut populated = 0;
     for column in child_schema
         .columns
@@ -463,7 +380,7 @@ pub(super) fn populate_delegated_relationship_values(
     {
         let delegated_from = column.delegated_from.as_deref().unwrap_or_default();
         let Some((model_name, source_name)) = delegated_from.split_once('.') else {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "read model `{}` delegated column `{}` has invalid source `{}`",
                 child_schema.model_name, column.column_name, delegated_from
             )));
@@ -474,13 +391,13 @@ pub(super) fn populate_delegated_relationship_values(
         }
 
         let source_column = column_name_for(parent_schema, source_name).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` delegated source `{}` is not a parent column",
                 child_schema.model_name, delegated_from
             ))
         })?;
         let value = parent_row.get(&source_column).cloned().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` parent row is missing delegated source column `{}`",
                 parent_schema.model_name, source_column
             ))
@@ -491,13 +408,13 @@ pub(super) fn populate_delegated_relationship_values(
 
     if populated == 0 {
         let foreign_key = relationship.foreign_key.as_deref().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` relationship `{}` must declare a foreign key",
                 parent_schema.model_name, relationship.field_name
             ))
         })?;
         let child_column = column_name_for(child_schema, foreign_key).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "relationship `{}` foreign key `{}` is not a child column",
                 relationship.field_name, foreign_key
             ))
@@ -505,13 +422,13 @@ pub(super) fn populate_delegated_relationship_values(
         let parent_column = column_name_for(parent_schema, foreign_key)
             .or_else(|| parent_schema.primary_key.columns.first().cloned())
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "relationship `{}` has no parent key to delegate",
                     relationship.field_name
                 ))
             })?;
         let value = parent_row.get(&parent_column).cloned().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` parent row is missing relationship key `{}`",
                 parent_schema.model_name, parent_column
             ))

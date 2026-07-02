@@ -12,9 +12,9 @@ pub use seat_view::SeatView;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 use distributed::table::TableSchemaRegistry;
-use distributed::{InMemoryReadModelStore, ReadModelError, RowKey, RowValue};
+use distributed::{InMemoryReadModelStore, RowKey, RowValue, TableStoreError};
 
-pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelError> {
+pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), TableStoreError> {
     store.register_schema::<SeatView>()?;
     store.register_schema::<CheckoutView>()?;
     store.register_schema::<CheckoutStepView>()?;
@@ -22,7 +22,7 @@ pub fn register_schemas(store: &InMemoryReadModelStore) -> Result<(), ReadModelE
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub fn table_schema_registry() -> Result<TableSchemaRegistry, ReadModelError> {
+pub fn table_schema_registry() -> Result<TableSchemaRegistry, TableStoreError> {
     let mut registry = TableSchemaRegistry::new();
     registry.register::<SeatView>()?;
     registry.register::<CheckoutView>()?;

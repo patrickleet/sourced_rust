@@ -5,17 +5,19 @@ use std::marker::PhantomData;
 
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
 
-use super::mutation::{
+use super::plan::{populate_delegated_relationship_values, validated_schema, RowIdentity};
+use super::{
+    ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelWritePlanBuilder, RelationalReadModel,
+    RelationalReadModelIncludes, Versioned,
+};
+use crate::table::{
     key_fingerprint, key_from_row, validate_delete_mutation, validate_key, validate_patch_mutation,
     validate_row_mutation,
 };
-use super::plan::{populate_delegated_relationship_values, validated_schema, RowIdentity};
-use super::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelCommitOutcome,
-    ReadModelError, ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelMutation, ReadModelSchema,
-    ReadModelWritePlan, ReadModelWritePlanBuilder, RelationalReadModel,
-    RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey, RowMutation, RowPatch,
-    RowValues, RowWriteMode, Versioned,
+use crate::table::{
+    DeleteTableRowMutation, ExpectedVersion, PatchMode, PatchTableRowMutation, RelationshipDef,
+    RelationshipKind, RowKey, RowPatch, RowValues, RowWriteMode, TableCommitOutcome, TableMutation,
+    TableRowMutation, TableSchema, TableStoreError, TableWritePlan,
 };
 
 #[derive(Clone, Debug)]
@@ -28,13 +30,13 @@ struct TrackedRowBaseline {
 #[derive(Clone, Debug)]
 struct TrackedIncludeBaseline {
     relationship: RelationshipDef,
-    target_schema: &'static ReadModelSchema,
+    target_schema: &'static TableSchema,
     rows: BTreeMap<String, TrackedRowBaseline>,
 }
 
 #[derive(Clone, Debug)]
 struct TrackedModelBaseline {
-    root_schema: &'static ReadModelSchema,
+    root_schema: &'static TableSchema,
     root_key: RowKey,
     root_row: RowValues,
     root_version: u64,
@@ -66,7 +68,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         self.writes.is_empty()
     }
 
-    pub fn sync<M>(&mut self, model: M) -> Result<&mut Self, ReadModelError>
+    pub fn sync<M>(&mut self, model: M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel + RelationalReadModelIncludes,
     {
@@ -85,7 +87,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                     && key_fingerprint(&baseline.root_key) == identity.key
             })
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` has no tracked baseline for sync",
                     schema.model_name
                 ))
@@ -123,7 +125,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn upsert<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -131,7 +133,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn insert<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -144,7 +146,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         parent: &P,
         relationship_field: &str,
         child: &C,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         P: RelationalReadModel,
         C: RelationalReadModel,
@@ -159,7 +161,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         parent: &P,
         relationship_field: &str,
         child: &C,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         P: RelationalReadModel,
         C: RelationalReadModel,
@@ -169,7 +171,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, ReadModelError>
+    pub fn patch<M>(&mut self, key: RowKey, patch: RowPatch) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -181,7 +183,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         &mut self,
         key: RowKey,
         patch: RowPatch,
-    ) -> Result<&mut Self, ReadModelError>
+    ) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -189,7 +191,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, ReadModelError>
+    pub fn delete<M>(&mut self, key: RowKey) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -197,7 +199,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, ReadModelError>
+    pub fn delete_model<M>(&mut self, model: &M) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -205,7 +207,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         Ok(self)
     }
 
-    pub fn into_write_plan(self) -> Result<ReadModelWritePlan, ReadModelError> {
+    pub fn into_write_plan(self) -> Result<TableWritePlan, TableStoreError> {
         self.writes.into_write_plan()
     }
 
@@ -213,7 +215,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
         &mut self,
         root: Versioned<RowValues>,
         includes: BTreeMap<String, ReadModelIncludeRows>,
-    ) -> Result<(), ReadModelError>
+    ) -> Result<(), TableStoreError>
     where
         M: RelationalReadModel + RelationalReadModelIncludes,
     {
@@ -269,15 +271,15 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
     fn stage_include_changes(
         &mut self,
-        root_schema: &ReadModelSchema,
+        root_schema: &TableSchema,
         root_row: &RowValues,
         baseline: &TrackedIncludeBaseline,
         current_rows: Vec<RowValues>,
-    ) -> Result<TrackedIncludeBaseline, ReadModelError> {
+    ) -> Result<TrackedIncludeBaseline, TableStoreError> {
         if matches!(baseline.relationship.kind, RelationshipKind::BelongsTo)
             && current_rows.len() > 1
         {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "belongs_to relationship `{}` can sync at most one related row",
                 baseline.relationship.field_name
             )));
@@ -296,7 +298,7 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
                 )?,
                 RelationshipKind::BelongsTo => {}
                 RelationshipKind::ManyToMany => {
-                    return Err(ReadModelError::Metadata(format!(
+                    return Err(TableStoreError::Metadata(format!(
                         "many-to-many relationship `{}` includes are not supported yet",
                         baseline.relationship.field_name
                     )));
@@ -367,19 +369,19 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
 
     fn stage_row_diff(
         &mut self,
-        schema: &'static ReadModelSchema,
+        schema: &'static TableSchema,
         key: RowKey,
         before: &RowValues,
         after: &RowValues,
         expected_version: u64,
-    ) -> Result<Option<u64>, ReadModelError> {
+    ) -> Result<Option<u64>, TableStoreError> {
         let patch = diff_rows(before, after);
         if patch.is_empty() {
             return Ok(None);
         }
         let next_version = next_tracked_version(schema, &key, expected_version)?;
 
-        let mutation = PatchRowMutation {
+        let mutation = PatchTableRowMutation {
             schema,
             key,
             patch,
@@ -387,17 +389,17 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
             mode: PatchMode::UpdateExisting,
         };
         validate_patch_mutation(&mutation)?;
-        self.writes.push(ReadModelMutation::PatchRow(mutation));
+        self.writes.push(TableMutation::PatchRow(mutation));
         Ok(Some(next_version))
     }
 
     fn stage_upsert_row(
         &mut self,
-        schema: &'static ReadModelSchema,
+        schema: &'static TableSchema,
         key: RowKey,
         values: RowValues,
-    ) -> Result<(), ReadModelError> {
-        let mutation = RowMutation {
+    ) -> Result<(), TableStoreError> {
+        let mutation = TableRowMutation {
             schema,
             key,
             values,
@@ -405,23 +407,23 @@ impl<'a, S> ReadModelWorkspace<'a, S> {
             mode: RowWriteMode::Upsert,
         };
         validate_row_mutation(&mutation)?;
-        self.writes.push(ReadModelMutation::UpsertRow(mutation));
+        self.writes.push(TableMutation::UpsertRow(mutation));
         Ok(())
     }
 
     fn stage_delete_row(
         &mut self,
-        schema: &'static ReadModelSchema,
+        schema: &'static TableSchema,
         key: RowKey,
         expected_version: u64,
-    ) -> Result<(), ReadModelError> {
-        let mutation = DeleteRowMutation {
+    ) -> Result<(), TableStoreError> {
+        let mutation = DeleteTableRowMutation {
             schema,
             key,
             expected_version: ExpectedVersion::Exact(expected_version),
         };
         validate_delete_mutation(&mutation)?;
-        self.writes.push(ReadModelMutation::DeleteRow(mutation));
+        self.writes.push(TableMutation::DeleteRow(mutation));
         Ok(())
     }
 }
@@ -444,7 +446,7 @@ where
     }
 
     /// Commit the staged write plan through the asynchronous store.
-    pub async fn commit(self) -> Result<ReadModelCommitOutcome, ReadModelError> {
+    pub async fn commit(self) -> Result<TableCommitOutcome, TableStoreError> {
         self.writes.commit(self.store).await
     }
 }
@@ -471,12 +473,12 @@ fn diff_rows(before: &RowValues, after: &RowValues) -> RowPatch {
 }
 
 fn next_tracked_version(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     current_version: u64,
-) -> Result<u64, ReadModelError> {
+) -> Result<u64, TableStoreError> {
     current_version.checked_add(1).ok_or_else(|| {
-        ReadModelError::Storage(format!(
+        TableStoreError::Storage(format!(
             "read model version overflow for {}:{}",
             schema.table_name,
             key_fingerprint(key)

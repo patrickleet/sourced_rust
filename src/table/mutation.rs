@@ -1,13 +1,13 @@
 //! Staged relational row mutations and the row/key validation helpers shared
-//! by the write-plan builder, the workspace, and the storage adapters.
+//! by the table write-plan builder, the workspace, and storage adapters.
 
 use std::cmp::Ordering;
 
 use serde::Serialize;
 
-use super::{ReadModelError, ReadModelSchema, RowKey, RowValue, RowValues};
+use super::{RowKey, RowValue, RowValues, TableSchema, TableStoreError};
 
-/// Expected optimistic version carried by a staged read-model write.
+/// Expected optimistic version carried by a staged table write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ExpectedVersion {
     /// No optimistic version check is requested.
@@ -53,7 +53,7 @@ impl RowPatch {
         mut self,
         column: impl Into<String>,
         value: &T,
-    ) -> Result<Self, ReadModelError> {
+    ) -> Result<Self, TableStoreError> {
         self.values.insert_serde(column, value)?;
         Ok(self)
     }
@@ -77,8 +77,8 @@ impl RowPatch {
 
 /// Full relational row insert/upsert mutation.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RowMutation {
-    pub schema: &'static ReadModelSchema,
+pub struct TableRowMutation {
+    pub schema: &'static TableSchema,
     pub key: RowKey,
     pub values: RowValues,
     pub expected_version: ExpectedVersion,
@@ -87,8 +87,8 @@ pub struct RowMutation {
 
 /// Sparse relational row patch mutation.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PatchRowMutation {
-    pub schema: &'static ReadModelSchema,
+pub struct PatchTableRowMutation {
+    pub schema: &'static TableSchema,
     pub key: RowKey,
     pub patch: RowPatch,
     pub expected_version: ExpectedVersion,
@@ -97,21 +97,21 @@ pub struct PatchRowMutation {
 
 /// Relational row delete mutation.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DeleteRowMutation {
-    pub schema: &'static ReadModelSchema,
+pub struct DeleteTableRowMutation {
+    pub schema: &'static TableSchema,
     pub key: RowKey,
     pub expected_version: ExpectedVersion,
 }
 
-/// First-pass read-model write-plan mutation surface.
+/// First-pass table write-plan mutation surface.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ReadModelMutation {
-    UpsertRow(RowMutation),
-    PatchRow(PatchRowMutation),
-    DeleteRow(DeleteRowMutation),
+pub enum TableMutation {
+    UpsertRow(TableRowMutation),
+    PatchRow(PatchTableRowMutation),
+    DeleteRow(DeleteTableRowMutation),
 }
 
-impl ReadModelMutation {
+impl TableMutation {
     pub fn table_name(&self) -> &str {
         self.schema().table_name.as_str()
     }
@@ -122,25 +122,25 @@ impl ReadModelMutation {
 
     fn key(&self) -> &RowKey {
         match self {
-            ReadModelMutation::UpsertRow(mutation) => &mutation.key,
-            ReadModelMutation::PatchRow(mutation) => &mutation.key,
-            ReadModelMutation::DeleteRow(mutation) => &mutation.key,
+            TableMutation::UpsertRow(mutation) => &mutation.key,
+            TableMutation::PatchRow(mutation) => &mutation.key,
+            TableMutation::DeleteRow(mutation) => &mutation.key,
         }
     }
 
-    pub(super) fn operation_rank(&self) -> u8 {
+    pub(crate) fn operation_rank(&self) -> u8 {
         match self {
-            ReadModelMutation::UpsertRow(_) => 1,
-            ReadModelMutation::PatchRow(_) => 2,
-            ReadModelMutation::DeleteRow(_) => 3,
+            TableMutation::UpsertRow(_) => 1,
+            TableMutation::PatchRow(_) => 2,
+            TableMutation::DeleteRow(_) => 3,
         }
     }
 
-    fn schema(&self) -> &'static ReadModelSchema {
+    fn schema(&self) -> &'static TableSchema {
         match self {
-            ReadModelMutation::UpsertRow(mutation) => mutation.schema,
-            ReadModelMutation::PatchRow(mutation) => mutation.schema,
-            ReadModelMutation::DeleteRow(mutation) => mutation.schema,
+            TableMutation::UpsertRow(mutation) => mutation.schema,
+            TableMutation::PatchRow(mutation) => mutation.schema,
+            TableMutation::DeleteRow(mutation) => mutation.schema,
         }
     }
 
@@ -158,7 +158,7 @@ impl ReadModelMutation {
             })
     }
 
-    pub(super) fn dependency_order(&self, other: &Self) -> Option<Ordering> {
+    pub(crate) fn dependency_order(&self, other: &Self) -> Option<Ordering> {
         let self_depends_on_other = self.depends_on_table(other.table_name());
         let other_depends_on_self = other.depends_on_table(self.table_name());
 
@@ -175,7 +175,7 @@ impl ReadModelMutation {
         }
     }
 
-    pub(super) fn sort_key(&self) -> String {
+    pub(crate) fn sort_key(&self) -> String {
         format!(
             "{}|{}|{}",
             self.operation_rank(),
@@ -185,49 +185,53 @@ impl ReadModelMutation {
     }
 }
 
-pub(super) fn validate_row_mutation(mutation: &RowMutation) -> Result<(), ReadModelError> {
+pub(crate) fn validate_row_mutation(mutation: &TableRowMutation) -> Result<(), TableStoreError> {
     mutation.schema.validate()?;
     validate_key(mutation.schema, &mutation.key)?;
     validate_expected_version(&mutation.expected_version, mutation.schema)?;
     validate_row_values(mutation.schema, &mutation.values, true)
 }
 
-pub(super) fn validate_patch_mutation(mutation: &PatchRowMutation) -> Result<(), ReadModelError> {
+pub(crate) fn validate_patch_mutation(
+    mutation: &PatchTableRowMutation,
+) -> Result<(), TableStoreError> {
     mutation.schema.validate()?;
     validate_key(mutation.schema, &mutation.key)?;
     validate_expected_version(&mutation.expected_version, mutation.schema)?;
     if mutation.patch.is_empty() {
-        return Err(ReadModelError::Metadata(format!(
-            "read model `{}` patch must set at least one column",
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` patch must set at least one column",
             mutation.schema.model_name
         )));
     }
     validate_row_values(mutation.schema, &mutation.patch.values, false)
 }
 
-pub(super) fn validate_delete_mutation(mutation: &DeleteRowMutation) -> Result<(), ReadModelError> {
+pub(crate) fn validate_delete_mutation(
+    mutation: &DeleteTableRowMutation,
+) -> Result<(), TableStoreError> {
     mutation.schema.validate()?;
     validate_key(mutation.schema, &mutation.key)?;
     validate_expected_version(&mutation.expected_version, mutation.schema)
 }
 
-pub(super) fn validate_expected_version(
+pub(crate) fn validate_expected_version(
     expected_version: &ExpectedVersion,
-    schema: &ReadModelSchema,
-) -> Result<(), ReadModelError> {
+    schema: &TableSchema,
+) -> Result<(), TableStoreError> {
     if matches!(expected_version, ExpectedVersion::Exact(0)) {
-        return Err(ReadModelError::Metadata(format!(
-            "read model `{}` expected version must be greater than zero",
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` expected version must be greater than zero",
             schema.model_name
         )));
     }
     Ok(())
 }
 
-pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(), ReadModelError> {
+pub(crate) fn validate_key(schema: &TableSchema, key: &RowKey) -> Result<(), TableStoreError> {
     if key.is_empty() {
-        return Err(ReadModelError::Metadata(format!(
-            "read model `{}` row key cannot be empty",
+        return Err(TableStoreError::Metadata(format!(
+            "model `{}` row key cannot be empty",
             schema.model_name
         )));
     }
@@ -235,15 +239,15 @@ pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(),
     for column in &schema.primary_key.columns {
         match key.get(column) {
             Some(RowValue::Null) => {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` primary-key column `{}` cannot be null",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` cannot be null",
                     schema.model_name, column
                 )));
             }
             Some(_) => {}
             None => {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` row key is missing primary-key column `{}`",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` row key is missing primary-key column `{}`",
                     schema.model_name, column
                 )));
             }
@@ -252,8 +256,8 @@ pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(),
 
     for (column, _) in key.iter() {
         if !schema.primary_key.columns.iter().any(|key| key == column) {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` row key includes non-primary-key column `{}`",
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` row key includes non-primary-key column `{}`",
                 schema.model_name, column
             )));
         }
@@ -263,32 +267,32 @@ pub(crate) fn validate_key(schema: &ReadModelSchema, key: &RowKey) -> Result<(),
 }
 
 pub(crate) fn validate_row_values(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     values: &RowValues,
     full_row: bool,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     for (column_name, value) in values.iter() {
         let column = schema
             .columns
             .iter()
             .find(|column| column.column_name == column_name)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
-                    "read model `{}` write references missing column `{}`",
+                TableStoreError::Metadata(format!(
+                    "model `{}` write references missing column `{}`",
                     schema.model_name, column_name
                 ))
             })?;
 
         if matches!(value, RowValue::Null) {
             if column.primary_key {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` primary-key column `{}` cannot be null",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` cannot be null",
                     schema.model_name, column.column_name
                 )));
             }
             if !column.nullable && !column.has_default {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` column `{}` is not nullable",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` column `{}` is not nullable",
                     schema.model_name, column.column_name
                 )));
             }
@@ -301,8 +305,8 @@ pub(crate) fn validate_row_values(
                 continue;
             }
             if !values.contains_key(&column.column_name) {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` row is missing required column `{}`",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` row is missing required column `{}`",
                     schema.model_name, column.column_name
                 )));
             }
@@ -315,8 +319,8 @@ pub(crate) fn validate_row_values(
         {
             match values.get(&column.column_name) {
                 Some(RowValue::Null) | None => {
-                    return Err(ReadModelError::Metadata(format!(
-                        "read model `{}` delegated column `{}` must be populated before write",
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` delegated column `{}` must be populated before write",
                         schema.model_name, column.column_name
                     )));
                 }
@@ -329,14 +333,14 @@ pub(crate) fn validate_row_values(
 }
 
 pub(crate) fn key_from_row(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     row: &RowValues,
-) -> Result<RowKey, ReadModelError> {
+) -> Result<RowKey, TableStoreError> {
     let mut key = RowKey::default();
     for column in &schema.primary_key.columns {
         let value = row.get(column).cloned().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
-                "read model `{}` row is missing primary-key column `{}`",
+            TableStoreError::Metadata(format!(
+                "model `{}` row is missing primary-key column `{}`",
                 schema.model_name, column
             ))
         })?;
@@ -346,7 +350,7 @@ pub(crate) fn key_from_row(
     Ok(key)
 }
 
-pub(crate) fn column_name_for(schema: &ReadModelSchema, field_or_column: &str) -> Option<String> {
+pub(crate) fn column_name_for(schema: &TableSchema, field_or_column: &str) -> Option<String> {
     schema
         .columns
         .iter()

@@ -8,15 +8,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use super::mutation::{column_name_for, key_fingerprint, validate_key, validate_row_values};
 use super::{
-    ExpectedVersion, PatchMode, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest,
-    ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaRegistry,
-    ReadModelWritePlan, RelationalReadModel, RelationshipDef, RelationshipKind, RowKey, RowValue,
-    RowValues, RowWriteMode, Versioned,
+    ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
+    RelationalReadModel, Versioned,
 };
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
+use crate::table::{column_name_for, key_fingerprint, validate_key, validate_row_values};
+use crate::table::{
+    ExpectedVersion, PatchMode, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
+    RowWriteMode, TableAdapterCapabilities, TableCommitOutcome, TableMutation, TableSchema,
+    TableSchemaRegistry, TableStoreError, TableWritePlan,
+};
 
 #[derive(Clone)]
 pub(crate) struct StoredRow {
@@ -33,28 +35,28 @@ pub(crate) const INITIAL_MODEL_VERSION: u64 = 1;
 pub(crate) fn next_model_version(
     key: &str,
     current_version: Option<u64>,
-) -> Result<u64, ReadModelError> {
+) -> Result<u64, TableStoreError> {
     match current_version {
         Some(version) => version.checked_add(1).ok_or_else(|| {
-            ReadModelError::Storage(format!("read model version overflow for {key}"))
+            TableStoreError::Storage(format!("read model version overflow for {key}"))
         }),
         None => Ok(INITIAL_MODEL_VERSION),
     }
 }
 
-fn relational_capabilities() -> ReadModelAdapterCapabilities {
-    ReadModelAdapterCapabilities::default()
+fn relational_capabilities() -> TableAdapterCapabilities {
+    TableAdapterCapabilities::default()
 }
 
 pub(crate) fn apply_read_model_write_plan(
-    plan: ReadModelWritePlan,
+    plan: TableWritePlan,
     staged_rows: &mut HashMap<String, StoredRow>,
-) -> Result<ReadModelCommitOutcome, ReadModelError> {
+) -> Result<TableCommitOutcome, TableStoreError> {
     plan.validate_for(&relational_capabilities())?;
 
     for mutation in plan.mutations {
         match mutation {
-            ReadModelMutation::UpsertRow(mutation) => {
+            TableMutation::UpsertRow(mutation) => {
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
@@ -81,7 +83,7 @@ pub(crate) fn apply_read_model_write_plan(
                     },
                 );
             }
-            ReadModelMutation::PatchRow(mutation) => {
+            TableMutation::PatchRow(mutation) => {
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
@@ -116,14 +118,14 @@ pub(crate) fn apply_read_model_write_plan(
                         );
                     }
                     None => {
-                        return Err(ReadModelError::NotFound {
+                        return Err(TableStoreError::NotFound {
                             collection: mutation.schema.table_name.clone(),
                             id: key_fingerprint(&mutation.key),
                         });
                     }
                 }
             }
-            ReadModelMutation::DeleteRow(mutation) => {
+            TableMutation::DeleteRow(mutation) => {
                 let key = relational_storage_key(&mutation.schema.table_name, &mutation.key);
                 let current_version = staged_rows.get(&key).map(|row| row.version);
                 validate_row_expected_version(
@@ -137,7 +139,7 @@ pub(crate) fn apply_read_model_write_plan(
         }
     }
 
-    Ok(ReadModelCommitOutcome::applied())
+    Ok(TableCommitOutcome::applied())
 }
 
 fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
@@ -145,10 +147,10 @@ fn relational_storage_key(table_name: &str, key: &RowKey) -> String {
 }
 
 fn row_values_from_key_and_patch(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     patch_values: RowValues,
-) -> Result<RowValues, ReadModelError> {
+) -> Result<RowValues, TableStoreError> {
     let mut values = RowValues::new();
     for (column, value) in key.iter() {
         values.insert(column.to_string(), value.clone());
@@ -159,11 +161,11 @@ fn row_values_from_key_and_patch(
 }
 
 fn apply_patch_values_preserving_key(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     values: &mut RowValues,
     patch_values: RowValues,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     for (column, value) in patch_values {
         if schema
             .primary_key
@@ -172,13 +174,13 @@ fn apply_patch_values_preserving_key(
             .any(|primary_key| primary_key == &column)
         {
             let key_value = key.get(&column).ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` row key is missing primary-key column `{}`",
                     schema.model_name, column
                 ))
             })?;
             if key_value != &value {
-                return Err(ReadModelError::Metadata(format!(
+                return Err(TableStoreError::Metadata(format!(
                     "read model `{}` patch cannot change primary-key column `{}`",
                     schema.model_name, column
                 )));
@@ -190,18 +192,18 @@ fn apply_patch_values_preserving_key(
 }
 
 fn validate_row_expected_version(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     expected_version: &ExpectedVersion,
     current_version: Option<u64>,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     match (expected_version, current_version) {
         (ExpectedVersion::Any, _) => Ok(()),
         (ExpectedVersion::Exact(expected), Some(actual)) if expected == &actual => Ok(()),
         (ExpectedVersion::Exact(expected), Some(actual)) => {
             Err(concurrency_conflict(schema, key, *expected, actual))
         }
-        (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
+        (ExpectedVersion::Exact(_), None) => Err(TableStoreError::NotFound {
             collection: schema.table_name.clone(),
             id: key_fingerprint(key),
         }),
@@ -213,12 +215,12 @@ fn validate_row_expected_version(
 }
 
 fn concurrency_conflict(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     expected: u64,
     actual: u64,
-) -> ReadModelError {
-    ReadModelError::ConcurrencyConflict {
+) -> TableStoreError {
+    TableStoreError::ConcurrencyConflict {
         collection: schema.table_name.clone(),
         id: key_fingerprint(key),
         expected,
@@ -232,7 +234,7 @@ fn concurrency_conflict(
 #[derive(Clone)]
 pub struct InMemoryReadModelStore {
     pub(crate) relational_rows: Arc<RwLock<HashMap<String, StoredRow>>>,
-    schema_registry: Arc<RwLock<ReadModelSchemaRegistry>>,
+    schema_registry: Arc<RwLock<TableSchemaRegistry>>,
 }
 
 impl Default for InMemoryReadModelStore {
@@ -246,51 +248,48 @@ impl InMemoryReadModelStore {
     pub fn new() -> Self {
         Self {
             relational_rows: Arc::new(RwLock::new(HashMap::new())),
-            schema_registry: Arc::new(RwLock::new(ReadModelSchemaRegistry::new())),
+            schema_registry: Arc::new(RwLock::new(TableSchemaRegistry::new())),
         }
     }
 
     /// Register a relational read-model schema for explicit include execution.
-    pub fn register_schema<M>(&self) -> Result<(), ReadModelError>
+    pub fn register_schema<M>(&self) -> Result<(), TableStoreError>
     where
         M: RelationalReadModel,
     {
         let mut registry = self
             .schema_registry
             .write()
-            .map_err(|_| ReadModelError::Storage("schema registry lock poisoned".into()))?;
+            .map_err(|_| TableStoreError::Storage("schema registry lock poisoned".into()))?;
         registry.register::<M>()?;
         Ok(())
     }
 
     /// Register an already-built relational read-model schema.
-    pub fn register_read_model_schema(
-        &self,
-        schema: ReadModelSchema,
-    ) -> Result<(), ReadModelError> {
+    pub fn register_read_model_schema(&self, schema: TableSchema) -> Result<(), TableStoreError> {
         let mut registry = self
             .schema_registry
             .write()
-            .map_err(|_| ReadModelError::Storage("schema registry lock poisoned".into()))?;
+            .map_err(|_| TableStoreError::Storage("schema registry lock poisoned".into()))?;
         registry.register_schema(schema)?;
         Ok(())
     }
 }
 
 impl ReadModelWritePlanStore for InMemoryReadModelStore {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+    fn read_model_capabilities(&self) -> TableAdapterCapabilities {
         relational_capabilities()
     }
 
     fn commit_write_plan(
         &self,
-        plan: ReadModelWritePlan,
-    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
+        plan: TableWritePlan,
+    ) -> impl Future<Output = Result<TableCommitOutcome, TableStoreError>> + Send + '_ {
         async move {
             let mut relational_rows = self
                 .relational_rows
                 .write()
-                .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+                .map_err(|_| TableStoreError::Storage("lock poisoned".into()))?;
 
             let mut staged_rows = relational_rows.clone();
             let outcome = apply_read_model_write_plan(plan, &mut staged_rows)?;
@@ -308,7 +307,7 @@ impl ReadModelWritePlanStore for InMemoryReadModelStore {
 struct IncludeSpec {
     name: String,
     relationship: RelationshipDef,
-    target_schema: ReadModelSchema,
+    target_schema: TableSchema,
 }
 
 impl RelationalReadModelQueryStore for InMemoryReadModelStore {
@@ -319,15 +318,14 @@ impl RelationalReadModelQueryStore for InMemoryReadModelStore {
     fn load_graph(
         &self,
         request: ReadModelLoadRequest,
-    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, TableStoreError>> + Send + '_ {
         async move {
             request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
 
             let (root_schema, include_specs) = {
-                let registry = self
-                    .schema_registry
-                    .read()
-                    .map_err(|_| ReadModelError::Storage("schema registry lock poisoned".into()))?;
+                let registry = self.schema_registry.read().map_err(|_| {
+                    TableStoreError::Storage("schema registry lock poisoned".into())
+                })?;
                 resolve_request_schemas(&registry, &request)?
             };
             validate_key(&root_schema, &request.key)?;
@@ -335,7 +333,7 @@ impl RelationalReadModelQueryStore for InMemoryReadModelStore {
             let rows = self
                 .relational_rows
                 .read()
-                .map_err(|_| ReadModelError::Storage("lock poisoned".into()))?;
+                .map_err(|_| TableStoreError::Storage("lock poisoned".into()))?;
             let root_storage_key = relational_storage_key(&root_schema.table_name, &request.key);
             let Some(root_row) = rows.get(&root_storage_key) else {
                 return Ok(ReadModelLoadGraph::default());
@@ -367,9 +365,9 @@ impl RelationalReadModelQueryStore for InMemoryReadModelStore {
 }
 
 fn resolve_request_schemas(
-    registry: &ReadModelSchemaRegistry,
+    registry: &TableSchemaRegistry,
     request: &ReadModelLoadRequest,
-) -> Result<(ReadModelSchema, Vec<IncludeSpec>), ReadModelError> {
+) -> Result<(TableSchema, Vec<IncludeSpec>), TableStoreError> {
     let root_schema = registry
         .schema_for_model(&request.schema.model_name)
         .cloned()
@@ -381,13 +379,13 @@ fn resolve_request_schemas(
             }
         })
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` is not registered for relationship includes",
                 request.schema.model_name
             ))
         })?;
     if root_schema != request.schema {
-        return Err(ReadModelError::Metadata(format!(
+        return Err(TableStoreError::Metadata(format!(
             "read model `{}` load request does not match registered schema",
             request.schema.model_name
         )));
@@ -400,13 +398,13 @@ fn resolve_request_schemas(
             .iter()
             .find(|relationship| relationship.field_name == *include_name)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` has no relationship `{}`",
                     root_schema.model_name, include_name
                 ))
             })?;
         if matches!(relationship.kind, RelationshipKind::ManyToMany) {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "many-to-many relationship `{}` includes are not supported until join metadata declares source and target keys",
                 relationship.field_name
             )));
@@ -414,7 +412,7 @@ fn resolve_request_schemas(
         let target_schema = registry
             .schema_for_model(&relationship.target_model)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` relationship `{}` targets unregistered model `{}`",
                     root_schema.model_name, relationship.field_name, relationship.target_model
                 ))
@@ -432,14 +430,14 @@ fn resolve_request_schemas(
 
 fn load_relationship_rows(
     rows: &HashMap<String, StoredRow>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError> {
     match spec.relationship.kind {
         RelationshipKind::HasMany => load_has_many_rows(rows, root_schema, root_row, spec),
         RelationshipKind::BelongsTo => load_belongs_to_rows(rows, root_schema, root_row, spec),
-        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
+        RelationshipKind::ManyToMany => Err(TableStoreError::Metadata(format!(
             "many-to-many relationship `{}` includes are not supported yet",
             spec.relationship.field_name
         ))),
@@ -448,18 +446,18 @@ fn load_relationship_rows(
 
 fn load_has_many_rows(
     rows: &HashMap<String, StoredRow>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError> {
     let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` must declare a foreign key",
             spec.relationship.field_name
         ))
     })?;
     let target_column = column_name_for(&spec.target_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` foreign key `{}` is not a target column",
             spec.relationship.field_name, foreign_key
         ))
@@ -467,13 +465,13 @@ fn load_has_many_rows(
     let root_column = column_name_for(root_schema, foreign_key)
         .or_else(|| root_schema.primary_key.columns.first().cloned())
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "relationship `{}` has no root key column",
                 spec.relationship.field_name
             ))
         })?;
     let root_value = root_row.get(&root_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",
             root_schema.model_name, root_column
         ))
@@ -488,25 +486,25 @@ fn load_has_many_rows(
 
 fn load_belongs_to_rows(
     rows: &HashMap<String, StoredRow>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError> {
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError> {
     let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` must declare a foreign key",
             spec.relationship.field_name
         ))
     })?;
     let source_column = column_name_for(root_schema, foreign_key).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` foreign key `{}` is not a source column",
             spec.relationship.field_name, foreign_key
         ))
     })?;
     let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
     let source_value = root_row.get(&source_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",
             root_schema.model_name, source_column
         ))
@@ -525,11 +523,11 @@ fn load_belongs_to_rows(
 }
 
 fn belongs_to_target_column(
-    target_schema: &ReadModelSchema,
+    target_schema: &TableSchema,
     source_column: &str,
-) -> Result<String, ReadModelError> {
+) -> Result<String, TableStoreError> {
     if target_schema.primary_key.columns.len() != 1 {
-        return Err(ReadModelError::Metadata(format!(
+        return Err(TableStoreError::Metadata(format!(
             "belongs_to target `{}` must have a single-column primary key to load from `{}`",
             target_schema.model_name, source_column
         )));
@@ -566,16 +564,16 @@ fn rows_matching_column(
 mod tests {
     use super::*;
     use crate::{
-        ColumnDef, ColumnType, DeleteRowMutation, PatchRowMutation, PrimaryKey, RowMutation,
-        RowPatch,
+        ColumnType, DeleteTableRowMutation, PatchTableRowMutation, PrimaryKey, RowPatch,
+        TableColumn, TableRowMutation,
     };
 
-    fn test_row_schema() -> &'static ReadModelSchema {
-        static SCHEMA: std::sync::LazyLock<ReadModelSchema> =
-            std::sync::LazyLock::new(|| ReadModelSchema {
+    fn test_row_schema() -> &'static TableSchema {
+        static SCHEMA: std::sync::LazyLock<TableSchema> =
+            std::sync::LazyLock::new(|| TableSchema {
                 model_name: "TestRow".into(),
                 table_name: "test_rows".into(),
-                columns: vec![ColumnDef::new("id", "id", ColumnType::Text)],
+                columns: vec![TableColumn::new("id", "id", ColumnType::Text)],
                 primary_key: PrimaryKey::new(["id"]),
                 version_column: None,
                 foreign_keys: Vec::new(),
@@ -594,8 +592,8 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         let outcome = store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
-                RowMutation {
+            .commit_write_plan(TableWritePlan::new(vec![TableMutation::UpsertRow(
+                TableRowMutation {
                     schema,
                     key: key.clone(),
                     values,
@@ -630,8 +628,8 @@ mod tests {
         values.insert("id", RowValue::String("row-1".into()));
 
         store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::UpsertRow(
-                RowMutation {
+            .commit_write_plan(TableWritePlan::new(vec![TableMutation::UpsertRow(
+                TableRowMutation {
                     schema,
                     key: key.clone(),
                     values,
@@ -642,8 +640,8 @@ mod tests {
             .await
             .unwrap();
         store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::PatchRow(
-                PatchRowMutation {
+            .commit_write_plan(TableWritePlan::new(vec![TableMutation::PatchRow(
+                PatchTableRowMutation {
                     schema,
                     key: key.clone(),
                     patch: RowPatch::new().set("id", RowValue::String("row-1".into())),
@@ -663,8 +661,8 @@ mod tests {
         assert_eq!(version, 2);
 
         store
-            .commit_write_plan(ReadModelWritePlan::new(vec![ReadModelMutation::DeleteRow(
-                DeleteRowMutation {
+            .commit_write_plan(TableWritePlan::new(vec![TableMutation::DeleteRow(
+                DeleteTableRowMutation {
                     schema,
                     key: key.clone(),
                     expected_version: ExpectedVersion::Exact(2),

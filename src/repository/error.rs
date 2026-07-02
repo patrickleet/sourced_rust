@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::lock::{LockError, RetryClass};
-use crate::read_model::ReadModelError;
+use crate::table::TableStoreError;
 use crate::EventRecordError;
 
 #[derive(Debug)]
@@ -238,18 +238,18 @@ impl From<LockError> for RepositoryError {
     }
 }
 
-impl From<ReadModelError> for RepositoryError {
-    fn from(err: ReadModelError) -> Self {
+impl From<TableStoreError> for RepositoryError {
+    fn from(err: TableStoreError) -> Self {
         // Map to `Storage` so the read-model error keeps a retry signal and its
         // source instead of collapsing to an opaque `Model` string. Only a lock
         // failure carries a transient/permanent distinction we can recover here;
         // every other read-model variant is deterministic (a concurrency
         // conflict, serde/metadata fault, or not-found will fail the same way on
-        // redelivery). `ReadModelError::Storage` is itself a stringified backend
+        // redelivery). `TableStoreError::Storage` is itself a stringified backend
         // error with no preserved retry signal — without changing `read_model`
         // it is classified permanent, which is the safe default (it cannot loop
         // forever; it surfaces to the failure policy).
-        let retryable = matches!(&err, ReadModelError::Lock(lock) if lock.is_retryable());
+        let retryable = matches!(&err, TableStoreError::Lock(lock) if lock.is_retryable());
         RepositoryError::Storage {
             operation: "read model".into(),
             retryable,

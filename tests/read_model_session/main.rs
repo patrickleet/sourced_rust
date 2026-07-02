@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use distributed::{
-    ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelError, ReadModelMutation, ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RowKey,
-    RowPatch, RowValue, RowWriteMode, Versioned,
+    ExpectedVersion, InMemoryReadModelStore, PatchMode, ReadModel, ReadModelWorkspaceExt,
+    ReadModelWritePlanBuilder, RowKey, RowPatch, RowValue, RowWriteMode, TableAdapterCapabilities,
+    TableMutation, TableStoreError, Versioned,
 };
 use serde::{Deserialize, Serialize};
 
@@ -114,8 +114,8 @@ fn write_plan_contains_relational_rows_only() {
 
     let plan = session.into_write_plan().unwrap();
 
-    assert!(matches!(plan.mutations[0], ReadModelMutation::UpsertRow(_)));
-    assert!(matches!(plan.mutations[1], ReadModelMutation::DeleteRow(_)));
+    assert!(matches!(plan.mutations[0], TableMutation::UpsertRow(_)));
+    assert!(matches!(plan.mutations[1], TableMutation::DeleteRow(_)));
 }
 
 #[test]
@@ -131,14 +131,14 @@ fn sparse_patches_and_full_replacements_are_distinct() {
 
     let plan = session.into_write_plan().unwrap();
 
-    let ReadModelMutation::UpsertRow(full_row) = &plan.mutations[0] else {
+    let TableMutation::UpsertRow(full_row) = &plan.mutations[0] else {
         panic!("expected full-row mutation");
     };
     assert_eq!(full_row.mode, RowWriteMode::Upsert);
     assert!(full_row.values.contains_key("balance_cents"));
     assert!(full_row.values.contains_key("counters_by_game"));
 
-    let ReadModelMutation::PatchRow(patch_row) = &plan.mutations[1] else {
+    let TableMutation::PatchRow(patch_row) = &plan.mutations[1] else {
         panic!("expected patch-row mutation");
     };
     assert_eq!(patch_row.mode, PatchMode::UpdateExisting);
@@ -159,13 +159,13 @@ fn insert_and_upsert_patch_carry_explicit_missing_row_behavior() {
 
     let plan = session.into_write_plan().unwrap();
 
-    let ReadModelMutation::UpsertRow(insert_row) = &plan.mutations[0] else {
+    let TableMutation::UpsertRow(insert_row) = &plan.mutations[0] else {
         panic!("expected insert row mutation");
     };
     assert_eq!(insert_row.mode, RowWriteMode::Insert);
     assert_eq!(insert_row.expected_version, ExpectedVersion::NotExists);
 
-    let ReadModelMutation::PatchRow(upsert_patch) = &plan.mutations[1] else {
+    let TableMutation::PatchRow(upsert_patch) = &plan.mutations[1] else {
         panic!("expected upsert patch mutation");
     };
     assert_eq!(upsert_patch.mode, PatchMode::InsertMissing);
@@ -221,7 +221,7 @@ async fn insert_missing_patch_rejects_primary_key_mismatch() {
     let err = session.commit(&store).await.unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("primary-key column `account_id`"))
     );
 }
 
@@ -238,7 +238,7 @@ async fn insert_missing_patch_rejects_partial_new_row() {
     let err = session.commit(&store).await.unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("missing required column `balance_cents`"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("missing required column `balance_cents`"))
     );
 
     let mut read_models = store.workspace();
@@ -267,7 +267,7 @@ async fn existing_patch_rejects_primary_key_mismatch() {
     let err = session.commit(&store).await.unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key column `account_id`"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("primary-key column `account_id`"))
     );
 }
 
@@ -289,7 +289,7 @@ fn relationship_operation_populates_child_foreign_key_in_explicit_row_mutation()
 
     let plan = session.into_write_plan().unwrap();
 
-    let ReadModelMutation::UpsertRow(child_row) = &plan.mutations[0] else {
+    let TableMutation::UpsertRow(child_row) = &plan.mutations[0] else {
         panic!("expected child row mutation");
     };
     assert_eq!(child_row.schema.table_name, "player_weapons");
@@ -321,7 +321,7 @@ fn expected_versions_are_carried_into_plan() {
 
     let plan = session.into_write_plan().unwrap();
 
-    let ReadModelMutation::UpsertRow(row) = &plan.mutations[0] else {
+    let TableMutation::UpsertRow(row) = &plan.mutations[0] else {
         panic!("expected upsert row");
     };
     assert_eq!(row.expected_version, ExpectedVersion::Exact(7));
@@ -347,7 +347,7 @@ fn load_requests_validate_primary_keys_and_explicit_relationship_includes() {
             ["missing"],
         )
         .unwrap_err();
-    assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("relationship")));
+    assert!(matches!(err, TableStoreError::Metadata(message) if message.contains("relationship")));
 }
 
 #[test]
@@ -361,7 +361,7 @@ fn validation_failures_happen_before_storage_writes() {
 
     let err = session.into_write_plan().unwrap_err();
 
-    assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("not nullable")));
+    assert!(matches!(err, TableStoreError::Metadata(message) if message.contains("not nullable")));
 }
 
 #[test]
@@ -372,14 +372,14 @@ fn write_plan_validation_reports_unsupported_adapter_capabilities() {
         .patch::<AccountSummary>(account_key("acct-1"), patch)
         .unwrap();
     let plan = session.into_write_plan().unwrap();
-    let capabilities = ReadModelAdapterCapabilities {
+    let capabilities = TableAdapterCapabilities {
         sparse_patches: false,
-        ..ReadModelAdapterCapabilities::default()
+        ..TableAdapterCapabilities::default()
     };
 
     let err = plan.validate_for(&capabilities).unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("sparse row patches"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("sparse row patches"))
     );
 }

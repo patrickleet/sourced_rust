@@ -8,15 +8,13 @@ use std::sync::Arc;
 
 use crate::entity::Entity;
 use crate::lock::{InMemoryLockManager, Lock, LockManager};
-use crate::read_model::{
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
-};
+use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
     CommitBatch, GetStream, InboxStore, ReadModelWritePlanStore, RelationalReadModelQueryStore,
     RepositoryError, SnapshotStore, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
+use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError, TableWritePlan};
 
 /// Options for read operations.
 #[derive(Debug, Clone, Copy)]
@@ -240,14 +238,14 @@ where
     R: ReadModelWritePlanStore,
     L: LockManager,
 {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+    fn read_model_capabilities(&self) -> TableAdapterCapabilities {
         self.inner.read_model_capabilities()
     }
 
     fn commit_write_plan(
         &self,
-        plan: ReadModelWritePlan,
-    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
+        plan: TableWritePlan,
+    ) -> impl Future<Output = Result<TableCommitOutcome, TableStoreError>> + Send + '_ {
         self.inner.commit_write_plan(plan)
     }
 }
@@ -264,7 +262,7 @@ where
     fn load_graph(
         &self,
         request: ReadModelLoadRequest,
-    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, TableStoreError>> + Send + '_ {
         self.inner.load_graph(request)
     }
 }

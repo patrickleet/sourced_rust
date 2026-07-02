@@ -1,10 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use distributed::{
-    ColumnType, ReadModel, ReadModelError, ReadModelMigrationArtifact, ReadModelSchema,
-    ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap,
-    ReadModelSchemaIssue, ReadModelSchemaIssueKind, ReadModelSchemaRegistry,
-    ReadModelSchemaVerification, RelationalReadModel, DEFAULT_READ_MODEL_VERSION_COLUMN,
+    ColumnType, ReadModel, RelationalReadModel, TableMigrationArtifact, TableSchema,
+    TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue,
+    TableSchemaIssueKind, TableSchemaRegistry, TableSchemaVerification, TableStoreError,
+    DEFAULT_TABLE_VERSION_COLUMN,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,9 +45,9 @@ struct PlayerWeapon {
 
 struct UnsupportedSchemaAdapter;
 
-impl ReadModelSchemaAdapter for UnsupportedSchemaAdapter {
-    fn schema_capabilities(&self) -> ReadModelSchemaAdapterCapabilities {
-        ReadModelSchemaAdapterCapabilities::default()
+impl TableSchemaAdapter for UnsupportedSchemaAdapter {
+    fn schema_capabilities(&self) -> TableSchemaAdapterCapabilities {
+        TableSchemaAdapterCapabilities::default()
     }
 }
 
@@ -63,17 +63,17 @@ impl FakeSqlSchemaAdapter {
     }
 }
 
-impl ReadModelSchemaAdapter for FakeSqlSchemaAdapter {
-    fn schema_capabilities(&self) -> ReadModelSchemaAdapterCapabilities {
-        ReadModelSchemaAdapterCapabilities::all()
+impl TableSchemaAdapter for FakeSqlSchemaAdapter {
+    fn schema_capabilities(&self) -> TableSchemaAdapterCapabilities {
+        TableSchemaAdapterCapabilities::all()
     }
 
     fn generate_migration_artifacts(
         &self,
-        registry: &ReadModelSchemaRegistry,
-    ) -> Result<Vec<ReadModelMigrationArtifact>, ReadModelError> {
+        registry: &TableSchemaRegistry,
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
         registry.validate()?;
-        Ok(vec![ReadModelMigrationArtifact::new(
+        Ok(vec![TableMigrationArtifact::new(
             "read-models",
             registry.schemas().map(create_table_statement),
         )])
@@ -81,36 +81,36 @@ impl ReadModelSchemaAdapter for FakeSqlSchemaAdapter {
 
     fn verify_schema(
         &self,
-        registry: &ReadModelSchemaRegistry,
-    ) -> Result<ReadModelSchemaVerification, ReadModelError> {
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaVerification, TableStoreError> {
         registry.validate()?;
         let mut issues = Vec::new();
         for schema in registry.schemas() {
             if !self.existing_tables.contains(&schema.table_name) {
-                issues.push(ReadModelSchemaIssue::new(
+                issues.push(TableSchemaIssue::new(
                     schema.table_name.clone(),
                     None::<String>,
-                    ReadModelSchemaIssueKind::MissingTable,
+                    TableSchemaIssueKind::MissingTable,
                     format!("missing table `{}`", schema.table_name),
                 ));
             }
         }
-        Ok(ReadModelSchemaVerification { issues })
+        Ok(TableSchemaVerification { issues })
     }
 
     fn bootstrap_schema_for_dev(
         &self,
-        registry: &ReadModelSchemaRegistry,
-    ) -> Result<ReadModelSchemaBootstrap, ReadModelError> {
+        registry: &TableSchemaRegistry,
+    ) -> Result<TableSchemaBootstrap, TableStoreError> {
         registry.validate()?;
-        Ok(ReadModelSchemaBootstrap::new(
+        Ok(TableSchemaBootstrap::new(
             registry.table_names().map(str::to_string),
         ))
     }
 }
 
-fn registry() -> ReadModelSchemaRegistry {
-    let mut registry = ReadModelSchemaRegistry::new();
+fn registry() -> TableSchemaRegistry {
+    let mut registry = TableSchemaRegistry::new();
     registry
         .register::<AccountSummary>()
         .unwrap()
@@ -121,7 +121,7 @@ fn registry() -> ReadModelSchemaRegistry {
     registry
 }
 
-fn create_table_statement(schema: &ReadModelSchema) -> String {
+fn create_table_statement(schema: &TableSchema) -> String {
     let columns = schema
         .columns
         .iter()
@@ -182,7 +182,7 @@ fn registry_registers_relational_models_and_exposes_schema_metadata() {
     assert_eq!(summary.table_name, "account_summaries");
     assert_eq!(
         summary.version_column.as_deref(),
-        Some(DEFAULT_READ_MODEL_VERSION_COLUMN)
+        Some(DEFAULT_TABLE_VERSION_COLUMN)
     );
     assert!(summary
         .columns
@@ -207,16 +207,16 @@ fn registry_registers_relational_models_and_exposes_schema_metadata() {
 
 #[test]
 fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
-    let mut duplicate_registry = ReadModelSchemaRegistry::new();
+    let mut duplicate_registry = TableSchemaRegistry::new();
     duplicate_registry.register::<AccountSummary>().unwrap();
 
     let err = duplicate_registry.register::<AccountSummary>().unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("already contains table"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("already contains table"))
     );
 
-    let mut invalid_registry = ReadModelSchemaRegistry::new();
+    let mut invalid_registry = TableSchemaRegistry::new();
     invalid_registry
         .register_schema(PlayerWeapon::schema().clone())
         .unwrap();
@@ -224,7 +224,7 @@ fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
     let err = invalid_registry.validate().unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("unregistered foreign-key table"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("unregistered foreign-key table"))
     );
 }
 
@@ -232,7 +232,7 @@ fn registry_rejects_duplicate_tables_and_invalid_foreign_key_targets() {
 fn registry_rejects_relationship_foreign_keys_missing_from_target_model() {
     let mut player_schema = Player::schema().clone();
     player_schema.relationships[0].foreign_key = Some("missing_player_id".into());
-    let mut registry = ReadModelSchemaRegistry::new();
+    let mut registry = TableSchemaRegistry::new();
     registry
         .register::<AccountSummary>()
         .unwrap()
@@ -243,7 +243,7 @@ fn registry_rejects_relationship_foreign_keys_missing_from_target_model() {
 
     let err = registry.validate().unwrap_err();
 
-    assert!(matches!(err, ReadModelError::Metadata(message)
+    assert!(matches!(err, TableStoreError::Metadata(message)
             if message.contains("foreign key `missing_player_id`")
                 && message.contains("target model `PlayerWeapon`")));
 }
@@ -258,7 +258,7 @@ fn adapters_can_generate_migration_artifacts_or_report_unsupported() {
         .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("migration artifact generation"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("migration artifact generation"))
     );
 
     let adapter = FakeSqlSchemaAdapter::new(Vec::<String>::new());
@@ -271,7 +271,7 @@ fn adapters_can_generate_migration_artifacts_or_report_unsupported() {
         .iter()
         .any(|statement| statement.contains("account_summaries")
             && statement.contains("jsonb")
-            && statement.contains(DEFAULT_READ_MODEL_VERSION_COLUMN)));
+            && statement.contains(DEFAULT_TABLE_VERSION_COLUMN)));
     assert!(artifacts[0]
         .statements
         .iter()
@@ -290,7 +290,7 @@ fn adapters_can_verify_schema_and_explicitly_bootstrap_dev_schema() {
         verification
             .issues
             .iter()
-            .filter(|issue| issue.kind == ReadModelSchemaIssueKind::MissingTable)
+            .filter(|issue| issue.kind == TableSchemaIssueKind::MissingTable)
             .count(),
         2
     );

@@ -26,9 +26,10 @@ use distributed::microsvc::{Context, Routes, Service, Session};
 #[cfg(feature = "sqlite")]
 use distributed::SqliteRepository;
 use distributed::{
-    AggregateBuilder, CommitBuilderExt, GetStream, OutboxMessage, OutboxStore, ReadModelError,
+    AggregateBuilder, CommitBuilderExt, GetStream, OutboxMessage, OutboxStore,
     ReadModelWritePlanBuilder, ReadModelWritePlanStore, RelationalReadModel,
-    RelationalReadModelIncludes, RelationalReadModelQueryStore, TransactionalCommit,
+    RelationalReadModelIncludes, RelationalReadModelQueryStore, TableStoreError,
+    TransactionalCommit,
 };
 use distributed::{HashMapRepository, InMemoryReadModelStore, Queueable};
 use projection_service::service as projection_service;
@@ -382,7 +383,7 @@ where
 async fn load_checkout_screen<R>(
     repo: &R,
     checkout_id: &str,
-) -> Result<Option<CheckoutView>, ReadModelError>
+) -> Result<Option<CheckoutView>, TableStoreError>
 where
     R: RelationalReadModelQueryStore + Send + Sync,
 {
@@ -407,7 +408,7 @@ where
     Ok(Some(checkout))
 }
 
-async fn load_seat<R>(repo: &R, seat_id: &str) -> Result<Option<SeatView>, ReadModelError>
+async fn load_seat<R>(repo: &R, seat_id: &str) -> Result<Option<SeatView>, TableStoreError>
 where
     R: RelationalReadModelQueryStore + Send + Sync,
 {

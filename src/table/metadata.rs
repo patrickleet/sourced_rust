@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use super::ReadModelError;
+use super::TableStoreError;
 
-pub const DEFAULT_READ_MODEL_VERSION_COLUMN: &str = "_sourced_version";
+pub const DEFAULT_TABLE_VERSION_COLUMN: &str = "_sourced_version";
 
-/// Logical storage type for a relational read-model column.
+/// Logical storage type for a relational table column.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
     Text,
@@ -36,7 +36,7 @@ impl ForeignKey {
     }
 }
 
-/// Primary-key metadata for a relational read-model table.
+/// Primary-key metadata for a relational table.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrimaryKey {
     pub columns: Vec<String>,
@@ -50,7 +50,7 @@ impl PrimaryKey {
     }
 }
 
-/// Runtime primary-key values for one read-model row.
+/// Runtime primary-key values for one table row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowKey {
     pub values: BTreeMap<String, RowValue>,
@@ -85,9 +85,9 @@ impl RowKey {
     }
 }
 
-/// Column metadata for a relational read-model table.
+/// Column metadata for a relational table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ColumnDef {
+pub struct TableColumn {
     pub field_name: String,
     pub column_name: String,
     pub column_type: ColumnType,
@@ -101,7 +101,7 @@ pub struct ColumnDef {
     pub skipped: bool,
 }
 
-impl ColumnDef {
+impl TableColumn {
     pub fn new(
         field_name: impl Into<String>,
         column_name: impl Into<String>,
@@ -123,15 +123,15 @@ impl ColumnDef {
     }
 }
 
-/// Index or unique-constraint metadata for a relational read-model table.
+/// Index or unique-constraint metadata for a relational table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndexDef {
+pub struct TableIndex {
     pub name: Option<String>,
     pub columns: Vec<String>,
     pub unique: bool,
 }
 
-impl IndexDef {
+impl TableIndex {
     pub fn new(columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             name: None,
@@ -149,7 +149,7 @@ pub enum RelationshipKind {
     ManyToMany,
 }
 
-/// Relationship metadata for a relational read model.
+/// Relationship metadata for a relational table model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationshipDef {
     pub field_name: String,
@@ -159,44 +159,44 @@ pub struct RelationshipDef {
     pub through: Option<String>,
 }
 
-/// Schema metadata for one relational read-model table.
+/// Schema metadata for one relational table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadModelSchema {
+pub struct TableSchema {
     pub model_name: String,
     pub table_name: String,
-    pub columns: Vec<ColumnDef>,
+    pub columns: Vec<TableColumn>,
     pub primary_key: PrimaryKey,
     pub version_column: Option<String>,
     pub foreign_keys: Vec<ForeignKey>,
-    pub indexes: Vec<IndexDef>,
+    pub indexes: Vec<TableIndex>,
     pub relationships: Vec<RelationshipDef>,
 }
 
-impl ReadModelSchema {
-    pub fn validate(&self) -> Result<(), ReadModelError> {
+impl TableSchema {
+    pub fn validate(&self) -> Result<(), TableStoreError> {
         if self.table_name.is_empty() {
-            return Err(ReadModelError::Metadata(
-                "read model schema must declare a table name".into(),
+            return Err(TableStoreError::Metadata(
+                "table schema must declare a table name".into(),
             ));
         }
 
         let mut columns = BTreeSet::new();
         for column in &self.columns {
             if column.column_name.is_empty() {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` has a column with an empty name",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` has a column with an empty name",
                     self.model_name
                 )));
             }
             if !columns.insert(column.column_name.as_str()) {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` declares duplicate column `{}`",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` declares duplicate column `{}`",
                     self.model_name, column.column_name
                 )));
             }
             if let ColumnType::Unsupported(type_name) = &column.column_type {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` field `{}` has unsupported field shape `{}`",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` field `{}` has unsupported field shape `{}`",
                     self.model_name, column.field_name, type_name
                 )));
             }
@@ -207,30 +207,30 @@ impl ReadModelSchema {
 
         if let Some(version_column) = &self.version_column {
             if version_column.is_empty() {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` declares an empty version column",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` declares an empty version column",
                     self.model_name
                 )));
             }
             if columns.contains(version_column.as_str()) {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` version column `{}` conflicts with a mapped column",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` version column `{}` conflicts with a mapped column",
                     self.model_name, version_column
                 )));
             }
         }
 
         if self.primary_key.columns.is_empty() {
-            return Err(ReadModelError::Metadata(format!(
-                "read model `{}` must declare at least one primary-key column",
+            return Err(TableStoreError::Metadata(format!(
+                "model `{}` must declare at least one primary-key column",
                 self.model_name
             )));
         }
 
         for column in &self.primary_key.columns {
             if !columns.contains(column.as_str()) {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` primary key references missing column `{}`",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary key references missing column `{}`",
                     self.model_name, column
                 )));
             }
@@ -244,22 +244,22 @@ impl ReadModelSchema {
         for index in &self.indexes {
             if let Some(name) = index.name.as_deref() {
                 if !index_names.insert(name) {
-                    return Err(ReadModelError::Metadata(format!(
-                        "read model `{}` declares duplicate index name `{}`",
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` declares duplicate index name `{}`",
                         self.model_name, name
                     )));
                 }
             }
             if index.columns.is_empty() {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` declares an index with no columns",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` declares an index with no columns",
                     self.model_name
                 )));
             }
             for column in &index.columns {
                 if !columns.contains(column.as_str()) {
-                    return Err(ReadModelError::Metadata(format!(
-                        "read model `{}` index references missing column `{}`",
+                    return Err(TableStoreError::Metadata(format!(
+                        "model `{}` index references missing column `{}`",
                         self.model_name, column
                     )));
                 }
@@ -268,8 +268,8 @@ impl ReadModelSchema {
 
         for relationship in &self.relationships {
             if relationship.target_model.is_empty() {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` relationship `{}` must declare a target model",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` relationship `{}` must declare a target model",
                     self.model_name, relationship.field_name
                 )));
             }
@@ -278,8 +278,8 @@ impl ReadModelSchema {
                 .as_deref()
                 .is_none_or(str::is_empty)
             {
-                return Err(ReadModelError::Metadata(format!(
-                    "read model `{}` relationship `{}` must declare a foreign key",
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` relationship `{}` must declare a foreign key",
                     self.model_name, relationship.field_name
                 )));
             }
@@ -289,16 +289,16 @@ impl ReadModelSchema {
     }
 }
 
-fn validate_foreign_key(model_name: &str, foreign_key: &ForeignKey) -> Result<(), ReadModelError> {
+fn validate_foreign_key(model_name: &str, foreign_key: &ForeignKey) -> Result<(), TableStoreError> {
     if foreign_key.table.is_empty() || foreign_key.column.is_empty() {
-        return Err(ReadModelError::Metadata(format!(
-            "read model `{model_name}` has an invalid foreign-key declaration"
+        return Err(TableStoreError::Metadata(format!(
+            "model `{model_name}` has an invalid foreign-key declaration"
         )));
     }
     Ok(())
 }
 
-/// A typed value in a relational read-model row.
+/// A typed value in a relational table row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowValue {
     Null,
@@ -312,9 +312,9 @@ pub enum RowValue {
 }
 
 impl RowValue {
-    pub fn from_serde<T: Serialize + ?Sized>(value: &T) -> Result<Self, ReadModelError> {
+    pub fn from_serde<T: Serialize + ?Sized>(value: &T) -> Result<Self, TableStoreError> {
         let value =
-            serde_json::to_value(value).map_err(|err| ReadModelError::Serde(err.to_string()))?;
+            serde_json::to_value(value).map_err(|err| TableStoreError::Serde(err.to_string()))?;
         Ok(Self::from_json_value(value))
     }
 
@@ -354,7 +354,7 @@ impl RowValue {
     }
 }
 
-/// Column-value map for one relational read-model row.
+/// Column-value map for one relational table row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowValues {
     values: BTreeMap<String, RowValue>,
@@ -373,7 +373,7 @@ impl RowValues {
         &mut self,
         column: impl Into<String>,
         value: &T,
-    ) -> Result<Option<RowValue>, ReadModelError> {
+    ) -> Result<Option<RowValue>, TableStoreError> {
         let value = RowValue::from_serde(value)?;
         Ok(self.insert(column, value))
     }
@@ -394,12 +394,12 @@ impl RowValues {
         self.values.is_empty()
     }
 
-    pub fn get_serde<T: DeserializeOwned>(&self, column: &str) -> Result<T, ReadModelError> {
+    pub fn get_serde<T: DeserializeOwned>(&self, column: &str) -> Result<T, TableStoreError> {
         let value = self.values.get(column).ok_or_else(|| {
-            ReadModelError::Metadata(format!("row is missing required column `{column}`"))
+            TableStoreError::Metadata(format!("row is missing required column `{column}`"))
         })?;
         serde_json::from_value(value.clone().into_json())
-            .map_err(|err| ReadModelError::Serde(err.to_string()))
+            .map_err(|err| TableStoreError::Serde(err.to_string()))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &RowValue)> {
@@ -418,55 +418,30 @@ impl IntoIterator for RowValues {
     }
 }
 
-/// Opt-in trait for table-mapped relational read models.
-pub trait RelationalReadModel: Clone + Send + Sync + Sized {
-    /// The model's schema. Static because a model's schema is fixed at compile
-    /// time; the derive macro backs this with a `LazyLock` so staging mutations
-    /// never rebuilds or clones schema metadata.
-    fn schema() -> &'static ReadModelSchema;
-    fn primary_key(&self) -> Result<RowKey, ReadModelError>;
-    fn to_row(&self) -> Result<RowValues, ReadModelError>;
-    fn from_row(row: RowValues) -> Result<Self, ReadModelError>;
-}
-
-/// Relationship hydration hooks generated for table-mapped read models.
-pub trait RelationalReadModelIncludes: RelationalReadModel {
-    fn hydrate_include(
-        &mut self,
-        include: &str,
-        rows: Vec<RowValues>,
-    ) -> Result<(), ReadModelError>;
-
-    fn include_rows(&self, include: &str) -> Result<Vec<RowValues>, ReadModelError>;
-
-    /// Schema of the model targeted by the named relationship.
-    fn include_target_schema(include: &str) -> Result<&'static ReadModelSchema, ReadModelError>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn valid_schema() -> ReadModelSchema {
-        ReadModelSchema {
+    fn valid_schema() -> TableSchema {
+        TableSchema {
             model_name: "PlayerWeapon".into(),
             table_name: "player_weapons".into(),
             columns: vec![
-                ColumnDef {
+                TableColumn {
                     primary_key: true,
                     foreign_key: Some(ForeignKey::new("players", "player_id")),
                     delegated_from: Some("Player.player_id".into()),
-                    ..ColumnDef::new("player_id", "player_id", ColumnType::Text)
+                    ..TableColumn::new("player_id", "player_id", ColumnType::Text)
                 },
-                ColumnDef {
+                TableColumn {
                     primary_key: true,
-                    ..ColumnDef::new("weapon_id", "weapon_id", ColumnType::Text)
+                    ..TableColumn::new("weapon_id", "weapon_id", ColumnType::Text)
                 },
             ],
             primary_key: PrimaryKey::new(["player_id", "weapon_id"]),
-            version_column: Some(DEFAULT_READ_MODEL_VERSION_COLUMN.into()),
+            version_column: Some(DEFAULT_TABLE_VERSION_COLUMN.into()),
             foreign_keys: vec![ForeignKey::new("players", "player_id")],
-            indexes: vec![IndexDef::new(["player_id"])],
+            indexes: vec![TableIndex::new(["player_id"])],
             relationships: Vec::new(),
         }
     }
@@ -486,14 +461,14 @@ mod tests {
         let err = schema.validate().unwrap_err();
 
         assert!(
-            matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key"))
+            matches!(err, TableStoreError::Metadata(message) if message.contains("primary-key"))
         );
     }
 
     #[test]
     fn validate_rejects_unsupported_field_shapes() {
         let mut schema = valid_schema();
-        schema.columns.push(ColumnDef::new(
+        schema.columns.push(TableColumn::new(
             "callback",
             "callback",
             ColumnType::Unsupported("fn()".into()),
@@ -502,7 +477,7 @@ mod tests {
         let err = schema.validate().unwrap_err();
 
         assert!(
-            matches!(err, ReadModelError::Metadata(message) if message.contains("unsupported field shape"))
+            matches!(err, TableStoreError::Metadata(message) if message.contains("unsupported field shape"))
         );
     }
 
@@ -520,7 +495,7 @@ mod tests {
         let err = schema.validate().unwrap_err();
 
         assert!(
-            matches!(err, ReadModelError::Metadata(message) if message.contains("foreign key"))
+            matches!(err, TableStoreError::Metadata(message) if message.contains("foreign key"))
         );
     }
 
@@ -528,12 +503,12 @@ mod tests {
     fn validate_rejects_duplicate_explicit_index_names() {
         let mut schema = valid_schema();
         schema.indexes = vec![
-            IndexDef {
+            TableIndex {
                 name: Some("idx_player_weapons_player_id".into()),
                 columns: vec!["player_id".into()],
                 unique: false,
             },
-            IndexDef {
+            TableIndex {
                 name: Some("idx_player_weapons_player_id".into()),
                 columns: vec!["weapon_id".into()],
                 unique: false,
@@ -542,7 +517,7 @@ mod tests {
 
         let err = schema.validate().unwrap_err();
 
-        assert!(matches!(err, ReadModelError::Metadata(message)
+        assert!(matches!(err, TableStoreError::Metadata(message)
                 if message.contains("duplicate index name `idx_player_weapons_player_id`")));
     }
 

@@ -7,14 +7,14 @@ use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore};
 
 use super::workspace::ReadModelWorkspace;
 use super::{
-    ReadModelError, ReadModelQueryCapabilities, ReadModelSchema, RelationalReadModel,
-    RelationalReadModelIncludes, RelationshipDef, RowKey, RowValues, Versioned,
+    ReadModelQueryCapabilities, RelationalReadModel, RelationalReadModelIncludes, Versioned,
 };
+use crate::table::{RelationshipDef, RowKey, RowValues, TableSchema, TableStoreError};
 
 /// A request an adapter can satisfy with a primary-key read plus explicit includes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadModelLoadRequest {
-    pub schema: ReadModelSchema,
+    pub schema: TableSchema,
     pub key: RowKey,
     pub includes: Vec<String>,
 }
@@ -23,9 +23,9 @@ impl ReadModelLoadRequest {
     pub fn validate_for_query_capabilities(
         &self,
         capabilities: &ReadModelQueryCapabilities,
-    ) -> Result<(), ReadModelError> {
+    ) -> Result<(), TableStoreError> {
         if !self.includes.is_empty() && !capabilities.relationship_includes {
-            return Err(ReadModelError::Metadata(
+            return Err(TableStoreError::Metadata(
                 "read-model adapter does not support relationship includes".into(),
             ));
         }
@@ -38,7 +38,7 @@ impl ReadModelLoadRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadModelIncludeRows {
     pub relationship: RelationshipDef,
-    pub target_schema: ReadModelSchema,
+    pub target_schema: TableSchema,
     pub rows: Vec<Versioned<RowValues>>,
 }
 
@@ -70,7 +70,7 @@ where
         self
     }
 
-    pub async fn one(self) -> Result<Option<Versioned<M>>, ReadModelError> {
+    pub async fn one(self) -> Result<Option<Versioned<M>>, TableStoreError> {
         let request = self
             .unit
             .writes

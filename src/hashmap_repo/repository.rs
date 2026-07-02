@@ -11,8 +11,7 @@ use crate::entity::{Entity, EventRecord};
 use crate::outbox::OutboxMessage;
 use crate::read_model::in_memory::apply_read_model_write_plan;
 use crate::read_model::{
-    InMemoryReadModelStore, ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
+    InMemoryReadModelStore, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
 };
 use crate::repository::{
     reject_duplicate_outbox_messages, reject_duplicate_streams,
@@ -22,6 +21,7 @@ use crate::repository::{
     TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord};
+use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError, TableWritePlan};
 
 /// In-memory repository implementation using HashMap.
 ///
@@ -344,14 +344,14 @@ fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
 }
 
 impl ReadModelWritePlanStore for HashMapRepository {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+    fn read_model_capabilities(&self) -> TableAdapterCapabilities {
         self.model_store.read_model_capabilities()
     }
 
     fn commit_write_plan(
         &self,
-        plan: ReadModelWritePlan,
-    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
+        plan: TableWritePlan,
+    ) -> impl Future<Output = Result<TableCommitOutcome, TableStoreError>> + Send + '_ {
         self.model_store.commit_write_plan(plan)
     }
 }
@@ -364,7 +364,7 @@ impl RelationalReadModelQueryStore for HashMapRepository {
     fn load_graph(
         &self,
         request: ReadModelLoadRequest,
-    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_ {
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, TableStoreError>> + Send + '_ {
         self.model_store.load_graph(request)
     }
 }

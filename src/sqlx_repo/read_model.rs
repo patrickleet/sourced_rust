@@ -18,14 +18,16 @@ use std::sync::RwLock;
 use sqlx::{Database, Encode, Executor, IntoArguments, QueryBuilder, Row, Transaction, Type};
 
 use crate::read_model::{
-    key_fingerprint, validate_key, validate_row_values, ColumnDef, DeleteRowMutation,
-    ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelSchema,
-    ReadModelWritePlan, RelationshipDef, RelationshipKind, RowKey, RowMutation, RowValue,
-    RowValues, RowWriteMode, Versioned,
+    ReadModelIncludeRows, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
+    Versioned,
 };
 use crate::table::TableSchemaRegistry;
+use crate::table::{
+    key_fingerprint, validate_key, validate_row_values, DeleteTableRowMutation, ExpectedVersion,
+    PatchMode, PatchTableRowMutation, RelationshipDef, RelationshipKind, RowKey, RowValue,
+    RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn, TableCommitOutcome,
+    TableMutation, TableRowMutation, TableSchema, TableStoreError, TableWritePlan,
+};
 
 /// A resolved relationship include: the relationship metadata plus the registered
 /// schema of the target model, ready for the relational load path to query.
@@ -33,21 +35,21 @@ use crate::table::TableSchemaRegistry;
 pub(crate) struct IncludeSpec {
     pub(crate) name: String,
     pub(crate) relationship: RelationshipDef,
-    pub(crate) target_schema: ReadModelSchema,
+    pub(crate) target_schema: TableSchema,
 }
 
 pub(crate) fn remember_read_model_schemas(
     stored: &RwLock<TableSchemaRegistry>,
     registry: &TableSchemaRegistry,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     let mut stored = stored
         .write()
-        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
+        .map_err(|_| TableStoreError::Storage("read-model schema registry lock poisoned".into()))?;
 
     for schema in registry.schemas() {
         if let Some(existing) = stored.schema_for_table(&schema.table_name) {
             if existing != schema {
-                return Err(ReadModelError::Metadata(format!(
+                return Err(TableStoreError::Metadata(format!(
                     "read-model schema registry already contains table `{}` with different metadata",
                     schema.table_name
                 )));
@@ -63,25 +65,25 @@ pub(crate) fn remember_read_model_schemas(
 pub(crate) fn resolve_registered_read_model_schemas(
     registry: &RwLock<TableSchemaRegistry>,
     request: &ReadModelLoadRequest,
-) -> Result<(ReadModelSchema, Vec<IncludeSpec>), ReadModelError> {
+) -> Result<(TableSchema, Vec<IncludeSpec>), TableStoreError> {
     if request.includes.is_empty() {
         return Ok((request.schema.clone(), Vec::new()));
     }
 
     let registry = registry
         .read()
-        .map_err(|_| ReadModelError::Storage("read-model schema registry lock poisoned".into()))?;
+        .map_err(|_| TableStoreError::Storage("read-model schema registry lock poisoned".into()))?;
     let root_schema = registry
         .schema_for_model(&request.schema.model_name)
         .cloned()
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` is not registered for relationship includes",
                 request.schema.model_name
             ))
         })?;
     if root_schema != request.schema {
-        return Err(ReadModelError::Metadata(format!(
+        return Err(TableStoreError::Metadata(format!(
             "read model `{}` load request does not match registered schema",
             request.schema.model_name
         )));
@@ -94,13 +96,13 @@ pub(crate) fn resolve_registered_read_model_schemas(
             .iter()
             .find(|relationship| relationship.field_name == *include_name)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` has no relationship `{}`",
                     root_schema.model_name, include_name
                 ))
             })?;
         if matches!(relationship.kind, RelationshipKind::ManyToMany) {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "many-to-many relationship `{}` includes are not supported until join metadata declares source and target keys",
                 relationship.field_name
             )));
@@ -108,7 +110,7 @@ pub(crate) fn resolve_registered_read_model_schemas(
         let target_schema = registry
             .schema_for_model(&relationship.target_model)
             .ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` relationship `{}` targets unregistered model `{}`",
                     root_schema.model_name, relationship.field_name, relationship.target_model
                 ))
@@ -124,15 +126,15 @@ pub(crate) fn resolve_registered_read_model_schemas(
     Ok((root_schema, include_specs))
 }
 
-pub(crate) fn sql_read_model_capabilities() -> ReadModelAdapterCapabilities {
-    ReadModelAdapterCapabilities {
+pub(crate) fn sql_read_model_capabilities() -> TableAdapterCapabilities {
+    TableAdapterCapabilities {
         relational_rows: true,
         sparse_patches: true,
         deletes: true,
     }
 }
 
-pub(crate) fn validate_sql_write_plan(plan: &ReadModelWritePlan) -> Result<(), ReadModelError> {
+pub(crate) fn validate_sql_write_plan(plan: &TableWritePlan) -> Result<(), TableStoreError> {
     plan.validate_for(&sql_read_model_capabilities())
 }
 
@@ -141,18 +143,18 @@ pub(crate) fn initial_row_version() -> u64 {
 }
 
 pub(crate) fn validate_row_expected_version(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     expected_version: &ExpectedVersion,
     current_version: Option<u64>,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     match (expected_version, current_version) {
         (ExpectedVersion::Any, _) => Ok(()),
         (ExpectedVersion::Exact(expected), Some(actual)) if expected == &actual => Ok(()),
         (ExpectedVersion::Exact(expected), Some(actual)) => {
             Err(row_concurrency_conflict(schema, key, *expected, actual))
         }
-        (ExpectedVersion::Exact(_), None) => Err(ReadModelError::NotFound {
+        (ExpectedVersion::Exact(_), None) => Err(TableStoreError::NotFound {
             collection: schema.table_name.clone(),
             id: key_fingerprint(key),
         }),
@@ -164,12 +166,12 @@ pub(crate) fn validate_row_expected_version(
 }
 
 pub(crate) fn row_concurrency_conflict(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     expected: u64,
     actual: u64,
-) -> ReadModelError {
-    ReadModelError::ConcurrencyConflict {
+) -> TableStoreError {
+    TableStoreError::ConcurrencyConflict {
         collection: schema.table_name.clone(),
         id: key_fingerprint(key),
         expected,
@@ -178,10 +180,10 @@ pub(crate) fn row_concurrency_conflict(
 }
 
 pub(crate) fn row_values_from_key_and_patch(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
-    patch: crate::read_model::RowPatch,
-) -> Result<RowValues, ReadModelError> {
+    patch: crate::table::RowPatch,
+) -> Result<RowValues, TableStoreError> {
     let mut values = RowValues::new();
     for (column, value) in key.iter() {
         values.insert(column.to_string(), value.clone());
@@ -194,13 +196,13 @@ pub(crate) fn row_values_from_key_and_patch(
             .any(|primary_key| primary_key == &column)
         {
             let key_value = key.get(&column).ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` row key is missing primary-key column `{}`",
                     schema.model_name, column
                 ))
             })?;
             if key_value != &value {
-                return Err(ReadModelError::Metadata(format!(
+                return Err(TableStoreError::Metadata(format!(
                     "read model `{}` patch cannot change primary-key column `{}`",
                     schema.model_name, column
                 )));
@@ -214,22 +216,22 @@ pub(crate) fn row_values_from_key_and_patch(
 }
 
 pub(crate) fn patch_values_preserving_key<'schema>(
-    schema: &'schema ReadModelSchema,
+    schema: &'schema TableSchema,
     key: &RowKey,
-    patch: &crate::read_model::RowPatch,
-) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
+    patch: &crate::table::RowPatch,
+) -> Result<Vec<(&'schema TableColumn, RowValue)>, TableStoreError> {
     let mut values = Vec::new();
     for (column_name, value) in patch.iter() {
         let column = column_by_name(schema, column_name)?;
         if column.primary_key {
             let key_value = key.get(column_name).ok_or_else(|| {
-                ReadModelError::Metadata(format!(
+                TableStoreError::Metadata(format!(
                     "read model `{}` row key is missing primary-key column `{}`",
                     schema.model_name, column_name
                 ))
             })?;
             if key_value != value {
-                return Err(ReadModelError::Metadata(format!(
+                return Err(TableStoreError::Metadata(format!(
                     "read model `{}` patch cannot change primary-key column `{}`",
                     schema.model_name, column_name
                 )));
@@ -242,25 +244,25 @@ pub(crate) fn patch_values_preserving_key<'schema>(
 }
 
 pub(crate) fn validate_values_match_key(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     values: &RowValues,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     for column in &schema.primary_key.columns {
         let key_value = key.get(column).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` row key is missing primary-key column `{}`",
                 schema.model_name, column
             ))
         })?;
         let row_value = values.get(column).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` row is missing primary-key column `{}`",
                 schema.model_name, column
             ))
         })?;
         if row_value != key_value {
-            return Err(ReadModelError::Metadata(format!(
+            return Err(TableStoreError::Metadata(format!(
                 "read model `{}` row values cannot change primary-key column `{}`",
                 schema.model_name, column
             )));
@@ -270,11 +272,11 @@ pub(crate) fn validate_values_match_key(
 }
 
 pub(crate) fn belongs_to_target_column(
-    target_schema: &ReadModelSchema,
+    target_schema: &TableSchema,
     source_column: &str,
-) -> Result<String, ReadModelError> {
+) -> Result<String, TableStoreError> {
     if target_schema.primary_key.columns.len() != 1 {
-        return Err(ReadModelError::Metadata(format!(
+        return Err(TableStoreError::Metadata(format!(
             "belongs_to target `{}` must have a single-column primary key to load from `{}`",
             target_schema.model_name, source_column
         )));
@@ -292,9 +294,9 @@ pub(crate) fn empty_string_as_none(value: &str) -> Option<&str> {
 }
 
 pub(crate) fn row_write_values<'schema>(
-    schema: &'schema ReadModelSchema,
+    schema: &'schema TableSchema,
     values: &RowValues,
-) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
+) -> Result<Vec<(&'schema TableColumn, RowValue)>, TableStoreError> {
     values
         .iter()
         .map(|(column_name, value)| Ok((column_by_name(schema, column_name)?, value.clone())))
@@ -302,24 +304,24 @@ pub(crate) fn row_write_values<'schema>(
 }
 
 pub(crate) fn column_by_name<'schema>(
-    schema: &'schema ReadModelSchema,
+    schema: &'schema TableSchema,
     column_name: &str,
-) -> Result<&'schema ColumnDef, ReadModelError> {
+) -> Result<&'schema TableColumn, TableStoreError> {
     schema
         .columns
         .iter()
         .find(|column| column.column_name == column_name)
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` write references missing column `{}`",
                 schema.model_name, column_name
             ))
         })
 }
 
-pub(crate) fn version_column(schema: &ReadModelSchema) -> Result<&str, ReadModelError> {
+pub(crate) fn version_column(schema: &TableSchema) -> Result<&str, TableStoreError> {
     schema.version_column.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "read model `{}` requires a version column for SQL write-plan persistence",
             schema.model_name
         ))
@@ -352,15 +354,15 @@ pub(crate) trait SqlxReadModelBackend: Database {
     fn push_row_value_bind(
         builder: &mut QueryBuilder<Self>,
         value: RowValue,
-        column: &ColumnDef,
-    ) -> Result<(), ReadModelError>;
+        column: &TableColumn,
+    ) -> Result<(), TableStoreError>;
 
     /// Bind a typed `NULL` for the column's type (Postgres needs the concrete
     /// `Option::<T>::None` per type so `$N` infers correctly).
     fn push_null_bind(
         builder: &mut QueryBuilder<Self>,
-        column: &ColumnDef,
-    ) -> Result<(), ReadModelError>;
+        column: &TableColumn,
+    ) -> Result<(), TableStoreError>;
 
     /// Affected-row count of a write result. `sqlx` exposes `rows_affected` only as
     /// an inherent method on each backend's `QueryResult`, not via a shared trait,
@@ -370,17 +372,17 @@ pub(crate) trait SqlxReadModelBackend: Database {
     /// Render one `SELECT`-list column. Postgres casts JSON/Timestamp to `::text`
     /// so they decode as `String`; SQLite stores them as text already, so it just
     /// pushes the quoted column. (Reading is the inverse of `push_row_value_bind`.)
-    fn push_select_column(builder: &mut QueryBuilder<Self>, column: &ColumnDef);
+    fn push_select_column(builder: &mut QueryBuilder<Self>, column: &TableColumn);
 
     /// Decode one fetched column into a `RowValue`. The one genuinely dialect-
     /// specific read: Postgres has a native `BOOLEAN`, SQLite stores booleans as
     /// `INTEGER` and decodes `value != 0`.
-    fn row_value(row: &Self::Row, column: &ColumnDef) -> Result<RowValue, ReadModelError>;
+    fn row_value(row: &Self::Row, column: &TableColumn) -> Result<RowValue, TableStoreError>;
 }
 
 pub(crate) async fn begin_read_model_tx<DB: SqlxReadModelBackend>(
     pool: &sqlx::Pool<DB>,
-) -> Result<Transaction<'_, DB>, ReadModelError> {
+) -> Result<Transaction<'_, DB>, TableStoreError> {
     pool.begin()
         .await
         .map_err(|err| read_model_storage_error(DB::BACKEND, "begin transaction", err))
@@ -388,7 +390,7 @@ pub(crate) async fn begin_read_model_tx<DB: SqlxReadModelBackend>(
 
 pub(crate) async fn commit_read_model_tx<DB: SqlxReadModelBackend>(
     tx: Transaction<'_, DB>,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     tx.commit()
         .await
         .map_err(|err| read_model_storage_error(DB::BACKEND, "commit transaction", err))
@@ -396,8 +398,8 @@ pub(crate) async fn commit_read_model_tx<DB: SqlxReadModelBackend>(
 
 pub(crate) async fn commit_read_model_write_plan<DB>(
     pool: &sqlx::Pool<DB>,
-    plan: ReadModelWritePlan,
-) -> Result<ReadModelCommitOutcome, ReadModelError>
+    plan: TableWritePlan,
+) -> Result<TableCommitOutcome, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -414,8 +416,8 @@ where
 
 pub(crate) async fn apply_read_model_write_plan_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    plan: ReadModelWritePlan,
-) -> Result<ReadModelCommitOutcome, ReadModelError>
+    plan: TableWritePlan,
+) -> Result<TableCommitOutcome, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -427,25 +429,25 @@ where
 
     for mutation in plan.mutations {
         match mutation {
-            ReadModelMutation::UpsertRow(mutation) => {
+            TableMutation::UpsertRow(mutation) => {
                 upsert_relational_row_in_tx(tx, mutation).await?;
             }
-            ReadModelMutation::PatchRow(mutation) => {
+            TableMutation::PatchRow(mutation) => {
                 patch_relational_row_in_tx(tx, mutation).await?;
             }
-            ReadModelMutation::DeleteRow(mutation) => {
+            TableMutation::DeleteRow(mutation) => {
                 delete_relational_row_in_tx(tx, mutation).await?;
             }
         }
     }
 
-    Ok(ReadModelCommitOutcome::applied())
+    Ok(TableCommitOutcome::applied())
 }
 
 pub(crate) async fn upsert_relational_row_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    mutation: RowMutation,
-) -> Result<(), ReadModelError>
+    mutation: TableRowMutation,
+) -> Result<(), TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -521,8 +523,8 @@ where
 
 pub(crate) async fn patch_relational_row_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    mutation: PatchRowMutation,
-) -> Result<(), ReadModelError>
+    mutation: PatchTableRowMutation,
+) -> Result<(), TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -544,7 +546,7 @@ where
             current_version,
         )?;
         if !matches!(mutation.mode, PatchMode::InsertMissing) {
-            return Err(ReadModelError::NotFound {
+            return Err(TableStoreError::NotFound {
                 collection: mutation.schema.table_name.clone(),
                 id: key_fingerprint(&mutation.key),
             });
@@ -577,7 +579,7 @@ where
                     expected_version,
                     actual,
                 )),
-                None => Err(ReadModelError::NotFound {
+                None => Err(TableStoreError::NotFound {
                     collection: mutation.schema.table_name.clone(),
                     id: key_fingerprint(&mutation.key),
                 }),
@@ -589,7 +591,7 @@ where
             insert_relational_row_in_tx(tx, mutation.schema, &values, initial_row_version())
                 .await?;
         } else {
-            return Err(ReadModelError::NotFound {
+            return Err(TableStoreError::NotFound {
                 collection: mutation.schema.table_name.clone(),
                 id: key_fingerprint(&mutation.key),
             });
@@ -601,8 +603,8 @@ where
 
 pub(crate) async fn delete_relational_row_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    mutation: DeleteRowMutation,
-) -> Result<(), ReadModelError>
+    mutation: DeleteTableRowMutation,
+) -> Result<(), TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -648,7 +650,7 @@ where
                         expected_version,
                         actual,
                     )),
-                    None => Err(ReadModelError::NotFound {
+                    None => Err(TableStoreError::NotFound {
                         collection: mutation.schema.table_name.clone(),
                         id: key_fingerprint(&mutation.key),
                     }),
@@ -661,9 +663,9 @@ where
 
 pub(crate) async fn row_version_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
-) -> Result<Option<u64>, ReadModelError>
+) -> Result<Option<u64>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -698,10 +700,10 @@ where
 
 pub(crate) async fn insert_relational_row_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     values: &RowValues,
     version: u64,
-) -> Result<(), ReadModelError>
+) -> Result<(), TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -761,9 +763,9 @@ where
 /// past `i64::MAX` fails as a storage error).
 pub(crate) async fn upsert_relational_row_on_conflict_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     values: &RowValues,
-) -> Result<(), ReadModelError>
+) -> Result<(), TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -829,11 +831,11 @@ where
 
 pub(crate) async fn update_relational_row_values_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     values: &RowValues,
     expected_version: Option<u64>,
-) -> Result<u64, ReadModelError>
+) -> Result<u64, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -851,11 +853,11 @@ where
 /// happens in-database; an increment past `i64::MAX` fails as a storage error.
 pub(crate) async fn update_relational_columns_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
-    write_values: Vec<(&ColumnDef, RowValue)>,
+    write_values: Vec<(&TableColumn, RowValue)>,
     expected_version: Option<u64>,
-) -> Result<u64, ReadModelError>
+) -> Result<u64, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -900,10 +902,10 @@ where
 
 pub(crate) async fn delete_relational_row_where_version_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
     expected_version: Option<u64>,
-) -> Result<u64, ReadModelError>
+) -> Result<u64, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
@@ -937,9 +939,9 @@ where
 
 pub(crate) fn push_key_predicates<DB: SqlxReadModelBackend>(
     builder: &mut QueryBuilder<DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
-) -> Result<(), ReadModelError> {
+) -> Result<(), TableStoreError> {
     builder.push(" WHERE ");
     for (index, column_name) in schema.primary_key.columns.iter().enumerate() {
         if index > 0 {
@@ -947,7 +949,7 @@ pub(crate) fn push_key_predicates<DB: SqlxReadModelBackend>(
         }
         let column = column_by_name(schema, column_name)?;
         let value = key.get(column_name).cloned().ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "read model `{}` row key is missing primary-key column `{}`",
                 schema.model_name, column_name
             ))
@@ -962,8 +964,8 @@ pub(crate) fn push_key_predicates<DB: SqlxReadModelBackend>(
 /// Build the shared `SELECT <columns>, <version> FROM <table>` prefix used by every
 /// relational read. Per-column rendering is dialect-specific (`push_select_column`).
 pub(crate) fn relational_row_select<DB: SqlxReadModelBackend>(
-    schema: &ReadModelSchema,
-) -> Result<QueryBuilder<DB>, ReadModelError> {
+    schema: &TableSchema,
+) -> Result<QueryBuilder<DB>, TableStoreError> {
     let version_column = version_column(schema)?;
     let mut builder = QueryBuilder::<DB>::new("SELECT ");
     for (index, column) in schema.columns.iter().enumerate() {
@@ -983,7 +985,7 @@ pub(crate) fn relational_row_select<DB: SqlxReadModelBackend>(
 
 pub(crate) fn push_order_by_primary_key<DB: SqlxReadModelBackend>(
     builder: &mut QueryBuilder<DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
 ) {
     if schema.primary_key.columns.is_empty() {
         return;
@@ -998,9 +1000,9 @@ pub(crate) fn push_order_by_primary_key<DB: SqlxReadModelBackend>(
 }
 
 pub(crate) fn row_to_versioned_values<DB>(
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     row: &DB::Row,
-) -> Result<Versioned<RowValues>, ReadModelError>
+) -> Result<Versioned<RowValues>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
@@ -1026,9 +1028,9 @@ where
 
 pub(crate) async fn load_relational_row_by_key<DB>(
     pool: &sqlx::Pool<DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     key: &RowKey,
-) -> Result<Option<Versioned<RowValues>>, ReadModelError>
+) -> Result<Option<Versioned<RowValues>>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
@@ -1050,10 +1052,10 @@ where
 
 pub(crate) async fn load_relationship_rows<DB>(
     pool: &sqlx::Pool<DB>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
@@ -1066,7 +1068,7 @@ where
         RelationshipKind::BelongsTo => {
             load_belongs_to_rows(pool, root_schema, root_row, spec).await
         }
-        RelationshipKind::ManyToMany => Err(ReadModelError::Metadata(format!(
+        RelationshipKind::ManyToMany => Err(TableStoreError::Metadata(format!(
             "many-to-many relationship `{}` includes are not supported yet",
             spec.relationship.field_name
         ))),
@@ -1078,7 +1080,7 @@ pub(crate) async fn load_read_model_graph<DB>(
     schemas: &RwLock<TableSchemaRegistry>,
     request: ReadModelLoadRequest,
     capabilities: ReadModelQueryCapabilities,
-) -> Result<ReadModelLoadGraph, ReadModelError>
+) -> Result<ReadModelLoadGraph, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
@@ -1116,10 +1118,10 @@ where
 
 async fn load_has_many_rows<DB>(
     pool: &sqlx::Pool<DB>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
@@ -1128,28 +1130,28 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
     let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` must declare a foreign key",
             spec.relationship.field_name
         ))
     })?;
-    let target_column = crate::read_model::column_name_for(&spec.target_schema, foreign_key)
+    let target_column = crate::table::column_name_for(&spec.target_schema, foreign_key)
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "relationship `{}` foreign key `{}` is not a target column",
                 spec.relationship.field_name, foreign_key
             ))
         })?;
-    let root_column = crate::read_model::column_name_for(root_schema, foreign_key)
+    let root_column = crate::table::column_name_for(root_schema, foreign_key)
         .or_else(|| root_schema.primary_key.columns.first().cloned())
         .ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+            TableStoreError::Metadata(format!(
                 "relationship `{}` has no root key column",
                 spec.relationship.field_name
             ))
         })?;
     let root_value = root_row.get(&root_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",
             root_schema.model_name, root_column
         ))
@@ -1160,10 +1162,10 @@ where
 
 async fn load_belongs_to_rows<DB>(
     pool: &sqlx::Pool<DB>,
-    root_schema: &ReadModelSchema,
+    root_schema: &TableSchema,
     root_row: &RowValues,
     spec: &IncludeSpec,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
@@ -1172,21 +1174,21 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
     let foreign_key = spec.relationship.foreign_key.as_deref().ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "relationship `{}` must declare a foreign key",
             spec.relationship.field_name
         ))
     })?;
     let source_column =
-        crate::read_model::column_name_for(root_schema, foreign_key).ok_or_else(|| {
-            ReadModelError::Metadata(format!(
+        crate::table::column_name_for(root_schema, foreign_key).ok_or_else(|| {
+            TableStoreError::Metadata(format!(
                 "relationship `{}` foreign key `{}` is not a source column",
                 spec.relationship.field_name, foreign_key
             ))
         })?;
     let target_column = belongs_to_target_column(&spec.target_schema, &source_column)?;
     let source_value = root_row.get(&source_column).ok_or_else(|| {
-        ReadModelError::Metadata(format!(
+        TableStoreError::Metadata(format!(
             "read model `{}` root row is missing relationship key `{}`",
             root_schema.model_name, source_column
         ))
@@ -1197,10 +1199,10 @@ where
 
 async fn load_rows_matching_column<DB>(
     pool: &sqlx::Pool<DB>,
-    schema: &ReadModelSchema,
+    schema: &TableSchema,
     column_name: &str,
     value: &RowValue,
-) -> Result<Vec<Versioned<RowValues>>, ReadModelError>
+) -> Result<Vec<Versioned<RowValues>>, TableStoreError>
 where
     DB: SqlxReadModelBackend,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,

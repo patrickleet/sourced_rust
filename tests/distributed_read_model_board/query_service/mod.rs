@@ -1,7 +1,7 @@
 //! Read-only query service for the board read model. Primary-key loads plus
 //! `has_many` / `belongs_to` relationship includes.
 
-use distributed::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
+use distributed::{InMemoryReadModelStore, ReadModelWorkspaceExt, TableStoreError};
 
 use crate::read_models::{board_key, card_key, BoardView, CardView};
 
@@ -19,7 +19,7 @@ impl BoardQueryService {
     pub async fn board_with_cards(
         &self,
         board_id: &str,
-    ) -> Result<Option<BoardView>, ReadModelError> {
+    ) -> Result<Option<BoardView>, TableStoreError> {
         let mut session = self.store.workspace();
         Ok(session
             .load::<BoardView>(board_key(board_id))
@@ -34,7 +34,7 @@ impl BoardQueryService {
         &self,
         board_id: &str,
         card_id: &str,
-    ) -> Result<Option<CardView>, ReadModelError> {
+    ) -> Result<Option<CardView>, TableStoreError> {
         let mut session = self.store.workspace();
         Ok(session
             .load::<CardView>(card_key(board_id, card_id))
