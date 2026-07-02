@@ -140,23 +140,6 @@ pub(crate) fn initial_row_version() -> u64 {
     1
 }
 
-pub(crate) fn next_row_version(
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    current_version: Option<u64>,
-) -> Result<u64, ReadModelError> {
-    match current_version {
-        Some(version) => version.checked_add(1).ok_or_else(|| {
-            ReadModelError::Storage(format!(
-                "read model version overflow for {}:{}",
-                schema.table_name,
-                key_fingerprint(key)
-            ))
-        }),
-        None => Ok(initial_row_version()),
-    }
-}
-
 pub(crate) fn validate_row_expected_version(
     schema: &ReadModelSchema,
     key: &RowKey,
@@ -233,19 +216,19 @@ pub(crate) fn row_values_from_key_and_patch(
 pub(crate) fn patch_values_preserving_key<'schema>(
     schema: &'schema ReadModelSchema,
     key: &RowKey,
-    patch: crate::read_model::RowPatch,
+    patch: &crate::read_model::RowPatch,
 ) -> Result<Vec<(&'schema ColumnDef, RowValue)>, ReadModelError> {
     let mut values = Vec::new();
-    for (column_name, value) in patch.into_values() {
-        let column = column_by_name(schema, &column_name)?;
+    for (column_name, value) in patch.iter() {
+        let column = column_by_name(schema, column_name)?;
         if column.primary_key {
-            let key_value = key.get(&column_name).ok_or_else(|| {
+            let key_value = key.get(column_name).ok_or_else(|| {
                 ReadModelError::Metadata(format!(
                     "read model `{}` row key is missing primary-key column `{}`",
                     schema.model_name, column_name
                 ))
             })?;
-            if key_value != &value {
+            if key_value != value {
                 return Err(ReadModelError::Metadata(format!(
                     "read model `{}` patch cannot change primary-key column `{}`",
                     schema.model_name, column_name
@@ -253,7 +236,7 @@ pub(crate) fn patch_values_preserving_key<'schema>(
             }
             continue;
         }
-        values.push((column, value));
+        values.push((column, value.clone()));
     }
     Ok(values)
 }
@@ -474,6 +457,16 @@ where
     validate_row_values(&mutation.schema, &mutation.values, true)?;
     validate_values_match_key(&mutation.schema, &mutation.key, &mutation.values)?;
 
+    // The common case — upsert without an optimistic-version check — is a single
+    // `INSERT ... ON CONFLICT (pk) DO UPDATE` round trip. Only version-checked
+    // writes need to observe the current row first.
+    if matches!(mutation.mode, RowWriteMode::Upsert)
+        && matches!(mutation.expected_version, ExpectedVersion::Any)
+    {
+        return upsert_relational_row_on_conflict_in_tx(tx, &mutation.schema, &mutation.values)
+            .await;
+    }
+
     let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
     validate_row_expected_version(
         &mutation.schema,
@@ -492,14 +485,12 @@ where
 
     match current_version {
         Some(expected_version) => {
-            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
             let rows_affected = update_relational_row_values_in_tx(
                 tx,
                 &mutation.schema,
                 &mutation.key,
                 &mutation.values,
-                expected_version,
-                new_version,
+                Some(expected_version),
             )
             .await?;
             if rows_affected == 0 {
@@ -541,47 +532,64 @@ where
 {
     validate_key(&mutation.schema, &mutation.key)?;
 
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
-    validate_row_expected_version(
+    // `NotExists` is the only shape that has to observe the row before writing;
+    // `Any`/`Exact` run the UPDATE directly and only re-read on a miss to tell
+    // "not found" apart from a version conflict.
+    if matches!(mutation.expected_version, ExpectedVersion::NotExists) {
+        let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+        validate_row_expected_version(
+            &mutation.schema,
+            &mutation.key,
+            &mutation.expected_version,
+            current_version,
+        )?;
+        if !matches!(mutation.mode, PatchMode::InsertMissing) {
+            return Err(ReadModelError::NotFound {
+                collection: mutation.schema.table_name,
+                id: key_fingerprint(&mutation.key),
+            });
+        }
+        let values =
+            row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
+        return insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
+            .await;
+    }
+
+    let expected_version = match mutation.expected_version {
+        ExpectedVersion::Exact(expected) => Some(expected),
+        _ => None,
+    };
+    let patch_values =
+        patch_values_preserving_key(&mutation.schema, &mutation.key, &mutation.patch)?;
+    let rows_affected = update_relational_columns_in_tx(
+        tx,
         &mutation.schema,
         &mutation.key,
-        &mutation.expected_version,
-        current_version,
-    )?;
-
-    match current_version {
-        Some(expected_version) => {
-            let patch_values =
-                patch_values_preserving_key(&mutation.schema, &mutation.key, mutation.patch)?;
-            let new_version = next_row_version(&mutation.schema, &mutation.key, current_version)?;
-            let rows_affected = update_relational_patch_in_tx(
-                tx,
-                &mutation.schema,
-                &mutation.key,
-                patch_values,
-                expected_version,
-                new_version,
-            )
-            .await?;
-            if rows_affected == 0 {
-                let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
-                    .await?
-                    .unwrap_or(expected_version);
-                return Err(row_concurrency_conflict(
+        patch_values,
+        expected_version,
+    )
+    .await?;
+    if rows_affected == 0 {
+        if let Some(expected_version) = expected_version {
+            return match row_version_in_tx(tx, &mutation.schema, &mutation.key).await? {
+                Some(actual) => Err(row_concurrency_conflict(
                     &mutation.schema,
                     &mutation.key,
                     expected_version,
                     actual,
-                ));
-            }
+                )),
+                None => Err(ReadModelError::NotFound {
+                    collection: mutation.schema.table_name,
+                    id: key_fingerprint(&mutation.key),
+                }),
+            };
         }
-        None if matches!(mutation.mode, PatchMode::InsertMissing) => {
+        if matches!(mutation.mode, PatchMode::InsertMissing) {
             let values =
                 row_values_from_key_and_patch(&mutation.schema, &mutation.key, mutation.patch)?;
             insert_relational_row_in_tx(tx, &mutation.schema, &values, initial_row_version())
                 .await?;
-        }
-        None => {
+        } else {
             return Err(ReadModelError::NotFound {
                 collection: mutation.schema.table_name,
                 id: key_fingerprint(&mutation.key),
@@ -604,36 +612,52 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
     validate_key(&mutation.schema, &mutation.key)?;
-    let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
-    validate_row_expected_version(
-        &mutation.schema,
-        &mutation.key,
-        &mutation.expected_version,
-        current_version,
-    )?;
 
-    let rows_affected = delete_relational_row_where_current_in_tx(
-        tx,
-        &mutation.schema,
-        &mutation.key,
-        current_version,
-    )
-    .await?;
-    if rows_affected == 0 {
-        if let Some(expected_version) = current_version {
-            let actual = row_version_in_tx(tx, &mutation.schema, &mutation.key)
-                .await?
-                .unwrap_or(expected_version);
-            return Err(row_concurrency_conflict(
+    match mutation.expected_version {
+        // The row must not exist: nothing to delete, but surface a conflict if it does.
+        ExpectedVersion::NotExists => {
+            let current_version = row_version_in_tx(tx, &mutation.schema, &mutation.key).await?;
+            validate_row_expected_version(
                 &mutation.schema,
                 &mutation.key,
-                expected_version,
-                actual,
-            ));
+                &mutation.expected_version,
+                current_version,
+            )?;
+            Ok(())
+        }
+        // No version check: one DELETE; deleting a missing row is a no-op.
+        ExpectedVersion::Any => {
+            delete_relational_row_where_version_in_tx(tx, &mutation.schema, &mutation.key, None)
+                .await?;
+            Ok(())
+        }
+        // Version-checked delete: only re-read on a miss to tell "not found"
+        // apart from a version conflict.
+        ExpectedVersion::Exact(expected_version) => {
+            let rows_affected = delete_relational_row_where_version_in_tx(
+                tx,
+                &mutation.schema,
+                &mutation.key,
+                Some(expected_version),
+            )
+            .await?;
+            if rows_affected == 0 {
+                return match row_version_in_tx(tx, &mutation.schema, &mutation.key).await? {
+                    Some(actual) => Err(row_concurrency_conflict(
+                        &mutation.schema,
+                        &mutation.key,
+                        expected_version,
+                        actual,
+                    )),
+                    None => Err(ReadModelError::NotFound {
+                        collection: mutation.schema.table_name,
+                        id: key_fingerprint(&mutation.key),
+                    }),
+                };
+            }
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 pub(crate) async fn row_version_in_tx<DB>(
@@ -729,13 +753,87 @@ where
     Ok(())
 }
 
+/// Upsert one row in a single statement: `INSERT ... ON CONFLICT (pk) DO UPDATE
+/// SET <non-pk columns> = excluded.<column>, <version> = <version> + 1`.
+///
+/// Both Postgres and SQLite (≥ 3.35) support `ON CONFLICT` with an explicit
+/// column-list target and the `excluded` pseudo-table. New rows start at
+/// version 1; conflicting rows bump their version in-database (an increment
+/// past `i64::MAX` fails as a storage error).
+pub(crate) async fn upsert_relational_row_on_conflict_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    schema: &ReadModelSchema,
+    values: &RowValues,
+) -> Result<(), ReadModelError>
+where
+    DB: SqlxReadModelBackend,
+    for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
+{
+    let version_column = version_column(schema)?;
+    let write_values = row_write_values(schema, values)?;
+    let mut builder = QueryBuilder::<DB>::new("INSERT INTO ");
+    builder.push(quote_identifier(&schema.table_name));
+    builder.push(" (");
+    for (column, _) in &write_values {
+        builder.push(quote_identifier(&column.column_name));
+        builder.push(", ");
+    }
+    builder.push(quote_identifier(version_column));
+    builder.push(") VALUES (");
+    for (column, value) in write_values.iter().cloned() {
+        DB::push_row_value_bind(&mut builder, value, column)?;
+        builder.push(", ");
+    }
+    builder.push_bind(read_model_i64_from_u64(
+        DB::BACKEND,
+        initial_row_version(),
+        version_column,
+        DB::INTEGER_STORAGE,
+    )?);
+    builder.push(") ON CONFLICT (");
+    for (index, column_name) in schema.primary_key.columns.iter().enumerate() {
+        if index > 0 {
+            builder.push(", ");
+        }
+        builder.push(quote_identifier(column_name));
+    }
+    builder.push(") DO UPDATE SET ");
+    for (column, _) in write_values
+        .iter()
+        .filter(|(column, _)| !column.primary_key)
+    {
+        builder.push(quote_identifier(&column.column_name));
+        builder.push(" = excluded.");
+        builder.push(quote_identifier(&column.column_name));
+        builder.push(", ");
+    }
+    // Qualify the existing-row reference with the table name: inside `DO UPDATE`
+    // an unqualified column is ambiguous with `excluded` on Postgres.
+    builder.push(quote_identifier(version_column));
+    builder.push(" = ");
+    builder.push(quote_identifier(&schema.table_name));
+    builder.push(".");
+    builder.push(quote_identifier(version_column));
+    builder.push(" + 1");
+
+    builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| read_model_storage_error(DB::BACKEND, "upsert relational row", err))?;
+
+    Ok(())
+}
+
 pub(crate) async fn update_relational_row_values_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
     schema: &ReadModelSchema,
     key: &RowKey,
     values: &RowValues,
-    expected_version: u64,
-    version: u64,
+    expected_version: Option<u64>,
 ) -> Result<u64, ReadModelError>
 where
     DB: SqlxReadModelBackend,
@@ -746,34 +844,18 @@ where
 {
     let mut write_values = row_write_values(schema, values)?;
     write_values.retain(|(column, _)| !column.primary_key);
-    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
+    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version).await
 }
 
-pub(crate) async fn update_relational_patch_in_tx<DB>(
-    tx: &mut Transaction<'_, DB>,
-    schema: &ReadModelSchema,
-    key: &RowKey,
-    write_values: Vec<(&ColumnDef, RowValue)>,
-    expected_version: u64,
-    version: u64,
-) -> Result<u64, ReadModelError>
-where
-    DB: SqlxReadModelBackend,
-    for<'c> &'c mut <DB as Database>::Connection: Executor<'c, Database = DB>,
-    <DB as Database>::Arguments: IntoArguments<DB>,
-    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
-    for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
-{
-    update_relational_columns_in_tx(tx, schema, key, write_values, expected_version, version).await
-}
-
+/// `UPDATE <table> SET <columns>, <version> = <version> + 1 WHERE <pk> [AND
+/// <version> = <expected>]`, returning the affected-row count. The version bump
+/// happens in-database; an increment past `i64::MAX` fails as a storage error.
 pub(crate) async fn update_relational_columns_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
     schema: &ReadModelSchema,
     key: &RowKey,
     write_values: Vec<(&ColumnDef, RowValue)>,
-    expected_version: u64,
-    version: u64,
+    expected_version: Option<u64>,
 ) -> Result<u64, ReadModelError>
 where
     DB: SqlxReadModelBackend,
@@ -786,37 +868,28 @@ where
     let mut builder = QueryBuilder::<DB>::new("UPDATE ");
     builder.push(quote_identifier(&schema.table_name));
     builder.push(" SET ");
-    let mut wrote_set = false;
     for (column, value) in write_values {
-        if wrote_set {
-            builder.push(", ");
-        }
         builder.push(quote_identifier(&column.column_name));
         builder.push(" = ");
         DB::push_row_value_bind(&mut builder, value, column)?;
-        wrote_set = true;
-    }
-    if wrote_set {
         builder.push(", ");
     }
     builder.push(quote_identifier(version_column));
     builder.push(" = ");
-    builder.push_bind(read_model_i64_from_u64(
-        DB::BACKEND,
-        version,
-        version_column,
-        DB::INTEGER_STORAGE,
-    )?);
-    push_key_predicates(&mut builder, schema, key)?;
-    builder.push(" AND ");
     builder.push(quote_identifier(version_column));
-    builder.push(" = ");
-    builder.push_bind(read_model_i64_from_u64(
-        DB::BACKEND,
-        expected_version,
-        "expected version",
-        DB::INTEGER_STORAGE,
-    )?);
+    builder.push(" + 1");
+    push_key_predicates(&mut builder, schema, key)?;
+    if let Some(expected_version) = expected_version {
+        builder.push(" AND ");
+        builder.push(quote_identifier(version_column));
+        builder.push(" = ");
+        builder.push_bind(read_model_i64_from_u64(
+            DB::BACKEND,
+            expected_version,
+            "expected version",
+            DB::INTEGER_STORAGE,
+        )?);
+    }
 
     let result = builder
         .build()
@@ -826,11 +899,11 @@ where
     Ok(DB::rows_affected(&result))
 }
 
-pub(crate) async fn delete_relational_row_where_current_in_tx<DB>(
+pub(crate) async fn delete_relational_row_where_version_in_tx<DB>(
     tx: &mut Transaction<'_, DB>,
     schema: &ReadModelSchema,
     key: &RowKey,
-    current_version: Option<u64>,
+    expected_version: Option<u64>,
 ) -> Result<u64, ReadModelError>
 where
     DB: SqlxReadModelBackend,
@@ -842,7 +915,7 @@ where
     let mut builder = QueryBuilder::<DB>::new("DELETE FROM ");
     builder.push(quote_identifier(&schema.table_name));
     push_key_predicates(&mut builder, schema, key)?;
-    if let Some(version) = current_version {
+    if let Some(version) = expected_version {
         let version_column = version_column(schema)?;
         builder.push(" AND ");
         builder.push(quote_identifier(version_column));
