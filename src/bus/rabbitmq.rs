@@ -19,8 +19,8 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 
 use super::source::{MessageSource, ReceivedMessage};
+use super::{message_from_wire, Message};
 use super::{retryable, MessagePublisher, TransportError};
-use super::{Message, MessageKind};
 
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
 
@@ -179,27 +179,21 @@ impl RabbitReceived {
     /// key (stripping its `{ns}.cmd.` prefix for commands) rather than the queue.
     pub(super) fn from_delivery_with_name(delivery: Delivery, name: String) -> Self {
         let payload = delivery.data.clone();
-        let id = delivery
+        let headers: Vec<(String, String)> = delivery
+            .properties
+            .headers()
+            .as_ref()
+            .into_iter()
+            .flat_map(|headers| headers.inner())
+            .map(|(key, value)| (key.to_string(), amqp_value_to_string(value)))
+            .collect();
+        // The id rides in the AMQP `message_id` property, not a header.
+        let mut message = message_from_wire(name, payload, None, MESSAGE_KIND_HEADER, headers);
+        message.id = delivery
             .properties
             .message_id()
             .as_ref()
             .map(|s| s.to_string());
-        let mut kind = MessageKind::Event;
-        let mut metadata = Vec::new();
-        if let Some(headers) = delivery.properties.headers().as_ref() {
-            for (key, value) in headers.inner() {
-                let key = key.to_string();
-                let value = amqp_value_to_string(value);
-                if key == MESSAGE_KIND_HEADER {
-                    kind = MessageKind::from_str_lossy(&value);
-                } else {
-                    metadata.push((key, value));
-                }
-            }
-        }
-        let mut message = Message::new(name, kind, payload);
-        message.id = id;
-        message.metadata = metadata;
         // Preserve the publisher's content type instead of the Message::new
         // default, so non-JSON payloads survive the round-trip.
         if let Some(content_type) = delivery.properties.content_type().as_ref() {

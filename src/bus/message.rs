@@ -176,6 +176,39 @@ impl Message {
     }
 }
 
+/// Assemble a canonical [`Message`] from a broker delivery's name, payload, and
+/// header pairs: an `id_key` entry becomes [`Message::id`], a `kind_key` entry
+/// becomes the [`MessageKind`] (defaulting to `Event` via
+/// [`MessageKind::from_str_lossy`]), and every other header becomes metadata.
+///
+/// Transports that carry the id outside the headers (RabbitMQ's `message_id`
+/// property) pass `id_key: None` and set the id on the returned message.
+#[cfg(any(feature = "nats", feature = "kafka", feature = "rabbitmq"))]
+pub(crate) fn message_from_wire(
+    name: String,
+    payload: Vec<u8>,
+    id_key: Option<&str>,
+    kind_key: &str,
+    headers: impl IntoIterator<Item = (String, String)>,
+) -> Message {
+    let mut id = None;
+    let mut kind = MessageKind::Event;
+    let mut metadata = Vec::new();
+    for (key, value) in headers {
+        if id_key == Some(key.as_str()) {
+            id = Some(value);
+        } else if key == kind_key {
+            kind = MessageKind::from_str_lossy(&value);
+        } else {
+            metadata.push((key, value));
+        }
+    }
+    let mut message = Message::new(name, kind, payload);
+    message.id = id;
+    message.metadata = metadata;
+    message
+}
+
 /// Derive a message name from a transport address (NATS subject, Kafka topic,
 /// or AMQP routing key) by stripping the publisher's `prefix`.
 ///
