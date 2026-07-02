@@ -13,6 +13,16 @@
 //!     .commit(&mut game)
 //!     .await?;
 //! ```
+//!
+//! ## Outbox source stamping
+//!
+//! One rule, for every entry point: outbox messages in the batch are stamped
+//! with a source aggregate exactly when **one distinct aggregate** is staged
+//! (via [`CommitBuilder::commit`], [`StagedCommitBuilder::aggregate`], or a
+//! single-element [`CommitBuilder::commit_many`]). With zero or several
+//! distinct aggregates the source is ambiguous and messages keep whatever
+//! source they already carry. Raw [`StagedCommitBuilder::entity`] writes never
+//! stamp.
 
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
@@ -22,14 +32,15 @@ use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
 
+/// The source-aggregate fields stamped onto outbox messages at commit time.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct OutboxSource {
+struct SourceStamp {
     aggregate_type: String,
     aggregate_id: String,
     source_sequence: u64,
 }
 
-impl OutboxSource {
+impl SourceStamp {
     fn from_aggregate<A: Aggregate>(aggregate: &A) -> Self {
         Self {
             aggregate_type: A::aggregate_type().to_string(),
@@ -45,16 +56,17 @@ impl OutboxSource {
     }
 }
 
+/// The staged outbox source: the single distinct aggregate in the batch, if any.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum StagedOutboxSource {
     #[default]
     None,
-    Single(OutboxSource),
+    Single(SourceStamp),
     Ambiguous,
 }
 
 impl StagedOutboxSource {
-    fn record(&mut self, source: OutboxSource) {
+    fn record(&mut self, source: SourceStamp) {
         match self {
             Self::None => *self = Self::Single(source),
             Self::Single(existing) if *existing == source => {}
@@ -75,10 +87,16 @@ impl StagedOutboxSource {
 }
 
 /// Builder for chaining multiple items into one transactional commit batch.
+///
+/// This is the single builder behind every commit entry point; staging state is
+/// the stream writes plus the [`StagedOutboxSource`]. [`aggregate`](Self::aggregate)
+/// hands back a [`StagedCommitBuilder`], whose no-argument `commit()` finishes
+/// the same batch.
 pub struct CommitBuilder<'a, R> {
     repo: &'a R,
     streams: Vec<StreamWrite<'a>>,
     outbox_messages: Vec<OutboxMessage>,
+    outbox_source: StagedOutboxSource,
     read_model_plans: Vec<ReadModelWritePlan>,
     error: Option<RepositoryError>,
 }
@@ -89,6 +107,7 @@ impl<'a, R> CommitBuilder<'a, R> {
             repo,
             streams: Vec::new(),
             outbox_messages: Vec::new(),
+            outbox_source: StagedOutboxSource::default(),
             read_model_plans: Vec::new(),
             error: None,
         }
@@ -114,47 +133,36 @@ impl<'a, R> CommitBuilder<'a, R> {
     }
 
     /// Stage an aggregate and switch to a no-argument staged commit builder.
-    pub fn aggregate<A: Aggregate>(self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
-        let source = OutboxSource::from_aggregate(aggregate);
-        let mut builder = StagedCommitBuilder::from_builder(self);
-        builder.push_aggregate(source, A::aggregate_type(), aggregate);
-        builder
+    pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> StagedCommitBuilder<'a, R> {
+        self.push_aggregate(aggregate);
+        StagedCommitBuilder(self)
     }
 
     /// Commit all items plus the primary aggregate.
+    ///
+    /// Sugar for [`aggregate(aggregate)`](Self::aggregate)`.commit()`.
     pub async fn commit<A: Aggregate + Send>(
-        mut self,
-        aggregate: &mut A,
+        self,
+        aggregate: &'a mut A,
     ) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
-        self.check_staged()?;
-        for message in &mut self.outbox_messages {
-            message.set_source(aggregate);
-        }
-
-        let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
-        self.streams
-            .push(StreamWrite::new(identity, aggregate.entity_mut()));
-        self.commit_streams().await
+        self.aggregate(aggregate).commit().await
     }
 
     /// Commit multiple aggregates of the same type in one batch.
-    pub async fn commit_many<A: Aggregate + Send>(
+    pub async fn commit_many<'b, A: Aggregate + Send>(
         mut self,
-        aggregates: &mut [&mut A],
+        aggregates: &'a mut [&'b mut A],
     ) -> Result<(), RepositoryError>
     where
         R: TransactionalCommit,
     {
-        self.check_staged()?;
         for aggregate in aggregates.iter_mut() {
-            let identity = StreamIdentity::new(A::aggregate_type(), aggregate.entity().id())?;
-            self.streams
-                .push(StreamWrite::new(identity, aggregate.entity_mut()));
+            self.push_aggregate(&mut **aggregate);
         }
-        self.commit_streams().await
+        self.commit_all().await
     }
 
     /// Commit without a primary aggregate.
@@ -162,88 +170,9 @@ impl<'a, R> CommitBuilder<'a, R> {
     where
         R: TransactionalCommit,
     {
-        self.check_staged()?;
-        self.commit_streams().await
-    }
-
-    fn check_staged(&mut self) -> Result<(), RepositoryError> {
         if let Some(err) = self.error.take() {
             return Err(err);
         }
-        Ok(())
-    }
-
-    async fn commit_streams(self) -> Result<(), RepositoryError>
-    where
-        R: TransactionalCommit,
-    {
-        self.repo
-            .commit_batch(CommitBatch {
-                streams: self.streams,
-                outbox_messages: self.outbox_messages,
-                read_model_plans: self.read_model_plans,
-                snapshots: Vec::new(),
-                inbox_receipts: Vec::new(),
-            })
-            .await
-    }
-}
-
-/// Builder returned after one or more aggregates are staged explicitly.
-pub struct StagedCommitBuilder<'a, R> {
-    repo: &'a R,
-    streams: Vec<StreamWrite<'a>>,
-    outbox_messages: Vec<OutboxMessage>,
-    outbox_source: StagedOutboxSource,
-    read_model_plans: Vec<ReadModelWritePlan>,
-    error: Option<RepositoryError>,
-}
-
-impl<'a, R> StagedCommitBuilder<'a, R> {
-    fn from_builder(builder: CommitBuilder<'a, R>) -> Self {
-        Self {
-            repo: builder.repo,
-            streams: builder.streams,
-            outbox_messages: builder.outbox_messages,
-            outbox_source: StagedOutboxSource::default(),
-            read_model_plans: builder.read_model_plans,
-            error: builder.error,
-        }
-    }
-
-    pub fn read_models(mut self, read_models: ReadModelWritePlanBuilder) -> Self {
-        if self.error.is_some() {
-            return self;
-        }
-
-        match read_models.into_write_plan() {
-            Ok(plan) => self.read_model_plans.push(plan),
-            Err(err) => self.error = Some(err.into()),
-        }
-        self
-    }
-
-    pub fn outbox(mut self, msg: OutboxMessage) -> Self {
-        self.outbox_messages.push(msg);
-        self
-    }
-
-    pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
-        let source = OutboxSource::from_aggregate(aggregate);
-        self.push_aggregate(source, A::aggregate_type(), aggregate);
-        self
-    }
-
-    pub fn entity(mut self, identity: StreamIdentity, entity: &'a mut Entity) -> Self {
-        self.streams.push(StreamWrite::new(identity, entity));
-        self
-    }
-
-    pub async fn commit(mut self) -> Result<(), RepositoryError>
-    where
-        R: TransactionalCommit,
-    {
-        self.check_staged()?;
         self.outbox_source.apply_to(&mut self.outbox_messages);
         self.repo
             .commit_batch(CommitBatch {
@@ -256,31 +185,52 @@ impl<'a, R> StagedCommitBuilder<'a, R> {
             .await
     }
 
-    fn push_aggregate<A: Aggregate>(
-        &mut self,
-        source: OutboxSource,
-        aggregate_type: &'static str,
-        aggregate: &'a mut A,
-    ) {
+    fn push_aggregate<A: Aggregate>(&mut self, aggregate: &'a mut A) {
         if self.error.is_some() {
             return;
         }
 
-        match StreamIdentity::new(aggregate_type, aggregate.entity().id()) {
+        match StreamIdentity::new(A::aggregate_type(), aggregate.entity().id()) {
             Ok(identity) => {
-                self.outbox_source.record(source);
+                self.outbox_source
+                    .record(SourceStamp::from_aggregate(aggregate));
                 self.streams
                     .push(StreamWrite::new(identity, aggregate.entity_mut()));
             }
             Err(err) => self.error = Some(err),
         }
     }
+}
 
-    fn check_staged(&mut self) -> Result<(), RepositoryError> {
-        if let Some(err) = self.error.take() {
-            return Err(err);
-        }
-        Ok(())
+/// [`CommitBuilder`] with at least one staged write, exposing the no-argument
+/// [`commit`](Self::commit). Purely a naming state — all behavior lives on the
+/// underlying builder.
+pub struct StagedCommitBuilder<'a, R>(CommitBuilder<'a, R>);
+
+impl<'a, R> StagedCommitBuilder<'a, R> {
+    pub fn read_models(self, read_models: ReadModelWritePlanBuilder) -> Self {
+        Self(self.0.read_models(read_models))
+    }
+
+    pub fn outbox(self, msg: OutboxMessage) -> Self {
+        Self(self.0.outbox(msg))
+    }
+
+    pub fn aggregate<A: Aggregate>(mut self, aggregate: &'a mut A) -> Self {
+        self.0.push_aggregate(aggregate);
+        self
+    }
+
+    pub fn entity(mut self, identity: StreamIdentity, entity: &'a mut Entity) -> Self {
+        self.0.streams.push(StreamWrite::new(identity, entity));
+        self
+    }
+
+    pub async fn commit(self) -> Result<(), RepositoryError>
+    where
+        R: TransactionalCommit,
+    {
+        self.0.commit_all().await
     }
 }
 
@@ -856,6 +806,50 @@ mod tests {
                     "async-agg-2".to_string(),
                 ),
             ]
+        );
+    }
+
+    // The one stamping rule: exactly one distinct staged aggregate stamps the
+    // outbox source; several distinct aggregates are ambiguous and stamp
+    // nothing. This holds across every entry point (commit, commit_many, and
+    // explicit staging).
+    #[tokio::test]
+    async fn outbox_source_stamping_requires_an_unambiguous_aggregate() {
+        // Single aggregate via commit_many: stamped.
+        let repo = RecordingBatchRepo::default();
+        let mut agg = TestAggregate::default();
+        agg.touch().unwrap();
+        let outbox = OutboxMessage::create("solo-msg", "TestEvent", b"{}".to_vec()).unwrap();
+        CommitBuilderExt::outbox(&repo, outbox)
+            .commit_many(&mut [&mut agg])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.outbox_sources.lock().unwrap().as_slice(),
+            &[(
+                "solo-msg".to_string(),
+                Some(TestAggregate::aggregate_type().to_string()),
+                Some("agg-1".to_string()),
+                Some(1),
+            )]
+        );
+
+        // Two distinct aggregates: ambiguous, nothing stamped.
+        let repo = RecordingBatchRepo::default();
+        let mut agg1 = TestAggregate::default();
+        agg1.touch().unwrap();
+        agg1.entity.set_id("many-1");
+        let mut agg2 = TestAggregate::default();
+        agg2.touch().unwrap();
+        agg2.entity.set_id("many-2");
+        let outbox = OutboxMessage::create("many-msg", "TestEvent", b"{}".to_vec()).unwrap();
+        CommitBuilderExt::outbox(&repo, outbox)
+            .commit_many(&mut [&mut agg1, &mut agg2])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.outbox_sources.lock().unwrap().as_slice(),
+            &[("many-msg".to_string(), None, None, None)]
         );
     }
 }
