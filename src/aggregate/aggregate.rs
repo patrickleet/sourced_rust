@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::entity::{upcast_events, Entity, EventRecord, EventUpcaster};
+use crate::entity::{upcast_events_for_replay, Entity, EventRecord, EventUpcaster};
 use crate::repository::RepositoryError;
 
 /// Trait for domain aggregates that can be event-sourced.
@@ -105,27 +105,27 @@ pub fn hydrate<A: Aggregate>(entity: Entity) -> Result<A, RepositoryError> {
     // `load_from_history` reproduces the exact loaded version/committed_version.
     let history = agg.entity_mut().take_events();
 
-    let upcasters = A::upcasters();
-    let events = if upcasters.is_empty() {
-        // Replay directly from `history`; it is restored verbatim below, so no
-        // clone of the stream is needed on the common (no-upcaster) path.
-        replay_into(&mut agg, &history)?;
-        history
-    } else {
-        // Upcasters may rewrite events for replay, but the durable history is
-        // unchanged: replay from the upcasted view, then restore the originals.
-        let upcasted = upcast_events(history.clone(), upcasters)
-            .map_err(|err| RepositoryError::Replay(err.to_string()))?;
-        replay_into(&mut agg, &upcasted)?;
-        history
-    };
+    // Upcasters may rewrite events for replay, but the durable history is
+    // unchanged: replay from the upcasted view (which clones only the events an
+    // upcaster rewrites), then restore the originals. When no upcaster applies —
+    // no upcasters registered, or every event already current — the borrowed
+    // history is replayed directly with no clone.
+    match upcast_events_for_replay(history.iter(), A::upcasters())
+        .map_err(|err| RepositoryError::Replay(err.to_string()))?
+    {
+        Some(upcasted) => replay_into(&mut agg, upcasted.iter().map(|event| event.as_ref()))?,
+        None => replay_into(&mut agg, history.iter())?,
+    }
 
-    agg.entity_mut().load_from_history(events);
+    agg.entity_mut().load_from_history(history);
 
     Ok(agg)
 }
 
-fn replay_into<A: Aggregate>(agg: &mut A, events: &[EventRecord]) -> Result<(), RepositoryError> {
+fn replay_into<'e, A: Aggregate>(
+    agg: &mut A,
+    events: impl Iterator<Item = &'e EventRecord>,
+) -> Result<(), RepositoryError> {
     agg.entity_mut().set_replaying(true);
     for event in events {
         if let Err(err) = agg.replay_event(event) {

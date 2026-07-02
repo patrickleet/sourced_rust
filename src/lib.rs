@@ -31,9 +31,9 @@ pub mod table;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
-    upcast_events, upcast_payload, BitcodePayloadCodec, Committable, Entity, Event, EventRecord,
-    EventRecordError, EventUpcaster, LocalEvent, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
-    BITCODE_PAYLOAD_CODEC_VERSION,
+    upcast_events, upcast_events_for_replay, upcast_payload, BitcodePayloadCodec, Committable,
+    Entity, Event, EventRecord, EventRecordError, EventUpcaster, LocalEvent, PayloadCodec,
+    UpcastError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
 };
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;

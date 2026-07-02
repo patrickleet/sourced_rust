@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -128,53 +129,87 @@ pub fn upcast_events(
         .collect()
 }
 
+/// Whether any registered upcaster applies to `event` at its current version.
+fn upcaster_applies(upcasters: &[EventUpcaster], event: &EventRecord) -> bool {
+    upcasters
+        .iter()
+        .any(|u| u.event_type == event.event_name && u.from_version == event.event_version)
+}
+
+/// Upcast a borrowed event view for replay, cloning only the events an
+/// upcaster actually rewrites.
+///
+/// Returns `Ok(None)` when no upcaster applies to any event (including when
+/// `upcasters` is empty), so callers replay the borrowed events directly —
+/// the no-op path allocates nothing. When at least one event matches, the
+/// returned view borrows unmatched events and owns the upcasted ones.
+///
+/// `events` must be a cheaply re-runnable iterator (`Clone`): it is scanned
+/// once to detect the no-op case and once more to build the view.
+pub fn upcast_events_for_replay<'a, I>(
+    events: I,
+    upcasters: &[EventUpcaster],
+) -> Result<Option<Vec<Cow<'a, EventRecord>>>, UpcastError>
+where
+    I: Iterator<Item = &'a EventRecord> + Clone,
+{
+    if upcasters.is_empty()
+        || !events
+            .clone()
+            .any(|event| upcaster_applies(upcasters, event))
+    {
+        return Ok(None);
+    }
+
+    events
+        .map(|event| {
+            if upcaster_applies(upcasters, event) {
+                upcast_one(event.clone(), upcasters).map(Cow::Owned)
+            } else {
+                Ok(Cow::Borrowed(event))
+            }
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 fn upcast_one(
     mut event: EventRecord,
     upcasters: &[EventUpcaster],
 ) -> Result<EventRecord, UpcastError> {
-    let mut seen_versions = HashSet::new();
-    seen_versions.insert(event.event_version);
+    // Cycle tracking is only needed once a transform applies; the common case
+    // (no matching upcaster) allocates nothing.
+    let mut seen_versions: Option<HashSet<u64>> = None;
 
-    loop {
-        let mut applied = false;
-        for u in upcasters {
-            if u.event_type == event.event_name && u.from_version == event.event_version {
-                if u.to_version == event.event_version {
-                    return Err(UpcastError::SameVersionTransition {
-                        event_type: event.event_name.clone(),
-                        version: event.event_version,
-                    });
-                }
-                if seen_versions.contains(&u.to_version) {
-                    return Err(UpcastError::CycleDetected {
-                        event_type: event.event_name.clone(),
-                        version: u.to_version,
-                    });
-                }
-                if u.to_version < event.event_version {
-                    return Err(UpcastError::BackwardTransition {
-                        event_type: event.event_name.clone(),
-                        from: event.event_version,
-                        to: u.to_version,
-                    });
-                }
+    while let Some(u) = upcasters
+        .iter()
+        .find(|u| u.event_type == event.event_name && u.from_version == event.event_version)
+    {
+        if u.to_version == event.event_version {
+            return Err(UpcastError::SameVersionTransition {
+                event_type: event.event_name.clone(),
+                version: event.event_version,
+            });
+        }
+        let seen = seen_versions.get_or_insert_with(|| HashSet::from([event.event_version]));
+        if seen.contains(&u.to_version) {
+            return Err(UpcastError::CycleDetected {
+                event_type: event.event_name.clone(),
+                version: u.to_version,
+            });
+        }
+        if u.to_version < event.event_version {
+            return Err(UpcastError::BackwardTransition {
+                event_type: event.event_name.clone(),
+                from: event.event_version,
+                to: u.to_version,
+            });
+        }
 
-                let next_version = u.to_version;
-                event.payload = (u.transform)(&event)?;
-                event.event_version = next_version;
-                if !seen_versions.insert(next_version) {
-                    return Err(UpcastError::CycleDetected {
-                        event_type: event.event_name,
-                        version: next_version,
-                    });
-                }
-                applied = true;
-                break; // restart loop to handle chaining
-            }
-        }
-        if !applied {
-            break;
-        }
+        let next_version = u.to_version;
+        event.payload = (u.transform)(&event)?;
+        event.event_version = next_version;
+        seen.insert(next_version);
     }
     Ok(event)
 }
@@ -323,6 +358,63 @@ mod tests {
             ("id".to_string(), "task".to_string(), 99)
         );
         assert_eq!(result[2].event_version, 2);
+    }
+
+    #[test]
+    fn upcast_for_replay_is_a_no_op_when_no_upcaster_matches() {
+        // Every event is already at its current version, so even with an
+        // upcaster registered the replay view is `None`: callers replay the
+        // borrowed history directly and nothing is cloned or transformed.
+        let events = vec![
+            EventRecord::new_versioned("TestEvent", vec![1], 1, 2),
+            EventRecord::new("OtherEvent", vec![2], 1),
+        ];
+        let upcasters = [EventUpcaster {
+            event_type: "TestEvent",
+            from_version: 1,
+            to_version: 2,
+            transform: |_| panic!("transform must not run on the no-op path"),
+        }];
+
+        assert!(upcast_events_for_replay(events.iter(), &upcasters)
+            .unwrap()
+            .is_none());
+        assert!(upcast_events_for_replay(events.iter(), &[])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn upcast_for_replay_clones_only_matching_events() {
+        let events = vec![
+            EventRecord::new(
+                "TestEvent",
+                event_payload(&("id".to_string(), "task".to_string())),
+                1,
+            ),
+            EventRecord::new("OtherEvent", vec![7], 1),
+        ];
+        let upcasters = [EventUpcaster {
+            event_type: "TestEvent",
+            from_version: 1,
+            to_version: 2,
+            transform: upcast_test_event_v1_v2,
+        }];
+
+        let view = upcast_events_for_replay(events.iter(), &upcasters)
+            .unwrap()
+            .expect("a matching event must produce an upcasted view");
+
+        assert!(
+            matches!(view[0], Cow::Owned(_)),
+            "the rewritten event is owned"
+        );
+        assert_eq!(view[0].event_version, 2);
+        assert!(
+            matches!(view[1], Cow::Borrowed(_)),
+            "a non-matching event is borrowed, not cloned"
+        );
+        assert_eq!(view[1].payload, vec![7]);
     }
 
     #[test]
