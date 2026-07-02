@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::table::{
     ColumnType, TableMigrationArtifact, TableSchema, TableSchemaAdapter,
@@ -83,40 +83,33 @@ pub fn table_schema_statements(
 fn table_schemas_in_dependency_order(
     registry: &TableSchemaRegistry,
 ) -> Result<Vec<&TableSchema>, TableStoreError> {
-    let schemas_by_table = registry
+    let mut remaining = registry
         .schemas()
         .map(|schema| (schema.table_name.as_str(), schema))
         .collect::<BTreeMap<_, _>>();
-    let mut remaining = schemas_by_table.keys().copied().collect::<BTreeSet<_>>();
     let mut ordered = Vec::with_capacity(remaining.len());
 
     while !remaining.is_empty() {
         let ready = remaining
             .iter()
-            .copied()
-            .filter(|table_name| {
-                let schema = schemas_by_table
-                    .get(table_name)
-                    .expect("remaining table should have schema");
-                schema_dependency_tables(schema)
-                    .all(|dependency| dependency == *table_name || !remaining.contains(dependency))
+            .filter(|(table_name, schema)| {
+                schema_dependency_tables(schema).all(|dependency| {
+                    dependency == **table_name || !remaining.contains_key(dependency)
+                })
             })
+            .map(|(table_name, schema)| (*table_name, *schema))
             .collect::<Vec<_>>();
 
         if ready.is_empty() {
-            let cycle = remaining.into_iter().collect::<Vec<_>>().join(", ");
+            let cycle = remaining.into_keys().collect::<Vec<_>>().join(", ");
             return Err(TableStoreError::Metadata(format!(
                 "table schema foreign-key cycle cannot be bootstrapped inline: {cycle}"
             )));
         }
 
-        for table_name in ready {
+        for (table_name, schema) in ready {
             remaining.remove(table_name);
-            ordered.push(
-                *schemas_by_table
-                    .get(table_name)
-                    .expect("ready table should have schema"),
-            );
+            ordered.push(schema);
         }
     }
 
