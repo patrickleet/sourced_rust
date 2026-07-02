@@ -365,7 +365,7 @@ mod tests {
         // Every event is already at its current version, so even with an
         // upcaster registered the replay view is `None`: callers replay the
         // borrowed history directly and nothing is cloned or transformed.
-        let events = vec![
+        let events = [
             EventRecord::new_versioned("TestEvent", vec![1], 1, 2),
             EventRecord::new("OtherEvent", vec![2], 1),
         ];
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn upcast_for_replay_clones_only_matching_events() {
-        let events = vec![
+        let events = [
             EventRecord::new(
                 "TestEvent",
                 event_payload(&("id".to_string(), "task".to_string())),
