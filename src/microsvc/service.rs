@@ -173,7 +173,7 @@ trait ErasedRoutes: Send + Sync {
 
     fn dispatch<'a>(
         &'a self,
-        message: Message,
+        message: &'a Message,
         input: Value,
         session: Session,
     ) -> HandlerFuture<'a>;
@@ -287,9 +287,12 @@ impl<D: Send + Sync + 'static> RouteBuilder<D> {
 }
 
 /// A typed bundle of command/event handlers and the dependency value they use.
+///
+/// Handlers are keyed by kind, then name, so dispatch looks up by `&str`
+/// without allocating a key.
 pub struct Routes<D> {
     dependencies: D,
-    handlers: HashMap<(MessageKind, String), RegisteredHandler<D>>,
+    handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
 }
@@ -368,21 +371,20 @@ impl<D: Send + Sync + 'static> Routes<D> {
         guard: Option<Arc<GuardFn<D>>>,
         handle: Arc<HandlerFn<D>>,
     ) -> Self {
-        let mut keys = Vec::new();
-        for name in spec.names() {
-            let key = handler_key(spec.kind, name);
+        let by_name = self.handlers.entry(spec.kind).or_default();
+        let names = spec.names();
+        for (position, name) in names.iter().enumerate() {
             assert!(
-                !self.handlers.contains_key(&key) && !keys.contains(&key),
+                !by_name.contains_key(*name) && !names[..position].contains(name),
                 "duplicate route registration for {:?} `{}`",
                 spec.kind,
                 name
             );
-            keys.push(key);
         }
 
-        for key in keys {
-            self.handlers.insert(
-                key,
+        for name in names {
+            by_name.insert(
+                name.to_string(),
                 RegisteredHandler {
                     guard: guard.clone(),
                     handle: handle.clone(),
@@ -394,12 +396,15 @@ impl<D: Send + Sync + 'static> Routes<D> {
     }
 
     fn registered_keys(&self) -> Vec<(MessageKind, String)> {
-        self.handlers.keys().cloned().collect()
+        self.handlers
+            .iter()
+            .flat_map(|(kind, by_name)| by_name.keys().map(move |name| (*kind, name.clone())))
+            .collect()
     }
 
     async fn invoke(
         &self,
-        message: Message,
+        message: &Message,
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
@@ -408,17 +413,17 @@ impl<D: Send + Sync + 'static> Routes<D> {
         let (guard, handle) = {
             let handler = self
                 .handlers
-                .get(&handler_key(message.kind, &message.name))
+                .get(&message.kind)
+                .and_then(|by_name| by_name.get(message.name.as_str()))
                 .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
             (handler.guard.clone(), handler.handle.clone())
         };
-        let name = message.name.clone();
         let ctx = Context::new(message, input, session, &self.dependencies);
 
         // Run guard (synchronous) if present.
         if let Some(guard) = &guard {
             if !guard(&ctx) {
-                return Err(HandlerError::GuardRejected(name));
+                return Err(HandlerError::GuardRejected(message.name.clone()));
             }
         }
 
@@ -436,7 +441,7 @@ where
 
     fn dispatch<'a>(
         &'a self,
-        message: Message,
+        message: &'a Message,
         input: Value,
         session: Session,
     ) -> HandlerFuture<'a> {
@@ -466,7 +471,7 @@ where
 pub struct Service {
     name: Option<String>,
     routes: Vec<Box<dyn ErasedRoutes>>,
-    index: HashMap<(MessageKind, String), usize>,
+    index: HashMap<MessageKind, HashMap<String, usize>>,
     handler_specs: Vec<HandlerSpec>,
     runner: Option<ServiceRunner>,
 }
@@ -533,7 +538,7 @@ impl Service {
         let keys = routes.registered_keys();
         for (kind, name) in &keys {
             assert!(
-                !self.index.contains_key(&handler_key(*kind, name)),
+                !self.handles_message(*kind, name),
                 "duplicate route registration for {:?} `{}`",
                 kind,
                 name
@@ -541,8 +546,11 @@ impl Service {
         }
 
         let route_index = self.routes.len();
-        for key in keys {
-            self.index.insert(key, route_index);
+        for (kind, name) in keys {
+            self.index
+                .entry(kind)
+                .or_default()
+                .insert(name, route_index);
         }
         self.handler_specs.extend_from_slice(routes.handler_specs());
         self.routes.push(Box::new(routes));
@@ -579,7 +587,7 @@ impl Service {
             metadata,
         };
 
-        self.invoke(message, input, session).await
+        self.invoke(&message, input, session).await
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -617,18 +625,19 @@ impl Service {
             Err(err) => return Err(err),
         };
         let session = message_to_session(message);
-        self.invoke(message.clone(), input, session).await
+        self.invoke(message, input, session).await
     }
 
     async fn invoke(
         &self,
-        message: Message,
+        message: &Message,
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
         let route_index = self
             .index
-            .get(&handler_key(message.kind, &message.name))
+            .get(&message.kind)
+            .and_then(|by_name| by_name.get(message.name.as_str()))
             .copied()
             .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
         self.routes[route_index]
@@ -673,13 +682,15 @@ impl Service {
     /// Return whether this service has a handler for the message name.
     pub fn handles(&self, name: &str) -> bool {
         self.index
-            .keys()
-            .any(|(_, registered_name)| registered_name == name)
+            .values()
+            .any(|by_name| by_name.contains_key(name))
     }
 
     /// Return whether this service has a handler for this message kind and name.
     pub fn handles_message(&self, kind: MessageKind, name: &str) -> bool {
-        self.index.contains_key(&handler_key(kind, name))
+        self.index
+            .get(&kind)
+            .is_some_and(|by_name| by_name.contains_key(name))
     }
 
     /// Return whether this service has an event handler for the message name.
@@ -795,10 +806,6 @@ fn names_by_kind(specs: &[HandlerSpec], kind: MessageKind) -> Vec<&str> {
     }
 
     names
-}
-
-fn handler_key(kind: MessageKind, name: &str) -> (MessageKind, String) {
-    (kind, name.to_string())
 }
 
 /// Whether a content type declares a JSON payload (`application/json` or any
