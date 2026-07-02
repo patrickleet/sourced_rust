@@ -56,16 +56,19 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
         .await
         .expect("outbox claim should succeed");
     for message in claimed {
-        bus.publish_message(
-            Message::new(
-                message.event_type.clone(),
-                MessageKind::Event,
-                message.payload.clone(),
-            )
-            .with_id(message.id().to_string()),
+        // Raw codec bytes are binary, not JSON — label them like the real
+        // outbox dispatch does, so the service does not try to parse them as
+        // JSON input.
+        let mut event = Message::new(
+            message.event_type.clone(),
+            MessageKind::Event,
+            message.payload.clone(),
         )
-        .await
-        .expect("board event should publish to the bus");
+        .with_id(message.id().to_string());
+        event.content_type = "application/octet-stream".to_string();
+        bus.publish_message(event)
+            .await
+            .expect("board event should publish to the bus");
         let claim = OutboxClaimRef::from_message(&message).expect("claimed message yields a ref");
         outbox
             .complete(&claim)
