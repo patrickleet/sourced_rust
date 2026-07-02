@@ -76,27 +76,9 @@ pub use outbox::{
 
 // Outbox Worker: drain and publish concerns
 pub use outbox_worker::{
-    ClaimOutboxMessages,
-    // Worker
-    DrainResult,
-    // Publishers
-    LogPublisher,
-    LogPublisherError,
-    OutboxClaimRef,
-    OutboxPublishFailureAction,
-    OutboxPublisher,
-    OutboxStore,
-    OutboxWorker,
-    ProcessOneResult,
-};
-
-// LocalEmitterPublisher requires the emitter feature
-#[cfg(feature = "emitter")]
-pub use outbox_worker::LocalEmitterPublisher;
-pub use outbox_worker::{
-    BusOutboxPublishHook, BusPublisher, OutboxDispatchOutcome, OutboxDispatcher, OutboxSource,
-    ReceivedOutboxMessage, DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE,
-    SOURCED_METADATA_PREFIX,
+    BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
+    OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
+    DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE, SOURCED_METADATA_PREFIX,
 };
 
 pub use queued_repo::{

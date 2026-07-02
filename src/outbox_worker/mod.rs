@@ -5,10 +5,8 @@
 //! Items:
 //! - `OutboxStore` - Store operations for claiming and completing messages
 //! - `OutboxDispatcher` / `BusPublisher` - the async production drain path
-//! - `OutboxWorker` - async loaded-message processor
-//! - `OutboxPublisher` - async loaded-message publish trait
-//! - `LogPublisher` - simple logging publisher for tests
-//! - `LocalEmitterPublisher` - In-process event emitter (requires `emitter` feature)
+//! - `OutboxSource` - outbox-backed durable receive
+//! - `BusOutboxPublishHook` - after-commit immediate publish hook
 //!
 //! ## Separation of Concerns
 //!
@@ -31,22 +29,12 @@ mod bus_publisher;
 mod outbox_dispatch;
 mod outbox_source;
 mod publish_hook;
-mod publisher;
 mod store;
-mod worker;
-
-// Publishers
-#[cfg(feature = "emitter")]
-pub use publisher::LocalEmitterPublisher;
-pub use publisher::{LogPublisher, LogPublisherError, OutboxPublisher};
 
 // Repository helpers
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use store::ensure_active_claim;
 pub use store::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
-
-// Worker
-pub use worker::{DrainResult, OutboxWorker, ProcessOneResult};
 
 // Outbox -> bus bridge (moved out of the bus module; depends up on bus traits).
 pub use bus_publisher::BusPublisher;
