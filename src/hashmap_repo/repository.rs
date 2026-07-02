@@ -176,6 +176,11 @@ impl TransactionalCommit for HashMapRepository {
             }
             reject_duplicate_outbox_messages(&batch.outbox_messages)?;
 
+            // All-or-nothing without cloning the stores: every fallible check
+            // below runs against the live maps (reads) or a staging copy scoped
+            // to the rows this batch touches, and the live maps are only mutated
+            // once nothing can fail. All five write guards are held throughout so
+            // the batch stays atomic to readers.
             let mut storage = self
                 .event_store
                 .write()
@@ -199,15 +204,10 @@ impl TransactionalCommit for HashMapRepository {
                 .write()
                 .map_err(|_| RepositoryError::LockPoisoned("async inbox write"))?;
 
-            let mut staged_events = storage.clone();
-            let mut staged_rows = relational_rows.clone();
-            let mut staged_snapshots = snapshot_storage.clone();
-            let mut staged_outbox = outbox_storage.clone();
-            let mut staged_inbox = inbox_storage.clone();
-
+            // Events: optimistic-concurrency check (reads only; appends cannot
+            // fail once every stream passed).
             for append in &prepared {
-                let stored_len =
-                    stored_stream_version(staged_events.get(&append.identity.storage_key()));
+                let stored_len = stored_stream_version(storage.get(&append.identity.storage_key()));
                 if stored_len != append.expected_version {
                     return Err(RepositoryError::ConcurrentWrite {
                         id: append.identity.to_string(),
@@ -217,52 +217,91 @@ impl TransactionalCommit for HashMapRepository {
                 }
             }
 
-            for append in prepared {
-                let stored = staged_events
-                    .entry(append.identity.storage_key())
-                    .or_insert_with(Vec::new);
-                stored.extend(append.events);
+            // Read models: plans can fail mid-application, so apply them to a
+            // copy of only the rows they touch. Every touched storage key is
+            // known from the mutations up front (`lock_key` is the row's storage
+            // key), so the copy is bounded by the batch, not the store.
+            let touched_rows: HashSet<String> = batch
+                .read_model_plans
+                .iter()
+                .flat_map(|plan| plan.mutations.iter().map(|mutation| mutation.lock_key()))
+                .collect();
+            let mut staged_rows = HashMap::with_capacity(touched_rows.len());
+            for key in &touched_rows {
+                if let Some(row) = relational_rows.get(key) {
+                    staged_rows.insert(key.clone(), row.clone());
+                }
             }
-
             for plan in batch.read_model_plans {
                 apply_read_model_write_plan(plan, &mut staged_rows)?;
+            }
+            debug_assert!(
+                staged_rows.keys().all(|key| touched_rows.contains(key)),
+                "read model plan wrote a row outside its mutations' lock keys"
+            );
+
+            // Outbox: duplicates against the store (intra-batch duplicates were
+            // rejected above).
+            for message in &batch.outbox_messages {
+                if outbox_storage.contains_key(message.id()) {
+                    return Err(RepositoryError::DuplicateOutboxMessageInBatch {
+                        id: message.id().to_string(),
+                    });
+                }
+            }
+
+            // Inbox receipts gate effectively-once: a receipt that already exists
+            // (committed or duplicated in this batch) rolls the whole batch back
+            // so effects are not double-applied.
+            let mut batch_receipts = HashSet::with_capacity(batch.inbox_receipts.len());
+            for receipt in &batch.inbox_receipts {
+                receipt.validate()?;
+                let key = (receipt.consumer.as_str(), receipt.message_id.as_str());
+                if inbox_storage.contains(&(receipt.consumer.clone(), receipt.message_id.clone()))
+                    || !batch_receipts.insert(key)
+                {
+                    return Err(RepositoryError::DuplicateInboxReceipt {
+                        consumer: receipt.consumer.clone(),
+                        message_id: receipt.message_id.clone(),
+                    });
+                }
+            }
+            drop(batch_receipts);
+
+            // Nothing below can fail: mutate the live stores.
+            for append in prepared {
+                storage
+                    .entry(append.identity.storage_key())
+                    .or_insert_with(Vec::new)
+                    .extend(append.events);
+            }
+
+            for key in touched_rows {
+                match staged_rows.remove(&key) {
+                    Some(row) => {
+                        relational_rows.insert(key, row);
+                    }
+                    None => {
+                        relational_rows.remove(&key);
+                    }
+                }
             }
 
             for write in batch.snapshots {
                 match write {
                     SnapshotWrite::Save { identity, record } => {
-                        staged_snapshots.insert(identity.storage_key(), record);
+                        snapshot_storage.insert(identity.storage_key(), record);
                     }
                 }
             }
 
             for message in batch.outbox_messages {
-                let id = message.id().to_string();
-                if staged_outbox.contains_key(&id) {
-                    return Err(RepositoryError::DuplicateOutboxMessageInBatch { id });
-                }
-                staged_outbox.insert(id, message);
+                outbox_storage.insert(message.id().to_string(), message);
             }
 
-            // Inbox receipts gate effectively-once: a receipt that already exists
-            // (committed or duplicated in this batch) rolls the whole batch back so
-            // effects are not double-applied.
             for receipt in batch.inbox_receipts {
-                receipt.validate()?;
-                let key = (receipt.consumer.clone(), receipt.message_id.clone());
-                if !staged_inbox.insert(key) {
-                    return Err(RepositoryError::DuplicateInboxReceipt {
-                        consumer: receipt.consumer,
-                        message_id: receipt.message_id,
-                    });
-                }
+                inbox_storage.insert((receipt.consumer, receipt.message_id));
             }
-
-            *storage = staged_events;
-            *relational_rows = staged_rows;
-            *snapshot_storage = staged_snapshots;
-            *outbox_storage = staged_outbox;
-            *inbox_storage = staged_inbox;
 
             for stream in batch.streams {
                 stream.entity.mark_committed();
