@@ -216,32 +216,74 @@ where
         &self,
         claimed: Vec<OutboxMessage>,
     ) -> Result<OutboxDispatchOutcome, TransportError> {
-        let mut outcome = OutboxDispatchOutcome {
-            claimed: claimed.len(),
-            ..Default::default()
-        };
-        for message in claimed {
-            let claim = OutboxClaimRef::from_message(&message)?;
-            let transport_message = Message::from(message);
-            match self.publisher.publish(transport_message).await {
-                Ok(()) => {
-                    self.store.complete(&claim).await?;
-                    outcome.published += 1;
-                }
-                Err(publish_error) => {
-                    match self
-                        .store
-                        .record_failure(&claim, &publish_error.to_string(), self.max_attempts)
-                        .await?
-                    {
-                        OutboxPublishFailureAction::Released => outcome.released += 1,
-                        OutboxPublishFailureAction::Failed => outcome.failed += 1,
-                    }
+        let claimed_count = claimed.len();
+        let settled =
+            publish_and_settle(&self.store, &self.publisher, claimed, self.max_attempts).await?;
+        Ok(OutboxDispatchOutcome {
+            requested: 0,
+            claimed: claimed_count,
+            published: settled.published,
+            released: settled.released,
+            failed: settled.failed,
+        })
+    }
+}
+
+/// Counts of what one [`publish_and_settle`] pass did with already-claimed rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SettleOutcome {
+    /// Rows published and completed.
+    pub published: usize,
+    /// Rows released for retry after a publish failure.
+    pub released: usize,
+    /// Rows permanently failed after exhausting attempts.
+    pub failed: usize,
+}
+
+/// Publish already-claimed outbox rows through `publisher` and settle each
+/// claim in `store`: `complete` on publish success, `record_failure`
+/// (release, or fail at the `max_attempts` ceiling) on publish error.
+///
+/// This is the one publish-then-settle path, shared by the dispatcher
+/// (background polling and after-commit `dispatch_ids`) and by the
+/// after-commit publish hook. It never claims: callers must already hold the
+/// claims — the dispatcher claims first, and the hook is handed rows that were
+/// claimed inside the commit transaction (re-claiming there would bump
+/// attempts and race the lease).
+///
+/// Publish failures are not errors — they are settled into the outcome. Only
+/// a store failure returns `Err`; rows settled before the failure keep their
+/// settled state.
+pub(crate) async fn publish_and_settle<S, P>(
+    store: &S,
+    publisher: &P,
+    claimed: Vec<OutboxMessage>,
+    max_attempts: u32,
+) -> Result<SettleOutcome, RepositoryError>
+where
+    S: OutboxStore,
+    P: MessagePublisher,
+{
+    let mut outcome = SettleOutcome::default();
+    for message in claimed {
+        let claim = OutboxClaimRef::from_message(&message)?;
+        match publisher.publish(Message::from(message)).await {
+            Ok(()) => {
+                store.complete(&claim).await?;
+                outcome.published += 1;
+            }
+            Err(publish_error) => {
+                match store
+                    .record_failure(&claim, &publish_error.to_string(), max_attempts)
+                    .await?
+                {
+                    OutboxPublishFailureAction::Released => outcome.released += 1,
+                    OutboxPublishFailureAction::Failed => outcome.failed += 1,
                 }
             }
         }
-        Ok(outcome)
     }
+    Ok(outcome)
 }
 
 #[cfg(test)]
