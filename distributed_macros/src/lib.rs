@@ -779,6 +779,53 @@ struct UpcasterDef {
     transform_fn: syn::Path,
 }
 
+impl Parse for UpcasterDef {
+    /// Parses one upcaster entry:
+    /// `("event.name", from => to, SourceType => TargetType, transform_fn)`.
+    ///
+    /// Shared by `aggregate!` and `#[sourced(..., upcasters(...))]` so the
+    /// upcaster grammar cannot drift between the two entry points.
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let inner;
+        syn::parenthesized!(inner in input);
+
+        let event_name: LitStr = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let from_version: syn::LitInt = inner.parse()?;
+        inner.parse::<Token![=>]>()?;
+        let to_version: syn::LitInt = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let source_type: syn::Type = inner.parse()?;
+        inner.parse::<Token![=>]>()?;
+        let target_type: syn::Type = inner.parse()?;
+        inner.parse::<Token![,]>()?;
+        let transform_fn: syn::Path = inner.parse()?;
+
+        Ok(UpcasterDef {
+            event_name,
+            from_version,
+            to_version,
+            source_type,
+            target_type,
+            transform_fn,
+        })
+    }
+}
+
+/// Parse a sequence of parenthesized upcaster entries with optional trailing
+/// commas, until `content` is exhausted.
+fn parse_upcaster_list(content: ParseStream) -> syn::Result<Vec<UpcasterDef>> {
+    let mut upcasters = Vec::new();
+    while !content.is_empty() {
+        upcasters.push(content.parse::<UpcasterDef>()?);
+        // Optional trailing comma between upcaster entries
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(upcasters)
+}
+
 struct AggregateInput {
     agg_name: Ident,
     entity_field: Ident,
@@ -881,38 +928,7 @@ impl Parse for AggregateInput {
 
             let upcaster_content;
             syn::bracketed!(upcaster_content in input);
-
-            while !upcaster_content.is_empty() {
-                // Parse: ("initialized", from => to, SourceType => TargetType, transform_fn)
-                let inner;
-                syn::parenthesized!(inner in upcaster_content);
-
-                let event_name: LitStr = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let from_version: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let to_version: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let source_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let target_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let transform_fn: syn::Path = inner.parse()?;
-
-                upcasters.push(UpcasterDef {
-                    event_name,
-                    from_version,
-                    to_version,
-                    source_type,
-                    target_type,
-                    transform_fn,
-                });
-
-                // Optional trailing comma between upcaster entries
-                if upcaster_content.peek(Token![,]) {
-                    upcaster_content.parse::<Token![,]>()?;
-                }
-            }
+            upcasters = parse_upcaster_list(&upcaster_content)?;
         }
 
         Ok(AggregateInput {
@@ -976,32 +992,7 @@ fn parse_sourced_args(input: ParseStream) -> syn::Result<SourcedArgs> {
         } else if kw == "upcasters" {
             let upcaster_content;
             syn::parenthesized!(upcaster_content in input);
-            while !upcaster_content.is_empty() {
-                let inner;
-                syn::parenthesized!(inner in upcaster_content);
-                let ev_name: LitStr = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let from_ver: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let to_ver: syn::LitInt = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let source_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![=>]>()?;
-                let target_type: syn::Type = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let transform: syn::Path = inner.parse()?;
-                upcasters.push(UpcasterDef {
-                    event_name: ev_name,
-                    from_version: from_ver,
-                    to_version: to_ver,
-                    source_type,
-                    target_type,
-                    transform_fn: transform,
-                });
-                if upcaster_content.peek(Token![,]) {
-                    upcaster_content.parse::<Token![,]>()?;
-                }
-            }
+            upcasters = parse_upcaster_list(&upcaster_content)?;
         } else {
             return Err(syn::Error::new_spanned(
                 &kw,
@@ -1719,6 +1710,50 @@ mod tests {
             err.to_string().contains("must take a `&mut self` receiver"),
             "got: {err}"
         );
+    }
+
+    // ---- upcasters -------------------------------------------------------
+
+    /// Both `aggregate!` and `#[sourced]` route through the same
+    /// `UpcasterDef` parser, so one grammar check covers both entry points.
+    #[test]
+    fn upcaster_def_parses_full_entry() {
+        let input = quote! { ("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn) };
+        let def: UpcasterDef = syn::parse2(input).unwrap();
+        assert_eq!(def.event_name.value(), "initialized");
+        assert_eq!(def.from_version.base10_parse::<u64>().unwrap(), 1);
+        assert_eq!(def.to_version.base10_parse::<u64>().unwrap(), 2);
+    }
+
+    #[test]
+    fn upcaster_def_rejects_missing_transform_fn() {
+        let input = quote! { ("initialized", 1 => 2, OldPayload => NewPayload) };
+        assert!(syn::parse2::<UpcasterDef>(input).is_err());
+    }
+
+    #[test]
+    fn parse_sourced_args_accepts_upcasters() {
+        let attr = quote! {
+            entity,
+            upcasters(("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn))
+        };
+        let args = parse_sourced_args.parse2(attr).unwrap();
+        assert_eq!(args.upcasters.len(), 1);
+    }
+
+    #[test]
+    fn expand_aggregate_accepts_upcasters_block() {
+        let input = quote! {
+            Todo, entity {
+                "initialized"(id) => initialize,
+            }
+            upcasters [
+                ("initialized", 1 => 2, OldPayload => NewPayload, upcast_fn),
+            ]
+        };
+        let out = expand_aggregate(input).unwrap().to_string();
+        assert!(out.contains("upcasters"), "got: {out}");
+        assert!(out.contains("upcast_fn"), "got: {out}");
     }
 
     // ---- aggregate -------------------------------------------------------
