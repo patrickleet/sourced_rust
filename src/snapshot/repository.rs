@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::aggregate::{hydrate, AggregateRepository, SnapshotPolicy};
-use crate::entity::{upcast_events, Entity, EventRecord};
+use crate::entity::{upcast_events_for_replay, Entity, EventRecord};
 use crate::repository::{GetStream, RepositoryError, SnapshotStore, StreamIdentity};
 
 use super::snapshottable::Snapshottable;
@@ -128,22 +128,17 @@ fn hydrate_prepared_snapshot<A: Snapshottable>(
     // must survive: the pre-snapshot prefix is still counted for `new_events`
     // slicing on the next commit).
     let history = agg.entity_mut().take_events();
-    let upcasters = A::upcasters();
 
-    let replay_result = if upcasters.is_empty() {
-        // Common path: replay straight from a filtered borrow — no clone of the
-        // post-snapshot tail.
-        replay_events(&mut agg, post_snapshot_tail(&history, snapshot.version))
-    } else {
-        // Upcasters may rewrite the post-snapshot events; build that view (a
-        // clone bounded to the tail) and replay from it.
-        let post_snapshot: Vec<EventRecord> = post_snapshot_tail(&history, snapshot.version)
-            .cloned()
-            .collect();
-        match upcast_events(post_snapshot, upcasters) {
-            Ok(events) => replay_events(&mut agg, events.iter()),
-            Err(err) => Err(SnapshotHydrationError::Replay(err.to_string())),
-        }
+    // Upcasters may rewrite the post-snapshot events; the upcasted view clones
+    // only the events an upcaster rewrites. When none applies, replay straight
+    // from the filtered borrow — no clone of the post-snapshot tail.
+    let replay_result = match upcast_events_for_replay(
+        post_snapshot_tail(&history, snapshot.version),
+        A::upcasters(),
+    ) {
+        Ok(Some(upcasted)) => replay_events(&mut agg, upcasted.iter().map(|event| event.as_ref())),
+        Ok(None) => replay_events(&mut agg, post_snapshot_tail(&history, snapshot.version)),
+        Err(err) => Err(SnapshotHydrationError::Replay(err.to_string())),
     };
 
     // Restore the full history regardless of replay outcome before surfacing it.
@@ -156,7 +151,7 @@ fn hydrate_prepared_snapshot<A: Snapshottable>(
 fn post_snapshot_tail(
     history: &[EventRecord],
     snapshot_version: u64,
-) -> impl Iterator<Item = &EventRecord> {
+) -> impl Iterator<Item = &EventRecord> + Clone {
     history
         .iter()
         .filter(move |e| e.sequence > snapshot_version)
