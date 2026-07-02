@@ -39,7 +39,7 @@ use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions,
     TransportError,
 };
-use super::{strip_address_prefix, validate_message_name, Message, MessageKind};
+use super::{strip_address_prefix, validate_message_name, Message};
 
 /// Reject a routing/binding name a wildcard would mis-bind. A `#`/`*` in a
 /// RabbitMQ topic binding key is a subscription wildcard, so an unvalidated
@@ -265,16 +265,6 @@ impl RabbitBus {
 }
 
 impl Bus for RabbitBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.send_message(Message::new(name, MessageKind::Command, payload))
-            .await
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.publish_message(Message::new(name, MessageKind::Event, payload))
-            .await
-    }
-
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
         checked_name(message.name())?;
         // Default exchange routes by routing key == queue name; declare the queue

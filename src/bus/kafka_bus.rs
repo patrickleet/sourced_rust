@@ -24,11 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::kafka::{KafkaPublisher, KafkaSource};
+use super::Message;
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessagePublisher, MessageRouter, RunOptions,
     TransportError,
 };
-use super::{Message, MessageKind};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -172,16 +172,6 @@ impl KafkaBus {
 }
 
 impl Bus for KafkaBus {
-    async fn send(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.send_message(Message::new(name, MessageKind::Command, payload))
-            .await
-    }
-
-    async fn publish(&self, name: &str, payload: Vec<u8>) -> Result<(), TransportError> {
-        self.publish_message(Message::new(name, MessageKind::Event, payload))
-            .await
-    }
-
     async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
         // The publisher uses the message name as the topic; namespace it.
         message.name = format!("{}{}", self.command_prefix()?, message.name);
@@ -245,7 +235,7 @@ impl BusConsumer for KafkaBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::SubscriptionPlan;
+    use crate::bus::{MessageKind, SubscriptionPlan};
     use rdkafka::config::ClientConfig;
     use rdkafka::producer::FutureProducer;
 
