@@ -19,7 +19,7 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 
 use super::source::{MessageSource, ReceivedMessage};
-use super::{message_from_wire, Message};
+use super::{message_from_wire, strip_address_prefix, Message};
 use super::{retryable, MessagePublisher, TransportError};
 
 const MESSAGE_KIND_HEADER: &str = "x-sourced-kind";
@@ -110,18 +110,44 @@ impl MessagePublisher for RabbitPublisher {
     }
 }
 
-/// Polls a single queue with `basic_get`.
+/// Polls one or more queues with `basic_get`, resolving the message name from
+/// the delivery's routing key (stripping a configured prefix — used by
+/// [`RabbitBus`](super::RabbitBus) for its `{ns}.cmd.` command queues).
+///
+/// Polling is *sticky*: each `recv` starts at the queue that last yielded a
+/// message, so draining a busy queue costs one `basic_get` per message instead
+/// of re-polling every just-empty queue each time. A full empty cycle over all
+/// queues is still required before returning `Ok(None)`, preserving the
+/// drain-to-idle contract. (`basic_consume` with prefetch would push messages
+/// with no broker-side "drained" signal, so `basic_get` stays.)
 pub struct RabbitSource {
     channel: Channel,
-    queue: String,
+    queues: Vec<String>,
+    strip_prefix: Option<String>,
+    /// Index of the queue that most recently yielded a message.
+    current: usize,
 }
 
 impl RabbitSource {
-    /// Wrap an existing channel bound to `queue`.
+    /// Wrap an existing channel bound to `queue`. With the default exchange the
+    /// routing key equals the queue name, so the delivered routing key is the
+    /// message name consumers subscribe to.
     pub fn new(channel: Channel, queue: impl Into<String>) -> Self {
+        Self::multi(channel, vec![queue.into()], None)
+    }
+
+    /// Poll several queues on one channel, optionally stripping `strip_prefix`
+    /// from each delivery's routing key when deriving the message name.
+    pub(super) fn multi(
+        channel: Channel,
+        queues: Vec<String>,
+        strip_prefix: Option<String>,
+    ) -> Self {
         Self {
             channel,
-            queue: queue.into(),
+            queues,
+            strip_prefix,
+            current: 0,
         }
     }
 
@@ -149,15 +175,27 @@ impl MessageSource for RabbitSource {
     type Received = RabbitReceived;
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        let message = self
-            .channel
-            .basic_get(
-                ShortString::from(self.queue.as_str()),
-                BasicGetOptions::default(),
-            )
-            .await
-            .map_err(|err| retryable("amqp basic_get", err))?;
-        Ok(message.map(|get| RabbitReceived::from_delivery(get.delivery, self.queue.clone())))
+        for offset in 0..self.queues.len() {
+            let index = (self.current + offset) % self.queues.len();
+            let got = self
+                .channel
+                .basic_get(
+                    ShortString::from(self.queues[index].as_str()),
+                    BasicGetOptions::default(),
+                )
+                .await
+                .map_err(|err| retryable("amqp basic_get", err))?;
+            if let Some(get) = got {
+                self.current = index;
+                let routing_key = get.delivery.routing_key.to_string();
+                let name = strip_address_prefix(routing_key, self.strip_prefix.as_deref());
+                return Ok(Some(RabbitReceived::from_delivery_with_name(
+                    get.delivery,
+                    name,
+                )));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -168,12 +206,6 @@ pub struct RabbitReceived {
 }
 
 impl RabbitReceived {
-    fn from_delivery(delivery: Delivery, queue: String) -> Self {
-        // The standalone source consumes a queue named for the message, so the
-        // queue name is the routed message name.
-        Self::from_delivery_with_name(delivery, queue)
-    }
-
     /// Build from a delivery with an explicitly resolved message name. Used by
     /// [`RabbitBus`](super::RabbitBus), which derives the name from the routing
     /// key (stripping its `{ns}.cmd.` prefix for commands) rather than the queue.

@@ -28,19 +28,18 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use lapin::options::{
-    BasicGetOptions, BasicPublishOptions, ConfirmSelectOptions, ExchangeDeclareOptions,
-    QueueBindOptions, QueueDeclareOptions,
+    BasicPublishOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
+    QueueDeclareOptions,
 };
 use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, ExchangeKind};
 
-use super::rabbitmq::{connect_channel, message_properties, RabbitReceived};
-use super::source::MessageSource;
+use super::rabbitmq::{connect_channel, message_properties, RabbitSource};
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions,
     TransportError,
 };
-use super::{strip_address_prefix, validate_message_name, Message};
+use super::{validate_message_name, Message};
 
 /// Reject a routing/binding name a wildcard would mis-bind. A `#`/`*` in a
 /// RabbitMQ topic binding key is a subscription wildcard, so an unvalidated
@@ -351,12 +350,7 @@ impl BusConsumer for RabbitBus {
             self.declare_queue(&channel, &queue).await?;
             queues.push(queue);
         }
-        let source = RabbitBusSource {
-            channel,
-            queues,
-            strip_prefix: Some(self.command_prefix()?),
-            current: 0,
-        };
+        let source = RabbitSource::multi(channel, queues, Some(self.command_prefix()?));
         run_source(router, source, options).await
     }
 
@@ -373,58 +367,8 @@ impl BusConsumer for RabbitBus {
             .topology
             .resolve_consumer_group(router.as_ref(), "rabbitmq")?;
         let channel = connect_channel(&self.uri).await?;
-        let source = RabbitBusSource {
-            channel,
-            queues: vec![self.group_queue(&group)?],
-            // Events are published with routing key == the bare event name.
-            strip_prefix: None,
-            current: 0,
-        };
+        // Events are published with routing key == the bare event name.
+        let source = RabbitSource::multi(channel, vec![self.group_queue(&group)?], None);
         run_source(router, source, options).await
-    }
-}
-
-/// Polls one or more queues with `basic_get`, resolving the message name from the
-/// delivery's routing key (stripping `strip_prefix` for command queues).
-///
-/// Polling is *sticky*: each `recv` starts at the queue that last yielded a
-/// message, so draining a busy queue costs one `basic_get` per message instead
-/// of re-polling every just-empty queue each time. A full empty cycle over all
-/// queues is still required before returning `Ok(None)`, preserving the
-/// drain-to-idle contract. (`basic_consume` with prefetch would push messages
-/// with no broker-side "drained" signal, so `basic_get` stays.)
-struct RabbitBusSource {
-    channel: Channel,
-    queues: Vec<String>,
-    strip_prefix: Option<String>,
-    /// Index of the queue that most recently yielded a message.
-    current: usize,
-}
-
-impl MessageSource for RabbitBusSource {
-    type Received = RabbitReceived;
-
-    async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
-        for offset in 0..self.queues.len() {
-            let index = (self.current + offset) % self.queues.len();
-            let got = self
-                .channel
-                .basic_get(
-                    ShortString::from(self.queues[index].as_str()),
-                    BasicGetOptions::default(),
-                )
-                .await
-                .map_err(|err| retryable("amqp basic_get", err))?;
-            if let Some(get) = got {
-                self.current = index;
-                let routing_key = get.delivery.routing_key.to_string();
-                let name = strip_address_prefix(routing_key, self.strip_prefix.as_deref());
-                return Ok(Some(RabbitReceived::from_delivery_with_name(
-                    get.delivery,
-                    name,
-                )));
-            }
-        }
-        Ok(None)
     }
 }
