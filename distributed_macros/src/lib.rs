@@ -14,32 +14,32 @@ use syn::{
 // Shared helpers
 // ============================================================================
 
-/// Extract parameter names from a method signature (excludes `self`).
-fn extract_param_names(sig: &syn::Signature) -> Vec<&Ident> {
-    sig.inputs
-        .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some(&pat_ident.ident);
-                }
-            }
-            None
-        })
-        .collect()
-}
-
 /// Extract parameter names and types from a method signature (excludes `self`).
-fn extract_params_with_types(sig: &syn::Signature) -> Vec<(Ident, syn::Type)> {
+///
+/// Every parameter must be a plain identifier: its name is recorded in the
+/// event payload and used to call the method again on replay. A pattern like
+/// `(a, b): (u8, u8)` or `_: String` has no single name, so silently skipping
+/// it would drop the parameter from the payload and make the generated replay
+/// arm call the method with too few arguments — an arity error pointing at
+/// generated code, far from the cause. Reject it here with a spanned error.
+fn extract_params_with_types(
+    sig: &syn::Signature,
+    attr_name: &str,
+) -> syn::Result<Vec<(Ident, syn::Type)>> {
     sig.inputs
         .iter()
-        .filter_map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
-                }
-            }
-            None
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .map(|pat_type| match &*pat_type.pat {
+            Pat::Ident(pat_ident) => Ok((pat_ident.ident.clone(), (*pat_type.ty).clone())),
+            other => Err(syn::Error::new_spanned(
+                other,
+                format!(
+                    "unsupported parameter pattern in #[{attr_name}] method — use a plain identifier"
+                ),
+            )),
         })
         .collect()
 }
@@ -361,7 +361,8 @@ fn expand_enqueue(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
     let event_name = &args.event_name;
 
     // Use function parameters - serialize as tuple to JSON
-    let param_names = extract_param_names(&func.sig);
+    let params = extract_params_with_types(&func.sig, "enqueue")?;
+    let param_names: Vec<&Ident> = params.iter().map(|(name, _)| name).collect();
 
     let entity_field = &args.entity_field;
 
@@ -529,7 +530,8 @@ fn expand_digest(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStr
 
     let signature_synthesized = ensure_sourced_result_signature(&mut func.sig, "digest")?;
 
-    let param_names = extract_param_names(&func.sig);
+    let params = extract_params_with_types(&func.sig, "digest")?;
+    let param_names: Vec<&Ident> = params.iter().map(|(name, _)| name).collect();
     let digest_call = generate_digest_call(
         &args.entity_field,
         &args.event_name,
@@ -1192,7 +1194,7 @@ fn expand_sourced(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenSt
                     let signature_synthesized =
                         ensure_sourced_result_signature(&mut method.sig, "event")?;
 
-                    let params = extract_params_with_types(&method.sig);
+                    let params = extract_params_with_types(&method.sig, "event")?;
                     let param_name_refs: Vec<&Ident> =
                         params.iter().map(|(name, _)| name).collect();
 
@@ -1651,6 +1653,56 @@ mod tests {
         assert!(msg.contains("`user.completed`"), "got: {msg}");
         assert!(msg.contains("`admin.completed`"), "got: {msg}");
         assert!(msg.contains("`Completed`"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_sourced_rejects_tuple_parameter_pattern() {
+        let attr = quote! { entity };
+        let item = quote! {
+            impl Point {
+                #[event("moved")]
+                pub fn moved(&mut self, (x, y): (u8, u8)) {
+                    self.x = x;
+                    self.y = y;
+                }
+            }
+        };
+        let err = expand_sourced(attr, item).expect_err("tuple pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[event] method"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_digest_rejects_wildcard_parameter_pattern() {
+        let attr = quote! { "initialized" };
+        let item = quote! {
+            fn initialize(&mut self, _: String) {}
+        };
+        let err = expand_digest(attr, item).expect_err("wildcard pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[digest] method"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_enqueue_rejects_struct_parameter_pattern() {
+        let attr = quote! { "order.initialized" };
+        let item = quote! {
+            fn create(&mut self, Payload { id }: Payload) {
+                let _ = id;
+            }
+        };
+        let err = expand_enqueue(attr, item).expect_err("struct pattern should error");
+        assert!(
+            err.to_string()
+                .contains("unsupported parameter pattern in #[enqueue] method"),
+            "got: {err}"
+        );
     }
 
     #[test]
