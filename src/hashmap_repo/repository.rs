@@ -14,11 +14,9 @@ use crate::read_model::{
     InMemoryReadModelStore, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
 };
 use crate::repository::{
-    reject_duplicate_outbox_messages, reject_duplicate_streams,
-    validate_entity_id_matches_identity, validate_prepared_appends, validate_snapshot_identity,
-    CommitBatch, GetStream, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RepositoryError, SnapshotStore, SnapshotWrite, StreamIdentity,
-    TransactionalCommit,
+    validate_commit_batch, validate_snapshot_identity, CommitBatch, GetStream, InboxStore,
+    ReadModelWritePlanStore, RelationalReadModelQueryStore, RepositoryError, SnapshotStore,
+    SnapshotWrite, StreamIdentity, TransactionalCommit,
 };
 use crate::snapshot::{InMemorySnapshotStore, SnapshotRecord};
 use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError, TableWritePlan};
@@ -140,21 +138,6 @@ impl GetStream for HashMapRepository {
             }
         }
     }
-
-    fn get_streams<'a>(
-        &'a self,
-        identities: &'a [StreamIdentity],
-    ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a {
-        async move {
-            let mut entities = Vec::with_capacity(identities.len());
-            for identity in identities {
-                if let Some(entity) = self.get_stream(identity).await? {
-                    entities.push(entity);
-                }
-            }
-            Ok(entities)
-        }
-    }
 }
 
 impl TransactionalCommit for HashMapRepository {
@@ -163,18 +146,7 @@ impl TransactionalCommit for HashMapRepository {
         batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            reject_duplicate_streams(&batch.streams)?;
-            validate_entity_id_matches_identity(&batch.streams)?;
-            let prepared = batch
-                .streams
-                .iter()
-                .map(PreparedEventAppend::from_stream_write)
-                .collect::<Vec<_>>();
-            validate_prepared_appends(&prepared)?;
-            for write in &batch.snapshots {
-                validate_snapshot_write(write)?;
-            }
-            reject_duplicate_outbox_messages(&batch.outbox_messages)?;
+            let prepared = validate_commit_batch(&batch)?;
 
             // All-or-nothing without cloning the stores: every fallible check
             // below runs against the live maps (reads) or a staging copy scoped
@@ -232,7 +204,9 @@ impl TransactionalCommit for HashMapRepository {
                     staged_rows.insert(key.clone(), row.clone());
                 }
             }
-            for plan in batch.read_model_plans {
+            // Clone plans: `prepared` borrows `batch` through the append loop
+            // below, so `batch.read_model_plans` cannot be moved out here.
+            for plan in batch.read_model_plans.iter().cloned() {
                 apply_read_model_write_plan(plan, &mut staged_rows)?;
             }
             debug_assert!(
@@ -273,7 +247,7 @@ impl TransactionalCommit for HashMapRepository {
                 storage
                     .entry(append.identity.storage_key())
                     .or_insert_with(Vec::new)
-                    .extend(append.events);
+                    .extend_from_slice(append.events);
             }
 
             for key in touched_rows {
@@ -331,12 +305,6 @@ impl InboxStore for HashMapRepository {
     }
 }
 
-fn validate_snapshot_write(write: &SnapshotWrite) -> Result<(), RepositoryError> {
-    match write {
-        SnapshotWrite::Save { identity, record } => validate_snapshot_identity(identity, record),
-    }
-}
-
 fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
     // A missing stream has committed version 0; the first appended event will
     // occupy sequence 1.
@@ -381,6 +349,23 @@ impl SnapshotStore for HashMapRepository {
                 .read()
                 .map_err(|_| RepositoryError::LockPoisoned("async snapshot read"))?;
             Ok(storage.get(&identity.storage_key()).cloned())
+        }
+    }
+
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            let storage = self
+                .snapshot_store
+                .storage
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("async snapshot read"))?;
+            Ok(identities
+                .iter()
+                .filter_map(|identity| storage.get(&identity.storage_key()).cloned())
+                .collect())
         }
     }
 

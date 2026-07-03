@@ -77,7 +77,7 @@ async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessag
         OutboxMessageStatus::Failed,
     ] {
         if let Some(message) = store
-            .messages_by_status(status)
+            .messages_by_status(status, usize::MAX)
             .await
             .unwrap()
             .into_iter()
@@ -104,7 +104,13 @@ async fn todos() {
 
     // Verify the outbox event was captured
     {
-        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
+        let pending = repo
+            .repo()
+            .inner()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "todo.initialized");
     }
@@ -125,7 +131,13 @@ async fn todos() {
         .expect("completed todo outbox commit should succeed");
 
     {
-        let pending = repo.repo().inner().outbox_store().pending().await.unwrap();
+        let pending = repo
+            .repo()
+            .inner()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 2);
         assert!(pending
             .iter()
@@ -223,7 +235,7 @@ async fn outbox_records_persisted() {
     repo.outbox(message).commit(&mut todo).await.unwrap();
 
     // Check pending outbox messages
-    let pending = repo.outbox_store().pending().await.unwrap();
+    let pending = repo.outbox_store().pending(usize::MAX).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "todo.initialized");
 
@@ -510,7 +522,10 @@ async fn outbox_dispatch_drains_one_row_at_a_time() {
         let message = load_outbox_message(&repo, id).await;
         assert!(message.is_published());
     }
-    assert_eq!(repo.outbox_store().pending().await.unwrap().len(), 0);
+    assert_eq!(
+        repo.outbox_store().pending(usize::MAX).await.unwrap().len(),
+        0
+    );
     assert_eq!(dispatcher.publisher().messages().len(), 3);
 }
 

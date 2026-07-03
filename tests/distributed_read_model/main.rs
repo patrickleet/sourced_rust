@@ -361,7 +361,7 @@ where
     S: OutboxStore + Send + Sync,
 {
     let pending = store
-        .pending()
+        .pending(usize::MAX)
         .await
         .expect("pending outbox messages should load");
     assert!(

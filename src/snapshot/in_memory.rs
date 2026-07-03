@@ -48,6 +48,22 @@ impl SnapshotStore for InMemorySnapshotStore {
         }
     }
 
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            let storage = self
+                .storage
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("async snapshot read"))?;
+            Ok(identities
+                .iter()
+                .filter_map(|identity| storage.get(&identity.storage_key()).cloned())
+                .collect())
+        }
+    }
+
     fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,

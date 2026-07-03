@@ -455,9 +455,10 @@ impl OutboxStore for CompleteOnceFailingStore {
     fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
+        limit: usize,
     ) -> impl std::future::Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_
     {
-        self.inner.messages_by_status(status)
+        self.inner.messages_by_status(status, limit)
     }
 
     fn claim(

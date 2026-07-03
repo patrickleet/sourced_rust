@@ -121,7 +121,7 @@ async fn create_persists_outbox_message() {
     assert_eq!(counter.value, 0);
 
     // Outbox message was persisted
-    let pending = store.outbox_store().pending().await.unwrap();
+    let pending = store.outbox_store().pending(usize::MAX).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_type, "counter.initialized");
 }
@@ -145,7 +145,7 @@ async fn duplicate_create_leaves_single_outbox_message() {
         .await;
     assert!(result.is_err());
 
-    let pending = store.outbox_store().pending().await.unwrap();
+    let pending = store.outbox_store().pending(usize::MAX).await.unwrap();
     assert_eq!(pending.len(), 1);
 }
 
@@ -184,7 +184,7 @@ async fn increment_persists_outbox_message() {
     assert_eq!(counter.value, 7);
 
     // Both outbox messages were persisted
-    let pending = store.outbox_store().pending().await.unwrap();
+    let pending = store.outbox_store().pending(usize::MAX).await.unwrap();
     assert_eq!(pending.len(), 2);
     let mut event_types: Vec<&str> = pending.iter().map(|m| m.event_type.as_str()).collect();
     event_types.sort();

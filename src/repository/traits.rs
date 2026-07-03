@@ -57,20 +57,22 @@ impl<'a> CommitBatch<'a> {
     }
 }
 
-/// Owned append data prepared from a borrowed stream write before async I/O.
+/// Append data prepared from a borrowed stream write before async I/O. Events
+/// are borrowed from the staged entity — backends bind them by reference, so
+/// preparing a batch never clones event payloads.
 #[derive(Clone, Debug)]
-pub struct PreparedEventAppend {
+pub struct PreparedEventAppend<'a> {
     pub identity: StreamIdentity,
     pub expected_version: u64,
-    pub events: Vec<EventRecord>,
+    pub events: &'a [EventRecord],
 }
 
-impl PreparedEventAppend {
-    pub fn from_stream_write(write: &StreamWrite<'_>) -> Self {
+impl<'a> PreparedEventAppend<'a> {
+    pub fn from_stream_write(write: &'a StreamWrite<'_>) -> Self {
         Self {
             identity: write.identity.clone(),
             expected_version: write.entity.committed_version(),
-            events: write.entity.new_events().to_vec(),
+            events: write.entity.new_events(),
         }
     }
 }
@@ -82,10 +84,28 @@ pub trait GetStream: Send + Sync {
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a;
 
+    /// Load the streams for the provided identities, skipping missing ones.
+    ///
+    /// The default loads each stream with [`get_stream`], which is always
+    /// correct, just one round trip per identity. Backends with a queryable
+    /// store (Postgres, SQLite) override this with a single grouped query.
+    /// Backends may return entities in storage order rather than input order.
+    ///
+    /// [`get_stream`]: GetStream::get_stream
     fn get_streams<'a>(
         &'a self,
         identities: &'a [StreamIdentity],
-    ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a;
+    ) -> impl Future<Output = Result<Vec<Entity>, RepositoryError>> + Send + 'a {
+        async move {
+            let mut entities = Vec::with_capacity(identities.len());
+            for identity in identities {
+                if let Some(entity) = self.get_stream(identity).await? {
+                    entities.push(entity);
+                }
+            }
+            Ok(entities)
+        }
+    }
 
     /// Load only the events with `sequence > after_version` as a tail-only
     /// [`Entity`] (see [`Entity::load_tail_from_history`]).
@@ -188,6 +208,30 @@ pub trait SnapshotStore: Send + Sync {
         &'a self,
         identity: &'a StreamIdentity,
     ) -> impl Future<Output = Result<Option<SnapshotRecord>, RepositoryError>> + Send + 'a;
+
+    /// Load the snapshots for the provided identities, skipping identities
+    /// without one. Each returned record carries its own aggregate type/id, so
+    /// callers can pair records back to identities.
+    ///
+    /// The default loads each snapshot with [`get_snapshot`], which is always
+    /// correct, just one round trip per identity. Backends with a queryable
+    /// store (Postgres, SQLite) override this with a single grouped query.
+    ///
+    /// [`get_snapshot`]: SnapshotStore::get_snapshot
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        async move {
+            let mut records = Vec::with_capacity(identities.len());
+            for identity in identities {
+                if let Some(record) = self.get_snapshot(identity).await? {
+                    records.push(record);
+                }
+            }
+            Ok(records)
+        }
+    }
 
     fn save_snapshot<'a>(
         &'a self,

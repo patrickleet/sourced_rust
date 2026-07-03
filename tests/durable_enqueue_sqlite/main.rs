@@ -70,13 +70,13 @@ async fn commit_publishes_immediately_over_sqlite() {
         .unwrap();
 
     let published = store
-        .messages_by_status(OutboxMessageStatus::Published)
+        .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
         .await
         .unwrap();
     assert_eq!(published.len(), 1, "row should be published immediately");
     assert_eq!(published[0].id(), "evt-c1");
     assert!(
-        store.pending().await.unwrap().is_empty(),
+        store.pending(usize::MAX).await.unwrap().is_empty(),
         "nothing should be left for the poller"
     );
 }
@@ -101,7 +101,7 @@ async fn run_consumes_command_and_publishes_over_sqlite() {
     service.run(RunOptions::idempotent()).await.unwrap();
 
     let published = store
-        .messages_by_status(OutboxMessageStatus::Published)
+        .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
         .await
         .unwrap();
     assert_eq!(published.len(), 1);

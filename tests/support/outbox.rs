@@ -17,7 +17,7 @@ where
         OutboxMessageStatus::Failed,
     ] {
         let messages = outbox
-            .messages_by_status(status)
+            .messages_by_status(status, usize::MAX)
             .await
             .expect("outbox status lookup should succeed");
         if let Some(message) = messages.into_iter().find(|message| message.id() == id) {

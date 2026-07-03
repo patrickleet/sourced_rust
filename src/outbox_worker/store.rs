@@ -95,15 +95,27 @@ impl OutboxClaimRef {
 
 /// Store capability for claiming and updating durable outbox messages.
 pub trait OutboxStore: Send + Sync {
+    /// List up to `limit` messages with the given status, in claim order
+    /// (created-at, then message id). The listing is a diagnostic/ops read, so
+    /// the bound is mandatory: an outbox can grow far beyond what any caller
+    /// should page into memory at once.
     fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
+        limit: usize,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_;
 
+    /// List up to `limit` pending messages (see [`messages_by_status`]).
+    ///
+    /// [`messages_by_status`]: OutboxStore::messages_by_status
     fn pending(
         &self,
+        limit: usize,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
-        async move { self.messages_by_status(OutboxMessageStatus::Pending).await }
+        async move {
+            self.messages_by_status(OutboxMessageStatus::Pending, limit)
+                .await
+        }
     }
 
     fn claim<'a>(
@@ -259,6 +271,7 @@ impl OutboxStore for HashMapOutboxStore {
     fn messages_by_status(
         &self,
         status: OutboxMessageStatus,
+        limit: usize,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_ {
         async move {
             let storage = self
@@ -272,6 +285,7 @@ impl OutboxStore for HashMapOutboxStore {
                 .cloned()
                 .collect::<Vec<_>>();
             sort_by_claim_order(&mut messages);
+            messages.truncate(limit);
             Ok(messages)
         }
     }

@@ -522,7 +522,7 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     let stored = repo
         .outbox_store()
-        .messages_by_status(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending, usize::MAX)
         .await
         .unwrap()
         .into_iter()
@@ -613,15 +613,13 @@ async fn backend_termination_mid_commit_rolls_back_and_nothing_persists() {
         matches!(&err, RepositoryError::Storage { .. }),
         "the terminated commit surfaces as a storage error, got {err:?}"
     );
-    // KNOWN CLASSIFICATION GAP (documented in the PR, not fixed here): the
-    // termination surfaces as SQLSTATE 57P01, which `is_sqlx_transient`
-    // classifies as permanent — it whitelists only 40001/40P01 among
-    // `Database` errors. Losing the connection is an infrastructure hiccup,
-    // so this SHOULD be retryable; when the classification is fixed, flip
-    // this to `assert!(err.is_retryable())`.
+    // The termination surfaces as SQLSTATE 57P01; `is_sqlx_transient` now
+    // classifies 57P01/57P02/57P03 and class-08 connection failures as
+    // transient (losing the connection is an infrastructure hiccup), so the
+    // error is retryable.
     assert!(
-        !err.is_retryable(),
-        "pinned current (mis)classification of 57P01 — see comment above; got {err:?}"
+        err.is_retryable(),
+        "57P01 (admin shutdown) must be retryable; got {err:?}"
     );
 
     // Release the lock and prove the whole transaction rolled back.

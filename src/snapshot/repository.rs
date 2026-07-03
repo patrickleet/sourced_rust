@@ -229,6 +229,7 @@ where
             frequency,
             snapshot_record_if_due::<A>,
             hydrate_from_store::<R, A>,
+            hydrate_all_from_store::<R, A>,
             load_from_store::<R, A>,
         ));
         self
@@ -265,6 +266,41 @@ where
     Box::pin(async move {
         let snapshot = repo.get_snapshot(identity).await?;
         hydrate_with_optional_snapshot::<A>(entity, snapshot)
+    })
+}
+
+/// Load the snapshot cache records for a whole batch in one round trip and
+/// hydrate each entity from its record (if any). Captured as the `hydrate_all`
+/// hook of a `SnapshotPolicy` — fixes the N+1 of consulting the cache per
+/// aggregate on batch loads.
+fn hydrate_all_from_store<'a, R, A>(
+    repo: &'a R,
+    entities: Vec<(StreamIdentity, Entity)>,
+) -> Pin<Box<dyn Future<Output = Result<Vec<A>, RepositoryError>> + Send + 'a>>
+where
+    R: SnapshotStore + Sync,
+    A: Snapshottable + Send,
+{
+    Box::pin(async move {
+        let identities: Vec<StreamIdentity> = entities
+            .iter()
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        let mut snapshots = std::collections::HashMap::with_capacity(identities.len());
+        for record in repo.get_snapshots(&identities).await? {
+            let key =
+                StreamIdentity::new(&record.aggregate_type, &record.aggregate_id)?.storage_key();
+            snapshots.insert(key, record);
+        }
+        entities
+            .into_iter()
+            .map(|(identity, entity)| {
+                hydrate_with_optional_snapshot::<A>(
+                    entity,
+                    snapshots.remove(&identity.storage_key()),
+                )
+            })
+            .collect()
     })
 }
 
@@ -393,12 +429,6 @@ mod tests {
             _identity: &StreamIdentity,
         ) -> Result<Option<Entity>, RepositoryError> {
             Ok(None)
-        }
-        async fn get_streams(
-            &self,
-            _identities: &[StreamIdentity],
-        ) -> Result<Vec<Entity>, RepositoryError> {
-            Ok(Vec::new())
         }
     }
 

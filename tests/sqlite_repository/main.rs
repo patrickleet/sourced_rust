@@ -564,7 +564,7 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     let stored = repo
         .outbox_store()
-        .messages_by_status(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending, usize::MAX)
         .await
         .unwrap()
         .into_iter()

@@ -199,7 +199,7 @@ mod tests {
         ]
         .into_iter()
         .find(|status| {
-            block_on(store.messages_by_status(status.clone()))
+            block_on(store.messages_by_status(status.clone(), usize::MAX))
                 .unwrap()
                 .iter()
                 .any(|m| m.id() == id)
