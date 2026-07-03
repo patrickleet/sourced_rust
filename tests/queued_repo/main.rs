@@ -230,3 +230,89 @@ async fn abort_releases_a_held_lock() {
         .unwrap();
     assert!(reloaded.is_some());
 }
+
+// ===========================================================================
+// Stale-lease fencing (durable lock manager): a writer whose lease expired and
+// was stolen must NOT be able to overwrite the stealing writer's commit.
+// ===========================================================================
+
+#[cfg(feature = "sqlite")]
+#[path = "../support/sqlite.rs"]
+mod sqlite_support;
+
+#[cfg(feature = "sqlite")]
+mod stale_lease {
+    use super::*;
+    use crate::sqlite_support::TempDb;
+    use distributed::{QueuedRepository, RepositoryError, SqliteLockManager};
+
+    /// Writer A loads (holds the lease), the lease TTL expires, writer B steals
+    /// the lease and commits, then A commits its stale load. The queue lock can
+    /// no longer protect A — the optimistic-concurrency check in the repository
+    /// is the backstop, and A must observe `ConcurrentWrite`, not silently
+    /// overwrite B.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_lease_holder_commit_is_fenced_by_optimistic_concurrency() {
+        let db = TempDb::new("queued_stale_lease");
+        let pool = db.pool().await;
+        SqliteLockManager::migrate(&pool)
+            .await
+            .expect("migrate aggregate_locks");
+        let ttl = Duration::from_millis(300);
+
+        // Two "processes": separate lock managers over the same lease table,
+        // one shared underlying repository.
+        let inner = HashMapRepository::new();
+        let repo_a = QueuedRepository::with_lock_manager(
+            inner.clone(),
+            SqliteLockManager::new(pool.clone())
+                .with_lease_ttl(ttl)
+                .with_owner_id("writer-a"),
+        )
+        .aggregate::<Counter>();
+        let repo_b = QueuedRepository::with_lock_manager(
+            inner.clone(),
+            SqliteLockManager::new(pool)
+                .with_lease_ttl(ttl)
+                .with_owner_id("writer-b"),
+        )
+        .aggregate::<Counter>();
+
+        // Seed at version 1 (commit releases A's lock).
+        let mut seed = Counter::default();
+        seed.create("c1".into()).unwrap();
+        repo_a.commit(&mut seed).await.unwrap();
+
+        // A loads and HOLDS the lease, then overruns its TTL.
+        let mut stale = repo_a.get("c1").await.unwrap().unwrap();
+        stale.increment("c1".into(), 10).unwrap();
+
+        // B's locking load parks on A's lease until it expires, then steals it
+        // and commits — advancing the stream past A's loaded version.
+        let mut winner = tokio::time::timeout(ttl + Duration::from_secs(5), repo_b.get("c1"))
+            .await
+            .expect("B must acquire once A's lease expires")
+            .unwrap()
+            .expect("counter should exist");
+        winner.increment("c1".into(), 20).unwrap();
+        repo_b.commit(&mut winner).await.unwrap();
+
+        // A wakes up late and commits its stale load: the optimistic version
+        // check must reject it.
+        let err = repo_a
+            .commit(&mut stale)
+            .await
+            .expect_err("a stale-lease holder must not overwrite the stealing writer");
+        assert!(
+            matches!(err, RepositoryError::ConcurrentWrite { .. }),
+            "expected ConcurrentWrite, got {err:?}"
+        );
+
+        // B's write survived; A's did not.
+        let current = repo_b.peek("c1").await.unwrap().expect("counter exists");
+        assert_eq!(
+            current.value, 20,
+            "the stealing writer's increment is the surviving state"
+        );
+    }
+}

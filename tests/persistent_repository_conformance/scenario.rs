@@ -1,6 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use distributed::{
     Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, RepositoryError, SnapshotRecord,
@@ -12,16 +10,7 @@ use super::checkout::{CHECKOUT_SEAT_RESERVED_STATUS, SEAT_RESERVED_STATUS};
 use super::checkout_saga::CheckoutSaga;
 use super::seat::Seat;
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-pub fn unique_id(prefix: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after UNIX epoch")
-        .as_nanos();
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{nanos}-{id}")
-}
+pub use super::ids::unique_id;
 
 pub async fn aggregate_checkout_flow_persists_reloaded_state<R>(repo: R)
 where

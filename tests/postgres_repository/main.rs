@@ -1,21 +1,24 @@
 #![cfg(feature = "postgres")]
 
+#[path = "../support/ids.rs"]
+mod ids;
+#[path = "../support/outbox.rs"]
+mod outbox_support;
 #[path = "../support/postgres.rs"]
 mod postgres;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use ids::unique_id;
+use outbox_support::find_outbox_by_id;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
     OutboxMessageStatus, OutboxStore, PostgresRepository, ReadModel, ReadModelWritePlanBuilder,
-    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    SnapshotStore, StreamIdentity, StreamWrite, TableSchemaRegistry, TransactionalCommit,
+    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, StreamIdentity,
+    StreamWrite, TableSchemaRegistry, TransactionalCommit,
 };
 use serde::{Deserialize, Serialize};
-
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 struct Counter {
@@ -63,15 +66,6 @@ async fn repository() -> Option<(postgres::PostgresTestSchema, PostgresRepositor
     .await?;
     let repo = schema.repository().await;
     Some((schema, repo))
-}
-
-fn unique_id(prefix: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{nanos}-{id}")
 }
 
 // Consumer inbox semantics are covered for all backends by the shared
@@ -185,91 +179,10 @@ async fn aggregate_stream_round_trips_with_metadata() {
     );
 }
 
-#[tokio::test]
-async fn optimistic_conflict_rolls_back_other_stream_and_snapshot() {
-    let Some((_schema, repo)) = repository().await else {
-        return;
-    };
-    let counter_repo = repo.clone().aggregate::<Counter>();
-    let counter_id = unique_id("conflict");
-    let other_id = unique_id("rollback");
-
-    let mut original = Counter::default();
-    original.increment(counter_id.clone(), 1).unwrap();
-    counter_repo.commit(&mut original).await.unwrap();
-
-    let mut stale = counter_repo.get(&counter_id).await.unwrap().unwrap();
-    let mut winner = counter_repo.get(&counter_id).await.unwrap().unwrap();
-    stale.increment(counter_id.clone(), 10).unwrap();
-    winner.increment(counter_id.clone(), 20).unwrap();
-    counter_repo.commit(&mut winner).await.unwrap();
-
-    let mut other = CounterProjection::default();
-    other.touch(other_id.clone()).unwrap();
-
-    let stale_identity = StreamIdentity::new(Counter::aggregate_type(), &counter_id).unwrap();
-    let other_identity =
-        StreamIdentity::new(CounterProjection::aggregate_type(), &other_id).unwrap();
-    let err = repo
-        .commit_batch(CommitBatch {
-            inbox_receipts: Vec::new(),
-            streams: vec![
-                StreamWrite::new(stale_identity, stale.entity_mut()),
-                StreamWrite::new(other_identity.clone(), other.entity_mut()),
-            ],
-            outbox_messages: Vec::new(),
-            read_model_plans: Vec::new(),
-            snapshots: vec![distributed::SnapshotWrite::Save {
-                identity: other_identity.clone(),
-                record: SnapshotRecord::new(
-                    CounterProjection::aggregate_type(),
-                    other_id.clone(),
-                    1,
-                    1,
-                    vec![1],
-                ),
-            }],
-        })
-        .await
-        .unwrap_err();
-
-    assert!(matches!(err, RepositoryError::ConcurrentWrite { .. }));
-    assert!(repo.get_stream(&other_identity).await.unwrap().is_none());
-    assert!(repo.get_snapshot(&other_identity).await.unwrap().is_none());
-    assert_eq!(stale.entity().committed_version(), 1);
-    assert_eq!(stale.entity().new_events().len(), 1);
-}
-
-#[tokio::test]
-async fn duplicate_stream_identity_is_rejected_before_sql_writes() {
-    let Some((_schema, repo)) = repository().await else {
-        return;
-    };
-    let id = unique_id("duplicate");
-    let identity = StreamIdentity::new(Counter::aggregate_type(), &id).unwrap();
-    let mut first = Entity::with_id(&id);
-    first.digest_empty("first_recorded").unwrap();
-    let mut second = Entity::with_id(&id);
-    second.digest_empty("second_recorded").unwrap();
-
-    let err = repo
-        .commit_batch(CommitBatch::new(vec![
-            StreamWrite::new(identity.clone(), &mut first),
-            StreamWrite::new(identity.clone(), &mut second),
-        ]))
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(
-            &err,
-            RepositoryError::DuplicateStreamInBatch { id: dup }
-                if *dup == format!("{}:{id}", Counter::aggregate_type())
-        ),
-        "unexpected error: {err}"
-    );
-    assert!(repo.get_stream(&identity).await.unwrap().is_none());
-}
+// Optimistic-conflict rollback, duplicate-stream rejection, and snapshot
+// identity semantics are covered for all backends by the shared
+// `persistent_repository_conformance` scenarios; this main keeps only the
+// Postgres-dialect raw-SQL assertions.
 
 #[tokio::test]
 async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
@@ -351,19 +264,12 @@ async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
     );
 
     // 2. Outbox row absent.
-    let outbox = repo.outbox_store();
-    for status in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ] {
-        let rows = outbox.messages_by_status(status).await.unwrap();
-        assert!(
-            rows.iter().all(|m| m.id() != outbox_id),
-            "the outbox row must roll back"
-        );
-    }
+    assert!(
+        find_outbox_by_id(&repo.outbox_store(), &outbox_id)
+            .await
+            .is_none(),
+        "the outbox row must roll back"
+    );
 
     // 3. First read-model mutation absent.
     let good_rows: i64 = sqlx::query_scalar(
@@ -534,42 +440,6 @@ async fn read_model_session_persists_relational_rows() {
 }
 
 #[tokio::test]
-async fn snapshots_persist_by_full_stream_identity() {
-    let Some((_schema, repo)) = repository().await else {
-        return;
-    };
-    let id = unique_id("snapshot");
-    let counter = StreamIdentity::new("postgres.counter", &id).unwrap();
-    let projection = StreamIdentity::new("postgres.counter_projection", &id).unwrap();
-
-    repo.save_snapshot(
-        &counter,
-        SnapshotRecord::new("postgres.counter", id.clone(), 1, 1, vec![1]),
-    )
-    .await
-    .unwrap();
-    repo.save_snapshot(
-        &projection,
-        SnapshotRecord::new("postgres.counter_projection", id, 2, 1, vec![2]),
-    )
-    .await
-    .unwrap();
-
-    let loaded_counter = repo.get_snapshot(&counter).await.unwrap().unwrap();
-    let loaded_projection = repo.get_snapshot(&projection).await.unwrap().unwrap();
-
-    assert_eq!(loaded_counter.version, 1);
-    assert_eq!(loaded_counter.aggregate_type, "postgres.counter");
-    assert_eq!(loaded_counter.payload, vec![1]);
-    assert_eq!(loaded_projection.version, 2);
-    assert_eq!(
-        loaded_projection.aggregate_type,
-        "postgres.counter_projection"
-    );
-    assert_eq!(loaded_projection.payload, vec![2]);
-}
-
-#[tokio::test]
 async fn unsupported_codec_rows_fail_on_read() {
     let Some((_schema, repo)) = repository().await else {
         return;
@@ -661,4 +531,107 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     assert_eq!(stored.correlation_id(), Some("corr-column"));
     assert_eq!(stored.causation_id(), Some("cause-column"));
+}
+
+#[tokio::test]
+async fn backend_termination_mid_commit_rolls_back_and_nothing_persists() {
+    // Fault injection: a commit_batch is killed mid-transaction (the backend is
+    // terminated while the commit waits on a table lock). The write must roll
+    // back completely and surface as a storage error rather than hanging or
+    // partially persisting.
+    let Some((schema, repo)) = repository().await else {
+        return;
+    };
+    let database_url = std::env::var("DATABASE_URL").expect("repository() checked DATABASE_URL");
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .expect("admin pool connects");
+
+    // Take an ACCESS EXCLUSIVE lock on the events table from a second
+    // connection so the commit blocks mid-transaction at its first table touch.
+    let mut locker = admin.acquire().await.expect("locker connection");
+    let locker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *locker)
+        .await
+        .expect("locker pid");
+    sqlx::query("BEGIN")
+        .execute(&mut *locker)
+        .await
+        .expect("begin lock tx");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "LOCK TABLE \"{}\".aggregate_events IN ACCESS EXCLUSIVE MODE",
+        schema.schema_name().replace('"', "\"\"")
+    )))
+    .execute(&mut *locker)
+    .await
+    .expect("lock aggregate_events");
+
+    // The commit now parks on the lock inside its transaction.
+    let id = unique_id("terminated");
+    let commit = {
+        let repo = repo.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            let mut counter = Counter::default();
+            counter.increment(id, 1).unwrap();
+            repo.aggregate::<Counter>().commit(&mut counter).await
+        })
+    };
+
+    // Find the backend our lock is blocking (precisely: blocked BY locker_pid),
+    // then terminate it mid-commit.
+    let mut victim_pid: Option<i32> = None;
+    for _ in 0..100 {
+        let blocked: Option<i32> = sqlx::query_scalar(
+            "SELECT pid FROM pg_stat_activity WHERE pg_blocking_pids(pid) @> ARRAY[$1] LIMIT 1",
+        )
+        .bind(locker_pid)
+        .fetch_optional(&admin)
+        .await
+        .expect("pg_stat_activity lookup");
+        if let Some(pid) = blocked {
+            victim_pid = Some(pid);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let victim_pid = victim_pid.expect("the commit should block on the table lock");
+    let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+        .bind(victim_pid)
+        .fetch_one(&admin)
+        .await
+        .expect("pg_terminate_backend");
+    assert!(terminated, "the blocked commit backend was terminated");
+
+    let err = commit
+        .await
+        .expect("commit task joins")
+        .expect_err("a terminated backend must fail the commit");
+    assert!(
+        matches!(&err, RepositoryError::Storage { .. }),
+        "the terminated commit surfaces as a storage error, got {err:?}"
+    );
+    // KNOWN CLASSIFICATION GAP (documented in the PR, not fixed here): the
+    // termination surfaces as SQLSTATE 57P01, which `is_sqlx_transient`
+    // classifies as permanent — it whitelists only 40001/40P01 among
+    // `Database` errors. Losing the connection is an infrastructure hiccup,
+    // so this SHOULD be retryable; when the classification is fixed, flip
+    // this to `assert!(err.is_retryable())`.
+    assert!(
+        !err.is_retryable(),
+        "pinned current (mis)classification of 57P01 — see comment above; got {err:?}"
+    );
+
+    // Release the lock and prove the whole transaction rolled back.
+    sqlx::query("ROLLBACK")
+        .execute(&mut *locker)
+        .await
+        .expect("release lock");
+    let identity = StreamIdentity::new(Counter::aggregate_type(), &id).unwrap();
+    assert!(
+        repo.get_stream(&identity).await.unwrap().is_none(),
+        "nothing from the killed commit may persist"
+    );
 }

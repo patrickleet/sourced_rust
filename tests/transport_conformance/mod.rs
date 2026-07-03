@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::bus::{
-    run_source, FailurePolicy, MessagePublisher, MessageSource, ReceivedMessage, RunOptions,
-    TransportError,
+    run_source, FailurePolicy, Handlers, MessagePublisher, MessageSource, ReceivedMessage,
+    RunOptions, TransportError,
 };
 use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Routes, Service};
 use distributed::OutboxDispatcher;
@@ -354,27 +354,7 @@ async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
 }
 
 async fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
-    use distributed::OutboxStore;
-    let store = repo.outbox_store();
-    for status in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ]
-    .into_iter()
-    {
-        if store
-            .messages_by_status(status.clone())
-            .await
-            .unwrap()
-            .iter()
-            .any(|message| message.id() == id)
-        {
-            return Some(status);
-        }
-    }
-    None
+    outbox_support::outbox_status_by_id(&repo.outbox_store(), id).await
 }
 
 fn dispatcher(
@@ -453,6 +433,247 @@ pub async fn dispatcher_claims_explicit_ids_before_publish() {
 }
 
 // ============================================================================
+// Composed at-least-once: crash between publish and complete → redelivery →
+// consumer inbox dedupe
+// ============================================================================
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use distributed::{
+    ClaimOutboxMessages, InboxReceipt, OutboxClaimRef, OutboxStore, RepositoryError,
+};
+
+/// An `OutboxStore` whose `complete` fails once with a retryable storage error,
+/// simulating a dispatcher crash AFTER the publish succeeded but BEFORE the
+/// completion write landed. Everything else delegates to the real store.
+struct CompleteOnceFailingStore {
+    inner: HashMapOutboxStore,
+    fail_next_complete: AtomicBool,
+}
+
+impl OutboxStore for CompleteOnceFailingStore {
+    fn messages_by_status(
+        &self,
+        status: OutboxMessageStatus,
+    ) -> impl std::future::Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_
+    {
+        self.inner.messages_by_status(status)
+    }
+
+    fn claim(
+        &self,
+        request: ClaimOutboxMessages,
+    ) -> impl std::future::Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_
+    {
+        self.inner.claim(request)
+    }
+
+    async fn complete<'a>(&'a self, claim: &'a OutboxClaimRef) -> Result<(), RepositoryError> {
+        if self.fail_next_complete.swap(false, Ordering::SeqCst) {
+            return Err(RepositoryError::Storage {
+                operation: "complete outbox row (simulated crash)".into(),
+                retryable: true,
+                source: None,
+            });
+        }
+        self.inner.complete(claim).await
+    }
+
+    fn release<'a>(
+        &'a self,
+        claim: &'a OutboxClaimRef,
+        error: &'a str,
+    ) -> impl std::future::Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        self.inner.release(claim, error)
+    }
+
+    fn fail<'a>(
+        &'a self,
+        claim: &'a OutboxClaimRef,
+        error: &'a str,
+    ) -> impl std::future::Future<Output = Result<(), RepositoryError>> + Send + 'a {
+        self.inner.fail(claim, error)
+    }
+}
+
+/// A publisher that captures every published message (id AND body) into a
+/// shared list, so deliveries from multiple dispatcher "workers" can be
+/// replayed into a consumer.
+struct CapturingPublisher {
+    published: Arc<Mutex<Vec<Message>>>,
+}
+
+impl MessagePublisher for CapturingPublisher {
+    async fn publish(&self, message: Message) -> Result<(), TransportError> {
+        self.published.lock().unwrap().push(message);
+        Ok(())
+    }
+}
+
+/// End-to-end at-least-once: the publish succeeds but the completion write
+/// fails (crash between publish and complete), the row is reclaimed and
+/// republished after the lease expires — a duplicate delivery — and the
+/// consumer's inbox receipt dedupes it, applying the effect exactly once.
+///
+/// The pieces are proven separately by the inbox conformance and the
+/// dispatcher tests; this composes them across the wire.
+pub async fn publish_then_crash_republishes_and_consumer_inbox_dedupes() {
+    // Producer side: one committed outbox row.
+    let producer = HashMapRepository::new();
+    let message_id = unique("evt");
+    let mut batch = CommitBatch::empty();
+    batch.outbox_messages.push(
+        OutboxMessage::create(&message_id, "order.initialized", b"{}".to_vec())
+            .expect("outbox message should be valid"),
+    );
+    producer
+        .commit_batch(batch)
+        .await
+        .expect("outbox row commits");
+
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let ids = [message_id.clone()];
+
+    // Pass 1: a worker with a short lease publishes successfully, then the
+    // completion write "crashes".
+    let crash_lease = Duration::from_millis(100);
+    let crashing_worker = OutboxDispatcher::new(
+        CompleteOnceFailingStore {
+            inner: producer.outbox_store(),
+            fail_next_complete: AtomicBool::new(true),
+        },
+        CapturingPublisher {
+            published: published.clone(),
+        },
+        "worker-crashed",
+        crash_lease,
+        5,
+    );
+    crashing_worker
+        .dispatch_ids(&ids)
+        .await
+        .expect_err("the failed completion write surfaces as an error (the crash)");
+
+    // The row survived the crash: still owed. Once the crashed worker's lease
+    // expires, a fresh worker (with a comfortable lease) reclaims and
+    // republishes it.
+    tokio::time::sleep(crash_lease + Duration::from_millis(200)).await;
+    let retry_worker = OutboxDispatcher::new(
+        producer.outbox_store(),
+        CapturingPublisher {
+            published: published.clone(),
+        },
+        "worker-retry",
+        Duration::from_secs(60),
+        5,
+    );
+    let outcome = retry_worker
+        .dispatch_ids(&ids)
+        .await
+        .expect("the retry pass dispatches cleanly");
+    assert_eq!(outcome.published, 1, "the reclaimed row is republished");
+    assert_eq!(
+        outbox_status(&producer, &message_id).await,
+        Some(OutboxMessageStatus::Published),
+        "the row completes only after the successful pass"
+    );
+
+    let deliveries = published.lock().unwrap().clone();
+    assert_eq!(
+        deliveries.len(),
+        2,
+        "at-least-once: the crash produced a duplicate delivery"
+    );
+    assert!(
+        deliveries
+            .iter()
+            .all(|delivery| delivery.id() == Some(message_id.as_str())),
+        "both deliveries carry the same stable message id"
+    );
+
+    // Consumer side: replay both deliveries through the runner in inbox mode.
+    // The handler commits its effect atomically with an inbox receipt and treats
+    // a duplicate receipt as already-applied (the dedupe).
+    let consumer_repo = HashMapRepository::new();
+    let effects_applied = Arc::new(AtomicUsize::new(0));
+    let effect_seq = Arc::new(AtomicUsize::new(0));
+    let consumer = "checkout-consumer";
+    let handlers = {
+        let repo = consumer_repo.clone();
+        let effects_applied = effects_applied.clone();
+        let effect_seq = effect_seq.clone();
+        Arc::new(
+            Handlers::new().on_event("order.initialized", move |message: &Message| {
+                let repo = repo.clone();
+                let effects_applied = effects_applied.clone();
+                let effect_seq = effect_seq.clone();
+                let id = message.id().unwrap_or_default().to_string();
+                async move {
+                    let mut batch = CommitBatch::empty();
+                    batch.inbox_receipts.push(InboxReceipt::new(consumer, &id));
+                    // A fresh effect id per attempt, so only the receipt (not an
+                    // outbox-id collision) can fence the duplicate.
+                    let attempt = effect_seq.fetch_add(1, Ordering::SeqCst);
+                    batch.outbox_messages.push(
+                        OutboxMessage::create(
+                            format!("effect-{attempt}"),
+                            "effect.applied",
+                            b"{}".to_vec(),
+                        )
+                        .expect("effect message should be valid"),
+                    );
+                    match repo.commit_batch(batch).await {
+                        Ok(()) => {
+                            effects_applied.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        }
+                        // Duplicate delivery: already applied — ack it.
+                        Err(RepositoryError::DuplicateInboxReceipt { .. }) => Ok(()),
+                        Err(other) => Err(TransportError::permanent(other.to_string())),
+                    }
+                }
+            }),
+        )
+    };
+
+    let recorder = Recorder::new();
+    let source = FakeSource::new(recorder.clone(), deliveries);
+    run_source(handlers, source, RunOptions::inbox(()))
+        .await
+        .expect("consumer drains both deliveries");
+
+    // Both deliveries were acked, the effect applied exactly once, and only the
+    // first attempt's effect row exists.
+    assert_eq!(
+        recorder.events(),
+        vec![Event::Ack, Event::Ack],
+        "both deliveries settle as acks (the duplicate is deduped, not nacked)"
+    );
+    assert_eq!(
+        effects_applied.load(Ordering::SeqCst),
+        1,
+        "effectively-once: the effect committed exactly once"
+    );
+    assert!(
+        consumer_repo.inbox_contains(consumer, &message_id),
+        "the receipt is recorded for the consumer"
+    );
+    let consumer_outbox = consumer_repo.outbox_store();
+    assert!(
+        outbox_support::find_outbox_by_id(&consumer_outbox, "effect-0")
+            .await
+            .is_some(),
+        "the first delivery's effect landed"
+    );
+    assert!(
+        outbox_support::find_outbox_by_id(&consumer_outbox, "effect-1")
+            .await
+            .is_none(),
+        "the duplicate delivery's effect was fenced by the inbox receipt"
+    );
+}
+
+// ============================================================================
 // Broker-test helpers
 // ============================================================================
 //
@@ -461,11 +682,13 @@ pub async fn dispatcher_claims_explicit_ids_before_publish() {
 // per-transport scenarios stay in their own files — only the genuinely
 // identical scaffolding lives here.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+#[path = "../support/ids.rs"]
+mod ids;
+#[path = "../support/outbox.rs"]
+pub mod outbox_support;
 
-/// Per-process sequence counter feeding [`unique`], so names do not collide
-/// between tests in the same run.
-static SEQ: AtomicU64 = AtomicU64::new(1);
+#[allow(unused_imports)] // each including target uses a subset
+pub use ids::{run_token, unique};
 
 /// A `Service` whose single handler records each message's id into `rec`;
 /// `kind` selects command vs event registration.
@@ -512,24 +735,151 @@ pub fn named_recording_for(
     )
 }
 
-/// A per-process token mixing wall-clock nanos with the pid, so names are unique
-/// even across separate runs against a persistent broker.
-pub fn run_token() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ u128::from(std::process::id())
+// ============================================================================
+// Shared bus behaviour scenarios
+// ============================================================================
+//
+// The point-to-point / fan-out / named-service contracts are identical across
+// every `Bus + BusConsumer` transport; only construction differs, so each
+// scenario takes a bus factory. Transport-specific variants (Kafka's
+// offset-commit point-to-point proof, RabbitMQ's bind-before-publish fan-out)
+// stay in their own mains — their transport semantics are the point.
+
+use std::future::Future;
+
+use distributed::bus::{Bus, BusConsumer};
+
+pub const COMMAND_NAME: &str = "order.initialize";
+pub const EVENT_NAME: &str = "order.initialized";
+pub const PAYLOAD: &[u8] = b"{}";
+
+pub fn command(id: impl Into<String>) -> Message {
+    Message::new(COMMAND_NAME, MessageKind::Command, PAYLOAD.to_vec()).with_id(id)
 }
 
-/// A unique subject/queue/stream name: `{prefix}_{run_token:x}_{seq}`. Both the
-/// run token and the sequence are included so names collide neither within a
-/// run nor across runs against persistent broker state.
-pub fn unique(prefix: &str) -> String {
-    format!(
-        "{prefix}_{:x}_{}",
-        run_token(),
-        SEQ.fetch_add(1, Ordering::SeqCst)
-    )
+pub fn event(id: impl Into<String>) -> Message {
+    Message::new(EVENT_NAME, MessageKind::Event, PAYLOAD.to_vec()).with_id(id)
+}
+
+pub fn expected_ids(prefix: &str, total: usize) -> Vec<String> {
+    (0..total).map(|i| format!("{prefix}{i}")).collect()
+}
+
+pub fn recorded_ids(rec: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let mut ids = rec.lock().unwrap().clone();
+    ids.sort();
+    ids
+}
+
+pub async fn send_commands<B: Bus>(bus: &B, total: usize) {
+    for message in expected_ids("c", total).into_iter().map(command) {
+        bus.send_message(message).await.expect("send command");
+    }
+}
+
+pub async fn publish_events<B: Bus>(bus: &B, total: usize) {
+    for message in expected_ids("e", total).into_iter().map(event) {
+        bus.publish_message(message).await.expect("publish event");
+    }
+}
+
+/// `send` + `listen`: replicas sharing a `group` compete for the commands —
+/// each command is handled exactly once across the pool (point-to-point).
+///
+/// `bus_for_group` returns a connected bus for the given consumer group. Each
+/// call may open a fresh connection (RabbitMQ) or clone over a shared pool;
+/// the factory owns any per-transport setup (`ensure_stream`/`ensure_tables`).
+pub async fn bus_send_listen_is_point_to_point_across_a_group<B, F, Fut>(bus_for_group: F)
+where
+    B: Bus + BusConsumer,
+    F: Fn(&'static str) -> Fut,
+    Fut: Future<Output = B>,
+{
+    let producer = bus_for_group("orders").await;
+    let total = 6;
+    send_commands(&producer, total).await;
+
+    // Two replicas of the same group drain concurrently.
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    let bus_a = bus_for_group("orders").await;
+    let bus_b = bus_for_group("orders").await;
+    let (ra, rb) = tokio::join!(
+        bus_a.listen(
+            recording_for(COMMAND_NAME, MessageKind::Command, rec.clone()),
+            RunOptions::idempotent()
+        ),
+        bus_b.listen(
+            recording_for(COMMAND_NAME, MessageKind::Command, rec.clone()),
+            RunOptions::idempotent()
+        ),
+    );
+    ra.expect("replica a drains");
+    rb.expect("replica b drains");
+
+    assert_eq!(
+        recorded_ids(&rec),
+        expected_ids("c", total),
+        "every command handled exactly once across the group"
+    );
+}
+
+/// `publish` + `subscribe`: distinct `group`s each get their own durable
+/// position, so every group sees every event (fan-out).
+pub async fn bus_publish_subscribe_fans_out_across_groups<B, F, Fut>(bus_for_group: F)
+where
+    B: Bus + BusConsumer,
+    F: Fn(&'static str) -> Fut,
+    Fut: Future<Output = B>,
+{
+    let producer = bus_for_group("producer").await;
+    let total = 4;
+    publish_events(&producer, total).await;
+
+    let expected = expected_ids("e", total);
+    for group in ["projections", "audit"] {
+        let bus = bus_for_group(group).await;
+        let rec = Arc::new(Mutex::new(Vec::new()));
+        bus.subscribe(
+            recording_for(EVENT_NAME, MessageKind::Event, rec.clone()),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+        assert_eq!(
+            recorded_ids(&rec),
+            expected,
+            "group {group} sees every event"
+        );
+    }
+}
+
+/// With no explicit `group`, a named service's name becomes the consumer-group
+/// identity, and the subscriber still drains every event.
+///
+/// `bus` returns a connected bus with NO group configured.
+pub async fn bus_subscribe_uses_named_service_as_consumer_group<B, F, Fut>(bus: F)
+where
+    B: Bus + BusConsumer,
+    F: Fn() -> Fut,
+    Fut: Future<Output = B>,
+{
+    let producer = bus().await;
+    publish_events(&producer, 3).await;
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    bus()
+        .await
+        .subscribe(
+            named_recording_for(
+                "order-projection",
+                EVENT_NAME,
+                MessageKind::Event,
+                rec.clone(),
+            ),
+            RunOptions::idempotent(),
+        )
+        .await
+        .expect("subscriber drains");
+
+    assert_eq!(recorded_ids(&rec), expected_ids("e", 3));
 }

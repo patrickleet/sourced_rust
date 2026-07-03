@@ -1,14 +1,18 @@
 #![cfg(feature = "sqlite")]
 
+#[path = "../support/outbox.rs"]
+mod outbox_support;
+
 use std::collections::HashMap;
+
+use outbox_support::find_outbox_by_id;
 
 use distributed::table::TableSchemaRegistry;
 use distributed::{
     sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
     OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanBuilder,
-    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SnapshotRecord,
-    SnapshotStore, SqliteRepository, StreamIdentity, StreamWrite, TransactionalCommit,
-    OUTBOX_MESSAGES_TABLE,
+    ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SqliteRepository,
+    StreamIdentity, StreamWrite, TransactionalCommit, OUTBOX_MESSAGES_TABLE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -298,19 +302,12 @@ async fn read_model_failure_mid_plan_rolls_back_events_and_outbox() {
     );
 
     // 2. The outbox row must be absent.
-    let outbox = repo.outbox_store();
-    for status in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ] {
-        let rows = outbox.messages_by_status(status).await.unwrap();
-        assert!(
-            rows.iter().all(|m| m.id() != outbox_id),
-            "the outbox row must roll back with the failed read-model plan"
-        );
-    }
+    assert!(
+        find_outbox_by_id(&repo.outbox_store(), outbox_id)
+            .await
+            .is_none(),
+        "the outbox row must roll back with the failed read-model plan"
+    );
 
     // 3. The first (already-applied) read-model mutation must be absent.
     let good_rows: i64 = sqlx::query_scalar(
@@ -486,38 +483,9 @@ async fn read_model_session_persists_relational_rows() {
     );
 }
 
-#[tokio::test]
-async fn snapshots_persist_by_full_stream_identity() {
-    let repo = repository().await;
-    let counter = StreamIdentity::new("sqlite.counter", "same-id").unwrap();
-    let projection = StreamIdentity::new("sqlite.counter_projection", "same-id").unwrap();
-
-    repo.save_snapshot(
-        &counter,
-        SnapshotRecord::new("sqlite.counter", "same-id", 1, 1, vec![1]),
-    )
-    .await
-    .unwrap();
-    repo.save_snapshot(
-        &projection,
-        SnapshotRecord::new("sqlite.counter_projection", "same-id", 2, 1, vec![2]),
-    )
-    .await
-    .unwrap();
-
-    let loaded_counter = repo.get_snapshot(&counter).await.unwrap().unwrap();
-    let loaded_projection = repo.get_snapshot(&projection).await.unwrap().unwrap();
-
-    assert_eq!(loaded_counter.version, 1);
-    assert_eq!(loaded_counter.aggregate_type, "sqlite.counter");
-    assert_eq!(loaded_counter.payload, vec![1]);
-    assert_eq!(loaded_projection.version, 2);
-    assert_eq!(
-        loaded_projection.aggregate_type,
-        "sqlite.counter_projection"
-    );
-    assert_eq!(loaded_projection.payload, vec![2]);
-}
+// Snapshot identity semantics are covered for all backends by the shared
+// `persistent_repository_conformance` scenarios; this main keeps only the
+// SQLite-dialect raw-SQL assertions.
 
 #[tokio::test]
 async fn unsupported_codec_rows_fail_on_read() {
@@ -605,4 +573,47 @@ async fn outbox_metadata_columns_round_trip_into_message_metadata() {
 
     assert_eq!(stored.correlation_id(), Some("corr-column"));
     assert_eq!(stored.causation_id(), Some("cause-column"));
+}
+
+#[tokio::test]
+async fn commit_batch_with_1000_events_round_trips() {
+    // SQLite's historical bound-parameter ceiling is 999, so a 1000-event batch
+    // must be inserted across multiple multi-row INSERT chunks. Prove the
+    // chunking boundary preserves count, order, and payloads.
+    let repo = repository().await;
+    let identity = StreamIdentity::new("sqlite.counter", "big-batch").unwrap();
+
+    let mut entity = Entity::with_id("big-batch");
+    for i in 0..1000 {
+        entity
+            .digest(format!("bulk_recorded_{i}"), &(i as u64))
+            .unwrap();
+    }
+    repo.commit_batch(CommitBatch::new(vec![StreamWrite::new(
+        identity.clone(),
+        &mut entity,
+    )]))
+    .await
+    .expect("a 1000-event batch should commit across bind-param chunks");
+
+    let loaded = repo
+        .get_stream(&identity)
+        .await
+        .unwrap()
+        .expect("stream should exist");
+    assert_eq!(loaded.committed_version(), 1000);
+    assert_eq!(loaded.events().len(), 1000);
+    let sequences: Vec<u64> = loaded.events().iter().map(|event| event.sequence).collect();
+    assert_eq!(
+        sequences,
+        (1..=1000).collect::<Vec<u64>>(),
+        "sequences must be contiguous across chunk boundaries"
+    );
+    // Spot-check payloads at the chunk seams and ends.
+    for index in [0usize, 98, 99, 100, 998, 999] {
+        let event = &loaded.events()[index];
+        assert_eq!(event.event_name, format!("bulk_recorded_{index}"));
+        let value: u64 = bitcode::deserialize(&event.payload).expect("payload decodes");
+        assert_eq!(value, index as u64);
+    }
 }

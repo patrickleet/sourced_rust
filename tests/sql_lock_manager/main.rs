@@ -7,6 +7,10 @@
 
 #![cfg(any(feature = "sqlite", feature = "postgres"))]
 
+#[cfg(feature = "sqlite")]
+#[path = "../support/sqlite.rs"]
+mod sqlite_support;
+
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -283,76 +287,36 @@ async fn scenario_cancelled_acquire_releases_gate<M: LockManager>(holder: &M, ot
 
 #[cfg(feature = "sqlite")]
 mod sqlite_backend {
+    use super::sqlite_support::TempDb;
     use super::*;
     use distributed::SqliteLockManager;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::SqlitePool;
-    use std::path::PathBuf;
-    use std::sync::atomic::AtomicU64;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// A temp-file SQLite database shared by every pool/manager in one test, so
-    /// multiple managers see the same `aggregate_locks` table (cross-"process").
-    /// `:memory:` cannot be shared across pools, so a file is required.
-    struct TempDb {
-        path: PathBuf,
+    /// A pool over the shared temp-file database (so multiple managers see the
+    /// same `aggregate_locks` table, cross-"process") with the lease table
+    /// migrated.
+    async fn pool(db: &TempDb) -> SqlitePool {
+        let pool = db.pool().await;
+        SqliteLockManager::migrate(&pool)
+            .await
+            .expect("migrate aggregate_locks");
+        pool
     }
 
-    impl TempDb {
-        fn new() -> Self {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-            let mut path = std::env::temp_dir();
-            path.push(format!("sourced_lock_test_{nanos}_{seq}.db"));
-            Self { path }
-        }
-
-        async fn pool(&self) -> SqlitePool {
-            let options = SqliteConnectOptions::new()
-                .filename(&self.path)
-                .create_if_missing(true)
-                // Treat writer collisions as waits, not immediate SQLITE_BUSY.
-                .busy_timeout(Duration::from_secs(5));
-            let pool = SqlitePoolOptions::new()
-                .max_connections(5)
-                .connect_with(options)
-                .await
-                .expect("sqlite test pool");
-            SqliteLockManager::migrate(&pool)
-                .await
-                .expect("migrate aggregate_locks");
-            pool
-        }
-    }
-
-    impl Drop for TempDb {
-        fn drop(&mut self) {
-            // Best-effort cleanup of the db and its WAL/SHM sidecars.
-            let _ = std::fs::remove_file(&self.path);
-            for suffix in ["-wal", "-shm"] {
-                let mut sidecar = self.path.clone();
-                let name = format!("{}{suffix}", sidecar.file_name().unwrap().to_string_lossy());
-                sidecar.set_file_name(name);
-                let _ = std::fs::remove_file(&sidecar);
-            }
-        }
+    fn temp_db() -> TempDb {
+        TempDb::new("sourced_lock_test")
     }
 
     async fn manager() -> (TempDb, SqliteLockManager) {
-        let db = TempDb::new();
-        let pool = db.pool().await;
-        (db, SqliteLockManager::new(pool))
+        let db = temp_db();
+        let manager = SqliteLockManager::new(pool(&db).await);
+        (db, manager)
     }
 
     async fn managers() -> (TempDb, SqliteLockManager, SqliteLockManager) {
-        let db = TempDb::new();
-        let m1 = SqliteLockManager::new(db.pool().await);
-        let m2 = SqliteLockManager::new(db.pool().await);
+        let db = temp_db();
+        let m1 = SqliteLockManager::new(pool(&db).await);
+        let m2 = SqliteLockManager::new(pool(&db).await);
         (db, m1, m2)
     }
 
@@ -383,9 +347,9 @@ mod sqlite_backend {
     #[tokio::test]
     async fn expired_lease_reclaim() {
         let ttl = Duration::from_millis(400);
-        let db = TempDb::new();
-        let holder = SqliteLockManager::new(db.pool().await).with_lease_ttl(ttl);
-        let other = SqliteLockManager::new(db.pool().await);
+        let db = temp_db();
+        let holder = SqliteLockManager::new(pool(&db).await).with_lease_ttl(ttl);
+        let other = SqliteLockManager::new(pool(&db).await);
         scenario_expired_lease_reclaim(&holder, &other, ttl).await;
         drop(db);
     }
@@ -393,9 +357,9 @@ mod sqlite_backend {
     #[tokio::test]
     async fn release_is_owner_scoped() {
         let ttl = Duration::from_millis(400);
-        let db = TempDb::new();
-        let m1 = SqliteLockManager::new(db.pool().await).with_lease_ttl(ttl);
-        let m2 = SqliteLockManager::new(db.pool().await);
+        let db = temp_db();
+        let m1 = SqliteLockManager::new(pool(&db).await).with_lease_ttl(ttl);
+        let m2 = SqliteLockManager::new(pool(&db).await);
         scenario_release_is_owner_scoped(&m1, &m2, ttl).await;
         drop(db);
     }
@@ -416,10 +380,10 @@ mod sqlite_backend {
 
     #[tokio::test]
     async fn max_wait_timeout() {
-        let db = TempDb::new();
-        let holder = SqliteLockManager::new(db.pool().await);
+        let db = temp_db();
+        let holder = SqliteLockManager::new(pool(&db).await);
         let waiter =
-            SqliteLockManager::new(db.pool().await).with_max_wait(Some(Duration::from_millis(150)));
+            SqliteLockManager::new(pool(&db).await).with_max_wait(Some(Duration::from_millis(150)));
         scenario_max_wait_timeout(&holder, &waiter).await;
         drop(db);
     }
@@ -427,8 +391,8 @@ mod sqlite_backend {
     #[tokio::test]
     async fn sweep_expired_reclaims_rows() {
         let ttl = Duration::from_millis(200);
-        let db = TempDb::new();
-        let manager = SqliteLockManager::new(db.pool().await).with_lease_ttl(ttl);
+        let db = temp_db();
+        let manager = SqliteLockManager::new(pool(&db).await).with_lease_ttl(ttl);
         let lock = manager.get_lock("sweepme").unwrap();
         within(lock.lock()).await.unwrap(); // writes a lease row, never released
         tokio::time::sleep(ttl + EXPIRY_MARGIN).await; // lease expires

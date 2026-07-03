@@ -4,28 +4,29 @@
 //! `RabbitSource` (`basic_get`) against a broker. Skips when `AMQP_URL` is unset.
 #![cfg(feature = "rabbitmq")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use distributed::bus::{
-    run_source, Bus, BusConsumer, MessagePublisher, RabbitBus, RabbitPublisher, RabbitSource,
-    RunOptions,
+    run_source, Bus, BusConsumer, Handlers, MessagePublisher, RabbitBus, RabbitPublisher,
+    RabbitSource, RunOptions, TransportError,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
+use lapin::options::{BasicGetOptions, BasicPublishOptions, QueueDeclareOptions};
+use lapin::types::{AMQPValue, FieldTable, ShortString};
+use lapin::{BasicProperties, Connection, ConnectionProperties};
 use serde_json::json;
 
 // Shared broker-test helpers (recording_for, named_recording_for, unique, ...).
 #[path = "../transport_conformance/mod.rs"]
 mod conformance;
 use conformance::{named_recording_for, recording_for, unique};
+#[path = "../support/env.rs"]
+mod env_support;
 
 fn amqp_url() -> Option<String> {
-    match std::env::var("AMQP_URL") {
-        Ok(url) => Some(url),
-        Err(_) => {
-            eprintln!("skipping rabbitmq transport test: AMQP_URL is not set");
-            None
-        }
-    }
+    env_support::broker_env("AMQP_URL", "rabbitmq transport test")
 }
 
 #[tokio::test]
@@ -131,59 +132,24 @@ async fn message_id_and_metadata_survive_the_round_trip() {
 
 /// `send` + `listen`: a durable command queue is shared by replicas of a group,
 /// so AMQP round-robins — each command handled exactly once (point-to-point).
+/// Each factory call opens a separate connection, so the replicas genuinely
+/// compete over the wire.
 #[tokio::test]
 async fn bus_send_listen_is_point_to_point_across_a_group() {
     let Some(url) = amqp_url() else { return };
     let ns = unique("ns").to_lowercase();
-
-    let producer = RabbitBus::connect(&url)
-        .group("orders")
-        .namespace(&ns)
-        .await
-        .expect("connect producer");
-    let total = 6;
-    for i in 0..total {
-        producer
-            .send_message(
-                Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
-                    .with_id(format!("c{i}")),
-            )
-            .await
-            .expect("send command");
-    }
-
-    // Two replicas of the same group (separate connections) drain concurrently.
-    let rec = Arc::new(Mutex::new(Vec::new()));
-    let bus_a = RabbitBus::connect(&url)
-        .group("orders")
-        .namespace(&ns)
-        .await
-        .unwrap();
-    let bus_b = RabbitBus::connect(&url)
-        .group("orders")
-        .namespace(&ns)
-        .await
-        .unwrap();
-    let (ra, rb) = tokio::join!(
-        bus_a.listen(
-            recording_for("order.initialize", MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-        bus_b.listen(
-            recording_for("order.initialize", MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-    );
-    ra.expect("replica a drains");
-    rb.expect("replica b drains");
-
-    let mut ids = rec.lock().unwrap().clone();
-    ids.sort();
-    let expected: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
-    assert_eq!(
-        ids, expected,
-        "every command handled exactly once across the group"
-    );
+    conformance::bus_send_listen_is_point_to_point_across_a_group(|group| {
+        let url = url.clone();
+        let ns = ns.clone();
+        async move {
+            RabbitBus::connect(&url)
+                .group(group)
+                .namespace(&ns)
+                .await
+                .expect("connect bus")
+        }
+    })
+    .await;
 }
 
 /// `publish` + `subscribe`: each group binds its own queue to the topic exchange,
@@ -296,5 +262,228 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
     assert_eq!(
         ids,
         vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
+    );
+}
+
+// ---- failure paths: redelivery, dead-letter routing, undecodable payloads ----
+
+/// Declare `dlq` (durable, plain) and `queue` (durable, dead-lettering to `dlq`
+/// via the default exchange), and return a source over `queue`. The connection
+/// is returned so it outlives the source's channel.
+async fn source_with_dlq(url: &str, queue: &str, dlq: &str) -> (Connection, RabbitSource) {
+    let connection = Connection::connect(url, ConnectionProperties::default())
+        .await
+        .expect("amqp connect");
+    let channel = connection.create_channel().await.expect("amqp channel");
+    channel
+        .queue_declare(
+            ShortString::from(dlq),
+            QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+        .expect("declare dlq");
+    let mut args = FieldTable::default();
+    args.insert(
+        ShortString::from("x-dead-letter-exchange"),
+        AMQPValue::LongString("".into()),
+    );
+    args.insert(
+        ShortString::from("x-dead-letter-routing-key"),
+        AMQPValue::LongString(dlq.into()),
+    );
+    channel
+        .queue_declare(
+            ShortString::from(queue),
+            QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            args,
+        )
+        .await
+        .expect("declare queue with dead-letter route");
+    let source = RabbitSource::new(channel, queue);
+    (connection, source)
+}
+
+/// Poll `dlq` until a dead-lettered delivery arrives (the DLX route is
+/// asynchronous on the broker side).
+async fn dlq_receive(connection: &Connection, dlq: &str) -> lapin::message::Delivery {
+    let channel = connection.create_channel().await.expect("dlq channel");
+    for _ in 0..50 {
+        if let Some(get) = channel
+            .basic_get(ShortString::from(dlq), BasicGetOptions::default())
+            .await
+            .expect("dlq basic_get")
+        {
+            return get.delivery;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("dead-letter queue never received the message");
+}
+
+#[tokio::test]
+async fn retryable_failure_is_redelivered_then_succeeds() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("delivery.retry");
+
+    let source = RabbitSource::connect(&url, &queue)
+        .await
+        .expect("connect source");
+    let publisher = RabbitPublisher::connect(&url)
+        .await
+        .expect("connect publisher");
+    publisher
+        .publish(Message::new(&queue, MessageKind::Event, b"{}".to_vec()).with_id("m1"))
+        .await
+        .expect("publish");
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let seen = attempts.clone();
+    let handlers = Arc::new(Handlers::new().on_event(queue.clone(), move |_: &Message| {
+        let seen = seen.clone();
+        async move {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(TransportError::retryable("transient"))
+            } else {
+                Ok(())
+            }
+        }
+    }));
+    run_source(handlers, source, RunOptions::idempotent())
+        .await
+        .expect("run drains after the requeued redelivery succeeds");
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "the nacked message was requeued and redelivered exactly once"
+    );
+}
+
+#[tokio::test]
+async fn permanent_failure_routes_to_dead_letter_destination() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("delivery.poison");
+    let dlq = unique("delivery.poison.dlq");
+    let (connection, source) = source_with_dlq(&url, &queue, &dlq).await;
+
+    let publisher = RabbitPublisher::connect(&url)
+        .await
+        .expect("connect publisher");
+    for id in ["poison", "ok"] {
+        publisher
+            .publish(Message::new(&queue, MessageKind::Event, b"{}".to_vec()).with_id(id))
+            .await
+            .expect("publish");
+    }
+
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    let seen = rec.clone();
+    let handlers = Arc::new(
+        Handlers::new().on_event(queue.clone(), move |message: &Message| {
+            let id = message.id().unwrap_or_default().to_string();
+            let seen = seen.clone();
+            async move {
+                if id == "poison" {
+                    Err(TransportError::permanent("unprocessable"))
+                } else {
+                    seen.lock().unwrap().push(id);
+                    Ok(())
+                }
+            }
+        }),
+    );
+    run_source(handlers, source, RunOptions::idempotent())
+        .await
+        .expect("run drains past the poison message");
+    assert_eq!(
+        rec.lock().unwrap().clone(),
+        vec!["ok".to_string()],
+        "subsequent messages still flow after the dead-letter"
+    );
+
+    // The reject-without-requeue routed the message to the configured DLQ.
+    let dead = dlq_receive(&connection, &dlq).await;
+    assert_eq!(
+        dead.properties
+            .message_id()
+            .as_ref()
+            .map(|s| s.to_string())
+            .as_deref(),
+        Some("poison"),
+        "the rejected message landed in the dead-letter queue"
+    );
+}
+
+#[tokio::test]
+async fn undecodable_payload_dead_letters_without_blocking() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("delivery.garbage");
+    let dlq = unique("delivery.garbage.dlq");
+    let (connection, source) = source_with_dlq(&url, &queue, &dlq).await;
+
+    // Raw garbage straight onto the queue: no properties, invalid JSON payload.
+    let garbage: &[u8] = &[0xff, 0xfe, b'{'];
+    let raw_channel = connection.create_channel().await.expect("raw channel");
+    raw_channel
+        .basic_publish(
+            ShortString::from(""),
+            ShortString::from(queue.as_str()),
+            BasicPublishOptions::default(),
+            garbage,
+            BasicProperties::default(),
+        )
+        .await
+        .expect("raw publish")
+        .await
+        .expect("raw publish resolves");
+
+    let publisher = RabbitPublisher::connect(&url)
+        .await
+        .expect("connect publisher");
+    publisher
+        .publish(Message::new(&queue, MessageKind::Event, b"{}".to_vec()).with_id("ok"))
+        .await
+        .expect("publish ok");
+
+    // A payload-decoding handler permanently fails the garbage (the handler is
+    // the decode point: `Service::dispatch_message` substitutes Null input for
+    // non-JSON payloads rather than failing), so it dead-letters instead of
+    // being requeued forever.
+    let rec = Arc::new(Mutex::new(Vec::new()));
+    let seen = rec.clone();
+    let handlers = Arc::new(
+        Handlers::new().on_event(queue.clone(), move |message: &Message| {
+            let id = message.id().unwrap_or_default().to_string();
+            let decoded = serde_json::from_slice::<serde_json::Value>(message.payload()).is_ok();
+            let seen = seen.clone();
+            async move {
+                if !decoded {
+                    return Err(TransportError::permanent("undecodable payload"));
+                }
+                seen.lock().unwrap().push(id);
+                Ok(())
+            }
+        }),
+    );
+    run_source(handlers, source, RunOptions::idempotent())
+        .await
+        .expect("run drains: the undecodable payload is rejected, not redelivered forever");
+    assert_eq!(
+        rec.lock().unwrap().clone(),
+        vec!["ok".to_string()],
+        "the message behind the garbage is still handled"
+    );
+
+    let dead = dlq_receive(&connection, &dlq).await;
+    assert_eq!(
+        dead.data, garbage,
+        "the undecodable payload landed in the dead-letter queue"
     );
 }

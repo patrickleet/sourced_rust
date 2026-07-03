@@ -1,5 +1,7 @@
 mod checkout;
 mod checkout_saga_service;
+#[path = "../support/ids.rs"]
+mod ids;
 #[cfg(feature = "postgres")]
 #[path = "../support/postgres.rs"]
 mod postgres;
@@ -8,9 +10,7 @@ mod query_service;
 mod read_models;
 mod seat_inventory_service;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use checkout::{
     checkout_command, seat_command, AddSeat, StartCheckout, CHECKOUT_SEAT_RESERVED, SEAT_RESERVED,
@@ -53,22 +53,13 @@ where
         .unwrap_or_else(|err| panic!("{command} should dispatch: {err:?}"));
 }
 
-static NEXT_ASYNC_FLOW_ID: AtomicU64 = AtomicU64::new(1);
-
 struct FlowIds {
     checkout_id: String,
     seat_id: String,
     category: String,
 }
 
-fn unique_id(prefix: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after epoch")
-        .as_nanos();
-    let sequence = NEXT_ASYNC_FLOW_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{nanos}-{sequence}")
-}
+use ids::unique_id;
 
 #[allow(dead_code)]
 async fn run_persistent_checkout_flow<R, CheckoutOutbox, SeatOutbox>(

@@ -9,10 +9,10 @@
 #[path = "../support/postgres.rs"]
 mod postgres;
 
-// Shared broker-test helpers (recording_for, named_recording_for).
+// Shared broker-test helpers (recording_for, bus scenarios).
 #[path = "../transport_conformance/mod.rs"]
 mod conformance;
-use conformance::{named_recording_for, recording_for};
+use conformance::{outbox_support, recording_for};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,8 +25,8 @@ use distributed::bus::{
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
 use distributed::OutboxSource;
 use distributed::{
-    CommitBatch, OutboxMessage, OutboxMessageStatus, OutboxStore, PostgresOutboxStore,
-    PostgresRepository, TransactionalCommit,
+    CommitBatch, OutboxMessage, OutboxMessageStatus, PostgresOutboxStore, PostgresRepository,
+    TransactionalCommit,
 };
 use serde_json::json;
 use tokio::sync::Notify;
@@ -44,23 +44,7 @@ async fn enqueue(repo: &PostgresRepository, id: &str, name: &str) {
 }
 
 async fn status(store: &PostgresOutboxStore, id: &str) -> Option<OutboxMessageStatus> {
-    for s in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ] {
-        if store
-            .messages_by_status(s.clone())
-            .await
-            .unwrap()
-            .iter()
-            .any(|m| m.id() == id)
-        {
-            return Some(s);
-        }
-    }
-    None
+    outbox_support::outbox_status_by_id(store, id).await
 }
 
 fn recording_service(handled: Arc<Mutex<Vec<String>>>) -> Arc<Service> {
@@ -203,8 +187,19 @@ async fn dead_letter_marks_row_failed() {
 
 // ---- PostgresBus: send/listen (work queue) + publish/subscribe (log+offsets) ----
 
-/// Service whose single handler records the message id; `kind` picks command vs
-/// event registration.
+/// Build a `PostgresBus` over `pool` for `group` (empty `group` = no group),
+/// with the bus tables ensured.
+async fn pg_bus(pool: &sqlx::PgPool, group: &str) -> PostgresBus {
+    let bus = PostgresBus::new(pool.clone());
+    let bus = if group.is_empty() {
+        bus
+    } else {
+        bus.group(group)
+    };
+    bus.ensure_tables().await.expect("ensure tables");
+    bus
+}
+
 /// `send` + `listen`: the work queue is claimed `FOR UPDATE SKIP LOCKED`, so two
 /// replicas sharing a `group` compete — each command handled exactly once.
 #[tokio::test]
@@ -213,46 +208,13 @@ async fn bus_send_listen_is_point_to_point_across_a_group() {
         return;
     };
     let repo = schema.repository().await;
-    let bus = PostgresBus::new(repo.pool().clone()).group("orders");
-    bus.ensure_tables().await.expect("ensure tables");
-
-    let total = 6;
-    for i in 0..total {
-        bus.send_message(
-            Message::new("order.initialize", MessageKind::Command, b"{}".to_vec())
-                .with_id(format!("c{i}")),
-        )
-        .await
-        .expect("send command");
-    }
-
-    let rec = Arc::new(Mutex::new(Vec::new()));
-    let bus_a = bus.clone();
-    let bus_b = bus.clone();
-    let (ra, rb) = tokio::join!(
-        bus_a.listen(
-            recording_for("order.initialize", MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-        bus_b.listen(
-            recording_for("order.initialize", MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-    );
-    ra.expect("replica a drains");
-    rb.expect("replica b drains");
-
-    let mut ids = rec.lock().unwrap().clone();
-    ids.sort();
-    let expected: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
-    assert_eq!(
-        ids, expected,
-        "every command handled exactly once across the group"
-    );
+    let pool = repo.pool().clone();
+    conformance::bus_send_listen_is_point_to_point_across_a_group(|group| pg_bus(&pool, group))
+        .await;
 }
 
 /// `publish` + `subscribe`: each `group` has its own log offset, so every group
-/// reads the full log — fan-out. nacked entries do not advance the offset.
+/// reads the full log — fan-out.
 #[tokio::test]
 async fn bus_publish_subscribe_fans_out_across_groups() {
     let Some(schema) = postgres::PostgresTestSchema::create_from_env("bus_fan", SKIP).await else {
@@ -260,34 +222,7 @@ async fn bus_publish_subscribe_fans_out_across_groups() {
     };
     let repo = schema.repository().await;
     let pool = repo.pool().clone();
-    let producer = PostgresBus::new(pool.clone()).group("producer");
-    producer.ensure_tables().await.expect("ensure tables");
-
-    let total = 4;
-    for i in 0..total {
-        producer
-            .publish_message(
-                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
-                    .with_id(format!("e{i}")),
-            )
-            .await
-            .expect("publish event");
-    }
-
-    let expected: Vec<String> = (0..total).map(|i| format!("e{i}")).collect();
-    for group in ["projections", "audit"] {
-        let bus = PostgresBus::new(pool.clone()).group(group);
-        let rec = Arc::new(Mutex::new(Vec::new()));
-        bus.subscribe(
-            recording_for("order.initialized", MessageKind::Event, rec.clone()),
-            RunOptions::idempotent(),
-        )
-        .await
-        .expect("subscriber drains");
-        let mut ids = rec.lock().unwrap().clone();
-        ids.sort();
-        assert_eq!(ids, expected, "group {group} sees every event");
-    }
+    conformance::bus_publish_subscribe_fans_out_across_groups(|group| pg_bus(&pool, group)).await;
 }
 
 #[tokio::test]
@@ -298,39 +233,7 @@ async fn bus_subscribe_uses_named_service_as_consumer_group() {
     };
     let repo = schema.repository().await;
     let pool = repo.pool().clone();
-    let producer = PostgresBus::new(pool.clone());
-    producer.ensure_tables().await.expect("ensure tables");
-
-    for i in 0..3 {
-        producer
-            .publish_message(
-                Message::new("order.initialized", MessageKind::Event, b"{}".to_vec())
-                    .with_id(format!("e{i}")),
-            )
-            .await
-            .expect("publish event");
-    }
-
-    let rec = Arc::new(Mutex::new(Vec::new()));
-    PostgresBus::new(pool)
-        .subscribe(
-            named_recording_for(
-                "order-projection",
-                "order.initialized",
-                MessageKind::Event,
-                rec.clone(),
-            ),
-            RunOptions::idempotent(),
-        )
-        .await
-        .expect("subscriber drains");
-
-    let mut ids = rec.lock().unwrap().clone();
-    ids.sort();
-    assert_eq!(
-        ids,
-        vec!["e0".to_string(), "e1".to_string(), "e2".to_string()]
-    );
+    conformance::bus_subscribe_uses_named_service_as_consumer_group(|| pg_bus(&pool, "")).await;
 }
 
 // ---- corrupt-row handling: a row that fails to decode must NOT vanish ----

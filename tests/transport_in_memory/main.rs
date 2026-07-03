@@ -70,3 +70,10 @@ async fn dispatcher_unknown_outcome_stays_retryable() {
 async fn dispatcher_claims_explicit_ids_before_publish() {
     conformance::dispatcher_claims_explicit_ids_before_publish().await;
 }
+
+// --- composed at-least-once: crash between publish and complete ---------------
+
+#[tokio::test]
+async fn publish_then_crash_republishes_and_consumer_inbox_dedupes() {
+    conformance::publish_then_crash_republishes_and_consumer_inbox_dedupes().await;
+}
