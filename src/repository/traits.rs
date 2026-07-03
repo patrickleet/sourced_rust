@@ -2,11 +2,9 @@ use std::future::Future;
 
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::OutboxMessage;
-use crate::read_model::{
-    ReadModelAdapterCapabilities, ReadModelCommitOutcome, ReadModelError, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWritePlan,
-};
+use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::snapshot::SnapshotRecord;
+use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError, TableWritePlan};
 
 use super::inbox::InboxReceipt;
 use super::{RepositoryError, StreamIdentity};
@@ -36,7 +34,7 @@ pub enum SnapshotWrite {
 pub struct CommitBatch<'a> {
     pub streams: Vec<StreamWrite<'a>>,
     pub outbox_messages: Vec<OutboxMessage>,
-    pub read_model_plans: Vec<ReadModelWritePlan>,
+    pub read_model_plans: Vec<TableWritePlan>,
     pub snapshots: Vec<SnapshotWrite>,
     /// Consumer inbox receipts to record in the same transaction (the optional
     /// effectively-once effect fence). Empty for the default idempotent path.
@@ -166,12 +164,12 @@ impl<T> Repository for T where T: GetStream + TransactionalCommit {}
 
 /// Adapter contract for committing read-model write plans.
 pub trait ReadModelWritePlanStore: Send + Sync {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities;
+    fn read_model_capabilities(&self) -> TableAdapterCapabilities;
 
     fn commit_write_plan(
         &self,
-        plan: ReadModelWritePlan,
-    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_;
+        plan: TableWritePlan,
+    ) -> impl Future<Output = Result<TableCommitOutcome, TableStoreError>> + Send + '_;
 }
 
 /// Primary-key relational read-model query contract.
@@ -181,7 +179,7 @@ pub trait RelationalReadModelQueryStore: Send + Sync {
     fn load_graph(
         &self,
         request: ReadModelLoadRequest,
-    ) -> impl Future<Output = Result<ReadModelLoadGraph, ReadModelError>> + Send + '_;
+    ) -> impl Future<Output = Result<ReadModelLoadGraph, TableStoreError>> + Send + '_;
 }
 
 /// Snapshot persistence keyed by full stream identity.

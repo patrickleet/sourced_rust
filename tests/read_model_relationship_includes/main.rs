@@ -1,10 +1,10 @@
 use std::future::Future;
 
 use distributed::{
-    InMemoryReadModelStore, ReadModel, ReadModelAdapterCapabilities, ReadModelCommitOutcome,
-    ReadModelError, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
-    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanStore,
-    RelationalReadModelQueryStore, RowKey, RowValue,
+    InMemoryReadModelStore, ReadModel, ReadModelLoadGraph, ReadModelLoadRequest,
+    ReadModelQueryCapabilities, ReadModelWorkspaceExt, ReadModelWritePlanStore,
+    RelationalReadModelQueryStore, RowKey, RowValue, TableAdapterCapabilities, TableCommitOutcome,
+    TableStoreError, TableWritePlan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,14 +99,14 @@ impl NoIncludeStore {
 }
 
 impl ReadModelWritePlanStore for NoIncludeStore {
-    fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
+    fn read_model_capabilities(&self) -> TableAdapterCapabilities {
         self.inner.read_model_capabilities()
     }
 
     fn commit_write_plan(
         &self,
-        plan: ReadModelWritePlan,
-    ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
+        plan: TableWritePlan,
+    ) -> impl Future<Output = Result<TableCommitOutcome, TableStoreError>> + Send + '_ {
         self.inner.commit_write_plan(plan)
     }
 }
@@ -119,7 +119,7 @@ impl RelationalReadModelQueryStore for NoIncludeStore {
     async fn load_graph(
         &self,
         request: ReadModelLoadRequest,
-    ) -> Result<ReadModelLoadGraph, ReadModelError> {
+    ) -> Result<ReadModelLoadGraph, TableStoreError> {
         request.validate_for_query_capabilities(&self.read_model_query_capabilities())?;
         self.inner.load_graph(request).await
     }
@@ -417,7 +417,7 @@ fn unregistered_relationship_target_fails_before_loading() {
     .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("unregistered model `PlayerWeapon`"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("unregistered model `PlayerWeapon`"))
     );
 }
 
@@ -451,7 +451,7 @@ fn adapter_without_include_capability_rejects_includes() {
     .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("relationship includes"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("relationship includes"))
     );
 }
 
@@ -469,7 +469,7 @@ fn nested_query_style_include_paths_are_not_a_public_query_dsl() {
     .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("has no relationship"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("has no relationship"))
     );
 }
 
@@ -488,7 +488,7 @@ fn many_to_many_include_fails_until_join_metadata_is_rich_enough() {
     .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("many-to-many relationship"))
+        matches!(err, TableStoreError::Metadata(message) if message.contains("many-to-many relationship"))
     );
 }
 
@@ -523,7 +523,7 @@ fn belongs_to_include_rejects_composite_target_primary_key() {
     .unwrap_err();
 
     assert!(
-        matches!(err, ReadModelError::Metadata(message) if message.contains("CompositeWeaponLabel")
+        matches!(err, TableStoreError::Metadata(message) if message.contains("CompositeWeaponLabel")
             && message.contains("player_id")
             && message.contains("single-column primary key"))
     );

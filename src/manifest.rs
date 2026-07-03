@@ -4,7 +4,7 @@ use crate::table::{
     generate_table_migration_artifacts, table_schema_statements, TableSchema, TableSchemaRegistry,
     TableSqlDialect,
 };
-use crate::{ReadModelError, ReadModelMigrationArtifact, RelationalReadModel};
+use crate::{RelationalReadModel, TableMigrationArtifact, TableStoreError};
 
 pub const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
@@ -48,7 +48,7 @@ impl DistributedProjectManifest {
         self
     }
 
-    pub fn try_read_model<M>(mut self) -> Result<Self, ReadModelError>
+    pub fn try_read_model<M>(mut self) -> Result<Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
@@ -56,11 +56,11 @@ impl DistributedProjectManifest {
         Ok(self)
     }
 
-    pub fn try_register_read_model<M>(&mut self) -> Result<&mut Self, ReadModelError>
+    pub fn try_register_read_model<M>(&mut self) -> Result<&mut Self, TableStoreError>
     where
         M: RelationalReadModel,
     {
-        self.try_register_table_schema(M::schema())
+        self.try_register_table_schema(M::schema().clone())
     }
 
     pub fn table_schema(mut self, schema: TableSchema) -> Self {
@@ -69,7 +69,7 @@ impl DistributedProjectManifest {
         self
     }
 
-    pub fn try_table_schema(mut self, schema: TableSchema) -> Result<Self, ReadModelError> {
+    pub fn try_table_schema(mut self, schema: TableSchema) -> Result<Self, TableStoreError> {
         self.try_register_table_schema(schema)?;
         Ok(self)
     }
@@ -77,7 +77,7 @@ impl DistributedProjectManifest {
     pub fn try_register_table_schema(
         &mut self,
         schema: TableSchema,
-    ) -> Result<&mut Self, ReadModelError> {
+    ) -> Result<&mut Self, TableStoreError> {
         let mut registry = self.table_registry()?;
         registry.register_schema(schema.clone())?;
         self.tables.push(schema);
@@ -89,7 +89,7 @@ impl DistributedProjectManifest {
         self
     }
 
-    pub fn table_registry(&self) -> Result<TableSchemaRegistry, ReadModelError> {
+    pub fn table_registry(&self) -> Result<TableSchemaRegistry, TableStoreError> {
         let mut registry = TableSchemaRegistry::new();
         for schema in &self.tables {
             registry.register_schema(schema.clone())?;
@@ -97,14 +97,14 @@ impl DistributedProjectManifest {
         Ok(registry)
     }
 
-    pub fn sql_statements(&self, dialect: TableSqlDialect) -> Result<Vec<String>, ReadModelError> {
+    pub fn sql_statements(&self, dialect: TableSqlDialect) -> Result<Vec<String>, TableStoreError> {
         table_schema_statements(&self.table_registry()?, dialect)
     }
 
     pub fn sql_migration_artifacts(
         &self,
         dialect: TableSqlDialect,
-    ) -> Result<Vec<ReadModelMigrationArtifact>, ReadModelError> {
+    ) -> Result<Vec<TableMigrationArtifact>, TableStoreError> {
         generate_table_migration_artifacts(&self.table_registry()?, dialect)
     }
 
@@ -192,7 +192,7 @@ mod tests {
     fn manifest_collects_schema_service_metadata_and_renders_sql() {
         let manifest = DistributedProjectManifest::new("checkout")
             .read_model::<OrderView>()
-            .table_schema(outbox_message_schema())
+            .table_schema(outbox_message_schema().clone())
             .service(
                 ServiceManifest::new("checkout-saga")
                     .command("checkout.start")

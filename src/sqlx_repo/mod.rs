@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
-use crate::read_model::ReadModelError;
 use crate::repository::RepositoryError;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+use crate::table::TableStoreError;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod read_model;
@@ -89,9 +89,9 @@ pub(crate) fn read_model_i64_from_u64(
     value: u64,
     field: &str,
     storage: &str,
-) -> Result<i64, ReadModelError> {
+) -> Result<i64, TableStoreError> {
     i64::try_from(value).map_err(|_| {
-        ReadModelError::Storage(format!("{backend} {field} value {value} exceeds {storage}"))
+        TableStoreError::Storage(format!("{backend} {field} value {value} exceeds {storage}"))
     })
 }
 
@@ -100,9 +100,9 @@ pub(crate) fn read_model_u64_from_i64(
     backend: &str,
     value: i64,
     field: &str,
-) -> Result<u64, ReadModelError> {
+) -> Result<u64, TableStoreError> {
     u64::try_from(value).map_err(|_| {
-        ReadModelError::Storage(format!("{backend} {field} value {value} is negative"))
+        TableStoreError::Storage(format!("{backend} {field} value {value} is negative"))
     })
 }
 
@@ -213,6 +213,6 @@ pub(crate) fn read_model_storage_error(
     backend: &str,
     operation: &str,
     err: sqlx::Error,
-) -> ReadModelError {
-    ReadModelError::Storage(format!("{backend} {operation} failed: {err}"))
+) -> TableStoreError {
+    TableStoreError::Storage(format!("{backend} {operation} failed: {err}"))
 }

@@ -94,29 +94,26 @@ pub use queued_repo::{
 
 // Read models: projections and read-optimized views
 pub use read_model::{
-    ColumnDef, ColumnType, DeleteRowMutation, ExpectedVersion, ForeignKey, InMemoryReadModelStore,
-    IndexDef, PatchMode, PatchRowMutation, PrimaryKey, ReadModel, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelError, ReadModelIncludeRows, ReadModelLoadBuilder,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelMigrationArtifact, ReadModelMutation,
-    ReadModelQueryCapabilities, ReadModelSchema, ReadModelSchemaAdapter,
-    ReadModelSchemaAdapterCapabilities, ReadModelSchemaBootstrap, ReadModelSchemaIssue,
-    ReadModelSchemaIssueKind, ReadModelSchemaRegistry, ReadModelSchemaVerification,
-    ReadModelWorkspace, ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder,
-    RelationalReadModel, RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey,
-    RowMutation, RowPatch, RowValue, RowValues, RowWriteMode, Versioned,
-    DEFAULT_READ_MODEL_VERSION_COLUMN,
+    InMemoryReadModelStore, ReadModel, ReadModelIncludeRows, ReadModelLoadBuilder,
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWorkspace,
+    ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RelationalReadModel,
+    RelationalReadModelIncludes, Versioned,
 };
 
-// Neutral table/row primitives shared by read models and operational tables stay
-// reachable under their module path (`distributed::table::*`). They are low-level
-// schema/adapter plumbing, not part of the quick-start surface, so they are not
-// re-exported at the crate root.
-//
-// Exception: `TableSchemaRegistry` is the entry point for registering operational
-// table schemas (it is what callers build before bootstrapping migrations), so it
-// is consumed directly by downstream users and integration tests. It stays at the
-// crate root as part of the public surface.
-pub use table::TableSchemaRegistry;
+// Neutral table/row primitives: the canonical schema, row, mutation, write-plan,
+// and error vocabulary shared by read models and operational tables (outbox,
+// inbox/checkpoint, and future operational tables). Read models build on these,
+// so they are part of the crate-root surface; SQL rendering helpers stay under
+// `distributed::table::*`.
+pub use table::{
+    ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PatchMode,
+    PatchTableRowMutation, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowPatch,
+    RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn, TableCommitOutcome,
+    TableIndex, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation, TableSchema,
+    TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue,
+    TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt, TableSchemaVerification,
+    TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
+};
 
 pub use manifest::{
     DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,

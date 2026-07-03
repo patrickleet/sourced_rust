@@ -119,6 +119,7 @@ fn expand_relational_read_model(
     let mut relationships = Vec::new();
     let mut hydrate_include_arms = Vec::new();
     let mut include_rows_arms = Vec::new();
+    let mut include_schema_arms = Vec::new();
 
     for (field, attrs) in fields.iter().zip(field_attrs) {
         let ident = field
@@ -129,10 +130,11 @@ fn expand_relational_read_model(
 
         if let Some(relationship) = attrs.relationship_tokens(&field_name)? {
             relationships.push(relationship);
-            let (hydrate_arm, include_rows_arm) =
+            let (hydrate_arm, include_rows_arm, include_schema_arm) =
                 attrs.relationship_include_tokens(field, &field_name)?;
             hydrate_include_arms.push(hydrate_arm);
             include_rows_arms.push(include_rows_arm);
+            include_schema_arms.push(include_schema_arm);
             row_fields.push(quote! { #ident: ::core::default::Default::default() });
             continue;
         }
@@ -162,7 +164,7 @@ fn expand_relational_read_model(
         let jsonb = attrs.jsonb;
 
         column_defs.push(quote! {
-            distributed::ColumnDef {
+            distributed::TableColumn {
                 field_name: #field_name.to_string(),
                 column_name: #column_name.to_string(),
                 column_type: #column_type,
@@ -231,34 +233,36 @@ fn expand_relational_read_model(
 
     Ok(quote! {
         impl distributed::RelationalReadModel for #name {
-            fn schema() -> distributed::ReadModelSchema {
-                distributed::ReadModelSchema {
-                    model_name: #model_name.to_string(),
-                    table_name: #table_name.to_string(),
-                    columns: vec![#(#column_defs),*],
-                    primary_key: distributed::PrimaryKey {
-                        columns: vec![#(#primary_key_columns),*],
-                    },
-                    version_column: Some(distributed::DEFAULT_READ_MODEL_VERSION_COLUMN.to_string()),
-                    foreign_keys: vec![#(#foreign_keys),*],
-                    indexes: vec![#(#indexes),*],
-                    relationships: vec![#(#relationships),*],
-                }
+            fn schema() -> &'static distributed::TableSchema {
+                static SCHEMA: ::std::sync::LazyLock<distributed::TableSchema> =
+                    ::std::sync::LazyLock::new(|| distributed::TableSchema {
+                        model_name: #model_name.to_string(),
+                        table_name: #table_name.to_string(),
+                        columns: vec![#(#column_defs),*],
+                        primary_key: distributed::PrimaryKey {
+                            columns: vec![#(#primary_key_columns),*],
+                        },
+                        version_column: Some(distributed::DEFAULT_TABLE_VERSION_COLUMN.to_string()),
+                        foreign_keys: vec![#(#foreign_keys),*],
+                        indexes: vec![#(#indexes),*],
+                        relationships: vec![#(#relationships),*],
+                    });
+                &SCHEMA
             }
 
-            fn primary_key(&self) -> Result<distributed::RowKey, distributed::ReadModelError> {
+            fn primary_key(&self) -> Result<distributed::RowKey, distributed::TableStoreError> {
                 let mut key = distributed::RowKey::default();
                 #(#key_inserts)*
                 Ok(key)
             }
 
-            fn to_row(&self) -> Result<distributed::RowValues, distributed::ReadModelError> {
+            fn to_row(&self) -> Result<distributed::RowValues, distributed::TableStoreError> {
                 let mut row = distributed::RowValues::new();
                 #(#row_inserts)*
                 Ok(row)
             }
 
-            fn from_row(row: distributed::RowValues) -> Result<Self, distributed::ReadModelError> {
+            fn from_row(row: distributed::RowValues) -> Result<Self, distributed::TableStoreError> {
                 Ok(Self {
                     #(#row_fields),*
                 })
@@ -270,10 +274,10 @@ fn expand_relational_read_model(
                 &mut self,
                 include: &str,
                 rows: Vec<distributed::RowValues>,
-            ) -> Result<(), distributed::ReadModelError> {
+            ) -> Result<(), distributed::TableStoreError> {
                 match include {
                     #(#hydrate_include_arms,)*
-                    _ => Err(distributed::ReadModelError::Metadata(format!(
+                    _ => Err(distributed::TableStoreError::Metadata(format!(
                         "read model `{}` has no hydratable relationship `{}`",
                         #model_name,
                         include
@@ -284,10 +288,23 @@ fn expand_relational_read_model(
             fn include_rows(
                 &self,
                 include: &str,
-            ) -> Result<Vec<distributed::RowValues>, distributed::ReadModelError> {
+            ) -> Result<Vec<distributed::RowValues>, distributed::TableStoreError> {
                 match include {
                     #(#include_rows_arms,)*
-                    _ => Err(distributed::ReadModelError::Metadata(format!(
+                    _ => Err(distributed::TableStoreError::Metadata(format!(
+                        "read model `{}` has no tracked relationship `{}`",
+                        #model_name,
+                        include
+                    ))),
+                }
+            }
+
+            fn include_target_schema(
+                include: &str,
+            ) -> Result<&'static distributed::TableSchema, distributed::TableStoreError> {
+                match include {
+                    #(#include_schema_arms,)*
+                    _ => Err(distributed::TableStoreError::Metadata(format!(
                         "read model `{}` has no tracked relationship `{}`",
                         #model_name,
                         include
@@ -356,7 +373,7 @@ fn index_def_tokens(
         .collect::<Vec<_>>();
 
     quote! {
-        distributed::IndexDef {
+        distributed::TableIndex {
             name: Some(#index_name.to_string()),
             columns: vec![#(#columns),*],
             unique: #unique,
@@ -661,7 +678,11 @@ impl FieldAttrs {
         &self,
         field: &Field,
         field_name: &str,
-    ) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+    ) -> syn::Result<(
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+    )> {
         let relationship = self.relationship.as_ref().ok_or_else(|| {
             syn::Error::new_spanned(field, "field is not a read-model relationship")
         })?;
@@ -689,7 +710,7 @@ impl FieldAttrs {
                         self.#ident = rows
                             .into_iter()
                             .map(<#inner as distributed::RelationalReadModel>::from_row)
-                            .collect::<Result<Vec<_>, distributed::ReadModelError>>()?;
+                            .collect::<Result<Vec<_>, distributed::TableStoreError>>()?;
                         Ok(())
                     }
                 };
@@ -698,9 +719,12 @@ impl FieldAttrs {
                         .#ident
                         .iter()
                         .map(distributed::RelationalReadModel::to_row)
-                        .collect::<Result<Vec<_>, distributed::ReadModelError>>()
+                        .collect::<Result<Vec<_>, distributed::TableStoreError>>()
                 };
-                Ok((hydrate, include_rows))
+                let include_schema = quote! {
+                    #field_name => Ok(<#inner as distributed::RelationalReadModel>::schema())
+                };
+                Ok((hydrate, include_rows, include_schema))
             }
             RelationshipKindAttr::BelongsTo => {
                 let inner = option_inner_type(&field.ty).ok_or_else(|| {
@@ -725,7 +749,7 @@ impl FieldAttrs {
                             None => None,
                         };
                         if rows.next().is_some() {
-                            return Err(distributed::ReadModelError::Metadata(format!(
+                            return Err(distributed::TableStoreError::Metadata(format!(
                                 "belongs_to relationship `{}` returned more than one row",
                                 #field_name
                             )));
@@ -742,7 +766,10 @@ impl FieldAttrs {
                         Ok(rows)
                     }
                 };
-                Ok((hydrate, include_rows))
+                let include_schema = quote! {
+                    #field_name => Ok(<#inner as distributed::RelationalReadModel>::schema())
+                };
+                Ok((hydrate, include_rows, include_schema))
             }
         }
     }

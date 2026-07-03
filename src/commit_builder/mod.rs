@@ -27,7 +27,8 @@
 use crate::aggregate::Aggregate;
 use crate::entity::Entity;
 use crate::outbox::OutboxMessage;
-use crate::read_model::{ReadModelWritePlan, ReadModelWritePlanBuilder};
+use crate::read_model::ReadModelWritePlanBuilder;
+use crate::table::TableWritePlan;
 use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
@@ -97,7 +98,7 @@ pub struct CommitBuilder<'a, R> {
     streams: Vec<StreamWrite<'a>>,
     outbox_messages: Vec<OutboxMessage>,
     outbox_source: StagedOutboxSource,
-    read_model_plans: Vec<ReadModelWritePlan>,
+    read_model_plans: Vec<TableWritePlan>,
     error: Option<RepositoryError>,
 }
 

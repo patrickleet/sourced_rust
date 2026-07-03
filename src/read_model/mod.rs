@@ -25,13 +25,15 @@
 //! let outcome = read_models.commit(&read_store)?;
 //! ```
 
+mod capabilities;
 pub(crate) mod in_memory;
-mod metadata;
-mod schema;
-mod session;
+mod load;
+mod plan;
+mod workspace;
 
 use serde::{de::DeserializeOwned, Serialize};
-use std::fmt;
+
+use crate::table::{RowKey, RowValues, TableSchema, TableStoreError};
 
 /// Trait implemented by the derive macro for read-model identity metadata.
 pub trait ReadModel: Serialize + DeserializeOwned + Clone + Send + Sync {
@@ -49,78 +51,35 @@ pub struct Versioned<T> {
     pub version: u64,
 }
 
-/// Error type for read model store operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ReadModelError {
-    /// Optimistic concurrency conflict.
-    ConcurrencyConflict {
-        collection: String,
-        id: String,
-        expected: u64,
-        actual: u64,
-    },
-    /// Serialization/deserialization error.
-    Serde(String),
-    /// Storage-level error.
-    Storage(String),
-    /// Read model not found.
-    NotFound { collection: String, id: String },
-    /// Lock error.
-    Lock(crate::lock::LockError),
-    /// Relational read-model metadata error.
-    Metadata(String),
+/// Opt-in trait for table-mapped relational read models.
+pub trait RelationalReadModel: Clone + Send + Sync + Sized {
+    /// The model's schema. Static because a model's schema is fixed at compile
+    /// time; the derive macro backs this with a `LazyLock` so staging mutations
+    /// never rebuilds or clones schema metadata.
+    fn schema() -> &'static TableSchema;
+    fn primary_key(&self) -> Result<RowKey, TableStoreError>;
+    fn to_row(&self) -> Result<RowValues, TableStoreError>;
+    fn from_row(row: RowValues) -> Result<Self, TableStoreError>;
 }
 
-impl fmt::Display for ReadModelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ReadModelError::ConcurrencyConflict {
-                collection,
-                id,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "concurrency conflict on {}:{} (expected version {}, actual {})",
-                collection, id, expected, actual
-            ),
-            ReadModelError::Serde(msg) => write!(f, "read model serialization error: {}", msg),
-            ReadModelError::Storage(msg) => write!(f, "read model storage error: {}", msg),
-            ReadModelError::NotFound { collection, id } => {
-                write!(f, "read model not found: {}:{}", collection, id)
-            }
-            ReadModelError::Lock(err) => write!(f, "read model lock error: {}", err),
-            ReadModelError::Metadata(msg) => write!(f, "read model metadata error: {}", msg),
-        }
-    }
+/// Relationship hydration hooks generated for table-mapped read models.
+pub trait RelationalReadModelIncludes: RelationalReadModel {
+    fn hydrate_include(
+        &mut self,
+        include: &str,
+        rows: Vec<RowValues>,
+    ) -> Result<(), TableStoreError>;
+
+    fn include_rows(&self, include: &str) -> Result<Vec<RowValues>, TableStoreError>;
+
+    /// Schema of the model targeted by the named relationship.
+    fn include_target_schema(include: &str) -> Result<&'static TableSchema, TableStoreError>;
 }
 
-impl std::error::Error for ReadModelError {}
-
-impl From<crate::lock::LockError> for ReadModelError {
-    fn from(err: crate::lock::LockError) -> Self {
-        ReadModelError::Lock(err)
-    }
-}
-
+pub use capabilities::ReadModelQueryCapabilities;
 pub use in_memory::InMemoryReadModelStore;
-pub use metadata::{
-    ColumnDef, ColumnType, ForeignKey, IndexDef, PrimaryKey, ReadModelSchema, RelationalReadModel,
-    RelationalReadModelIncludes, RelationshipDef, RelationshipKind, RowKey, RowValue, RowValues,
-    DEFAULT_READ_MODEL_VERSION_COLUMN,
+pub use load::{
+    ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelLoadGraph, ReadModelLoadRequest,
 };
-pub use schema::{
-    ReadModelMigrationArtifact, ReadModelSchemaAdapter, ReadModelSchemaAdapterCapabilities,
-    ReadModelSchemaBootstrap, ReadModelSchemaIssue, ReadModelSchemaIssueKind,
-    ReadModelSchemaRegistry, ReadModelSchemaVerification,
-};
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
-pub(crate) use session::{column_name_for, key_fingerprint, validate_key, validate_row_values};
-pub use session::{
-    DeleteRowMutation, ExpectedVersion, PatchMode, PatchRowMutation, ReadModelAdapterCapabilities,
-    ReadModelCommitOutcome, ReadModelIncludeRows, ReadModelLoadBuilder, ReadModelLoadGraph,
-    ReadModelLoadRequest, ReadModelMutation, ReadModelQueryCapabilities, ReadModelWorkspace,
-    ReadModelWorkspaceExt, ReadModelWritePlan, ReadModelWritePlanBuilder, RowMutation, RowPatch,
-    RowWriteMode,
-};
+pub use plan::ReadModelWritePlanBuilder;
+pub use workspace::{ReadModelWorkspace, ReadModelWorkspaceExt};

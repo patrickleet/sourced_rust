@@ -6,7 +6,7 @@ mod handlers;
 use std::sync::Arc;
 
 use distributed::microsvc::{HandlerError, Routes, Service};
-use distributed::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
+use distributed::{InMemoryReadModelStore, ReadModelWorkspaceExt, TableStoreError};
 
 use crate::read_models::{board_key, BoardView};
 
@@ -19,7 +19,7 @@ pub fn service(store: InMemoryReadModelStore) -> Arc<Service> {
     )))
 }
 
-fn read_model_error(err: ReadModelError) -> HandlerError {
+fn read_model_error(err: TableStoreError) -> HandlerError {
     HandlerError::Repository(err.into())
 }
 

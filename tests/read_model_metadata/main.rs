@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use distributed::{
-    ColumnType, ReadModel, ReadModelError, RelationalReadModel, RelationshipKind, RowValue,
-    DEFAULT_READ_MODEL_VERSION_COLUMN,
+    ColumnType, ReadModel, RelationalReadModel, RelationshipKind, RowValue, TableStoreError,
+    DEFAULT_TABLE_VERSION_COLUMN,
 };
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ fn derive_describes_columns_indexes_nullability_and_jsonb() {
     assert_eq!(schema.primary_key.columns, vec!["account_id"]);
     assert_eq!(
         schema.version_column.as_deref(),
-        Some(DEFAULT_READ_MODEL_VERSION_COLUMN)
+        Some(DEFAULT_TABLE_VERSION_COLUMN)
     );
 
     let owner = schema
@@ -227,7 +227,7 @@ fn metadata_validation_reports_missing_keys_before_storage_writes() {
 
     let err = MissingKeyModel::schema().validate().unwrap_err();
 
-    assert!(matches!(err, ReadModelError::Metadata(message) if message.contains("primary-key")));
+    assert!(matches!(err, TableStoreError::Metadata(message) if message.contains("primary-key")));
 }
 
 #[test]

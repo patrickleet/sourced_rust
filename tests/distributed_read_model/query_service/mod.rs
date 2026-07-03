@@ -2,7 +2,7 @@
 //! projected relational tables through primary-key loads plus explicit
 //! relationship includes.
 
-use distributed::{InMemoryReadModelStore, ReadModelError, ReadModelWorkspaceExt};
+use distributed::{InMemoryReadModelStore, ReadModelWorkspaceExt, TableStoreError};
 
 use crate::read_models::{checkout_key, seat_key, CheckoutView, SeatView};
 
@@ -20,7 +20,7 @@ impl CheckoutQueryService {
     pub async fn checkout_screen(
         &self,
         checkout_id: &str,
-    ) -> Result<Option<CheckoutView>, ReadModelError> {
+    ) -> Result<Option<CheckoutView>, TableStoreError> {
         let mut session = self.store.workspace();
         Ok(session
             .load::<CheckoutView>(checkout_key(checkout_id))
@@ -31,7 +31,7 @@ impl CheckoutQueryService {
             .map(|view| view.data))
     }
 
-    pub async fn seat(&self, seat_id: &str) -> Result<Option<SeatView>, ReadModelError> {
+    pub async fn seat(&self, seat_id: &str) -> Result<Option<SeatView>, TableStoreError> {
         let mut session = self.store.workspace();
         Ok(session
             .load::<SeatView>(seat_key(seat_id))

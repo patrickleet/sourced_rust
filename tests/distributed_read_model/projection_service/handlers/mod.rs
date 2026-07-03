@@ -5,8 +5,8 @@ pub mod checkout;
 pub mod seat;
 
 use distributed::microsvc::HandlerError;
-use distributed::ReadModelError;
+use distributed::TableStoreError;
 
-pub fn read_model_error(err: ReadModelError) -> HandlerError {
+pub fn read_model_error(err: TableStoreError) -> HandlerError {
     HandlerError::Repository(err.into())
 }

@@ -5,10 +5,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::aggregate::{Aggregate, AggregateRepository};
 use crate::outbox::OutboxMessage;
-use crate::read_model::{ReadModelWritePlan, ReadModelWritePlanBuilder};
+use crate::read_model::ReadModelWritePlanBuilder;
 use crate::repository::{
     CommitBatch, RepositoryError, StreamIdentity, StreamWrite, TransactionalCommit,
 };
+use crate::table::TableWritePlan;
 
 /// Publishes already-committed, claimed outbox rows and settles their claims.
 ///
@@ -88,7 +89,7 @@ impl CommitReceipt {
 pub struct AggregateCommit<'a, R, A> {
     repo: &'a AggregateRepository<R, A>,
     outbox_messages: Vec<OutboxMessage>,
-    read_model_plans: Vec<ReadModelWritePlan>,
+    read_model_plans: Vec<TableWritePlan>,
     error: Option<RepositoryError>,
 }
 
