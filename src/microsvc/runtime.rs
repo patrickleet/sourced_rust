@@ -196,7 +196,7 @@ mod tests {
             .unwrap();
 
         let published_a = store_a
-            .messages_by_status(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
             .unwrap();
         assert_eq!(
@@ -205,10 +205,10 @@ mod tests {
             "first route bundle should publish at commit time"
         );
         assert_eq!(published_a[0].id(), "evt-1");
-        assert!(store_a.pending().await.unwrap().is_empty());
+        assert!(store_a.pending(usize::MAX).await.unwrap().is_empty());
 
         let published_b = store_b
-            .messages_by_status(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
             .unwrap();
         assert_eq!(
@@ -217,7 +217,7 @@ mod tests {
             "second route bundle should publish at commit time"
         );
         assert_eq!(published_b[0].id(), "evt-1");
-        assert!(store_b.pending().await.unwrap().is_empty());
+        assert!(store_b.pending(usize::MAX).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -275,12 +275,12 @@ mod tests {
             .unwrap();
 
         let published = store
-            .messages_by_status(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
             .unwrap();
         assert_eq!(published.len(), 1, "row should be published immediately");
         assert_eq!(published[0].id(), "evt-1");
-        assert!(store.pending().await.unwrap().is_empty());
+        assert!(store.pending(usize::MAX).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -304,7 +304,7 @@ mod tests {
         service.run(RunOptions::idempotent()).await.unwrap();
 
         let published = store
-            .messages_by_status(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
             .unwrap();
         assert_eq!(
@@ -362,7 +362,7 @@ mod tests {
             .unwrap();
 
         let published = store
-            .messages_by_status(OutboxMessageStatus::Published)
+            .messages_by_status(OutboxMessageStatus::Published, usize::MAX)
             .await
             .unwrap();
         assert_eq!(

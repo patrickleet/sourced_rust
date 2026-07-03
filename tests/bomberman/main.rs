@@ -211,7 +211,7 @@ async fn player_killed_by_bomb() {
     use distributed::{OutboxMessageStatus, OutboxStore};
     let pending = repo2
         .outbox_store()
-        .messages_by_status(OutboxMessageStatus::Pending)
+        .messages_by_status(OutboxMessageStatus::Pending, usize::MAX)
         .await
         .unwrap();
     assert!(!pending.is_empty());

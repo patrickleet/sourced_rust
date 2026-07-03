@@ -267,7 +267,12 @@ mod tests {
         assert!(receipt.has_outbox_messages());
         assert_eq!(receipt.outbox_message_ids(), ["msg-1".to_string()]);
 
-        let pending = repo.repo().outbox_store().pending().await.unwrap();
+        let pending = repo
+            .repo()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "msg-1");
     }
@@ -404,7 +409,12 @@ mod tests {
         );
 
         // 2) outbox row present (pending — no bus attached here)
-        let pending = repo.repo().outbox_store().pending().await.unwrap();
+        let pending = repo
+            .repo()
+            .outbox_store()
+            .pending(usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), "evt-c1");
 

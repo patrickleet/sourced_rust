@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
@@ -90,8 +91,8 @@ fn default_event_version() -> u64 {
 fn is_version_one(v: &u64) -> bool {
     *v == 1
 }
-fn default_payload_codec() -> String {
-    BITCODE_PAYLOAD_CODEC.to_string()
+fn default_payload_codec() -> Cow<'static, str> {
+    Cow::Borrowed(BITCODE_PAYLOAD_CODEC)
 }
 fn default_payload_codec_version() -> u16 {
     BITCODE_PAYLOAD_CODEC_VERSION
@@ -105,8 +106,11 @@ fn default_payload_codec_version() -> u16 {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct EventRecord {
     pub event_name: String,
+    /// Payload codec name. `Cow` because virtually every event carries the
+    /// crate's own codec constant — the borrowed variant avoids one heap
+    /// allocation per event created and per row decoded.
     #[serde(default = "default_payload_codec")]
-    pub payload_codec: String,
+    pub payload_codec: Cow<'static, str>,
     #[serde(default = "default_payload_codec_version")]
     pub payload_codec_version: u16,
     #[serde(with = "payload_serde")]
@@ -146,7 +150,7 @@ impl EventRecord {
     pub fn new(event_name: impl Into<String>, payload: Vec<u8>, sequence: u64) -> Self {
         EventRecord {
             event_name: event_name.into(),
-            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec: Cow::Borrowed(BITCODE_PAYLOAD_CODEC),
             payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: 1,
@@ -165,7 +169,7 @@ impl EventRecord {
     ) -> Self {
         EventRecord {
             event_name: event_name.into(),
-            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec: Cow::Borrowed(BITCODE_PAYLOAD_CODEC),
             payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: version,
@@ -184,7 +188,7 @@ impl EventRecord {
     ) -> Self {
         EventRecord {
             event_name: event_name.into(),
-            payload_codec: BITCODE_PAYLOAD_CODEC.to_string(),
+            payload_codec: Cow::Borrowed(BITCODE_PAYLOAD_CODEC),
             payload_codec_version: BITCODE_PAYLOAD_CODEC_VERSION,
             payload,
             event_version: 1,
@@ -292,7 +296,7 @@ mod tests {
     #[test]
     fn decode_unknown_codec_returns_error() {
         let mut event_record = EventRecord::new("test_event", vec![], 1);
-        event_record.payload_codec = "json".to_string();
+        event_record.payload_codec = "json".into();
 
         let err = event_record.decode::<()>().unwrap_err();
         assert!(err.message.contains("unsupported payload codec `json`"));

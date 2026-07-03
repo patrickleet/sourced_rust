@@ -217,6 +217,13 @@ where
         self.inner.get_snapshot(identity)
     }
 
+    fn get_snapshots<'a>(
+        &'a self,
+        identities: &'a [StreamIdentity],
+    ) -> impl Future<Output = Result<Vec<SnapshotRecord>, RepositoryError>> + Send + 'a {
+        self.inner.get_snapshots(identities)
+    }
+
     fn save_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,

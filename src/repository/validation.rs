@@ -15,9 +15,43 @@ use crate::entity::{
 use crate::outbox::{validate_outbox_message_table_write, OutboxMessage};
 use crate::snapshot::SnapshotRecord;
 
-use super::{PreparedEventAppend, RepositoryError, StreamIdentity, StreamWrite};
+use super::{
+    CommitBatch, PreparedEventAppend, RepositoryError, SnapshotWrite, StreamIdentity, StreamWrite,
+};
 
-pub(crate) fn reject_duplicate_streams(streams: &[StreamWrite<'_>]) -> Result<(), RepositoryError> {
+/// Validate a full [`CommitBatch`] and prepare its event appends.
+///
+/// This is the single validation preamble every backend runs before touching
+/// storage: duplicate-stream and duplicate-outbox rejection, entity/identity
+/// agreement, sequence-contiguity of the prepared appends, and snapshot
+/// identity agreement. Backends must not add or skip batch-shape checks
+/// locally — extending this function is what keeps them from drifting.
+pub(crate) fn validate_commit_batch<'a>(
+    batch: &'a CommitBatch<'_>,
+) -> Result<Vec<PreparedEventAppend<'a>>, RepositoryError> {
+    reject_duplicate_streams(&batch.streams)?;
+    reject_duplicate_outbox_messages(&batch.outbox_messages)?;
+    validate_entity_id_matches_identity(&batch.streams)?;
+
+    let prepared = batch
+        .streams
+        .iter()
+        .map(PreparedEventAppend::from_stream_write)
+        .collect::<Vec<_>>();
+    validate_prepared_appends(&prepared)?;
+
+    for write in &batch.snapshots {
+        match write {
+            SnapshotWrite::Save { identity, record } => {
+                validate_snapshot_identity(identity, record)?;
+            }
+        }
+    }
+
+    Ok(prepared)
+}
+
+fn reject_duplicate_streams(streams: &[StreamWrite<'_>]) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(streams.len());
     for stream in streams {
         let key = stream.identity.storage_key();
@@ -30,9 +64,7 @@ pub(crate) fn reject_duplicate_streams(streams: &[StreamWrite<'_>]) -> Result<()
     Ok(())
 }
 
-pub(crate) fn reject_duplicate_outbox_messages(
-    messages: &[OutboxMessage],
-) -> Result<(), RepositoryError> {
+fn reject_duplicate_outbox_messages(messages: &[OutboxMessage]) -> Result<(), RepositoryError> {
     let mut seen = HashSet::with_capacity(messages.len());
     for message in messages {
         validate_outbox_message_table_write(message)
@@ -55,9 +87,7 @@ pub(crate) fn reject_duplicate_outbox_messages(
     Ok(())
 }
 
-pub(crate) fn validate_entity_id_matches_identity(
-    streams: &[StreamWrite<'_>],
-) -> Result<(), RepositoryError> {
+fn validate_entity_id_matches_identity(streams: &[StreamWrite<'_>]) -> Result<(), RepositoryError> {
     for stream in streams {
         if stream.entity.id() != stream.identity.aggregate_id() {
             return Err(RepositoryError::Model(format!(
@@ -70,9 +100,7 @@ pub(crate) fn validate_entity_id_matches_identity(
     Ok(())
 }
 
-pub(crate) fn validate_prepared_appends(
-    appends: &[PreparedEventAppend],
-) -> Result<(), RepositoryError> {
+fn validate_prepared_appends(appends: &[PreparedEventAppend<'_>]) -> Result<(), RepositoryError> {
     for append in appends {
         for (offset, event) in append.events.iter().enumerate() {
             validate_supported_event_codec(event)?;

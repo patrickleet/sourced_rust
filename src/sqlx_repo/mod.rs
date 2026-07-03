@@ -6,6 +6,8 @@ use crate::table::TableStoreError;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod read_model;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) mod repo;
 
 pub(crate) fn serialize_event_metadata(
     metadata: &HashMap<String, String>,
@@ -32,18 +34,6 @@ pub(crate) fn repository_i64_from_u64(
     })
 }
 
-#[cfg(feature = "postgres")]
-pub(crate) fn repository_i32_from_u64(
-    backend: &str,
-    value: u64,
-    field: &str,
-    storage: &str,
-) -> Result<i32, RepositoryError> {
-    i32::try_from(value).map_err(|_| {
-        RepositoryError::Model(format!("{backend} {field} value {value} exceeds {storage}"))
-    })
-}
-
 pub(crate) fn repository_u64_from_i64(
     backend: &str,
     value: i64,
@@ -53,30 +43,10 @@ pub(crate) fn repository_u64_from_i64(
         .map_err(|_| RepositoryError::Model(format!("{backend} {field} value {value} is negative")))
 }
 
-#[cfg(feature = "postgres")]
-pub(crate) fn repository_u64_from_i32(
-    backend: &str,
-    value: i32,
-    field: &str,
-) -> Result<u64, RepositoryError> {
-    u64::try_from(value)
-        .map_err(|_| RepositoryError::Model(format!("{backend} {field} value {value} is negative")))
-}
-
-#[cfg(feature = "sqlite")]
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) fn repository_u16_from_i64(
     backend: &str,
     value: i64,
-    field: &str,
-) -> Result<u16, RepositoryError> {
-    u16::try_from(value)
-        .map_err(|_| RepositoryError::Model(format!("{backend} {field} value {value} is invalid")))
-}
-
-#[cfg(feature = "postgres")]
-pub(crate) fn repository_u16_from_i32(
-    backend: &str,
-    value: i32,
     field: &str,
 ) -> Result<u16, RepositoryError> {
     u16::try_from(value)
@@ -184,12 +154,24 @@ pub(crate) fn is_sqlx_transient(err: &sqlx::Error) -> bool {
     if is_sqlite_busy(err) {
         return true;
     }
-    // Postgres serialization_failure (40001) / deadlock_detected (40P01): the
-    // transaction lost a write race and should be retried, not handed to the
-    // failure policy. SQLite never carries these SQLSTATEs, so no feature gate.
+    // Postgres SQLSTATEs that name transient conditions. SQLite never carries
+    // these codes (its codes are plain integers), so no feature gate.
+    // - 40001 serialization_failure / 40P01 deadlock_detected: the transaction
+    //   lost a write race and should be retried, not handed to the failure
+    //   policy.
+    // - 57P01 admin_shutdown / 57P02 crash_shutdown / 57P03 cannot_connect_now:
+    //   the backend was terminated (pg_terminate_backend, failover, restart);
+    //   the statement may succeed once the server recovers.
+    // - class 08 (connection_exception): the connection died mid-statement.
     if let sqlx::Error::Database(db_err) = err {
-        if matches!(db_err.code().as_deref(), Some("40001" | "40P01")) {
-            return true;
+        if let Some(code) = db_err.code() {
+            if matches!(
+                code.as_ref(),
+                "40001" | "40P01" | "57P01" | "57P02" | "57P03"
+            ) || code.starts_with("08")
+            {
+                return true;
+            }
         }
     }
     false
@@ -215,4 +197,85 @@ pub(crate) fn read_model_storage_error(
     err: sqlx::Error,
 ) -> TableStoreError {
     TableStoreError::Storage(format!("{backend} {operation} failed: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_sqlx_transient;
+    use std::borrow::Cow;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct StubDatabaseError(&'static str);
+
+    impl fmt::Display for StubDatabaseError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "stub database error ({})", self.0)
+        }
+    }
+
+    impl std::error::Error for StubDatabaseError {}
+
+    impl sqlx::error::DatabaseError for StubDatabaseError {
+        fn message(&self) -> &str {
+            "stub database error"
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.0))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn database_error(code: &'static str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(StubDatabaseError(code)))
+    }
+
+    #[test]
+    fn write_races_are_transient() {
+        assert!(is_sqlx_transient(&database_error("40001")));
+        assert!(is_sqlx_transient(&database_error("40P01")));
+    }
+
+    #[test]
+    fn server_shutdown_and_connection_loss_are_transient() {
+        // pg_terminate_backend / failover / restart-in-progress.
+        assert!(is_sqlx_transient(&database_error("57P01")));
+        assert!(is_sqlx_transient(&database_error("57P02")));
+        assert!(is_sqlx_transient(&database_error("57P03")));
+        // connection_exception class.
+        assert!(is_sqlx_transient(&database_error("08000")));
+        assert!(is_sqlx_transient(&database_error("08006")));
+    }
+
+    #[test]
+    fn deterministic_failures_are_permanent() {
+        // unique_violation: re-running the identical statement cannot succeed.
+        assert!(!is_sqlx_transient(&database_error("23505")));
+        // query_canceled (57014) is a deliberate cancellation, not recovery.
+        assert!(!is_sqlx_transient(&database_error("57014")));
+        // RowNotFound-style decode errors are permanent.
+        assert!(!is_sqlx_transient(&sqlx::Error::RowNotFound));
+    }
+
+    #[test]
+    fn pool_and_io_failures_are_transient() {
+        assert!(is_sqlx_transient(&sqlx::Error::PoolTimedOut));
+        assert!(is_sqlx_transient(&sqlx::Error::PoolClosed));
+    }
 }

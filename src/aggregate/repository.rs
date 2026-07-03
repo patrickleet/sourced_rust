@@ -42,8 +42,11 @@ pub(crate) struct SnapshotPolicy<R, A> {
     /// Build a snapshot cache record for the aggregate when one is due.
     record: fn(&A, u64) -> Result<Option<SnapshotRecord>, RepositoryError>,
     /// Hydrate an already-loaded entity from the cache record (if any). Used on
-    /// load paths that have the full stream in hand (batch loads, locked reads).
+    /// load paths that have the full stream in hand (locked reads).
     hydrate: HydrateFn<R, A>,
+    /// Hydrate a batch of already-loaded entities, reading all cache records in
+    /// one round trip. Used by batch loads (`get_all`).
+    hydrate_all: HydrateAllFn<R, A>,
     /// Own the whole load: read the snapshot first, then fetch only the tail of
     /// the stream (skipping already-snapshotted I/O), falling back to a full
     /// load on a cache miss. Used by the single-aggregate `get` hot path.
@@ -56,6 +59,12 @@ type HydrateFn<R, A> =
         &'a StreamIdentity,
         Entity,
     ) -> Pin<Box<dyn Future<Output = Result<A, RepositoryError>> + Send + 'a>>;
+
+type HydrateAllFn<R, A> =
+    for<'a> fn(
+        &'a R,
+        Vec<(StreamIdentity, Entity)>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<A>, RepositoryError>> + Send + 'a>>;
 
 type LoadFn<R, A> = for<'a> fn(
     &'a R,
@@ -71,12 +80,14 @@ impl<R, A> SnapshotPolicy<R, A> {
         frequency: u64,
         record: fn(&A, u64) -> Result<Option<SnapshotRecord>, RepositoryError>,
         hydrate: HydrateFn<R, A>,
+        hydrate_all: HydrateAllFn<R, A>,
         load: LoadFn<R, A>,
     ) -> Self {
         Self {
             frequency,
             record,
             hydrate,
+            hydrate_all,
             load,
         }
     }
@@ -223,15 +234,21 @@ impl<R, A> AggregateRepository<R, A>
 where
     A: Aggregate + Send,
 {
-    /// Hydrate a batch of entities, deriving each identity from the entity id so
-    /// the snapshot cache can be consulted per aggregate.
+    /// Hydrate a batch of entities, deriving each identity from the entity id.
+    /// With a snapshot policy the cache records for the whole batch are read in
+    /// one round trip; without one, a plain per-entity replay.
     async fn hydrate_entities(&self, entities: Vec<Entity>) -> Result<Vec<A>, RepositoryError> {
-        let mut aggregates = Vec::with_capacity(entities.len());
-        for entity in entities {
-            let identity = stream_identity_for::<A>(entity.id())?;
-            aggregates.push(self.hydrate_entity(&identity, entity).await?);
+        match &self.snapshot {
+            Some(policy) => {
+                let mut pairs = Vec::with_capacity(entities.len());
+                for entity in entities {
+                    let identity = stream_identity_for::<A>(entity.id())?;
+                    pairs.push((identity, entity));
+                }
+                (policy.hydrate_all)(&self.repo, pairs).await
+            }
+            None => entities.into_iter().map(hydrate::<A>).collect(),
         }
-        Ok(aggregates)
     }
 }
 

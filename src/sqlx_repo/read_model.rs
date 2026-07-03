@@ -343,7 +343,7 @@ use super::{read_model_i64_from_u64, read_model_storage_error, read_model_u64_fr
 /// SQLite stores booleans as `i64` and collapses integer/bool `NULL`s) and the
 /// backend/storage labels used in numeric-conversion error messages. Those —
 /// and nothing else — live behind this trait, implemented once per backend.
-pub(crate) trait SqlxReadModelBackend: Database {
+pub trait SqlxReadModelBackend: Database {
     /// Backend name used in numeric-conversion error messages (`"postgres"`/`"sqlite"`).
     const BACKEND: &'static str;
     /// Human-readable storage label for the signed-64-bit version column.
