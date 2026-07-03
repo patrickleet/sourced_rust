@@ -1,8 +1,10 @@
 use std::future::Future;
 
+use distributed::read_model::{
+    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
+};
 use distributed::{
-    InMemoryReadModelStore, ReadModel, ReadModelLoadGraph, ReadModelLoadRequest,
-    ReadModelQueryCapabilities, ReadModelWorkspaceExt, ReadModelWritePlanStore,
+    InMemoryReadModelStore, ReadModel, ReadModelWorkspaceExt, ReadModelWritePlanStore,
     RelationalReadModelQueryStore, RowKey, RowValue, TableAdapterCapabilities, TableCommitOutcome,
     TableStoreError, TableWritePlan,
 };

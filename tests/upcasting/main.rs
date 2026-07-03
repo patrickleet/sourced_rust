@@ -3,7 +3,7 @@ mod aggregate;
 use aggregate::{TodoV1, TodoV2, TodoV3};
 use distributed::{
     hydrate, hydrate_from_snapshot, upcast_events, Aggregate, AggregateBuilder, Entity,
-    EventRecord, EventUpcaster, HashMapRepository, RepositoryError, SnapshotRecord, SnapshotStore,
+    EventRecord, EventUpcaster, InMemoryRepository, RepositoryError, SnapshotRecord, SnapshotStore,
     StreamIdentity, TransactionalCommit, UpcastError,
 };
 
@@ -263,7 +263,7 @@ fn mixed_events_v1_init_and_v1_complete() {
 #[tokio::test]
 async fn repo_roundtrip_v1_to_v2() {
     // Store using v1
-    let base_repo = HashMapRepository::new();
+    let base_repo = InMemoryRepository::new();
     let mut v1 = TodoV1::default();
     v1.initialize("t1".into(), "frank".into(), "Shop".into())
         .unwrap();
@@ -339,7 +339,7 @@ fn hydrate_returns_replay_error_when_typed_upcaster_decode_fails() {
 #[tokio::test]
 async fn snapshot_plus_upcasting_post_snapshot_events() {
     // TodoV2 implements Snapshottable in aggregate.rs
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<TodoV2>()
         .with_snapshots(1);
 
@@ -371,7 +371,7 @@ async fn snapshot_plus_upcasting_post_snapshot_events() {
 #[tokio::test]
 async fn snapshot_repo_with_v1_events_upcasted_on_hydrate() {
     // Store v1 events, then load with v2 snapshot repo
-    let base_repo = HashMapRepository::new();
+    let base_repo = InMemoryRepository::new();
 
     // Create a v1 todo
     let mut v1 = TodoV1::default();
@@ -442,7 +442,7 @@ async fn unknown_event_type_in_repo_stream_fails_get_with_named_replay_error() {
     // not panic and not return a half-built aggregate.
     let unknown_name = "todo.never_registered_event";
 
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let identity = StreamIdentity::new(TodoV1::aggregate_type(), "t-unknown").unwrap();
     // Build a fresh stream containing a valid v1 event followed by an event with
     // an unregistered name, and persist it in one append (both events are new).

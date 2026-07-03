@@ -30,7 +30,7 @@ aggregate_type = "...")`, `aggregate!(..., aggregate_type = "..." { ... })`, or
 
 ## In-Memory Reference
 
-`HashMapRepository`, `InMemoryReadModelStore`, and `InMemorySnapshotStore`
+`InMemoryRepository`, `InMemoryReadModelStore`, and `InMemorySnapshotStore`
 implement the repository traits as a behavioral reference for conformance tests.
 The in-memory implementation is not a production I/O adapter; it exists so
 Postgres, SQLite, and other persistent backends can be tested against the same

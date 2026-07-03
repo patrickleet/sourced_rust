@@ -31,7 +31,7 @@ use distributed::{
     RelationalReadModelIncludes, RelationalReadModelQueryStore, TableStoreError,
     TransactionalCommit,
 };
-use distributed::{HashMapRepository, InMemoryReadModelStore, Queueable};
+use distributed::{InMemoryRepository, InMemoryReadModelStore, Queueable};
 use projection_service::service as projection_service;
 use query_service::CheckoutQueryService;
 use read_models::{register_schemas, CheckoutView};
@@ -442,7 +442,7 @@ fn assert_projected_seat(seat: &SeatView, ids: &FlowIds) {
 }
 
 async fn publish_pending_outbox(
-    outbox: &distributed::HashMapOutboxStore,
+    outbox: &distributed::InMemoryOutboxStore,
     bus: &distributed::bus::InMemoryBus,
 ) {
     let claimed = outbox
@@ -481,10 +481,10 @@ async fn seat_checkout_saga_reserves_seat_and_projects_user_screen() {
         seat_id: "A-7".to_string(),
         category: "balcony".to_string(),
     };
-    let checkout_store = HashMapRepository::new();
+    let checkout_store = InMemoryRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
-    let seat_store = HashMapRepository::new();
+    let seat_store = InMemoryRepository::new();
     let seat_service = seat_inventory_service::service(seat_store.clone().queued().aggregate());
     let read_store = InMemoryReadModelStore::new();
     register_schemas(&read_store).expect("relational schemas should register");
@@ -648,7 +648,7 @@ async fn postgres_checkout_flow_projects_relational_read_models() {
 #[cfg(feature = "http")]
 #[tokio::test]
 async fn checkout_commands_can_be_http_service() {
-    let checkout_store = HashMapRepository::new();
+    let checkout_store = InMemoryRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
     let base = checkout_saga_service::start_http_service(checkout_service.clone()).await;
@@ -679,7 +679,7 @@ async fn checkout_commands_can_be_http_service() {
 #[cfg(feature = "grpc")]
 #[tokio::test]
 async fn checkout_commands_can_be_grpc_service() {
-    let checkout_store = HashMapRepository::new();
+    let checkout_store = InMemoryRepository::new();
     let checkout_service =
         checkout_saga_service::service(checkout_store.clone().queued().aggregate());
     let mut client = checkout_saga_service::start_grpc_service(checkout_service.clone()).await;
@@ -884,8 +884,8 @@ async fn matrix_in_memory_persistence_over_in_memory_bus() {
     run_matrix_cell(InMemoryBus::new(), inmem_matrix_repo(), "inmem-inmem").await;
 }
 
-fn inmem_matrix_repo() -> HashMapRepository {
-    let repo = HashMapRepository::new();
+fn inmem_matrix_repo() -> InMemoryRepository {
+    let repo = InMemoryRepository::new();
     register_schemas(repo.model_store()).expect("read-model schemas should register");
     repo
 }

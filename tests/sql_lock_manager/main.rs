@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use distributed::{
-    sourced, AggregateBuilder, Entity, HashMapRepository, Lock, LockError, LockManager, Queueable,
+    sourced, AggregateBuilder, Entity, InMemoryRepository, Lock, LockError, LockManager, Queueable,
 };
 
 #[derive(Default)]
@@ -187,7 +187,7 @@ async fn scenario_queued_abort_releases<M>(manager: M)
 where
     M: LockManager + 'static,
 {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .queued_with(manager)
         .aggregate::<Counter>();
 

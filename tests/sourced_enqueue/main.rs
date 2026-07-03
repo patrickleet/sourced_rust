@@ -3,7 +3,7 @@
 mod aggregate;
 
 use aggregate::{Notifier, NotifierEvent, Order, OrderEvent};
-use distributed::{Aggregate, AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{Aggregate, AggregateBuilder, InMemoryRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ fn full_lifecycle_digest_and_enqueue() {
 
 #[tokio::test]
 async fn replay_does_not_re_enqueue() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();
@@ -134,7 +134,7 @@ fn custom_emitter_field_emits() {
 
 #[tokio::test]
 async fn custom_emitter_replay_does_not_enqueue() {
-    let repo = HashMapRepository::new().queued().aggregate::<Notifier>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Notifier>();
 
     let mut notifier = Notifier::default();
     notifier.send("n-1".into(), "Hello".into()).unwrap();

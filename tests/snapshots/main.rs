@@ -2,7 +2,7 @@ mod aggregate;
 
 use aggregate::Todo;
 use distributed::{
-    sourced, Aggregate, AggregateBuilder, Entity, HashMapRepository, Queueable, SnapshotRecord,
+    sourced, Aggregate, AggregateBuilder, Entity, InMemoryRepository, Queueable, SnapshotRecord,
     SnapshotStore, Snapshottable, StreamIdentity,
 };
 use serde::{Deserialize, Serialize};
@@ -48,7 +48,7 @@ impl Snapshottable for ReplayCounter {
 
 #[tokio::test]
 async fn snapshot_created_at_frequency_threshold() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 
@@ -88,7 +88,7 @@ async fn snapshot_created_at_frequency_threshold() {
 
 #[tokio::test]
 async fn no_snapshot_before_threshold() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(5);
 
@@ -105,7 +105,7 @@ async fn no_snapshot_before_threshold() {
 
 #[tokio::test]
 async fn load_from_snapshot_produces_correct_state() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 
@@ -131,7 +131,7 @@ async fn load_from_snapshot_produces_correct_state() {
 
 #[tokio::test]
 async fn snapshot_plus_newer_events() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 
@@ -162,7 +162,7 @@ async fn snapshot_plus_newer_events() {
 
 #[tokio::test]
 async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
-    let base_repo = HashMapRepository::new();
+    let base_repo = InMemoryRepository::new();
     let full_replay_repo = base_repo.clone().aggregate::<ReplayCounter>();
     let snapshot_repo = base_repo
         .clone()
@@ -219,7 +219,7 @@ async fn snapshot_hydration_replays_every_event_after_snapshot_version() {
 
 #[tokio::test]
 async fn no_snapshot_falls_back_to_full_replay() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 
@@ -248,7 +248,7 @@ async fn no_snapshot_falls_back_to_full_replay() {
 
 #[tokio::test]
 async fn snapshot_version_advances_on_second_snapshot() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(1); // snapshot every event
 
@@ -280,7 +280,7 @@ async fn snapshot_version_advances_on_second_snapshot() {
 
 #[tokio::test]
 async fn with_queued_repo() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .queued()
         .aggregate::<Todo>()
         .with_snapshots(2);
@@ -309,7 +309,7 @@ async fn with_queued_repo() {
 
 #[tokio::test]
 async fn get_all_with_snapshots() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 
@@ -339,7 +339,7 @@ async fn get_all_with_snapshots() {
 
 #[tokio::test]
 async fn commit_all_with_snapshots() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(2);
 

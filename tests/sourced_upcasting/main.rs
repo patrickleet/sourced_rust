@@ -2,7 +2,7 @@ mod aggregate;
 
 use aggregate::{TodoV1, TodoV1Event, TodoV2, TodoV2Event, TodoV3};
 use distributed::{
-    hydrate, Aggregate, AggregateBuilder, CommitBatch, Entity, HashMapRepository, StreamIdentity,
+    hydrate, Aggregate, AggregateBuilder, CommitBatch, Entity, InMemoryRepository, StreamIdentity,
     StreamWrite, TransactionalCommit,
 };
 
@@ -97,7 +97,7 @@ fn hydrate_v3_native_no_upcasting() {
 
 #[tokio::test]
 async fn repo_roundtrip_v1_to_v2() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let mut v1 = TodoV1::default();
     v1.initialize("t1".into(), "frank".into(), "Shop".into())
         .unwrap();

@@ -208,7 +208,7 @@ impl<R, A> AggregateRepository<R, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sourced, AggregateBuilder, Entity, HashMapRepository, OutboxStore};
+    use crate::{sourced, AggregateBuilder, Entity, InMemoryRepository, OutboxStore};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -253,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn outbox_helper_commits_both_entities() {
-        let repo = HashMapRepository::new().aggregate::<Dummy>();
+        let repo = InMemoryRepository::new().aggregate::<Dummy>();
 
         let mut aggregate = Dummy::default();
         aggregate.touch().unwrap();
@@ -330,7 +330,7 @@ mod tests {
             SnapshotStore, StreamIdentity,
         };
 
-        let repo = HashMapRepository::new()
+        let repo = InMemoryRepository::new()
             .aggregate::<ComposeCounter>()
             .with_snapshots(1);
 
@@ -374,7 +374,7 @@ mod tests {
             RowValue, SnapshotStore, StreamIdentity,
         };
 
-        let repo = HashMapRepository::new()
+        let repo = InMemoryRepository::new()
             .aggregate::<ComposeCounter>()
             .with_snapshots(1);
 

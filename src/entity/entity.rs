@@ -330,7 +330,7 @@ impl Entity {
         self.replaying
     }
 
-    pub fn set_replaying(&mut self, replaying: bool) {
+    pub(crate) fn set_replaying(&mut self, replaying: bool) {
         self.replaying = replaying;
     }
 }

@@ -3,7 +3,7 @@ mod aggregate;
 use aggregate::{Todo, TodoSnapshot};
 use distributed::bus::{Message, MessagePublisher, TransportError};
 use distributed::{
-    AggregateBuilder, CommitBuilderExt, HashMapOutboxStore, HashMapRepository, Lock, LockManager,
+    AggregateBuilder, CommitBuilderExt, InMemoryOutboxStore, InMemoryRepository, Lock, LockManager,
     OutboxDispatcher, OutboxMessage, OutboxMessageStatus, OutboxStore, Queueable, RepositoryError,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,8 +57,8 @@ impl MessagePublisher for RecordingPublisher {
 
 /// Production drain path over the in-memory store: claim → publish → complete.
 fn dispatcher(
-    repo: &HashMapRepository,
-) -> OutboxDispatcher<HashMapOutboxStore, RecordingPublisher> {
+    repo: &InMemoryRepository,
+) -> OutboxDispatcher<InMemoryOutboxStore, RecordingPublisher> {
     OutboxDispatcher::new(
         repo.outbox_store(),
         RecordingPublisher::default(),
@@ -68,7 +68,7 @@ fn dispatcher(
     )
 }
 
-async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+async fn load_outbox_message(repo: &InMemoryRepository, id: &str) -> OutboxMessage {
     let store = repo.outbox_store();
     for status in [
         OutboxMessageStatus::Pending,
@@ -91,7 +91,7 @@ async fn load_outbox_message(repo: &HashMapRepository, id: &str) -> OutboxMessag
 
 #[tokio::test]
 async fn todos() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Todo>();
 
     let (mut todo, id1) = initialized_todo("user1", "Buy groceries");
     let init_message = todo_outbox_message(&id1, "init", "todo.initialized", &todo.snapshot());
@@ -175,7 +175,7 @@ async fn todos() {
 
 #[tokio::test]
 async fn get_commit_roundtrip() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Todo>();
     let (mut todo, id) = initialized_todo("user1", "Roundtrip");
 
     repo.commit(&mut todo).await.unwrap();
@@ -189,7 +189,7 @@ async fn get_commit_roundtrip() {
 
 #[tokio::test]
 async fn get_all_commit_all_roundtrip() {
-    let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Todo>();
 
     let (mut todo1, id1) = initialized_todo("user1", "todo.first_recorded");
     let (mut todo2, id2) = initialized_todo("user2", "todo.second_recorded");
@@ -227,7 +227,7 @@ async fn get_all_commit_all_roundtrip() {
 
 #[tokio::test]
 async fn outbox_records_persisted() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let (mut todo, id) = initialized_todo("user1", "Outbox demo");
     let snapshot = todo.snapshot();
     let message = todo_outbox_message(&id, "init", "todo.initialized", &snapshot);
@@ -248,7 +248,7 @@ async fn outbox_records_persisted() {
 
 #[tokio::test]
 async fn outbox_dispatch_publishes_and_completes_committed_row() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let (mut todo, id) = initialized_todo("user1", "Outbox dispatch");
     let message = todo_outbox_message(&id, "init", "todo.initialized", &todo.snapshot());
     let message_id = message.id().to_string();
@@ -270,7 +270,7 @@ async fn outbox_dispatch_publishes_and_completes_committed_row() {
 
 #[tokio::test]
 async fn abort_releases_lock_after_get() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+    let repo = Arc::new(InMemoryRepository::new().queued().aggregate::<Todo>());
     let (mut todo, id) = initialized_todo("user1", "Abort get");
     repo.commit(&mut todo).await.unwrap();
 
@@ -296,7 +296,7 @@ async fn abort_releases_lock_after_get() {
 
 #[tokio::test]
 async fn abort_releases_lock_after_get_all() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+    let repo = Arc::new(InMemoryRepository::new().queued().aggregate::<Todo>());
     let (mut todo1, id1) = initialized_todo("user1", "Abort get_all 1");
     repo.commit(&mut todo1).await.unwrap();
 
@@ -328,7 +328,7 @@ async fn abort_releases_lock_after_get_all() {
 
 #[tokio::test]
 async fn queued_repo_blocks_get_until_commit() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+    let repo = Arc::new(InMemoryRepository::new().queued().aggregate::<Todo>());
     let (mut todo, id) = initialized_todo("user1", "Queue test");
     repo.commit(&mut todo).await.unwrap();
 
@@ -412,7 +412,7 @@ async fn queued_repo_blocks_get_until_commit() {
 
 #[tokio::test]
 async fn manual_lock_reports_failure_when_already_held() {
-    let repo = HashMapRepository::new().queued();
+    let repo = InMemoryRepository::new().queued();
     let id = next_id();
 
     let lock = repo.lock_manager().get_lock(&id).unwrap();
@@ -435,7 +435,7 @@ async fn manual_lock_reports_failure_when_already_held() {
 
 #[tokio::test]
 async fn commit_failure_keeps_lock_until_abort() {
-    let repo = Arc::new(HashMapRepository::new().queued().aggregate::<Todo>());
+    let repo = Arc::new(InMemoryRepository::new().queued().aggregate::<Todo>());
     let (mut todo, id) = initialized_todo("user1", "Commit failure lock");
     repo.commit(&mut todo).await.unwrap();
 
@@ -482,7 +482,7 @@ async fn commit_failure_keeps_lock_until_abort() {
 
 #[tokio::test]
 async fn outbox_dispatch_drains_one_row_at_a_time() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let (mut todo, id) = initialized_todo("user1", "Process next test");
     let snapshot = todo.snapshot();
 
@@ -532,7 +532,7 @@ async fn outbox_dispatch_drains_one_row_at_a_time() {
 /// Full metadata chain: Entity → EventRecord → OutboxMessage → OutboxWorker → publisher
 #[tokio::test]
 async fn metadata_flows_from_entity_through_outbox_to_publisher() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     // 1. Create a todo with metadata on the entity
     let mut todo = Todo::new();

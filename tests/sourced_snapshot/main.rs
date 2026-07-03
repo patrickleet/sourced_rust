@@ -2,7 +2,7 @@ mod aggregates;
 
 use aggregates::*;
 use distributed::{
-    Aggregate, AggregateBuilder, HashMapRepository, OutboxMessage, OutboxStore, SnapshotStore,
+    Aggregate, AggregateBuilder, InMemoryRepository, OutboxMessage, OutboxStore, SnapshotStore,
     Snapshottable, StreamIdentity,
 };
 
@@ -26,7 +26,7 @@ fn default_snapshot_has_id_and_all_fields() {
 
 #[tokio::test]
 async fn default_snapshot_roundtrip_via_snapshottable() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Todo>()
         .with_snapshots(1);
 
@@ -89,7 +89,7 @@ fn custom_id_restore_sets_entity_id_from_field() {
 
 #[tokio::test]
 async fn custom_id_roundtrip_via_repo() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Inventory>()
         .with_snapshots(1);
 
@@ -132,7 +132,7 @@ fn serde_skip_default_excluded_from_snapshot() {
 
 #[tokio::test]
 async fn serde_skip_restore_roundtrip() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Order>()
         .with_snapshots(1);
 
@@ -165,7 +165,7 @@ fn sourced_attr_with_snapshot_derive() {
 
 #[tokio::test]
 async fn sourced_attr_snapshot_roundtrip_via_repo() {
-    let repo = HashMapRepository::new()
+    let repo = InMemoryRepository::new()
         .aggregate::<Counter>()
         .with_snapshots(2);
 
@@ -249,7 +249,7 @@ fn domain_event_propagates_metadata() {
 
 #[tokio::test]
 async fn domain_event_commits_with_outbox() {
-    let repo = HashMapRepository::new().aggregate::<Todo>();
+    let repo = InMemoryRepository::new().aggregate::<Todo>();
 
     let mut todo = Todo::new();
     todo.initialize("t1".into(), "alice".into(), "Ship it".into())

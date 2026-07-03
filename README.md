@@ -213,14 +213,14 @@ are written once and are transport-agnostic.
 use std::sync::Arc;
 use distributed::microsvc::{self, Routes, Service, Session};
 use distributed::bus::{InMemoryBus, RunOptions};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let routes = distributed::routes!(
         Routes::new().with_repo(
-            HashMapRepository::new().queued().aggregate::<Todo>()
+            InMemoryRepository::new().queued().aggregate::<Todo>()
         ),
         command handlers::todo_create,
         command handlers::todo_complete,
@@ -251,7 +251,7 @@ a handler change — every infrastructure concern is an async trait with an in-m
 default you replace with a durable adapter.
 
 ```rust,ignore
-// Persistence: HashMapRepository → durable SQL (features "postgres" / "sqlite")
+// Persistence: InMemoryRepository → durable SQL (features "postgres" / "sqlite")
 let repo = distributed::PostgresRepository::connect_and_migrate(database_url).await?;
 let routes = distributed::routes!(
     Routes::new().with_repo(repo.queued().aggregate::<Todo>()),
@@ -290,7 +290,7 @@ names through `subscription_plan()` and passes them to the transport.
 
 | Concern | In-memory default | Swap in for production |
 |---|---|---|
-| Storage | `HashMapRepository` | `PostgresRepository`, `SqliteRepository` |
+| Storage | `InMemoryRepository` | `PostgresRepository`, `SqliteRepository` |
 | Messaging | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Locking | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), any `LockManager` (Redis, …) |
 
@@ -342,7 +342,7 @@ network servers.
 - **EventRecord**: An immutable aggregate event record with name, payload, sequence, timestamp, and optional metadata. It is replayable model history, not automatically a published domain event.
 - **Aggregate**: A struct that embeds an `Entity` and replays `EventRecord`s. `aggregate_type()` provides the durable stream-identity component for persistence.
 - **Repository / AggregateRepository**: Persists and loads aggregates by event history. The event store is optimized for append and replay; `get`/`commit` are async.
-- **HashMapRepository**: In-memory repository for tests and examples. Implements every async trait (repository, read-model, snapshot, outbox).
+- **InMemoryRepository**: In-memory repository for tests and examples. Implements every async trait (repository, read-model, snapshot, outbox).
 - **SqliteRepository / PostgresRepository**: Durable async SQL adapters (optional features).
 - **QueuedRepository**: Wraps any repository and adds async per-entity queue locking.
 - **EventUpcaster**: A pure, stateless transformation that converts event payloads from one version to another at read time.
@@ -369,11 +369,11 @@ Every infrastructure concern in `distributed` follows the same pattern: a **trai
 
 | Concern | Trait(s) | In-memory default | Swap in for production |
 |---|---|---|---|
-| Storage | `GetStream` + `TransactionalCommit` | `HashMapRepository` | `PostgresRepository`, `SqliteRepository`, … |
+| Storage | `GetStream` + `TransactionalCommit` | `InMemoryRepository` | `PostgresRepository`, `SqliteRepository`, … |
 | Messaging | `Bus` + `BusConsumer` | `InMemoryBus` | `NatsBus`, `PostgresBus`, `SqliteBus`, `RabbitBus`, `KafkaBus`, `KnativeBus` |
 | Read model rows | `ReadModelWritePlanStore` + `RelationalReadModelQueryStore` | `InMemoryReadModelStore` | Postgres, SQLite |
 | Snapshot store | `SnapshotStore` | `InMemorySnapshotStore` | Postgres, SQLite, … |
-| Outbox publishing | `OutboxStore` + async `MessagePublisher` | `HashMapRepository` outbox store (dev/test) | Any `MessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
+| Outbox publishing | `OutboxStore` + async `MessagePublisher` | `InMemoryRepository` outbox store (dev/test) | Any `MessagePublisher` (e.g. `BusPublisher` over a real `Bus`) |
 | Locking | `Lock` + `LockManager` | `InMemoryLockManager` | `PostgresLockManager`, `SqliteLockManager` (durable leases), Redis, … |
 
 All in-memory defaults are `Clone` and `Send + Sync`, so they work in single-task tests and multi-task servers alike. When you're ready for production, implement the trait for your infrastructure and plug it in — handler code does not change.
@@ -750,9 +750,9 @@ This pattern is useful for reactive workflows within the same process. For cross
 Per-entity async locking for serialized workflows. `get` acquires the lock, `commit` releases it:
 
 ```rust,ignore
-use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable, RepositoryError};
 
-let repo = HashMapRepository::new().queued().aggregate::<Todo>();
+let repo = InMemoryRepository::new().queued().aggregate::<Todo>();
 
 let Some(mut todo) = repo.get("todo-1").await? else {
     return Err(RepositoryError::NotFound { id: "todo-1".into() });
@@ -792,7 +792,7 @@ set the lease TTL above your longest critical section. Tune with `with_lease_ttl
 ## Persistent Repositories
 
 The optional `sqlite` and `postgres` features add async, SQL-backed repositories
-that implement the same async traits as `HashMapRepository`. They persist aggregate
+that implement the same async traits as `InMemoryRepository`. They persist aggregate
 event streams, relational read-model write plans, processed-message marks,
 snapshots, and outbox rows — staging everything through one SQL transaction when
 committed via `CommitBatch`. They also enable SQL-backed bus transports over the
@@ -999,11 +999,11 @@ Handlers are registered with a fluent builder. `.command(name)` / `.event(name)`
 ```rust,ignore
 use std::sync::Arc;
 use distributed::microsvc::{Context, HandlerError, Routes, Service, Session};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use serde_json::json;
 
 let routes = Routes::new()
-    .with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+    .with_repo(InMemoryRepository::new().queued().aggregate::<Counter>())
     .command("counter.initialize")
     .handle(|ctx: &Context<Repo>| {
         let input = ctx.input::<CreateCounter>();
@@ -1092,7 +1092,7 @@ Register them with the `routes!` macro:
 
 ```rust,ignore
 let routes = distributed::routes!(
-    Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+    Routes::new().with_repo(InMemoryRepository::new().queued().aggregate::<Counter>()),
     command handlers::counter_create,
     command handlers::counter_increment,
 );
@@ -1335,9 +1335,9 @@ struct Widget {
 Chain `.with_snapshots(frequency)` onto any aggregate repository. The frequency is how many events between automatic snapshots:
 
 ```rust,ignore
-use distributed::{AggregateBuilder, HashMapRepository, Queueable, RepositoryError};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable, RepositoryError};
 
-let repo = HashMapRepository::new()
+let repo = InMemoryRepository::new()
     .queued()
     .aggregate::<Todo>()
     .with_snapshots(10); // snapshot every 10 events
@@ -1512,7 +1512,7 @@ src/
   commit_builder/ # Transactional batches for aggregates, outbox, and read models
   emitter/        # In-process event emitter helpers (feature = "emitter")
   entity/         # Entity, event records, metadata, upcasting codecs
-  hashmap_repo/   # In-memory repository (implements every async trait)
+  in_memory_repo/   # In-memory repository (implements every async trait)
   lock/           # Lock + lock manager traits, in-memory locks
   microsvc/       # Command/event handler framework: service, context, session
   outbox/         # Durable outbox message + commit extension

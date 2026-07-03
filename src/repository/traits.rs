@@ -169,7 +169,7 @@ pub trait InboxStore: Send + Sync {
     /// Age is evaluated against the **database clock**, not the caller's, so
     /// there is no client/server skew. SQL backends issue a single bounded
     /// `DELETE`; the in-memory store keeps no timestamps and treats any positive
-    /// `age` as a no-op (see [`HashMapRepository`](crate::HashMapRepository),
+    /// `age` as a no-op (see [`InMemoryRepository`](crate::InMemoryRepository),
     /// whose inbox is dev-only).
     fn purge_inbox_older_than(
         &self,

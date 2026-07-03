@@ -1,7 +1,7 @@
 //! End-to-end durable-enqueue dispatch over a real SQL backend (in-memory
 //! SQLite). Exercises `repo.outbox(msg).commit(agg)` (claim-in-transaction +
 //! immediate publish, enabled by `with_bus`) and the `with_bus` runtime against a
-//! persistent repository, not just the in-memory `HashMapRepository` covered by
+//! persistent repository, not just the in-memory `InMemoryRepository` covered by
 //! the unit tests.
 
 #![cfg(feature = "sqlite")]

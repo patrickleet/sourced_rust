@@ -12,7 +12,7 @@ pub mod repository;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
-mod hashmap_repo;
+mod in_memory_repo;
 pub mod lock;
 pub mod manifest;
 pub mod microsvc;
@@ -31,9 +31,9 @@ pub mod table;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
-    upcast_events, upcast_events_for_replay, upcast_payload, BitcodePayloadCodec, Committable,
-    Entity, Event, EventRecord, EventRecordError, EventUpcaster, LocalEvent, PayloadCodec,
-    UpcastError, BITCODE_PAYLOAD_CODEC, BITCODE_PAYLOAD_CODEC_VERSION,
+    upcast_events, upcast_events_for_replay, upcast_payload, BitcodePayloadCodec, Entity,
+    EventRecord, EventRecordError, EventUpcaster, PayloadCodec, UpcastError, BITCODE_PAYLOAD_CODEC,
+    BITCODE_PAYLOAD_CODEC_VERSION,
 };
 
 pub type SourcedResult<T = ()> = std::result::Result<T, EventRecordError>;
@@ -48,7 +48,7 @@ pub use repository::{
 // Re-export aggregate types at crate root for convenience
 pub use aggregate::{hydrate, Aggregate, AggregateBuilder, AggregateRepository};
 
-pub use hashmap_repo::{HashMapOutboxStore, HashMapRepository};
+pub use in_memory_repo::{InMemoryOutboxStore, InMemoryRepository};
 #[cfg(feature = "postgres")]
 pub use postgres_repo::{PostgresOutboxStore, PostgresRepository};
 #[cfg(feature = "sqlite")]
@@ -74,11 +74,15 @@ pub use outbox::{
     OutboxMessageStatus, OutboxPublishHook, OutboxPublisherConfig, OUTBOX_MESSAGES_TABLE,
 };
 
-// Outbox Worker: drain and publish concerns
+// Outbox Worker: drain and publish concerns.
+//
+// Adapter-authoring constants (`SOURCED_METADATA_PREFIX`,
+// `DEFAULT_OUTBOX_SOURCE_BATCH`, `DEFAULT_OUTBOX_SOURCE_LEASE`) stay reachable
+// under `distributed::outbox_worker::*` and are intentionally NOT re-exported
+// at the crate root.
 pub use outbox_worker::{
     BusOutboxPublishHook, BusPublisher, ClaimOutboxMessages, OutboxClaimRef, OutboxDispatchOutcome,
     OutboxDispatcher, OutboxPublishFailureAction, OutboxSource, OutboxStore, ReceivedOutboxMessage,
-    DEFAULT_OUTBOX_SOURCE_BATCH, DEFAULT_OUTBOX_SOURCE_LEASE, SOURCED_METADATA_PREFIX,
 };
 
 pub use queued_repo::{
@@ -92,12 +96,16 @@ pub use queued_repo::{
     UnlockableRepository,
 };
 
-// Read models: projections and read-optimized views
+// Read models: projections and read-optimized views.
+//
+// Only the quick-start surface is re-exported at the crate root: the traits
+// user models implement (incl. `RelationalReadModelIncludes`, which the
+// `ReadModel` derive expands to), the in-memory default store, the
+// workspace/plan entry points, and the version marker. Load-graph, query, and
+// row-include plumbing stays reachable under `distributed::read_model::*`.
 pub use read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelIncludeRows, ReadModelLoadBuilder,
-    ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities, ReadModelWorkspace,
-    ReadModelWorkspaceExt, ReadModelWritePlanBuilder, RelationalReadModel,
-    RelationalReadModelIncludes, Versioned,
+    InMemoryReadModelStore, ReadModel, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
+    RelationalReadModel, RelationalReadModelIncludes, Versioned,
 };
 
 // Neutral table/row primitives: the canonical schema, row, mutation, write-plan,

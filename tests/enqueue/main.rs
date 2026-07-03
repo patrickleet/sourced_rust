@@ -2,7 +2,7 @@
 
 mod aggregate;
 
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -217,7 +217,7 @@ fn digest_and_enqueue_guards_stay_in_sync() {
 
 #[tokio::test]
 async fn enqueue_events_survive_commit_and_emit_after() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();
@@ -245,7 +245,7 @@ async fn enqueue_events_survive_commit_and_emit_after() {
 
 #[tokio::test]
 async fn replay_does_not_enqueue_events() {
-    let repo = HashMapRepository::new().queued().aggregate::<Order>();
+    let repo = InMemoryRepository::new().queued().aggregate::<Order>();
 
     let mut order = Order::default();
     order.create("order-1".into(), "alice".into()).unwrap();

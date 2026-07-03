@@ -22,7 +22,7 @@ use distributed::bus::{
 use distributed::microsvc::{Context, HandlerError, Message, MessageKind, Routes, Service};
 use distributed::OutboxDispatcher;
 use distributed::{
-    CommitBatch, HashMapOutboxStore, HashMapRepository, OutboxMessage, OutboxMessageStatus,
+    CommitBatch, InMemoryOutboxStore, InMemoryRepository, OutboxMessage, OutboxMessageStatus,
     TransactionalCommit,
 };
 use serde_json::json;
@@ -345,7 +345,7 @@ pub async fn source_propagates_settle_errors() {
 // Publisher / outbox dispatcher contract
 // =============================================================================
 
-async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
+async fn store_outbox(repo: &InMemoryRepository, id: &str) -> String {
     let message = OutboxMessage::create(id, "order.initialized", b"\x01".to_vec()).unwrap();
     let mut batch = CommitBatch::empty();
     batch.outbox_messages.push(message);
@@ -353,15 +353,15 @@ async fn store_outbox(repo: &HashMapRepository, id: &str) -> String {
     id.to_string()
 }
 
-async fn outbox_status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
+async fn outbox_status(repo: &InMemoryRepository, id: &str) -> Option<OutboxMessageStatus> {
     outbox_support::outbox_status_by_id(&repo.outbox_store(), id).await
 }
 
 fn dispatcher(
-    repo: &HashMapRepository,
+    repo: &InMemoryRepository,
     mode: PublishMode,
     max_attempts: u32,
-) -> OutboxDispatcher<HashMapOutboxStore, FakePublisher> {
+) -> OutboxDispatcher<InMemoryOutboxStore, FakePublisher> {
     OutboxDispatcher::new(
         repo.outbox_store(),
         FakePublisher::new(mode),
@@ -372,7 +372,7 @@ fn dispatcher(
 }
 
 pub async fn dispatcher_completes_only_after_publish_success() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let id = store_outbox(&repo, "evt-1").await;
     let dispatcher = dispatcher(&repo, PublishMode::Succeed, 3);
 
@@ -392,7 +392,7 @@ pub async fn dispatcher_completes_only_after_publish_success() {
 }
 
 pub async fn dispatcher_unknown_outcome_stays_retryable() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let id = store_outbox(&repo, "evt-1").await;
     let dispatcher = dispatcher(&repo, PublishMode::FailUnknown, 3);
 
@@ -410,7 +410,7 @@ pub async fn dispatcher_unknown_outcome_stays_retryable() {
 }
 
 pub async fn dispatcher_claims_explicit_ids_before_publish() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let wanted = store_outbox(&repo, "evt-1").await;
     let other = store_outbox(&repo, "evt-2").await;
     let dispatcher = dispatcher(&repo, PublishMode::Succeed, 3);
@@ -447,7 +447,7 @@ use distributed::{
 /// simulating a dispatcher crash AFTER the publish succeeded but BEFORE the
 /// completion write landed. Everything else delegates to the real store.
 struct CompleteOnceFailingStore {
-    inner: HashMapOutboxStore,
+    inner: InMemoryOutboxStore,
     fail_next_complete: AtomicBool,
 }
 
@@ -520,7 +520,7 @@ impl MessagePublisher for CapturingPublisher {
 /// dispatcher tests; this composes them across the wire.
 pub async fn publish_then_crash_republishes_and_consumer_inbox_dedupes() {
     // Producer side: one committed outbox row.
-    let producer = HashMapRepository::new();
+    let producer = InMemoryRepository::new();
     let message_id = unique("evt");
     let mut batch = CommitBatch::empty();
     batch.outbox_messages.push(
@@ -595,7 +595,7 @@ pub async fn publish_then_crash_republishes_and_consumer_inbox_dedupes() {
     // Consumer side: replay both deliveries through the runner in inbox mode.
     // The handler commits its effect atomically with an inbox receipt and treats
     // a duplicate receipt as already-applied (the dedupe).
-    let consumer_repo = HashMapRepository::new();
+    let consumer_repo = InMemoryRepository::new();
     let effects_applied = Arc::new(AtomicUsize::new(0));
     let effect_seq = Arc::new(AtomicUsize::new(0));
     let consumer = "checkout-consumer";

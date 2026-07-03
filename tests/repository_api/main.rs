@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, ClaimOutboxMessages, CommitBatch, Entity, GetStream,
-    HashMapRepository, InMemorySnapshotStore, OutboxMessage, OutboxStore, ReadModel,
+    InMemoryRepository, InMemorySnapshotStore, OutboxMessage, OutboxStore, ReadModel,
     ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelQueryStore, RepositoryError,
     RowKey, RowValue, SnapshotRecord, SnapshotStore, Snapshottable, StreamIdentity, StreamWrite,
     TransactionalCommit, Versioned,
@@ -74,7 +74,7 @@ fn test_view_key(id: &str) -> RowKey {
     RowKey::new([("id", RowValue::String(id.into()))])
 }
 
-async fn load_test_view(repo: &HashMapRepository, id: &str) -> Option<Versioned<TestView>> {
+async fn load_test_view(repo: &InMemoryRepository, id: &str) -> Option<Versioned<TestView>> {
     let request = ReadModelWritePlanBuilder::new()
         .load::<TestView>(test_view_key(id))
         .unwrap();
@@ -87,7 +87,7 @@ async fn load_test_view(repo: &HashMapRepository, id: &str) -> Option<Versioned<
 
 #[tokio::test]
 async fn aggregate_repository_separates_streams_by_aggregate_type() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let alpha_repo = repo.clone().aggregate::<AlphaAggregate>();
     let beta_repo = repo.clone().aggregate::<BetaAggregate>();
 
@@ -108,7 +108,7 @@ async fn aggregate_repository_separates_streams_by_aggregate_type() {
 
 #[tokio::test]
 async fn batch_rejects_duplicate_stream_identity_before_write() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let identity = StreamIdentity::new("async.alpha", "duplicate").unwrap();
     let mut first = Entity::with_id("duplicate");
     first.digest_empty("first_recorded").unwrap();
@@ -135,7 +135,7 @@ async fn batch_rejects_duplicate_stream_identity_before_write() {
 
 #[tokio::test]
 async fn read_model_write_plan_can_commit_against_store() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let view = TestView {
         id: "view-1".into(),
         value: 42,
@@ -182,7 +182,7 @@ async fn snapshot_store_uses_full_stream_identity() {
 
 #[tokio::test]
 async fn snapshot_repository_writes_cache_without_event_record() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let snapshot_repo = repo
         .clone()
         .aggregate::<SnapshotCounter>()
@@ -209,7 +209,7 @@ async fn snapshot_repository_writes_cache_without_event_record() {
 
 #[tokio::test]
 async fn snapshot_repository_ignores_invalid_cache_and_replays_events() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let aggregate_repo = repo.clone().aggregate::<SnapshotCounter>();
     let snapshot_repo = repo
         .clone()
@@ -234,7 +234,7 @@ async fn snapshot_repository_ignores_invalid_cache_and_replays_events() {
 
 #[tokio::test]
 async fn snapshot_repository_ignores_cache_past_stream_version_and_replays_events() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let aggregate_repo = repo.clone().aggregate::<SnapshotCounter>();
     let snapshot_repo = repo
         .clone()
@@ -264,7 +264,7 @@ async fn snapshot_repository_ignores_cache_past_stream_version_and_replays_event
 
 #[tokio::test]
 async fn outbox_repository_delegates_worker_operations() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let outbox = repo.outbox_store();
     let message = OutboxMessage::create("msg-1", "alpha.happened", b"{}".to_vec()).unwrap();
     let mut aggregate = AlphaAggregate::default();

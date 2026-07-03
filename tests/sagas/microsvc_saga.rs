@@ -20,7 +20,7 @@ use serde_json::json;
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Routes, Service, Session};
 use distributed::{
-    AggregateBuilder, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository, OutboxClaimRef,
+    AggregateBuilder, ClaimOutboxMessages, InMemoryOutboxStore, InMemoryRepository, OutboxClaimRef,
     OutboxStore, Queueable,
 };
 
@@ -54,7 +54,7 @@ fn event_message(name: &str, input: serde_json::Value) -> Message {
 /// ```
 #[tokio::test]
 async fn saga_orchestrated() {
-    let saga_repo = HashMapRepository::new();
+    let saga_repo = InMemoryRepository::new();
     let saga_svc = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(saga_repo.clone().queued().aggregate::<OrderFulfillmentSaga>()),
         command handlers::saga::start,
@@ -64,21 +64,21 @@ async fn saga_orchestrated() {
         event handlers::saga::on_order_completed,
     ));
 
-    let order_repo = HashMapRepository::new();
+    let order_repo = InMemoryRepository::new();
     let order_svc = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(order_repo.clone().queued().aggregate::<Order>()),
         command handlers::orders::create,
         command handlers::orders::complete,
     ));
 
-    let inventory_repo = HashMapRepository::new();
+    let inventory_repo = InMemoryRepository::new();
     let inventory_svc = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(inventory_repo.clone().queued().aggregate::<Inventory>()),
         command handlers::inventory::init,
         command handlers::inventory::reserve,
     ));
 
-    let payment_repo = HashMapRepository::new();
+    let payment_repo = InMemoryRepository::new();
     let payment_svc = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(payment_repo.clone().queued().aggregate::<Payment>()),
         command handlers::payments::process,
@@ -252,7 +252,7 @@ async fn saga_orchestrated() {
 /// commands (consumed via `listen`); messages addressed to the saga
 /// (`destination == "saga"`) are events (consumed via `subscribe`). Returns how
 /// many messages were forwarded.
-async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) -> usize {
+async fn publish_pending_outbox(outbox: &InMemoryOutboxStore, bus: &InMemoryBus) -> usize {
     let claimed = outbox
         .claim(ClaimOutboxMessages::new(
             "saga-outbox-bridge",
@@ -303,7 +303,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 #[tokio::test]
 async fn saga_distributed() {
     // === SAGA SERVICE ===
-    let saga_repo = HashMapRepository::new();
+    let saga_repo = InMemoryRepository::new();
     let saga_outbox = saga_repo.outbox_store();
     let saga_svc = Arc::new(Service::new().routes(distributed::routes!(
         Routes::new().with_repo(saga_repo.clone().queued().aggregate::<OrderFulfillmentSaga>()),
@@ -315,7 +315,7 @@ async fn saga_distributed() {
     )));
 
     // === ORDER SERVICE ===
-    let order_repo = HashMapRepository::new();
+    let order_repo = InMemoryRepository::new();
     let order_outbox = order_repo.outbox_store();
     let order_svc = Arc::new(Service::new().routes(distributed::routes!(
         Routes::new().with_repo(order_repo.clone().queued().aggregate::<Order>()),
@@ -324,7 +324,7 @@ async fn saga_distributed() {
     )));
 
     // === INVENTORY SERVICE (pre-seeded) ===
-    let inventory_repo = HashMapRepository::new();
+    let inventory_repo = InMemoryRepository::new();
     let inventory_outbox = inventory_repo.outbox_store();
     {
         let tmp = inventory_repo.clone().aggregate::<Inventory>();
@@ -339,7 +339,7 @@ async fn saga_distributed() {
     )));
 
     // === PAYMENT SERVICE ===
-    let payment_repo = HashMapRepository::new();
+    let payment_repo = InMemoryRepository::new();
     let payment_outbox = payment_repo.outbox_store();
     let payment_svc = Arc::new(Service::new().routes(distributed::routes!(
         Routes::new().with_repo(payment_repo.clone().queued().aggregate::<Payment>()),

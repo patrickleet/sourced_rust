@@ -267,7 +267,7 @@ impl<R: TransactionalCommit> ReadModelWritePlanCommitExt for R {}
 mod tests {
     use super::*;
     use crate::{
-        sourced, Entity, HashMapRepository, ReadModelWorkspaceExt, RowKey, RowValue,
+        sourced, Entity, InMemoryRepository, ReadModelWorkspaceExt, RowKey, RowValue,
         TransactionalCommit,
     };
     use serde::{Deserialize, Serialize};
@@ -381,7 +381,7 @@ mod tests {
             .lock_key()
     }
 
-    async fn loaded_view(repo: &HashMapRepository, id: &str) -> Option<RelationalView> {
+    async fn loaded_view(repo: &InMemoryRepository, id: &str) -> Option<RelationalView> {
         repo.model_store()
             .workspace()
             .load::<RelationalView>(view_key(id))
@@ -393,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_builder_ext_commits_read_models_and_aggregate() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view = RelationalView {
             id: "1".into(),
@@ -415,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_multiple_read_models() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view1 = RelationalView {
             id: "1".into(),
@@ -443,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_read_models_with_outbox() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view = RelationalView {
             id: "1".into(),
@@ -466,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_outbox_then_read_models() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view = RelationalView {
             id: "1".into(),
@@ -489,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_all_without_aggregate() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view1 = RelationalView {
             id: "standalone-1".into(),
@@ -520,7 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_many_multiple_aggregates() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let view = RelationalView {
             id: "multi".into(),

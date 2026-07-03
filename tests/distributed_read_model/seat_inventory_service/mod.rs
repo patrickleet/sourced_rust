@@ -6,7 +6,7 @@ pub mod models;
 pub use models::Seat;
 pub use service::service;
 
-use distributed::{AggregateRepository, HashMapRepository, InMemoryLockManager, QueuedRepository};
+use distributed::{AggregateRepository, InMemoryRepository, InMemoryLockManager, QueuedRepository};
 
 pub type SeatRepo =
-    AggregateRepository<QueuedRepository<HashMapRepository, InMemoryLockManager>, Seat>;
+    AggregateRepository<QueuedRepository<InMemoryRepository, InMemoryLockManager>, Seat>;

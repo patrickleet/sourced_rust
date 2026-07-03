@@ -344,7 +344,7 @@ where
 mod tests {
     use super::*;
     use crate::outbox_worker::testing::block_on;
-    use crate::{CommitBatch, HashMapRepository, TransactionalCommit};
+    use crate::{CommitBatch, InMemoryRepository, TransactionalCommit};
     use std::sync::Mutex;
 
     /// Publisher that records every published message id, optionally failing.
@@ -379,7 +379,7 @@ mod tests {
         }
     }
 
-    fn store_message(repo: &HashMapRepository, message: OutboxMessage) -> String {
+    fn store_message(repo: &InMemoryRepository, message: OutboxMessage) -> String {
         let id = message.id().to_string();
         let mut batch = CommitBatch::empty();
         batch.outbox_messages.push(message);
@@ -453,10 +453,10 @@ mod tests {
     }
 
     fn dispatcher(
-        repo: &HashMapRepository,
+        repo: &InMemoryRepository,
         fail: bool,
         max_attempts: u32,
-    ) -> OutboxDispatcher<crate::HashMapOutboxStore, RecordingPublisher> {
+    ) -> OutboxDispatcher<crate::InMemoryOutboxStore, RecordingPublisher> {
         OutboxDispatcher::new(
             repo.outbox_store(),
             RecordingPublisher::new(fail),
@@ -466,7 +466,7 @@ mod tests {
         )
     }
 
-    fn load(repo: &HashMapRepository, id: &str) -> OutboxMessage {
+    fn load(repo: &InMemoryRepository, id: &str) -> OutboxMessage {
         repo.outbox_storage()
             .read()
             .unwrap()
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn dispatch_ids_claims_then_publishes_then_completes() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let id = store_message(&repo, outbox("evt-1"));
         let dispatcher = dispatcher(&repo, false, 3);
 
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn unknown_publish_outcome_leaves_row_retryable() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let id = store_message(&repo, outbox("evt-1"));
         let dispatcher = dispatcher(&repo, true, 3);
 
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn publish_failure_fails_row_at_attempt_ceiling() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let id = store_message(&repo, outbox("evt-1"));
         let dispatcher = dispatcher(&repo, true, 1);
 
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn dispatch_ids_only_claims_requested_ids() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let wanted = store_message(&repo, outbox("evt-1"));
         let other = store_message(&repo, outbox("evt-2"));
         let dispatcher = dispatcher(&repo, false, 3);
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn raced_id_is_not_an_error() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         // No such row stored: claim returns nothing, dispatch is a clean no-op.
         let outcome =
             block_on(dispatcher(&repo, false, 3).dispatch_ids(&["missing".to_string()])).unwrap();
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn worker_and_immediate_dispatch_share_state_transitions() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let immediate_id = store_message(&repo, outbox("evt-1"));
         let _worker_id = store_message(&repo, outbox("evt-2"));
 
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn mixed_publish_outcomes_settle_successes_batched_and_failures_individually() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         for id in ["evt-1", "evt-2", "evt-3"] {
             store_message(&repo, outbox(id));
         }
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn publish_concurrency_above_one_still_settles_every_row() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         for id in ["evt-1", "evt-2", "evt-3"] {
             store_message(&repo, outbox(id));
         }
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn default_concurrency_publishes_in_claim_order() {
         use std::time::SystemTime;
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         // Claim order is created-at then id; pin created-at so the id
         // tiebreaker decides, and store in shuffled id order.
         for id in ["evt-b", "evt-a", "evt-c"] {

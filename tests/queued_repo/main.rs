@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AggregateRepository, Entity, GetStream,
-    HashMapRepository, InMemoryLockManager, Queueable, StreamIdentity,
+    InMemoryRepository, InMemoryLockManager, Queueable, StreamIdentity,
 };
 use tokio::sync::Barrier;
 
@@ -34,12 +34,12 @@ impl Counter {
 }
 
 type QueuedCounterRepo = AggregateRepository<
-    distributed::QueuedRepository<HashMapRepository, InMemoryLockManager>,
+    distributed::QueuedRepository<InMemoryRepository, InMemoryLockManager>,
     Counter,
 >;
 
 fn queued_repo() -> Arc<QueuedCounterRepo> {
-    Arc::new(HashMapRepository::new().queued().aggregate::<Counter>())
+    Arc::new(InMemoryRepository::new().queued().aggregate::<Counter>())
 }
 
 async fn seed(repo: &QueuedCounterRepo, id: &str) {
@@ -132,7 +132,7 @@ async fn queued_repo_n_writers_commit_in_fifo_order() {
     //      Replaying the stream must then reproduce that exact grant order.
     const WRITERS: usize = 10;
 
-    let base = HashMapRepository::new();
+    let base = InMemoryRepository::new();
     let reader = base.clone();
     let repo: Arc<QueuedCounterRepo> = Arc::new(base.queued().aggregate::<Counter>());
 
@@ -262,7 +262,7 @@ mod stale_lease {
 
         // Two "processes": separate lock managers over the same lease table,
         // one shared underlying repository.
-        let inner = HashMapRepository::new();
+        let inner = InMemoryRepository::new();
         let repo_a = QueuedRepository::with_lock_manager(
             inner.clone(),
             SqliteLockManager::new(pool.clone())

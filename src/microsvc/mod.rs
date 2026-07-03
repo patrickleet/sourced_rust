@@ -12,11 +12,11 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use distributed::{microsvc, HashMapRepository};
+//! use distributed::{microsvc, InMemoryRepository};
 //! use serde_json::json;
 //!
 //! let routes = microsvc::Routes::new()
-//!     .with_repo(HashMapRepository::new().queued().aggregate::<Order>())
+//!     .with_repo(InMemoryRepository::new().queued().aggregate::<Order>())
 //!     .command("order.create")
 //!     .handle(|ctx| {
 //!         let input = ctx.input::<CreateOrderInput>();
@@ -72,8 +72,8 @@ pub use dependencies::{
 pub use error::HandlerError;
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 pub use service::{
-    CommandRequest, CommandResponse, DeliveryKind, HandlerBuilder, HandlerNames, HandlerSpec,
-    RouteBuilder, Routes, Service,
+    CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes,
+    Service,
 };
 pub use session::Session;
 

@@ -262,9 +262,6 @@ pub struct RouteBuilder<D> {
     spec: HandlerSpec,
 }
 
-/// Backwards-compatible type alias for the handler registration builder.
-pub type HandlerBuilder<D> = RouteBuilder<D>;
-
 impl<D: Send + Sync + 'static> RouteBuilder<D> {
     /// Register an async handler without a guard.
     pub fn handle<F>(self, handler: F) -> Routes<D>
@@ -842,7 +839,7 @@ fn message_to_session(message: &Message) -> Session {
 mod tests {
     use super::*;
     use crate::{
-        sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, Queueable,
+        sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, Queueable,
         QueuedRepository,
     };
     use serde_json::json;
@@ -861,8 +858,8 @@ mod tests {
     }
 
     type RouteComboRepo =
-        AggregateRepository<QueuedRepository<HashMapRepository>, RouteComboAggregate>;
-    type RouteComboDeps = RepoReadModelDependencies<RouteComboRepo, HashMapRepository>;
+        AggregateRepository<QueuedRepository<InMemoryRepository>, RouteComboAggregate>;
+    type RouteComboDeps = RepoReadModelDependencies<RouteComboRepo, InMemoryRepository>;
 
     fn test_routes() -> Routes<()> {
         Routes::new().with_dependencies(())
@@ -874,7 +871,7 @@ mod tests {
 
     #[test]
     fn named_service_preserves_identity_with_route_bundles() {
-        let routes = Routes::new().with_read_model_store(crate::HashMapRepository::new());
+        let routes = Routes::new().with_read_model_store(crate::InMemoryRepository::new());
         let service = Service::new().named("todo-api").routes(routes);
 
         assert_eq!(service.name(), Some("todo-api"));
@@ -932,8 +929,8 @@ mod tests {
 
     #[tokio::test]
     async fn service_dispatches_all_route_dependency_builder_combinations() {
-        let repo_only = HashMapRepository::new().queued().aggregate();
-        let combo_repo = HashMapRepository::new().queued().aggregate();
+        let repo_only = InMemoryRepository::new().queued().aggregate();
+        let combo_repo = InMemoryRepository::new().queued().aggregate();
         let service = Service::new()
             .routes(
                 Routes::new()
@@ -955,9 +952,9 @@ mod tests {
             )
             .routes(
                 Routes::new()
-                    .with_read_model_store(HashMapRepository::new())
+                    .with_read_model_store(InMemoryRepository::new())
                     .event("read.route")
-                    .handle(|ctx: &Context<HashMapRepository>| {
+                    .handle(|ctx: &Context<InMemoryRepository>| {
                         let _ = ctx.read_model_store();
                         async move { Ok(json!({ "route": "read" })) }
                     }),
@@ -965,7 +962,7 @@ mod tests {
             .routes(
                 Routes::new()
                     .with_repo(combo_repo)
-                    .with_read_model_store(HashMapRepository::new())
+                    .with_read_model_store(InMemoryRepository::new())
                     .command("repo-read.route")
                     .handle(|ctx: &Context<RouteComboDeps>| {
                         let _ = ctx.repo();
