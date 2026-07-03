@@ -2,10 +2,11 @@
 //! in-memory, SQLite, and Postgres backends.
 
 use distributed::{
-    CommitBatch, InboxReceipt, InboxStore, OutboxMessage, OutboxMessageStatus, OutboxStore,
-    RepositoryError, TransactionalCommit,
+    CommitBatch, InboxReceipt, InboxStore, OutboxMessage, OutboxStore, RepositoryError,
+    TransactionalCommit,
 };
 
+use super::outbox_support::find_outbox_by_id;
 use super::scenario::unique_id;
 
 fn batch_with(outbox: Vec<OutboxMessage>, receipts: Vec<InboxReceipt>) -> CommitBatch<'static> {
@@ -16,21 +17,7 @@ fn batch_with(outbox: Vec<OutboxMessage>, receipts: Vec<InboxReceipt>) -> Commit
 }
 
 async fn outbox_present<S: OutboxStore + Send + Sync>(outbox: &S, id: &str) -> bool {
-    for status in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ] {
-        let messages = outbox
-            .messages_by_status(status)
-            .await
-            .expect("outbox status lookup should succeed");
-        if messages.iter().any(|m| m.id() == id) {
-            return true;
-        }
-    }
-    false
+    find_outbox_by_id(outbox, id).await.is_some()
 }
 
 /// Records a receipt, dedupes a replay, and — crucially — fences a **real

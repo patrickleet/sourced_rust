@@ -4,111 +4,40 @@
 //! event log offsets, retry/nack behavior, and corrupt-row handling.
 #![cfg(feature = "sqlite")]
 
-// Shared broker-test helpers (recording_for, named_recording_for).
+// Shared broker-test helpers (recording_for, message fixtures, bus scenarios).
 #[path = "../transport_conformance/mod.rs"]
 mod conformance;
-use conformance::{named_recording_for, recording_for};
+use conformance::{command, event, recorded_ids, recording_for, COMMAND_NAME, EVENT_NAME, PAYLOAD};
+#[path = "../support/sqlite.rs"]
+mod sqlite_support;
+use sqlite_support::TempDb;
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use distributed::bus::{
     Bus, BusConsumer, Handlers, Message, MessageKind, RunOptions, SqliteBus, TransportError,
 };
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use tokio::sync::Notify;
 
-static DB_SEQ: AtomicU64 = AtomicU64::new(0);
-
-const COMMAND_NAME: &str = "order.initialize";
-const EVENT_NAME: &str = "order.initialized";
-const PAYLOAD: &[u8] = b"{}";
-
-struct TempDb {
-    path: PathBuf,
-}
-
-impl TempDb {
-    fn new() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let seq = DB_SEQ.fetch_add(1, Ordering::Relaxed);
-        let mut path = std::env::temp_dir();
-        path.push(format!("distributed_sqlite_bus_test_{nanos}_{seq}.db"));
-        Self { path }
-    }
-
-    async fn pool(&self) -> SqlitePool {
-        self.pool_with_timeout(Duration::from_secs(5)).await
-    }
-
-    async fn pool_with_timeout(&self, busy_timeout: Duration) -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(&self.path)
-            .create_if_missing(true)
-            .busy_timeout(busy_timeout);
-        SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .expect("sqlite test pool")
-    }
-}
-
-impl Drop for TempDb {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = self.path.clone();
-            if let Some(file_name) = sidecar.file_name() {
-                let name = format!("{}{suffix}", file_name.to_string_lossy());
-                sidecar.set_file_name(name);
-                let _ = std::fs::remove_file(sidecar);
-            }
-        }
-    }
-}
-
 async fn bus() -> (TempDb, SqlitePool, SqliteBus) {
-    let db = TempDb::new();
+    let db = TempDb::new("distributed_sqlite_bus_test");
     let pool = db.pool().await;
     let bus = SqliteBus::new(pool.clone()).group("orders");
     bus.ensure_tables().await.expect("ensure tables");
     (db, pool, bus)
 }
 
-fn command(id: impl Into<String>) -> Message {
-    Message::new(COMMAND_NAME, MessageKind::Command, PAYLOAD.to_vec()).with_id(id)
-}
-
-fn event(id: impl Into<String>) -> Message {
-    Message::new(EVENT_NAME, MessageKind::Event, PAYLOAD.to_vec()).with_id(id)
-}
-
-fn expected_ids(prefix: &str, total: usize) -> Vec<String> {
-    (0..total).map(|i| format!("{prefix}{i}")).collect()
-}
-
-fn recorded_ids(rec: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    let mut ids = rec.lock().unwrap().clone();
-    ids.sort();
-    ids
-}
-
-async fn send_commands(bus: &SqliteBus, total: usize) {
-    for message in expected_ids("c", total).into_iter().map(command) {
-        bus.send_message(message).await.expect("send command");
-    }
-}
-
-async fn publish_events(bus: &SqliteBus, total: usize) {
-    for message in expected_ids("e", total).into_iter().map(event) {
-        bus.publish_message(message).await.expect("publish event");
+/// Build a `SqliteBus` over `pool` for `group` (empty `group` = no group).
+/// Tables are already ensured by [`bus`].
+fn sqlite_bus(pool: &SqlitePool, group: &str) -> SqliteBus {
+    let bus = SqliteBus::new(pool.clone());
+    if group.is_empty() {
+        bus
+    } else {
+        bus.group(group)
     }
 }
 
@@ -221,78 +150,32 @@ async fn corrupt_latest_log_content_type(pool: &SqlitePool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bus_send_listen_is_point_to_point_across_a_group() {
-    let (_db, _pool, bus) = bus().await;
-
-    let total = 6usize;
-    send_commands(&bus, total).await;
-
-    let rec = Arc::new(Mutex::new(Vec::new()));
-    let bus_a = bus.clone();
-    let bus_b = bus.clone();
-    let (ra, rb) = tokio::join!(
-        bus_a.listen(
-            recording_for(COMMAND_NAME, MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-        bus_b.listen(
-            recording_for(COMMAND_NAME, MessageKind::Command, rec.clone()),
-            RunOptions::idempotent()
-        ),
-    );
-    ra.expect("replica a drains");
-    rb.expect("replica b drains");
-
-    assert_eq!(
-        recorded_ids(&rec),
-        expected_ids("c", total),
-        "every command handled exactly once across the group"
-    );
+    let (_db, pool, _bus) = bus().await;
+    conformance::bus_send_listen_is_point_to_point_across_a_group(|group| {
+        let bus = sqlite_bus(&pool, group);
+        async move { bus }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn bus_publish_subscribe_fans_out_across_groups() {
-    let (_db, _pool, producer) = bus().await;
-    let total = 4usize;
-    publish_events(&producer, total).await;
-
-    let expected = expected_ids("e", total);
-    for group in ["projections", "audit"] {
-        let bus = producer.clone().group(group);
-        let rec = Arc::new(Mutex::new(Vec::new()));
-        bus.subscribe(
-            recording_for(EVENT_NAME, MessageKind::Event, rec.clone()),
-            RunOptions::idempotent(),
-        )
-        .await
-        .expect("subscriber drains");
-        assert_eq!(
-            recorded_ids(&rec),
-            expected,
-            "group {group} sees every event"
-        );
-    }
+    let (_db, pool, _bus) = bus().await;
+    conformance::bus_publish_subscribe_fans_out_across_groups(|group| {
+        let bus = sqlite_bus(&pool, group);
+        async move { bus }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn bus_subscribe_uses_named_service_as_consumer_group() {
-    let (_db, pool, producer) = bus().await;
-    publish_events(&producer, 3).await;
-
-    let rec = Arc::new(Mutex::new(Vec::new()));
-    SqliteBus::new(pool)
-        .subscribe(
-            named_recording_for(
-                "order-projection",
-                EVENT_NAME,
-                MessageKind::Event,
-                rec.clone(),
-            ),
-            RunOptions::idempotent(),
-        )
-        .await
-        .expect("subscriber drains");
-
-    assert_eq!(recorded_ids(&rec), expected_ids("e", 3));
+    let (_db, pool, _bus) = bus().await;
+    conformance::bus_subscribe_uses_named_service_as_consumer_group(|| {
+        let bus = sqlite_bus(&pool, "");
+        async move { bus }
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -405,7 +288,7 @@ async fn bus_schema_rejects_unsupported_message_kind() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn busy_or_locked_writer_contention_is_retryable() {
-    let db = TempDb::new();
+    let db = TempDb::new("distributed_sqlite_bus_test");
     let setup_pool = db.pool().await;
     SqliteBus::new(setup_pool.clone())
         .ensure_tables()

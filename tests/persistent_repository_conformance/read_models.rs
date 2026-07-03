@@ -1,10 +1,8 @@
-#![allow(dead_code)]
-
 use distributed::{
     Aggregate, AggregateBuilder, CommitBatch, GetStream, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, ReadModelWritePlanStore, RelationalReadModel,
     RelationalReadModelQueryStore, RepositoryError, RowKey, RowValue, StreamIdentity, StreamWrite,
-    TransactionalCommit, Versioned,
+    TableSchemaRegistry, TransactionalCommit, Versioned,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +15,18 @@ struct SeatView {
     #[id]
     id: String,
     status: String,
+}
+
+/// The table schemas backing these scenarios, so SQL backends can bootstrap
+/// the `conformance_seat_views` table in their `repository()` factory.
+/// (Unused by the in-memory target, which needs no schema.)
+#[allow(dead_code)]
+pub fn conformance_table_registry() -> TableSchemaRegistry {
+    let mut registry = TableSchemaRegistry::new();
+    registry
+        .register::<SeatView>()
+        .expect("SeatView schema should register");
+    registry
 }
 
 fn seat_view_key(id: &str) -> RowKey {

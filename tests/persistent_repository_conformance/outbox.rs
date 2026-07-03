@@ -8,6 +8,7 @@ use distributed::{
     StreamIdentity, TransactionalCommit,
 };
 
+use super::outbox_support::find_outbox_by_id;
 use super::scenario::unique_id;
 use super::seat::Seat;
 
@@ -577,25 +578,4 @@ fn added_seat(id: &str) -> Seat {
     seat.add(id.to_string(), "floor".to_string())
         .expect("seat should be valid");
     seat
-}
-
-async fn find_outbox_by_id<S>(outbox: &S, id: &str) -> Option<OutboxMessage>
-where
-    S: OutboxStore + Send + Sync,
-{
-    for status in [
-        OutboxMessageStatus::Pending,
-        OutboxMessageStatus::InFlight,
-        OutboxMessageStatus::Published,
-        OutboxMessageStatus::Failed,
-    ] {
-        let messages = outbox
-            .messages_by_status(status)
-            .await
-            .expect("outbox status lookup should succeed");
-        if let Some(message) = messages.into_iter().find(|message| message.id() == id) {
-            return Some(message);
-        }
-    }
-    None
 }
