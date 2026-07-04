@@ -68,6 +68,11 @@ tonic-build = { version = "0.14", default-features = false, features = ["transpo
 
 [dev-dependencies]
 axum = "0.8"
+# OTLP export e2e (tests/otel_export): a real SDK pipeline pointed at a
+# collector container, exercising the `otel` feature the way a service binary
+# would. Keep versions in lockstep with the optional `otel` feature deps.
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 proptest = "1"
 prost = "0.14"
 reqwest = { version = "0.13", features = ["json"] }
