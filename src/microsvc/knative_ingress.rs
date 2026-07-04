@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 
 use crate::bus::{validate_message_name, Message, MessageKind};
 use crate::microsvc::{Service, MAX_HTTP_BODY_BYTES};
-use crate::trace_context::{TRACEPARENT, TRACESTATE};
+use crate::trace_context::{TraceContext, TRACEPARENT, TRACESTATE};
 
 const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 
@@ -114,17 +114,13 @@ fn parse_cloud_event(headers: &HeaderMap, body: &Bytes) -> Result<Message, Strin
 }
 
 fn inject_http_trace_context(headers: &HeaderMap, metadata: &mut Vec<(String, String)>) {
-    if let Some(traceparent) = header(headers, TRACEPARENT) {
-        replace_metadata_key(metadata, TRACEPARENT, traceparent);
+    let context = TraceContext {
+        traceparent: header(headers, TRACEPARENT).map(str::to_string),
+        tracestate: header(headers, TRACESTATE).map(str::to_string),
+    };
+    if !context.is_empty() {
+        context.inject_vec(metadata);
     }
-    if let Some(tracestate) = header(headers, TRACESTATE) {
-        replace_metadata_key(metadata, TRACESTATE, tracestate);
-    }
-}
-
-fn replace_metadata_key(metadata: &mut Vec<(String, String)>, key: &'static str, value: &str) {
-    metadata.retain(|(existing, _)| !existing.eq_ignore_ascii_case(key));
-    metadata.push((key.to_string(), value.to_string()));
 }
 
 /// Binary mode: attributes are `ce-*` headers, the body is the data.

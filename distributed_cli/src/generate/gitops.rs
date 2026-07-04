@@ -122,16 +122,16 @@ impl Scaffold {
 
         let service_name = k8s_name(&self.names.package_name);
         format!(
-            r#"            {{{{- if .Values.observability.tracing.enabled }}}}
+            r#"            {{{{ if .Values.observability.tracing.enabled }}}}
             - name: OTEL_SERVICE_NAME
               value: "{service_name}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: {{{{ .Values.observability.tracing.otlpProtocol | quote }}}}
-            {{{{- if .Values.observability.tracing.otlpEndpoint }}}}
+            {{{{ if .Values.observability.tracing.otlpEndpoint }}}}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{{{ .Values.observability.tracing.otlpEndpoint | quote }}}}
-            {{{{- end }}}}
-            {{{{- end }}}}
+            {{{{ end }}}}
+            {{{{ end }}}}
 "#,
         )
     }

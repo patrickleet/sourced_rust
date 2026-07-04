@@ -436,6 +436,15 @@ mod tests {
         let project = generate_service_scaffold(s).unwrap();
         let cargo = contents(&project, "Cargo.toml");
         assert!(cargo.contains("\"otel\""));
+        assert!(cargo.contains("opentelemetry-otlp"));
+        assert!(cargo.contains("\"grpc-tonic\""));
+        assert!(cargo.contains("tracing-subscriber"));
+
+        let main = contents(&project, "src/main.rs");
+        assert!(main.contains("let tracer_provider = init_tracing()?;"));
+        assert!(main.contains("opentelemetry_otlp::SpanExporter::builder().build()?"));
+        assert!(main.contains("tracing_opentelemetry::layer().with_tracer(tracer)"));
+        assert!(main.contains("tracer_provider.shutdown()"));
 
         let service = contents(&project, "src/service.rs");
         assert!(service.contains(".tracing(TracingManifest::otlp())"));
@@ -450,6 +459,10 @@ mod tests {
         assert!(!deployment.contains(".Chart.Name"));
         assert!(deployment.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
         assert!(deployment.contains(".Values.observability.tracing.otlpEndpoint"));
+        assert!(deployment.contains(
+            "value: 0.0.0.0:3000\n            {{ if .Values.observability.tracing.enabled }}"
+        ));
+        assert!(!deployment.contains("{{- if .Values.observability.tracing.enabled }}"));
     }
 
     #[test]

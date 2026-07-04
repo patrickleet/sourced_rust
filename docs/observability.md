@@ -69,9 +69,11 @@ that context and sets it as the OpenTelemetry parent for the framework span:
 distributed = { version = "0.1", features = ["http", "otel"] }
 ```
 
-The feature intentionally does not install a global tracer or exporter. Service
-binaries should configure their own `tracing` subscriber and OpenTelemetry layer
-so deployment owners control sampling, resources, redaction, and export.
+The library feature intentionally does not install a global tracer or exporter.
+Hand-written service binaries should configure their own `tracing` subscriber
+and OpenTelemetry layer so deployment owners control sampling, resources,
+redaction, and export. `dctl scaffold --tracing` emits a default OTLP tracing
+setup in the generated `main.rs` for the common case.
 
 Recommended environment variables for OTLP exporters:
 
@@ -100,20 +102,24 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 
 ## CLI And GitOps
 
-`dsvc scaffold --tracing` enables the generated service's `distributed` `otel`
+`dctl scaffold --tracing` enables the generated service's `distributed` `otel`
 feature and records tracing intent in `ServiceManifest` with
-`TracingManifest::otlp()`. When GitOps output is requested, the deploy chart
-renders Helm values for OTLP configuration and conditionally injects:
+`TracingManifest::otlp()`. It also adds the generated binary dependencies for
+`opentelemetry-otlp`, `tracing-opentelemetry`, and `tracing-subscriber`,
+initializes an OTLP tracer provider from `OTEL_EXPORTER_OTLP_*` environment
+variables, and shuts the provider down when the server exits. When GitOps output
+is requested, the deploy chart renders Helm values for OTLP configuration and
+conditionally injects:
 
 - `OTEL_SERVICE_NAME`
 - `OTEL_EXPORTER_OTLP_PROTOCOL`
 - `OTEL_EXPORTER_OTLP_ENDPOINT` when a chart value is set
 
-`dsvc scaffold --metrics` generates a real `/metrics` endpoint in the service
-crate and records `MetricsEndpointManifest::prometheus_default()` in the service
-manifest. For generated HTTP Deployment + Service charts, GitOps output also
-includes a Prometheus Operator `ServiceMonitor` that scrapes the named `http`
-port at `/metrics`.
+`dctl scaffold --metrics prometheus` generates a real `/metrics` endpoint in the
+service crate and records `MetricsEndpointManifest::prometheus_default()` in the
+service manifest. For generated HTTP Deployment + Service charts, GitOps output
+also includes a Prometheus Operator `ServiceMonitor` that scrapes the named
+`http` port at `/metrics`.
 
 Knative services can still generate the `/metrics` endpoint, but the generic
 GitOps renderer does not emit a `ServiceMonitor` for Knative because the correct

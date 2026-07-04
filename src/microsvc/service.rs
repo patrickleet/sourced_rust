@@ -979,6 +979,8 @@ mod tests {
         QueuedRepository,
     };
     use serde_json::json;
+    #[cfg(feature = "metrics")]
+    use std::future::Future;
 
     #[derive(Default)]
     struct RouteComboAggregate {
@@ -1003,6 +1005,15 @@ mod tests {
 
     fn test_service(routes: Routes<()>) -> Service {
         Service::new().routes(routes)
+    }
+
+    #[cfg(feature = "metrics")]
+    fn block_on<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(future)
     }
 
     #[test]
@@ -1220,9 +1231,8 @@ mod tests {
                 .handle(|_ctx: &Context<()>| async move { Ok(json!({})) }),
         );
 
-        let result = service
-            .dispatch("attacker-controlled-path", json!({}), Session::new())
-            .await;
+        let result =
+            block_on(service.dispatch("attacker-controlled-path", json!({}), Session::new()));
         assert!(matches!(result, Err(HandlerError::UnknownCommand(_))));
 
         let text = crate::metrics::prometheus_text();

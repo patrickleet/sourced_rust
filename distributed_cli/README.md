@@ -34,9 +34,9 @@ generated values default both resources to disabled; enable them only in
 clusters with the Prometheus Operator CRDs installed. Plain `--gitops` does not
 emit `monitoring.coreos.com` resources.
 
-`--tracing` enables Distributed's optional `otel` span feature in the generated
-crate and renders OTLP environment values in the Helm chart without hard-coding
-an endpoint.
+`--tracing` enables Distributed's optional `otel` span feature, emits a default
+OTLP tracing setup in the generated `main.rs`, and renders OTLP environment
+values in the Helm chart without hard-coding an endpoint.
 
 ## The project manifest entrypoint
 
