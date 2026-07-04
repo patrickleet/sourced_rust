@@ -364,7 +364,7 @@ Intentionally changed:
 The in-memory repository already pins the behaviors the Postgres repository must
 match:
 
-- `src/hashmap_repo/repository.rs::duplicate_stream_ids_rejected_before_write`
+- `src/in_memory_repo/repository.rs::duplicate_stream_ids_rejected_before_write`
   verifies duplicate stream IDs are rejected before any write.
 - `tests/event_store/main.rs::concurrent_writes_detected` verifies optimistic
   conflicts return `ConcurrentWrite`.

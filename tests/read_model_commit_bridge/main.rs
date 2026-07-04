@@ -1,5 +1,5 @@
 use distributed::{
-    sourced, Entity, HashMapRepository, ReadModel, ReadModelWorkspaceExt,
+    sourced, Entity, InMemoryRepository, ReadModel, ReadModelWorkspaceExt,
     ReadModelWritePlanBuilder, ReadModelWritePlanCommitExt, RowKey, RowValue,
 };
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ struct BridgeView {
 
 #[tokio::test]
 async fn repo_first_read_models_session_commit_form_is_available() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let view = BridgeView {
         id: "view-1".into(),
         value: 42,

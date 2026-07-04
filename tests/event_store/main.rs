@@ -1,5 +1,5 @@
 use distributed::{
-    CommitBatch, Entity, GetStream, HashMapRepository, StreamIdentity, StreamWrite,
+    CommitBatch, Entity, GetStream, InMemoryRepository, StreamIdentity, StreamWrite,
     TransactionalCommit,
 };
 
@@ -17,13 +17,13 @@ fn identity(id: &str) -> StreamIdentity {
 }
 
 /// Equivalent of the old `repo.get_one(id)`.
-async fn get_one(repo: &HashMapRepository, id: &str) -> Option<Entity> {
+async fn get_one(repo: &InMemoryRepository, id: &str) -> Option<Entity> {
     repo.get_stream(&identity(id)).await.unwrap()
 }
 
 /// Equivalent of the old `repo.commit(&mut entity)` for a single entity.
 async fn commit_one(
-    repo: &HashMapRepository,
+    repo: &InMemoryRepository,
     entity: &mut Entity,
 ) -> Result<(), distributed::RepositoryError> {
     let id = entity.id().to_string();
@@ -33,7 +33,7 @@ async fn commit_one(
 
 /// Equivalent of the old `repo.commit(&mut [&mut a, &mut b])` for many entities.
 async fn commit_many(
-    repo: &HashMapRepository,
+    repo: &InMemoryRepository,
     entities: &mut [&mut Entity],
 ) -> Result<(), distributed::RepositoryError> {
     let mut streams = Vec::with_capacity(entities.len());
@@ -61,7 +61,7 @@ fn digest_adds_events_with_correct_sequences() {
 
 #[tokio::test]
 async fn multiple_load_modify_commit_cycles_accumulate_all_events() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     // Cycle 1: create and commit
     let mut entity = Entity::with_id("e1");
@@ -93,7 +93,7 @@ async fn multiple_load_modify_commit_cycles_accumulate_all_events() {
 
 #[tokio::test]
 async fn commit_appends_only_new_events() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("initialized", &"v1").unwrap();
@@ -113,7 +113,7 @@ async fn commit_appends_only_new_events() {
 
 #[tokio::test]
 async fn empty_commit_is_idempotent() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
@@ -132,7 +132,7 @@ async fn empty_commit_is_idempotent() {
 
 #[tokio::test]
 async fn events_grow_monotonically() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     for i in 0..5 {
         let mut entity = if i == 0 {
@@ -152,7 +152,7 @@ async fn events_grow_monotonically() {
 
 #[tokio::test]
 async fn concurrent_writes_detected() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     // Create initial state
     let mut entity = Entity::with_id("e1");
@@ -193,7 +193,7 @@ async fn concurrent_writes_detected() {
 
 #[tokio::test]
 async fn partial_conflict_rolls_back_entire_commit() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     // Create two entities
     let mut e1 = Entity::with_id("e1");
@@ -245,7 +245,7 @@ fn new_entity_has_zero_versions() {
 
 #[tokio::test]
 async fn load_from_history_sets_committed_version() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("initialized", &"v1").unwrap();
@@ -261,7 +261,7 @@ async fn load_from_history_sets_committed_version() {
 
 #[tokio::test]
 async fn commit_updates_committed_version() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("initialized", &"v1").unwrap();
@@ -284,7 +284,7 @@ async fn commit_updates_committed_version() {
 
 #[tokio::test]
 async fn new_events_returns_only_uncommitted() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
 
     let mut entity = Entity::with_id("e1");
     entity.digest("first_recorded", &"a").unwrap();

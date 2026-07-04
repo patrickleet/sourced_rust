@@ -105,7 +105,7 @@ mod nats_bus;
 mod postgres_bus;
 mod publisher;
 #[cfg(feature = "rabbitmq")]
-mod rabbit_bus;
+mod rabbitmq_bus;
 #[cfg(feature = "rabbitmq")]
 mod rabbitmq;
 mod router;
@@ -132,7 +132,7 @@ pub use nats::{NatsJetStreamSource, NatsPublisher, NatsReceived};
 #[cfg(feature = "nats")]
 pub use nats_bus::{NatsBus, NatsBusConnect};
 #[cfg(feature = "rabbitmq")]
-pub use rabbit_bus::{RabbitBus, RabbitBusConnect};
+pub use rabbitmq_bus::{RabbitBus, RabbitBusConnect};
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq::{RabbitPublisher, RabbitReceived, RabbitSource};
 

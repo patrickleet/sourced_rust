@@ -177,19 +177,19 @@ mod tests {
     use crate::microsvc::Service;
     use crate::outbox_worker::testing::block_on;
     use crate::{
-        CommitBatch, HashMapRepository, OutboxMessage, OutboxMessageStatus, OutboxStore,
+        CommitBatch, InMemoryRepository, OutboxMessage, OutboxMessageStatus, OutboxStore,
         TransactionalCommit,
     };
     use serde_json::json;
 
-    fn store_row(repo: &HashMapRepository, id: &str, name: &str) {
+    fn store_row(repo: &InMemoryRepository, id: &str, name: &str) {
         let message = OutboxMessage::create(id, name, b"{}".to_vec()).unwrap();
         let mut batch = CommitBatch::empty();
         batch.outbox_messages.push(message);
         block_on(repo.commit_batch(batch)).unwrap();
     }
 
-    fn status(repo: &HashMapRepository, id: &str) -> Option<OutboxMessageStatus> {
+    fn status(repo: &InMemoryRepository, id: &str) -> Option<OutboxMessageStatus> {
         let store = repo.outbox_store();
         [
             OutboxMessageStatus::Pending,
@@ -206,27 +206,27 @@ mod tests {
         })
     }
 
-    fn source(repo: &HashMapRepository) -> OutboxSource<crate::HashMapOutboxStore> {
+    fn source(repo: &InMemoryRepository) -> OutboxSource<crate::InMemoryOutboxStore> {
         OutboxSource::new(Arc::new(repo.outbox_store()), "pg-transport", 3)
     }
 
     #[test]
     #[should_panic(expected = "lease must be greater than zero")]
     fn with_lease_zero_panics() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let _ = source(&repo).with_lease(Duration::ZERO);
     }
 
     #[test]
     #[should_panic(expected = "batch_size must be greater than zero")]
     fn with_batch_size_zero_panics() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let _ = source(&repo).with_batch_size(0);
     }
 
     #[test]
     fn recv_yields_claimed_rows_then_drains_to_none() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "evt");
         store_row(&repo, "m2", "evt");
         let mut src = source(&repo);
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn ack_completes_the_row() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "evt");
         let mut src = source(&repo);
         let received = block_on(src.recv()).unwrap().unwrap();
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn nack_releases_for_retry() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "evt");
         let mut src = source(&repo);
         let received = block_on(src.recv()).unwrap().unwrap();
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn dead_letter_fails_the_row() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "evt");
         let mut src = source(&repo);
         let received = block_on(src.recv()).unwrap().unwrap();
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn run_source_drains_outbox_and_completes() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "evt");
         store_row(&repo, "m2", "evt");
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn unhandled_outbox_message_is_acked_and_completed() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         store_row(&repo, "m1", "unrelated");
         // Service handles a different event; the unrelated row is acked-ignored,
         // i.e. completed, so it does not loop forever.

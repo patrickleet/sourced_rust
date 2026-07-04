@@ -20,7 +20,7 @@ use board_service::{AddCard, Board, MoveCard, OpenBoard, RemoveCard};
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Service, Session};
 use distributed::{
-    AggregateBuilder, ClaimOutboxMessages, HashMapOutboxStore, HashMapRepository,
+    AggregateBuilder, ClaimOutboxMessages, InMemoryOutboxStore, InMemoryRepository,
     InMemoryReadModelStore, OutboxClaimRef, OutboxStore, Queueable,
 };
 use projections_service::{load_board, service as build_projection};
@@ -46,7 +46,7 @@ where
 /// (`domain_event`, no destination), so each is published as an event for the
 /// projection's `subscribe` to drain. Payload bytes are forwarded verbatim
 /// (bitcode), and the projection decodes them with `BitcodePayloadCodec`.
-async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) {
+async fn publish_pending_outbox(outbox: &InMemoryOutboxStore, bus: &InMemoryBus) {
     let claimed = outbox
         .claim(ClaimOutboxMessages::new(
             "board-outbox-bridge",
@@ -79,7 +79,7 @@ async fn publish_pending_outbox(outbox: &HashMapOutboxStore, bus: &InMemoryBus) 
 
 #[tokio::test]
 async fn board_service_feeds_a_normalized_card_read_model() {
-    let board_store = HashMapRepository::new();
+    let board_store = InMemoryRepository::new();
     let board_outbox = board_store.outbox_store();
     let board_service = board_service::model_service(board_store.clone().queued().aggregate());
 

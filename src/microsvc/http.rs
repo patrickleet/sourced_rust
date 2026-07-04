@@ -11,12 +11,12 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use distributed::{microsvc, HashMapRepository};
+//! use distributed::{microsvc, InMemoryRepository};
 //!
 //! let service = Arc::new(
 //!     microsvc::Service::new().routes(
 //!         microsvc::Routes::new()
-//!             .with_repo(HashMapRepository::new().queued().aggregate::<Counter>())
+//!             .with_repo(InMemoryRepository::new().queued().aggregate::<Counter>())
 //!             .command("counter.create")
 //!             .handle(|ctx| { /* ... */ })
 //!     )

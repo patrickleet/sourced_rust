@@ -1,6 +1,7 @@
 use event_emitter_rs::EventEmitter;
 
-use crate::entity::{Entity, EventRecordError, LocalEvent};
+use super::LocalEvent;
+use crate::entity::{Entity, EventRecordError};
 use crate::SourcedResult;
 
 /// Extension wrapper that adds event emitter capabilities to an Entity.

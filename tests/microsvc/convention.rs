@@ -8,7 +8,7 @@
 //! Registration uses the `routes!` macro.
 
 use distributed::microsvc::{Routes, Service, Session};
-use distributed::{AggregateBuilder, HashMapRepository, OutboxStore, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, OutboxStore, Queueable};
 use serde_json::json;
 
 use crate::handlers;
@@ -20,7 +20,7 @@ use crate::models::counter::Counter;
 
 #[tokio::test]
 async fn routes_macro_registers_handlers_and_dispatches() {
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
@@ -63,7 +63,7 @@ async fn routes_macro_registers_handlers_and_dispatches() {
 #[tokio::test]
 async fn guard_rejects_bad_input() {
     let service = Service::new().routes(distributed::routes!(
-        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Routes::new().with_repo(InMemoryRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
     ));
 
@@ -76,7 +76,7 @@ async fn guard_rejects_bad_input() {
 #[tokio::test]
 async fn handler_rejects_duplicate_create() {
     let service = Service::new().routes(distributed::routes!(
-        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Routes::new().with_repo(InMemoryRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
     ));
 
@@ -97,7 +97,7 @@ async fn handler_rejects_duplicate_create() {
 
 #[tokio::test]
 async fn create_persists_outbox_message() {
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
@@ -128,7 +128,7 @@ async fn create_persists_outbox_message() {
 
 #[tokio::test]
 async fn duplicate_create_leaves_single_outbox_message() {
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,
@@ -151,7 +151,7 @@ async fn duplicate_create_leaves_single_outbox_message() {
 
 #[tokio::test]
 async fn increment_persists_outbox_message() {
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),
         command handlers::counter_create,

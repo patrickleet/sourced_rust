@@ -131,7 +131,7 @@ mod tests {
     use crate::microsvc::{Context, HandlerError, Routes, Service, Session};
     use crate::outbox_worker::OutboxStore;
     use crate::{
-        sourced, AggregateBuilder, AggregateRepository, Entity, HashMapRepository, OutboxMessage,
+        sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, OutboxMessage,
         OutboxMessageStatus, Queueable, QueuedRepository, Snapshot,
     };
 
@@ -167,9 +167,9 @@ mod tests {
 
     #[tokio::test]
     async fn with_bus_configures_outbox_for_all_eligible_route_bundles() {
-        let repo_a = HashMapRepository::new();
+        let repo_a = InMemoryRepository::new();
         let store_a = repo_a.outbox_store();
-        let repo_b = HashMapRepository::new();
+        let repo_b = InMemoryRepository::new();
         let store_b = repo_b.outbox_store();
         let service = Service::new()
             .routes(
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(result, json!({ "reply": "pong" }));
     }
 
-    type TouchRepo = AggregateRepository<QueuedRepository<HashMapRepository>, Dummy>;
+    type TouchRepo = AggregateRepository<QueuedRepository<InMemoryRepository>, Dummy>;
 
     // A named fn (not a closure) so the higher-ranked `Handler` bound resolves.
     async fn touch_and_publish(ctx: &Context<'_, TouchRepo>) -> Result<Value, HandlerError> {
@@ -256,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_through_a_handler_publishes_immediately() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let store = repo.outbox_store();
         let service = Service::new()
             .routes(
@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn run_consumes_registered_commands_from_the_bus() {
         let bus = InMemoryBus::new();
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let store = repo.outbox_store();
         let service = Service::new()
             .routes(
@@ -330,7 +330,7 @@ mod tests {
     }
 
     // Snapshots are a transparent optimization: the repo type is unchanged.
-    type SnapRepo = AggregateRepository<QueuedRepository<HashMapRepository>, SnapCounter>;
+    type SnapRepo = AggregateRepository<QueuedRepository<InMemoryRepository>, SnapCounter>;
 
     async fn touch_snap(ctx: &Context<'_, SnapRepo>) -> Result<Value, HandlerError> {
         let mut counter = SnapCounter::default();
@@ -345,7 +345,7 @@ mod tests {
         // `outbox().commit()` must work for a snapshot-backed repository too: the
         // outbox row and the snapshot commit together in one transaction, then
         // the row publishes immediately.
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let store = repo.outbox_store();
         let service = Service::new()
             .routes(

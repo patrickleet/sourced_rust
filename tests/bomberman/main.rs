@@ -18,7 +18,7 @@ mod views;
 use domain::types::Direction;
 use sim::Game;
 
-use distributed::HashMapRepository;
+use distributed::InMemoryRepository;
 
 const SMALL_MAP: &str = "\
 #######
@@ -36,7 +36,7 @@ const SMALL_MAP: &str = "\
 
 #[tokio::test]
 async fn game_setup_and_movement() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let game = Game::new(&repo, "game-1", SMALL_MAP).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
@@ -74,7 +74,7 @@ async fn game_setup_and_movement() {
 
 #[tokio::test]
 async fn invalid_spawn_index_returns_error() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let game = Game::new(&repo, "game-invalid-spawn", SMALL_MAP)
         .await
         .unwrap();
@@ -95,7 +95,7 @@ async fn invalid_spawn_index_returns_error() {
 
 #[tokio::test]
 async fn bomb_destroys_blocks() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let game = Game::new(&repo, "game-2", SMALL_MAP).await.unwrap();
 
     let p1 = game.sim("p1", "Alice");
@@ -146,7 +146,7 @@ async fn bomb_destroys_blocks() {
 #[tokio::test]
 async fn player_killed_by_bomb() {
     // Use a tall open map so players can retreat far from blast
-    let repo2 = HashMapRepository::new();
+    let repo2 = InMemoryRepository::new();
     let open_map = "\
 ###########
 #1        #
@@ -225,7 +225,7 @@ async fn player_killed_by_bomb() {
 
 #[tokio::test]
 async fn chain_reaction() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     // Tall map so players can retreat far enough from blast radius 2
     let tall_map = "\
 ###########
@@ -346,8 +346,8 @@ async fn concurrent_bomb_placement() {
     use distributed::{ReadModelWorkspaceExt, RowKey, RowValue};
     use std::sync::Arc;
 
-    // HashMapRepository uses Arc<RwLock<...>> internally, safe to share across tasks
-    let repo = Arc::new(HashMapRepository::new());
+    // InMemoryRepository uses Arc<RwLock<...>> internally, safe to share across tasks
+    let repo = Arc::new(InMemoryRepository::new());
     let open_map = "\
 #######
 #1   2#
@@ -424,7 +424,7 @@ async fn concurrent_bomb_placement() {
 
 #[tokio::test]
 async fn full_game_to_winner() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     // Larger arena to allow proper retreat from blast radius 2
     let arena = "\
 #############

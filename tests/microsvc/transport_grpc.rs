@@ -8,7 +8,7 @@ use distributed::microsvc::grpc::{
     CommandServiceClient, GrpcRequest, GrpcServeError, HealthRequest,
 };
 use distributed::microsvc::{Routes, Service};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -18,7 +18,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service> {
     Arc::new(Service::new().routes(distributed::routes!(
-        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Routes::new().with_repo(InMemoryRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,

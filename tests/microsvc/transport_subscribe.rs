@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Routes, Service};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 
 use crate::handlers;
 use crate::models::counter::Counter;
 
-fn counter_service(store: HashMapRepository) -> Arc<Service> {
+fn counter_service(store: InMemoryRepository) -> Arc<Service> {
     Arc::new(
         Service::new().routes(
             Routes::new()
@@ -34,7 +34,7 @@ fn counter_service(store: HashMapRepository) -> Arc<Service> {
 #[tokio::test]
 async fn dispatches_from_pubsub() {
     let bus = InMemoryBus::new();
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = counter_service(store.clone());
 
     for (id, name, payload) in [

@@ -31,7 +31,7 @@ use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError
 /// no timestamps) and exists for tests and local development. Use the Postgres
 /// or SQLite repository for a production inbox with retention control.
 #[derive(Clone)]
-pub struct HashMapRepository {
+pub struct InMemoryRepository {
     event_store: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
     outbox_store: Arc<RwLock<HashMap<String, OutboxMessage>>>,
     model_store: InMemoryReadModelStore,
@@ -48,20 +48,20 @@ pub struct HashMapRepository {
 
 /// In-memory outbox table handle.
 #[derive(Clone)]
-pub struct HashMapOutboxStore {
+pub struct InMemoryOutboxStore {
     pub(crate) storage: Arc<RwLock<HashMap<String, OutboxMessage>>>,
 }
 
-impl Default for HashMapRepository {
+impl Default for InMemoryRepository {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HashMapRepository {
+impl InMemoryRepository {
     /// Create a new empty repository.
     pub fn new() -> Self {
-        HashMapRepository {
+        InMemoryRepository {
             event_store: Arc::new(RwLock::new(HashMap::new())),
             outbox_store: Arc::new(RwLock::new(HashMap::new())),
             model_store: InMemoryReadModelStore::new(),
@@ -76,8 +76,8 @@ impl HashMapRepository {
     }
 
     /// Access the in-memory outbox table handle.
-    pub fn outbox_store(&self) -> HashMapOutboxStore {
-        HashMapOutboxStore {
+    pub fn outbox_store(&self) -> InMemoryOutboxStore {
+        InMemoryOutboxStore {
             storage: Arc::clone(&self.outbox_store),
         }
     }
@@ -117,7 +117,7 @@ impl HashMapRepository {
     }
 }
 
-impl GetStream for HashMapRepository {
+impl GetStream for InMemoryRepository {
     fn get_stream<'a>(
         &'a self,
         identity: &'a StreamIdentity,
@@ -140,7 +140,7 @@ impl GetStream for HashMapRepository {
     }
 }
 
-impl TransactionalCommit for HashMapRepository {
+impl TransactionalCommit for InMemoryRepository {
     fn commit_batch<'a>(
         &'a self,
         batch: CommitBatch<'a>,
@@ -286,7 +286,7 @@ impl TransactionalCommit for HashMapRepository {
     }
 }
 
-impl InboxStore for HashMapRepository {
+impl InboxStore for InMemoryRepository {
     fn inbox_contains<'a>(
         &'a self,
         consumer: &'a str,
@@ -311,7 +311,7 @@ fn stored_stream_version(events: Option<&Vec<EventRecord>>) -> u64 {
     events.map_or(0, |events| events.len() as u64)
 }
 
-impl ReadModelWritePlanStore for HashMapRepository {
+impl ReadModelWritePlanStore for InMemoryRepository {
     fn read_model_capabilities(&self) -> TableAdapterCapabilities {
         self.model_store.read_model_capabilities()
     }
@@ -324,7 +324,7 @@ impl ReadModelWritePlanStore for HashMapRepository {
     }
 }
 
-impl RelationalReadModelQueryStore for HashMapRepository {
+impl RelationalReadModelQueryStore for InMemoryRepository {
     fn read_model_query_capabilities(&self) -> ReadModelQueryCapabilities {
         self.model_store.read_model_query_capabilities()
     }
@@ -337,7 +337,7 @@ impl RelationalReadModelQueryStore for HashMapRepository {
     }
 }
 
-impl SnapshotStore for HashMapRepository {
+impl SnapshotStore for InMemoryRepository {
     fn get_snapshot<'a>(
         &'a self,
         identity: &'a StreamIdentity,
@@ -411,7 +411,7 @@ mod tests {
     }
 
     async fn commit_one(
-        repo: &HashMapRepository,
+        repo: &InMemoryRepository,
         entity: &mut Entity,
     ) -> Result<(), RepositoryError> {
         let id = entity.id().to_string();
@@ -424,13 +424,13 @@ mod tests {
 
     #[test]
     fn new() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         assert!(repo.event_store.read().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn single_entity_commit() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
         let id = "test_id";
         let mut entity = Entity::with_id(id);
 
@@ -445,7 +445,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_entity_commit() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let mut entity1 = Entity::with_id("id_1");
         entity1.digest("event1", &"arg1").unwrap();
@@ -469,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_stream_ids_rejected_before_write() {
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let mut entity1 = Entity::with_id("same-id");
         entity1.digest("event1", &"arg1").unwrap();
@@ -503,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn inbox_receipts_record_dedupe_and_roll_back_atomically() {
         use crate::repository::InboxReceipt;
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let mut batch = CommitBatch::empty();
         batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));
@@ -537,7 +537,7 @@ mod tests {
     #[tokio::test]
     async fn clear_inbox_drops_all_receipts_and_age_purge_is_noop() {
         use crate::repository::{InboxReceipt, InboxStore};
-        let repo = HashMapRepository::new();
+        let repo = InMemoryRepository::new();
 
         let mut batch = CommitBatch::empty();
         batch.inbox_receipts.push(InboxReceipt::new("proj", "m1"));

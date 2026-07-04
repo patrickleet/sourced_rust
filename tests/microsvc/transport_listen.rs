@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 use distributed::bus::{Bus, BusConsumer, FailurePolicy, InMemoryBus, RunOptions};
 use distributed::microsvc::{Message, MessageKind, Routes, Service, Session};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use serde_json::json;
 
 use crate::handlers;
 use crate::models::counter::Counter;
 
-fn counter_service(store: HashMapRepository) -> Arc<Service> {
+fn counter_service(store: InMemoryRepository) -> Arc<Service> {
     Arc::new(Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.queued().aggregate::<Counter>()),
         command handlers::counter_create,
@@ -33,7 +33,7 @@ fn command(name: &str, id: &str, payload: &str) -> Message {
 #[tokio::test]
 async fn dispatches_from_queue() {
     let bus = InMemoryBus::new();
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = counter_service(store.clone());
 
     bus.send_message(command("counter.initialize", "cmd-1", r#"{"id":"c1"}"#))
@@ -65,7 +65,7 @@ async fn dispatches_from_queue() {
 #[tokio::test]
 async fn tolerates_handler_failures_and_keeps_processing() {
     let bus = InMemoryBus::new();
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = counter_service(store.clone());
 
     // A failing message (increment a counter that was never created → NotFound)
@@ -115,7 +115,7 @@ async fn tolerates_handler_failures_and_keeps_processing() {
 #[tokio::test]
 async fn coexists_with_direct_dispatch() {
     let bus = InMemoryBus::new();
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
     let service = counter_service(store.clone());
 
     // c1 created via the bus.
@@ -142,7 +142,7 @@ async fn coexists_with_direct_dispatch() {
 #[tokio::test]
 async fn metadata_becomes_session() {
     let bus = InMemoryBus::new();
-    let service = counter_service(HashMapRepository::new());
+    let service = counter_service(InMemoryRepository::new());
 
     // `whoami` reads `ctx.user_id()`, which the runner derives from the message
     // metadata (`message_to_session` lowercases keys into session variables).
@@ -181,7 +181,7 @@ async fn metadata_becomes_session() {
 #[tokio::test]
 async fn multiple_services_on_different_queues() {
     let bus = InMemoryBus::new();
-    let store = HashMapRepository::new();
+    let store = InMemoryRepository::new();
 
     let service_a = Arc::new(Service::new().routes(distributed::routes!(
         Routes::new().with_repo(store.clone().queued().aggregate::<Counter>()),

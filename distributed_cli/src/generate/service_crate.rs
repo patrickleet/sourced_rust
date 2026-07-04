@@ -182,15 +182,15 @@ pub fn service_manifest() -> ServiceManifest {{
 
 use distributed::{{
     microsvc::{{Routes, Service}},
-    HashMapRepository, ServiceManifest,
+    InMemoryRepository, ServiceManifest,
 }};
 
 use crate::handlers;
 
-pub type ServiceRepo = HashMapRepository;
+pub type ServiceRepo = InMemoryRepository;
 
 pub fn in_memory() -> Arc<Service> {{
-    build(HashMapRepository::new())
+    build(InMemoryRepository::new())
 }}
 
 pub fn build(repo: ServiceRepo) -> Arc<Service> {{

@@ -14,7 +14,7 @@
 mod aggregate;
 
 use aggregate::{Command, Ledger};
-use distributed::{AggregateBuilder, HashMapRepository};
+use distributed::{AggregateBuilder, InMemoryRepository};
 use proptest::prelude::*;
 use tokio::runtime::Runtime;
 
@@ -88,7 +88,7 @@ proptest! {
         let runtime = Runtime::new().expect("runtime");
         runtime.block_on(async move {
             let id = "ledger-reload";
-            let repo = HashMapRepository::new();
+            let repo = InMemoryRepository::new();
             let ledger_repo = repo.aggregate::<Ledger>();
 
             // Build and commit the whole sequence at once.
@@ -117,7 +117,7 @@ proptest! {
         let runtime = Runtime::new().expect("runtime");
         runtime.block_on(async move {
             let id = "ledger-snapshot";
-            let base = HashMapRepository::new();
+            let base = InMemoryRepository::new();
 
             // Commit through a snapshot-enabled repo, one command per cycle so
             // snapshots actually trigger at the chosen frequency. Each cycle does

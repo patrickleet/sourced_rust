@@ -1,20 +1,20 @@
 //! Basic microsvc integration tests — exercises dispatch with a real repository.
 
 use distributed::microsvc::{Context, HandlerError, Routes, Service, Session};
-use distributed::{AggregateBuilder, HashMapRepository};
+use distributed::{AggregateBuilder, InMemoryRepository};
 use serde_json::json;
 
 use crate::models::counter::{Counter, CreateCounter, DecrementCounter, IncrementCounter};
 
 #[tokio::test]
 async fn full_lifecycle() {
-    let repo = HashMapRepository::new();
+    let repo = InMemoryRepository::new();
     let counter_repo = repo.clone().aggregate::<Counter>();
     let service = Service::new().routes(
         Routes::new()
             .with_dependencies(repo)
             .command("counter.initialize")
-            .handle(|ctx: &Context<HashMapRepository>| {
+            .handle(|ctx: &Context<InMemoryRepository>| {
                 let input = ctx.input::<CreateCounter>();
                 let counter_repo = ctx.repo().clone().aggregate::<Counter>();
                 async move {
@@ -26,7 +26,7 @@ async fn full_lifecycle() {
                 }
             })
             .command("counter.increment")
-            .handle(|ctx: &Context<HashMapRepository>| {
+            .handle(|ctx: &Context<InMemoryRepository>| {
                 let input = ctx.input::<IncrementCounter>();
                 let counter_repo = ctx.repo().clone().aggregate::<Counter>();
                 async move {
@@ -41,7 +41,7 @@ async fn full_lifecycle() {
                 }
             })
             .command("counter.decrement")
-            .handle(|ctx: &Context<HashMapRepository>| {
+            .handle(|ctx: &Context<InMemoryRepository>| {
                 let input = ctx.input::<DecrementCounter>();
                 let counter_repo = ctx.repo().clone().aggregate::<Counter>();
                 async move {

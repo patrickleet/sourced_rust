@@ -1,14 +1,14 @@
 //! Saga service handlers — coordinates the order fulfillment flow.
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::{AggregateRepository, HashMapRepository, InMemoryLockManager, QueuedRepository};
+use distributed::{AggregateRepository, InMemoryRepository, InMemoryLockManager, QueuedRepository};
 use serde_json::{json, Value};
 
 use super::messages::*;
 use crate::order::OrderFulfillmentSaga;
 
 pub type Repo = AggregateRepository<
-    QueuedRepository<HashMapRepository, InMemoryLockManager>,
+    QueuedRepository<InMemoryRepository, InMemoryLockManager>,
     OrderFulfillmentSaga,
 >;
 

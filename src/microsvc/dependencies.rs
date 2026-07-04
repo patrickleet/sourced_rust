@@ -67,10 +67,10 @@ pub trait HasOutboxStore {
 // Leaf repositories own the store. Each calls its inherent `outbox_store()` —
 // inherent methods take precedence over the trait method of the same name, so
 // `self.outbox_store()` here does not recurse.
-impl HasOutboxStore for crate::HashMapRepository {
-    type OutboxStore = crate::HashMapOutboxStore;
+impl HasOutboxStore for crate::InMemoryRepository {
+    type OutboxStore = crate::InMemoryOutboxStore;
     fn outbox_store(&self) -> Self::OutboxStore {
-        crate::HashMapRepository::outbox_store(self)
+        crate::InMemoryRepository::outbox_store(self)
     }
 }
 
@@ -226,10 +226,10 @@ mod tests {
         // AggregateRepository -> QueuedRepository wrapper chain the canonical
         // `repo.queued().aggregate::<A>()` builder produces. `A` is unbounded,
         // so the unit type stands in for any aggregate.
-        assert_has_outbox_store::<crate::HashMapRepository>();
-        assert_has_outbox_store::<AggregateRepository<crate::HashMapRepository, ()>>();
+        assert_has_outbox_store::<crate::InMemoryRepository>();
+        assert_has_outbox_store::<AggregateRepository<crate::InMemoryRepository, ()>>();
         assert_has_outbox_store::<
-            AggregateRepository<crate::QueuedRepository<crate::HashMapRepository>, ()>,
+            AggregateRepository<crate::QueuedRepository<crate::InMemoryRepository>, ()>,
         >();
     }
 }

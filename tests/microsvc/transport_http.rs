@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use distributed::microsvc::{self, Routes, Service};
-use distributed::{AggregateBuilder, HashMapRepository, Queueable};
+use distributed::{AggregateBuilder, InMemoryRepository, Queueable};
 use serde_json::json;
 
 use crate::handlers;
@@ -13,7 +13,7 @@ use crate::models::counter::Counter;
 
 fn counter_service() -> Arc<Service> {
     Arc::new(Service::new().routes(distributed::routes!(
-        Routes::new().with_repo(HashMapRepository::new().queued().aggregate::<Counter>()),
+        Routes::new().with_repo(InMemoryRepository::new().queued().aggregate::<Counter>()),
         command handlers::counter_create,
         command handlers::counter_increment,
         command handlers::whoami,
