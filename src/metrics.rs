@@ -5,7 +5,7 @@
 //! for HTTP scrape endpoints.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard as StdMutexGuard, OnceLock};
 use std::time::Duration;
 
 use crate::bus::MessageKind;
@@ -20,7 +20,7 @@ const HISTOGRAM_BUCKETS: [f64; 11] = [
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
 
 #[cfg(test)]
-static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Record that a service exists so `/metrics` exposes a stable info series even
 /// before the first request.
@@ -116,7 +116,9 @@ pub fn prometheus_text() -> String {
 ///
 /// This is intended for workers and services whose primary transport is not
 /// HTTP. Run it on a small side port so Prometheus can scrape the same
-/// framework metrics that the bus/outbox/runtime paths record.
+/// framework metrics that the bus/outbox/runtime paths record. The endpoint is
+/// unauthenticated; bind it only on a private listener or behind equivalent
+/// network controls.
 #[cfg(feature = "http")]
 pub fn http_router() -> axum::Router {
     http_router_with_state(MetricsHttpState::default())
@@ -135,7 +137,9 @@ pub fn http_router_for_service(service: impl Into<String>) -> axum::Router {
 ///
 /// This helper is deliberately independent of `microsvc::http`, so a NATS,
 /// Kafka, RabbitMQ, or outbox worker can expose Prometheus metrics without
-/// exposing command dispatch over HTTP.
+/// exposing command dispatch over HTTP. The endpoint is unauthenticated; do not
+/// bind it on a public interface unless an ingress or network policy restricts
+/// access.
 #[cfg(feature = "http")]
 pub async fn serve_http(addr: &str, service: Option<&str>) -> Result<(), std::io::Error> {
     let app = match service {
@@ -165,11 +169,18 @@ pub(crate) fn reset_for_tests() {
 }
 
 #[cfg(test)]
-pub(crate) fn lock_for_tests() -> MutexGuard<'static, ()> {
+pub(crate) fn lock_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
     TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .blocking_lock()
+}
+
+#[cfg(test)]
+pub(crate) async fn async_lock_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
-        .expect("metrics test lock poisoned")
+        .await
 }
 
 fn registry() -> &'static MetricsRegistry {
@@ -205,76 +216,84 @@ async fn metrics_http_handler(
 
 #[derive(Default)]
 struct MetricsRegistry {
-    inner: Mutex<MetricsInner>,
+    service_info: Mutex<BTreeMap<String, ()>>,
+    dispatch_total: Mutex<BTreeMap<DispatchCounterKey, u64>>,
+    dispatch_duration: Mutex<BTreeMap<DispatchHistogramKey, Histogram>>,
+    transport_messages_total: Mutex<BTreeMap<TransportMessageKey, u64>>,
+    transport_failures_total: Mutex<BTreeMap<TransportFailureKey, u64>>,
+    outbox_messages_total: Mutex<BTreeMap<OutboxMessageKey, u64>>,
+    outbox_pending_messages: Mutex<BTreeMap<String, f64>>,
+    outbox_oldest_pending_age_seconds: Mutex<BTreeMap<String, f64>>,
 }
 
 impl MetricsRegistry {
     fn describe_service(&self, service: String) {
-        self.inner().service_info.insert(service, ());
+        self.note_service(service);
     }
 
     fn record_microsvc_dispatch(&self, key: DispatchKey) {
-        let mut inner = self.inner();
-        inner
-            .dispatch_total
+        let service = key.service.clone();
+        self.lock(&self.dispatch_total)
             .entry(key.counter_key())
             .and_modify(|value| *value += 1)
             .or_insert(1);
-        inner
-            .dispatch_duration
+        self.lock(&self.dispatch_duration)
             .entry(key.histogram_key())
             .or_insert_with(Histogram::new)
             .observe(key.duration_seconds);
-        inner.service_info.insert(key.service, ());
+        self.note_service(service);
     }
 
     fn record_transport_message(&self, key: TransportMessageKey) {
-        let mut inner = self.inner();
-        inner
-            .transport_messages_total
-            .entry(key.clone())
+        let service = key.service.clone();
+        self.lock(&self.transport_messages_total)
+            .entry(key)
             .and_modify(|value| *value += 1)
             .or_insert(1);
-        inner.service_info.insert(key.service, ());
+        self.note_service(service);
     }
 
     fn record_transport_failure(&self, key: TransportFailureKey) {
-        let mut inner = self.inner();
-        inner
-            .transport_failures_total
-            .entry(key.clone())
+        let service = key.service.clone();
+        self.lock(&self.transport_failures_total)
+            .entry(key)
             .and_modify(|value| *value += 1)
             .or_insert(1);
-        inner.service_info.insert(key.service, ());
+        self.note_service(service);
     }
 
     fn record_outbox_messages(&self, key: OutboxMessageKey, count: u64) {
-        let mut inner = self.inner();
-        inner
-            .outbox_messages_total
-            .entry(key.clone())
+        let service = key.service.clone();
+        self.lock(&self.outbox_messages_total)
+            .entry(key)
             .and_modify(|value| *value += count)
             .or_insert(count);
-        inner.service_info.insert(key.service, ());
+        self.note_service(service);
     }
 
     fn set_outbox_backlog(&self, service: String, pending: f64, oldest_pending_age: Option<f64>) {
-        let mut inner = self.inner();
-        inner
-            .outbox_pending_messages
+        self.lock(&self.outbox_pending_messages)
             .insert(service.clone(), pending);
         if let Some(age) = oldest_pending_age {
-            inner
-                .outbox_oldest_pending_age_seconds
+            self.lock(&self.outbox_oldest_pending_age_seconds)
                 .insert(service.clone(), age);
         } else {
-            inner.outbox_oldest_pending_age_seconds.remove(&service);
+            self.lock(&self.outbox_oldest_pending_age_seconds)
+                .remove(&service);
         }
-        inner.service_info.insert(service, ());
+        self.note_service(service);
     }
 
     fn prometheus_text(&self) -> String {
-        let inner = self.inner();
+        let service_info = self.snapshot(&self.service_info);
+        let dispatch_total = self.snapshot(&self.dispatch_total);
+        let dispatch_duration = self.snapshot(&self.dispatch_duration);
+        let transport_messages_total = self.snapshot(&self.transport_messages_total);
+        let transport_failures_total = self.snapshot(&self.transport_failures_total);
+        let outbox_messages_total = self.snapshot(&self.outbox_messages_total);
+        let outbox_pending_messages = self.snapshot(&self.outbox_pending_messages);
+        let outbox_oldest_pending_age_seconds =
+            self.snapshot(&self.outbox_oldest_pending_age_seconds);
         let mut output = String::new();
 
         write_help_type(
@@ -283,7 +302,7 @@ impl MetricsRegistry {
             "Static Distributed service metadata.",
             "gauge",
         );
-        for service in inner.service_info.keys() {
+        for service in service_info.keys() {
             push_metric(
                 &mut output,
                 "distributed_service_info",
@@ -301,7 +320,7 @@ impl MetricsRegistry {
             "Total microsvc dispatches by service, message kind, message, and status.",
             "counter",
         );
-        for (key, value) in &inner.dispatch_total {
+        for (key, value) in &dispatch_total {
             push_metric(
                 &mut output,
                 "distributed_microsvc_dispatch_total",
@@ -316,7 +335,7 @@ impl MetricsRegistry {
             "Microsvc dispatch duration in seconds.",
             "histogram",
         );
-        for (key, histogram) in &inner.dispatch_duration {
+        for (key, histogram) in &dispatch_duration {
             for (bucket, count) in HISTOGRAM_BUCKETS.iter().zip(histogram.bucket_counts.iter()) {
                 let le = bucket.to_string();
                 let mut labels = key.labels();
@@ -356,7 +375,7 @@ impl MetricsRegistry {
             "Total transport receive/settle outcomes.",
             "counter",
         );
-        for (key, value) in &inner.transport_messages_total {
+        for (key, value) in &transport_messages_total {
             push_metric(
                 &mut output,
                 "distributed_transport_messages_total",
@@ -371,7 +390,7 @@ impl MetricsRegistry {
             "Total transport failures by class and chosen action.",
             "counter",
         );
-        for (key, value) in &inner.transport_failures_total {
+        for (key, value) in &transport_failures_total {
             push_metric(
                 &mut output,
                 "distributed_transport_failures_total",
@@ -386,7 +405,7 @@ impl MetricsRegistry {
             "Total outbox publish outcomes.",
             "counter",
         );
-        for (key, value) in &inner.outbox_messages_total {
+        for (key, value) in &outbox_messages_total {
             push_metric(
                 &mut output,
                 "distributed_outbox_messages_total",
@@ -401,7 +420,7 @@ impl MetricsRegistry {
             "Pending outbox message count.",
             "gauge",
         );
-        for (service, value) in &inner.outbox_pending_messages {
+        for (service, value) in &outbox_pending_messages {
             push_metric(
                 &mut output,
                 "distributed_outbox_pending_messages",
@@ -416,7 +435,7 @@ impl MetricsRegistry {
             "Age in seconds of the oldest pending outbox message.",
             "gauge",
         );
-        for (service, value) in &inner.outbox_oldest_pending_age_seconds {
+        for (service, value) in &outbox_oldest_pending_age_seconds {
             push_metric(
                 &mut output,
                 "distributed_outbox_oldest_pending_age_seconds",
@@ -431,26 +450,29 @@ impl MetricsRegistry {
 
     #[cfg(test)]
     fn reset(&self) {
-        *self.inner() = MetricsInner::default();
+        self.lock(&self.service_info).clear();
+        self.lock(&self.dispatch_total).clear();
+        self.lock(&self.dispatch_duration).clear();
+        self.lock(&self.transport_messages_total).clear();
+        self.lock(&self.transport_failures_total).clear();
+        self.lock(&self.outbox_messages_total).clear();
+        self.lock(&self.outbox_pending_messages).clear();
+        self.lock(&self.outbox_oldest_pending_age_seconds).clear();
     }
 
-    fn inner(&self) -> MutexGuard<'_, MetricsInner> {
-        self.inner
+    fn note_service(&self, service: String) {
+        self.lock(&self.service_info).insert(service, ());
+    }
+
+    fn snapshot<T: Clone>(&self, mutex: &Mutex<T>) -> T {
+        self.lock(mutex).clone()
+    }
+
+    fn lock<'a, T>(&self, mutex: &'a Mutex<T>) -> StdMutexGuard<'a, T> {
+        mutex
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-}
-
-#[derive(Default)]
-struct MetricsInner {
-    service_info: BTreeMap<String, ()>,
-    dispatch_total: BTreeMap<DispatchCounterKey, u64>,
-    dispatch_duration: BTreeMap<DispatchHistogramKey, Histogram>,
-    transport_messages_total: BTreeMap<TransportMessageKey, u64>,
-    transport_failures_total: BTreeMap<TransportFailureKey, u64>,
-    outbox_messages_total: BTreeMap<OutboxMessageKey, u64>,
-    outbox_pending_messages: BTreeMap<String, f64>,
-    outbox_oldest_pending_age_seconds: BTreeMap<String, f64>,
 }
 
 #[derive(Clone)]

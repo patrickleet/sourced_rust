@@ -97,6 +97,8 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Postgres {
          correlation_id, \
          causation_id";
     const ORDER_BY_CREATED_AT: &'static str = "created_at";
+    const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str =
+        "EXTRACT(EPOCH FROM MIN(created_at))::double precision AS oldest_created_at";
     const TABLE_DIALECT: TableSqlDialect = TableSqlDialect::Postgres;
 
     /// Epoch seconds; stored via `to_timestamp(...)` into `timestamptz`.

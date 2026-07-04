@@ -86,26 +86,10 @@ fn scaffold_generates_a_service_tree() {
 
 #[test]
 fn scaffold_metrics_prometheus_emits_operator_resources() {
-    let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scaffold-orders-metrics");
-    let _ = fs::remove_dir_all(&out_dir);
-
-    let status = Command::new(env!("CARGO_BIN_EXE_dctl"))
-        .args([
-            "scaffold",
-            "orders",
-            "--path",
-            out_dir.to_str().unwrap(),
-            "--store",
-            "postgres",
-            "--gitops",
-            "--metrics",
-            "prometheus",
-            "--distributed-path",
-            distributed_root().to_str().unwrap(),
-        ])
-        .status()
-        .expect("dctl should run");
-    assert!(status.success(), "dctl scaffold failed");
+    let out_dir = scaffold(
+        "scaffold-orders-metrics",
+        &["--store", "postgres", "--gitops", "--metrics", "prometheus"],
+    );
 
     for expected in [
         ".gitops/deploy/templates/servicemonitor.yaml",
@@ -117,7 +101,7 @@ fn scaffold_metrics_prometheus_emits_operator_resources() {
         );
     }
 
-    let cargo = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
+    let cargo = read(&out_dir, "Cargo.toml");
     assert!(cargo.contains("\"metrics\""), "Cargo.toml: {cargo}");
 }
 

@@ -26,6 +26,10 @@ Prometheus can scrape `GET /metrics` on the service's HTTP port. Hops
 ObserveStack should use the same scrape target and labels; dashboards can join
 these metrics with trace data by the stable `service` and message labels.
 
+The scrape route is unauthenticated by design. Do not expose `/metrics` on a
+public listener; keep it behind a private network, ingress policy, security
+group, or equivalent access control used only by the metrics collector.
+
 For services whose primary transport is not HTTP, run a metrics-only listener on
 a side port:
 
@@ -57,7 +61,8 @@ Metric labels are intentionally bounded:
   `dead_letter`, `park`, `ignored`, `published`, `released`, or `failed`.
 - `failure_class`: `retryable` or `permanent`.
 - `action`: failure-policy action such as `nack`, `dead_letter`, `park`,
-  `log_and_ack`, `stop`, or `recv_error`.
+  `log_and_ack`, `stop`, `recv_error`, or a settle failure label such as
+  `settle_ack`.
 
 Do not add IDs, trace IDs, user IDs, aggregate IDs, or other high-cardinality
 values as framework labels.

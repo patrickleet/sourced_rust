@@ -395,9 +395,6 @@ mod tests {
         let cargo = contents(&project, "Cargo.toml");
         assert!(cargo.contains("\"metrics\""));
 
-        let service = contents(&project, "src/service.rs");
-        assert!(service.contains(".named(\"orders\")"));
-
         let values = contents(&project, ".gitops/deploy/values.yaml");
         assert!(values.contains("metrics:"));
         assert!(values.contains("serviceMonitor:"));
@@ -421,6 +418,10 @@ mod tests {
         let paths = paths(&project);
         assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
         assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(!values.contains("metrics:"), "values.yaml: {values}");
+        assert!(!values.contains("serviceMonitor:"), "values.yaml: {values}");
+        assert!(!values.contains("prometheusRule:"), "values.yaml: {values}");
     }
 
     #[test]

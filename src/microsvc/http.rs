@@ -6,7 +6,8 @@
 //!
 //! - `POST /{command}` — dispatch a command. Body = JSON input, request headers → Session.
 //! - `GET /health` — health check returning `{ "ok": true, "commands": [...] }`.
-//! - `GET /metrics` — Prometheus text metrics (requires the `metrics` feature).
+//! - `GET /metrics` — Prometheus text metrics (requires the `metrics` feature);
+//!   unauthenticated by design and intended for private scrape networks only.
 //!
 //! ## Example
 //!
@@ -73,6 +74,10 @@ async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoRespons
 }
 
 /// `GET /metrics` — returns Prometheus text metrics.
+///
+/// This endpoint is unauthenticated by design for Prometheus scraping. Keep it
+/// behind a private listener, ingress policy, security group, or equivalent
+/// network restriction.
 #[cfg(feature = "metrics")]
 async fn metrics_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     crate::metrics::prometheus_response(service.name())

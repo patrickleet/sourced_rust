@@ -7,6 +7,7 @@
 //! Knative/HTTP ingress will call, so consumer execution stays identical across
 //! ingress shapes.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use super::source::{MessageSource, ReceivedMessage};
@@ -73,23 +74,36 @@ where
             match action {
                 FailureAction::Nack => {
                     let reason = error.to_string();
-                    received.nack(&reason).await?;
-                    record_transport_message(service, transport, kind, "nack");
+                    settle_and_record(service, transport, kind, "nack", "nack", || {
+                        received.nack(&reason)
+                    })
+                    .await?;
                 }
                 FailureAction::DeadLetter => {
                     let reason = error.to_string();
-                    received.dead_letter(&reason).await?;
-                    record_transport_message(service, transport, kind, "dead_letter");
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        "dead_letter",
+                        "dead_letter",
+                        || received.dead_letter(&reason),
+                    )
+                    .await?;
                 }
                 FailureAction::Park => {
                     let reason = error.to_string();
-                    received.park(&reason).await?;
-                    record_transport_message(service, transport, kind, "park");
+                    settle_and_record(service, transport, kind, "park", "park", || {
+                        received.park(&reason)
+                    })
+                    .await?;
                 }
                 FailureAction::LogAndAck => {
                     eprintln!("[bus::runner] dropping undecodable message after permanent failure: {error}");
-                    received.ack().await?;
-                    record_transport_message(service, transport, kind, "log_and_ack");
+                    settle_and_record(service, transport, kind, "ack", "log_and_ack", || {
+                        received.ack()
+                    })
+                    .await?;
                 }
                 FailureAction::Stop => return Err(TransportError::permanent(error.to_string())),
             }
@@ -99,31 +113,47 @@ where
         // dead-letter, so unrelated fan-out events don't pile into the DLQ.
         if !router.handles(received.message().kind, received.message().name()) {
             let kind = received.message().kind;
-            received.ack().await?;
-            record_transport_message(service, transport, kind, "ignored");
+            settle_and_record(service, transport, kind, "ack", "ignored", || {
+                received.ack()
+            })
+            .await?;
             continue;
         }
         let kind = received.message().kind;
         match dispatch(router.as_ref(), &options, received.message()).await {
             Ok(()) => {
-                received.ack().await?;
-                record_transport_message(service, transport, kind, "ack");
+                settle_and_record(service, transport, kind, "ack", "ack", || received.ack())
+                    .await?;
             }
             Err(error) => match options.failure_policy.resolve(&error) {
                 action @ FailureAction::Nack => {
                     record_transport_failure(service, transport, error.kind(), action);
-                    received.nack(&error.to_string()).await?;
-                    record_transport_message(service, transport, kind, "nack");
+                    let reason = error.to_string();
+                    settle_and_record(service, transport, kind, "nack", "nack", || {
+                        received.nack(&reason)
+                    })
+                    .await?;
                 }
                 action @ FailureAction::DeadLetter => {
                     record_transport_failure(service, transport, error.kind(), action);
-                    received.dead_letter(&error.to_string()).await?;
-                    record_transport_message(service, transport, kind, "dead_letter");
+                    let reason = error.to_string();
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        "dead_letter",
+                        "dead_letter",
+                        || received.dead_letter(&reason),
+                    )
+                    .await?;
                 }
                 action @ FailureAction::Park => {
                     record_transport_failure(service, transport, error.kind(), action);
-                    received.park(&error.to_string()).await?;
-                    record_transport_message(service, transport, kind, "park");
+                    let reason = error.to_string();
+                    settle_and_record(service, transport, kind, "park", "park", || {
+                        received.park(&reason)
+                    })
+                    .await?;
                 }
                 FailureAction::LogAndAck => {
                     record_transport_failure(
@@ -136,8 +166,10 @@ where
                         "[bus::runner] dropping message '{}' after permanent failure: {error}",
                         received.message().name()
                     );
-                    received.ack().await?;
-                    record_transport_message(service, transport, kind, "log_and_ack");
+                    settle_and_record(service, transport, kind, "ack", "log_and_ack", || {
+                        received.ack()
+                    })
+                    .await?;
                 }
                 FailureAction::Stop => {
                     record_transport_failure(service, transport, error.kind(), FailureAction::Stop);
@@ -147,6 +179,45 @@ where
         }
     }
     Ok(())
+}
+
+async fn settle_and_record<F, Fut>(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    settle_action: &'static str,
+    outcome: &'static str,
+    settle: F,
+) -> Result<(), TransportError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), TransportError>>,
+{
+    match settle().await {
+        Ok(()) => {
+            record_transport_message(service, transport, kind, outcome);
+            Ok(())
+        }
+        Err(error) => {
+            record_transport_failure(
+                service,
+                transport,
+                error.kind(),
+                settle_error_action(settle_action),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn settle_error_action(action: &'static str) -> &'static str {
+    match action {
+        "ack" => "settle_ack",
+        "nack" => "settle_nack",
+        "dead_letter" => "settle_dead_letter",
+        "park" => "settle_park",
+        _ => "settle_error",
+    }
 }
 
 async fn recv_next<S: MessageSource>(
@@ -517,6 +588,47 @@ mod tests {
                 "distributed_transport_failures_total{service=\"metrics-runner-settlement\",transport=\"unknown\",failure_class=\"retryable\",action=\"nack\"} 1"
             ),
             "metrics should include the retryable failure action:\n{text}"
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_record_settle_failures_before_propagating() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let recorder = Recorder::new();
+        let svc = Arc::new(
+            router(&recorder)
+                .as_ref()
+                .clone()
+                .named("metrics-runner-settle-failure"),
+        );
+        let source = FakeSource {
+            queue: vec![event_message("ok", None)].into_iter().collect(),
+            recorder,
+            settle_ok: false,
+            recv_error: false,
+            decode_error: false,
+        };
+
+        let outcome = block_on(run_source(svc, source, RunOptions::idempotent()));
+        assert!(outcome
+            .expect_err("settle error should propagate")
+            .is_retryable());
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_transport_failures_total{service=\"metrics-runner-settle-failure\",transport=\"unknown\",failure_class=\"retryable\",action=\"settle_ack\"} 1"
+            ),
+            "metrics should include the settle failure:\n{text}"
+        );
+        assert!(
+            !text.contains(
+                "distributed_transport_messages_total{service=\"metrics-runner-settle-failure\",transport=\"unknown\",message_kind=\"event\",outcome=\"ack\"} 1"
+            ),
+            "settle failure should not record an ack outcome:\n{text}"
         );
     }
 

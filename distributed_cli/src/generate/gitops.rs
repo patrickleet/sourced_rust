@@ -184,7 +184,9 @@ appVersion: "0.1.0"
             .bus
             .map(|bus| format!("bus:\n  kind: {}\n", bus.kind()))
             .unwrap_or_default();
-        let metrics = if self.metrics == Some(MetricsTarget::Prometheus) {
+        let metrics = if self.metrics == Some(MetricsTarget::Prometheus)
+            && self.transport == ServiceTransport::Http
+        {
             r#"metrics:
   enabled: true
   path: /metrics

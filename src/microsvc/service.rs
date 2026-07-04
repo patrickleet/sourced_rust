@@ -1156,7 +1156,7 @@ mod tests {
     #[cfg(feature = "metrics")]
     #[tokio::test]
     async fn metrics_bucket_unknown_command_under_fixed_message_label() {
-        let _guard = crate::metrics::lock_for_tests();
+        let _guard = crate::metrics::async_lock_for_tests().await;
         crate::metrics::reset_for_tests();
 
         let service = test_service(
