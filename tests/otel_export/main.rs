@@ -22,9 +22,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
+use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig as _;
 use serde_json::{json, Value};
+use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[path = "../support/env.rs"]
@@ -49,14 +52,7 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
 
     // A fresh trace id per run so stale collector output can never satisfy the
     // assertion.
-    let trace_id = format!(
-        "{:032x}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            | 1
-    );
+    let trace_id = fresh_trace_id(1);
     let traceparent = format!("00-{trace_id}-{REMOTE_PARENT_SPAN_ID}-01");
 
     // The exporter pipeline a service binary would install.
@@ -94,20 +90,70 @@ async fn dispatch_span_reaches_collector_with_propagated_parent() {
         .await
         .expect("dispatch succeeds");
 
+    let nested_trace_id = fresh_trace_id(17);
+    let nested_traceparent = format!("00-{nested_trace_id}-{REMOTE_PARENT_SPAN_ID}-01");
+    let outer_span = tracing::info_span!("test.outer");
+    let parent_context = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(
+        &TraceparentExtractor {
+            traceparent: &nested_traceparent,
+        },
+    );
+    let _ = outer_span.set_parent(parent_context);
+    let nested_message = Message::new(
+        "orders.create",
+        MessageKind::Command,
+        br#"{"id":"o-2"}"#.to_vec(),
+    )
+    .with_id("evt-otel-nested")
+    .with_metadata("traceparent", &nested_traceparent);
+    service
+        .dispatch_message(&nested_message)
+        .instrument(outer_span)
+        .await
+        .expect("nested dispatch succeeds");
+
     provider.force_flush().expect("flush spans to collector");
     provider.shutdown().expect("shutdown provider");
 
-    let span = poll_for_span(&traces_file, &trace_id, Duration::from_secs(20));
+    let span = poll_for_span(
+        &traces_file,
+        &trace_id,
+        "distributed.microsvc.dispatch",
+        Duration::from_secs(20),
+    );
     assert_eq!(
         span["parentSpanId"].as_str(),
         Some(REMOTE_PARENT_SPAN_ID),
         "dispatch span must be parented to the incoming traceparent: {span}"
     );
+
+    let outer_span = poll_for_span(
+        &traces_file,
+        &nested_trace_id,
+        "test.outer",
+        Duration::from_secs(20),
+    );
+    let nested_dispatch_span = poll_for_span(
+        &traces_file,
+        &nested_trace_id,
+        "distributed.microsvc.dispatch",
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        outer_span["parentSpanId"].as_str(),
+        Some(REMOTE_PARENT_SPAN_ID),
+        "outer span must keep the incoming traceparent as its parent: {outer_span}"
+    );
+    assert_eq!(
+        nested_dispatch_span["parentSpanId"].as_str(),
+        outer_span["spanId"].as_str(),
+        "dispatch span must preserve the active local span hierarchy: {nested_dispatch_span}"
+    );
 }
 
 /// Poll the collector's file-exporter output until the framework dispatch span
 /// for `trace_id` appears, and return it.
-fn poll_for_span(path: &str, trace_id: &str, timeout: Duration) -> Value {
+fn poll_for_span(path: &str, trace_id: &str, span_name: &str, timeout: Duration) -> Value {
     let deadline = Instant::now() + timeout;
     loop {
         if let Ok(contents) = std::fs::read_to_string(path) {
@@ -115,14 +161,14 @@ fn poll_for_span(path: &str, trace_id: &str, timeout: Duration) -> Value {
                 let Ok(batch) = serde_json::from_str::<Value>(line) else {
                     continue;
                 };
-                if let Some(span) = find_dispatch_span(&batch, trace_id) {
+                if let Some(span) = find_span(&batch, trace_id, span_name) {
                     return span;
                 }
             }
         }
         assert!(
             Instant::now() < deadline,
-            "collector never exported the dispatch span for trace {trace_id}; \
+            "collector never exported span {span_name} for trace {trace_id}; \
              file {path} contents:\n{}",
             std::fs::read_to_string(path).unwrap_or_else(|e| format!("<unreadable: {e}>"))
         );
@@ -130,12 +176,18 @@ fn poll_for_span(path: &str, trace_id: &str, timeout: Duration) -> Value {
     }
 }
 
-fn find_dispatch_span(batch: &Value, trace_id: &str) -> Option<Value> {
+fn find_span(batch: &Value, trace_id: &str, span_name: &str) -> Option<Value> {
     for resource_spans in batch["resourceSpans"].as_array()? {
-        for scope_spans in resource_spans["scopeSpans"].as_array().unwrap_or(&vec![]) {
-            for span in scope_spans["spans"].as_array().unwrap_or(&vec![]) {
+        let Some(scope_spans) = resource_spans["scopeSpans"].as_array() else {
+            continue;
+        };
+        for scope_span in scope_spans {
+            let Some(spans) = scope_span["spans"].as_array() else {
+                continue;
+            };
+            for span in spans {
                 if span["traceId"].as_str() == Some(trace_id)
-                    && span["name"].as_str() == Some("distributed.microsvc.dispatch")
+                    && span["name"].as_str() == Some(span_name)
                 {
                     return Some(span.clone());
                 }
@@ -143,4 +195,31 @@ fn find_dispatch_span(batch: &Value, trace_id: &str) -> Option<Value> {
         }
     }
     None
+}
+
+fn fresh_trace_id(salt: u128) -> String {
+    format!(
+        "{:032x}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .wrapping_add(salt)
+            | 1
+    )
+}
+
+struct TraceparentExtractor<'a> {
+    traceparent: &'a str,
+}
+
+impl Extractor for TraceparentExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        key.eq_ignore_ascii_case("traceparent")
+            .then_some(self.traceparent)
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        vec!["traceparent"]
+    }
 }
