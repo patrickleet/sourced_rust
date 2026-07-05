@@ -1,0 +1,110 @@
+name: Observability Integration Tests
+
+# Reusable workflow: referenced via `uses: ./.github/workflows/integration-observability.yaml`
+# from both the PR-quality and push-to-main pipelines.
+#
+# Everything here is docker-level on purpose: promtool validates the Prometheus
+# exposition with Prometheus's own parser, a real OpenTelemetry Collector
+# receives OTLP spans, and kubeconform validates the scaffolded Prometheus
+# Operator manifests against published CRD schemas. Whether an operator
+# actually reconciles the ServiceMonitor is a platform concern, verified on a
+# live cluster — not re-proven per PR here.
+on:
+  workflow_call:
+
+jobs:
+  metrics-exposition:
+    name: Metrics Exposition (promtool)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      PROMTOOL: /usr/local/bin/promtool
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Install promtool
+        run: |
+          VERSION=3.4.1
+          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${VERSION}/prometheus-${VERSION}.linux-amd64.tar.gz" \
+            | tar -xz -C /tmp "prometheus-${VERSION}.linux-amd64/promtool"
+          sudo mv "/tmp/prometheus-${VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
+          promtool --version
+      - name: Run metrics exposition tests
+        run: cargo test --test metrics_exposition --features http,metrics --verbose
+
+  otel-export:
+    name: OTLP Export (collector)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://localhost:4318/v1/traces
+      OTEL_COLLECTOR_TRACES_FILE: ${{ github.workspace }}/target/otel-out/traces.json
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      # The collector needs a config file mount, which `services:` containers
+      # can't express, so start it as a step. `--user 0` lets its file exporter
+      # write to the bind-mounted output dir regardless of host uid mapping.
+      - name: Start OpenTelemetry Collector
+        run: |
+          mkdir -p target/otel-out && chmod 777 target/otel-out
+          docker run -d --user 0 --name otelcol -p 4318:4318 -p 4317:4317 \
+            -v "$PWD/tests/otel_export/collector-config.yaml:/etc/otelcol/config.yaml:ro" \
+            -v "$PWD/target/otel-out:/out" \
+            otel/opentelemetry-collector:0.116.1 --config /etc/otelcol/config.yaml
+          for i in $(seq 1 30); do
+            if docker logs otelcol 2>&1 | grep -q "Everything is ready"; then echo "collector up"; exit 0; fi
+            sleep 1
+          done
+          echo "collector never became ready"; docker logs otelcol; exit 1
+      - name: Run OTLP export tests
+        run: cargo test --test otel_export --features http,otel --verbose
+
+  scaffold-manifests:
+    name: Scaffolded Manifests (kubeconform)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Install kubeconform
+        run: |
+          VERSION=0.7.0
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v${VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp kubeconform
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+      - name: Scaffold service with metrics and tracing
+        run: |
+          cargo run -p distributed_cli --bin dctl -- scaffold observability-orders \
+            --path target/tmp/scaffold-observability \
+            --store in-memory --transport http \
+            --metrics prometheus --tracing --gitops \
+            --force --distributed-path .
+      - name: Render chart and validate against CRD schemas
+        run: |
+          helm template obs target/tmp/scaffold-observability/.gitops/deploy \
+            --set serviceMonitor.enabled=true \
+            --set prometheusRule.enabled=true \
+            --set observability.tracing.enabled=true \
+            > target/tmp/rendered.yaml
+          grep -q "kind: ServiceMonitor" target/tmp/rendered.yaml
+          grep -q "kind: PrometheusRule" target/tmp/rendered.yaml
+          grep -q "OTEL_SERVICE_NAME" target/tmp/rendered.yaml
+          kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            target/tmp/rendered.yaml

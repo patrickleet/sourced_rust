@@ -124,3 +124,23 @@ also includes a Prometheus Operator `ServiceMonitor` that scrapes the named
 Knative services can still generate the `/metrics` endpoint, but the generic
 GitOps renderer does not emit a `ServiceMonitor` for Knative because the correct
 scrape target is platform-specific.
+
+## Integration Tests
+
+CI verifies the observability surface at the docker level (see
+`integration-observability.yaml`):
+
+- `tests/metrics_exposition` drives real HTTP + outbox traffic, scrapes
+  `GET /metrics`, and lints the exposition with `promtool check metrics`
+  (skips when `PROMTOOL` is unset).
+- `tests/otel_export` builds a real OTLP pipeline the way a service binary
+  would, dispatches a message carrying a W3C `traceparent`, and asserts a real
+  OpenTelemetry Collector received `distributed.microsvc.dispatch` parented to
+  the incoming span (skips when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+  `OTEL_COLLECTOR_TRACES_FILE` are unset).
+- The scaffolded `ServiceMonitor` / `PrometheusRule` / OTLP env output is
+  rendered with `helm template` and validated against published CRD schemas
+  with `kubeconform`.
+
+Whether a Prometheus Operator actually reconciles the `ServiceMonitor` is a
+platform concern, verified on a live cluster rather than per PR.
