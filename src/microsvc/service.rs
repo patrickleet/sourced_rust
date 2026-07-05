@@ -1202,6 +1202,13 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_command() {
+        // This dispatch records the same {unnamed, unknown, unknown_command}
+        // series into the process-global registry that
+        // `metrics_bucket_unknown_command_under_fixed_message_label` asserts
+        // an exact count on — serialize against it.
+        #[cfg(feature = "metrics")]
+        let _guard = crate::metrics::async_lock_for_tests().await;
+
         let service = test_service(
             test_routes()
                 .command("ping")

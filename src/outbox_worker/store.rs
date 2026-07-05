@@ -102,6 +102,11 @@ impl OutboxClaimRef {
     }
 }
 
+/// Row bound for the default [`backlog_stats`] scan.
+///
+/// [`backlog_stats`]: OutboxStore::backlog_stats
+pub const BACKLOG_STATS_SCAN_LIMIT: usize = 1000;
+
 /// Store capability for claiming and updating durable outbox messages.
 pub trait OutboxStore: Send + Sync {
     /// List up to `limit` messages with the given status, in claim order
@@ -129,12 +134,21 @@ pub trait OutboxStore: Send + Sync {
 
     /// Return pending-row count and oldest pending creation time without
     /// requiring callers to page full rows. Backends with query support should
-    /// override this with `COUNT`/`MIN(created_at)` or equivalent.
+    /// override this with `COUNT`/`MIN(created_at)` or equivalent (both
+    /// in-tree stores do).
+    ///
+    /// The default pages up to [`BACKLOG_STATS_SCAN_LIMIT`] pending rows —
+    /// never the whole outbox, per the bound contract on
+    /// [`messages_by_status`]. The count saturates at that limit; the oldest
+    /// creation time stays exact because pending listings are in claim
+    /// (oldest-first) order.
+    ///
+    /// [`messages_by_status`]: OutboxStore::messages_by_status
     fn backlog_stats(
         &self,
     ) -> impl Future<Output = Result<OutboxBacklogStats, RepositoryError>> + Send + '_ {
         async move {
-            let pending = self.pending(usize::MAX).await?;
+            let pending = self.pending(BACKLOG_STATS_SCAN_LIMIT).await?;
             let oldest_created_at = pending.first().map(|message| message.created_at);
             Ok(OutboxBacklogStats {
                 pending: pending.len(),
@@ -665,6 +679,62 @@ mod tests {
                 oldest_created_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
             }
         );
+    }
+
+    /// The default `backlog_stats` must honor the mandatory listing bound —
+    /// a store that only implements the required methods must never see an
+    /// unbounded (`usize::MAX`) page-in from the gauge path.
+    #[tokio::test]
+    async fn default_backlog_stats_scan_is_bounded() {
+        struct LimitProbeStore;
+
+        impl OutboxStore for LimitProbeStore {
+            fn messages_by_status(
+                &self,
+                _status: OutboxMessageStatus,
+                limit: usize,
+            ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + '_
+            {
+                async move {
+                    assert_eq!(limit, BACKLOG_STATS_SCAN_LIMIT);
+                    Ok(Vec::new())
+                }
+            }
+
+            fn claim<'a>(
+                &'a self,
+                _request: ClaimOutboxMessages,
+            ) -> impl Future<Output = Result<Vec<OutboxMessage>, RepositoryError>> + Send + 'a
+            {
+                async move { unimplemented!("probe store only lists") }
+            }
+
+            fn complete<'a>(
+                &'a self,
+                _claim: &'a OutboxClaimRef,
+            ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+                async move { unimplemented!("probe store only lists") }
+            }
+
+            fn release<'a>(
+                &'a self,
+                _claim: &'a OutboxClaimRef,
+                _error: &'a str,
+            ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+                async move { unimplemented!("probe store only lists") }
+            }
+
+            fn fail<'a>(
+                &'a self,
+                _claim: &'a OutboxClaimRef,
+                _error: &'a str,
+            ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
+                async move { unimplemented!("probe store only lists") }
+            }
+        }
+
+        let stats = LimitProbeStore.backlog_stats().await.unwrap();
+        assert_eq!(stats, OutboxBacklogStats::default());
     }
 
     #[tokio::test]

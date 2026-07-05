@@ -10,14 +10,10 @@
 //! [`dispatch_batch`]: OutboxDispatcher::dispatch_batch
 //! [`dispatch_ids`]: OutboxDispatcher::dispatch_ids
 
-#[cfg(feature = "metrics")]
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
-#[cfg(feature = "metrics")]
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 #[cfg(feature = "metrics")]
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use futures_util::stream::{self, StreamExt};
 
@@ -287,56 +283,22 @@ where
     }
 }
 
-#[cfg(feature = "metrics")]
-const BACKLOG_GAUGE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-#[cfg(feature = "metrics")]
-static BACKLOG_GAUGE_REFRESHES: OnceLock<Mutex<HashMap<Option<String>, Instant>>> = OnceLock::new();
-
-/// Set the outbox backlog gauges from a lightweight pending count/oldest read.
-/// Shared by the dispatcher and after-commit publish hook so both report the
-/// same series. A store read failure skips the update rather than failing
-/// dispatch.
+/// Set the outbox backlog gauges from a lightweight pending count/oldest read
+/// ([`OutboxStore::backlog_stats`]). Shared by the dispatcher and after-commit
+/// publish hook so both report the same series.
+///
+/// Runs on every settle pass, deliberately unthrottled: refreshes are
+/// activity-driven (there is no timer in the crate), so skipping any pass —
+/// the final drain especially — would freeze the gauges at stale values and
+/// misfire backlog alerts in both directions. A store read failure skips the
+/// update rather than failing dispatch.
 #[cfg(feature = "metrics")]
 pub(crate) async fn record_backlog_gauges<S: OutboxStore>(store: &S, service: Option<&str>) {
-    if !should_refresh_backlog_gauges(service) {
-        return;
-    }
-
     if let Ok(stats) = store.backlog_stats().await {
         let oldest_pending_age = stats
             .oldest_created_at
             .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
         crate::metrics::set_outbox_backlog(service, stats.pending, oldest_pending_age);
-    }
-}
-
-#[cfg(feature = "metrics")]
-fn should_refresh_backlog_gauges(service: Option<&str>) -> bool {
-    let refreshes = BACKLOG_GAUGE_REFRESHES.get_or_init(|| Mutex::new(HashMap::new()));
-    let Ok(mut refreshes) = refreshes.lock() else {
-        return true;
-    };
-
-    let now = Instant::now();
-    let key = service.map(str::to_owned);
-    if refreshes
-        .get(&key)
-        .is_some_and(|last| now.duration_since(*last) < BACKLOG_GAUGE_REFRESH_INTERVAL)
-    {
-        return false;
-    }
-
-    refreshes.insert(key, now);
-    true
-}
-
-#[cfg(all(test, feature = "metrics"))]
-fn reset_backlog_gauge_refreshes_for_tests() {
-    if let Some(refreshes) = BACKLOG_GAUGE_REFRESHES.get() {
-        refreshes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
     }
 }
 
@@ -814,7 +776,6 @@ mod tests {
     fn metrics_record_publish_outcomes_and_backlog_gauges() {
         let _guard = crate::metrics::lock_for_tests();
         crate::metrics::reset_for_tests();
-        reset_backlog_gauge_refreshes_for_tests();
 
         let repo = InMemoryRepository::new();
         let id = store_message(&repo, outbox("evt-1"));
@@ -838,40 +799,26 @@ mod tests {
 
     #[cfg(feature = "metrics")]
     #[test]
-    fn backlog_gauges_are_throttled_per_service() {
+    fn backlog_gauges_observe_latest_backlog_on_every_refresh() {
         let _guard = crate::metrics::lock_for_tests();
         crate::metrics::reset_for_tests();
-        reset_backlog_gauge_refreshes_for_tests();
 
         let repo = InMemoryRepository::new();
         store_message(&repo, outbox("evt-1"));
-
         block_on(record_backlog_gauges(
             &repo.outbox_store(),
-            Some("orders-throttle"),
+            Some("orders-refresh"),
         ));
         store_message(&repo, outbox("evt-2"));
         block_on(record_backlog_gauges(
             &repo.outbox_store(),
-            Some("orders-throttle"),
+            Some("orders-refresh"),
         ));
 
         let text = crate::metrics::prometheus_text();
         assert!(
-            text.contains("distributed_outbox_pending_messages{service=\"orders-throttle\"} 1"),
-            "second immediate refresh should be throttled:\n{text}"
-        );
-
-        reset_backlog_gauge_refreshes_for_tests();
-        block_on(record_backlog_gauges(
-            &repo.outbox_store(),
-            Some("orders-throttle"),
-        ));
-
-        let text = crate::metrics::prometheus_text();
-        assert!(
-            text.contains("distributed_outbox_pending_messages{service=\"orders-throttle\"} 2"),
-            "refresh after throttle reset should observe the latest backlog:\n{text}"
+            text.contains("distributed_outbox_pending_messages{service=\"orders-refresh\"} 2"),
+            "every refresh must observe the current backlog, never a stale snapshot:\n{text}"
         );
     }
 }

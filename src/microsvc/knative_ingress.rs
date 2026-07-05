@@ -118,7 +118,11 @@ fn inject_http_trace_context(headers: &HeaderMap, metadata: &mut Vec<(String, St
         traceparent: header(headers, TRACEPARENT).map(str::to_string),
         tracestate: header(headers, TRACESTATE).map(str::to_string),
     };
-    if !context.is_empty() {
+    // W3C tracestate is only meaningful alongside a traceparent, so HTTP
+    // headers win only when they carry one. A tracestate-only header set must
+    // not disturb trace context the message already carries (e.g. a
+    // ce-traceparent extension stored as `traceparent` metadata).
+    if context.traceparent.is_some() {
         context.inject_vec(metadata);
     }
 }
@@ -286,6 +290,25 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn tracestate_only_headers_preserve_existing_trace_extensions() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let h = headers(&[
+            ("ce-id", "evt-1"),
+            ("ce-type", "order.created"),
+            ("ce-traceparent", traceparent),
+            ("tracestate", "vendor=value"),
+            ("content-type", "application/json"),
+        ]);
+        let body = Bytes::from_static(br#"{"order":"o1"}"#);
+
+        let message = parse_cloud_event(&h, &body).unwrap();
+
+        // Without an HTTP traceparent, headers must not disturb the trace
+        // context the event itself carries.
+        assert_eq!(message.traceparent(), Some(traceparent));
     }
 
     #[test]

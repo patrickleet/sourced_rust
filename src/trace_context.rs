@@ -29,6 +29,11 @@ pub struct TraceContext {
 
 impl TraceContext {
     /// Extract trace context from key/value metadata using case-insensitive keys.
+    ///
+    /// The first match per key wins. Metadata does not dedup keys on insert, so
+    /// this must agree with every other reader — `Message::traceparent()` and
+    /// OTel span-parent extraction are also first-match — or the value a service
+    /// reports for itself and the value it propagates downstream can diverge.
     pub fn from_metadata<I, K, V>(metadata: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -37,9 +42,12 @@ impl TraceContext {
     {
         let mut trace_context = Self::default();
         for (key, value) in metadata {
-            if key.as_ref().eq_ignore_ascii_case(TRACEPARENT) {
+            if trace_context.traceparent.is_none() && key.as_ref().eq_ignore_ascii_case(TRACEPARENT)
+            {
                 trace_context.traceparent = Some(value.as_ref().to_string());
-            } else if key.as_ref().eq_ignore_ascii_case(TRACESTATE) {
+            } else if trace_context.tracestate.is_none()
+                && key.as_ref().eq_ignore_ascii_case(TRACESTATE)
+            {
                 trace_context.tracestate = Some(value.as_ref().to_string());
             }
         }
@@ -64,17 +72,16 @@ impl TraceContext {
     }
 }
 
-#[cfg(feature = "otel")]
-pub(crate) fn set_span_parent_from_metadata(span: &tracing::Span, metadata: &[(String, String)]) {
-    use opentelemetry::trace::TraceContextExt as _;
-    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-
-    let parent_context = extract_otel_context_from_metadata(metadata);
-    if parent_context.span().span_context().is_valid() {
-        let _ = span.set_parent(parent_context);
-    }
-}
-
+/// Parent `span` on the message's W3C trace context — unless a local span is
+/// already active, in which case the ambient span wins by design and `span`
+/// nests under it via normal `tracing` parenting.
+///
+/// This is the single parenting rule for every framework span (HTTP/Knative
+/// dispatch, transport receive, outbox publish): a caller that opened a span
+/// before reaching the framework (an ingress middleware layer, an
+/// `#[instrument]`ed wrapper) owns the hierarchy, and is expected to have
+/// installed any remote context on that ambient span itself. Messages
+/// dispatched outside any span join their producer's trace directly.
 #[cfg(feature = "otel")]
 pub(crate) fn set_span_parent_from_metadata_if_no_current_span(
     span: &tracing::Span,
@@ -82,6 +89,17 @@ pub(crate) fn set_span_parent_from_metadata_if_no_current_span(
 ) {
     if tracing::Span::current().id().is_none() {
         set_span_parent_from_metadata(span, metadata);
+    }
+}
+
+#[cfg(feature = "otel")]
+fn set_span_parent_from_metadata(span: &tracing::Span, metadata: &[(String, String)]) {
+    use opentelemetry::trace::TraceContextExt as _;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let parent_context = extract_otel_context_from_metadata(metadata);
+    if parent_context.span().span_context().is_valid() {
+        let _ = span.set_parent(parent_context);
     }
 }
 
@@ -183,6 +201,24 @@ mod tests {
             TraceContext {
                 traceparent: Some(TRACEPARENT_VALUE.to_string()),
                 tracestate: Some("vendor=value".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn trace_context_first_match_wins_on_duplicate_keys() {
+        let context = TraceContext::from_metadata([
+            ("traceparent", TRACEPARENT_VALUE),
+            ("Traceparent", "00-later-duplicate-must-lose-01"),
+            ("tracestate", "vendor=first"),
+            ("TRACESTATE", "vendor=second"),
+        ]);
+
+        assert_eq!(
+            context,
+            TraceContext {
+                traceparent: Some(TRACEPARENT_VALUE.to_string()),
+                tracestate: Some("vendor=first".to_string()),
             }
         );
     }

@@ -249,7 +249,10 @@ async fn dispatch<R: MessageRouter, I>(
         use tracing::Instrument as _;
 
         let span = transport_receive_span(message);
-        crate::trace_context::set_span_parent_from_metadata(&span, &message.metadata);
+        crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+            &span,
+            &message.metadata,
+        );
         return async {
             options
                 .validate_message_id(message)
