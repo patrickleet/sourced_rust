@@ -76,6 +76,16 @@ pub(crate) fn set_span_parent_from_metadata(span: &tracing::Span, metadata: &[(S
 }
 
 #[cfg(feature = "otel")]
+pub(crate) fn set_span_parent_from_metadata_if_no_current_span(
+    span: &tracing::Span,
+    metadata: &[(String, String)],
+) {
+    if tracing::Span::current().id().is_none() {
+        set_span_parent_from_metadata(span, metadata);
+    }
+}
+
+#[cfg(feature = "otel")]
 fn extract_otel_context_from_metadata(metadata: &[(String, String)]) -> opentelemetry::Context {
     opentelemetry_sdk::propagation::TraceContextPropagator::new()
         .extract(&MetadataExtractor { metadata })

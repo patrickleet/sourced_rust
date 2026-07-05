@@ -438,7 +438,10 @@ async fn publish_with_span<P: MessagePublisher>(
         use tracing::Instrument as _;
 
         let span = outbox_publish_span(&message);
-        crate::trace_context::set_span_parent_from_metadata(&span, &message.metadata);
+        crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+            &span,
+            &message.metadata,
+        );
         return publisher.publish(message).instrument(span).await;
     }
 

@@ -717,7 +717,10 @@ impl Service {
             use tracing::Instrument as _;
 
             let span = microsvc_dispatch_span(message);
-            crate::trace_context::set_span_parent_from_metadata(&span, &message.metadata);
+            crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+                &span,
+                &message.metadata,
+            );
             return self.invoke(message, input, session).instrument(span).await;
         }
 
@@ -979,8 +982,6 @@ mod tests {
         QueuedRepository,
     };
     use serde_json::json;
-    #[cfg(feature = "metrics")]
-    use std::future::Future;
 
     #[derive(Default)]
     struct RouteComboAggregate {
@@ -1005,15 +1006,6 @@ mod tests {
 
     fn test_service(routes: Routes<()>) -> Service {
         Service::new().routes(routes)
-    }
-
-    #[cfg(feature = "metrics")]
-    fn block_on<F: Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime should build")
-            .block_on(future)
     }
 
     #[test]
@@ -1231,8 +1223,9 @@ mod tests {
                 .handle(|_ctx: &Context<()>| async move { Ok(json!({})) }),
         );
 
-        let result =
-            block_on(service.dispatch("attacker-controlled-path", json!({}), Session::new()));
+        let result = service
+            .dispatch("attacker-controlled-path", json!({}), Session::new())
+            .await;
         assert!(matches!(result, Err(HandlerError::UnknownCommand(_))));
 
         let text = crate::metrics::prometheus_text();
