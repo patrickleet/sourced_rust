@@ -5,6 +5,8 @@ use std::time::SystemTime;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE};
+
 pub const BITCODE_PAYLOAD_CODEC: &str = "bitcode";
 pub const BITCODE_PAYLOAD_CODEC_VERSION: u16 = 1;
 
@@ -231,12 +233,27 @@ impl EventRecord {
 
     /// Get the correlation ID, if set.
     pub fn correlation_id(&self) -> Option<&str> {
-        self.meta("correlation_id")
+        self.meta(CORRELATION_ID)
     }
 
     /// Get the causation ID, if set.
     pub fn causation_id(&self) -> Option<&str> {
-        self.meta("causation_id")
+        self.meta(CAUSATION_ID)
+    }
+
+    /// Get the W3C `traceparent`, if set.
+    pub fn traceparent(&self) -> Option<&str> {
+        self.meta(TRACEPARENT)
+    }
+
+    /// Get the W3C `tracestate`, if set.
+    pub fn tracestate(&self) -> Option<&str> {
+        self.meta(TRACESTATE)
+    }
+
+    /// Extract W3C trace context from event metadata.
+    pub fn trace_context(&self) -> TraceContext {
+        TraceContext::from_metadata(self.metadata.iter())
     }
 }
 
@@ -319,6 +336,24 @@ mod tests {
         assert_eq!(record.correlation_id(), Some("req-123"));
         assert_eq!(record.meta("user_id"), Some("u-1"));
         assert_eq!(record.causation_id(), None);
+    }
+
+    #[test]
+    fn trace_context_helpers_read_event_metadata() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+        );
+        meta.insert("tracestate".to_string(), "vendor=value".to_string());
+
+        let record = EventRecord::with_metadata("test_event", vec![], 1, meta);
+
+        assert_eq!(
+            record.traceparent(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        );
+        assert_eq!(record.tracestate(), Some("vendor=value"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use distributed::bus::{
     MessagePublisher, RunOptions, TransportError,
 };
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
+use distributed::TRACEPARENT;
 use serde_json::json;
 
 // Shared broker-test helpers (recording_for, bus scenarios). `unique` mixes
@@ -87,7 +88,11 @@ async fn message_id_and_metadata_survive_the_round_trip() {
         .publish(
             Message::new(&topic, MessageKind::Event, br#"{"k":"v"}"#.to_vec())
                 .with_id("evt-1")
-                .with_metadata("correlation_id", "corr-9"),
+                .with_metadata("correlation_id", "corr-9")
+                .with_metadata(
+                    TRACEPARENT,
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                ),
         )
         .await
         .expect("publish");
@@ -109,6 +114,7 @@ async fn message_id_and_metadata_survive_the_round_trip() {
                     let recorded = Some((
                         m.id().map(str::to_string),
                         m.correlation_id().map(str::to_string),
+                        m.traceparent().map(str::to_string),
                         m.payload().to_vec(),
                     ));
                     *o.lock().unwrap() = recorded;
@@ -123,7 +129,11 @@ async fn message_id_and_metadata_survive_the_round_trip() {
     let got = observed.lock().unwrap().clone().expect("handler ran");
     assert_eq!(got.0.as_deref(), Some("evt-1"));
     assert_eq!(got.1.as_deref(), Some("corr-9"));
-    assert_eq!(got.2, br#"{"k":"v"}"#.to_vec());
+    assert_eq!(
+        got.2.as_deref(),
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    );
+    assert_eq!(got.3, br#"{"k":"v"}"#.to_vec());
 }
 
 // ---- KafkaBus: shared group = listen (point-to-point); group-per-service = subscribe (fan-out) ----

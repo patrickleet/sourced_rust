@@ -397,7 +397,7 @@ where
     // go out strictly in claim (created-at) order.
     let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
         stream::iter(work.into_iter().map(|(claim, message)| async move {
-            let result = publisher.publish(message).await;
+            let result = publish_with_span(publisher, message).await;
             (claim, result)
         }))
         .buffer_unordered(publish_concurrency.get())
@@ -425,6 +425,40 @@ where
     store.complete_many(&published).await?;
     outcome.published = published.len();
     Ok(outcome)
+}
+
+/// Publish one mapped outbox message, wrapped in a framework span when the
+/// `otel` feature is enabled (parented from the message's trace metadata).
+async fn publish_with_span<P: MessagePublisher>(
+    publisher: &P,
+    message: Message,
+) -> Result<(), TransportError> {
+    #[cfg(feature = "otel")]
+    {
+        use tracing::Instrument as _;
+
+        let span = outbox_publish_span(&message);
+        crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+            &span,
+            &message.metadata,
+        );
+        return publisher.publish(message).instrument(span).await;
+    }
+
+    #[cfg(not(feature = "otel"))]
+    {
+        publisher.publish(message).await
+    }
+}
+
+#[cfg(feature = "otel")]
+fn outbox_publish_span(message: &Message) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.outbox.publish",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or("")
+    )
 }
 
 #[cfg(test)]
@@ -479,9 +513,16 @@ mod tests {
             id,
             "OrderCreated",
             b"\x01\x02".to_vec(),
-            [("correlation_id".to_string(), "corr-1".to_string())]
-                .into_iter()
-                .collect(),
+            [
+                ("correlation_id".to_string(), "corr-1".to_string()),
+                (
+                    "traceparent".to_string(),
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+                ),
+                ("tracestate".to_string(), "vendor=value".to_string()),
+            ]
+            .into_iter()
+            .collect(),
         )
         .unwrap()
     }
@@ -496,6 +537,11 @@ mod tests {
         assert_eq!(message.content_type, "application/octet-stream");
         // User metadata preserved; codec carried (namespaced) for the consumer.
         assert_eq!(message.correlation_id(), Some("corr-1"));
+        assert_eq!(
+            message.traceparent(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        );
+        assert_eq!(message.tracestate(), Some("vendor=value"));
         assert_eq!(message.metadata("x-sourced-payload-codec"), Some("bytes"));
         assert_eq!(
             message.metadata("x-sourced-payload-codec-version"),

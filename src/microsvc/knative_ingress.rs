@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 
 use crate::bus::{validate_message_name, Message, MessageKind};
 use crate::microsvc::{Service, MAX_HTTP_BODY_BYTES};
+use crate::trace_context::{TraceContext, TRACEPARENT, TRACESTATE};
 
 const STRUCTURED_CONTENT_TYPE: &str = "application/cloudevents+json";
 
@@ -103,10 +104,22 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// Parse a CloudEvent in binary or structured HTTP mode into a [`Message`].
 fn parse_cloud_event(headers: &HeaderMap, body: &Bytes) -> Result<Message, String> {
     let content_type = header(headers, "content-type").unwrap_or("");
-    if content_type.starts_with(STRUCTURED_CONTENT_TYPE) {
+    let mut message = if content_type.starts_with(STRUCTURED_CONTENT_TYPE) {
         parse_structured(body)
     } else {
         parse_binary(headers, body)
+    }?;
+    inject_http_trace_context(headers, &mut message.metadata);
+    Ok(message)
+}
+
+fn inject_http_trace_context(headers: &HeaderMap, metadata: &mut Vec<(String, String)>) {
+    let context = TraceContext {
+        traceparent: header(headers, TRACEPARENT).map(str::to_string),
+        tracestate: header(headers, TRACESTATE).map(str::to_string),
+    };
+    if !context.is_empty() {
+        context.inject_vec(metadata);
     }
 }
 
@@ -249,6 +262,33 @@ mod tests {
     }
 
     #[test]
+    fn binary_cloud_event_preserves_w3c_trace_headers() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let h = headers(&[
+            ("ce-id", "evt-1"),
+            ("ce-type", "order.created"),
+            ("ce-traceparent", "old-extension-value"),
+            ("traceparent", traceparent),
+            ("tracestate", "vendor=value"),
+            ("content-type", "application/json"),
+        ]);
+        let body = Bytes::from_static(br#"{"order":"o1"}"#);
+
+        let message = parse_cloud_event(&h, &body).unwrap();
+
+        assert_eq!(message.traceparent(), Some(traceparent));
+        assert_eq!(message.tracestate(), Some("vendor=value"));
+        assert_eq!(
+            message
+                .metadata
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("traceparent"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn parses_structured_cloud_event() {
         let h = headers(&[("content-type", "application/cloudevents+json")]);
         let body = Bytes::from(
@@ -267,6 +307,51 @@ mod tests {
         assert_eq!(message.name(), "order.created");
         assert_eq!(message.payload(), br#"{"order":"o2"}"#);
         assert_eq!(message.metadata("source"), Some("/orders"));
+    }
+
+    #[test]
+    fn structured_cloud_event_prefers_http_trace_headers_over_extensions() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let h = headers(&[
+            ("content-type", "application/cloudevents+json"),
+            ("traceparent", traceparent),
+        ]);
+        let body = Bytes::from(
+            json!({
+                "specversion": "1.0",
+                "id": "evt-2",
+                "type": "order.created",
+                "traceparent": "old-extension-value",
+                "data": {"order": "o2"},
+            })
+            .to_string(),
+        );
+
+        let message = parse_cloud_event(&h, &body).unwrap();
+
+        assert_eq!(message.traceparent(), Some(traceparent));
+    }
+
+    #[test]
+    fn structured_cloud_event_preserves_trace_extensions_without_http_headers() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let h = headers(&[("content-type", "application/cloudevents+json")]);
+        let body = Bytes::from(
+            json!({
+                "specversion": "1.0",
+                "id": "evt-2",
+                "type": "order.created",
+                "traceparent": traceparent,
+                "tracestate": "vendor=value",
+                "data": {"order": "o2"},
+            })
+            .to_string(),
+        );
+
+        let message = parse_cloud_event(&h, &body).unwrap();
+
+        assert_eq!(message.traceparent(), Some(traceparent));
+        assert_eq!(message.tracestate(), Some("vendor=value"));
     }
 
     #[test]

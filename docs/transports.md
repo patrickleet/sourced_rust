@@ -72,6 +72,12 @@ map to a canonical `Message` via `From<&OutboxMessage>`; framework-derived
 metadata (codec, destination, source aggregate) is namespaced under the reserved
 `x-sourced-` prefix so it cannot be shadowed by user metadata.
 
+Trace context is normal metadata. Distributed preserves W3C `traceparent` and
+`tracestate` across `Message`, `EventRecord`, and `OutboxMessage` carriers
+without requiring an OpenTelemetry SDK in the default build. See
+[`observability.md`](observability.md) for trace helpers, the optional `otel`
+span feature, and GitOps observability output.
+
 ## Adapters
 
 | Transport | Feature | Source / Publisher | Notes |

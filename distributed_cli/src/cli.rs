@@ -68,6 +68,9 @@ pub struct ScaffoldArgs {
     /// Generate placeholder read-model modules and register them in distributed_manifest().
     #[arg(long)]
     pub read_models: bool,
+    /// Enable Distributed tracing spans and GitOps OTLP environment values.
+    #[arg(long, visible_alias = "otel")]
+    pub tracing: bool,
     /// Command handler to scaffold. May be repeated.
     #[arg(long)]
     pub command: Vec<String>,
@@ -348,6 +351,7 @@ fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
         metrics: args.metrics.map(Into::into),
         models: args.model.clone(),
         read_models: args.read_models,
+        tracing: args.tracing,
         commands: args.command.clone(),
         events: args.event.clone(),
         distributed_dependency_path,
@@ -750,6 +754,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ok.slug(), "hops-ops/test-domain");
+    }
+
+    #[test]
+    fn scaffold_help_lists_otel_alias() {
+        let mut command = ScaffoldArgs::augment_args(clap::Command::new("scaffold"));
+        let mut help = Vec::new();
+        command.write_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+
+        assert!(help.contains("--tracing"));
+        assert!(help.contains("--otel"));
     }
 
     #[test]

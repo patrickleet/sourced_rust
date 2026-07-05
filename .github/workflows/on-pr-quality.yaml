@@ -28,3 +28,6 @@ jobs:
 
   distributed-cli:
     uses: ./.github/workflows/integration-distributed-cli.yaml
+
+  observability:
+    uses: ./.github/workflows/integration-observability.yaml

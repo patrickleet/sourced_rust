@@ -115,6 +115,27 @@ impl Scaffold {
             .unwrap_or_default()
     }
 
+    fn tracing_env_yaml(&self) -> String {
+        if !self.tracing {
+            return String::new();
+        }
+
+        let service_name = k8s_name(&self.names.package_name);
+        format!(
+            r#"            {{{{ if .Values.observability.tracing.enabled }}}}
+            - name: OTEL_SERVICE_NAME
+              value: "{service_name}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{{{ .Values.observability.tracing.otlpProtocol | quote }}}}
+            {{{{ if .Values.observability.tracing.otlpEndpoint }}}}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{{{ .Values.observability.tracing.otlpEndpoint | quote }}}}
+            {{{{ end }}}}
+            {{{{ end }}}}
+"#,
+        )
+    }
+
     fn knative_broker_names(&self) -> Vec<String> {
         let mut brokers = BTreeSet::new();
         for model in &self.models {
@@ -201,12 +222,18 @@ prometheusRule:
         } else {
             ""
         };
+        let tracing_enabled = self.tracing;
         format!(
             r#"image:
   repository: {image_repository}
   tag: latest
 service:
   port: 3000
+observability:
+  tracing:
+    enabled: {tracing_enabled}
+    otlpEndpoint: ""
+    otlpProtocol: grpc
 {bus}{metrics}
 "#,
             image_repository = self.image_repository(),
@@ -216,6 +243,7 @@ service:
     fn gitops_http_deployment_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
+        let tracing_env = self.tracing_env_yaml();
         format!(
             r#"apiVersion: apps/v1
 kind: Deployment
@@ -223,6 +251,8 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   replicas: 1
   selector:
@@ -232,6 +262,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {name}
+        app.kubernetes.io/component: service
+        hops.ops.com.ai/service: {name}
     spec:
       containers:
         - name: {name}
@@ -241,7 +273,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}
+{bus_env}{tracing_env}
 "#,
         )
     }
@@ -255,6 +287,8 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   selector:
     app.kubernetes.io/name: {name}
@@ -338,6 +372,7 @@ spec:
     fn gitops_knative_service_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
+        let tracing_env = self.tracing_env_yaml();
         format!(
             r#"apiVersion: serving.knative.dev/v1
 kind: Service
@@ -345,11 +380,17 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   template:
     metadata:
       annotations:
         autoscaling.knative.dev/min-scale: "0"
+      labels:
+        app.kubernetes.io/name: {name}
+        app.kubernetes.io/component: service
+        hops.ops.com.ai/service: {name}
     spec:
       containers:
         - image: {{{{ .Values.image.repository }}}}:{{{{ .Values.image.tag }}}}
@@ -358,7 +399,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}
+{bus_env}{tracing_env}
 "#,
         )
     }

@@ -30,6 +30,7 @@ pub mod sqlite_repo;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_repo;
 pub mod table;
+pub mod trace_context;
 
 // Re-export entity types at crate root for convenience
 pub use entity::{
@@ -127,7 +128,11 @@ pub use table::{
 
 pub use manifest::{
     DistributedManifestEnvelope, DistributedProjectManifest, MessageEndpointManifest,
-    ServiceManifest, TransportManifest, DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
+    MetricsEndpointManifest, ServiceManifest, ServiceObservabilityManifest, TraceExportMode,
+    TracePropagationMode, TracingManifest, TransportManifest, DISTRIBUTED_MANIFEST_SCHEMA_VERSION,
+};
+pub use trace_context::{
+    is_valid_traceparent, TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE,
 };
 
 // CommitBuilder: transactional batches of read models, outbox, and aggregates

@@ -6,6 +6,8 @@
 //! [`PayloadDecodeError`] (not `microsvc::HandlerError`), so the bus does not
 //! depend up into microsvc; microsvc maps it back via `From`.
 
+use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE};
+
 /// The kind of message a handler consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum MessageKind {
@@ -98,6 +100,12 @@ impl Message {
         self
     }
 
+    /// Add or replace W3C trace context metadata.
+    pub fn with_trace_context(mut self, context: &TraceContext) -> Self {
+        context.inject_vec(&mut self.metadata);
+        self
+    }
+
     /// Get the durable message id, if this message has one.
     pub fn id(&self) -> Option<&str> {
         self.id.as_deref()
@@ -140,12 +148,27 @@ impl Message {
 
     /// Get the correlation id, if present.
     pub fn correlation_id(&self) -> Option<&str> {
-        self.metadata("correlation_id")
+        self.metadata(CORRELATION_ID)
     }
 
     /// Get the causation id, if present.
     pub fn causation_id(&self) -> Option<&str> {
-        self.metadata("causation_id")
+        self.metadata(CAUSATION_ID)
+    }
+
+    /// Get the W3C `traceparent`, if present.
+    pub fn traceparent(&self) -> Option<&str> {
+        self.metadata(TRACEPARENT)
+    }
+
+    /// Get the W3C `tracestate`, if present.
+    pub fn tracestate(&self) -> Option<&str> {
+        self.metadata(TRACESTATE)
+    }
+
+    /// Extract W3C trace context from this message's metadata.
+    pub fn trace_context(&self) -> TraceContext {
+        TraceContext::from_metadata(self.metadata.iter().map(|(key, value)| (key, value)))
     }
 
     /// Decode the raw payload as JSON.
@@ -223,5 +246,50 @@ pub(crate) fn strip_address_prefix(address: String, prefix: Option<&str>) -> Str
             .map(str::to_string)
             .unwrap_or(address),
         None => address,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TRACEPARENT_VALUE: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    #[test]
+    fn message_trace_context_uses_case_insensitive_metadata() {
+        let message = Message::new("checkout.started", MessageKind::Event, Vec::new())
+            .with_metadata("TraceParent", TRACEPARENT_VALUE)
+            .with_metadata("TRACESTATE", "vendor=value");
+
+        assert_eq!(message.traceparent(), Some(TRACEPARENT_VALUE));
+        assert_eq!(
+            message.trace_context(),
+            TraceContext {
+                traceparent: Some(TRACEPARENT_VALUE.to_string()),
+                tracestate: Some("vendor=value".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn with_trace_context_replaces_duplicate_keys() {
+        let context = TraceContext {
+            traceparent: Some(TRACEPARENT_VALUE.to_string()),
+            tracestate: Some("vendor=value".to_string()),
+        };
+        let message = Message::new("checkout.started", MessageKind::Event, Vec::new())
+            .with_metadata("TraceParent", "old")
+            .with_trace_context(&context);
+
+        assert_eq!(message.traceparent(), Some(TRACEPARENT_VALUE));
+        assert_eq!(message.tracestate(), Some("vendor=value"));
+        assert_eq!(
+            message
+                .metadata
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(TRACEPARENT))
+                .count(),
+            1
+        );
     }
 }
