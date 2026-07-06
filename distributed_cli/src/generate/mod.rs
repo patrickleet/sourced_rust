@@ -452,11 +452,14 @@ mod tests {
         let values = contents(&project, ".gitops/deploy/values.yaml");
         assert!(values.contains("enabled: true"));
         assert!(values.contains("otlpEndpoint: \"\""));
+        assert!(!values.contains("otlpProtocol"));
 
         let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
         assert!(deployment.contains("OTEL_SERVICE_NAME"));
         assert!(deployment.contains("value: \"orders\""));
         assert!(!deployment.contains(".Chart.Name"));
+        assert!(deployment.contains("OTEL_EXPORTER_OTLP_PROTOCOL\n              value: \"grpc\""));
+        assert!(!deployment.contains(".Values.observability.tracing.otlpProtocol"));
         assert!(deployment.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
         assert!(deployment.contains(".Values.observability.tracing.otlpEndpoint"));
         assert!(deployment.contains(

@@ -126,7 +126,7 @@ impl Scaffold {
             - name: OTEL_SERVICE_NAME
               value: "{service_name}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
-              value: {{{{ .Values.observability.tracing.otlpProtocol | quote }}}}
+              value: "grpc"
             {{{{ if .Values.observability.tracing.otlpEndpoint }}}}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{{{ .Values.observability.tracing.otlpEndpoint | quote }}}}
@@ -233,7 +233,6 @@ observability:
   tracing:
     enabled: {tracing_enabled}
     otlpEndpoint: ""
-    otlpProtocol: grpc
 {bus}{metrics}
 "#,
             image_repository = self.image_repository(),
