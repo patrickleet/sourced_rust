@@ -19,6 +19,9 @@ pub(crate) mod metric_names {
     pub(crate) const MICROSVC_DISPATCH_TOTAL: &str = "distributed_microsvc_dispatch_total";
     pub(crate) const MICROSVC_DISPATCH_DURATION_SECONDS: &str =
         "distributed_microsvc_dispatch_duration_seconds";
+    pub(crate) const HTTP_SERVER_REQUESTS_TOTAL: &str = "distributed_http_server_requests_total";
+    pub(crate) const HTTP_SERVER_REQUEST_DURATION_SECONDS: &str =
+        "distributed_http_server_request_duration_seconds";
     pub(crate) const TRANSPORT_MESSAGES_TOTAL: &str = "distributed_transport_messages_total";
     pub(crate) const TRANSPORT_FAILURES_TOTAL: &str = "distributed_transport_failures_total";
     pub(crate) const OUTBOX_MESSAGES_TOTAL: &str = "distributed_outbox_messages_total";
@@ -34,6 +37,9 @@ pub(crate) mod metric_labels {
     pub(crate) const MESSAGE_KIND: &str = "message_kind";
     pub(crate) const MESSAGE: &str = "message";
     pub(crate) const STATUS: &str = "status";
+    pub(crate) const METHOD: &str = "method";
+    pub(crate) const ROUTE: &str = "route";
+    pub(crate) const STATUS_CODE: &str = "status_code";
     pub(crate) const TRANSPORT: &str = "transport";
     pub(crate) const OUTCOME: &str = "outcome";
     pub(crate) const FAILURE_CLASS: &str = "failure_class";
@@ -94,43 +100,6 @@ pub(crate) mod outbox_outcome {
     pub(crate) const PUBLISHED: &str = "published";
     pub(crate) const RELEASED: &str = "released";
     pub(crate) const FAILED: &str = "failed";
-}
-
-#[cfg(test)]
-#[cfg(feature = "metrics")]
-pub(crate) mod privacy_policy {
-    pub(crate) const ALLOWED_METRIC_LABELS: &[&str] = &[
-        super::metric_labels::SERVICE,
-        super::metric_labels::VERSION,
-        super::metric_labels::MESSAGE_KIND,
-        super::metric_labels::MESSAGE,
-        super::metric_labels::STATUS,
-        super::metric_labels::TRANSPORT,
-        super::metric_labels::OUTCOME,
-        super::metric_labels::FAILURE_CLASS,
-        super::metric_labels::ACTION,
-        super::metric_labels::LE,
-    ];
-
-    pub(crate) const FORBIDDEN_METRIC_LABELS: &[&str] = &[
-        "request_id",
-        "trace_id",
-        "span_id",
-        "correlation_id",
-        "causation_id",
-        "message_id",
-        "aggregate_id",
-        "aggregate_type",
-        "stream_id",
-        "user_id",
-        "tenant_id",
-        "payload",
-        "metadata",
-        "http_path",
-        "http_target",
-        "http_route",
-        "http_user_agent",
-    ];
 }
 
 #[cfg(feature = "metrics")]
@@ -228,4 +197,44 @@ pub(crate) fn transport_receive_span(message: &Message) -> tracing::Span {
 #[cfg(feature = "otel")]
 pub(crate) fn outbox_publish_span(message: &Message) -> tracing::Span {
     framework_message_span!("distributed.outbox.publish", message)
+}
+
+#[cfg(test)]
+#[cfg(feature = "metrics")]
+pub(crate) mod privacy_policy {
+    pub(crate) const ALLOWED_METRIC_LABELS: &[&str] = &[
+        super::metric_labels::SERVICE,
+        super::metric_labels::VERSION,
+        super::metric_labels::MESSAGE_KIND,
+        super::metric_labels::MESSAGE,
+        super::metric_labels::STATUS,
+        super::metric_labels::METHOD,
+        super::metric_labels::ROUTE,
+        super::metric_labels::STATUS_CODE,
+        super::metric_labels::TRANSPORT,
+        super::metric_labels::OUTCOME,
+        super::metric_labels::FAILURE_CLASS,
+        super::metric_labels::ACTION,
+        super::metric_labels::LE,
+    ];
+
+    pub(crate) const FORBIDDEN_METRIC_LABELS: &[&str] = &[
+        "request_id",
+        "trace_id",
+        "span_id",
+        "correlation_id",
+        "causation_id",
+        "message_id",
+        "aggregate_id",
+        "aggregate_type",
+        "stream_id",
+        "user_id",
+        "tenant_id",
+        "payload",
+        "metadata",
+        "http_path",
+        "http_target",
+        "http_route",
+        "http_user_agent",
+    ];
 }

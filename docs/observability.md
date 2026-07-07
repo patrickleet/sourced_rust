@@ -59,10 +59,11 @@ metadata already stored with events.
 
 ## Optional Span Feature
 
-The `otel` feature adds framework-owned `tracing` spans around dispatch,
-handler execution, transport receive, and outbox publish boundaries. When the
-incoming message carries W3C `traceparent` / `tracestate`, Distributed extracts
-that context and sets it as the OpenTelemetry parent for the framework span:
+The `otel` feature adds framework-owned `tracing` spans around HTTP request,
+dispatch, handler execution, transport receive, and outbox publish boundaries.
+When the incoming HTTP request or message carries W3C `traceparent` /
+`tracestate`, Distributed extracts that context and sets it as the OpenTelemetry
+parent for the framework span:
 
 ```toml
 [dependencies]
@@ -77,20 +78,42 @@ setup in the generated `main.rs` for the common case.
 
 Framework span names are intentionally bounded:
 
+- `GET /health`
+- `GET /metrics`
+- `POST /{command}`
+- `POST /`
+- `POST /cloudevent/{type}`
 - `distributed.microsvc.dispatch`
 - `distributed.handler`
 - `distributed.transport.receive`
 - `distributed.outbox.publish`
 
-Each span uses the same framework-owned message attributes:
+HTTP server spans are created only for Distributed-owned routers and are span
+kind `SERVER`. They use bounded HTTP attributes:
+
+- `http.request.method`
+- `http.route`
+- `http.response.status_code`
+- `network.protocol.name = "http"`
+
+Distributed intentionally emits `http.route` and omits `url.path` and
+`url.query` in this first pass so route telemetry cannot leak raw paths or query
+strings. A command HTTP request carrying `traceparent` creates a request span
+parented to that incoming context; `distributed.microsvc.dispatch` is then a
+child of the HTTP span. If a caller has already opened a local span before
+entering Distributed, the existing ambient-span rule still wins and framework
+spans nest under that local span.
+
+Message-oriented spans use these framework-owned message attributes:
 
 - `distributed.message.name`
 - `distributed.message.kind`
 - `messaging.message.id`
 
-Future spans should use the same helper path so new attributes are reviewed in
-one place. Do not add payload fields, user ids, aggregate ids, or raw metadata
-values as framework span attributes.
+Future spans should use the same helper paths so new attributes are reviewed in
+one place. Do not add payload fields, user ids, aggregate ids, raw URI paths,
+query strings, headers, cookies, session variables, or raw metadata values as
+framework span attributes.
 
 Recommended environment variables for OTLP exporters:
 
@@ -151,10 +174,12 @@ CI verifies the observability surface at the docker level (see
   `GET /metrics`, and lints the exposition with `promtool check metrics`
   (skips when `PROMTOOL` is unset).
 - `tests/otel_export` builds a real OTLP pipeline the way a service binary
-  would, dispatches a message carrying a W3C `traceparent`, and asserts a real
-  OpenTelemetry Collector received `distributed.microsvc.dispatch` parented to
-  the incoming span (skips when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
-  `OTEL_COLLECTOR_TRACES_FILE` are unset).
+  would, dispatches a message carrying a W3C `traceparent`, sends an HTTP
+  command request carrying `traceparent`, and asserts a real OpenTelemetry
+  Collector received the request span and `distributed.microsvc.dispatch` with
+  the expected parent/child relationships (skips when
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_COLLECTOR_TRACES_FILE` are
+  unset).
 - The scaffolded `ServiceMonitor` / `PrometheusRule` / OTLP env output is
   rendered with `helm template` and validated against published CRD schemas
   with `kubeconform`.
@@ -167,11 +192,11 @@ platform concern, verified on a live cluster rather than per PR.
 The default feature set propagates W3C trace context metadata only.
 
 The `metrics` feature records framework metrics and renders Prometheus text. It
-does not expose OpenTelemetry metrics or request-level HTTP telemetry.
+does not expose OpenTelemetry metrics.
 
-The `otel` feature creates framework spans and parents them from W3C metadata
-when available. It does not install subscribers, exporters, sampling rules, or
-resource attributes.
+The `otel` feature creates framework spans and parents them from W3C HTTP
+headers or message metadata when available. It does not install subscribers,
+exporters, sampling rules, or resource attributes.
 
 Future `logs` or private `diagnostics` features should build on the same
 bounded telemetry vocabulary. Logs may carry structured failure context, but

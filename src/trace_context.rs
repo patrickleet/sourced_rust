@@ -103,15 +103,47 @@ fn set_span_parent_from_metadata(span: &tracing::Span, metadata: &[(String, Stri
     }
 }
 
+#[cfg(all(feature = "otel", feature = "http"))]
+pub(crate) fn set_span_parent_from_headers_if_no_current_span(
+    span: &tracing::Span,
+    headers: &axum::http::HeaderMap,
+) {
+    if tracing::Span::current().id().is_none() {
+        set_span_parent_from_headers(span, headers);
+    }
+}
+
+#[cfg(all(feature = "otel", feature = "http"))]
+fn set_span_parent_from_headers(span: &tracing::Span, headers: &axum::http::HeaderMap) {
+    use opentelemetry::trace::TraceContextExt as _;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let parent_context = extract_otel_context_from_headers(headers);
+    if parent_context.span().span_context().is_valid() {
+        let _ = span.set_parent(parent_context);
+    }
+}
+
 #[cfg(feature = "otel")]
 fn extract_otel_context_from_metadata(metadata: &[(String, String)]) -> opentelemetry::Context {
     opentelemetry_sdk::propagation::TraceContextPropagator::new()
         .extract(&MetadataExtractor { metadata })
 }
 
+#[cfg(all(feature = "otel", feature = "http"))]
+fn extract_otel_context_from_headers(headers: &axum::http::HeaderMap) -> opentelemetry::Context {
+    opentelemetry_sdk::propagation::TraceContextPropagator::new()
+        .extract(&HeaderExtractor { headers })
+}
+
 #[cfg(feature = "otel")]
 struct MetadataExtractor<'a> {
     metadata: &'a [(String, String)],
+}
+
+#[cfg(all(feature = "otel", feature = "http"))]
+struct HeaderExtractor<'a> {
+    headers: &'a axum::http::HeaderMap,
 }
 
 #[cfg(feature = "otel")]
@@ -125,6 +157,17 @@ impl Extractor for MetadataExtractor<'_> {
 
     fn keys(&self) -> Vec<&str> {
         self.metadata.iter().map(|(key, _)| key.as_str()).collect()
+    }
+}
+
+#[cfg(all(feature = "otel", feature = "http"))]
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.headers.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.headers.keys().map(|key| key.as_str()).collect()
     }
 }
 

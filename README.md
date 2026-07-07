@@ -1122,6 +1122,7 @@ Routes:
 |---|---|---|
 | `POST` | `/:command` | Dispatch a command. Body = JSON input, headers = session variables. |
 | `GET` | `/health` | Health check: `{ "ok": true, "commands": ["counter.initialize", ...] }` |
+| `GET` | `/metrics` | Prometheus text metrics when the `metrics` feature is enabled. |
 
 ```bash
 curl -X POST http://localhost:3000/counter.initialize \
@@ -1485,6 +1486,12 @@ values keep those CRDs disabled until an environment explicitly enables them.
 Bus-only and worker services can expose the same registry on a side port with
 `distributed::metrics::serve_http`. See [`docs/metrics.md`](docs/metrics.md) for
 metric names, label rules, and GitOps details.
+
+HTTP services record request-count and duration metrics for Distributed-owned
+route templates (`/health`, `/metrics`, `/:command` as `/{command}`, `/`, and
+`/cloudevent/{type}`) separately from dispatch metrics. Request metrics capture
+pre-dispatch failures such as malformed JSON or body-limit rejection without
+recording raw paths, query strings, headers, session variables, or payload data.
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
 entrypoint (override with `--entrypoint`), which registers the [read

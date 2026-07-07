@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use distributed::bus::{MessagePublisher, TransportError};
-use distributed::microsvc::{self, Context, Message, Routes, Service};
+use distributed::microsvc::{self, Context, Message, Routes, Service, MAX_HTTP_BODY_BYTES};
 use distributed::outbox_worker::OutboxDispatcher;
 use distributed::{CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit};
 use serde_json::json;
@@ -112,9 +112,33 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
         .await
         .unwrap();
     assert_ne!(resp.status(), 200);
+    let unknown_status = resp.status().as_u16();
+
+    let health = client.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(health.status(), 200);
+
+    let bad_json = client
+        .post(format!("{base}/orders.create"))
+        .header("content-type", "application/json")
+        .body("{not valid json")
+        .send()
+        .await
+        .unwrap();
+    assert!(bad_json.status().is_client_error());
+
+    let oversized = client
+        .post(format!("{base}/orders.create"))
+        .header("content-type", "application/json")
+        .body("x".repeat(MAX_HTTP_BODY_BYTES + 1))
+        .send()
+        .await
+        .unwrap();
+    assert!(oversized.status().is_client_error());
 
     drive_outbox("orders-exposition").await;
 
+    let first_scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
+    assert_eq!(first_scrape.status(), 200);
     let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
     assert_eq!(scrape.status(), 200);
     let content_type = scrape
@@ -131,6 +155,23 @@ async fn exposition_covers_framework_families_and_passes_promtool() {
     let body = scrape.text().await.unwrap();
     for family in [
         "distributed_service_info{service=\"orders-exposition\"",
+        "distributed_http_server_requests_total{service=\"orders-exposition\",method=\"GET\",route=\"/health\",status_code=\"200\"}",
+        "distributed_http_server_requests_total{service=\"orders-exposition\",method=\"GET\",route=\"/metrics\",status_code=\"200\"}",
+        "distributed_http_server_requests_total{service=\"orders-exposition\",method=\"POST\",route=\"/{command}\",status_code=\"200\"}",
+        &format!(
+            "distributed_http_server_requests_total{{service=\"orders-exposition\",method=\"POST\",route=\"/{{command}}\",status_code=\"{unknown_status}\"}}"
+        ),
+        &format!(
+            "distributed_http_server_requests_total{{service=\"orders-exposition\",method=\"POST\",route=\"/{{command}}\",status_code=\"{}\"}}",
+            bad_json.status().as_u16()
+        ),
+        &format!(
+            "distributed_http_server_requests_total{{service=\"orders-exposition\",method=\"POST\",route=\"/{{command}}\",status_code=\"{}\"}}",
+            oversized.status().as_u16()
+        ),
+        "distributed_http_server_request_duration_seconds_bucket{service=\"orders-exposition\"",
+        "distributed_http_server_request_duration_seconds_sum{service=\"orders-exposition\"",
+        "distributed_http_server_request_duration_seconds_count{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_total{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_bucket{service=\"orders-exposition\"",
         "distributed_microsvc_dispatch_duration_seconds_sum{service=\"orders-exposition\"",
