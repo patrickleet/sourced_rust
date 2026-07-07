@@ -40,6 +40,7 @@ use sqlx::{ColumnIndex, Decode, Row, Type};
 
 use crate::sqlx_repo::is_sqlx_transient;
 
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::source::{MessageSource, ReceivedMessage};
 use super::{
     run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
@@ -315,10 +316,42 @@ impl<B: SqlBusDialect> SqlBus<B> {
 
 impl<B: SqlBusDialect> Bus for SqlBus<B> {
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
-        self.dialect.insert_queue(&message).await
+        record_direct_publish(
+            None,
+            B::BACKEND,
+            BusOperation::Send,
+            message,
+            |message| async { self.send_message_raw(message).await },
+        )
+        .await
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            B::BACKEND,
+            BusOperation::Publish,
+            message,
+            |message| async { self.publish_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.send_message_raw(message).await
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.publish_message_raw(message).await
+    }
+}
+
+impl<B: SqlBusDialect> SqlBus<B> {
+    async fn send_message_raw(&self, message: Message) -> Result<(), TransportError> {
+        self.dialect.insert_queue(&message).await
+    }
+
+    async fn publish_message_raw(&self, message: Message) -> Result<(), TransportError> {
         self.dialect.insert_log(&message).await
     }
 }

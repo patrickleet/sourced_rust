@@ -44,8 +44,8 @@ impl<B> Clone for BusPublisher<B> {
 impl<B: Bus> MessagePublisher for BusPublisher<B> {
     async fn publish(&self, message: Message) -> Result<(), TransportError> {
         match message.kind {
-            MessageKind::Command => self.bus.send_message(message).await,
-            MessageKind::Event => self.bus.publish_message(message).await,
+            MessageKind::Command => self.bus.send_outbox_message(message).await,
+            MessageKind::Event => self.bus.publish_outbox_message(message).await,
         }
     }
 }
@@ -119,6 +119,29 @@ mod tests {
                 Call::Send("ship.order".to_string()),
                 Call::Publish("order.shipped".to_string()),
             ]
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn built_in_bus_publisher_uses_outbox_raw_path_without_direct_metrics() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let bus = Arc::new(crate::bus::InMemoryBus::new());
+        let publisher = BusPublisher::new(bus);
+
+        block_on(publisher.publish(Message::new(
+            "order.shipped",
+            MessageKind::Event,
+            b"{}".to_vec(),
+        )))
+        .unwrap();
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            !text.contains("distributed_transport_publish_total{"),
+            "outbox-derived BusPublisher publishes must not record direct publish metrics:\n{text}"
         );
     }
 }

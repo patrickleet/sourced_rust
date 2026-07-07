@@ -34,6 +34,7 @@ use lapin::options::{
 use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, ExchangeKind};
 
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::rabbitmq::{connect_channel, message_properties, RabbitSource};
 use super::{
     retryable, run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions,
@@ -313,7 +314,39 @@ impl RabbitBus {
 }
 
 impl Bus for RabbitBus {
-    async fn send_message(&self, mut message: Message) -> Result<(), TransportError> {
+    async fn send_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "rabbitmq",
+            BusOperation::Send,
+            message,
+            |message| async { self.send_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "rabbitmq",
+            BusOperation::Publish,
+            message,
+            |message| async { self.publish_message_raw(message).await },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.send_message_raw(message).await
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.publish_message_raw(message).await
+    }
+}
+
+impl RabbitBus {
+    async fn send_message_raw(&self, mut message: Message) -> Result<(), TransportError> {
         checked_name(message.name())?;
         // Default exchange routes by routing key == queue name; declare the queue
         // (once per process) so the command is retained until a listener consumes it.
@@ -323,7 +356,7 @@ impl Bus for RabbitBus {
         self.publish_confirmed("", &queue, &message).await
     }
 
-    async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+    async fn publish_message_raw(&self, message: Message) -> Result<(), TransportError> {
         checked_name(message.name())?;
         let exchange = self.events_exchange()?;
         self.ensure_events_exchange(&exchange).await?;

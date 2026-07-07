@@ -56,7 +56,7 @@ Metric labels are intentionally bounded:
 - `status`: bounded dispatch status such as `success`, `unknown_command`,
   `decode_failed`, `guard_rejected`, `repository_error`, or `other_error`.
 - `transport`: built-in source label such as `in_memory`, `sqlite`,
-  `postgres`, `rabbitmq`, `kafka`, `nats`, or `outbox`.
+  `postgres`, `rabbitmq`, `kafka`, `nats`, or `knative`.
 - `outcome`: bounded settle/publish outcome such as `ack`, `nack`,
   `dead_letter`, `park`, `ignored`, `log_and_ack`, `published`, `released`, or
   `failed`.
@@ -83,6 +83,12 @@ metrics should use that vocabulary rather than introducing ad hoc labels.
   counter.
 - `distributed_transport_failures_total{service,transport,failure_class,action}`
   counter.
+- `distributed_transport_publish_total{service,transport,message_kind,outcome}`
+  counter for direct bus producer calls. `outcome` is `published` or `failed`.
+- `distributed_transport_publish_duration_seconds{service,transport,message_kind,outcome}`
+  histogram for direct bus producer call duration.
+- `distributed_transport_publish_failures_total{service,transport,message_kind,failure_class}`
+  counter for failed direct bus producer calls.
 - `distributed_outbox_messages_total{service,outcome}` counter.
 - `distributed_outbox_pending_messages{service}` gauge.
 - `distributed_outbox_oldest_pending_age_seconds{service}` gauge.
@@ -100,10 +106,22 @@ does not install an OpenTelemetry metrics SDK, emit request-level HTTP metrics,
 or record user payload data.
 
 Direct transport receive paths emit receive/settle counters and failure
-counters. Outbox dispatch emits publish outcomes and backlog gauges. Direct
-`MessagePublisher` calls outside the outbox path do not emit publish metrics in
-this release; instrumenting those calls should use the same bounded vocabulary
-and should stay separate from outbox publish outcomes.
+counters. Direct `Bus::send`, `Bus::publish`, `send_message`, and
+`publish_message` calls on built-in buses emit `distributed_transport_publish_*`
+metrics. A direct publish success means the adapter's durable publish threshold
+resolved `Ok`: in-memory accepted the message, SQL committed the insert,
+RabbitMQ confirmed the publish, Kafka acknowledged per `acks`, NATS JetStream
+returned a publish ack, or Knative/HTTP returned a successful broker response.
+If that threshold returns `Err`, the publish outcome is `failed` and the
+failure counter uses the error's `TransportErrorKind` as `retryable` or
+`permanent`.
+
+Outbox-derived publishes are intentionally separate. `BusOutboxPublishHook`,
+`BusPublisher`, `DynBusPublisher`, and `OutboxDispatcher` record outbox
+`published`, `released`, `failed`, and backlog metrics, but they use the buses'
+raw outbox publish path so those rows do not increment direct producer metrics.
+This avoids double-counting; outbox metrics and the `distributed.outbox.publish`
+span remain the authoritative producer signal for outbox rows.
 
 ## Scaffolded GitOps
 

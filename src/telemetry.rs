@@ -21,6 +21,11 @@ pub(crate) mod metric_names {
         "distributed_microsvc_dispatch_duration_seconds";
     pub(crate) const TRANSPORT_MESSAGES_TOTAL: &str = "distributed_transport_messages_total";
     pub(crate) const TRANSPORT_FAILURES_TOTAL: &str = "distributed_transport_failures_total";
+    pub(crate) const TRANSPORT_PUBLISH_TOTAL: &str = "distributed_transport_publish_total";
+    pub(crate) const TRANSPORT_PUBLISH_DURATION_SECONDS: &str =
+        "distributed_transport_publish_duration_seconds";
+    pub(crate) const TRANSPORT_PUBLISH_FAILURES_TOTAL: &str =
+        "distributed_transport_publish_failures_total";
     pub(crate) const OUTBOX_MESSAGES_TOTAL: &str = "distributed_outbox_messages_total";
     pub(crate) const OUTBOX_PENDING_MESSAGES: &str = "distributed_outbox_pending_messages";
     pub(crate) const OUTBOX_OLDEST_PENDING_AGE_SECONDS: &str =
@@ -67,6 +72,12 @@ pub(crate) mod transport_outcome {
     pub(crate) const PARK: &str = "park";
     pub(crate) const IGNORED: &str = "ignored";
     pub(crate) const LOG_AND_ACK: &str = "log_and_ack";
+}
+
+#[cfg(feature = "metrics")]
+pub(crate) mod transport_publish_outcome {
+    pub(crate) const PUBLISHED: &str = "published";
+    pub(crate) const FAILED: &str = "failed";
 }
 
 #[cfg(feature = "metrics")]
@@ -228,4 +239,21 @@ pub(crate) fn transport_receive_span(message: &Message) -> tracing::Span {
 #[cfg(feature = "otel")]
 pub(crate) fn outbox_publish_span(message: &Message) -> tracing::Span {
     framework_message_span!("distributed.outbox.publish", message)
+}
+
+#[cfg(feature = "otel")]
+pub(crate) fn transport_publish_span(
+    transport: &str,
+    operation: &str,
+    message: &Message,
+) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.transport.publish",
+        distributed.transport.name = %transport,
+        distributed.bus.operation = %operation,
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or(""),
+        distributed.producer.source = "direct",
+    )
 }

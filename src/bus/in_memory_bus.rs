@@ -13,6 +13,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use super::producer_telemetry::{record_direct_publish, BusOperation};
 use super::source::{MessageSource, ReceivedMessage};
 use super::Message;
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
@@ -62,10 +63,32 @@ impl InMemoryBus {
 
 impl Bus for InMemoryBus {
     async fn send_message(&self, message: Message) -> Result<(), TransportError> {
-        self.enqueue(message)
+        record_direct_publish(
+            None,
+            "in_memory",
+            BusOperation::Send,
+            message,
+            |message| async { self.enqueue(message) },
+        )
+        .await
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
+        record_direct_publish(
+            None,
+            "in_memory",
+            BusOperation::Publish,
+            message,
+            |message| async { self.append(message) },
+        )
+        .await
+    }
+
+    async fn send_outbox_message(&self, message: Message) -> Result<(), TransportError> {
+        self.enqueue(message)
+    }
+
+    async fn publish_outbox_message(&self, message: Message) -> Result<(), TransportError> {
         self.append(message)
     }
 }

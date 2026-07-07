@@ -36,6 +36,18 @@ const TRANSPORT_FAILURES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
     metric_names::TRANSPORT_FAILURES_TOTAL,
     "Total transport failures by class and chosen action.",
 );
+const TRANSPORT_PUBLISH_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::TRANSPORT_PUBLISH_TOTAL,
+    "Total direct transport publish outcomes.",
+);
+const TRANSPORT_PUBLISH_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::TRANSPORT_PUBLISH_DURATION_SECONDS,
+    "Direct transport publish duration in seconds.",
+);
+const TRANSPORT_PUBLISH_FAILURES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::TRANSPORT_PUBLISH_FAILURES_TOTAL,
+    "Total direct transport publish failures by class.",
+);
 const OUTBOX_MESSAGES_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
     metric_names::OUTBOX_MESSAGES_TOTAL,
     "Total outbox publish outcomes.",
@@ -104,6 +116,38 @@ pub fn record_transport_failure(
         transport: transport.to_string(),
         failure_class: failure_class.to_string(),
         action: action.to_string(),
+    });
+}
+
+/// Record one direct producer publish attempt.
+pub fn record_transport_publish(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    outcome: &str,
+    duration: Duration,
+) {
+    registry().record_transport_publish(TransportPublishKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        message_kind: kind.as_str().to_string(),
+        outcome: outcome.to_string(),
+        duration_seconds: duration.as_secs_f64(),
+    });
+}
+
+/// Record a classified direct producer publish failure.
+pub fn record_transport_publish_failure(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    failure_class: &str,
+) {
+    registry().record_transport_publish_failure(TransportPublishFailureKey {
+        service: service_label(service),
+        transport: transport.to_string(),
+        message_kind: kind.as_str().to_string(),
+        failure_class: failure_class.to_string(),
     });
 }
 
@@ -392,6 +436,9 @@ struct MetricsRegistry {
     dispatch_duration: Mutex<BTreeMap<DispatchHistogramKey, Histogram>>,
     transport_messages_total: Mutex<BTreeMap<TransportMessageKey, u64>>,
     transport_failures_total: Mutex<BTreeMap<TransportFailureKey, u64>>,
+    transport_publish_total: Mutex<BTreeMap<TransportPublishCounterKey, u64>>,
+    transport_publish_duration: Mutex<BTreeMap<TransportPublishHistogramKey, Histogram>>,
+    transport_publish_failures_total: Mutex<BTreeMap<TransportPublishFailureKey, u64>>,
     outbox_messages_total: Mutex<BTreeMap<OutboxMessageKey, u64>>,
     outbox_pending_messages: Mutex<BTreeMap<String, f64>>,
     outbox_oldest_pending_age_seconds: Mutex<BTreeMap<String, f64>>,
@@ -433,6 +480,28 @@ impl MetricsRegistry {
         self.note_service(service);
     }
 
+    fn record_transport_publish(&self, key: TransportPublishKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_publish_total)
+            .entry(key.counter_key())
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
+        self.lock(&self.transport_publish_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
+    fn record_transport_publish_failure(&self, key: TransportPublishFailureKey) {
+        let service = key.service.clone();
+        self.lock(&self.transport_publish_failures_total)
+            .entry(key)
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
+        self.note_service(service);
+    }
+
     fn record_outbox_messages(&self, key: OutboxMessageKey, count: u64) {
         let service = key.service.clone();
         self.lock(&self.outbox_messages_total)
@@ -461,6 +530,10 @@ impl MetricsRegistry {
         let dispatch_duration = self.clone_locked(&self.dispatch_duration);
         let transport_messages_total = self.clone_locked(&self.transport_messages_total);
         let transport_failures_total = self.clone_locked(&self.transport_failures_total);
+        let transport_publish_total = self.clone_locked(&self.transport_publish_total);
+        let transport_publish_duration = self.clone_locked(&self.transport_publish_duration);
+        let transport_publish_failures_total =
+            self.clone_locked(&self.transport_publish_failures_total);
         let outbox_messages_total = self.clone_locked(&self.outbox_messages_total);
         let outbox_pending_messages = self.clone_locked(&self.outbox_pending_messages);
         let outbox_oldest_pending_age_seconds =
@@ -509,6 +582,24 @@ impl MetricsRegistry {
                         .map(|(key, value)| MetricSample::counter(key.labels(), *value))
                         .collect(),
                 ),
+                TRANSPORT_PUBLISH_TOTAL_FAMILY.snapshot(
+                    transport_publish_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
+                TRANSPORT_PUBLISH_DURATION_FAMILY.snapshot(
+                    transport_publish_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                ),
+                TRANSPORT_PUBLISH_FAILURES_TOTAL_FAMILY.snapshot(
+                    transport_publish_failures_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
                 OUTBOX_MESSAGES_TOTAL_FAMILY.snapshot(
                     outbox_messages_total
                         .iter()
@@ -542,6 +633,9 @@ impl MetricsRegistry {
         self.lock(&self.dispatch_duration).clear();
         self.lock(&self.transport_messages_total).clear();
         self.lock(&self.transport_failures_total).clear();
+        self.lock(&self.transport_publish_total).clear();
+        self.lock(&self.transport_publish_duration).clear();
+        self.lock(&self.transport_publish_failures_total).clear();
         self.lock(&self.outbox_messages_total).clear();
         self.lock(&self.outbox_pending_messages).clear();
         self.lock(&self.outbox_oldest_pending_age_seconds).clear();
@@ -679,6 +773,98 @@ impl TransportFailureKey {
     }
 }
 
+#[derive(Clone)]
+struct TransportPublishKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    outcome: String,
+    duration_seconds: f64,
+}
+
+impl TransportPublishKey {
+    fn counter_key(&self) -> TransportPublishCounterKey {
+        TransportPublishCounterKey {
+            service: self.service.clone(),
+            transport: self.transport.clone(),
+            message_kind: self.message_kind.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+
+    fn histogram_key(&self) -> TransportPublishHistogramKey {
+        TransportPublishHistogramKey {
+            service: self.service.clone(),
+            transport: self.transport.clone(),
+            message_kind: self.message_kind.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportPublishCounterKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    outcome: String,
+}
+
+impl TransportPublishCounterKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        transport_publish_labels(
+            &self.service,
+            &self.transport,
+            &self.message_kind,
+            &self.outcome,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportPublishHistogramKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    outcome: String,
+}
+
+impl TransportPublishHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        transport_publish_labels(
+            &self.service,
+            &self.transport,
+            &self.message_kind,
+            &self.outcome,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TransportPublishFailureKey {
+    service: String,
+    transport: String,
+    message_kind: String,
+    failure_class: String,
+}
+
+impl TransportPublishFailureKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            (metric_labels::TRANSPORT.to_string(), self.transport.clone()),
+            (
+                metric_labels::MESSAGE_KIND.to_string(),
+                self.message_kind.clone(),
+            ),
+            (
+                metric_labels::FAILURE_CLASS.to_string(),
+                self.failure_class.clone(),
+            ),
+        ]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct OutboxMessageKey {
     service: String,
@@ -723,6 +909,23 @@ impl Histogram {
 
 fn service_labels(service: &str) -> Vec<(String, String)> {
     vec![(metric_labels::SERVICE.to_string(), service.to_string())]
+}
+
+fn transport_publish_labels(
+    service: &str,
+    transport: &str,
+    message_kind: &str,
+    outcome: &str,
+) -> Vec<(String, String)> {
+    vec![
+        (metric_labels::SERVICE.to_string(), service.to_string()),
+        (metric_labels::TRANSPORT.to_string(), transport.to_string()),
+        (
+            metric_labels::MESSAGE_KIND.to_string(),
+            message_kind.to_string(),
+        ),
+        (metric_labels::OUTCOME.to_string(), outcome.to_string()),
+    ]
 }
 
 fn render_prometheus(snapshot: &MetricsSnapshot) -> String {
@@ -847,7 +1050,7 @@ mod tests {
     use super::*;
     use crate::telemetry::{
         dispatch_status, failure_action, failure_class, metric_labels, metric_names,
-        outbox_outcome, transport_outcome,
+        outbox_outcome, transport_outcome, transport_publish_outcome,
     };
     use std::collections::BTreeSet;
 
@@ -921,6 +1124,19 @@ mod tests {
             failure_class::RETRYABLE,
             failure_action::NACK,
         );
+        record_transport_publish(
+            Some("orders"),
+            "nats",
+            MessageKind::Event,
+            transport_publish_outcome::PUBLISHED,
+            Duration::from_millis(9),
+        );
+        record_transport_publish_failure(
+            Some("orders"),
+            "nats",
+            MessageKind::Command,
+            failure_class::PERMANENT,
+        );
         record_outbox_messages(Some("orders"), outbox_outcome::PUBLISHED, 2);
         set_outbox_backlog(Some("orders"), 3, Some(Duration::from_secs(4)));
 
@@ -939,6 +1155,9 @@ mod tests {
                 metric_names::MICROSVC_DISPATCH_DURATION_SECONDS,
                 metric_names::TRANSPORT_MESSAGES_TOTAL,
                 metric_names::TRANSPORT_FAILURES_TOTAL,
+                metric_names::TRANSPORT_PUBLISH_TOTAL,
+                metric_names::TRANSPORT_PUBLISH_DURATION_SECONDS,
+                metric_names::TRANSPORT_PUBLISH_FAILURES_TOTAL,
                 metric_names::OUTBOX_MESSAGES_TOTAL,
                 metric_names::OUTBOX_PENDING_MESSAGES,
                 metric_names::OUTBOX_OLDEST_PENDING_AGE_SECONDS,
@@ -997,6 +1216,19 @@ mod tests {
             "rabbitmq",
             failure_class::PERMANENT,
             failure_action::DEAD_LETTER,
+        );
+        record_transport_publish(
+            Some("orders"),
+            "rabbitmq",
+            MessageKind::Command,
+            transport_publish_outcome::FAILED,
+            Duration::from_millis(5),
+        );
+        record_transport_publish_failure(
+            Some("orders"),
+            "rabbitmq",
+            MessageKind::Command,
+            failure_class::PERMANENT,
         );
         record_outbox_messages(Some("orders"), outbox_outcome::RELEASED, 1);
         set_outbox_backlog(Some("orders"), 1, Some(Duration::from_secs(30)));
