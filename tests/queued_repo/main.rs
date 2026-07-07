@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use distributed::{
     sourced, Aggregate, AggregateBuilder, AggregateRepository, Entity, GetStream,
-    InMemoryRepository, InMemoryLockManager, Queueable, StreamIdentity,
+    InMemoryLockManager, InMemoryRepository, Queueable, StreamIdentity,
 };
 use tokio::sync::Barrier;
 

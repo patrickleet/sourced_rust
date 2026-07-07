@@ -76,6 +76,33 @@ fn scaffold_generates_a_service_tree() {
 
     let cargo = read(&out_dir, "Cargo.toml");
     assert!(cargo.contains("\"postgres\""), "Cargo.toml: {cargo}");
+    assert!(
+        !out_dir
+            .join(".gitops/deploy/templates/servicemonitor.yaml")
+            .exists(),
+        "plain --gitops should not emit Prometheus Operator CRDs"
+    );
+}
+
+#[test]
+fn scaffold_metrics_prometheus_emits_operator_resources() {
+    let out_dir = scaffold(
+        "scaffold-orders-metrics",
+        &["--store", "postgres", "--gitops", "--metrics", "prometheus"],
+    );
+
+    for expected in [
+        ".gitops/deploy/templates/servicemonitor.yaml",
+        ".gitops/deploy/templates/prometheusrule.yaml",
+    ] {
+        assert!(
+            out_dir.join(expected).exists(),
+            "missing generated file: {expected}"
+        );
+    }
+
+    let cargo = read(&out_dir, "Cargo.toml");
+    assert!(cargo.contains("\"metrics\""), "Cargo.toml: {cargo}");
 }
 
 #[test]

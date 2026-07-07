@@ -32,6 +32,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "metrics")]
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -166,7 +168,7 @@ struct RegisteredHandler<D> {
     handle: Arc<HandlerFn<D>>,
 }
 
-type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32);
+type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32, Option<String>);
 
 trait ErasedRoutes: Send + Sync {
     fn handler_specs(&self) -> &[HandlerSpec];
@@ -184,6 +186,7 @@ trait ErasedRoutes: Send + Sync {
         worker_id: String,
         lease: Duration,
         max_attempts: u32,
+        service_name: Option<String>,
     );
 }
 
@@ -243,11 +246,13 @@ fn configure_outbox_for<D>(
     worker_id: String,
     lease: Duration,
     max_attempts: u32,
+    service_name: Option<String>,
 ) where
     D: HasOutboxStore + ConfigurableOutboxPublisher,
     D::OutboxStore: 'static,
 {
-    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts);
+    let hook = BusOutboxPublishHook::new(dependencies.outbox_store(), publisher, max_attempts)
+        .with_service(service_name);
     dependencies.configure_outbox_publisher(OutboxPublisherConfig::new(
         Arc::new(hook),
         worker_id,
@@ -451,6 +456,7 @@ where
         worker_id: String,
         lease: Duration,
         max_attempts: u32,
+        service_name: Option<String>,
     ) {
         if let Some(configurator) = self.outbox_configurator {
             configurator(
@@ -459,6 +465,7 @@ where
                 worker_id,
                 lease,
                 max_attempts,
+                service_name,
             );
         }
     }
@@ -563,6 +570,31 @@ impl Service {
         input: Value,
         session: Session,
     ) -> Result<Value, HandlerError> {
+        #[cfg(feature = "metrics")]
+        let started = Instant::now();
+        let result = self.dispatch_command_inner(command, input, session).await;
+        #[cfg(feature = "metrics")]
+        {
+            let error = result.as_ref().err();
+            crate::metrics::record_microsvc_dispatch(
+                self.name(),
+                MessageKind::Command,
+                crate::telemetry::handler_message_label(command, error),
+                error
+                    .map(crate::telemetry::handler_error_status)
+                    .unwrap_or(crate::telemetry::dispatch_status::SUCCESS),
+                started.elapsed(),
+            );
+        }
+        result
+    }
+
+    async fn dispatch_command_inner(
+        &self,
+        command: &str,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
         if !self.handles_message(MessageKind::Command, command) {
             return Err(HandlerError::UnknownCommand(command.to_string()));
         }
@@ -584,7 +616,8 @@ impl Service {
             metadata,
         };
 
-        self.invoke(&message, input, session).await
+        self.invoke_with_dispatch_span(&message, input, session)
+            .await
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -607,6 +640,26 @@ impl Service {
 
     /// Dispatch a transport message.
     pub async fn dispatch_message(&self, message: &Message) -> Result<Value, HandlerError> {
+        #[cfg(feature = "metrics")]
+        let started = Instant::now();
+        let result = self.dispatch_message_inner(message).await;
+        #[cfg(feature = "metrics")]
+        {
+            let error = result.as_ref().err();
+            crate::metrics::record_microsvc_dispatch(
+                self.name(),
+                message.kind,
+                crate::telemetry::handler_message_label(message.name(), error),
+                error
+                    .map(crate::telemetry::handler_error_status)
+                    .unwrap_or(crate::telemetry::dispatch_status::SUCCESS),
+                started.elapsed(),
+            );
+        }
+        result
+    }
+
+    async fn dispatch_message_inner(&self, message: &Message) -> Result<Value, HandlerError> {
         if !self.handles_message(message.kind, &message.name) {
             return Err(HandlerError::UnknownCommand(message.name.clone()));
         }
@@ -622,7 +675,32 @@ impl Service {
             Err(err) => return Err(err),
         };
         let session = message_to_session(message);
-        self.invoke(message, input, session).await
+        self.invoke_with_dispatch_span(message, input, session)
+            .await
+    }
+
+    async fn invoke_with_dispatch_span(
+        &self,
+        message: &Message,
+        input: Value,
+        session: Session,
+    ) -> Result<Value, HandlerError> {
+        #[cfg(feature = "otel")]
+        {
+            use tracing::Instrument as _;
+
+            let span = microsvc_dispatch_span(message);
+            crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+                &span,
+                &message.metadata,
+            );
+            return self.invoke(message, input, session).instrument(span).await;
+        }
+
+        #[cfg(not(feature = "otel"))]
+        {
+            self.invoke(message, input, session).await
+        }
     }
 
     async fn invoke(
@@ -637,9 +715,21 @@ impl Service {
             .and_then(|by_name| by_name.get(message.name.as_str()))
             .copied()
             .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
-        self.routes[route_index]
-            .dispatch(message, input, session)
-            .await
+        #[cfg(feature = "otel")]
+        let handler_span = microsvc_handler_span(message);
+        let dispatch = self.routes[route_index].dispatch(message, input, session);
+
+        #[cfg(feature = "otel")]
+        {
+            use tracing::Instrument as _;
+
+            return dispatch.instrument(handler_span).await;
+        }
+
+        #[cfg(not(feature = "otel"))]
+        {
+            dispatch.await
+        }
     }
 
     /// List registered command names.
@@ -703,12 +793,14 @@ impl Service {
         lease: Duration,
         max_attempts: u32,
     ) {
+        let service_name = self.name.clone();
         for route in &mut self.routes {
             route.configure_outbox_publisher(
                 publisher.clone(),
                 worker_id.clone(),
                 lease,
                 max_attempts,
+                service_name.clone(),
             );
         }
     }
@@ -815,6 +907,16 @@ fn is_json_content_type(content_type: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     essence == "application/json" || essence.ends_with("+json")
+}
+
+#[cfg(feature = "otel")]
+fn microsvc_dispatch_span(message: &Message) -> tracing::Span {
+    crate::telemetry::microsvc_dispatch_span(message)
+}
+
+#[cfg(feature = "otel")]
+fn microsvc_handler_span(message: &Message) -> tracing::Span {
+    crate::telemetry::microsvc_handler_span(message)
 }
 
 fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {
@@ -1063,6 +1165,13 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_command() {
+        // This dispatch records the same {unnamed, unknown, unknown_command}
+        // series into the process-global registry that
+        // `metrics_bucket_unknown_command_under_fixed_message_label` asserts
+        // an exact count on — serialize against it.
+        #[cfg(feature = "metrics")]
+        let _guard = crate::metrics::async_lock_for_tests().await;
+
         let service = test_service(
             test_routes()
                 .command("ping")
@@ -1070,6 +1179,36 @@ mod tests {
         );
         let result = service.dispatch("unknown", json!({}), Session::new()).await;
         assert!(matches!(result, Err(HandlerError::UnknownCommand(ref s)) if s == "unknown"));
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_bucket_unknown_command_under_fixed_message_label() {
+        let _guard = crate::metrics::async_lock_for_tests().await;
+        crate::metrics::reset_for_tests();
+
+        let service = test_service(
+            test_routes()
+                .command("ping")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({})) }),
+        );
+
+        let result = service
+            .dispatch("attacker-controlled-path", json!({}), Session::new())
+            .await;
+        assert!(matches!(result, Err(HandlerError::UnknownCommand(_))));
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_microsvc_dispatch_total{service=\"unnamed\",message_kind=\"command\",message=\"unknown\",status=\"unknown_command\"} 1"
+            ),
+            "unknown commands should use a bounded message label:\n{text}"
+        );
+        assert!(
+            !text.contains("attacker-controlled-path"),
+            "unknown command input must not become a metric label:\n{text}"
+        );
     }
 
     #[tokio::test]
@@ -1307,6 +1446,36 @@ mod tests {
                 "correlation_id": "checkout-1",
                 "seat_id": "A-7",
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_exposes_trace_context_from_session_metadata() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let service = test_service(test_routes().command("checkout.start").handle(
+            |ctx: &Context<()>| {
+                let trace_context = ctx.message().trace_context();
+                async move {
+                    Ok(json!({
+                        "traceparent": trace_context.traceparent,
+                        "tracestate": trace_context.tracestate,
+                    }))
+                }
+            },
+        ));
+        let session = Session::from_map(HashMap::from([
+            ("traceparent".to_string(), traceparent.to_string()),
+            ("tracestate".to_string(), "vendor=value".to_string()),
+        ]));
+
+        let result = service
+            .dispatch("checkout.start", json!({}), session)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({ "traceparent": traceparent, "tracestate": "vendor=value" })
         );
     }
 

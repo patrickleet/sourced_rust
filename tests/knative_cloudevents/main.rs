@@ -143,6 +143,33 @@ async fn unknown_type_returns_422() {
     assert_eq!(resp.status(), 422);
 }
 
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn metrics_endpoint_exposes_cloud_event_dispatch_counters() {
+    let (url, _) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("ce-id", "evt-metrics")
+        .header("ce-type", "order.initialized")
+        .header("ce-source", "/orders")
+        .header("content-type", "application/json")
+        .body(r#"{"order":"o-metrics"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client.get(format!("{url}metrics")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("distributed_microsvc_dispatch_total{service=\"unnamed\",message_kind=\"event\",message=\"order.initialized\",status=\"success\"}"),
+        "metrics body should include the CloudEvents dispatch counter:\n{body}"
+    );
+}
+
 #[tokio::test]
 async fn missing_id_returns_400() {
     let (url, _) = spawn_server().await;

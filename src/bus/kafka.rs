@@ -149,6 +149,10 @@ impl KafkaSource {
 impl MessageSource for KafkaSource {
     type Received = KafkaReceived;
 
+    fn transport_name(&self) -> &'static str {
+        "kafka"
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         // Poll within the fetch-timeout budget. Kafka surfaces transient broker
         // transport/coordination errors (normal during group bootstrap and

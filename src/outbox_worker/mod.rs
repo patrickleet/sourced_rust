@@ -36,7 +36,10 @@ mod testing;
 // Repository helpers
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) use store::ensure_active_claim;
-pub use store::{ClaimOutboxMessages, OutboxClaimRef, OutboxPublishFailureAction, OutboxStore};
+pub use store::{
+    ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxPublishFailureAction,
+    OutboxStore,
+};
 
 // Outbox -> bus bridge (moved out of the bus module; depends up on bus traits).
 pub use bus_publisher::BusPublisher;

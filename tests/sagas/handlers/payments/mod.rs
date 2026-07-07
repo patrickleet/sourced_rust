@@ -1,7 +1,7 @@
 //! Payment service handlers.
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::{AggregateRepository, InMemoryRepository, InMemoryLockManager, QueuedRepository};
+use distributed::{AggregateRepository, InMemoryLockManager, InMemoryRepository, QueuedRepository};
 use serde_json::{json, Value};
 
 use super::messages::*;

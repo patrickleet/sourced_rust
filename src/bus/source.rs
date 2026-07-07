@@ -28,6 +28,11 @@ pub trait MessageSource: Send {
     /// The settle handle for a received message.
     type Received: ReceivedMessage;
 
+    /// Stable label used for framework metrics.
+    fn transport_name(&self) -> &'static str {
+        "unknown"
+    }
+
     /// Receive the next message, if any.
     fn recv(
         &mut self,

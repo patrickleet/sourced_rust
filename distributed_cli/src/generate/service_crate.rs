@@ -4,7 +4,7 @@
 
 use super::names::{message_owner, rust_string, toml_string, MessageHandler, ModelScaffold};
 use super::Scaffold;
-use crate::{ServiceTransport, StoreTarget};
+use crate::{MetricsTarget, ServiceTransport, StoreTarget};
 
 impl Scaffold {
     pub(super) fn cargo_toml(&self) -> String {
@@ -22,6 +22,16 @@ impl Scaffold {
         } else {
             ""
         };
+        let tracing_deps = if self.tracing {
+            r#"opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+"#
+        } else {
+            ""
+        };
 
         format!(
             r#"[package]
@@ -36,6 +46,7 @@ distributed = {{ path = {distributed_path}, features = [{features}] }}
 {axum}serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
+{tracing_deps}
 "#,
             package_name = toml_string(&self.names.package_name),
         )
@@ -51,6 +62,12 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
             StoreTarget::Postgres => features.push("postgres"),
             StoreTarget::Sqlite => features.push("sqlite"),
             StoreTarget::InMemory => {}
+        }
+        if self.metrics == Some(MetricsTarget::Prometheus) {
+            features.push("metrics");
+        }
+        if self.tracing {
+            features.push("otel");
         }
         features
     }
@@ -77,32 +94,79 @@ pub use manifest::distributed_manifest;
     }
 
     pub(super) fn main_rs(&self) -> String {
-        match self.transport {
-            ServiceTransport::Http => format!(
-                r#"#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {{
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+        let error_type = if self.tracing {
+            "Box<dyn std::error::Error + Send + Sync + 'static>"
+        } else {
+            "Box<dyn std::error::Error>"
+        };
+        let tracing_init = if self.tracing {
+            "    let tracer_provider = init_tracing()?;\n"
+        } else {
+            ""
+        };
+        let tracing_shutdown = if self.tracing {
+            r#"    let shutdown = tracer_provider.shutdown();
+    result?;
+    shutdown?;
+"#
+        } else {
+            "    result?;\n"
+        };
+        let tracing_setup = self.tracing_setup_rs(error_type);
+        let serve_block = match self.transport {
+            ServiceTransport::Http => {
+                "    let result = distributed::microsvc::serve(service, &addr).await;\n".to_string()
+            }
+            ServiceTransport::Knative => r#"    let result = async {
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        let app = distributed::microsvc::cloud_events_router(service);
+        axum::serve(listener, app).await
+    }
+    .await;
+"#
+            .to_string(),
+        };
+
+        format!(
+            r#"#[tokio::main]
+async fn main() -> Result<(), {error_type}> {{
+{tracing_init}    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let service = {crate_ident}::service::in_memory();
-    distributed::microsvc::serve(service, &addr).await?;
-    Ok(())
+{serve_block}{tracing_shutdown}    Ok(())
 }}
-"#,
-                crate_ident = self.names.crate_ident,
-            ),
-            ServiceTransport::Knative => format!(
-                r#"#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {{
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let service = {crate_ident}::service::in_memory();
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let app = distributed::microsvc::cloud_events_router(service);
-    axum::serve(listener, app).await?;
-    Ok(())
-}}
-"#,
-                crate_ident = self.names.crate_ident,
-            ),
+
+{tracing_setup}"#,
+            crate_ident = self.names.crate_ident,
+        )
+    }
+
+    fn tracing_setup_rs(&self, error_type: &str) -> String {
+        if !self.tracing {
+            return String::new();
         }
+
+        r#"fn init_tracing() -> Result<opentelemetry_sdk::trace::SdkTracerProvider, __ERROR_TYPE__> {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder().build()?;
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build();
+    let tracer = tracer_provider.tracer(env!("CARGO_PKG_NAME"));
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+        .try_init()?;
+
+    Ok(tracer_provider)
+}
+"#
+        .replace("__ERROR_TYPE__", error_type)
     }
 
     pub(super) fn manifest_rs(&self) -> String {
@@ -142,6 +206,18 @@ pub fn service_manifest() -> ServiceManifest {{
     }
 
     pub(super) fn service_rs(&self) -> String {
+        let mut manifest_imports = vec![
+            "microsvc::{Routes, Service}",
+            "InMemoryRepository",
+            "ServiceManifest",
+        ];
+        if self.metrics == Some(MetricsTarget::Prometheus) {
+            manifest_imports.push("MetricsEndpointManifest");
+        }
+        if self.tracing {
+            manifest_imports.push("TracingManifest");
+        }
+        let manifest_imports = manifest_imports.join(", ");
         let registrations = self
             .commands
             .iter()
@@ -176,14 +252,21 @@ pub fn service_manifest() -> ServiceManifest {{
             ServiceTransport::Http => "http",
             ServiceTransport::Knative => "knative",
         };
+        let manifest_metrics = if self.metrics == Some(MetricsTarget::Prometheus) {
+            "        .metrics(MetricsEndpointManifest::prometheus_default())\n"
+        } else {
+            ""
+        };
+        let manifest_tracing = if self.tracing {
+            "        .tracing(TracingManifest::otlp())\n"
+        } else {
+            ""
+        };
 
         format!(
             r#"use std::sync::Arc;
 
-use distributed::{{
-    microsvc::{{Routes, Service}},
-    InMemoryRepository, ServiceManifest,
-}};
+use distributed::{{{manifest_imports}}};
 
 use crate::handlers;
 
@@ -202,7 +285,7 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
 
 pub fn manifest() -> ServiceManifest {{
     ServiceManifest::new({service_name})
-{manifest_commands}{manifest_events}        .transport({transport})
+{manifest_commands}{manifest_events}{manifest_metrics}{manifest_tracing}        .transport({transport})
 }}
 "#,
             service_name = rust_string(&self.names.package_name),

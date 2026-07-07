@@ -17,7 +17,7 @@ use crate::bus::MessagePublisher;
 use crate::outbox::{OutboxMessage, OutboxPublishHook};
 use crate::repository::RepositoryError;
 
-use super::outbox_dispatch::publish_and_settle;
+use super::outbox_dispatch::{publish_and_settle, SettleOutcome};
 use super::OutboxStore;
 
 /// Publishes committed outbox rows through `publisher` and settles their claims
@@ -26,6 +26,7 @@ pub struct BusOutboxPublishHook<S, P> {
     store: S,
     publisher: P,
     max_attempts: u32,
+    service_name: Option<String>,
 }
 
 impl<S, P> BusOutboxPublishHook<S, P> {
@@ -36,7 +37,14 @@ impl<S, P> BusOutboxPublishHook<S, P> {
             store,
             publisher,
             max_attempts,
+            service_name: None,
         }
+    }
+
+    /// Attach the logical service name to metrics emitted by this hook.
+    pub fn with_service(mut self, service_name: Option<String>) -> Self {
+        self.service_name = service_name;
+        self
     }
 }
 
@@ -52,15 +60,46 @@ where
         Box::pin(async move {
             // Concurrency 1: a commit's rows are one aggregate's events, and
             // their relative order matters to consumers.
-            publish_and_settle(
+            let settled = publish_and_settle(
                 &self.store,
                 &self.publisher,
                 claimed,
                 self.max_attempts,
                 std::num::NonZeroUsize::MIN,
             )
-            .await
-            .map(|_outcome| ())
+            .await?;
+            self.record_outbox_outcomes(&settled).await;
+            Ok(())
         })
+    }
+}
+
+impl<S, P> BusOutboxPublishHook<S, P>
+where
+    S: OutboxStore,
+{
+    async fn record_outbox_outcomes(&self, settled: &SettleOutcome) {
+        #[cfg(feature = "metrics")]
+        {
+            let service = self.service_name.as_deref();
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::PUBLISHED,
+                settled.published,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::RELEASED,
+                settled.released,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::FAILED,
+                settled.failed,
+            );
+            super::outbox_dispatch::record_backlog_gauges(&self.store, service).await;
+        }
+        #[cfg(not(feature = "metrics"))]
+        let _ = settled;
     }
 }

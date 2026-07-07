@@ -72,6 +72,19 @@ map to a canonical `Message` via `From<&OutboxMessage>`; framework-derived
 metadata (codec, destination, source aggregate) is namespaced under the reserved
 `x-sourced-` prefix so it cannot be shadowed by user metadata.
 
+Telemetry follows the same boundary. Consumer-side direct transports report
+receive/settle outcomes and classified failures. Producer-side outbox dispatch
+reports `published`, `released`, `failed`, and backlog gauges. A direct
+`MessagePublisher` call outside the outbox path is not counted as an outbox
+publish and currently has no direct publish metric; adding that should be a
+separate producer telemetry path with its own bounded labels.
+
+Trace context is normal metadata. Distributed preserves W3C `traceparent` and
+`tracestate` across `Message`, `EventRecord`, and `OutboxMessage` carriers
+without requiring an OpenTelemetry SDK in the default build. See
+[`observability.md`](observability.md) for trace helpers, the optional `otel`
+span feature, and GitOps observability output.
+
 ## Adapters
 
 | Transport | Feature | Source / Publisher | Notes |

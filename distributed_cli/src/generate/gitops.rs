@@ -8,7 +8,7 @@ use super::names::{
     command_broker_for_message, event_broker_for_message, k8s_name, KnativeTrigger,
 };
 use super::{file, Scaffold};
-use crate::{GeneratedFile, GitopsPromoteTarget, ServiceTransport};
+use crate::{GeneratedFile, GitopsPromoteTarget, MetricsTarget, ServiceTransport};
 
 impl Scaffold {
     /// The `.gitops/deploy` (and optional `.gitops/promote`) files. The deploy
@@ -40,6 +40,16 @@ impl Scaffold {
                         ".gitops/deploy/templates/service.yaml",
                         self.gitops_http_service_yaml(),
                     ));
+                    if self.metrics == Some(MetricsTarget::Prometheus) {
+                        files.push(file(
+                            ".gitops/deploy/templates/servicemonitor.yaml",
+                            self.gitops_service_monitor_yaml(),
+                        ));
+                        files.push(file(
+                            ".gitops/deploy/templates/prometheusrule.yaml",
+                            self.gitops_prometheus_rule_yaml(),
+                        ));
+                    }
                 }
                 ServiceTransport::Knative => {
                     files.push(file(
@@ -103,6 +113,27 @@ impl Scaffold {
                 )
             })
             .unwrap_or_default()
+    }
+
+    fn tracing_env_yaml(&self) -> String {
+        if !self.tracing {
+            return String::new();
+        }
+
+        let service_name = k8s_name(&self.names.package_name);
+        format!(
+            r#"            {{{{ if .Values.observability.tracing.enabled }}}}
+            - name: OTEL_SERVICE_NAME
+              value: "{service_name}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            {{{{ if .Values.observability.tracing.otlpEndpoint }}}}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{{{ .Values.observability.tracing.otlpEndpoint | quote }}}}
+            {{{{ end }}}}
+            {{{{ end }}}}
+"#,
+        )
     }
 
     fn knative_broker_names(&self) -> Vec<String> {
@@ -174,13 +205,35 @@ appVersion: "0.1.0"
             .bus
             .map(|bus| format!("bus:\n  kind: {}\n", bus.kind()))
             .unwrap_or_default();
+        let metrics = if self.metrics == Some(MetricsTarget::Prometheus)
+            && self.transport == ServiceTransport::Http
+        {
+            r#"metrics:
+  enabled: true
+  path: /metrics
+  portName: http
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+prometheusRule:
+  enabled: false
+"#
+        } else {
+            ""
+        };
+        let tracing_enabled = self.tracing;
         format!(
             r#"image:
   repository: {image_repository}
   tag: latest
 service:
   port: 3000
-{bus}
+observability:
+  tracing:
+    enabled: {tracing_enabled}
+    otlpEndpoint: ""
+{bus}{metrics}
 "#,
             image_repository = self.image_repository(),
         )
@@ -189,6 +242,7 @@ service:
     fn gitops_http_deployment_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
+        let tracing_env = self.tracing_env_yaml();
         format!(
             r#"apiVersion: apps/v1
 kind: Deployment
@@ -196,6 +250,8 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   replicas: 1
   selector:
@@ -205,6 +261,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {name}
+        app.kubernetes.io/component: service
+        hops.ops.com.ai/service: {name}
     spec:
       containers:
         - name: {name}
@@ -214,7 +272,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}
+{bus_env}{tracing_env}
 "#,
         )
     }
@@ -228,6 +286,8 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   selector:
     app.kubernetes.io/name: {name}
@@ -239,9 +299,79 @@ spec:
         )
     }
 
+    fn gitops_service_monitor_yaml(&self) -> String {
+        let name = k8s_name(&self.names.package_name);
+        format!(
+            r#"{{{{- if .Values.serviceMonitor.enabled }}}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {name}
+  labels:
+    app.kubernetes.io/name: {name}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {name}
+  endpoints:
+    - port: {{{{ .Values.metrics.portName }}}}
+      path: {{{{ .Values.metrics.path }}}}
+      interval: {{{{ .Values.serviceMonitor.interval }}}}
+      scrapeTimeout: {{{{ .Values.serviceMonitor.scrapeTimeout }}}}
+{{{{- end }}}}
+"#
+        )
+    }
+
+    fn gitops_prometheus_rule_yaml(&self) -> String {
+        let name = k8s_name(&self.names.package_name);
+        format!(
+            r#"{{{{- if .Values.prometheusRule.enabled }}}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {name}
+  labels:
+    app.kubernetes.io/name: {name}
+spec:
+  groups:
+    - name: {name}.distributed
+      rules:
+        - alert: DistributedMicrosvcDispatchErrorsHigh
+          expr: |
+            (
+              sum(rate(distributed_microsvc_dispatch_total{{service="{name}",status!="success"}}[5m]))
+              /
+              clamp_min(sum(rate(distributed_microsvc_dispatch_total{{service="{name}"}}[5m])), 1)
+            ) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} has elevated dispatch errors
+        - alert: DistributedOutboxOldestPendingHigh
+          expr: distributed_outbox_oldest_pending_age_seconds{{service="{name}"}} > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} has old pending outbox messages
+        - alert: DistributedTransportRetrying
+          expr: sum(rate(distributed_transport_failures_total{{service="{name}",failure_class="retryable"}}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Distributed service {name} is retrying transport work
+{{{{- end }}}}
+"#
+        )
+    }
+
     fn gitops_knative_service_yaml(&self) -> String {
         let name = k8s_name(&self.names.package_name);
         let bus_env = self.bus_env_yaml();
+        let tracing_env = self.tracing_env_yaml();
         format!(
             r#"apiVersion: serving.knative.dev/v1
 kind: Service
@@ -249,11 +379,17 @@ metadata:
   name: {name}
   labels:
     app.kubernetes.io/name: {name}
+    app.kubernetes.io/component: service
+    hops.ops.com.ai/service: {name}
 spec:
   template:
     metadata:
       annotations:
         autoscaling.knative.dev/min-scale: "0"
+      labels:
+        app.kubernetes.io/name: {name}
+        app.kubernetes.io/component: service
+        hops.ops.com.ai/service: {name}
     spec:
       containers:
         - image: {{{{ .Values.image.repository }}}}:{{{{ .Values.image.tag }}}}
@@ -262,7 +398,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
-{bus_env}
+{bus_env}{tracing_env}
 "#,
         )
     }

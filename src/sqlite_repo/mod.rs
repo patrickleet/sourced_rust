@@ -17,7 +17,6 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::ClaimOutboxMessages;
-use crate::table::{ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError};
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
@@ -30,6 +29,9 @@ use crate::sqlx_repo::{
     repository_i64_from_u64 as sqlx_repository_i64_from_u64,
 };
 use crate::table::TableSqlDialect;
+use crate::table::{
+    ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError,
+};
 
 static SQLITE_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
     embedded_migrator(&[(
@@ -67,6 +69,8 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
          attempts, last_error, destination, source_aggregate_type, source_aggregate_id, \
          source_sequence, correlation_id, causation_id";
     const ORDER_BY_CREATED_AT: &'static str = "CAST(created_at AS REAL)";
+    const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str =
+        "MIN(CAST(created_at AS REAL)) AS oldest_created_at";
     const TABLE_DIALECT: TableSqlDialect = TableSqlDialect::Sqlite;
 
     /// `"secs.nanos"` text, sortable/comparable via `CAST(... AS REAL)`.
@@ -134,13 +138,18 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
         row: &SqliteRow,
         column: &'static str,
     ) -> Result<Option<SystemTime>, RepositoryError> {
-        row.try_get::<Option<String>, _>(column)
-            .map_err(|err| {
-                repository_storage_error(&format!("decode {column} timestamp row"), err)
-            })?
-            .as_deref()
-            .map(system_time_from_storage)
-            .transpose()
+        match row.try_get::<Option<String>, _>(column) {
+            Ok(value) => value.as_deref().map(system_time_from_storage).transpose(),
+            Err(string_err) => row
+                .try_get::<Option<f64>, _>(column)
+                .map_err(|float_err| {
+                    RepositoryError::Model(format!(
+                        "decode {column} timestamp row failed as sqlite text ({string_err}) and real ({float_err})"
+                    ))
+                })?
+                .map(system_time_from_epoch_secs)
+                .transpose(),
+        }
     }
 
     fn push_metadata(sep: &mut Separated<'_, Sqlite, &'static str>, json: &str) {
@@ -452,6 +461,15 @@ fn system_time_from_storage(value: &str) -> Result<SystemTime, RepositoryError> 
         return Err(invalid());
     }
     Ok(UNIX_EPOCH + Duration::new(secs, nanos))
+}
+
+fn system_time_from_epoch_secs(value: f64) -> Result<SystemTime, RepositoryError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(RepositoryError::Model(format!(
+            "sqlite timestamp epoch value {value} is invalid"
+        )));
+    }
+    Ok(UNIX_EPOCH + Duration::from_secs_f64(value))
 }
 
 fn repository_storage_error(operation: &str, err: sqlx::Error) -> RepositoryError {

@@ -16,7 +16,6 @@ use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::ClaimOutboxMessages;
-use crate::table::{ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError};
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::quote_identifier;
 use crate::sqlx_repo::repo::{
@@ -29,6 +28,9 @@ use crate::sqlx_repo::{
     repository_i64_from_u64 as sqlx_repository_i64_from_u64,
 };
 use crate::table::TableSqlDialect;
+use crate::table::{
+    ColumnType, RowValue, TableColumn as ColumnDef, TableStoreError as ReadModelError,
+};
 
 static POSTGRES_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
     embedded_migrator(&[(
@@ -95,6 +97,8 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Postgres {
          correlation_id, \
          causation_id";
     const ORDER_BY_CREATED_AT: &'static str = "created_at";
+    const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str =
+        "EXTRACT(EPOCH FROM MIN(created_at))::double precision AS oldest_created_at";
     const TABLE_DIALECT: TableSqlDialect = TableSqlDialect::Postgres;
 
     /// Epoch seconds; stored via `to_timestamp(...)` into `timestamptz`.

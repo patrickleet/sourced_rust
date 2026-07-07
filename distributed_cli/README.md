@@ -25,8 +25,18 @@ Writes a ready-to-build Distributed service under `./<name>` (override with
 `--path`). Common flags: `--store <postgres|sqlite|in-memory>`, `--transport
 <http|knative>`, `--model <name>` (repeatable), `--read-models`, `--command` /
 `--event` (repeatable), `--bus <rabbitmq|kafka|psql|nats>`, `--gitops`,
-`--gitops-promote <argo|flux>`, `--github OWNER/REPO`, `--force`. See
-`dctl scaffold --help` for the full list.
+`--metrics prometheus`, `--tracing` / `--otel`, `--gitops-promote <argo|flux>`,
+`--github OWNER/REPO`, `--force`. See `dctl scaffold --help` for the full list.
+
+When used with `--gitops`, `--metrics prometheus` emits Prometheus Operator
+`ServiceMonitor` and `PrometheusRule` templates for HTTP services. The
+generated values default both resources to disabled; enable them only in
+clusters with the Prometheus Operator CRDs installed. Plain `--gitops` does not
+emit `monitoring.coreos.com` resources.
+
+`--tracing` enables Distributed's optional `otel` span feature, emits a default
+OTLP tracing setup in the generated `main.rs`, and renders OTLP environment
+values in the Helm chart without hard-coding an endpoint.
 
 ## The project manifest entrypoint
 

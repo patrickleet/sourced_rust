@@ -119,6 +119,8 @@ pub struct ServiceManifest {
     pub commands: Vec<MessageEndpointManifest>,
     pub events: Vec<MessageEndpointManifest>,
     pub transports: Vec<TransportManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observability: Option<ServiceObservabilityManifest>,
 }
 
 impl ServiceManifest {
@@ -128,6 +130,7 @@ impl ServiceManifest {
             commands: Vec::new(),
             events: Vec::new(),
             transports: Vec::new(),
+            observability: None,
         }
     }
 
@@ -145,6 +148,114 @@ impl ServiceManifest {
         self.transports.push(TransportManifest::new(kind));
         self
     }
+
+    pub fn observability(mut self, observability: ServiceObservabilityManifest) -> Self {
+        self.observability = Some(observability);
+        self
+    }
+
+    pub fn metrics(mut self, metrics: MetricsEndpointManifest) -> Self {
+        let mut observability = self.observability.unwrap_or_default();
+        observability.metrics = Some(metrics);
+        self.observability = Some(observability);
+        self
+    }
+
+    pub fn tracing(mut self, tracing: TracingManifest) -> Self {
+        let mut observability = self.observability.unwrap_or_default();
+        observability.tracing = Some(tracing);
+        self.observability = Some(observability);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceObservabilityManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<MetricsEndpointManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracing: Option<TracingManifest>,
+}
+
+impl ServiceObservabilityManifest {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn metrics(mut self, metrics: MetricsEndpointManifest) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn tracing(mut self, tracing: TracingManifest) -> Self {
+        self.tracing = Some(tracing);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricsEndpointManifest {
+    pub path: String,
+    pub port_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+}
+
+impl MetricsEndpointManifest {
+    pub fn new(path: impl Into<String>, port_name: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            port_name: port_name.into(),
+            interval: None,
+        }
+    }
+
+    pub fn prometheus_default() -> Self {
+        Self::new("/metrics", "http").interval("30s")
+    }
+
+    pub fn interval(mut self, interval: impl Into<String>) -> Self {
+        self.interval = Some(interval.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TracingManifest {
+    pub propagation: TracePropagationMode,
+    pub export: TraceExportMode,
+}
+
+impl TracingManifest {
+    pub fn otlp() -> Self {
+        Self {
+            propagation: TracePropagationMode::W3cTraceContext,
+            export: TraceExportMode::Otlp,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            propagation: TracePropagationMode::Disabled,
+            export: TraceExportMode::Disabled,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TracePropagationMode {
+    #[default]
+    W3cTraceContext,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceExportMode {
+    #[default]
+    Otlp,
+    Disabled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,5 +331,40 @@ mod tests {
             .join("\n");
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"orders\""));
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"outbox_messages\""));
+    }
+
+    #[test]
+    fn service_manifest_serializes_observability_metadata_when_declared() {
+        let service = ServiceManifest::new("checkout-saga")
+            .metrics(MetricsEndpointManifest::prometheus_default())
+            .tracing(TracingManifest::otlp());
+
+        let json = serde_json::to_string(&service).expect("service manifest should serialize");
+        assert!(json.contains("\"observability\""));
+        assert!(json.contains("\"path\":\"/metrics\""));
+        assert!(json.contains("\"propagation\":\"w3c_trace_context\""));
+
+        let restored: ServiceManifest =
+            serde_json::from_str(&json).expect("service manifest should deserialize");
+        let observability = restored
+            .observability
+            .expect("observability should deserialize");
+        assert_eq!(
+            observability.metrics.expect("metrics").port_name,
+            "http".to_string()
+        );
+        assert_eq!(
+            observability.tracing.expect("tracing").export,
+            TraceExportMode::Otlp
+        );
+    }
+
+    #[test]
+    fn service_manifest_observability_is_optional_for_older_json() {
+        let json = r#"{"name":"checkout-saga","commands":[],"events":[],"transports":[]}"#;
+        let restored: ServiceManifest =
+            serde_json::from_str(json).expect("older service manifest should deserialize");
+
+        assert!(restored.observability.is_none());
     }
 }

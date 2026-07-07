@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregate::Aggregate;
 use crate::entity::{BitcodePayloadCodec, Entity, EventRecordError, PayloadCodec};
+use crate::trace_context::{TraceContext, CAUSATION_ID, CORRELATION_ID, TRACEPARENT, TRACESTATE};
 use crate::SourcedResult;
 
 /// Status of an outbox message.
@@ -476,12 +477,17 @@ impl OutboxMessage {
 
     /// Set the correlation ID.
     pub fn set_correlation_id(&mut self, id: impl Into<String>) {
-        self.set_meta("correlation_id", id);
+        self.set_meta(CORRELATION_ID, id);
     }
 
     /// Set the causation ID.
     pub fn set_causation_id(&mut self, id: impl Into<String>) {
-        self.set_meta("causation_id", id);
+        self.set_meta(CAUSATION_ID, id);
+    }
+
+    /// Set W3C trace context metadata.
+    pub fn set_trace_context(&mut self, context: &TraceContext) {
+        context.inject_map(&mut self.metadata);
     }
 
     /// Get a metadata value by key.
@@ -491,12 +497,27 @@ impl OutboxMessage {
 
     /// Get the correlation ID, if set.
     pub fn correlation_id(&self) -> Option<&str> {
-        self.meta("correlation_id")
+        self.meta(CORRELATION_ID)
     }
 
     /// Get the causation ID, if set.
     pub fn causation_id(&self) -> Option<&str> {
-        self.meta("causation_id")
+        self.meta(CAUSATION_ID)
+    }
+
+    /// Get the W3C `traceparent`, if set.
+    pub fn traceparent(&self) -> Option<&str> {
+        self.meta(TRACEPARENT)
+    }
+
+    /// Get the W3C `tracestate`, if set.
+    pub fn tracestate(&self) -> Option<&str> {
+        self.meta(TRACESTATE)
+    }
+
+    /// Extract W3C trace context from this outbox message's metadata.
+    pub fn trace_context(&self) -> TraceContext {
+        TraceContext::from_metadata(self.metadata.iter())
     }
 
     pub fn set_source<A: Aggregate>(&mut self, aggregate: &A) {
@@ -684,6 +705,23 @@ mod tests {
         assert_eq!(message.correlation_id(), Some("req-abc"));
         assert_eq!(message.causation_id(), Some("evt-prior"));
         assert_eq!(message.meta("tenant"), Some("acme"));
+    }
+
+    #[test]
+    fn set_trace_context_replaces_existing_trace_metadata() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message.set_meta("TraceParent", "old");
+        let context = TraceContext {
+            traceparent: Some(
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+            ),
+            tracestate: Some("vendor=value".to_string()),
+        };
+
+        message.set_trace_context(&context);
+
+        assert_eq!(message.trace_context(), context);
+        assert!(!message.metadata.contains_key("TraceParent"));
     }
 
     #[test]

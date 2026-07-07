@@ -174,6 +174,10 @@ impl RabbitSource {
 impl MessageSource for RabbitSource {
     type Received = RabbitReceived;
 
+    fn transport_name(&self) -> &'static str {
+        "rabbitmq"
+    }
+
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         for offset in 0..self.queues.len() {
             let index = (self.current + offset) % self.queues.len();

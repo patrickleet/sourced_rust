@@ -22,8 +22,8 @@ use names::{
 };
 
 use crate::{
-    BusTarget, GeneratedFile, GeneratedProject, GithubRepo, GitopsPromoteTarget, PostCreateAction,
-    ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
+    BusTarget, GeneratedFile, GeneratedProject, GithubRepo, GitopsPromoteTarget, MetricsTarget,
+    PostCreateAction, ScaffoldError, ServiceScaffoldSpec, ServiceTransport, StoreTarget,
 };
 
 /// Generate a Distributed service project from a spec. The public entry point.
@@ -48,7 +48,9 @@ pub(crate) struct Scaffold {
     pub(crate) transport: ServiceTransport,
     pub(crate) store: StoreTarget,
     pub(crate) bus: Option<BusTarget>,
+    pub(crate) metrics: Option<MetricsTarget>,
     pub(crate) include_read_models: bool,
+    pub(crate) tracing: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
     pub(crate) github: Option<GithubRepo>,
@@ -91,7 +93,9 @@ impl Scaffold {
             transport: spec.transport,
             store: spec.store,
             bus: spec.bus,
+            metrics: spec.metrics,
             include_read_models: spec.read_models,
+            tracing: spec.tracing,
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
             github: spec.github,
@@ -168,7 +172,7 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 #[cfg(test)]
 mod tests {
     use crate::{
-        generate_service_scaffold, GeneratedProject, GithubRepo, PostCreateAction,
+        generate_service_scaffold, GeneratedProject, GithubRepo, MetricsTarget, PostCreateAction,
         ServiceScaffoldSpec, ServiceTransport, StoreTarget,
     };
 
@@ -178,8 +182,10 @@ mod tests {
             transport: ServiceTransport::Http,
             store: StoreTarget::Postgres,
             bus: None,
+            metrics: None,
             models: Vec::new(),
             read_models: false,
+            tracing: false,
             commands: Vec::new(),
             events: Vec::new(),
             distributed_dependency_path: "../distributed".to_string(),
@@ -374,7 +380,92 @@ mod tests {
         assert!(paths.contains(&".gitops/deploy/Chart.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/deployment.yaml"));
         assert!(paths.contains(&".gitops/deploy/templates/service.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
         assert!(!paths.iter().any(|p| p.contains("knative")));
+    }
+
+    #[test]
+    fn gitops_http_metrics_emits_prometheus_operator_resources() {
+        let mut s = spec("orders");
+        s.gitops = true;
+        s.metrics = Some(MetricsTarget::Prometheus);
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
+
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(cargo.contains("\"metrics\""));
+
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(values.contains("metrics:"));
+        assert!(values.contains("serviceMonitor:"));
+        assert!(values.contains("serviceMonitor:\n  enabled: false"));
+        assert!(values.contains("prometheusRule:"));
+        assert!(values.contains("prometheusRule:\n  enabled: false"));
+
+        let monitor = contents(&project, ".gitops/deploy/templates/servicemonitor.yaml");
+        assert!(monitor.contains("apiVersion: monitoring.coreos.com/v1"));
+        assert!(monitor.contains("kind: ServiceMonitor"));
+        assert!(monitor.contains("path: {{ .Values.metrics.path }}"));
+    }
+
+    #[test]
+    fn knative_metrics_does_not_emit_service_monitor() {
+        let mut s = spec("orders");
+        s.transport = ServiceTransport::Knative;
+        s.gitops = true;
+        s.metrics = Some(MetricsTarget::Prometheus);
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(!paths.contains(&".gitops/deploy/templates/servicemonitor.yaml"));
+        assert!(!paths.contains(&".gitops/deploy/templates/prometheusrule.yaml"));
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(!values.contains("metrics:"), "values.yaml: {values}");
+        assert!(!values.contains("serviceMonitor:"), "values.yaml: {values}");
+        assert!(!values.contains("prometheusRule:"), "values.yaml: {values}");
+    }
+
+    #[test]
+    fn tracing_scaffold_enables_otel_feature_and_gitops_env_values() {
+        let mut s = spec("orders");
+        s.tracing = true;
+        s.gitops = true;
+
+        let project = generate_service_scaffold(s).unwrap();
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(cargo.contains("\"otel\""));
+        assert!(cargo.contains("opentelemetry-otlp"));
+        assert!(cargo.contains("\"grpc-tonic\""));
+        assert!(cargo.contains("tracing-subscriber"));
+
+        let main = contents(&project, "src/main.rs");
+        assert!(main.contains("let tracer_provider = init_tracing()?;"));
+        assert!(main.contains("opentelemetry_otlp::SpanExporter::builder().build()?"));
+        assert!(main.contains("tracing_opentelemetry::layer().with_tracer(tracer)"));
+        assert!(main.contains("tracer_provider.shutdown()"));
+
+        let service = contents(&project, "src/service.rs");
+        assert!(service.contains(".tracing(TracingManifest::otlp())"));
+
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(values.contains("enabled: true"));
+        assert!(values.contains("otlpEndpoint: \"\""));
+        assert!(!values.contains("otlpProtocol"));
+
+        let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(deployment.contains("OTEL_SERVICE_NAME"));
+        assert!(deployment.contains("value: \"orders\""));
+        assert!(!deployment.contains(".Chart.Name"));
+        assert!(deployment.contains("OTEL_EXPORTER_OTLP_PROTOCOL\n              value: \"grpc\""));
+        assert!(!deployment.contains(".Values.observability.tracing.otlpProtocol"));
+        assert!(deployment.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
+        assert!(deployment.contains(".Values.observability.tracing.otlpEndpoint"));
+        assert!(deployment.contains(
+            "value: 0.0.0.0:3000\n            {{ if .Values.observability.tracing.enabled }}"
+        ));
+        assert!(!deployment.contains("{{- if .Values.observability.tracing.enabled }}"));
     }
 
     #[test]

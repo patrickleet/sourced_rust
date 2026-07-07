@@ -87,6 +87,16 @@ fn scaffolded_http_service_compiles() {
 
 #[test]
 #[ignore = "compiles the scaffolded project via a nested cargo build; run in the integration job"]
+fn scaffolded_http_tracing_service_compiles() {
+    let out_dir = scaffold(
+        "compile-http-tracing",
+        &["--transport", "http", "--store", "in-memory", "--tracing"],
+    );
+    cargo_check(&out_dir);
+}
+
+#[test]
+#[ignore = "compiles the scaffolded project via a nested cargo build; run in the integration job"]
 fn scaffolded_knative_service_compiles() {
     // The other main.rs branch: CloudEvents ingress served through the
     // scaffold's own axum dependency, with the in-memory store and the
@@ -94,6 +104,22 @@ fn scaffolded_knative_service_compiles() {
     let out_dir = scaffold(
         "compile-knative-in-memory",
         &["--transport", "knative", "--store", "in-memory"],
+    );
+    cargo_check(&out_dir);
+}
+
+#[test]
+#[ignore = "compiles the scaffolded project via a nested cargo build; run in the integration job"]
+fn scaffolded_knative_tracing_service_compiles() {
+    let out_dir = scaffold(
+        "compile-knative-tracing",
+        &[
+            "--transport",
+            "knative",
+            "--store",
+            "in-memory",
+            "--tracing",
+        ],
     );
     cargo_check(&out_dir);
 }

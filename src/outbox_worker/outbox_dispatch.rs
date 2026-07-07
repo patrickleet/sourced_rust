@@ -12,6 +12,8 @@
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
+#[cfg(feature = "metrics")]
+use std::time::SystemTime;
 
 use futures_util::stream::{self, StreamExt};
 
@@ -150,6 +152,7 @@ pub struct OutboxDispatcher<S, P> {
     lease: Duration,
     max_attempts: u32,
     publish_concurrency: NonZeroUsize,
+    service_name: Option<String>,
 }
 
 impl<S, P> OutboxDispatcher<S, P>
@@ -174,6 +177,7 @@ where
             lease,
             max_attempts,
             publish_concurrency: NonZeroUsize::MIN,
+            service_name: None,
         }
     }
 
@@ -187,6 +191,12 @@ where
     /// e.g. by per-key partitioning). Settlement is batched either way.
     pub fn with_publish_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.publish_concurrency = concurrency;
+        self
+    }
+
+    /// Attach the logical service name to metrics emitted by this dispatcher.
+    pub fn with_service(mut self, service_name: impl Into<String>) -> Self {
+        self.service_name = Some(service_name.into());
         self
     }
 
@@ -212,6 +222,7 @@ where
         let claimed = self.store.claim(request).await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = ids.len();
+        self.record_outbox_backlog().await;
         Ok(outcome)
     }
 
@@ -224,6 +235,7 @@ where
         let claimed = self.store.claim(request).await?;
         let mut outcome = self.dispatch_claimed(claimed).await?;
         outcome.requested = batch_size;
+        self.record_outbox_backlog().await;
         Ok(outcome)
     }
 
@@ -243,6 +255,7 @@ where
             self.publish_concurrency,
         )
         .await?;
+        self.record_outbox_outcomes(&settled);
         Ok(OutboxDispatchOutcome {
             requested: 0,
             claimed: claimed_count,
@@ -250,6 +263,54 @@ where
             released: settled.released,
             failed: settled.failed,
         })
+    }
+
+    fn record_outbox_outcomes(&self, settled: &SettleOutcome) {
+        #[cfg(feature = "metrics")]
+        {
+            let service = self.service_name.as_deref();
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::PUBLISHED,
+                settled.published,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::RELEASED,
+                settled.released,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::FAILED,
+                settled.failed,
+            );
+        }
+        #[cfg(not(feature = "metrics"))]
+        let _ = settled;
+    }
+
+    async fn record_outbox_backlog(&self) {
+        #[cfg(feature = "metrics")]
+        record_backlog_gauges(&self.store, self.service_name.as_deref()).await;
+    }
+}
+
+/// Set the outbox backlog gauges from a lightweight pending count/oldest read
+/// ([`OutboxStore::backlog_stats`]). Shared by the dispatcher and after-commit
+/// publish hook so both report the same series.
+///
+/// Runs on every settle pass, deliberately unthrottled: refreshes are
+/// activity-driven (there is no timer in the crate), so skipping any pass —
+/// the final drain especially — would freeze the gauges at stale values and
+/// misfire backlog alerts in both directions. A store read failure skips the
+/// update rather than failing dispatch.
+#[cfg(feature = "metrics")]
+pub(crate) async fn record_backlog_gauges<S: OutboxStore>(store: &S, service: Option<&str>) {
+    if let Ok(stats) = store.backlog_stats().await {
+        let oldest_pending_age = stats
+            .oldest_created_at
+            .and_then(|created_at| SystemTime::now().duration_since(created_at).ok());
+        crate::metrics::set_outbox_backlog(service, stats.pending, oldest_pending_age);
     }
 }
 
@@ -310,7 +371,7 @@ where
     // go out strictly in claim (created-at) order.
     let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
         stream::iter(work.into_iter().map(|(claim, message)| async move {
-            let result = publisher.publish(message).await;
+            let result = publish_with_span(publisher, message).await;
             (claim, result)
         }))
         .buffer_unordered(publish_concurrency.get())
@@ -338,6 +399,35 @@ where
     store.complete_many(&published).await?;
     outcome.published = published.len();
     Ok(outcome)
+}
+
+/// Publish one mapped outbox message, wrapped in a framework span when the
+/// `otel` feature is enabled (parented from the message's trace metadata).
+async fn publish_with_span<P: MessagePublisher>(
+    publisher: &P,
+    message: Message,
+) -> Result<(), TransportError> {
+    #[cfg(feature = "otel")]
+    {
+        use tracing::Instrument as _;
+
+        let span = outbox_publish_span(&message);
+        crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
+            &span,
+            &message.metadata,
+        );
+        return publisher.publish(message).instrument(span).await;
+    }
+
+    #[cfg(not(feature = "otel"))]
+    {
+        publisher.publish(message).await
+    }
+}
+
+#[cfg(feature = "otel")]
+fn outbox_publish_span(message: &Message) -> tracing::Span {
+    crate::telemetry::outbox_publish_span(message)
 }
 
 #[cfg(test)]
@@ -392,9 +482,16 @@ mod tests {
             id,
             "OrderCreated",
             b"\x01\x02".to_vec(),
-            [("correlation_id".to_string(), "corr-1".to_string())]
-                .into_iter()
-                .collect(),
+            [
+                ("correlation_id".to_string(), "corr-1".to_string()),
+                (
+                    "traceparent".to_string(),
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+                ),
+                ("tracestate".to_string(), "vendor=value".to_string()),
+            ]
+            .into_iter()
+            .collect(),
         )
         .unwrap()
     }
@@ -409,6 +506,11 @@ mod tests {
         assert_eq!(message.content_type, "application/octet-stream");
         // User metadata preserved; codec carried (namespaced) for the consumer.
         assert_eq!(message.correlation_id(), Some("corr-1"));
+        assert_eq!(
+            message.traceparent(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        );
+        assert_eq!(message.tracestate(), Some("vendor=value"));
         assert_eq!(message.metadata("x-sourced-payload-codec"), Some("bytes"));
         assert_eq!(
             message.metadata("x-sourced-payload-codec-version"),
@@ -673,6 +775,57 @@ mod tests {
                 "evt-b".to_string(),
                 "evt-c".to_string()
             ]
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_record_publish_outcomes_and_backlog_gauges() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let repo = InMemoryRepository::new();
+        let id = store_message(&repo, outbox("evt-1"));
+        let _pending = store_message(&repo, outbox("evt-2"));
+        let dispatcher = dispatcher(&repo, false, 3).with_service("orders");
+
+        block_on(dispatcher.dispatch_ids(std::slice::from_ref(&id))).unwrap();
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_outbox_messages_total{service=\"orders\",outcome=\"published\"} 1"
+            ),
+            "metrics should include published outbox count:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_pending_messages{service=\"orders\"} 1"),
+            "metrics should include pending outbox gauge:\n{text}"
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn backlog_gauges_observe_latest_backlog_on_every_refresh() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let repo = InMemoryRepository::new();
+        store_message(&repo, outbox("evt-1"));
+        block_on(record_backlog_gauges(
+            &repo.outbox_store(),
+            Some("orders-refresh"),
+        ));
+        store_message(&repo, outbox("evt-2"));
+        block_on(record_backlog_gauges(
+            &repo.outbox_store(),
+            Some("orders-refresh"),
+        ));
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains("distributed_outbox_pending_messages{service=\"orders-refresh\"} 2"),
+            "every refresh must observe the current backlog, never a stale snapshot:\n{text}"
         );
     }
 }

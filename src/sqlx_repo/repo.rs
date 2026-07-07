@@ -29,13 +29,10 @@ use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction
 
 use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
-use crate::outbox_worker::{ensure_active_claim, ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
-use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
-use crate::table::{
-    TableAdapterCapabilities as ReadModelAdapterCapabilities,
-    TableCommitOutcome as ReadModelCommitOutcome, TableStoreError as ReadModelError,
-    TableWritePlan as ReadModelWritePlan,
+use crate::outbox_worker::{
+    ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore,
 };
+use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
     validate_commit_batch, validate_snapshot_identity, validate_supported_event_codec, CommitBatch,
     GetStream, InboxReceipt, InboxStore, PreparedEventAppend, ReadModelWritePlanStore,
@@ -56,6 +53,11 @@ use crate::table::{
     generate_table_migration_artifacts, table_schema_bootstrap_result, table_schema_statements,
     TableMigrationArtifact, TableSchemaBootstrap, TableSchemaRegistry, TableSqlDialect,
     TableSqlSchemaAdapter, TableStoreError,
+};
+use crate::table::{
+    TableAdapterCapabilities as ReadModelAdapterCapabilities,
+    TableCommitOutcome as ReadModelCommitOutcome, TableStoreError as ReadModelError,
+    TableWritePlan as ReadModelWritePlan,
 };
 
 /// Build an embedded migrator from statically included migration files
@@ -139,6 +141,9 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
     /// ORDER BY expression for outbox `created_at` ordering (SQLite stores
     /// timestamps as text and must cast for numeric ordering).
     const ORDER_BY_CREATED_AT: &'static str;
+    /// `SELECT` expression for `MIN(created_at)` surfaced as
+    /// `oldest_created_at` in this backend's timestamp representation.
+    const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str;
     /// Dialect for table/read-model schema artifact generation.
     const TABLE_DIALECT: TableSqlDialect;
 
@@ -920,6 +925,41 @@ where
             rows.into_iter()
                 .map(outbox_message_from_row::<DB>)
                 .collect()
+        }
+    }
+
+    fn backlog_stats(
+        &self,
+    ) -> impl Future<Output = Result<OutboxBacklogStats, RepositoryError>> + Send + '_ {
+        async move {
+            let mut builder = QueryBuilder::<DB>::new("SELECT COUNT(*) AS pending_count, ");
+            builder.push(DB::OUTBOX_OLDEST_CREATED_AT_SELECT);
+            builder.push(" FROM outbox_messages WHERE status = ");
+            builder.push_bind(OutboxMessageStatus::Pending.as_str());
+            let row =
+                builder.build().fetch_one(&self.pool).await.map_err(|err| {
+                    repository_storage_error::<DB>("load outbox backlog stats", err)
+                })?;
+
+            let pending_count: i64 = row.try_get("pending_count").map_err(|err| {
+                repository_storage_error::<DB>("decode outbox backlog count row", err)
+            })?;
+            let pending =
+                repository_u64_from_i64(DB::BACKEND, pending_count, "outbox backlog count")
+                    .and_then(|value| {
+                        usize::try_from(value).map_err(|_| {
+                            RepositoryError::Model(format!(
+                                "{} outbox backlog count value {value} is invalid",
+                                DB::BACKEND
+                            ))
+                        })
+                    })?;
+            let oldest_created_at = DB::decode_optional_timestamp(&row, "oldest_created_at")?;
+
+            Ok(OutboxBacklogStats {
+                pending,
+                oldest_created_at,
+            })
         }
     }
 

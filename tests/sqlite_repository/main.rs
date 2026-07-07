@@ -4,6 +4,7 @@
 mod outbox_support;
 
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 use outbox_support::find_outbox_by_id;
 
@@ -58,6 +59,39 @@ async fn repository() -> SqliteRepository {
     SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn outbox_backlog_stats_order_sqlite_text_timestamps_numerically() {
+    let repo = repository().await;
+    let mut newer = OutboxMessage::create("backlog-newer", "counter.touched", b"{}".to_vec())
+        .expect("newer outbox message should be valid");
+    newer.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+    let mut older = OutboxMessage::create("backlog-older", "counter.touched", b"{}".to_vec())
+        .expect("older outbox message should be valid");
+    older.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+
+    repo.commit_batch(CommitBatch {
+        streams: Vec::new(),
+        outbox_messages: vec![newer, older],
+        read_model_plans: Vec::new(),
+        snapshots: Vec::new(),
+        inbox_receipts: Vec::new(),
+    })
+    .await
+    .expect("outbox-only batch should commit");
+
+    let stats = repo
+        .outbox_store()
+        .backlog_stats()
+        .await
+        .expect("backlog stats should load");
+
+    assert_eq!(stats.pending, 2);
+    assert_eq!(
+        stats.oldest_created_at,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(2))
+    );
 }
 
 // Consumer inbox semantics are covered for all backends by the shared
