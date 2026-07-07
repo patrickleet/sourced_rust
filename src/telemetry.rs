@@ -21,10 +21,31 @@ pub(crate) mod metric_names {
         "distributed_microsvc_dispatch_duration_seconds";
     pub(crate) const TRANSPORT_MESSAGES_TOTAL: &str = "distributed_transport_messages_total";
     pub(crate) const TRANSPORT_FAILURES_TOTAL: &str = "distributed_transport_failures_total";
+    pub(crate) const TRANSPORT_RECEIVE_DURATION_SECONDS: &str =
+        "distributed_transport_receive_duration_seconds";
+    pub(crate) const TRANSPORT_IN_FLIGHT_DURATION_SECONDS: &str =
+        "distributed_transport_in_flight_duration_seconds";
+    pub(crate) const TRANSPORT_MESSAGE_AGE_SECONDS: &str =
+        "distributed_transport_message_age_seconds";
+    pub(crate) const TRANSPORT_DELIVERY_ATTEMPTS_TOTAL: &str =
+        "distributed_transport_delivery_attempts_total";
     pub(crate) const OUTBOX_MESSAGES_TOTAL: &str = "distributed_outbox_messages_total";
     pub(crate) const OUTBOX_PENDING_MESSAGES: &str = "distributed_outbox_pending_messages";
     pub(crate) const OUTBOX_OLDEST_PENDING_AGE_SECONDS: &str =
         "distributed_outbox_oldest_pending_age_seconds";
+    pub(crate) const OUTBOX_CLAIM_DURATION_SECONDS: &str =
+        "distributed_outbox_claim_duration_seconds";
+    pub(crate) const OUTBOX_CLAIMED_MESSAGES_TOTAL: &str =
+        "distributed_outbox_claimed_messages_total";
+    pub(crate) const OUTBOX_PUBLISH_DURATION_SECONDS: &str =
+        "distributed_outbox_publish_duration_seconds";
+    pub(crate) const OUTBOX_MESSAGE_AGE_SECONDS: &str = "distributed_outbox_message_age_seconds";
+    pub(crate) const OUTBOX_RETRY_MESSAGES_TOTAL: &str = "distributed_outbox_retry_messages_total";
+    pub(crate) const OUTBOX_CLAIMABLE_MESSAGES: &str = "distributed_outbox_claimable_messages";
+    pub(crate) const OUTBOX_IN_FLIGHT_MESSAGES: &str = "distributed_outbox_in_flight_messages";
+    pub(crate) const OUTBOX_OLDEST_IN_FLIGHT_AGE_SECONDS: &str =
+        "distributed_outbox_oldest_in_flight_age_seconds";
+    pub(crate) const OUTBOX_STALE_LEASES: &str = "distributed_outbox_stale_leases";
 }
 
 #[cfg(feature = "metrics")]
@@ -38,6 +59,9 @@ pub(crate) mod metric_labels {
     pub(crate) const OUTCOME: &str = "outcome";
     pub(crate) const FAILURE_CLASS: &str = "failure_class";
     pub(crate) const ACTION: &str = "action";
+    pub(crate) const SOURCE: &str = "source";
+    pub(crate) const PHASE: &str = "phase";
+    pub(crate) const ATTEMPT_BUCKET: &str = "attempt_bucket";
     pub(crate) const LE: &str = "le";
 }
 
@@ -69,10 +93,10 @@ pub(crate) mod transport_outcome {
     pub(crate) const LOG_AND_ACK: &str = "log_and_ack";
 }
 
-#[cfg(feature = "metrics")]
-pub(crate) mod failure_class {
-    pub(crate) const RETRYABLE: &str = "retryable";
-    pub(crate) const PERMANENT: &str = "permanent";
+pub(crate) mod transport_receive_outcome {
+    pub(crate) const MESSAGE: &str = "message";
+    pub(crate) const DRAINED: &str = "drained";
+    pub(crate) const ERROR: &str = "error";
 }
 
 pub(crate) mod failure_action {
@@ -89,11 +113,40 @@ pub(crate) mod failure_action {
     pub(crate) const SETTLE_ERROR: &str = "settle_error";
 }
 
-#[cfg(feature = "metrics")]
+#[allow(dead_code)]
 pub(crate) mod outbox_outcome {
     pub(crate) const PUBLISHED: &str = "published";
     pub(crate) const RELEASED: &str = "released";
     pub(crate) const FAILED: &str = "failed";
+    pub(crate) const ERROR: &str = "error";
+}
+
+#[allow(dead_code)]
+pub(crate) mod outbox_claim_source {
+    pub(crate) const DISPATCHER_BATCH: &str = "dispatcher_batch";
+    pub(crate) const DISPATCHER_IDS: &str = "dispatcher_ids";
+    pub(crate) const TRANSPORT_SOURCE: &str = "transport_source";
+}
+
+#[allow(dead_code)]
+pub(crate) mod outbox_claim_outcome {
+    pub(crate) const SUCCESS: &str = "success";
+    pub(crate) const EMPTY: &str = "empty";
+    pub(crate) const ERROR: &str = "error";
+}
+
+#[cfg(feature = "metrics")]
+pub(crate) mod outbox_message_phase {
+    pub(crate) const CLAIMED: &str = "claimed";
+    pub(crate) const SETTLED: &str = "settled";
+}
+
+#[cfg(feature = "metrics")]
+pub(crate) mod attempt_bucket {
+    pub(crate) const TWO: &str = "2";
+    pub(crate) const THREE: &str = "3";
+    pub(crate) const FOUR_TO_TEN: &str = "4_10";
+    pub(crate) const GT_TEN: &str = "gt10";
 }
 
 #[cfg(test)]
@@ -109,6 +162,9 @@ pub(crate) mod privacy_policy {
         super::metric_labels::OUTCOME,
         super::metric_labels::FAILURE_CLASS,
         super::metric_labels::ACTION,
+        super::metric_labels::SOURCE,
+        super::metric_labels::PHASE,
+        super::metric_labels::ATTEMPT_BUCKET,
         super::metric_labels::LE,
     ];
 
@@ -130,6 +186,12 @@ pub(crate) mod privacy_policy {
         "http_target",
         "http_route",
         "http_user_agent",
+        "worker_id",
+        "destination",
+        "topic",
+        "queue",
+        "subject",
+        "error",
     ];
 }
 
@@ -166,9 +228,25 @@ pub(crate) fn handler_message_label<'a>(message: &'a str, error: Option<&Handler
 
 #[cfg(feature = "metrics")]
 pub(crate) fn transport_failure_class(kind: TransportErrorKind) -> &'static str {
+    transport_failure_class_label(kind)
+}
+
+#[allow(dead_code)]
+pub(crate) fn transport_failure_class_label(kind: crate::bus::TransportErrorKind) -> &'static str {
     match kind {
-        TransportErrorKind::Retryable => failure_class::RETRYABLE,
-        TransportErrorKind::Permanent => failure_class::PERMANENT,
+        crate::bus::TransportErrorKind::Retryable => "retryable",
+        crate::bus::TransportErrorKind::Permanent => "permanent",
+    }
+}
+
+#[cfg(feature = "metrics")]
+pub(crate) fn attempt_bucket(attempt: u32) -> Option<&'static str> {
+    match attempt {
+        0 | 1 => None,
+        2 => Some(attempt_bucket::TWO),
+        3 => Some(attempt_bucket::THREE),
+        4..=10 => Some(attempt_bucket::FOUR_TO_TEN),
+        _ => Some(attempt_bucket::GT_TEN),
     }
 }
 
@@ -221,11 +299,56 @@ pub(crate) fn microsvc_handler_span(message: &Message) -> tracing::Span {
 }
 
 #[cfg(feature = "otel")]
-pub(crate) fn transport_receive_span(message: &Message) -> tracing::Span {
-    framework_message_span!("distributed.transport.receive", message)
+pub(crate) fn transport_receive_span_with_attrs(
+    message: &Message,
+    transport: &str,
+    delivery_attempt: Option<u32>,
+    message_age_seconds: Option<f64>,
+    lag: Option<i64>,
+) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.transport.receive",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or(""),
+        distributed.transport.name = %transport,
+        distributed.transport.delivery_attempt = delivery_attempt.map(i64::from),
+        distributed.transport.message_age_seconds = message_age_seconds,
+        distributed.transport.lag = lag,
+        distributed.transport.outcome = tracing::field::Empty,
+    )
 }
 
 #[cfg(feature = "otel")]
-pub(crate) fn outbox_publish_span(message: &Message) -> tracing::Span {
-    framework_message_span!("distributed.outbox.publish", message)
+pub(crate) fn outbox_publish_span(
+    message: &Message,
+    attempt: u32,
+    age_seconds: Option<f64>,
+) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.outbox.publish",
+        distributed.message.name = %message.name(),
+        distributed.message.kind = %message.kind.as_str(),
+        messaging.message.id = %message.id().unwrap_or(""),
+        distributed.outbox.publish.attempt = i64::from(attempt),
+        distributed.outbox.message_age_seconds = age_seconds,
+        distributed.outbox.outcome = tracing::field::Empty,
+        distributed.failure.class = tracing::field::Empty,
+    )
+}
+
+#[cfg(feature = "otel")]
+pub(crate) fn outbox_claim_span(
+    source: &'static str,
+    requested: usize,
+    lease: std::time::Duration,
+) -> tracing::Span {
+    tracing::info_span!(
+        "distributed.outbox.claim",
+        distributed.outbox.claim.source = %source,
+        distributed.outbox.claim.requested = requested as i64,
+        distributed.outbox.claim.claimed = tracing::field::Empty,
+        distributed.outbox.claim.lease_seconds = lease.as_secs_f64(),
+        distributed.outbox.outcome = tracing::field::Empty,
+    )
 }

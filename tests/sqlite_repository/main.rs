@@ -10,8 +10,8 @@ use outbox_support::find_outbox_by_id;
 
 use distributed::table::TableSchemaRegistry;
 use distributed::{
-    sourced, Aggregate, AggregateBuilder, CommitBatch, Entity, GetStream, OutboxMessage,
-    OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanBuilder,
+    sourced, Aggregate, AggregateBuilder, ClaimOutboxMessages, CommitBatch, Entity, GetStream,
+    OutboxMessage, OutboxMessageStatus, OutboxStore, ReadModel, ReadModelWritePlanBuilder,
     ReadModelWritePlanCommitExt, RepositoryError, RowKey, RowPatch, RowValue, SqliteRepository,
     StreamIdentity, StreamWrite, TransactionalCommit, OUTBOX_MESSAGES_TABLE,
 };
@@ -92,6 +92,78 @@ async fn outbox_backlog_stats_order_sqlite_text_timestamps_numerically() {
         stats.oldest_created_at,
         Some(SystemTime::UNIX_EPOCH + Duration::from_secs(2))
     );
+}
+
+#[tokio::test]
+async fn outbox_runtime_stats_cover_claimable_in_flight_and_stale_sqlite() {
+    let repo = repository().await;
+    let mut pending_older =
+        OutboxMessage::create("runtime-pending-older", "counter.touched", b"{}".to_vec())
+            .expect("pending older outbox message should be valid");
+    pending_older.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    let mut pending_newer =
+        OutboxMessage::create("runtime-pending-newer", "counter.touched", b"{}".to_vec())
+            .expect("pending newer outbox message should be valid");
+    pending_newer.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(4);
+    let mut stale_in_flight =
+        OutboxMessage::create("runtime-stale", "counter.touched", b"{}".to_vec())
+            .expect("stale outbox message should be valid");
+    stale_in_flight.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+    stale_in_flight
+        .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let mut live_in_flight =
+        OutboxMessage::create("runtime-live", "counter.touched", b"{}".to_vec())
+            .expect("live outbox message should be valid");
+    live_in_flight.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
+    live_in_flight
+        .claim_for("worker-1", Duration::from_secs(60))
+        .unwrap();
+
+    repo.commit_batch(CommitBatch {
+        streams: Vec::new(),
+        outbox_messages: vec![
+            pending_newer,
+            stale_in_flight,
+            live_in_flight,
+            pending_older,
+        ],
+        read_model_plans: Vec::new(),
+        snapshots: Vec::new(),
+        inbox_receipts: Vec::new(),
+    })
+    .await
+    .expect("outbox-only batch should commit");
+
+    let stats = repo
+        .outbox_store()
+        .runtime_stats()
+        .await
+        .expect("runtime stats should load");
+
+    assert_eq!(stats.pending, 2);
+    assert_eq!(stats.claimable, 3);
+    assert_eq!(stats.in_flight, 2);
+    assert_eq!(stats.stale_leases, 1);
+    assert_eq!(
+        stats.oldest_pending_created_at,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+    );
+    assert_eq!(
+        stats.oldest_in_flight_created_at,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(2))
+    );
+
+    let claimed = repo
+        .outbox_store()
+        .claim(ClaimOutboxMessages::new(
+            "worker-2",
+            10,
+            Duration::from_secs(60),
+        ))
+        .await
+        .expect("claimable rows should claim");
+    assert_eq!(claimed.len(), 3);
 }
 
 // Consumer inbox semantics are covered for all backends by the shared

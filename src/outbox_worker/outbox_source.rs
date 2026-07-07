@@ -16,7 +16,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use super::{ClaimOutboxMessages, OutboxClaimRef, OutboxStore};
 use crate::bus::{Message, MessageSource, ReceivedMessage, TransportError};
@@ -112,17 +112,63 @@ where
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         if self.buffer.is_empty() {
-            let claimed = self.store.claim(self.claim_request()).await?;
+            let started = Instant::now();
+            let request = self.claim_request();
+            #[cfg(feature = "otel")]
+            let span = crate::telemetry::outbox_claim_span(
+                crate::telemetry::outbox_claim_source::TRANSPORT_SOURCE,
+                request.batch_size,
+                request.lease,
+            );
+            #[cfg(feature = "otel")]
+            let claimed = {
+                use tracing::Instrument as _;
+                match self.store.claim(request).instrument(span.clone()).await {
+                    Ok(claimed) => claimed,
+                    Err(error) => {
+                        record_claim_error(started.elapsed());
+                        span.record("distributed.outbox.claim.claimed", 0_i64);
+                        span.record(
+                            "distributed.outbox.outcome",
+                            crate::telemetry::outbox_claim_outcome::ERROR,
+                        );
+                        return Err(error.into());
+                    }
+                }
+            };
+            #[cfg(not(feature = "otel"))]
+            let claimed = match self.store.claim(request).await {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    record_claim_error(started.elapsed());
+                    return Err(error.into());
+                }
+            };
+            let outcome = if claimed.is_empty() {
+                crate::telemetry::outbox_claim_outcome::EMPTY
+            } else {
+                crate::telemetry::outbox_claim_outcome::SUCCESS
+            };
+            record_claim_metrics(&claimed, outcome, started.elapsed());
+            #[cfg(feature = "otel")]
+            {
+                span.record("distributed.outbox.claim.claimed", claimed.len() as i64);
+                span.record("distributed.outbox.outcome", outcome);
+            }
             self.buffer.extend(claimed);
         }
         match self.buffer.pop_front() {
             Some(row) => {
                 let claim = OutboxClaimRef::from_message(&row)?;
+                let attempt = row.attempts;
+                let created_at = row.created_at;
                 Ok(Some(ReceivedOutboxMessage {
                     store: self.store.clone(),
                     message: Message::from(row),
                     claim,
                     max_attempts: self.max_attempts,
+                    attempt,
+                    created_at,
                 }))
             }
             None => Ok(None),
@@ -136,6 +182,8 @@ pub struct ReceivedOutboxMessage<S> {
     message: Message,
     claim: OutboxClaimRef,
     max_attempts: u32,
+    attempt: u32,
+    created_at: SystemTime,
 }
 
 impl<S> ReceivedMessage for ReceivedOutboxMessage<S>
@@ -144,6 +192,14 @@ where
 {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn delivery_attempt(&self) -> Option<u32> {
+        Some(self.attempt)
+    }
+
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        Some(self.created_at)
     }
 
     /// Complete the row (transport delivery succeeded).
@@ -172,6 +228,44 @@ where
         self.store.fail(&self.claim, reason).await?;
         Ok(())
     }
+}
+
+fn record_claim_metrics(claimed: &[OutboxMessage], outcome: &str, duration: Duration) {
+    #[cfg(feature = "metrics")]
+    {
+        crate::metrics::record_outbox_claim(
+            None,
+            crate::telemetry::outbox_claim_source::TRANSPORT_SOURCE,
+            claimed.len(),
+            outcome,
+            duration,
+        );
+        for message in claimed {
+            if let Ok(age) = SystemTime::now().duration_since(message.created_at) {
+                crate::metrics::record_outbox_message_age(
+                    None,
+                    crate::telemetry::outbox_message_phase::CLAIMED,
+                    outcome,
+                    age,
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "metrics"))]
+    let _ = (claimed, outcome, duration);
+}
+
+fn record_claim_error(duration: Duration) {
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_outbox_claim(
+        None,
+        crate::telemetry::outbox_claim_source::TRANSPORT_SOURCE,
+        0,
+        crate::telemetry::outbox_claim_outcome::ERROR,
+        duration,
+    );
+    #[cfg(not(feature = "metrics"))]
+    let _ = duration;
 }
 
 #[cfg(test)]

@@ -25,6 +25,24 @@ pub struct OutboxBacklogStats {
     pub oldest_created_at: Option<SystemTime>,
 }
 
+/// Lightweight outbox runtime/backlog summary for metrics and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct OutboxRuntimeStats {
+    /// Number of rows currently in the pending status.
+    pub pending: usize,
+    /// Creation time of the oldest pending row, when any pending rows exist.
+    pub oldest_pending_created_at: Option<SystemTime>,
+    /// Number of rows that are claimable now.
+    pub claimable: usize,
+    /// Number of rows currently leased in flight.
+    pub in_flight: usize,
+    /// Creation time of the oldest in-flight row, when any in-flight rows exist.
+    pub oldest_in_flight_created_at: Option<SystemTime>,
+    /// Number of in-flight rows whose lease is stale and claimable again.
+    pub stale_leases: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimOutboxMessages {
     pub worker_id: String,
@@ -153,6 +171,36 @@ pub trait OutboxStore: Send + Sync {
             Ok(OutboxBacklogStats {
                 pending: pending.len(),
                 oldest_created_at,
+            })
+        }
+    }
+
+    /// Return runtime/backlog stats without requiring callers to page full rows.
+    /// Backends with query support should override this with indexed aggregate
+    /// queries. The default stays bounded by [`BACKLOG_STATS_SCAN_LIMIT`].
+    fn runtime_stats(
+        &self,
+    ) -> impl Future<Output = Result<OutboxRuntimeStats, RepositoryError>> + Send + '_ {
+        async move {
+            let pending = self.pending(BACKLOG_STATS_SCAN_LIMIT).await?;
+            let in_flight = self
+                .messages_by_status(OutboxMessageStatus::InFlight, BACKLOG_STATS_SCAN_LIMIT)
+                .await?;
+            let now = SystemTime::now();
+            let stale_leases = in_flight
+                .iter()
+                .filter(|message| message.has_expired_lease_at(now))
+                .count();
+            Ok(OutboxRuntimeStats {
+                pending: pending.len(),
+                oldest_pending_created_at: pending.first().map(|message| message.created_at),
+                claimable: pending.len() + stale_leases,
+                in_flight: in_flight.len(),
+                oldest_in_flight_created_at: in_flight
+                    .iter()
+                    .map(|message| message.created_at)
+                    .min(),
+                stale_leases,
             })
         }
     }
@@ -349,6 +397,51 @@ impl OutboxStore for InMemoryOutboxStore {
                         .oldest_created_at
                         .map_or(message.created_at, |oldest| oldest.min(message.created_at)),
                 );
+            }
+            Ok(stats)
+        }
+    }
+
+    fn runtime_stats(
+        &self,
+    ) -> impl Future<Output = Result<OutboxRuntimeStats, RepositoryError>> + Send + '_ {
+        async move {
+            let storage = self
+                .storage
+                .read()
+                .map_err(|_| RepositoryError::LockPoisoned("outbox read"))?;
+
+            let now = SystemTime::now();
+            let mut stats = OutboxRuntimeStats::default();
+            for message in storage.values() {
+                match message.status {
+                    OutboxMessageStatus::Pending => {
+                        stats.pending += 1;
+                        stats.claimable += 1;
+                        stats.oldest_pending_created_at = Some(
+                            stats
+                                .oldest_pending_created_at
+                                .map_or(message.created_at, |oldest| {
+                                    oldest.min(message.created_at)
+                                }),
+                        );
+                    }
+                    OutboxMessageStatus::InFlight => {
+                        stats.in_flight += 1;
+                        stats.oldest_in_flight_created_at = Some(
+                            stats
+                                .oldest_in_flight_created_at
+                                .map_or(message.created_at, |oldest| {
+                                    oldest.min(message.created_at)
+                                }),
+                        );
+                        if message.has_expired_lease_at(now) {
+                            stats.claimable += 1;
+                            stats.stale_leases += 1;
+                        }
+                    }
+                    OutboxMessageStatus::Published | OutboxMessageStatus::Failed => {}
+                }
             }
             Ok(stats)
         }
@@ -681,6 +774,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn runtime_stats_cover_claimable_in_flight_stale_and_oldest_ages() {
+        let repo = InMemoryRepository::new();
+        let mut pending_older =
+            OutboxMessage::create("msg-pending-a", "Event", b"{}".to_vec()).unwrap();
+        pending_older.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut pending_newer =
+            OutboxMessage::create("msg-pending-b", "Event", b"{}".to_vec()).unwrap();
+        pending_newer.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(4);
+        let mut stale_in_flight =
+            OutboxMessage::create("msg-stale", "Event", b"{}".to_vec()).unwrap();
+        stale_in_flight.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+        stale_in_flight
+            .claim_at("worker-1", Duration::from_secs(1), SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let mut live_in_flight =
+            OutboxMessage::create("msg-live", "Event", b"{}".to_vec()).unwrap();
+        live_in_flight.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
+        live_in_flight
+            .claim_for("worker-1", Duration::from_secs(60))
+            .unwrap();
+        let mut settled = OutboxMessage::create("msg-settled", "Event", b"{}".to_vec()).unwrap();
+        settled.fail("done".to_string()).unwrap();
+        for message in [
+            pending_newer,
+            stale_in_flight,
+            settled,
+            live_in_flight,
+            pending_older,
+        ] {
+            store_message(&repo, message).await;
+        }
+
+        let stats = repo.outbox_store().runtime_stats().await.unwrap();
+
+        assert_eq!(
+            stats,
+            OutboxRuntimeStats {
+                pending: 2,
+                oldest_pending_created_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                claimable: 3,
+                in_flight: 2,
+                oldest_in_flight_created_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(2)),
+                stale_leases: 1,
+            }
+        );
+    }
+
     /// The default `backlog_stats` must honor the mandatory listing bound —
     /// a store that only implements the required methods must never see an
     /// unbounded (`usize::MAX`) page-in from the gauge path.
@@ -735,6 +876,8 @@ mod tests {
 
         let stats = LimitProbeStore.backlog_stats().await.unwrap();
         assert_eq!(stats, OutboxBacklogStats::default());
+        let runtime_stats = LimitProbeStore.runtime_stats().await.unwrap();
+        assert_eq!(runtime_stats, OutboxRuntimeStats::default());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 use super::source::{MessageSource, ReceivedMessage};
 use super::{FailureAction, MessageRouter, RunOptions, TransportError, TransportErrorKind};
@@ -61,6 +62,14 @@ where
         let Some(received) = recv_next(&mut source, service, transport).await? else {
             break;
         };
+        let in_flight_started = Instant::now();
+        let received_telemetry = ReceivedTelemetry::from_received(&received);
+        record_transport_message_age(
+            service,
+            transport,
+            received.message().kind,
+            &received_telemetry,
+        );
 
         // A delivery the transport could not decode is a permanent failure: it
         // carries no valid message to dispatch, and it must NOT be treated as an
@@ -80,6 +89,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::NACK,
                         crate::telemetry::transport_outcome::NACK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.nack(&reason),
                     )
                     .await?;
@@ -92,6 +103,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.dead_letter(&reason),
                     )
                     .await?;
@@ -104,6 +117,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::PARK,
                         crate::telemetry::transport_outcome::PARK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.park(&reason),
                     )
                     .await?;
@@ -116,11 +131,23 @@ where
                         kind,
                         crate::telemetry::transport_outcome::ACK,
                         crate::telemetry::transport_outcome::LOG_AND_ACK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.ack(),
                     )
                     .await?;
                 }
-                FailureAction::Stop => return Err(TransportError::permanent(error.to_string())),
+                FailureAction::Stop => {
+                    record_transport_in_flight(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::failure_action::STOP,
+                        in_flight_started.elapsed(),
+                        &received_telemetry,
+                    );
+                    return Err(TransportError::permanent(error.to_string()));
+                }
             }
             continue;
         }
@@ -134,13 +161,23 @@ where
                 kind,
                 crate::telemetry::transport_outcome::ACK,
                 crate::telemetry::transport_outcome::IGNORED,
+                in_flight_started,
+                &received_telemetry,
                 || received.ack(),
             )
             .await?;
             continue;
         }
         let kind = received.message().kind;
-        match dispatch(router.as_ref(), &options, received.message()).await {
+        match dispatch(
+            router.as_ref(),
+            &options,
+            received.message(),
+            transport,
+            &received_telemetry,
+        )
+        .await
+        {
             Ok(()) => {
                 settle_and_record(
                     service,
@@ -148,6 +185,8 @@ where
                     kind,
                     crate::telemetry::transport_outcome::ACK,
                     crate::telemetry::transport_outcome::ACK,
+                    in_flight_started,
+                    &received_telemetry,
                     || received.ack(),
                 )
                 .await?;
@@ -162,6 +201,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::NACK,
                         crate::telemetry::transport_outcome::NACK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.nack(&reason),
                     )
                     .await?;
@@ -175,6 +216,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
                         crate::telemetry::transport_outcome::DEAD_LETTER,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.dead_letter(&reason),
                     )
                     .await?;
@@ -188,6 +231,8 @@ where
                         kind,
                         crate::telemetry::transport_outcome::PARK,
                         crate::telemetry::transport_outcome::PARK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.park(&reason),
                     )
                     .await?;
@@ -209,12 +254,22 @@ where
                         kind,
                         crate::telemetry::transport_outcome::ACK,
                         crate::telemetry::transport_outcome::LOG_AND_ACK,
+                        in_flight_started,
+                        &received_telemetry,
                         || received.ack(),
                     )
                     .await?;
                 }
                 FailureAction::Stop => {
                     record_transport_failure(service, transport, error.kind(), FailureAction::Stop);
+                    record_transport_in_flight(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::failure_action::STOP,
+                        in_flight_started.elapsed(),
+                        &received_telemetry,
+                    );
                     return Err(error);
                 }
             },
@@ -229,6 +284,8 @@ async fn settle_and_record<F, Fut>(
     kind: MessageKind,
     settle_action: &'static str,
     outcome: &'static str,
+    in_flight_started: Instant,
+    received_telemetry: &ReceivedTelemetry,
     settle: F,
 ) -> Result<(), TransportError>
 where
@@ -238,14 +295,26 @@ where
     match settle().await {
         Ok(()) => {
             record_transport_message(service, transport, kind, outcome);
+            record_transport_in_flight(
+                service,
+                transport,
+                kind,
+                outcome,
+                in_flight_started.elapsed(),
+                received_telemetry,
+            );
             Ok(())
         }
         Err(error) => {
-            record_transport_failure(
+            let failure_action = crate::telemetry::settle_failure_action(settle_action);
+            record_transport_failure(service, transport, error.kind(), failure_action);
+            record_transport_in_flight(
                 service,
                 transport,
-                error.kind(),
-                crate::telemetry::settle_failure_action(settle_action),
+                kind,
+                failure_action,
+                in_flight_started.elapsed(),
+                received_telemetry,
             );
             Err(error)
         }
@@ -257,9 +326,33 @@ async fn recv_next<S: MessageSource>(
     service: Option<&str>,
     transport: &str,
 ) -> Result<Option<S::Received>, TransportError> {
+    let started = Instant::now();
     match source.recv().await {
-        Ok(received) => Ok(received),
+        Ok(Some(received)) => {
+            record_transport_receive_duration(
+                service,
+                transport,
+                crate::telemetry::transport_receive_outcome::MESSAGE,
+                started.elapsed(),
+            );
+            Ok(Some(received))
+        }
+        Ok(None) => {
+            record_transport_receive_duration(
+                service,
+                transport,
+                crate::telemetry::transport_receive_outcome::DRAINED,
+                started.elapsed(),
+            );
+            Ok(None)
+        }
         Err(error) => {
+            record_transport_receive_duration(
+                service,
+                transport,
+                crate::telemetry::transport_receive_outcome::ERROR,
+                started.elapsed(),
+            );
             record_transport_failure(
                 service,
                 transport,
@@ -280,28 +373,36 @@ async fn dispatch<R: MessageRouter, I>(
     router: &R,
     options: &RunOptions<I>,
     message: &Message,
+    transport: &str,
+    received_telemetry: &ReceivedTelemetry,
 ) -> Result<(), TransportError> {
     #[cfg(feature = "otel")]
     {
         use tracing::Instrument as _;
 
-        let span = transport_receive_span(message);
+        let span = transport_receive_span(message, transport, received_telemetry);
         crate::trace_context::set_span_parent_from_metadata_if_no_current_span(
             &span,
             &message.metadata,
         );
-        return async {
+        let result = async {
             options
                 .validate_message_id(message)
                 .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
             router.dispatch(message).await
         }
-        .instrument(span)
+        .instrument(span.clone())
         .await;
+        span.record(
+            "distributed.transport.outcome",
+            if result.is_ok() { "success" } else { "error" },
+        );
+        return result;
     }
 
     #[cfg(not(feature = "otel"))]
     {
+        let _ = (transport, received_telemetry);
         options
             .validate_message_id(message)
             .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
@@ -310,8 +411,38 @@ async fn dispatch<R: MessageRouter, I>(
 }
 
 #[cfg(feature = "otel")]
-fn transport_receive_span(message: &Message) -> tracing::Span {
-    crate::telemetry::transport_receive_span(message)
+fn transport_receive_span(
+    message: &Message,
+    transport: &str,
+    received_telemetry: &ReceivedTelemetry,
+) -> tracing::Span {
+    crate::telemetry::transport_receive_span_with_attrs(
+        message,
+        transport,
+        received_telemetry.delivery_attempt,
+        received_telemetry.message_age.map(|age| age.as_secs_f64()),
+        received_telemetry.lag,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ReceivedTelemetry {
+    delivery_attempt: Option<u32>,
+    message_age: Option<Duration>,
+    lag: Option<i64>,
+}
+
+impl ReceivedTelemetry {
+    fn from_received<R: ReceivedMessage>(received: &R) -> Self {
+        let message_age = received
+            .producer_timestamp()
+            .and_then(|timestamp| SystemTime::now().duration_since(timestamp).ok());
+        Self {
+            delivery_attempt: received.delivery_attempt(),
+            message_age,
+            lag: received.transport_lag(),
+        }
+    }
 }
 
 fn record_transport_message(
@@ -324,6 +455,69 @@ fn record_transport_message(
     crate::metrics::record_transport_message(service, transport, kind, outcome);
     #[cfg(not(feature = "metrics"))]
     let _ = (service, transport, kind, outcome);
+}
+
+fn record_transport_receive_duration(
+    service: Option<&str>,
+    transport: &str,
+    outcome: &str,
+    duration: Duration,
+) {
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_transport_receive_duration(service, transport, outcome, duration);
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, transport, outcome, duration);
+}
+
+fn record_transport_in_flight(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    outcome: &str,
+    duration: Duration,
+    received_telemetry: &ReceivedTelemetry,
+) {
+    #[cfg(feature = "metrics")]
+    {
+        crate::metrics::record_transport_in_flight_duration(
+            service, transport, kind, outcome, duration,
+        );
+        if let Some(attempt) = received_telemetry.delivery_attempt {
+            crate::metrics::record_transport_delivery_attempt(
+                service, transport, kind, attempt, outcome,
+            );
+        }
+    }
+    #[cfg(not(feature = "metrics"))]
+    let _ = (
+        service,
+        transport,
+        kind,
+        outcome,
+        duration,
+        received_telemetry,
+    );
+}
+
+fn record_transport_message_age(
+    service: Option<&str>,
+    transport: &str,
+    kind: MessageKind,
+    received_telemetry: &ReceivedTelemetry,
+) {
+    let _ = (
+        received_telemetry.delivery_attempt,
+        received_telemetry.message_age,
+        received_telemetry.lag,
+    );
+    #[cfg(feature = "metrics")]
+    {
+        if let Some(age) = received_telemetry.message_age {
+            crate::metrics::record_transport_message_age(service, transport, kind, age);
+        }
+    }
+    #[cfg(not(feature = "metrics"))]
+    let _ = (service, transport, kind, received_telemetry);
 }
 
 fn record_transport_failure<A>(
@@ -371,6 +565,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::future::Future;
     use std::sync::Mutex;
+    #[cfg(feature = "metrics")]
+    use std::time::Duration as StdDuration;
+    use std::time::SystemTime as StdSystemTime;
 
     // --- minimal runtime-free executor -------------------------------------
     // The transport module is not feature-gated, so its tests run without an
@@ -430,6 +627,9 @@ mod tests {
         recorder: Arc<Recorder>,
         settle_ok: bool,
         decode_error: Option<TransportError>,
+        delivery_attempt: Option<u32>,
+        producer_timestamp: Option<StdSystemTime>,
+        lag: Option<i64>,
     }
 
     impl FakeReceived {
@@ -449,6 +649,15 @@ mod tests {
         }
         fn decode_error(&self) -> Option<&TransportError> {
             self.decode_error.as_ref()
+        }
+        fn delivery_attempt(&self) -> Option<u32> {
+            self.delivery_attempt
+        }
+        fn producer_timestamp(&self) -> Option<StdSystemTime> {
+            self.producer_timestamp
+        }
+        fn transport_lag(&self) -> Option<i64> {
+            self.lag
         }
         async fn ack(self) -> Result<(), TransportError> {
             self.settle(Event::Ack)
@@ -472,6 +681,9 @@ mod tests {
         // When set, every received message reports this as a decode failure,
         // modeling a transport that claims a row/offset before decoding it.
         decode_error: bool,
+        delivery_attempt: Option<u32>,
+        producer_timestamp: Option<StdSystemTime>,
+        lag: Option<i64>,
     }
 
     impl MessageSource for FakeSource {
@@ -487,6 +699,9 @@ mod tests {
                 settle_ok: self.settle_ok,
                 decode_error: decode_error
                     .then(|| TransportError::permanent("corrupt row: name failed to decode")),
+                delivery_attempt: self.delivery_attempt,
+                producer_timestamp: self.producer_timestamp,
+                lag: self.lag,
             }))
         }
     }
@@ -556,6 +771,9 @@ mod tests {
             settle_ok,
             recv_error,
             decode_error: false,
+            delivery_attempt: None,
+            producer_timestamp: None,
+            lag: None,
         };
         let outcome = block_on(run_source(svc, source, options));
         RunResult {
@@ -615,6 +833,9 @@ mod tests {
             settle_ok: true,
             recv_error: false,
             decode_error: false,
+            delivery_attempt: Some(2),
+            producer_timestamp: Some(StdSystemTime::now() - StdDuration::from_secs(5)),
+            lag: None,
         };
 
         let outcome = block_on(run_source(svc, source, RunOptions::idempotent()));
@@ -639,6 +860,48 @@ mod tests {
             ),
             "metrics should include the retryable failure action:\n{text}"
         );
+        assert!(
+            text.contains(
+                "distributed_transport_receive_duration_seconds_count{service=\"metrics-runner-settlement\",transport=\"unknown\",outcome=\"message\"} 2"
+            ),
+            "metrics should include receive timing for messages:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_receive_duration_seconds_count{service=\"metrics-runner-settlement\",transport=\"unknown\",outcome=\"drained\"} 1"
+            ),
+            "metrics should include receive timing for drain:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_in_flight_duration_seconds_count{service=\"metrics-runner-settlement\",transport=\"unknown\",message_kind=\"event\",outcome=\"ack\"} 1"
+            ),
+            "metrics should include ack in-flight timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_in_flight_duration_seconds_count{service=\"metrics-runner-settlement\",transport=\"unknown\",message_kind=\"event\",outcome=\"nack\"} 1"
+            ),
+            "metrics should include nack in-flight timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_message_age_seconds_count{service=\"metrics-runner-settlement\",transport=\"unknown\",message_kind=\"event\"} 2"
+            ),
+            "metrics should include optional adapter message age:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_delivery_attempts_total{service=\"metrics-runner-settlement\",transport=\"unknown\",message_kind=\"event\",attempt_bucket=\"2\",outcome=\"ack\"} 1"
+            ),
+            "metrics should include ack delivery attempt bucket:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_delivery_attempts_total{service=\"metrics-runner-settlement\",transport=\"unknown\",message_kind=\"event\",attempt_bucket=\"2\",outcome=\"nack\"} 1"
+            ),
+            "metrics should include nack delivery attempt bucket:\n{text}"
+        );
     }
 
     #[cfg(feature = "metrics")]
@@ -660,6 +923,9 @@ mod tests {
             settle_ok: false,
             recv_error: false,
             decode_error: false,
+            delivery_attempt: Some(3),
+            producer_timestamp: None,
+            lag: None,
         };
 
         let outcome = block_on(run_source(svc, source, RunOptions::idempotent()));
@@ -680,6 +946,124 @@ mod tests {
             ),
             "settle failure should not record an ack outcome:\n{text}"
         );
+        assert!(
+            text.contains(
+                "distributed_transport_in_flight_duration_seconds_count{service=\"metrics-runner-settle-failure\",transport=\"unknown\",message_kind=\"event\",outcome=\"settle_ack\"} 1"
+            ),
+            "metrics should include settle failure in-flight timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_delivery_attempts_total{service=\"metrics-runner-settle-failure\",transport=\"unknown\",message_kind=\"event\",attempt_bucket=\"3\",outcome=\"settle_ack\"} 1"
+            ),
+            "metrics should include settle failure delivery attempt bucket:\n{text}"
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_record_receive_error() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        let recorder = Recorder::new();
+        let svc = Arc::new(
+            router(&recorder)
+                .as_ref()
+                .clone()
+                .named("metrics-runner-recv-error"),
+        );
+        let source = FakeSource {
+            queue: vec![event_message("ok", None)].into_iter().collect(),
+            recorder,
+            settle_ok: true,
+            recv_error: true,
+            decode_error: false,
+            delivery_attempt: None,
+            producer_timestamp: None,
+            lag: None,
+        };
+
+        let outcome = block_on(run_source(svc, source, RunOptions::idempotent()));
+        assert!(outcome
+            .expect_err("recv error should propagate")
+            .is_retryable());
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_transport_receive_duration_seconds_count{service=\"metrics-runner-recv-error\",transport=\"unknown\",outcome=\"error\"} 1"
+            ),
+            "metrics should include receive error timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_transport_failures_total{service=\"metrics-runner-recv-error\",transport=\"unknown\",failure_class=\"retryable\",action=\"recv_error\"} 1"
+            ),
+            "metrics should include receive error failure action:\n{text}"
+        );
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_record_failure_policy_in_flight_outcomes() {
+        let _guard = crate::metrics::lock_for_tests();
+        crate::metrics::reset_for_tests();
+
+        fn run_named(service_name: &str, policy: FailurePolicy) -> Result<(), TransportError> {
+            let recorder = Recorder::new();
+            let svc = Arc::new(router(&recorder).as_ref().clone().named(service_name));
+            let source = FakeSource {
+                queue: vec![event_message("permanent", None)].into_iter().collect(),
+                recorder,
+                settle_ok: true,
+                recv_error: false,
+                decode_error: false,
+                delivery_attempt: None,
+                producer_timestamp: None,
+                lag: None,
+            };
+            block_on(run_source(
+                svc,
+                source,
+                RunOptions::idempotent().with_failure_policy(policy),
+            ))
+        }
+
+        run_named("metrics-runner-dead-letter", FailurePolicy::DeadLetter).unwrap();
+        run_named("metrics-runner-park", FailurePolicy::Park).unwrap();
+        run_named("metrics-runner-log-and-ack", FailurePolicy::LogAndAck).unwrap();
+        let stop = run_named("metrics-runner-stop", FailurePolicy::Stop);
+        assert!(stop.expect_err("stop should propagate").is_permanent());
+
+        let text = crate::metrics::prometheus_text();
+        for (service, outcome) in [
+            ("metrics-runner-dead-letter", "dead_letter"),
+            ("metrics-runner-park", "park"),
+            ("metrics-runner-log-and-ack", "log_and_ack"),
+            ("metrics-runner-stop", "stop"),
+        ] {
+            let needle = format!(
+                "distributed_transport_in_flight_duration_seconds_count{{service=\"{service}\",transport=\"unknown\",message_kind=\"event\",outcome=\"{outcome}\"}} 1"
+            );
+            assert!(
+                text.contains(&needle),
+                "metrics should include {outcome} in-flight timing:\n{text}"
+            );
+        }
+        for (service, outcome) in [
+            ("metrics-runner-dead-letter", "dead_letter"),
+            ("metrics-runner-park", "park"),
+            ("metrics-runner-log-and-ack", "log_and_ack"),
+        ] {
+            let needle = format!(
+                "distributed_transport_messages_total{{service=\"{service}\",transport=\"unknown\",message_kind=\"event\",outcome=\"{outcome}\"}} 1"
+            );
+            assert!(
+                text.contains(&needle),
+                "metrics should include {outcome} settle outcome:\n{text}"
+            );
+        }
     }
 
     #[test]
@@ -860,6 +1244,9 @@ mod tests {
             settle_ok: true,
             recv_error: false,
             decode_error: true,
+            delivery_attempt: None,
+            producer_timestamp: None,
+            lag: None,
         };
         let outcome = block_on(run_source(svc, source, options));
         RunResult {
@@ -924,6 +1311,9 @@ mod tests {
             settle_ok: true,
             recv_error: false,
             decode_error: false,
+            delivery_attempt: None,
+            producer_timestamp: None,
+            lag: None,
         };
         let future = run_source(svc, source, RunOptions::idempotent());
         assert_send(&future);

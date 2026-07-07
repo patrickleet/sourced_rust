@@ -71,6 +71,7 @@ impl crate::sqlx_repo::repo::SqlxRepoBackend for Sqlite {
     const ORDER_BY_CREATED_AT: &'static str = "CAST(created_at AS REAL)";
     const OUTBOX_OLDEST_CREATED_AT_SELECT: &'static str =
         "MIN(CAST(created_at AS REAL)) AS oldest_created_at";
+    const OUTBOX_CREATED_AT_EPOCH_EXPR: &'static str = "CAST(created_at AS REAL)";
     const TABLE_DIALECT: TableSqlDialect = TableSqlDialect::Sqlite;
 
     /// `"secs.nanos"` text, sortable/comparable via `CAST(... AS REAL)`.

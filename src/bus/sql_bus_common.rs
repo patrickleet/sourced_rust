@@ -34,7 +34,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::{ColumnIndex, Decode, Row, Type};
 
@@ -157,6 +157,8 @@ pub struct ReceivedRow {
     seq: i64,
     message: Message,
     decode_error: Option<TransportError>,
+    delivery_attempt: Option<u32>,
+    producer_timestamp: Option<SystemTime>,
 }
 
 impl ReceivedRow {
@@ -170,6 +172,7 @@ impl ReceivedRow {
         for<'r> String: Decode<'r, R::Database> + Type<R::Database>,
         for<'r> Vec<u8>: Decode<'r, R::Database> + Type<R::Database>,
         for<'r> i64: Decode<'r, R::Database> + Type<R::Database>,
+        for<'r> f64: Decode<'r, R::Database> + Type<R::Database>,
     {
         let seq = row.try_get("seq").unwrap_or_default();
         let (message, decode_error) = match message_from_row(backend, row) {
@@ -183,8 +186,33 @@ impl ReceivedRow {
             seq,
             message,
             decode_error,
+            delivery_attempt: delivery_attempt_from_row(row),
+            producer_timestamp: producer_timestamp_from_row(row),
         }
     }
+}
+
+fn delivery_attempt_from_row<R>(row: &R) -> Option<u32>
+where
+    R: Row,
+    for<'a> &'a str: ColumnIndex<R>,
+    for<'r> i64: Decode<'r, R::Database> + Type<R::Database>,
+{
+    let attempts = row.try_get::<i64, _>("attempts").ok()?;
+    u32::try_from(attempts).ok()
+}
+
+fn producer_timestamp_from_row<R>(row: &R) -> Option<SystemTime>
+where
+    R: Row,
+    for<'a> &'a str: ColumnIndex<R>,
+    for<'r> f64: Decode<'r, R::Database> + Type<R::Database>,
+{
+    let epoch_seconds = row.try_get::<f64, _>("producer_timestamp").ok()?;
+    if !epoch_seconds.is_finite() || epoch_seconds < 0.0 {
+        return None;
+    }
+    Some(UNIX_EPOCH + Duration::from_secs_f64(epoch_seconds))
 }
 
 /// A claimed `bus_queue` row: the decoded row plus the claim token that fences
@@ -427,6 +455,14 @@ impl<B: SqlBusDialect> ReceivedMessage for SqlQueueReceived<B> {
         self.row.decode_error.as_ref()
     }
 
+    fn delivery_attempt(&self) -> Option<u32> {
+        self.row.delivery_attempt
+    }
+
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        self.row.producer_timestamp
+    }
+
     async fn ack(self) -> Result<(), TransportError> {
         self.dialect
             .delete_claimed(self.row.seq, &self.claim_token)
@@ -538,6 +574,10 @@ impl<B: SqlBusDialect> ReceivedMessage for SqlLogReceived<B> {
 
     fn decode_error(&self) -> Option<&TransportError> {
         self.row.decode_error.as_ref()
+    }
+
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        self.row.producer_timestamp
     }
 
     async fn ack(self) -> Result<(), TransportError> {

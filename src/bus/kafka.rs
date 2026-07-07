@@ -14,7 +14,7 @@
 //! tested in `tests/kafka_transport` against a broker (see `compose.yaml`).
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -190,6 +190,7 @@ pub struct KafkaReceived {
     partition: i32,
     offset: i64,
     message: Message,
+    producer_timestamp: Option<SystemTime>,
 }
 
 impl KafkaReceived {
@@ -220,12 +221,18 @@ impl KafkaReceived {
             MESSAGE_KIND_HEADER,
             headers,
         );
+        let producer_timestamp = borrowed
+            .timestamp()
+            .to_millis()
+            .and_then(|millis| u64::try_from(millis).ok())
+            .map(|millis| UNIX_EPOCH + Duration::from_millis(millis));
         Self {
             consumer,
             topic,
             partition: borrowed.partition(),
             offset: borrowed.offset(),
             message,
+            producer_timestamp,
         }
     }
 
@@ -251,6 +258,10 @@ impl KafkaReceived {
 impl ReceivedMessage for KafkaReceived {
     fn message(&self) -> &Message {
         &self.message
+    }
+
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        self.producer_timestamp
     }
 
     async fn ack(self) -> Result<(), TransportError> {

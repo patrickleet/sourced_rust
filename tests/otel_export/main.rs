@@ -18,23 +18,99 @@
 //!   output (`/out/traces.json` in the container)
 #![cfg(all(feature = "http", feature = "otel"))]
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use distributed::bus::{
+    run_source, MessagePublisher, MessageSource, ReceivedMessage, RunOptions, TransportError,
+};
 use distributed::microsvc::{Context, Message, MessageKind, Routes, Service};
+use distributed::outbox_worker::OutboxDispatcher;
+use distributed::{CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit};
 use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig as _;
 use serde_json::{json, Value};
+use tracing::field::{Field, Visit};
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::layer::{Context as LayerContext, Layer};
+use tracing_subscriber::registry::LookupSpan;
 
 #[path = "../support/env.rs"]
 mod env_support;
 
 /// The parent span id we inject; the exported framework span must be its child.
 const REMOTE_PARENT_SPAN_ID: &str = "00f067aa0ba902b7";
+
+#[tokio::test(flavor = "current_thread")]
+async fn outbox_and_transport_depth_spans_are_recorded_without_exporter_setup() {
+    let capture = SpanCaptureLayer::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let repo = InMemoryRepository::new();
+    let mut outbox =
+        OutboxMessage::create("span-outbox-1", "orders.created", b"{}".to_vec()).unwrap();
+    outbox.created_at = SystemTime::now() - Duration::from_secs(5);
+    repo.commit_batch(CommitBatch {
+        outbox_messages: vec![outbox],
+        ..CommitBatch::empty()
+    })
+    .await
+    .unwrap();
+    let dispatcher = OutboxDispatcher::new(
+        repo.outbox_store(),
+        SpanPublisher,
+        "span-worker",
+        Duration::from_secs(60),
+        3,
+    )
+    .with_service("otel-depth");
+    dispatcher.dispatch_batch(1).await.unwrap();
+
+    let service = Arc::new(
+        Service::new().named("otel-depth").routes(
+            Routes::new()
+                .with_dependencies(())
+                .event("orders.transport")
+                .handle(|_ctx: &Context<()>| async move { Ok(json!({"ok": true})) }),
+        ),
+    );
+    run_source(
+        service,
+        SpanSource {
+            next: Some(
+                Message::new("orders.transport", MessageKind::Event, b"{}".to_vec())
+                    .with_id("transport-1"),
+            ),
+        },
+        RunOptions::idempotent(),
+    )
+    .await
+    .unwrap();
+
+    let spans = capture.snapshot();
+    let claim = span_named(&spans, "distributed.outbox.claim");
+    assert_field_eq(claim, "distributed.outbox.claim.source", "dispatcher_batch");
+    assert_field_eq(claim, "distributed.outbox.claim.requested", "1");
+    assert_field_eq(claim, "distributed.outbox.claim.claimed", "1");
+    assert_field_eq(claim, "distributed.outbox.outcome", "success");
+
+    let publish = span_named(&spans, "distributed.outbox.publish");
+    assert_field_eq(publish, "distributed.outbox.publish.attempt", "1");
+    assert_field_contains(publish, "distributed.outbox.message_age_seconds", "5");
+    assert_field_eq(publish, "distributed.outbox.outcome", "published");
+
+    let transport = span_named(&spans, "distributed.transport.receive");
+    assert_field_eq(transport, "distributed.transport.name", "span-test");
+    assert_field_contains(transport, "distributed.transport.delivery_attempt", "4");
+    assert_field_contains(transport, "distributed.transport.message_age_seconds", "7");
+    assert_field_contains(transport, "distributed.transport.lag", "17");
+    assert_field_eq(transport, "distributed.transport.outcome", "success");
+}
 
 #[tokio::test]
 async fn dispatch_span_reaches_collector_with_propagated_parent() {
@@ -222,4 +298,181 @@ impl Extractor for TraceparentExtractor<'_> {
     fn keys(&self) -> Vec<&str> {
         vec!["traceparent"]
     }
+}
+
+struct SpanPublisher;
+
+impl MessagePublisher for SpanPublisher {
+    async fn publish(&self, _message: Message) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+struct SpanSource {
+    next: Option<Message>,
+}
+
+impl MessageSource for SpanSource {
+    type Received = SpanReceived;
+
+    fn transport_name(&self) -> &'static str {
+        "span-test"
+    }
+
+    async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        Ok(self.next.take().map(|message| SpanReceived { message }))
+    }
+}
+
+struct SpanReceived {
+    message: Message,
+}
+
+impl ReceivedMessage for SpanReceived {
+    fn message(&self) -> &Message {
+        &self.message
+    }
+
+    fn delivery_attempt(&self) -> Option<u32> {
+        Some(4)
+    }
+
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        Some(SystemTime::now() - Duration::from_secs(7))
+    }
+
+    fn transport_lag(&self) -> Option<i64> {
+        Some(17)
+    }
+
+    async fn ack(self) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    async fn nack(self, _reason: &str) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct SpanCaptureLayer {
+    spans: Arc<Mutex<BTreeMap<u64, CapturedSpan>>>,
+}
+
+impl SpanCaptureLayer {
+    fn snapshot(&self) -> Vec<CapturedSpan> {
+        self.spans.lock().unwrap().values().cloned().collect()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct CapturedSpan {
+    name: String,
+    fields: BTreeMap<String, String>,
+}
+
+impl<S> Layer<S> for SpanCaptureLayer
+where
+    S: tracing::Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        _ctx: LayerContext<'_, S>,
+    ) {
+        let mut fields = BTreeMap::new();
+        attrs.record(&mut FieldRecorder {
+            fields: &mut fields,
+        });
+        self.spans.lock().unwrap().insert(
+            id.clone().into_u64(),
+            CapturedSpan {
+                name: attrs.metadata().name().to_string(),
+                fields,
+            },
+        );
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: LayerContext<'_, S>,
+    ) {
+        let mut fields = BTreeMap::new();
+        values.record(&mut FieldRecorder {
+            fields: &mut fields,
+        });
+        if let Some(span) = self.spans.lock().unwrap().get_mut(&id.clone().into_u64()) {
+            span.fields.extend(fields);
+        }
+    }
+}
+
+struct FieldRecorder<'a> {
+    fields: &'a mut BTreeMap<String, String>,
+}
+
+impl Visit for FieldRecorder<'_> {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.fields
+            .insert(field.name().to_string(), format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
+    }
+
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
+    }
+}
+
+fn span_named<'a>(spans: &'a [CapturedSpan], name: &str) -> &'a CapturedSpan {
+    spans
+        .iter()
+        .find(|span| span.name == name)
+        .unwrap_or_else(|| panic!("missing span {name}; captured spans: {spans:#?}"))
+}
+
+fn assert_field_eq(span: &CapturedSpan, key: &str, expected: &str) {
+    assert_eq!(
+        span.fields.get(key).map(String::as_str),
+        Some(expected),
+        "span `{}` should carry `{key}` = `{expected}`; fields: {:#?}",
+        span.name,
+        span.fields
+    );
+}
+
+fn assert_field_contains(span: &CapturedSpan, key: &str, expected: &str) {
+    let value = span.fields.get(key).unwrap_or_else(|| {
+        panic!(
+            "span `{}` missing `{key}`; fields: {:#?}",
+            span.name, span.fields
+        )
+    });
+    assert!(
+        value.contains(expected),
+        "span `{}` field `{key}` = `{value}` should contain `{expected}`",
+        span.name
+    );
 }

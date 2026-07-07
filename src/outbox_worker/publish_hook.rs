@@ -66,6 +66,7 @@ where
                 claimed,
                 self.max_attempts,
                 std::num::NonZeroUsize::MIN,
+                self.service_name.as_deref(),
             )
             .await?;
             self.record_outbox_outcomes(&settled).await;
@@ -101,5 +102,103 @@ where
         }
         #[cfg(not(feature = "metrics"))]
         let _ = settled;
+    }
+}
+
+#[cfg(all(test, feature = "metrics"))]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use crate::bus::{Message, TransportError};
+    use crate::outbox_worker::{ClaimOutboxMessages, OutboxStore};
+    use crate::{CommitBatch, InMemoryRepository, OutboxMessage, TransactionalCommit};
+
+    use super::*;
+
+    struct FailingPublisher;
+
+    impl MessagePublisher for FailingPublisher {
+        async fn publish(&self, _message: Message) -> Result<(), TransportError> {
+            Err(TransportError::retryable("publish failed"))
+        }
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_record_hook_publish_retry_age_and_backlog_gauges() {
+        let _guard = crate::metrics::async_lock_for_tests().await;
+        crate::metrics::reset_for_tests();
+
+        let repo = InMemoryRepository::new();
+        let store = repo.outbox_store();
+        let mut message =
+            OutboxMessage::create("hook-retry", "OrderCreated", b"{}".to_vec()).unwrap();
+        message.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        repo.commit_batch(CommitBatch {
+            outbox_messages: vec![message],
+            ..CommitBatch::empty()
+        })
+        .await
+        .unwrap();
+
+        let claimed = store
+            .claim(ClaimOutboxMessages::new(
+                "worker-1",
+                1,
+                Duration::from_secs(60),
+            ))
+            .await
+            .unwrap();
+        let claim = crate::outbox_worker::OutboxClaimRef::from_message(&claimed[0]).unwrap();
+        store
+            .record_failure(&claim, "first failure", 3)
+            .await
+            .unwrap();
+        let retry_claimed = store
+            .claim(ClaimOutboxMessages::new(
+                "worker-1",
+                1,
+                Duration::from_secs(60),
+            ))
+            .await
+            .unwrap();
+
+        let hook = BusOutboxPublishHook::new(store, FailingPublisher, 3)
+            .with_service(Some("orders-hook".to_string()));
+        hook.publish_claimed(retry_claimed).await.unwrap();
+
+        let text = crate::metrics::prometheus_text();
+        assert!(
+            text.contains(
+                "distributed_outbox_messages_total{service=\"orders-hook\",outcome=\"released\"} 1"
+            ),
+            "hook metrics should include released outcome:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_publish_duration_seconds_count{service=\"orders-hook\",message_kind=\"event\",outcome=\"released\"} 1"
+            ),
+            "hook metrics should include publish timing:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_message_age_seconds_count{service=\"orders-hook\",phase=\"settled\",outcome=\"released\"} 1"
+            ),
+            "hook metrics should include message age at settlement:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "distributed_outbox_retry_messages_total{service=\"orders-hook\",outcome=\"released\",attempt_bucket=\"2\"} 1"
+            ),
+            "hook metrics should include retry attempt bucket:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_pending_messages{service=\"orders-hook\"} 1"),
+            "hook metrics should include pending backlog gauge:\n{text}"
+        );
+        assert!(
+            text.contains("distributed_outbox_claimable_messages{service=\"orders-hook\"} 1"),
+            "hook metrics should include claimable backlog gauge:\n{text}"
+        );
     }
 }

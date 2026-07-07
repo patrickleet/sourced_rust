@@ -11,6 +11,7 @@
 //! poll loop) and is intentionally not modeled through this trait.
 
 use std::future::Future;
+use std::time::SystemTime;
 
 use super::{Message, TransportError};
 
@@ -62,6 +63,24 @@ pub trait ReceivedMessage: Send {
     /// same path as a permanent dispatch failure — so a corrupt row is
     /// dead-lettered/parked rather than ack-and-ignored as an empty message.
     fn decode_error(&self) -> Option<&TransportError> {
+        None
+    }
+
+    /// Adapter-supplied delivery attempt count, when available without extra
+    /// broker/admin calls. `1` means first delivery; higher values are retries.
+    fn delivery_attempt(&self) -> Option<u32> {
+        None
+    }
+
+    /// Adapter-supplied producer/store timestamp for message-age telemetry,
+    /// when available and reliable without extra broker/admin calls.
+    fn producer_timestamp(&self) -> Option<SystemTime> {
+        None
+    }
+
+    /// Adapter-supplied lag value, when a concrete adapter has documented
+    /// semantics. Defaults to absent because lag units differ across brokers.
+    fn transport_lag(&self) -> Option<i64> {
         None
     }
 
