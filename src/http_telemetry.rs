@@ -71,7 +71,7 @@ pub(crate) async fn middleware(
 
         let status = response.status();
         #[cfg(feature = "otel")]
-        span.record("http.response.status_code", status.as_u16());
+        span.record("http.response.status_code", i64::from(status.as_u16()));
         #[cfg(feature = "metrics")]
         crate::metrics::record_http_server_request(
             state.service(),
