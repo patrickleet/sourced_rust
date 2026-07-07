@@ -65,8 +65,9 @@ matching guidance for it.
 Re-runs are safe and idempotent — per file: absent → `created`, identical →
 `unchanged`, locally edited → skipped with a warning (`--force` to overwrite,
 printed as `updated`). Files you add under the skills directories are never
-touched. Re-running after a CLI upgrade converges every copy on the embedded
-content.
+touched. After a CLI upgrade, re-run with `--force` to refresh existing skill
+files to the binary's embedded content; without `--force`, differing files are
+treated as local edits and skipped.
 
 ## The project manifest entrypoint
 
