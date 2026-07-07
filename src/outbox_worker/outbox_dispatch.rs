@@ -253,6 +253,7 @@ where
             claimed,
             self.max_attempts,
             self.publish_concurrency,
+            self.service_name.as_deref(),
         )
         .await?;
         self.record_outbox_outcomes(&settled);
@@ -355,6 +356,7 @@ pub(crate) async fn publish_and_settle<S, P>(
     claimed: Vec<OutboxMessage>,
     max_attempts: u32,
     publish_concurrency: NonZeroUsize,
+    service_name: Option<&str>,
 ) -> Result<SettleOutcome, RepositoryError>
 where
     S: OutboxStore,
@@ -363,36 +365,57 @@ where
     let mut work = Vec::with_capacity(claimed.len());
     for message in claimed {
         let claim = OutboxClaimRef::from_message(&message)?;
-        work.push((claim, Message::from(message)));
+        let message = Message::from(message);
+        let diagnostics = crate::diagnostics::FailureMessageContext::from_message(&message);
+        work.push((claim, message, diagnostics));
     }
 
     // Publish phase: up to `publish_concurrency` publishes in flight. With the
     // default of 1 this awaits each publish before starting the next, so rows
     // go out strictly in claim (created-at) order.
-    let results: Vec<(OutboxClaimRef, Result<(), TransportError>)> =
-        stream::iter(work.into_iter().map(|(claim, message)| async move {
-            let result = publish_with_span(publisher, message).await;
-            (claim, result)
-        }))
-        .buffer_unordered(publish_concurrency.get())
-        .collect()
-        .await;
+    let results: Vec<(
+        OutboxClaimRef,
+        crate::diagnostics::FailureMessageContext,
+        Result<(), TransportError>,
+    )> = stream::iter(
+        work.into_iter()
+            .map(|(claim, message, diagnostics)| async move {
+                let result = publish_with_span(publisher, message).await;
+                (claim, diagnostics, result)
+            }),
+    )
+    .buffer_unordered(publish_concurrency.get())
+    .collect()
+    .await;
 
     // Settle phase: failures are the exception and settle individually;
     // successes settle in one batched complete.
     let mut outcome = SettleOutcome::default();
     let mut published = Vec::with_capacity(results.len());
-    for (claim, result) in results {
+    for (claim, diagnostics, result) in results {
         match result {
             Ok(()) => published.push(claim),
             Err(publish_error) => {
-                match store
+                let action = match store
                     .record_failure(&claim, &publish_error.to_string(), max_attempts)
                     .await?
                 {
-                    OutboxPublishFailureAction::Released => outcome.released += 1,
-                    OutboxPublishFailureAction::Failed => outcome.failed += 1,
-                }
+                    OutboxPublishFailureAction::Released => {
+                        outcome.released += 1;
+                        "release"
+                    }
+                    OutboxPublishFailureAction::Failed => {
+                        outcome.failed += 1;
+                        "fail"
+                    }
+                };
+                crate::diagnostics::record_outbox_publish_failure(
+                    service_name,
+                    &diagnostics,
+                    publish_error.kind(),
+                    action,
+                    publish_error.message(),
+                );
             }
         }
     }

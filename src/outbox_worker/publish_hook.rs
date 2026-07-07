@@ -66,6 +66,7 @@ where
                 claimed,
                 self.max_attempts,
                 std::num::NonZeroUsize::MIN,
+                self.service_name.as_deref(),
             )
             .await?;
             self.record_outbox_outcomes(&settled).await;

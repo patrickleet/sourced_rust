@@ -177,3 +177,10 @@ Future `logs` or private `diagnostics` features should build on the same
 bounded telemetry vocabulary. Logs may carry structured failure context, but
 must not log payloads or secrets by default. Diagnostics should read typed
 snapshots of framework state rather than parsing public Prometheus text.
+
+Private diagnostics now live behind explicit composition of
+`microsvc::router_with_diagnostics(...)` at `/_distributed/diagnostics`. Treat
+that JSON as reconnaissance-grade private data; it must use localhost,
+management-only networking, mTLS, trusted-proxy auth, or an access hook and must
+not follow `/metrics` unauthenticated exposure semantics. See
+[`diagnostics.md`](diagnostics.md).

@@ -586,6 +586,13 @@ impl Service {
                 started.elapsed(),
             );
         }
+        if let Err(error) = &result {
+            let message = crate::diagnostics::FailureMessageContext::new(
+                command.to_string(),
+                MessageKind::Command,
+            );
+            crate::diagnostics::record_microsvc_failure(self.name(), &message, error);
+        }
         result
     }
 
@@ -655,6 +662,10 @@ impl Service {
                     .unwrap_or(crate::telemetry::dispatch_status::SUCCESS),
                 started.elapsed(),
             );
+        }
+        if let Err(error) = &result {
+            let message = crate::diagnostics::FailureMessageContext::from_message(message);
+            crate::diagnostics::record_microsvc_failure(self.name(), &message, error);
         }
         result
     }

@@ -6,6 +6,7 @@ extern crate self as distributed;
 
 pub mod aggregate;
 pub mod bus;
+pub mod diagnostics;
 pub mod entity;
 pub mod repository;
 
