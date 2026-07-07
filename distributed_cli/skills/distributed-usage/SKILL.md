@@ -14,6 +14,21 @@ shapes. If you find yourself hand-writing service plumbing, routing, broker
 topology, or deploy YAML, stop — the framework or CLI almost certainly
 generates it, and hand-rolled copies drift.
 
+**Always reach for the highest-level API first.** The macros and one-call
+conveniences are the recommended surface, not sugar:
+
+- `#[sourced]` — not `#[digest]` + `aggregate!()` (its lower-level building
+  blocks, still supported but only for granular control you actually need)
+- `#[derive(Snapshot)]` / `#[derive(ReadModel)]` — not hand-written snapshot
+  payloads or table plumbing
+- `routes!` + `Service::routes(..)` — not manual handler registration
+- `service.with_bus(bus).run(opts)` — not direct `listen`/`subscribe`/
+  `send`/`publish` wiring (drop to the facade only for finer control)
+
+Dropping a level means re-implementing conventions the macro layer keeps
+correct for you (event enums, replay, subscription plans, outbox publication
+on commit). Do it deliberately, not by default.
+
 Distributed is a CQRS + event-sourcing framework for Rust. Domain state lives in
 plain structs; `#[sourced]` command methods record replayable `EventRecord`s;
 read models serve queries; published messages are created deliberately through
