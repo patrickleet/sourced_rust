@@ -30,6 +30,7 @@ path = "src/lib.rs"
 default = []
 emitter = ["dep:event-emitter-rs"]
 metrics = []
+failure-logs = ["dep:tracing"]
 http = ["dep:axum", "dep:reqwest", "dep:tokio"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
 postgres = ["dep:sqlx", "dep:tokio", "sqlx/postgres", "sqlx/migrate", "sqlx/runtime-tokio"]
@@ -37,7 +38,7 @@ sqlite = ["dep:sqlx", "dep:tokio", "sqlx/migrate", "sqlx/runtime-tokio", "sqlx/s
 nats = ["dep:async-nats", "dep:futures", "dep:tokio"]
 rabbitmq = ["dep:lapin", "dep:futures", "dep:tokio"]
 kafka = ["dep:rdkafka", "dep:tokio"]
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing", "dep:tracing-opentelemetry"]
+otel = ["failure-logs", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing-opentelemetry"]
 
 [dependencies]
 async-nats = { version = "0.49", optional = true }

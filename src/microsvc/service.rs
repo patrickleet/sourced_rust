@@ -47,6 +47,7 @@ use super::session::Session;
 use crate::bus::{
     Bus, Message, MessageKind, MessagePublisher, RunOptions, SubscriptionPlan, TransportError,
 };
+use crate::failure_log::{FailureComponent, FailureMessageFields, FailureOperation, FailureRecord};
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
 
@@ -596,7 +597,13 @@ impl Service {
         session: Session,
     ) -> Result<Value, HandlerError> {
         if !self.handles_message(MessageKind::Command, command) {
-            return Err(HandlerError::UnknownCommand(command.to_string()));
+            let error = HandlerError::UnknownCommand(command.to_string());
+            self.emit_handler_failure(
+                FailureOperation::Dispatch,
+                FailureMessageFields::unknown(),
+                &error,
+            );
+            return Err(error);
         }
 
         let payload = serde_json::to_vec(&input).map_err(|e| {
@@ -616,8 +623,17 @@ impl Service {
             metadata,
         };
 
-        self.invoke_with_dispatch_span(&message, input, session)
-            .await
+        let result = self
+            .invoke_with_dispatch_span(&message, input, session)
+            .await;
+        if let Err(error) = &result {
+            self.emit_handler_failure(
+                FailureOperation::Dispatch,
+                FailureMessageFields::from_message(&message),
+                error,
+            );
+        }
+        result
     }
 
     /// Dispatch a `CommandRequest`, returning a `CommandResponse`.
@@ -633,7 +649,7 @@ impl Service {
             },
             Err(e) => CommandResponse {
                 status: e.status_code(),
-                body: serde_json::json!({ "error": e.to_string() }),
+                body: serde_json::json!({ "error": e.client_facing_message() }),
             },
         }
     }
@@ -661,7 +677,13 @@ impl Service {
 
     async fn dispatch_message_inner(&self, message: &Message) -> Result<Value, HandlerError> {
         if !self.handles_message(message.kind, &message.name) {
-            return Err(HandlerError::UnknownCommand(message.name.clone()));
+            let error = HandlerError::UnknownCommand(message.name.clone());
+            self.emit_handler_failure(
+                FailureOperation::Dispatch,
+                FailureMessageFields::unknown(),
+                &error,
+            );
+            return Err(error);
         }
 
         let input = match message_to_json_input(message) {
@@ -672,11 +694,27 @@ impl Service {
             // *claims* to be JSON but does not parse is a decode error — surface
             // it instead of silently nulling the input.
             Err(_) if !is_json_content_type(&message.content_type) => Value::Null,
-            Err(err) => return Err(err),
+            Err(err) => {
+                self.emit_handler_failure(
+                    FailureOperation::Dispatch,
+                    FailureMessageFields::from_message(message),
+                    &err,
+                );
+                return Err(err);
+            }
         };
         let session = message_to_session(message);
-        self.invoke_with_dispatch_span(message, input, session)
-            .await
+        let result = self
+            .invoke_with_dispatch_span(message, input, session)
+            .await;
+        if let Err(error) = &result {
+            self.emit_handler_failure(
+                FailureOperation::Dispatch,
+                FailureMessageFields::from_message(message),
+                error,
+            );
+        }
+        result
     }
 
     async fn invoke_with_dispatch_span(
@@ -803,6 +841,18 @@ impl Service {
                 service_name.clone(),
             );
         }
+    }
+
+    fn emit_handler_failure(
+        &self,
+        operation: FailureOperation,
+        message: FailureMessageFields,
+        error: &HandlerError,
+    ) {
+        FailureRecord::from_handler_error(FailureComponent::Microsvc, operation, error)
+            .with_service(self.name())
+            .with_message(message)
+            .emit();
     }
 }
 

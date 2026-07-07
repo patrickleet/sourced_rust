@@ -12,6 +12,7 @@ pub mod repository;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
+mod failure_log;
 mod in_memory_repo;
 pub mod lock;
 pub mod manifest;
