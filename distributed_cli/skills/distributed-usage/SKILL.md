@@ -1,9 +1,18 @@
 ---
 name: distributed-usage
-description: Build services with the Distributed CQRS/event-sourcing framework - aggregates, command/event handlers, read models, the outbox, and the distributed_manifest() entrypoint. Use when writing or modifying a Distributed (Rust) service.
+description: Build services with the Distributed CQRS/event-sourcing framework, where you mostly just write models and handlers - the framework and dctl generate the wiring, transports, persistence, manifest, and deploy structure around them. Use when writing or modifying a Distributed (Rust) service.
 ---
 
 # Using the Distributed framework
+
+**The point of Distributed: you mostly just write models and handlers.**
+Everything else — service wiring, transports, persistence, manifests, schema,
+CI/GitOps — is deterministic structure the framework, macros, and `dctl`
+generate. Your authored surface is deliberately small: aggregate models
+(`#[sourced]` event methods), command/event handler bodies, and read-model
+shapes. If you find yourself hand-writing service plumbing, routing, broker
+topology, or deploy YAML, stop — the framework or CLI almost certainly
+generates it, and hand-rolled copies drift.
 
 Distributed is a CQRS + event-sourcing framework for Rust. Domain state lives in
 plain structs; `#[sourced]` command methods record replayable `EventRecord`s;
@@ -17,8 +26,9 @@ traits — production swaps are one constructor line, never a handler change.
    `dctl scaffold <name> --model <agg> --command <agg.action> --event <fact.happened> --store postgres --transport http --bus nats --gitops`
    (from an event-storming board: aggregates → `--model`, commands →
    `--command`, events/policies → `--event`, query views → `--read-models`).
-2. Replace placeholder fields, event methods, guards, and handler bodies with
-   real domain behavior. Keep the generated structure.
+2. Write the domain: replace placeholder fields, event methods, guards, and
+   handler bodies with real behavior. This is the part that is yours — models
+   and handlers. Keep the generated structure around it.
 3. Start in-memory (`InMemoryRepository`, `InMemoryBus`); swap constructors for
    Postgres/a broker when deploying. Handlers do not change.
 

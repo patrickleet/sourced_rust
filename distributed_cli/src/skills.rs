@@ -43,7 +43,7 @@ pub struct EmbeddedSkill {
 static SKILLS: [EmbeddedSkill; 3] = [
     EmbeddedSkill {
         name: "distributed-usage",
-        description: "Build services with the Distributed CQRS/event-sourcing framework - aggregates, command/event handlers, read models, the outbox, and the distributed_manifest() entrypoint. Use when writing or modifying a Distributed (Rust) service.",
+        description: "Build services with the Distributed CQRS/event-sourcing framework, where you mostly just write models and handlers - the framework and dctl generate the wiring, transports, persistence, manifest, and deploy structure around them. Use when writing or modifying a Distributed (Rust) service.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-usage/SKILL.md"),
