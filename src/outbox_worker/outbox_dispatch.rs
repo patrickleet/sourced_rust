@@ -269,9 +269,21 @@ where
         #[cfg(feature = "metrics")]
         {
             let service = self.service_name.as_deref();
-            crate::metrics::record_outbox_messages(service, "published", settled.published);
-            crate::metrics::record_outbox_messages(service, "released", settled.released);
-            crate::metrics::record_outbox_messages(service, "failed", settled.failed);
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::PUBLISHED,
+                settled.published,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::RELEASED,
+                settled.released,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::FAILED,
+                settled.failed,
+            );
         }
         #[cfg(not(feature = "metrics"))]
         let _ = settled;
@@ -415,12 +427,7 @@ async fn publish_with_span<P: MessagePublisher>(
 
 #[cfg(feature = "otel")]
 fn outbox_publish_span(message: &Message) -> tracing::Span {
-    tracing::info_span!(
-        "distributed.outbox.publish",
-        distributed.message.name = %message.name(),
-        distributed.message.kind = %message.kind.as_str(),
-        messaging.message.id = %message.id().unwrap_or("")
-    )
+    crate::telemetry::outbox_publish_span(message)
 }
 
 #[cfg(test)]

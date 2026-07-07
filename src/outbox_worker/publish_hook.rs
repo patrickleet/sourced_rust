@@ -82,9 +82,21 @@ where
         #[cfg(feature = "metrics")]
         {
             let service = self.service_name.as_deref();
-            crate::metrics::record_outbox_messages(service, "published", settled.published);
-            crate::metrics::record_outbox_messages(service, "released", settled.released);
-            crate::metrics::record_outbox_messages(service, "failed", settled.failed);
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::PUBLISHED,
+                settled.published,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::RELEASED,
+                settled.released,
+            );
+            crate::metrics::record_outbox_messages(
+                service,
+                crate::telemetry::outbox_outcome::FAILED,
+                settled.failed,
+            );
             super::outbox_dispatch::record_backlog_gauges(&self.store, service).await;
         }
         #[cfg(not(feature = "metrics"))]

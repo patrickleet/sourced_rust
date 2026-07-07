@@ -58,7 +58,8 @@ Metric labels are intentionally bounded:
 - `transport`: built-in source label such as `in_memory`, `sqlite`,
   `postgres`, `rabbitmq`, `kafka`, `nats`, or `outbox`.
 - `outcome`: bounded settle/publish outcome such as `ack`, `nack`,
-  `dead_letter`, `park`, `ignored`, `published`, `released`, or `failed`.
+  `dead_letter`, `park`, `ignored`, `log_and_ack`, `published`, `released`, or
+  `failed`.
 - `failure_class`: `retryable` or `permanent`.
 - `action`: failure-policy action such as `nack`, `dead_letter`, `park`,
   `log_and_ack`, `stop`, `recv_error`, or a settle failure label such as
@@ -66,6 +67,10 @@ Metric labels are intentionally bounded:
 
 Do not add IDs, trace IDs, user IDs, aggregate IDs, or other high-cardinality
 values as framework labels.
+
+The label names, framework status values, transport outcomes, failure actions,
+and outbox outcomes live in one internal telemetry vocabulary. New framework
+metrics should use that vocabulary rather than introducing ad hoc labels.
 
 ## Metric Families
 
@@ -81,6 +86,24 @@ values as framework labels.
 - `distributed_outbox_messages_total{service,outcome}` counter.
 - `distributed_outbox_pending_messages{service}` gauge.
 - `distributed_outbox_oldest_pending_age_seconds{service}` gauge.
+
+The registry also exposes an internal typed snapshot shape used by tests and
+future private diagnostics. The snapshot contains metric families, bounded
+labels, and numeric samples only; diagnostics must not add payloads, metadata,
+trace ids, aggregate ids, user ids, raw HTTP targets, or request ids to that
+shape.
+
+## Boundaries
+
+The `metrics` feature owns Prometheus text exposition for framework metrics. It
+does not install an OpenTelemetry metrics SDK, emit request-level HTTP metrics,
+or record user payload data.
+
+Direct transport receive paths emit receive/settle counters and failure
+counters. Outbox dispatch emits publish outcomes and backlog gauges. Direct
+`MessagePublisher` calls outside the outbox path do not emit publish metrics in
+this release; instrumenting those calls should use the same bounded vocabulary
+and should stay separate from outbox publish outcomes.
 
 ## Scaffolded GitOps
 

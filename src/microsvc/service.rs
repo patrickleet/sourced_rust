@@ -162,35 +162,6 @@ impl HandlerSpec {
     }
 }
 
-#[cfg(feature = "metrics")]
-const UNKNOWN_COMMAND_MESSAGE_LABEL: &str = "unknown";
-
-#[cfg(feature = "metrics")]
-fn handler_error_metric_status(error: &HandlerError) -> &'static str {
-    match error {
-        HandlerError::UnknownCommand(_) => "unknown_command",
-        HandlerError::DecodeFailed(_) => "decode_failed",
-        HandlerError::Rejected(_) => "rejected",
-        HandlerError::NotFound(_) => "not_found",
-        HandlerError::Unauthorized(_) => "unauthorized",
-        HandlerError::Repository(_) => "repository_error",
-        HandlerError::GuardRejected(_) => "guard_rejected",
-        HandlerError::Other(_) => "other_error",
-    }
-}
-
-#[cfg(feature = "metrics")]
-fn handler_message_metric_label<'a>(
-    message: &'a str,
-    result: &Result<Value, HandlerError>,
-) -> &'a str {
-    if matches!(result, Err(HandlerError::UnknownCommand(_))) {
-        UNKNOWN_COMMAND_MESSAGE_LABEL
-    } else {
-        message
-    }
-}
-
 /// A registered handler with optional guard.
 struct RegisteredHandler<D> {
     guard: Option<Arc<GuardFn<D>>>,
@@ -603,17 +574,18 @@ impl Service {
         let started = Instant::now();
         let result = self.dispatch_command_inner(command, input, session).await;
         #[cfg(feature = "metrics")]
-        crate::metrics::record_microsvc_dispatch(
-            self.name(),
-            MessageKind::Command,
-            handler_message_metric_label(command, &result),
-            result
-                .as_ref()
-                .err()
-                .map(handler_error_metric_status)
-                .unwrap_or("success"),
-            started.elapsed(),
-        );
+        {
+            let error = result.as_ref().err();
+            crate::metrics::record_microsvc_dispatch(
+                self.name(),
+                MessageKind::Command,
+                crate::telemetry::handler_message_label(command, error),
+                error
+                    .map(crate::telemetry::handler_error_status)
+                    .unwrap_or(crate::telemetry::dispatch_status::SUCCESS),
+                started.elapsed(),
+            );
+        }
         result
     }
 
@@ -672,17 +644,18 @@ impl Service {
         let started = Instant::now();
         let result = self.dispatch_message_inner(message).await;
         #[cfg(feature = "metrics")]
-        crate::metrics::record_microsvc_dispatch(
-            self.name(),
-            message.kind,
-            handler_message_metric_label(message.name(), &result),
-            result
-                .as_ref()
-                .err()
-                .map(handler_error_metric_status)
-                .unwrap_or("success"),
-            started.elapsed(),
-        );
+        {
+            let error = result.as_ref().err();
+            crate::metrics::record_microsvc_dispatch(
+                self.name(),
+                message.kind,
+                crate::telemetry::handler_message_label(message.name(), error),
+                error
+                    .map(crate::telemetry::handler_error_status)
+                    .unwrap_or(crate::telemetry::dispatch_status::SUCCESS),
+                started.elapsed(),
+            );
+        }
         result
     }
 
@@ -938,22 +911,12 @@ fn is_json_content_type(content_type: &str) -> bool {
 
 #[cfg(feature = "otel")]
 fn microsvc_dispatch_span(message: &Message) -> tracing::Span {
-    tracing::info_span!(
-        "distributed.microsvc.dispatch",
-        distributed.message.name = %message.name(),
-        distributed.message.kind = %message.kind.as_str(),
-        messaging.message.id = %message.id().unwrap_or("")
-    )
+    crate::telemetry::microsvc_dispatch_span(message)
 }
 
 #[cfg(feature = "otel")]
 fn microsvc_handler_span(message: &Message) -> tracing::Span {
-    tracing::info_span!(
-        "distributed.handler",
-        distributed.message.name = %message.name(),
-        distributed.message.kind = %message.kind.as_str(),
-        messaging.message.id = %message.id().unwrap_or("")
-    )
+    crate::telemetry::microsvc_handler_span(message)
 }
 
 fn message_to_json_input(message: &Message) -> Result<Value, HandlerError> {

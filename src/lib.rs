@@ -30,6 +30,7 @@ pub mod sqlite_repo;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_repo;
 pub mod table;
+mod telemetry;
 pub mod trace_context;
 
 // Re-export entity types at crate root for convenience

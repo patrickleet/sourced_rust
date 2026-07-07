@@ -75,6 +75,23 @@ and OpenTelemetry layer so deployment owners control sampling, resources,
 redaction, and export. `dctl scaffold --tracing` emits a default OTLP tracing
 setup in the generated `main.rs` for the common case.
 
+Framework span names are intentionally bounded:
+
+- `distributed.microsvc.dispatch`
+- `distributed.handler`
+- `distributed.transport.receive`
+- `distributed.outbox.publish`
+
+Each span uses the same framework-owned message attributes:
+
+- `distributed.message.name`
+- `distributed.message.kind`
+- `messaging.message.id`
+
+Future spans should use the same helper path so new attributes are reviewed in
+one place. Do not add payload fields, user ids, aggregate ids, or raw metadata
+values as framework span attributes.
+
 Recommended environment variables for OTLP exporters:
 
 ```text
@@ -144,3 +161,19 @@ CI verifies the observability surface at the docker level (see
 
 Whether a Prometheus Operator actually reconciles the `ServiceMonitor` is a
 platform concern, verified on a live cluster rather than per PR.
+
+## Feature Boundaries
+
+The default feature set propagates W3C trace context metadata only.
+
+The `metrics` feature records framework metrics and renders Prometheus text. It
+does not expose OpenTelemetry metrics or request-level HTTP telemetry.
+
+The `otel` feature creates framework spans and parents them from W3C metadata
+when available. It does not install subscribers, exporters, sampling rules, or
+resource attributes.
+
+Future `logs` or private `diagnostics` features should build on the same
+bounded telemetry vocabulary. Logs may carry structured failure context, but
+must not log payloads or secrets by default. Diagnostics should read typed
+snapshots of framework state rather than parsing public Prometheus text.

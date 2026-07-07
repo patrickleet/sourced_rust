@@ -74,9 +74,14 @@ where
             match action {
                 FailureAction::Nack => {
                     let reason = error.to_string();
-                    settle_and_record(service, transport, kind, "nack", "nack", || {
-                        received.nack(&reason)
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::NACK,
+                        crate::telemetry::transport_outcome::NACK,
+                        || received.nack(&reason),
+                    )
                     .await?;
                 }
                 FailureAction::DeadLetter => {
@@ -85,24 +90,34 @@ where
                         service,
                         transport,
                         kind,
-                        "dead_letter",
-                        "dead_letter",
+                        crate::telemetry::transport_outcome::DEAD_LETTER,
+                        crate::telemetry::transport_outcome::DEAD_LETTER,
                         || received.dead_letter(&reason),
                     )
                     .await?;
                 }
                 FailureAction::Park => {
                     let reason = error.to_string();
-                    settle_and_record(service, transport, kind, "park", "park", || {
-                        received.park(&reason)
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::PARK,
+                        crate::telemetry::transport_outcome::PARK,
+                        || received.park(&reason),
+                    )
                     .await?;
                 }
                 FailureAction::LogAndAck => {
                     eprintln!("[bus::runner] dropping undecodable message after permanent failure: {error}");
-                    settle_and_record(service, transport, kind, "ack", "log_and_ack", || {
-                        received.ack()
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::ACK,
+                        crate::telemetry::transport_outcome::LOG_AND_ACK,
+                        || received.ack(),
+                    )
                     .await?;
                 }
                 FailureAction::Stop => return Err(TransportError::permanent(error.to_string())),
@@ -113,25 +128,42 @@ where
         // dead-letter, so unrelated fan-out events don't pile into the DLQ.
         if !router.handles(received.message().kind, received.message().name()) {
             let kind = received.message().kind;
-            settle_and_record(service, transport, kind, "ack", "ignored", || {
-                received.ack()
-            })
+            settle_and_record(
+                service,
+                transport,
+                kind,
+                crate::telemetry::transport_outcome::ACK,
+                crate::telemetry::transport_outcome::IGNORED,
+                || received.ack(),
+            )
             .await?;
             continue;
         }
         let kind = received.message().kind;
         match dispatch(router.as_ref(), &options, received.message()).await {
             Ok(()) => {
-                settle_and_record(service, transport, kind, "ack", "ack", || received.ack())
-                    .await?;
+                settle_and_record(
+                    service,
+                    transport,
+                    kind,
+                    crate::telemetry::transport_outcome::ACK,
+                    crate::telemetry::transport_outcome::ACK,
+                    || received.ack(),
+                )
+                .await?;
             }
             Err(error) => match options.failure_policy.resolve(&error) {
                 action @ FailureAction::Nack => {
                     record_transport_failure(service, transport, error.kind(), action);
                     let reason = error.to_string();
-                    settle_and_record(service, transport, kind, "nack", "nack", || {
-                        received.nack(&reason)
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::NACK,
+                        crate::telemetry::transport_outcome::NACK,
+                        || received.nack(&reason),
+                    )
                     .await?;
                 }
                 action @ FailureAction::DeadLetter => {
@@ -141,8 +173,8 @@ where
                         service,
                         transport,
                         kind,
-                        "dead_letter",
-                        "dead_letter",
+                        crate::telemetry::transport_outcome::DEAD_LETTER,
+                        crate::telemetry::transport_outcome::DEAD_LETTER,
                         || received.dead_letter(&reason),
                     )
                     .await?;
@@ -150,9 +182,14 @@ where
                 action @ FailureAction::Park => {
                     record_transport_failure(service, transport, error.kind(), action);
                     let reason = error.to_string();
-                    settle_and_record(service, transport, kind, "park", "park", || {
-                        received.park(&reason)
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::PARK,
+                        crate::telemetry::transport_outcome::PARK,
+                        || received.park(&reason),
+                    )
                     .await?;
                 }
                 FailureAction::LogAndAck => {
@@ -166,9 +203,14 @@ where
                         "[bus::runner] dropping message '{}' after permanent failure: {error}",
                         received.message().name()
                     );
-                    settle_and_record(service, transport, kind, "ack", "log_and_ack", || {
-                        received.ack()
-                    })
+                    settle_and_record(
+                        service,
+                        transport,
+                        kind,
+                        crate::telemetry::transport_outcome::ACK,
+                        crate::telemetry::transport_outcome::LOG_AND_ACK,
+                        || received.ack(),
+                    )
                     .await?;
                 }
                 FailureAction::Stop => {
@@ -203,20 +245,10 @@ where
                 service,
                 transport,
                 error.kind(),
-                settle_error_action(settle_action),
+                crate::telemetry::settle_failure_action(settle_action),
             );
             Err(error)
         }
-    }
-}
-
-fn settle_error_action(action: &'static str) -> &'static str {
-    match action {
-        "ack" => "settle_ack",
-        "nack" => "settle_nack",
-        "dead_letter" => "settle_dead_letter",
-        "park" => "settle_park",
-        _ => "settle_error",
     }
 }
 
@@ -228,7 +260,12 @@ async fn recv_next<S: MessageSource>(
     match source.recv().await {
         Ok(received) => Ok(received),
         Err(error) => {
-            record_transport_failure(service, transport, error.kind(), "recv_error");
+            record_transport_failure(
+                service,
+                transport,
+                error.kind(),
+                crate::telemetry::failure_action::RECV_ERROR,
+            );
             Err(error)
         }
     }
@@ -274,12 +311,7 @@ async fn dispatch<R: MessageRouter, I>(
 
 #[cfg(feature = "otel")]
 fn transport_receive_span(message: &Message) -> tracing::Span {
-    tracing::info_span!(
-        "distributed.transport.receive",
-        distributed.message.name = %message.name(),
-        distributed.message.kind = %message.kind.as_str(),
-        messaging.message.id = %message.id().unwrap_or("")
-    )
+    crate::telemetry::transport_receive_span(message)
 }
 
 fn record_transport_message(
@@ -306,7 +338,7 @@ fn record_transport_failure<A>(
     crate::metrics::record_transport_failure(
         service,
         transport,
-        transport_error_kind_label(kind),
+        crate::telemetry::transport_failure_class(kind),
         action.into_failure_action_label(),
     );
     #[cfg(not(feature = "metrics"))]
@@ -322,27 +354,13 @@ trait IntoFailureActionLabel {
 
 impl IntoFailureActionLabel for FailureAction {
     fn into_failure_action_label(self) -> &'static str {
-        match self {
-            FailureAction::Nack => "nack",
-            FailureAction::DeadLetter => "dead_letter",
-            FailureAction::Park => "park",
-            FailureAction::LogAndAck => "log_and_ack",
-            FailureAction::Stop => "stop",
-        }
+        crate::telemetry::failure_action_label(self)
     }
 }
 
 impl IntoFailureActionLabel for &'static str {
     fn into_failure_action_label(self) -> &'static str {
         self
-    }
-}
-
-#[cfg(feature = "metrics")]
-fn transport_error_kind_label(kind: TransportErrorKind) -> &'static str {
-    match kind {
-        TransportErrorKind::Retryable => "retryable",
-        TransportErrorKind::Permanent => "permanent",
     }
 }
 
