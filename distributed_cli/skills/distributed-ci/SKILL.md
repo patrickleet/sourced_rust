@@ -18,6 +18,8 @@ regenerating/extending these artifacts over hand-writing pipeline YAML.
 | `--github OWNER/REPO` | `.github/workflows/version.yaml` + `release.yaml`, and a post-create `gh repo create` (private) if the repo does not exist |
 | `--github-preview OWNER/REPO` | `.github/workflows/preview.yaml` + `.gitops/preview/helm` promotion chart |
 | `--github-promote OWNER/REPO` | `.github/workflows/promote.yaml` + `.gitops/promote/helm` promotion chart |
+| `--metrics prometheus` (with `--gitops`, HTTP transport) | `metrics`/`serviceMonitor`/`prometheusRule` values plus Prometheus Operator `ServiceMonitor` and `PrometheusRule` templates |
+| `--tracing` (alias `--otel`) | OTLP tracing setup in the generated `main.rs` (Distributed's `otel` feature) and OTLP env values in the Helm chart |
 
 The `.gitops/deploy` chart is emitted whenever **any** of the flags above is
 set, because the promotion charts target `.gitops/deploy`.
@@ -58,6 +60,17 @@ set, because the promotion charts target `.gitops/deploy`.
 - The generated Deployment/Knative Service sets `BIND_ADDR=0.0.0.0:3000` and,
   when `--bus <kind>` was given, `HOPS_BUS=<kind>` plus a `bus.kind` entry in
   `values.yaml` — keep these in sync if you rename or add env plumbing.
+- **Observability gating**: the generated `ServiceMonitor` and `PrometheusRule`
+  default to **disabled** in `values.yaml` (`serviceMonitor.enabled`,
+  `prometheusRule.enabled`) — enable them only in clusters with the Prometheus
+  Operator CRDs installed, or the deploy fails on unknown
+  `monitoring.coreos.com` kinds. Plain `--gitops` emits no monitoring
+  resources.
+- **OTLP env**: with `--tracing`, the chart renders `OTEL_SERVICE_NAME`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`, and (only when
+  `observability.tracing.otlpEndpoint` is set) `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  all gated by `observability.tracing.enabled` — no endpoint is hard-coded;
+  point it at your collector per environment.
 
 ## Gotchas
 
