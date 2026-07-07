@@ -69,7 +69,8 @@ pub struct SkillsInitArgs {
     #[arg(long, value_enum, value_delimiter = ',', default_value = "auto")]
     pub agents: Vec<AgentHarness>,
     /// Overwrite skill files whose on-disk content differs from the embedded
-    /// content. Without it, locally-edited files are skipped with a warning.
+    /// content, and replace non-link entries at harness locations with
+    /// symlinks. Without it, such paths are skipped with a warning.
     #[arg(long)]
     pub force: bool,
 }
@@ -83,7 +84,7 @@ pub enum AgentHarness {
     Auto,
     /// Canonical `.distributed/skills/` files only; no harness wiring.
     None,
-    /// Claude Code: copies under `.claude/skills/`.
+    /// Claude Code: per-skill links under `.claude/skills/`.
     Claude,
     Codex,
     Grok,
@@ -408,23 +409,41 @@ fn run_skills_init(args: &SkillsInitArgs) -> Result<(), Box<dyn Error>> {
 
     for file in &project.files {
         let target = anchor.join(&file.path);
-        let on_disk = read_optional(&target)?;
-        // AGENTS.md contents are a merge of the on-disk file, so "differs"
-        // means "update the managed block" — never skip, never need --force.
-        let action = if file.path == AGENTS_MD_FILE {
-            decide_managed_write(on_disk.as_deref(), &file.contents)
+        let (action, skip_reason) = if file.mode == Some(FileMode::Symlink) {
+            (
+                decide_symlink_write(&target, Path::new(&file.contents), args.force)?,
+                "existing path; --force to replace with a symlink",
+            )
+        } else if file.path == AGENTS_MD_FILE {
+            // AGENTS.md contents are a merge of the on-disk file, so "differs"
+            // means "update the managed block" — never skip, never need --force.
+            (
+                decide_managed_write(read_optional(&target)?.as_deref(), &file.contents),
+                "",
+            )
         } else {
-            decide_write(on_disk.as_deref(), &file.contents, args.force)
+            (
+                decide_write(
+                    read_optional(&target)?.as_deref(),
+                    &file.contents,
+                    args.force,
+                ),
+                "local edits; --force to overwrite",
+            )
         };
         let shown = display_path(&target);
         match action {
             WriteAction::Created | WriteAction::Updated => {
                 write_generated_file(&anchor, file)?;
-                println!("{} {shown}", action.verb());
+                if file.mode == Some(FileMode::Symlink) {
+                    println!("{} {shown} -> {}", action.verb(), file.contents);
+                } else {
+                    println!("{} {shown}", action.verb());
+                }
             }
             WriteAction::Unchanged => println!("unchanged {shown}"),
             WriteAction::Skipped => {
-                eprintln!("warning: skipped {shown} (local edits; --force to overwrite)");
+                eprintln!("warning: skipped {shown} ({skip_reason})");
             }
         }
     }
@@ -528,6 +547,31 @@ fn decide_write(on_disk: Option<&str>, contents: &str, force: bool) -> WriteActi
         Some(existing) if existing == contents => WriteAction::Unchanged,
         Some(_) if force => WriteAction::Updated,
         Some(_) => WriteAction::Skipped,
+    }
+}
+
+/// Drift decision for symlink entries: a link already pointing at the right
+/// target is unchanged; anything else at the path (a stale link, or a real
+/// file/directory such as a user's own skill) is only replaced with --force.
+fn decide_symlink_write(
+    path: &Path,
+    target: &Path,
+    force: bool,
+) -> Result<WriteAction, Box<dyn Error>> {
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(WriteAction::Created),
+        Err(err) => Err(format!("inspect {}: {err}", path.display()).into()),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(path)? == target {
+                Ok(WriteAction::Unchanged)
+            } else if force {
+                Ok(WriteAction::Updated)
+            } else {
+                Ok(WriteAction::Skipped)
+            }
+        }
+        Ok(_) if force => Ok(WriteAction::Updated),
+        Ok(_) => Ok(WriteAction::Skipped),
     }
 }
 
@@ -755,17 +799,47 @@ fn ensure_output_dir(path: &Path, force: bool) -> Result<(), Box<dyn Error>> {
 }
 
 /// Write one generated file under `output_dir`, creating parent directories and
-/// honoring the optional executable mode hint.
+/// honoring the optional mode hint (executable bit, or a symlink whose
+/// `contents` is the relative target).
 fn write_generated_file(output_dir: &Path, file: &GeneratedFile) -> Result<(), Box<dyn Error>> {
     let path = output_dir.join(&file.path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+    }
+    if file.mode == Some(FileMode::Symlink) {
+        return replace_with_symlink(&path, Path::new(&file.contents));
     }
     fs::write(&path, &file.contents)?;
     if file.mode == Some(FileMode::Executable) {
         set_executable(&path)?;
     }
     Ok(())
+}
+
+/// Point `path` at `target`, replacing whatever is there. Only reached after a
+/// write decision said to write, so removal of an existing entry is deliberate
+/// (a stale link, or an old copy being converted with --force).
+#[cfg(unix)]
+fn replace_with_symlink(path: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path)?,
+        Ok(_) => fs::remove_file(path)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("inspect {}: {err}", path.display()).into()),
+    }
+    std::os::unix::fs::symlink(target, path)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn replace_with_symlink(path: &Path, _target: &Path) -> Result<(), Box<dyn Error>> {
+    // generate_skills emits copies instead of symlinks off unix; reaching this
+    // means a generator bug, not a user error.
+    Err(format!(
+        "symlink generation is unsupported on this platform: {}",
+        path.display()
+    )
+    .into())
 }
 
 #[cfg(unix)]

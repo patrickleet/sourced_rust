@@ -54,10 +54,25 @@ fn init_bootstraps_a_fresh_project_and_reruns_are_noops() {
     let (stdout, _) = init_ok(&dir, &["init"]);
 
     // Canonical files plus both adapters — nothing detected wires everything.
+    // Harness locations are per-skill symlinks resolving to the canonical copy.
     for skill in SKILL_NAMES {
         for root in [".distributed/skills", ".claude/skills", ".agents/skills"] {
             let rel = format!("{root}/{skill}/SKILL.md");
             assert!(dir.join(&rel).is_file(), "missing {rel}");
+        }
+        for root in [".claude/skills", ".agents/skills"] {
+            let link = dir.join(root).join(skill);
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{root}/{skill} should be a symlink"
+            );
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                Path::new(&format!("../../.distributed/skills/{skill}"))
+            );
         }
     }
     let agents_md = read(&dir, "AGENTS.md");
@@ -133,10 +148,15 @@ fn path_flag_moves_the_container_and_anchors_wiring_at_its_parent() {
         assert!(dir
             .join(format!("some/dir/skills/{skill}/SKILL.md"))
             .is_file());
-        // Wiring anchors at the container's parent, not the cwd.
+        // Wiring anchors at the container's parent, not the cwd, and the links
+        // climb back to the container by its final path component.
         assert!(dir
             .join(format!("some/.claude/skills/{skill}/SKILL.md"))
             .is_file());
+        assert_eq!(
+            fs::read_link(dir.join(format!("some/.claude/skills/{skill}"))).unwrap(),
+            Path::new(&format!("../../dir/skills/{skill}"))
+        );
     }
     assert!(!dir.join(".claude").exists());
     assert!(
@@ -208,6 +228,43 @@ fn agents_md_managed_block_preserves_user_content() {
     for skill in SKILL_NAMES {
         assert!(merged.contains(skill), "block should list {skill}");
     }
+}
+
+#[test]
+fn existing_directory_at_a_harness_location_needs_force_to_become_a_link() {
+    let dir = project_dir("skills-link-conversion");
+    // An old copy-based layout (or a user skill with a colliding name).
+    let stale = dir.join(".claude/skills/distributed-usage");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join("SKILL.md"), "old copy\n").unwrap();
+
+    let (_, stderr) = init_ok(&dir, &["init", "--agents", "claude"]);
+    assert!(
+        stderr.contains("skipped .claude/skills/distributed-usage")
+            && stderr.contains("--force to replace with a symlink"),
+        "stderr: {stderr}"
+    );
+    assert!(!fs::symlink_metadata(&stale)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        read(&dir, ".claude/skills/distributed-usage/SKILL.md"),
+        "old copy\n"
+    );
+
+    let (stdout, _) = init_ok(&dir, &["init", "--agents", "claude", "--force"]);
+    assert!(
+        stdout.contains(
+            "updated .claude/skills/distributed-usage -> ../../.distributed/skills/distributed-usage"
+        ),
+        "{stdout}"
+    );
+    assert!(fs::symlink_metadata(&stale)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(read(&dir, ".claude/skills/distributed-usage/SKILL.md").starts_with("---\n"));
 }
 
 #[test]

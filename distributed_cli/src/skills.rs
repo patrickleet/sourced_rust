@@ -7,10 +7,19 @@
 //! skill with a `SKILL.md` whose frontmatter has `name` and `description` —
 //! used identically by Claude Code, OpenAI Codex, Grok Build, Gemini CLI, and
 //! Pi. Discovery *locations* differ, so [`SkillsInitSpec`] carries two adapter
-//! switches: `.claude/skills/` copies (Claude Code) and `.agents/skills/`
-//! copies plus a managed `AGENTS.md` block (everything else).
+//! switches: `.claude/skills/` (Claude Code) and `.agents/skills/` plus a
+//! managed `AGENTS.md` block (everything else). The canonical files live under
+//! `<container>/skills/`; each harness location gets a per-skill symlink to the
+//! canonical folder (a real copy on platforms without reliable symlinks), so
+//! there is exactly one on-disk copy of each skill and user-owned skills can
+//! coexist next to the links.
 
-use crate::{GeneratedFile, GeneratedProject};
+use crate::{FileMode, GeneratedFile, GeneratedProject};
+
+/// Whether harness locations are wired as symlinks to the canonical skills.
+/// On non-unix platforms symlinks need elevated privileges and are
+/// inconsistently followed, so the adapters fall back to real copies there.
+const HARNESS_SYMLINKS: bool = cfg!(unix);
 
 /// One file of an embedded skill, addressed relative to the skill's folder.
 pub struct EmbeddedFile {
@@ -81,9 +90,9 @@ pub struct SkillsInitSpec {
     /// component), e.g. `.distributed`. Canonical files land under
     /// `<container>/skills/`.
     pub container: String,
-    /// Copy each skill to `.claude/skills/<name>/` (Claude Code discovery).
+    /// Link each skill at `.claude/skills/<name>` (Claude Code discovery).
     pub wire_claude: bool,
-    /// Copy each skill to `.agents/skills/<name>/` (Codex, Grok, Gemini, Pi)
+    /// Link each skill at `.agents/skills/<name>` (Codex, Grok, Gemini, Pi)
     /// and maintain the managed block in `AGENTS.md`.
     pub wire_agents: bool,
     /// The current on-disk `AGENTS.md` contents, when one exists. Only read
@@ -91,27 +100,49 @@ pub struct SkillsInitSpec {
     pub agents_md: Option<String>,
 }
 
-/// Generate every file `skills init` should write: the canonical
-/// `<container>/skills/` tree plus the wired harness copies and merged
-/// `AGENTS.md`. No I/O — the caller owns writes and per-file drift decisions.
+/// Generate every entry `skills init` should write: the canonical
+/// `<container>/skills/` tree, a per-skill symlink (or copy fallback) at each
+/// wired harness location, and the merged `AGENTS.md`. No I/O — the caller
+/// owns writes and per-file drift decisions.
 pub fn generate_skills(spec: &SkillsInitSpec) -> GeneratedProject {
     let mut project = GeneratedProject::default();
 
+    let mut harness_roots = Vec::new();
+    if spec.wire_claude {
+        harness_roots.push(".claude/skills");
+    }
+    if spec.wire_agents {
+        harness_roots.push(".agents/skills");
+    }
+
     for skill in embedded_skills() {
         for file in skill.files {
-            let mut roots = vec![format!("{}/skills", spec.container)];
-            if spec.wire_claude {
-                roots.push(".claude/skills".to_string());
-            }
-            if spec.wire_agents {
-                roots.push(".agents/skills".to_string());
-            }
-            for root in roots {
+            project.files.push(GeneratedFile {
+                path: format!(
+                    "{}/skills/{}/{}",
+                    spec.container, skill.name, file.relative_path
+                ),
+                contents: file.contents.to_string(),
+                mode: None,
+            });
+        }
+        for root in &harness_roots {
+            if HARNESS_SYMLINKS {
+                // Both harness roots sit two levels below the anchor, so the
+                // canonical folder is always ../../<container>/skills/<name>.
                 project.files.push(GeneratedFile {
-                    path: format!("{root}/{}/{}", skill.name, file.relative_path),
-                    contents: file.contents.to_string(),
-                    mode: None,
+                    path: format!("{root}/{}", skill.name),
+                    contents: format!("../../{}/skills/{}", spec.container, skill.name),
+                    mode: Some(FileMode::Symlink),
                 });
+            } else {
+                for file in skill.files {
+                    project.files.push(GeneratedFile {
+                        path: format!("{root}/{}/{}", skill.name, file.relative_path),
+                        contents: file.contents.to_string(),
+                        mode: None,
+                    });
+                }
             }
         }
     }
@@ -139,7 +170,7 @@ fn managed_block(container: &str) -> String {
          ## Distributed framework skills\n\
          \n\
          Skills for building services with Distributed live in `.agents/skills/`\n\
-         (canonical copy: `{container}/skills/`). Consult the relevant skill before\n\
+         (canonical source: `{container}/skills/`). Consult the relevant skill before\n\
          scaffolding, CI, or schema work:\n\
          \n"
     );
@@ -346,22 +377,41 @@ mod tests {
     }
 
     #[test]
-    fn generate_wires_both_adapters() {
+    #[cfg(unix)]
+    fn generate_wires_both_adapters_as_symlinks() {
         let project = generate_skills(&spec(".distributed", true, true, None));
-        let paths: BTreeSet<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
         for skill in embedded_skills() {
-            for root in [".distributed/skills", ".claude/skills", ".agents/skills"] {
-                let expected = format!("{root}/{}/SKILL.md", skill.name);
-                assert!(paths.contains(expected.as_str()), "missing {expected}");
+            let canonical = format!(".distributed/skills/{}/SKILL.md", skill.name);
+            let copy = project
+                .files
+                .iter()
+                .find(|f| f.path == canonical)
+                .unwrap_or_else(|| panic!("missing {canonical}"));
+            assert_eq!(copy.mode, None, "canonical entries are real files");
+
+            for root in [".claude/skills", ".agents/skills"] {
+                let path = format!("{root}/{}", skill.name);
+                let link = project
+                    .files
+                    .iter()
+                    .find(|f| f.path == path)
+                    .unwrap_or_else(|| panic!("missing {path}"));
+                assert_eq!(link.mode, Some(FileMode::Symlink));
+                assert_eq!(
+                    link.contents,
+                    format!("../../.distributed/skills/{}", skill.name),
+                    "link target must reach the canonical folder from {root}"
+                );
             }
         }
+        let paths: BTreeSet<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(AGENTS_MD_FILE));
-        // Nothing but skill folders under the harness roots (no root-level .md
-        // strays — Pi historically treated those as skills).
+        // Nothing but per-skill entries under the harness roots (no root-level
+        // .md strays — Pi historically treated those as skills).
         assert!(paths
             .iter()
             .filter(|p| p.starts_with(".agents/skills/") || p.starts_with(".claude/skills/"))
-            .all(|p| p.splitn(4, '/').count() == 4));
+            .all(|p| p.splitn(4, '/').count() == 3));
     }
 
     #[test]

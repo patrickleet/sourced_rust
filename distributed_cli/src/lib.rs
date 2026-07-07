@@ -176,7 +176,8 @@ pub struct GeneratedProject {
 pub struct GeneratedFile {
     /// Path relative to the project directory (forward slashes).
     pub path: String,
-    /// File contents.
+    /// File contents. For [`FileMode::Symlink`] entries this is the link
+    /// target (a relative path), not file data.
     pub contents: String,
     /// Optional file mode hint (e.g. executable). `None` = default text file.
     pub mode: Option<FileMode>,
@@ -187,6 +188,8 @@ pub struct GeneratedFile {
 pub enum FileMode {
     /// The file should be marked executable.
     Executable,
+    /// The entry is a symbolic link; `contents` holds the relative target.
+    Symlink,
 }
 
 /// A side effect the caller should perform after writing the generated files.
