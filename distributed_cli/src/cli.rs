@@ -15,6 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::manifest_harness::{run_manifest_harness, HarnessMode, HarnessOptions};
+use crate::skills::{embedded_skills, generate_skills, SkillsInitSpec, AGENTS_MD_FILE};
 use crate::{
     generate_service_scaffold, package_name, render_atlas_schema, AtlasDatabaseUrl,
     AtlasSchemaSpec, BusTarget, FileMode, GeneratedFile, GithubRepo, GitopsPromoteTarget,
@@ -38,6 +39,60 @@ pub enum ServiceCommands {
     Describe(DescribeArgs),
     /// Render schema artifacts (SQL or an Atlas Operator resource) from a manifest
     Schema(SchemaArgs),
+    /// Extract the embedded Distributed agent skills into a project
+    Skills(SkillsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SkillsArgs {
+    #[command(subcommand)]
+    pub command: SkillsCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillsCommands {
+    /// Materialize the embedded agent skills into .distributed/skills/ and wire
+    /// them for discovery by agent harnesses
+    Init(SkillsInitArgs),
+    /// Print the name and description of every embedded skill
+    List,
+}
+
+#[derive(Args, Debug)]
+pub struct SkillsInitArgs {
+    /// Directory that will contain the skills/ folder. Harness wiring
+    /// (.claude/, .agents/, AGENTS.md) lands in its parent directory.
+    #[arg(long, default_value = ".distributed")]
+    pub path: PathBuf,
+    /// Harnesses to wire for native skill discovery (comma-delimited).
+    /// `auto` detects from the project; `none` writes canonical files only.
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "auto")]
+    pub agents: Vec<AgentHarness>,
+    /// Overwrite skill files whose on-disk content differs from the embedded
+    /// content, and replace non-link entries at harness locations with
+    /// symlinks. Without it, such paths are skipped with a warning.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Which agent harnesses to wire. `codex`/`grok`/`openai`/`gemini`/`pi` are
+/// aliases for `agents` — they all discover `.agents/skills/` — and exist so
+/// users can name their tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AgentHarness {
+    /// Wire every harness with evidence in the project root; both when fresh.
+    Auto,
+    /// Canonical `.distributed/skills/` files only; no harness wiring.
+    None,
+    /// Claude Code: per-skill links under `.claude/skills/`.
+    Claude,
+    Codex,
+    Grok,
+    Openai,
+    Gemini,
+    Pi,
+    /// The shared `.agents/skills/` convention + AGENTS.md managed block.
+    Agents,
 }
 
 #[derive(Args, Debug)]
@@ -309,7 +364,243 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         ServiceCommands::Describe(describe) => run_describe(describe),
         ServiceCommands::Schema(schema) => run_schema(schema),
+        ServiceCommands::Skills(skills) => match &skills.command {
+            SkillsCommands::Init(init) => run_skills_init(init),
+            SkillsCommands::List => run_skills_list(),
+        },
     }
+}
+
+fn run_skills_list() -> Result<(), Box<dyn Error>> {
+    let width = embedded_skills()
+        .iter()
+        .map(|skill| skill.name.len())
+        .max()
+        .unwrap_or(0);
+    for skill in embedded_skills() {
+        println!("{:width$}  {}", skill.name, skill.description);
+    }
+    Ok(())
+}
+
+fn run_skills_init(args: &SkillsInitArgs) -> Result<(), Box<dyn Error>> {
+    let container = absolute_path(&args.path)?;
+    if container.exists() && !container.is_dir() {
+        return Err(format!("{} exists and is not a directory", container.display()).into());
+    }
+    let (Some(anchor), Some(container_name)) = (container.parent(), container.file_name()) else {
+        return Err(format!("--path {} has no parent directory", container.display()).into());
+    };
+    let anchor = anchor.to_path_buf();
+
+    let wiring = resolve_agent_wiring(&args.agents, &anchor)?;
+    let agents_md = if wiring.agents {
+        read_optional(&anchor.join(AGENTS_MD_FILE))?
+    } else {
+        None
+    };
+
+    let project = generate_skills(&SkillsInitSpec {
+        container: container_name.to_string_lossy().into_owned(),
+        wire_claude: wiring.claude,
+        wire_agents: wiring.agents,
+        agents_md,
+    });
+
+    for file in &project.files {
+        let target = anchor.join(&file.path);
+        let (action, skip_reason) = if file.mode == Some(FileMode::Symlink) {
+            (
+                decide_symlink_write(&target, Path::new(&file.contents), args.force)?,
+                "existing path; --force to replace with a symlink",
+            )
+        } else if file.path == AGENTS_MD_FILE {
+            // AGENTS.md contents are a merge of the on-disk file, so "differs"
+            // means "update the managed block" — never skip, never need --force.
+            (
+                decide_managed_write(read_optional(&target)?.as_deref(), &file.contents),
+                "",
+            )
+        } else {
+            (
+                decide_write(
+                    read_optional(&target)?.as_deref(),
+                    &file.contents,
+                    args.force,
+                ),
+                "local edits; --force to overwrite",
+            )
+        };
+        let shown = display_path(&target);
+        match action {
+            WriteAction::Created | WriteAction::Updated => {
+                write_generated_file(&anchor, file)?;
+                if file.mode == Some(FileMode::Symlink) {
+                    println!("{} {shown} -> {}", action.verb(), file.contents);
+                } else {
+                    println!("{} {shown}", action.verb());
+                }
+            }
+            WriteAction::Unchanged => println!("unchanged {shown}"),
+            WriteAction::Skipped => {
+                eprintln!("warning: skipped {shown} ({skip_reason})");
+            }
+        }
+    }
+    for warning in &project.warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    let wired = match (wiring.claude, wiring.agents) {
+        (true, true) => "claude, agents",
+        (true, false) => "claude",
+        (false, true) => "agents",
+        (false, false) => "none",
+    };
+    println!(
+        "Initialized {} skills at {} (wired: {wired})",
+        embedded_skills().len(),
+        display_path(&container.join("skills")),
+    );
+    Ok(())
+}
+
+/// Which discovery adapters to wire, resolved from `--agents`.
+struct AgentWiring {
+    claude: bool,
+    agents: bool,
+}
+
+fn resolve_agent_wiring(
+    values: &[AgentHarness],
+    anchor: &Path,
+) -> Result<AgentWiring, Box<dyn Error>> {
+    let auto = values.contains(&AgentHarness::Auto);
+    let none = values.contains(&AgentHarness::None);
+    if (auto || none) && values.len() > 1 {
+        return Err("--agents auto and none cannot be combined with other values".into());
+    }
+    if none {
+        return Ok(AgentWiring {
+            claude: false,
+            agents: false,
+        });
+    }
+    if auto {
+        let claude = anchor.join(".claude").is_dir();
+        let agents = anchor.join(AGENTS_MD_FILE).is_file()
+            || anchor.join(".agents").is_dir()
+            || anchor.join(".gemini").is_dir()
+            || anchor.join(".pi").is_dir();
+        if !claude && !agents {
+            // Fresh project: being discoverable by default beats being minimal.
+            return Ok(AgentWiring {
+                claude: true,
+                agents: true,
+            });
+        }
+        return Ok(AgentWiring { claude, agents });
+    }
+
+    let mut wiring = AgentWiring {
+        claude: false,
+        agents: false,
+    };
+    for value in values {
+        match value {
+            AgentHarness::Claude => wiring.claude = true,
+            AgentHarness::Codex
+            | AgentHarness::Grok
+            | AgentHarness::Openai
+            | AgentHarness::Gemini
+            | AgentHarness::Pi
+            | AgentHarness::Agents => wiring.agents = true,
+            AgentHarness::Auto | AgentHarness::None => unreachable!("handled above"),
+        }
+    }
+    Ok(wiring)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteAction {
+    Created,
+    Unchanged,
+    Skipped,
+    Updated,
+}
+
+impl WriteAction {
+    fn verb(self) -> &'static str {
+        match self {
+            WriteAction::Created => "created",
+            WriteAction::Unchanged => "unchanged",
+            WriteAction::Skipped => "skipped",
+            WriteAction::Updated => "updated",
+        }
+    }
+}
+
+/// Per-file drift decision for skill files: never silently clobber local edits.
+fn decide_write(on_disk: Option<&str>, contents: &str, force: bool) -> WriteAction {
+    match on_disk {
+        None => WriteAction::Created,
+        Some(existing) if existing == contents => WriteAction::Unchanged,
+        Some(_) if force => WriteAction::Updated,
+        Some(_) => WriteAction::Skipped,
+    }
+}
+
+/// Drift decision for symlink entries: a link already pointing at the right
+/// target is unchanged; anything else at the path (a stale link, or a real
+/// file/directory such as a user's own skill) is only replaced with --force.
+fn decide_symlink_write(
+    path: &Path,
+    target: &Path,
+    force: bool,
+) -> Result<WriteAction, Box<dyn Error>> {
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(WriteAction::Created),
+        Err(err) => Err(format!("inspect {}: {err}", path.display()).into()),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(path)? == target {
+                Ok(WriteAction::Unchanged)
+            } else if force {
+                Ok(WriteAction::Updated)
+            } else {
+                Ok(WriteAction::Skipped)
+            }
+        }
+        Ok(_) if force => Ok(WriteAction::Updated),
+        Ok(_) => Ok(WriteAction::Skipped),
+    }
+}
+
+/// Drift decision for merged files (AGENTS.md): a difference is the managed
+/// block converging, so it is always written.
+fn decide_managed_write(on_disk: Option<&str>, contents: &str) -> WriteAction {
+    match on_disk {
+        None => WriteAction::Created,
+        Some(existing) if existing == contents => WriteAction::Unchanged,
+        Some(_) => WriteAction::Updated,
+    }
+}
+
+fn read_optional(path: &Path) -> Result<Option<String>, Box<dyn Error>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("read {}: {err}", path.display()).into()),
+    }
+}
+
+/// Prefer a cwd-relative path in status output; fall back to the full path.
+fn display_path(path: &Path) -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(&cwd).ok())
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
@@ -508,17 +799,47 @@ fn ensure_output_dir(path: &Path, force: bool) -> Result<(), Box<dyn Error>> {
 }
 
 /// Write one generated file under `output_dir`, creating parent directories and
-/// honoring the optional executable mode hint.
+/// honoring the optional mode hint (executable bit, or a symlink whose
+/// `contents` is the relative target).
 fn write_generated_file(output_dir: &Path, file: &GeneratedFile) -> Result<(), Box<dyn Error>> {
     let path = output_dir.join(&file.path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+    }
+    if file.mode == Some(FileMode::Symlink) {
+        return replace_with_symlink(&path, Path::new(&file.contents));
     }
     fs::write(&path, &file.contents)?;
     if file.mode == Some(FileMode::Executable) {
         set_executable(&path)?;
     }
     Ok(())
+}
+
+/// Point `path` at `target`, replacing whatever is there. Only reached after a
+/// write decision said to write, so removal of an existing entry is deliberate
+/// (a stale link, or an old copy being converted with --force).
+#[cfg(unix)]
+fn replace_with_symlink(path: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path)?,
+        Ok(_) => fs::remove_file(path)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("inspect {}: {err}", path.display()).into()),
+    }
+    std::os::unix::fs::symlink(target, path)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn replace_with_symlink(path: &Path, _target: &Path) -> Result<(), Box<dyn Error>> {
+    // generate_skills emits copies instead of symlinks off unix; reaching this
+    // means a generator bug, not a user error.
+    Err(format!(
+        "symlink generation is unsupported on this platform: {}",
+        path.display()
+    )
+    .into())
 }
 
 #[cfg(unix)]
@@ -732,6 +1053,67 @@ mod tests {
             out: None,
             distributed_path: None,
         }
+    }
+
+    #[test]
+    fn write_decisions_cover_absent_identical_and_drift() {
+        for force in [false, true] {
+            assert_eq!(decide_write(None, "new", force), WriteAction::Created);
+            assert_eq!(
+                decide_write(Some("same"), "same", force),
+                WriteAction::Unchanged
+            );
+        }
+        assert_eq!(
+            decide_write(Some("edited"), "new", false),
+            WriteAction::Skipped
+        );
+        assert_eq!(
+            decide_write(Some("edited"), "new", true),
+            WriteAction::Updated
+        );
+
+        // Merged files converge without --force.
+        assert_eq!(decide_managed_write(None, "new"), WriteAction::Created);
+        assert_eq!(
+            decide_managed_write(Some("same"), "same"),
+            WriteAction::Unchanged
+        );
+        assert_eq!(
+            decide_managed_write(Some("old"), "new"),
+            WriteAction::Updated
+        );
+    }
+
+    #[test]
+    fn agent_wiring_maps_aliases_and_rejects_mixed_auto() {
+        let anchor = Path::new("/nonexistent-anchor-for-wiring-test");
+        // Aliases collapse onto the agents adapter; claude stays separate.
+        for alias in [
+            AgentHarness::Codex,
+            AgentHarness::Grok,
+            AgentHarness::Openai,
+            AgentHarness::Gemini,
+            AgentHarness::Pi,
+            AgentHarness::Agents,
+        ] {
+            let wiring = resolve_agent_wiring(&[alias], anchor).unwrap();
+            assert!(!wiring.claude);
+            assert!(wiring.agents);
+        }
+        let wiring =
+            resolve_agent_wiring(&[AgentHarness::Claude, AgentHarness::Codex], anchor).unwrap();
+        assert!(wiring.claude && wiring.agents);
+
+        let wiring = resolve_agent_wiring(&[AgentHarness::None], anchor).unwrap();
+        assert!(!wiring.claude && !wiring.agents);
+
+        // Auto on a project with no harness evidence wires both.
+        let wiring = resolve_agent_wiring(&[AgentHarness::Auto], anchor).unwrap();
+        assert!(wiring.claude && wiring.agents);
+
+        assert!(resolve_agent_wiring(&[AgentHarness::Auto, AgentHarness::Claude], anchor).is_err());
+        assert!(resolve_agent_wiring(&[AgentHarness::None, AgentHarness::Agents], anchor).is_err());
     }
 
     #[test]

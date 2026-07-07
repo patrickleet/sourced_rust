@@ -38,6 +38,42 @@ emit `monitoring.coreos.com` resources.
 OTLP tracing setup in the generated `main.rs`, and renders OTLP environment
 values in the Helm chart without hard-coding an endpoint.
 
+## `dctl skills init` — extract agent skills into a project
+
+```bash
+dctl skills init                    # writes ./.distributed/skills/ and wires harnesses
+dctl skills list                    # names + descriptions of the embedded skills
+```
+
+Materializes the **agent skills** embedded in the binary — markdown guidance
+for coding agents on using Distributed (`distributed-usage`, `distributed-ci`,
+`distributed-schema`) — into `.distributed/skills/<name>/SKILL.md` (override
+the container with `--path <dir>`, which yields `<dir>/skills/...`). No network
+and no repo checkout: the binary that scaffolded your service carries the
+matching guidance for it.
+
+`--agents <list>` wires the skills for native discovery by agent harnesses.
+The canonical files live under the container; each harness location gets a
+**per-skill symlink** to the canonical folder (a real copy on platforms
+without reliable symlinks), anchored at the container's parent directory —
+one on-disk copy, and your own skills coexist next to the links:
+
+| value | effect |
+|------|--------|
+| `auto` (default) | wire every harness with evidence in the project root (`.claude/` → claude; `AGENTS.md`/`.agents/`/`.gemini/`/`.pi/` → agents); a fresh project wires both |
+| `claude` | link each skill at `.claude/skills/<name>` (Claude Code) |
+| `codex`, `grok`, `openai`, `gemini`, `pi`, `agents` | link each skill at `.agents/skills/<name>` (Codex, Grok Build, Gemini CLI, Pi) and maintain a sentinel-delimited managed block in `AGENTS.md` (created if absent); user content outside the sentinels is preserved |
+| `none` | canonical `.distributed/skills/` files only |
+
+Re-runs are safe and idempotent — per file: absent → `created`, identical →
+`unchanged`, locally edited → skipped with a warning (`--force` to overwrite,
+printed as `updated`). A harness path that is not a link to the canonical
+folder (a stale link, or a directory from an older copy-based layout) is
+likewise skipped unless `--force` replaces it. Files you add under the skills
+directories are never touched. After a CLI upgrade, re-run with `--force` to
+refresh existing skill files to the binary's embedded content; without
+`--force`, differing files are treated as local edits and skipped.
+
 ## The project manifest entrypoint
 
 `describe` and `schema` work by compiling your service crate and calling an
