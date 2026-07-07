@@ -21,13 +21,16 @@ mod atlas;
 mod cli;
 mod generate;
 mod manifest_harness;
+mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, Metrics, ScaffoldArgs,
-    SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands, Store, Transport,
+    run, AgentHarness, Bus, DescribeArgs, Framework, GitopsPromote, ManifestFormat, Metrics,
+    ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs, ServiceCommands,
+    SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
 };
 pub use generate::{generate_service_scaffold, package_name};
+pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
 
 /// What to scaffold. The pure input to [`generate_service_scaffold`].
 ///

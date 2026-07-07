@@ -38,6 +38,36 @@ emit `monitoring.coreos.com` resources.
 OTLP tracing setup in the generated `main.rs`, and renders OTLP environment
 values in the Helm chart without hard-coding an endpoint.
 
+## `dctl skills init` — extract agent skills into a project
+
+```bash
+dctl skills init                    # writes ./.distributed/skills/ and wires harnesses
+dctl skills list                    # names + descriptions of the embedded skills
+```
+
+Materializes the **agent skills** embedded in the binary — markdown guidance
+for coding agents on using Distributed (`distributed-usage`, `distributed-ci`,
+`distributed-schema`) — into `.distributed/skills/<name>/SKILL.md` (override
+the container with `--path <dir>`, which yields `<dir>/skills/...`). No network
+and no repo checkout: the binary that scaffolded your service carries the
+matching guidance for it.
+
+`--agents <list>` wires the skills for native discovery by agent harnesses
+(anchored at the container's parent directory):
+
+| value | effect |
+|------|--------|
+| `auto` (default) | wire every harness with evidence in the project root (`.claude/` → claude; `AGENTS.md`/`.agents/`/`.gemini/`/`.pi/` → agents); a fresh project wires both |
+| `claude` | copy each skill to `.claude/skills/<name>/` (Claude Code) |
+| `codex`, `grok`, `openai`, `gemini`, `pi`, `agents` | copy each skill to `.agents/skills/<name>/` (Codex, Grok Build, Gemini CLI, Pi) and maintain a sentinel-delimited managed block in `AGENTS.md` (created if absent); user content outside the sentinels is preserved |
+| `none` | canonical `.distributed/skills/` files only |
+
+Re-runs are safe and idempotent — per file: absent → `created`, identical →
+`unchanged`, locally edited → skipped with a warning (`--force` to overwrite,
+printed as `updated`). Files you add under the skills directories are never
+touched. Re-running after a CLI upgrade converges every copy on the embedded
+content.
+
 ## The project manifest entrypoint
 
 `describe` and `schema` work by compiling your service crate and calling an
