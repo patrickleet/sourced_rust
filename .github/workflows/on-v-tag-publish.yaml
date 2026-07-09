@@ -1,4 +1,4 @@
-name: On Version Tagged, Publish Crate
+name: On Version Tagged, Publish Crates and CLI Artifacts
 
 on:
   push:
@@ -36,11 +36,13 @@ jobs:
       manifest_path: Cargo.toml
       cargo_publish_args: "--locked"
 
+  # `publish` waits for the macros crate, while `publish-cli` is independent.
+  # Gate binary artifacts on both so all three crates publish first.
   release:
     needs: [publish, publish-cli]
     permissions:
       contents: write
-    uses: unbounded-tech/workflow-simple-release/.github/workflows/workflow.yaml@main
+    uses: unbounded-tech/workflows-rust/.github/workflows/release.yaml@v2.3.0
     with:
-      tag: ${{ github.ref_name }}
-      name: ${{ github.ref_name }}
+      binary_name: dctl
+      build_args: "--release --locked --package distributed_cli --bin dctl"
