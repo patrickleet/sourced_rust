@@ -45,4 +45,5 @@ jobs:
     uses: unbounded-tech/workflows-rust/.github/workflows/release.yaml@v2.3.0
     with:
       binary_name: dctl
-      build_args: "--release --locked --package distributed_cli --bin dctl"
+      # Cargo.lock is intentionally untracked for this library workspace.
+      build_args: "--release --package distributed_cli --bin dctl"
