@@ -10,14 +10,14 @@ fmt + clippy + test without a third-party runs-on.com dependency.
 | Workflow | `workflow_call` | Purpose |
 |----------|-----------------|---------|
 | [`quality.yaml`](./quality.yaml) | yes | **fmt → clippy → build → test** for libraries / domain crates |
-| [`github-release.yaml`](./github-release.yaml) | yes | GitHub Release for `v*.*.*` tags (**no** crates.io) |
 | [`test-all-features.yaml`](./test-all-features.yaml) | yes | Workspace `--all-features` (framework repo) |
 | [`integration-*.yaml`](./) | yes | Broker / DB / CLI integration (framework repo) |
 | [`on-pr-quality.yaml`](./on-pr-quality.yaml) | entry | This repo’s PR gate |
 | [`on-push-main-version-and-tag.yaml`](./on-push-main-version-and-tag.yaml) | entry | This repo’s main → **vnext** tag |
 | [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | This repo’s crates.io + `dctl` binary release |
 
-Version tagging still uses **`unbounded-tech/workflow-vnext-tag`** (keep that).
+**Version tagging:** `unbounded-tech/workflow-vnext-tag`  
+**GitHub Release only (domain crates):** `unbounded-tech/workflow-simple-release` (not owned here)
 
 ## Domain crate recipe (private libs)
 
@@ -70,12 +70,15 @@ permissions:
   contents: write
 jobs:
   release:
-    uses: hops-ops/distributed/.github/workflows/github-release.yaml@main
+    uses: unbounded-tech/workflow-simple-release/.github/workflows/workflow.yaml@v2.1.3
+    with:
+      tag: ${{ github.ref_name }}
+      name: ${{ github.ref_name }}
 ```
 
 **Secrets:** write `DEPLOY_KEY` via `vnext generate-deploy-key --owner … --name …`.
 
-**Pinning:** prefer a released tag once cut (`@vX.Y.Z` or git SHA). During development of these workflows, `@feat/shared-workflows` is fine.
+**Pinning:** prefer a released tag once cut (`@vX.Y.Z` or git SHA). During development of quality, `@feat/shared-workflows` is fine.
 
 ## Out of scope (for now)
 
