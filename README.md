@@ -13,6 +13,7 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 | Capability | What it gives you |
 |---|---|
 | Plain Rust aggregates | Domain state stays in ordinary structs with explicit command methods. |
+| Model-first TDD | Specify the aggregate API in fast, exhaustive unit tests before writing handlers or choosing infrastructure. |
 | Event-sourced persistence | Append-only `EventRecord`s, replay, optimistic commit, and pluggable async repositories. |
 | Typed macros | `#[sourced]`, `#[digest]`, and `aggregate!()` remove boilerplate while keeping replay explicit. |
 | Snapshots | `#[derive(Snapshot)]` and a snapshot cache speed up hydration for long streams. |
@@ -118,10 +119,82 @@ embedding the CLI in another command such as `hops service`.
 
 ## Quick Start
 
-Four steps: write your models, write a command handler, serve it, then swap in
-production persistence and transports without touching any of the above.
+Five steps: specify the model API in tests, implement the model, add a thin
+command handler, serve it, then swap in production persistence and transports
+without changing the proven domain behavior.
 
-### 1. Write your models
+### 1. Specify the model behavior in tests
+
+Start with the API you want the domain model to expose. These are ordinary,
+synchronous Rust unit tests: instantiate the plain model and call its command
+methods directly. There is no Tokio runtime, repository, handler `Context`, bus,
+database, or mock to set up.
+
+Write the test before the model behavior exists, see it fail, and then implement
+only enough behavior to make it pass. Assert the complete observable contract:
+the result, resulting state, and the typed events recorded by the command.
+
+```rust,ignore
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialized_todo() -> Todo {
+        let mut todo = Todo::default();
+        todo.initialize(
+            "todo-1".into(),
+            "user-1".into(),
+            "Buy milk".into(),
+        )
+        .unwrap();
+        todo
+    }
+
+    #[test]
+    fn completing_a_todo_changes_state_and_records_the_fact() {
+        let mut todo = initialized_todo();
+
+        todo.complete().unwrap();
+
+        assert!(todo.snapshot().completed);
+        assert_eq!(todo.entity.version(), 2);
+        assert_eq!(
+            TodoEvent::try_from(&todo.entity.events()[1]).unwrap(),
+            TodoEvent::Completed,
+        );
+    }
+
+    #[test]
+    fn completing_an_already_completed_todo_is_a_no_op() {
+        let mut todo = initialized_todo();
+        todo.complete().unwrap();
+        let before = todo.snapshot();
+        let version = todo.entity.version();
+        let event_count = todo.entity.events().len();
+
+        todo.complete().unwrap();
+
+        assert_eq!(todo.snapshot(), before);
+        assert_eq!(todo.entity.version(), version);
+        assert_eq!(todo.entity.events().len(), event_count);
+    }
+}
+```
+
+Repeat this red-green-refactor loop for every valid transition, invariant,
+guard/no-op, validation failure, repeated command, and boundary case. The small,
+infrastructure-free surface makes 100% model coverage a practical target before
+service or handler work begins. Coverage proves that code ran, however; the
+meaningful state, result, and event assertions are what prove the domain contract.
+Run `cargo llvm-cov --lib --summary-only` in the bounded-context crate to measure
+that model-only feedback loop.
+
+The `when = ...` guard used below deliberately returns `Ok(())` without changing
+state or recording an event. If the desired API should reject the command instead,
+write that contract first (`Err`, unchanged state, and no new event), validate in
+the public command method, and only then call a private recorded event applier.
+
+### 2. Implement the model
 
 A domain model is a plain Rust struct with an embedded `Entity`. `#[sourced]` turns
 its command methods into recorded, replayable events; `#[derive(Snapshot)]` adds a
@@ -166,7 +239,7 @@ struct CreateTodo {
 // #[derive(Snapshot)] generates: TodoSnapshot, fn snapshot(), impl Snapshottable
 ```
 
-### 2. Write a command handler
+### 3. Write a command handler
 
 Each handler is a module exporting a `COMMAND` name, a `guard`, and an **async**
 `handle`. It loads/creates the aggregate, runs a command, and commits the resulting
@@ -193,7 +266,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
     todo.initialize(input.id.clone(), input.user_id, input.task)?;
 
     // Record a fact for other services. The outbox row commits atomically with
-    // the aggregate's events. Once a bus is attached (step 3) this `commit`
+    // the aggregate's events. Once a bus is attached (step 4) this `commit`
     // publishes the row immediately; with no bus it stays pending for a worker.
     let message = OutboxMessage::domain_event("todo.initialized", &todo)?;
     ctx.repo().outbox(message).commit(&mut todo).await?;
@@ -202,7 +275,7 @@ pub async fn handle(ctx: &Context<'_, Repo>) -> Result<Value, HandlerError> {
 }
 ```
 
-### 3. Serve it
+### 4. Serve it
 
 Build typed route bundles with `Routes::new()`, register handler modules with
 `routes!`, then collect those bundles into a deployment-level `Service`. Expose
@@ -227,7 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let service = Service::new().routes(routes);
 
-    // Attach a bus and run. `with_bus` closes the loop from step 2: that
+    // Attach a bus and run. `with_bus` closes the loop from step 3: that
     // `outbox(..).commit(..)` now publishes on commit, and `run` consumes the
     // registered commands (and events). Same handlers, one line of wiring.
     service
@@ -244,7 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 4. Swap persistence and transports
+### 5. Swap persistence and transports
 
 Everything above is in-memory. Moving to production is a **constructor change**, not
 a handler change — every infrastructure concern is an async trait with an in-memory

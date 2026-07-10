@@ -1,11 +1,12 @@
 ---
 name: distributed-usage
-description: Build services with the Distributed CQRS/event-sourcing framework, where you mostly just write models and handlers - the framework and dctl generate the wiring, transports, persistence, manifest, and deploy structure around them. Use when writing or modifying a Distributed (Rust) service.
+description: Build Distributed CQRS/event-sourced Rust services model-first by specifying plain aggregate behavior with fast unit tests, implementing models to make them pass, then adding thin handlers while the framework and dctl generate persistence, transports, manifests, and deploy wiring. Use when designing, testing, writing, or modifying a Distributed service or domain model.
 ---
 
 # Using the Distributed framework
 
-**The point of Distributed: you mostly just write models and handlers.**
+**The point of Distributed: specify and exhaustively test plain domain models
+first, then write thin handlers around proven behavior.**
 Everything else — service wiring, transports, persistence, manifests, schema,
 CI/GitOps — is deterministic structure the framework, macros, and `dctl`
 generate. Your authored surface is deliberately small: aggregate models
@@ -41,11 +42,50 @@ traits — production swaps are one constructor line, never a handler change.
    `dctl scaffold <name> --model <agg> --command <agg.action> --event <fact.happened> --store postgres --transport http --bus nats --gitops`
    (from an event-storming board: aggregates → `--model`, commands →
    `--command`, events/policies → `--event`, query views → `--read-models`).
-2. Write the domain: replace placeholder fields, event methods, guards, and
-   handler bodies with real behavior. This is the part that is yours — models
-   and handlers. Keep the generated structure around it.
-3. Start in-memory (`InMemoryRepository`, `InMemoryBus`); swap constructors for
+2. Write failing, colocated unit tests against the aggregate command API you
+   want. Exercise the plain model directly, without a handler or infrastructure.
+3. Implement the model fields, event methods, validation, and guards until the
+   contract tests pass. Refactor while they stay green.
+4. Implement thin handlers around the proven model behavior. Keep the generated
+   structure around them.
+5. Start in-memory (`InMemoryRepository`, `InMemoryBus`); swap constructors for
    Postgres/a broker when deploying. Handlers do not change.
+
+## Model-first TDD
+
+Treat an aggregate's public command methods as the domain API. Define and prove
+that API before implementing handlers or services:
+
+1. Write the behavior you want as a failing test.
+2. Instantiate the plain model and call its command methods directly. Do not use
+   a repository, bus, handler `Context`, async runtime, database, or mocks.
+3. Assert the complete observable contract: returned result and resulting
+   state/snapshot; decode the generated event enum for its name and payload, and
+   assert the record version, sequence, and event count separately.
+4. Cover every valid transition, validation failure/domain rejection, guard or
+   no-op, repeated call, invariant, and boundary case. An explicit rejection or
+   intentional guard/no-op must not mutate state or add a pending event.
+5. Implement the smallest model behavior that makes the test pass, then
+   refactor. Repeat until the model modules have 100% coverage.
+6. Only then add handlers. A handler should decode input, load or create the
+   aggregate, invoke an already-proven command method, then commit. Add an
+   outbox message only when a fact must be published outside the aggregate.
+
+Use the generated event enum and `TryFrom<&EventRecord>` to assert business
+facts; do not couple domain tests to encoded payload bytes. `Entity::events()`
+is the aggregate's complete in-memory history, while `Entity::new_events()` is
+the set added since it was loaded or committed.
+
+A `#[event(..., when = condition)]` command returns `Ok(())` when its condition
+is false: this is a successful no-op, not a domain error. If the API should
+reject instead, test for `Err`, unchanged state, and no new event, then validate
+in a public command method before calling a private recorded event applier. An
+error returned from a fallible recorded event body does not roll back the event
+that was already recorded, so do not use that as the rejection boundary.
+
+Run `cargo llvm-cov --lib --summary-only` in the bounded-context crate to check
+model coverage. Coverage confirms execution; the result, state, invariant, and
+event assertions above define the actual contract.
 
 ## Aggregates
 
@@ -84,7 +124,8 @@ Rules that prevent real bugs:
 - **Event methods become fallible.** `#[event]`/`#[digest]` methods return
   `SourcedResult` even without a declared return type — call them with `?`.
 - Event names are lowercase past-tense facts (`"initialized"`, `"completed"`).
-  Use `when = <expr>` guards so invalid transitions record nothing.
+  Use `when = <expr>` for intentional idempotent/no-op transitions so they
+  record nothing; use explicit validation when the API promises a rejection.
 - Evolving an event's payload? Do not edit stored data — add an upcaster:
   `#[sourced(entity, upcasters(("initialized", 1 => 2, V1 => V2, upcast_fn)))]`
   and mark new-format methods `#[event("initialized", version = 2)]`.
