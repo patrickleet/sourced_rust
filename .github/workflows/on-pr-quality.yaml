@@ -5,11 +5,10 @@ on:
 
 jobs:
   quality:
-    uses: unbounded-tech/workflows-rust/.github/workflows/quality.yaml@feat/cargo-publish
+    uses: ./.github/workflows/quality.yaml
     with:
       cargo_build_args: "--verbose"
       cargo_test_args: "--verbose"
-      cargo_incremental: true
 
   all-features:
     uses: ./.github/workflows/test-all-features.yaml
