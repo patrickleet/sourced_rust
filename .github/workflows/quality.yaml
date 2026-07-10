@@ -204,7 +204,7 @@ jobs:
 
       - name: Upload lcov artifact
         if: inputs.cargo_test && inputs.cargo_coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lcov
           path: lcov.info
