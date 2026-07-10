@@ -11,11 +11,10 @@ permissions:
 
 jobs:
   quality:
-    uses: unbounded-tech/workflows-rust/.github/workflows/quality.yaml@feat/cargo-publish
+    uses: ./.github/workflows/quality.yaml
     with:
       cargo_build_args: "--verbose"
       cargo_test_args: "--verbose"
-      cargo_incremental: true
 
   all-features:
     uses: ./.github/workflows/test-all-features.yaml
@@ -38,11 +37,21 @@ jobs:
   observability:
     uses: ./.github/workflows/integration-observability.yaml
 
-  # This uses commit logs and tags from git to determine the next version number and create a tag for the release.
-  # Some commits such as chore: will not trigger a version bump and tag; this is by design.
+  # Conventional commits drive the next tag. chore: alone does not bump.
+  # Deploy key required so the tag push can chain into on-v-tag-publish.
   version-and-tag:
     name: Version and Tag
-    needs: [quality, all-features, postgres, nats, rabbitmq, kafka, distributed-cli, observability]
+    needs:
+      [
+        quality,
+        all-features,
+        postgres,
+        nats,
+        rabbitmq,
+        kafka,
+        distributed-cli,
+        observability,
+      ]
     uses: unbounded-tech/workflow-vnext-tag/.github/workflows/workflow.yaml@v1.21.5
     secrets:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}

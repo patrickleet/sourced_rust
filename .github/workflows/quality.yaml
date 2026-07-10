@@ -1,0 +1,122 @@
+# Reusable Rust quality gate for Distributed libraries and domain crates.
+#
+# Callers (this repo or any consumer):
+#   jobs:
+#     quality:
+#       uses: hops-ops/distributed/.github/workflows/quality.yaml@main
+#       with:
+#         cargo_test_args: "--verbose --locked"
+#
+# Designed for pure domain crates and library workspaces:
+#   rustfmt → clippy (-D warnings) → build → test
+# Does not run broker/DB integrations or --all-features (see sibling
+# workflows: test-all-features.yaml, integration-*.yaml).
+#
+# Prefer this over unbounded-tech/workflows-rust for Distributed workloads:
+# fmt + clippy are first-class, defaults match cargo-library packages, and
+# there is no runs-on.com dependency.
+
+name: Distributed Rust Quality
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: GitHub-hosted runner label
+        type: string
+        required: false
+        default: ubuntu-latest
+
+      toolchain:
+        description: Rust toolchain channel or version
+        type: string
+        required: false
+        default: stable
+
+      cargo_fmt:
+        description: Run cargo fmt --check
+        type: boolean
+        required: false
+        default: true
+
+      cargo_clippy:
+        description: Run cargo clippy with -D warnings
+        type: boolean
+        required: false
+        default: true
+
+      cargo_build:
+        description: Run cargo build before tests
+        type: boolean
+        required: false
+        default: true
+
+      cargo_test:
+        description: Run cargo test
+        type: boolean
+        required: false
+        default: true
+
+      cargo_build_args:
+        description: Extra args for cargo build
+        type: string
+        required: false
+        default: "--verbose"
+
+      cargo_test_args:
+        description: Extra args for cargo test
+        type: string
+        required: false
+        default: "--verbose"
+
+      cargo_clippy_args:
+        description: Args after `cargo clippy` (include `--` flags for rustc/clippy)
+        type: string
+        required: false
+        default: "--all-targets -- -D warnings"
+
+      rust_cache:
+        description: Enable Swatinem/rust-cache
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  quality:
+    name: fmt · clippy · build · test
+    runs-on: ${{ inputs.runs_on }}
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        if: inputs.rust_cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        if: inputs.cargo_fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        if: inputs.cargo_clippy
+        run: cargo clippy ${{ inputs.cargo_clippy_args }}
+
+      - name: cargo build
+        if: inputs.cargo_build
+        run: cargo build ${{ inputs.cargo_build_args }}
+
+      - name: cargo test
+        if: inputs.cargo_test
+        run: cargo test ${{ inputs.cargo_test_args }}
