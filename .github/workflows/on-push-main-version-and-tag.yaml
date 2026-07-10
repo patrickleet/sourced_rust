@@ -8,13 +8,18 @@ on:
 permissions:
   packages: write
   contents: write
+  pull-requests: write
 
 jobs:
   quality:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/quality.yaml
     with:
       cargo_build_args: "--verbose"
       cargo_test_args: "--verbose"
+      cargo_llvm_cov_args: "--workspace"
 
   all-features:
     uses: ./.github/workflows/test-all-features.yaml

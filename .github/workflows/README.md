@@ -9,7 +9,7 @@ fmt + clippy + test without a third-party runs-on.com dependency.
 
 | Workflow | `workflow_call` | Purpose |
 |----------|-----------------|---------|
-| [`quality.yaml`](./quality.yaml) | yes | **fmt → clippy → build → test** for libraries / domain crates |
+| [`quality.yaml`](./quality.yaml) | yes | **fmt → clippy → build → test + coverage** (PR sticky comment via cargo-llvm-cov) |
 | [`test-all-features.yaml`](./test-all-features.yaml) | yes | Workspace `--all-features` (framework repo) |
 | [`integration-*.yaml`](./) | yes | Broker / DB / CLI integration (framework repo) |
 | [`on-pr-quality.yaml`](./on-pr-quality.yaml) | entry | This repo’s PR gate |
@@ -29,6 +29,9 @@ on:
     branches: [main]
 jobs:
   quality:
+    permissions:
+      contents: read
+      pull-requests: write  # coverage sticky comment on PRs
     uses: hops-ops/distributed/.github/workflows/quality.yaml@main  # or @feat/shared-workflows while landing
     with:
       cargo_build_args: "--verbose --locked"
