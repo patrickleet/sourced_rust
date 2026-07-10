@@ -1,12 +1,15 @@
 ---
 name: distributed-usage
-description: Build Distributed CQRS/event-sourced Rust services model-first by specifying plain aggregate behavior with fast unit tests, implementing models to make them pass, then adding thin handlers while the framework and dctl generate persistence, transports, manifests, and deploy wiring. Use when designing, testing, writing, or modifying a Distributed service or domain model.
+description: Build Distributed CQRS/event-sourced Rust services where you mostly write models and handlers while the framework and dctl generate persistence, transports, manifests, and deploy wiring. Use model-first TDD to specify plain aggregate behavior with fast unit tests before implementing models and thin handlers. Use when designing, testing, writing, or modifying a Distributed service or domain model.
 ---
 
 # Using the Distributed framework
 
-**The point of Distributed: specify and exhaustively test plain domain models
+**The point of Distributed: you mostly just write models and handlers.**
+
+**The model-first advantage: specify and exhaustively test plain domain models
 first, then write thin handlers around proven behavior.**
+
 Everything else — service wiring, transports, persistence, manifests, schema,
 CI/GitOps — is deterministic structure the framework, macros, and `dctl`
 generate. Your authored surface is deliberately small: aggregate models
