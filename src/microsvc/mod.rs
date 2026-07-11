@@ -93,6 +93,8 @@ pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 mod http;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
+#[cfg(feature = "http")]
+pub(crate) use http::session_from_headers;
 
 // Knative / CloudEvents HTTP ingress (Service-coupled; the bus keeps only the
 // produce/manifest helpers). Requires the "http" feature.

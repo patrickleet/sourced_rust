@@ -246,6 +246,7 @@ fn expand_relational_read_model(
                         foreign_keys: vec![#(#foreign_keys),*],
                         indexes: vec![#(#indexes),*],
                         relationships: vec![#(#relationships),*],
+                        kind: distributed::TableKind::ReadModel,
                     });
                 &SCHEMA
             }
@@ -471,6 +472,7 @@ impl FieldAttrs {
         let mut attrs = Self::default();
         let mut pending_foreign_key: Option<String> = None;
         let mut pending_through: Option<String> = None;
+        let mut pending_target_foreign_key: Option<String> = None;
         for attr in &field.attrs {
             if attr.path().is_ident("id") {
                 attrs.id = true;
@@ -557,6 +559,7 @@ impl FieldAttrs {
                         target_model: target,
                         foreign_key: None,
                         through: None,
+                        target_foreign_key: None,
                     });
                 } else if meta.path.is_ident("belongs_to") {
                     let target = meta.value()?.parse::<LitStr>()?.value();
@@ -565,6 +568,7 @@ impl FieldAttrs {
                         target_model: target,
                         foreign_key: None,
                         through: None,
+                        target_foreign_key: None,
                     });
                 } else if meta.path.is_ident("many_to_many") {
                     let target = meta.value()?.parse::<LitStr>()?.value();
@@ -573,6 +577,7 @@ impl FieldAttrs {
                         target_model: target,
                         foreign_key: None,
                         through: None,
+                        target_foreign_key: None,
                     });
                 } else if meta.path.is_ident("through") {
                     let through = meta.value()?.parse::<LitStr>()?.value();
@@ -586,6 +591,23 @@ impl FieldAttrs {
                         return Err(meta.error("relationship through declared more than once"));
                     } else {
                         pending_through = Some(through);
+                    }
+                } else if meta.path.is_ident("target_foreign_key") {
+                    let value = meta.value()?.parse::<LitStr>()?.value();
+                    if attrs.relationship.is_some() {
+                        let relationship = relationship_mut(&mut attrs, "target_foreign_key")?;
+                        if relationship.target_foreign_key.is_some() {
+                            return Err(
+                                meta.error("relationship target_foreign_key declared more than once")
+                            );
+                        }
+                        relationship.target_foreign_key = Some(value);
+                    } else if pending_target_foreign_key.is_some() {
+                        return Err(
+                            meta.error("relationship target_foreign_key declared more than once")
+                        );
+                    } else {
+                        pending_target_foreign_key = Some(value);
                     }
                 } else {
                     return Err(meta.error("unknown readmodel field attribute"));
@@ -625,6 +647,23 @@ impl FieldAttrs {
             }
         }
 
+        if let Some(target_fk) = pending_target_foreign_key {
+            if let Some(relationship) = attrs.relationship.as_mut() {
+                if relationship.target_foreign_key.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "relationship target_foreign_key declared more than once",
+                    ));
+                }
+                relationship.target_foreign_key = Some(target_fk);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`target_foreign_key` must be declared with a relationship attribute",
+                ));
+            }
+        }
+
         Ok(attrs)
     }
 
@@ -656,6 +695,8 @@ impl FieldAttrs {
         };
         let target_model = &relationship.target_model;
         let through = option_string_tokens(relationship.through.as_deref());
+        let target_foreign_key =
+            option_string_tokens(relationship.target_foreign_key.as_deref());
         let kind = match relationship.kind {
             RelationshipKindAttr::HasMany => quote! { distributed::RelationshipKind::HasMany },
             RelationshipKindAttr::BelongsTo => quote! { distributed::RelationshipKind::BelongsTo },
@@ -670,6 +711,7 @@ impl FieldAttrs {
                 target_model: #target_model.to_string(),
                 foreign_key: Some(#foreign_key.to_string()),
                 through: #through,
+                target_foreign_key: #target_foreign_key,
             }
         }))
     }
@@ -799,6 +841,7 @@ struct RelationshipAttr {
     target_model: String,
     foreign_key: Option<String>,
     through: Option<String>,
+    target_foreign_key: Option<String>,
 }
 
 #[derive(Clone, Copy)]

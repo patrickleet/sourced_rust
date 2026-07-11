@@ -446,6 +446,7 @@ mod tests {
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
             relationships: Vec::new(),
+            kind: crate::table::TableKind::ReadModel,
         };
         let child = TableSchema {
             model_name: "Child".into(),
@@ -462,6 +463,7 @@ mod tests {
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
             relationships: Vec::new(),
+            kind: crate::table::TableKind::ReadModel,
         };
         let mut registry = TableSchemaRegistry::new();
         registry.register_schema(child).expect("child registers");
@@ -544,6 +546,7 @@ mod tests {
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
             relationships: Vec::new(),
+            kind: crate::table::TableKind::ReadModel,
         };
 
         let err = create_table_statement(&schema, TableSqlDialect::Sqlite)

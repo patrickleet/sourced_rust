@@ -26,10 +26,13 @@
 //! ```
 
 mod capabilities;
+pub mod change;
 pub(crate) mod in_memory;
 mod load;
 mod plan;
 mod workspace;
+
+pub use change::ReadModelChange;
 
 use serde::{de::DeserializeOwned, Serialize};
 

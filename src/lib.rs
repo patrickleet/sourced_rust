@@ -30,6 +30,7 @@ pub mod sqlite_repo;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_repo;
 pub mod table;
+pub mod graphql;
 mod telemetry;
 pub mod trace_context;
 
@@ -108,8 +109,8 @@ pub use queued_repo::{
 // workspace/plan entry points, and the version marker. Load-graph, query, and
 // row-include plumbing stays reachable under `distributed::read_model::*`.
 pub use read_model::{
-    InMemoryReadModelStore, ReadModel, ReadModelWorkspaceExt, ReadModelWritePlanBuilder,
-    RelationalReadModel, RelationalReadModelIncludes, Versioned,
+    InMemoryReadModelStore, ReadModel, ReadModelChange, ReadModelWorkspaceExt,
+    ReadModelWritePlanBuilder, RelationalReadModel, RelationalReadModelIncludes, Versioned,
 };
 
 // Neutral table/row primitives: the canonical schema, row, mutation, write-plan,
@@ -121,10 +122,10 @@ pub use table::{
     ColumnType, DeleteTableRowMutation, ExpectedVersion, ForeignKey, PatchMode,
     PatchTableRowMutation, PrimaryKey, RelationshipDef, RelationshipKind, RowKey, RowPatch,
     RowValue, RowValues, RowWriteMode, TableAdapterCapabilities, TableColumn, TableCommitOutcome,
-    TableIndex, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation, TableSchema,
-    TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap, TableSchemaIssue,
-    TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt, TableSchemaVerification,
-    TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
+    TableIndex, TableKind, TableMigrationArtifact, TableModel, TableMutation, TableRowMutation,
+    TableSchema, TableSchemaAdapter, TableSchemaAdapterCapabilities, TableSchemaBootstrap,
+    TableSchemaIssue, TableSchemaIssueKind, TableSchemaRegistry, TableSchemaRegistryExt,
+    TableSchemaVerification, TableStoreError, TableWritePlan, DEFAULT_TABLE_VERSION_COLUMN,
 };
 
 pub use manifest::{
@@ -147,6 +148,22 @@ pub use snapshot::{hydrate_from_snapshot, InMemorySnapshotStore, SnapshotRecord,
 // Re-export the EventEmitter from the event_emitter_rs crate (requires "emitter" feature)
 #[cfg(feature = "emitter")]
 pub use event_emitter_rs::EventEmitter;
+
+/// Register read models + permissions on a GraphQL engine builder.
+///
+/// ```ignore
+/// let builder = graphql_models!(builder, orders, players);
+/// // expands to builder.model::<orders::Model>(orders::permissions())...
+/// ```
+#[macro_export]
+macro_rules! graphql_models {
+    ($builder:expr, $($m:ident),+ $(,)?) => {
+        $builder $( .model::<$m::Model>($m::permissions()) )+
+    };
+}
+
+// Session convenience re-exports used by GraphQL permission filters.
+pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
 // Re-export proc macros
 pub use distributed_macros::{aggregate, digest, sourced, ReadModel, Snapshot};

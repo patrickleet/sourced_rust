@@ -433,6 +433,34 @@ impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Postgres {
             }
         })
     }
+
+    fn push_change_notify<'e, E>(
+        executor: E,
+        tables: &std::collections::BTreeSet<String>,
+    ) -> impl std::future::Future<Output = Result<(), ReadModelError>> + Send
+    where
+        E: sqlx::Executor<'e, Database = Postgres> + Send,
+    {
+        async move {
+            if tables.is_empty() {
+                return Ok(());
+            }
+            let payload = serde_json::to_string(&tables.iter().collect::<Vec<_>>())
+                .map_err(|err| ReadModelError::Serde(err.to_string()))?;
+            sqlx::query("SELECT pg_notify('distributed_read_model_changes', $1)")
+                .bind(payload)
+                .execute(executor)
+                .await
+                .map_err(|err| {
+                    crate::sqlx_repo::read_model_storage_error(
+                        "postgres",
+                        "pg_notify read model changes",
+                        err,
+                    )
+                })?;
+            Ok(())
+        }
+    }
 }
 
 fn push_postgres_type_cast(builder: &mut QueryBuilder<Postgres>, column: &ColumnDef) {

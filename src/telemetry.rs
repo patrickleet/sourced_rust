@@ -110,6 +110,8 @@ pub(crate) mod privacy_policy {
         super::metric_labels::FAILURE_CLASS,
         super::metric_labels::ACTION,
         super::metric_labels::LE,
+        // GraphQL query engine (specs/query-service-graphql).
+        "root_field",
     ];
 
     pub(crate) const FORBIDDEN_METRIC_LABELS: &[&str] = &[

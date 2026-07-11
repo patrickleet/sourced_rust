@@ -313,6 +313,9 @@ pub enum SchemaFormat {
     Sql,
     /// An Atlas Operator `AtlasSchema` resource wrapping the desired-state SQL.
     Atlas,
+    /// Dialect-independent GraphQL SDL (`schema.graphql` artifact).
+    /// When set, `--dialect` is silently ignored (SDL has no dialect).
+    Graphql,
 }
 
 // Map the CLI's clap enums onto the generation spec enums. These exist so
@@ -694,7 +697,11 @@ fn run_describe(args: &DescribeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_schema(args: &SchemaArgs) -> Result<(), Box<dyn Error>> {
-    let sql = run_manifest_harness(
+    let mode = match args.format {
+        SchemaFormat::Graphql => HarnessMode::SchemaGraphql,
+        _ => HarnessMode::SchemaSql(args.dialect),
+    };
+    let rendered = run_manifest_harness(
         &HarnessOptions {
             path: args.path.clone(),
             manifest_path: args.manifest_path.clone(),
@@ -704,12 +711,22 @@ fn run_schema(args: &SchemaArgs) -> Result<(), Box<dyn Error>> {
             entrypoint: args.entrypoint.clone(),
             distributed_path: args.distributed_path.clone(),
         },
-        HarnessMode::SchemaSql(args.dialect),
-    )?;
+        mode,
+    ).map_err(|err| -> Box<dyn Error> {
+        let msg = err.to_string();
+        if msg.contains("graphql_sdl") || msg.contains("no method named `graphql_sdl`") {
+            format!(
+                "target service's distributed version predates graphql schema support — upgrade distributed to a version that provides DistributedProjectManifest::graphql_sdl(): {msg}"
+            ).into()
+        } else {
+            err
+        }
+    })?;
 
     let content = match args.format {
-        SchemaFormat::Sql => sql,
-        SchemaFormat::Atlas => render_atlas_schema(&atlas_spec_from_flags(args, sql)?)?,
+        SchemaFormat::Sql => rendered,
+        SchemaFormat::Atlas => render_atlas_schema(&atlas_spec_from_flags(args, rendered)?)?,
+        SchemaFormat::Graphql => rendered,
     };
 
     if let Some(out) = &args.out {

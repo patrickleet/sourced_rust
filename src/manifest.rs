@@ -111,6 +111,12 @@ impl DistributedProjectManifest {
     pub fn envelope(self) -> DistributedManifestEnvelope {
         DistributedManifestEnvelope::new(self)
     }
+
+    /// Render the dialect-independent GraphQL SDL artifact for all
+    /// [`TableKind::ReadModel`] tables in this manifest.
+    pub fn graphql_sdl(&self) -> Result<String, String> {
+        crate::graphql::graphql_sdl_for_tables(&self.tables)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

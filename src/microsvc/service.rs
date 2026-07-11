@@ -478,6 +478,8 @@ pub struct Service {
     index: HashMap<MessageKind, HashMap<String, usize>>,
     handler_specs: Vec<HandlerSpec>,
     runner: Option<ServiceRunner>,
+    #[cfg(feature = "graphql")]
+    graphql: Option<std::sync::Arc<crate::graphql::GraphqlEngine>>,
 }
 
 impl Service {
@@ -489,7 +491,28 @@ impl Service {
             index: HashMap::new(),
             handler_specs: Vec::new(),
             runner: None,
+            #[cfg(feature = "graphql")]
+            graphql: None,
         }
+    }
+
+    /// Attach a GraphQL query engine served at `POST /graphql`.
+    ///
+    /// Panics if a command named `graphql` is already registered (route clash).
+    #[cfg(feature = "graphql")]
+    pub fn with_graphql(mut self, engine: crate::graphql::GraphqlEngine) -> Self {
+        assert!(
+            !self.handles_message(crate::bus::MessageKind::Command, "graphql"),
+            "cannot enable GraphQL: a command named `graphql` is already registered"
+        );
+        self.graphql = Some(std::sync::Arc::new(engine));
+        self
+    }
+
+    /// The attached GraphQL engine, if any.
+    #[cfg(feature = "graphql")]
+    pub fn graphql_engine(&self) -> Option<std::sync::Arc<crate::graphql::GraphqlEngine>> {
+        self.graphql.clone()
     }
 
     /// Build a service from a single route bundle.
@@ -546,6 +569,13 @@ impl Service {
                 "duplicate route registration for {:?} `{}`",
                 kind,
                 name
+            );
+            #[cfg(feature = "graphql")]
+            assert!(
+                !(self.graphql.is_some()
+                    && *kind == crate::bus::MessageKind::Command
+                    && name == "graphql"),
+                "cannot register command `graphql` while GraphQL is enabled on this service"
             );
         }
 

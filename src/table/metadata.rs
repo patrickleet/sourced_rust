@@ -157,6 +157,29 @@ pub struct RelationshipDef {
     pub target_model: String,
     pub foreign_key: Option<String>,
     pub through: Option<String>,
+    /// Join-table column referencing the TARGET row (many-to-many).
+    ///
+    /// When `None`, resolvers infer the unique join column whose column-level FK
+    /// targets the target model's table, excluding the source-side `foreign_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_foreign_key: Option<String>,
+}
+
+/// Discriminator for tables owned by the framework vs read-model projections.
+///
+/// Operational tables (outbox, inbox, …) are never exposed on the GraphQL query
+/// surface; `from_manifest` / `graphql_sdl` consume only `ReadModel` entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TableKind {
+    #[default]
+    ReadModel,
+    Operational,
+}
+
+impl TableKind {
+    pub fn is_read_model(&self) -> bool {
+        matches!(self, Self::ReadModel)
+    }
 }
 
 /// Schema metadata for one relational table.
@@ -170,6 +193,10 @@ pub struct TableSchema {
     pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<TableIndex>,
     pub relationships: Vec<RelationshipDef>,
+    /// Defaults to [`TableKind::ReadModel`]; skipped when serializing the default
+    /// so existing describe-JSON artifacts stay byte-identical on upgrade.
+    #[serde(default, skip_serializing_if = "TableKind::is_read_model")]
+    pub kind: TableKind,
 }
 
 impl TableSchema {
@@ -443,6 +470,52 @@ mod tests {
             foreign_keys: vec![ForeignKey::new("players", "player_id")],
             indexes: vec![TableIndex::new(["player_id"])],
             relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[test]
+    fn table_kind_deserializes_missing_as_read_model() {
+        let json = r#"{
+            "model_name": "PlayerWeapon",
+            "table_name": "player_weapons",
+            "columns": [],
+            "primary_key": { "columns": [] },
+            "version_column": null,
+            "foreign_keys": [],
+            "indexes": [],
+            "relationships": []
+        }"#;
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.kind, TableKind::ReadModel);
+        assert!(schema.target_foreign_key_absent());
+    }
+
+    #[test]
+    fn table_kind_read_model_skipped_from_json() {
+        let schema = valid_schema();
+        let value = serde_json::to_value(&schema).unwrap();
+        assert!(value.get("kind").is_none());
+    }
+
+    #[test]
+    fn relationship_target_foreign_key_defaults_absent() {
+        let json = r#"{
+            "field_name": "tags",
+            "kind": "ManyToMany",
+            "target_model": "Tag",
+            "foreign_key": "post_id",
+            "through": "post_tags"
+        }"#;
+        let rel: RelationshipDef = serde_json::from_str(json).unwrap();
+        assert_eq!(rel.target_foreign_key, None);
+    }
+
+    impl TableSchema {
+        fn target_foreign_key_absent(&self) -> bool {
+            self.relationships
+                .iter()
+                .all(|r| r.target_foreign_key.is_none())
         }
     }
 
@@ -490,6 +563,7 @@ mod tests {
             target_model: "PlayerWeapon".into(),
             foreign_key: None,
             through: None,
+            target_foreign_key: None,
         });
 
         let err = schema.validate().unwrap_err();
