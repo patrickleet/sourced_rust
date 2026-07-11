@@ -63,13 +63,7 @@ pub fn router(service: Arc<Service>) -> Router {
                 .unwrap_or(false);
             let post_route = axum::routing::post(crate::graphql::http::microsvc_graphql_handler);
             let route = if graphiql {
-                post_route.get(|| async {
-                    axum::response::Html(
-                        async_graphql::http::GraphiQLSource::build()
-                            .endpoint("/graphql")
-                            .finish(),
-                    )
-                })
+                post_route.get(|| async { crate::graphql::http::graphiql_page() })
             } else {
                 post_route
             };

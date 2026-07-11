@@ -42,7 +42,7 @@ pub use engine::{GraphqlBuildError, GraphqlEngine, GraphqlEngineBuilder, Graphql
 #[cfg(feature = "graphql")]
 pub use filter::{claim, col, lit, rel, ClaimRef, ColRef, FilterExpr, LitValue, Operand};
 #[cfg(feature = "graphql")]
-pub use http::{graphql_router, graphql_router_with_service};
+pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
 #[cfg(feature = "graphql")]
 pub use permissions::{select, ModelPermissions, SelectPermission};
 #[cfg(feature = "graphql")]

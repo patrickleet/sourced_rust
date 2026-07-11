@@ -26,6 +26,11 @@ categories = ["data-structures", "database"]
 [lib]
 path = "src/lib.rs"
 
+[[example]]
+name = "graphiql"
+path = "examples/graphiql.rs"
+required-features = ["graphql", "sqlite"]
+
 [features]
 default = []
 emitter = ["dep:event-emitter-rs"]

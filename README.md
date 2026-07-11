@@ -1701,7 +1701,16 @@ Enable with features `graphql` + `sqlite` and/or `postgres`. See [docs/graphql.m
 let engine = GraphqlEngine::from_manifest(&manifest, pool)?
     .roles(&["user", "anonymous"])
     .grant_all("user")
+    .graphiql(true) // GET /graphql → GraphiQL IDE
     .build()?;
 let service = Service::new().routes(routes).with_graphql(engine);
-// POST /graphql
+// POST /graphql  — queries / mutations
+// GET  /graphql  — GraphiQL when enabled
+```
+
+Local visual playground (seeded sample orders):
+
+```bash
+cargo run --example graphiql --features "graphql,sqlite"
+# open http://127.0.0.1:4000/graphql
 ```
