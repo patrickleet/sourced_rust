@@ -448,6 +448,7 @@ mod tests {
         s.read_models = true;
         s.store = StoreTarget::Sqlite;
         s.models = vec!["Order".into()];
+        s.gitops = true;
         let project = generate_service_scaffold(s).unwrap();
         let paths = paths(&project);
         assert!(paths.contains(&"src/query/mod.rs"));
@@ -475,6 +476,24 @@ mod tests {
             main.contains("build_with_graphql"),
             "main must call build_with_graphql: {main}"
         );
+
+        // GitOps chart injects DATABASE_URL for query API (mirrors tracing OTEL env).
+        let values = contents(&project, ".gitops/deploy/values.yaml");
+        assert!(
+            values.contains("queryApi:") && values.contains("databaseUrl:"),
+            "values.yaml must declare queryApi.databaseUrl: {values}"
+        );
+        assert!(values.contains("enabled: true"));
+        let deployment = contents(&project, ".gitops/deploy/templates/deployment.yaml");
+        assert!(
+            deployment.contains("DATABASE_URL"),
+            "deployment must inject DATABASE_URL: {deployment}"
+        );
+        assert!(
+            deployment.contains(".Values.queryApi.databaseUrl"),
+            "deployment must bind DATABASE_URL from values: {deployment}"
+        );
+        assert!(deployment.contains(".Values.queryApi.enabled"));
     }
 
     #[test]
