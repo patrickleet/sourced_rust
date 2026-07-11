@@ -69,6 +69,9 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
         if self.tracing {
             features.push("otel");
         }
+        if self.query_api {
+            features.push("graphql");
+        }
         features
     }
 
@@ -83,10 +86,15 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
         } else {
             ""
         };
+        let query = if self.query_api {
+            "pub mod query;\n"
+        } else {
+            ""
+        };
         format!(
             r#"pub mod handlers;
 pub mod manifest;
-{models}{read_models}pub mod service;
+{models}{read_models}{query}pub mod service;
 
 pub use manifest::distributed_manifest;
 "#
@@ -94,7 +102,7 @@ pub use manifest::distributed_manifest;
     }
 
     pub(super) fn main_rs(&self) -> String {
-        let error_type = if self.tracing {
+        let error_type = if self.tracing || self.query_api {
             "Box<dyn std::error::Error + Send + Sync + 'static>"
         } else {
             "Box<dyn std::error::Error>"
@@ -113,6 +121,17 @@ pub use manifest::distributed_manifest;
             "    result?;\n"
         };
         let tracing_setup = self.tracing_setup_rs(error_type);
+        let service_init = if self.query_api {
+            format!(
+                "    let service = {crate}::service::build_with_graphql().await?;\n",
+                crate = self.names.crate_ident
+            )
+        } else {
+            format!(
+                "    let service = {crate}::service::in_memory();\n",
+                crate = self.names.crate_ident
+            )
+        };
         let serve_block = match self.transport {
             ServiceTransport::Http => {
                 "    let result = distributed::microsvc::serve(service, &addr).await;\n".to_string()
@@ -131,12 +150,10 @@ pub use manifest::distributed_manifest;
             r#"#[tokio::main]
 async fn main() -> Result<(), {error_type}> {{
 {tracing_init}    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let service = {crate_ident}::service::in_memory();
-{serve_block}{tracing_shutdown}    Ok(())
+{service_init}{serve_block}{tracing_shutdown}    Ok(())
 }}
 
 {tracing_setup}"#,
-            crate_ident = self.names.crate_ident,
         )
     }
 
@@ -262,6 +279,66 @@ pub fn service_manifest() -> ServiceManifest {{
         } else {
             ""
         };
+
+        if self.query_api {
+            let (repo_ty, connect_default) = match self.store {
+                StoreTarget::Postgres => (
+                    "distributed::PostgresRepository",
+                    r#""postgres://postgres:postgres@127.0.0.1:5432/postgres""#,
+                ),
+                _ => (
+                    "distributed::SqliteRepository",
+                    r#""sqlite::memory:""#,
+                ),
+            };
+            return format!(
+                r#"use std::sync::Arc;
+
+use distributed::{{{manifest_imports}}};
+
+use crate::handlers;
+
+pub type ServiceRepo = InMemoryRepository;
+
+pub fn in_memory() -> Arc<Service> {{
+    build(InMemoryRepository::new())
+}}
+
+pub fn build(repo: ServiceRepo) -> Arc<Service> {{
+    let routes = distributed::routes!(
+        Routes::new().with_dependencies(repo),
+{registrations}    );
+    Arc::new(Service::new().named({service_name}).routes(routes))
+}}
+
+/// Build the service with GraphQL mounted at `POST /graphql`.
+///
+/// Reads `DATABASE_URL` (defaults to {connect_default} for local dev).
+pub async fn build_with_graphql() -> Result<Arc<Service>, Box<dyn std::error::Error + Send + Sync>> {{
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| {connect_default}.to_string());
+    let store = {repo_ty}::connect(&database_url).await?;
+    let engine = crate::query::build_engine(store.pool().clone())?;
+    let routes = distributed::routes!(
+        Routes::new().with_dependencies(InMemoryRepository::new()),
+{registrations}    );
+    Ok(Arc::new(
+        Service::new()
+            .named({service_name})
+            .routes(routes)
+            .with_graphql(engine),
+    ))
+}}
+
+pub fn manifest() -> ServiceManifest {{
+    ServiceManifest::new({service_name})
+{manifest_commands}{manifest_events}{manifest_metrics}{manifest_tracing}        .transport({transport})
+}}
+"#,
+                service_name = rust_string(&self.names.package_name),
+                transport = rust_string(transport),
+            );
+        }
 
         format!(
             r#"use std::sync::Arc;
@@ -477,5 +554,97 @@ use serde::{{Deserialize, Serialize}};
             .iter()
             .find(|model| model.name == message_model)
             .or_else(|| self.models.first())
+    }
+
+    pub(super) fn query_mod_rs(&self) -> String {
+        let mods = self
+            .read_models
+            .iter()
+            .map(|m| format!("pub mod {};\n", m.module_ident))
+            .collect::<String>();
+        let tighten_hint = if self.read_models.is_empty() {
+            String::new()
+        } else {
+            let names = self
+                .read_models
+                .iter()
+                .map(|m| m.module_ident.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "// Tighten grants by replacing grant_all with:\n//   distributed::graphql_models!(builder, {names})\n// after filling permissions() in each model module.\n"
+            )
+        };
+        format!(
+            r#"//! GraphQL query exposure (deny-by-default permissions).
+//!
+//! One module per exposed read model. Register roles in `roles` and command
+//! mutations in `commands`.
+
+{mods}pub mod commands;
+pub mod roles;
+
+use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPool}};
+
+/// Build the GraphQL engine for this service.
+///
+/// `DATABASE_URL` is used by `service::build_with_graphql`; defaults to an
+/// in-memory SQLite database when unset (dev only).
+pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, GraphqlBuildError> {{
+{tighten_hint}    GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
+        .roles(roles::ALL)
+        .grant_all(roles::USER)
+        .commands(commands::commands())
+        .build()
+}}
+"#
+        )
+    }
+
+    pub(super) fn query_roles_rs(&self) -> String {
+        r#"//! Role vocabulary for GraphQL permissions.
+
+pub const USER: &str = "user";
+pub const ANONYMOUS: &str = "anonymous";
+
+/// Roles declared on the engine builder.
+pub const ALL: &[&str] = &[USER, ANONYMOUS];
+"#
+        .to_string()
+    }
+
+    pub(super) fn query_commands_rs(&self) -> String {
+        r#"//! GraphQL command mutations (Hasura-actions parity).
+//!
+//! Register commands with `.command("name", exposed_command()...)`.
+
+use distributed::graphql::GraphqlCommands;
+
+pub fn commands() -> GraphqlCommands {
+    GraphqlCommands::new()
+}
+"#
+        .to_string()
+    }
+
+    pub(super) fn query_model_rs(&self, model: &ModelScaffold) -> String {
+        format!(
+            r#"//! Permissions for `{view}`.
+
+use distributed::graphql::{{select, ModelPermissions}};
+
+use crate::read_models::{view};
+
+pub type Model = {view};
+
+pub fn permissions() -> ModelPermissions<{view}> {{
+    ModelPermissions::new()
+        // Deny-by-default until roles are granted. grant_all(USER) in mod.rs
+        // covers the scaffold default; tighten columns/filters here for prod.
+        .role(super::roles::USER, select().all_columns().allow_aggregations(true))
+}}
+"#,
+            view = model.view_ident,
+        )
     }
 }

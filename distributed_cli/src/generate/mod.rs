@@ -50,6 +50,7 @@ pub(crate) struct Scaffold {
     pub(crate) bus: Option<BusTarget>,
     pub(crate) metrics: Option<MetricsTarget>,
     pub(crate) include_read_models: bool,
+    pub(crate) query_api: bool,
     pub(crate) tracing: bool,
     pub(crate) gitops: bool,
     pub(crate) gitops_promote: Option<GitopsPromoteTarget>,
@@ -95,6 +96,7 @@ impl Scaffold {
             bus: spec.bus,
             metrics: spec.metrics,
             include_read_models: spec.read_models,
+            query_api: spec.query_api,
             tracing: spec.tracing,
             gitops: spec.gitops,
             gitops_promote: spec.gitops_promote,
@@ -138,6 +140,17 @@ impl Scaffold {
                 &format!("src/handlers/{}.rs", event.module_ident),
                 self.event_handler_rs(event),
             ));
+        }
+        if self.query_api {
+            files.push(file("src/query/mod.rs", self.query_mod_rs()));
+            files.push(file("src/query/roles.rs", self.query_roles_rs()));
+            files.push(file("src/query/commands.rs", self.query_commands_rs()));
+            for model in &self.read_models {
+                files.push(file(
+                    &format!("src/query/{}.rs", model.module_ident),
+                    self.query_model_rs(model),
+                ));
+            }
         }
         if self.include_read_models {
             files.push(file("src/read_models/mod.rs", self.read_models_mod_rs()));
@@ -185,6 +198,7 @@ mod tests {
             metrics: None,
             models: Vec::new(),
             read_models: false,
+            query_api: false,
             tracing: false,
             commands: Vec::new(),
             events: Vec::new(),
@@ -428,6 +442,41 @@ mod tests {
     }
 
     #[test]
+    fn query_api_emits_query_modules_and_graphql_feature() {
+        let mut s = spec("orders");
+        s.query_api = true;
+        s.read_models = true;
+        s.store = StoreTarget::Sqlite;
+        s.models = vec!["Order".into()];
+        let project = generate_service_scaffold(s).unwrap();
+        let paths = paths(&project);
+        assert!(paths.contains(&"src/query/mod.rs"));
+        assert!(paths.contains(&"src/query/roles.rs"));
+        assert!(paths.contains(&"src/query/commands.rs"));
+        assert!(
+            paths.iter().any(|p| p.starts_with("src/query/")
+                && *p != "src/query/mod.rs"
+                && *p != "src/query/roles.rs"
+                && *p != "src/query/commands.rs"),
+            "expected per-model query module: {paths:?}"
+        );
+        let cargo = contents(&project, "Cargo.toml");
+        assert!(
+            cargo.contains("graphql"),
+            "Cargo.toml must enable graphql feature: {cargo}"
+        );
+        let service = contents(&project, "src/service.rs");
+        assert!(
+            service.contains("build_with_graphql") && service.contains("with_graphql"),
+            "service must wire GraphQL: {service}"
+        );
+        let main = contents(&project, "src/main.rs");
+        assert!(
+            main.contains("build_with_graphql"),
+            "main must call build_with_graphql: {main}"
+        );
+    }
+
     fn tracing_scaffold_enables_otel_feature_and_gitops_env_values() {
         let mut s = spec("orders");
         s.tracing = true;
