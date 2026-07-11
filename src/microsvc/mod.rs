@@ -75,7 +75,7 @@ pub use service::{
     CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes,
     Service,
 };
-pub use session::Session;
+pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
 /// Maximum accepted HTTP request body size for the microsvc ingresses, in bytes
 /// (1 MiB).

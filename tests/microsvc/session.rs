@@ -20,7 +20,10 @@ async fn handler_accesses_user_id() {
     );
 
     let mut vars = HashMap::new();
-    vars.insert("x-hasura-user-id".to_string(), "user-42".to_string());
+    vars.insert(
+        distributed::microsvc::USER_ID_KEY.to_string(),
+        "user-42".to_string(),
+    );
     let session = Session::from_map(vars);
 
     let result = service

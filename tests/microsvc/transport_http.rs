@@ -203,7 +203,7 @@ async fn headers_flow_to_session() {
 
     let resp = client
         .post(format!("{base}/session.identify"))
-        .header("x-hasura-user-id", "user-42")
+        .header("x-user-id", "user-42")
         .json(&json!({}))
         .send()
         .await
@@ -216,7 +216,7 @@ async fn headers_flow_to_session() {
 
 /// Documents the HTTP trust boundary: request headers are copied into the
 /// `Session` verbatim and trusted at face value — the framework does NOT
-/// authenticate. A client-supplied `x-hasura-user-id` is reflected straight
+/// authenticate. A client-supplied identity header is reflected straight
 /// through, which is precisely why a trusted proxy must strip/inject these
 /// headers in production. See `session_from_headers` and the `Session` docs.
 #[tokio::test]
@@ -229,7 +229,7 @@ async fn client_supplied_identity_header_is_trusted_verbatim() {
         .post(format!("{base}/session.identify"))
         // No proxy in front: the client sets its own identity. The framework
         // trusts it as-is. In production a trusted proxy must overwrite this.
-        .header("x-hasura-user-id", "client-claimed-id")
+        .header("x-user-id", "client-claimed-id")
         .json(&json!({}))
         .send()
         .await

@@ -110,8 +110,9 @@ use `delete::<Root>(key)`.
 
 This API is for command handlers, projectors, tests, admin tools, and adapter
 conformance that need typed internal includes. It is not a public query DSL.
-Hasura or another query gateway remains the intended public GraphQL/query API
-for normalized Postgres read models.
+A query gateway (Hasura, PostgREST, custom GraphQL, …) remains a common
+choice for the public query API over normalized Postgres read models —
+command/write traffic still goes through `microsvc` handlers.
 
 ## Command-Side Atomic Writes
 

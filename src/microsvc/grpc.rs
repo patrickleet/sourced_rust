@@ -213,18 +213,18 @@ impl CommandService for GrpcHandler {
 ///
 /// **Trust boundary (security-critical):** transport metadata is TRUSTED —
 /// it is injected by a trusted proxy/gateway that authenticates the caller
-/// and strips any client-supplied `x-hasura-*` headers. The request payload
+/// and strips any client-supplied identity headers. The request payload
 /// `session_variables` are CLIENT-CONTROLLED and therefore UNTRUSTED.
 ///
 /// Precedence: **metadata wins.** Payload values are applied first, then
 /// metadata overwrites any colliding key. This prevents a client from
-/// spoofing identity (e.g. `x-hasura-user-id` / `x-hasura-role`) via the
-/// request body when behind a trusted gateway. See the [`Session`] docs for
-/// the framework-wide trust model.
+/// spoofing identity via the request body when behind a trusted gateway.
+/// See the [`Session`] docs for the framework-wide trust model.
 ///
-/// Payload-only keys (not present in metadata) still pass through, preserving
-/// the Hasura action use case where Hasura forwards verified claims in the
-/// payload and no transport metadata is injected.
+/// Payload-only keys (not present in metadata) still pass through. That
+/// supports gateway action/webhook shapes where verified claims arrive only
+/// in the body (e.g. a query-layer action payload) and no transport metadata
+/// is injected.
 fn build_session(
     metadata: &tonic::metadata::MetadataMap,
     payload_vars: HashMap<String, String>,

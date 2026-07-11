@@ -1176,7 +1176,7 @@ Event projection handlers use `EVENT` / `EVENTS` and `event handlers::...` in th
 
 ### HTTP Transport (requires `http` feature)
 
-The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session` verbatim — including `x-hasura-*` identity headers, which the framework does **not** authenticate. Deploy behind a trusted proxy that strips client-supplied identity headers and injects authenticated ones (see [Security / Trust Boundary](#security--trust-boundary)).
+The `http` feature adds an axum-based HTTP transport. Every registered command becomes a `POST /:command` endpoint. Request headers flow into the `Session` verbatim — including identity claims, which the framework does **not** authenticate. Deploy behind a trusted proxy that strips client-supplied identity headers and injects authenticated ones (see [Security / Trust Boundary](#security--trust-boundary)).
 
 ```rust,ignore
 use std::sync::Arc;
@@ -1199,11 +1199,16 @@ Routes:
 ```bash
 curl -X POST http://localhost:3000/counter.initialize \
   -H 'Content-Type: application/json' \
-  -H 'x-hasura-user-id: user-42' \
+  -H 'x-user-id: user-42' \
   -d '{"id": "c1"}'
 
 curl http://localhost:3000/health
 ```
+
+`x-user-id` / `x-role` are convenience keys for `Session::user_id()` /
+`Session::role()` only — not a required protocol. Your gateway can inject any
+claim names; handlers read them with `session.get("…")` or map claims to the
+convenience keys at the edge.
 
 ### gRPC Transport (requires `grpc` feature)
 
@@ -1257,24 +1262,27 @@ applies identically to the HTTP and gRPC transports.
 
 ### Security / Trust Boundary
 
-**This framework does NOT authenticate requests.** The `Session` is built from
-whatever the transport provides — HTTP request headers, gRPC metadata, and (for
-gRPC) the request payload's `session_variables`. Identity values such as
-`x-hasura-user-id` and `x-hasura-role` are trusted at face value by handlers.
+**This framework does NOT authenticate requests.** The `Session` is an opaque
+string map built from whatever the transport provides — HTTP request headers,
+gRPC metadata, and (for gRPC) the request payload's `session_variables`.
+Identity claims are trusted at face value by handlers. Claim **names** are
+deployment convention, not a fixed protocol (`Session::user_id` /
+`Session::role` only look up the convenience keys `x-user-id` / `x-role`).
 
-You **must** deploy `microsvc` behind a **trusted proxy / API gateway** (e.g.
-Hasura, or an authenticating ingress) that:
+You **must** deploy `microsvc` behind a **trusted proxy / API gateway**
+(JWT middleware, authenticating ingress, a query-layer action such as Hasura,
+a custom BFF, …) that:
 
-- **Strips** any client-supplied `x-hasura-*` headers/metadata on the way in, and
+- **Strips** any client-supplied identity headers/metadata on the way in, and
 - **Injects** only identity claims it has authenticated.
 
-Without that proxy, any caller can set `x-hasura-user-id` / `x-hasura-role` and
-assume any identity or role.
+Without that proxy, any caller can set identity keys and assume any identity
+or role.
 
 **Source precedence:** when identity arrives in more than one place, the trusted
 transport channel wins over the client-controlled payload. For gRPC, transport
 **metadata overrides** payload `session_variables` — a client cannot override a
-proxy-injected `x-hasura-user-id` via the request body. For HTTP, request headers
+proxy-injected subject claim via the request body. For HTTP, request headers
 populate the session and the proxy is responsible for ensuring they are
 authenticated. Never trust the request body for identity.
 

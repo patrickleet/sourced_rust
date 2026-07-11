@@ -1354,7 +1354,7 @@ mod tests {
             kind: MessageKind::Event,
             payload: br#"{"checkout_id":"checkout-1"}"#.to_vec(),
             content_type: "application/json".to_string(),
-            metadata: vec![("X-Hasura-User-Id".to_string(), "user-1".to_string())],
+            metadata: vec![("X-User-Id".to_string(), "user-1".to_string())],
         };
 
         let result = service.dispatch_message(&message).await.unwrap();
@@ -1526,7 +1526,7 @@ mod tests {
 
         // Admin role
         let mut session = Session::new();
-        session.set("x-hasura-role", "admin");
+        session.set(crate::microsvc::ROLE_KEY, "admin");
         assert!(service.dispatch("admin", json!({}), session).await.is_ok());
     }
 
@@ -1601,7 +1601,7 @@ mod tests {
             }
         }));
         let mut vars = HashMap::new();
-        vars.insert("x-hasura-user-id".to_string(), "user-99".to_string());
+        vars.insert(crate::microsvc::USER_ID_KEY.to_string(), "user-99".to_string());
         let request = CommandRequest {
             command: "whoami".to_string(),
             input: json!({}),
@@ -1626,21 +1626,26 @@ mod tests {
 
 /// An inbound command request.
 ///
-/// Maps to a Hasura Action payload:
+/// Generic command envelope used by in-process dispatch and adapters that
+/// already decoded a gateway payload. Example shape:
 /// ```json
 /// {
-///   "action": { "name": "CreateOrder" },
+///   "command": "order.create",
 ///   "input": { "product_id": "SKU-1" },
-///   "session_variables": { "x-hasura-user-id": "user-42" }
+///   "session_variables": { "x-user-id": "user-42" }
 /// }
 /// ```
+///
+/// `session_variables` keys are deployment convention (see [`Session`]). A
+/// query-layer action (Hasura, custom BFF, …) can map its native claims into
+/// these variables before calling `dispatch_request`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommandRequest {
-    /// Command name (from `action.name` or URL path).
+    /// Command name (URL path, action name, or explicit field).
     pub command: String,
     /// JSON input payload.
     pub input: Value,
-    /// Session variables (user ID, role, etc.).
+    /// Opaque session variables (identity claims, roles, tenant, etc.).
     pub session_variables: HashMap<String, String>,
 }
 

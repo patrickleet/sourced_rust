@@ -147,7 +147,7 @@ async fn metadata_becomes_session() {
     // `whoami` reads `ctx.user_id()`, which the runner derives from the message
     // metadata (`message_to_session` lowercases keys into session variables).
     bus.send_message(
-        command("session.identify", "cmd-1", "{}").with_metadata("x-hasura-user-id", "user-42"),
+        command("session.identify", "cmd-1", "{}").with_metadata("x-user-id", "user-42"),
     )
     .await
     .expect("whoami should enqueue");
