@@ -591,10 +591,17 @@ use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPool}};
 /// `DATABASE_URL` is used by `service::build_with_graphql`; defaults to an
 /// in-memory SQLite database when unset (dev only).
 pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, GraphqlBuildError> {{
-{tighten_hint}    GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
+{tighten_hint}    // GraphiQL on by default for local exploration (`GET /graphql`).
+    // Set GRAPHIQL=0 (or false) in production to disable the IDE surface.
+    let graphiql = match std::env::var("GRAPHIQL") {{
+        Ok(v) => !matches!(v.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
+        Err(_) => true,
+    }};
+    GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
         .roles(roles::ALL)
         .grant_all(roles::USER)
         .commands(commands::commands())
+        .graphiql(graphiql)
         .build()
 }}
 "#

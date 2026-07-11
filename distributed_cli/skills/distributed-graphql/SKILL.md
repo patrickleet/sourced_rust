@@ -53,12 +53,27 @@ a role sees nothing until granted via `.model(...)` / `.grant_all(role)` /
 ## Wire the service
 
 ```rust
-let engine = query::build_engine(pool)?;
+let engine = query::build_engine(pool)?; // scaffold enables GraphiQL unless GRAPHIQL=0
 let service = Service::new()
     .routes(routes)
     .with_graphql(engine);
-// POST /graphql  (microsvc::router mounts it)
+// POST /graphql  — queries / mutations
+// GET  /graphql  — GraphiQL IDE when `.graphiql(true)`
 ```
+
+### GraphiQL (local visual explorer)
+
+```bash
+# Framework playground (seeded orders, no scaffold needed):
+cargo run --example graphiql --features "graphql,sqlite"
+# → http://127.0.0.1:4000/graphql
+
+# Or run your scaffolded service and open GET /graphql
+GRAPHIQL=0 cargo run   # disable IDE in production
+```
+
+Default GraphiQL headers: `x-role: user`, `x-user-id: demo`. Edit in the IDE
+Headers panel. See `docs/graphql.md`.
 
 Pass `change_stream(repo.read_model_changes())` for live subscriptions.
 

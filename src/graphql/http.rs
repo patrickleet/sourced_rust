@@ -6,12 +6,29 @@ use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::response::{Html, IntoResponse};
-use axum::routing::{get, post};
-use axum::{Extension, Router};
+use axum::routing::post;
+use axum::Router;
 
 use crate::microsvc::{session_from_headers, Service, MAX_HTTP_BODY_BYTES};
 
 use super::engine::GraphqlEngine;
+
+/// HTML for the GraphiQL IDE served on `GET /graphql` when GraphiQL is enabled.
+///
+/// Ships default identity headers so deny-by-default role grants work in local
+/// exploration (`x-role: user`, `x-user-id: demo`). Override them in the
+/// GraphiQL headers panel for other roles. A real gateway must still strip and
+/// re-inject identity headers — this is a local-dev convenience only.
+pub fn graphiql_page() -> Html<String> {
+    Html(
+        GraphiQLSource::build()
+            .endpoint("/graphql")
+            .header("x-role", "user")
+            .header("x-user-id", "demo")
+            .title("Distributed GraphQL")
+            .finish(),
+    )
+}
 
 /// Standalone GraphQL router with its own body limit.
 pub fn graphql_router(engine: Arc<GraphqlEngine>) -> Router {
@@ -20,7 +37,7 @@ pub fn graphql_router(engine: Arc<GraphqlEngine>) -> Router {
         "/graphql",
         post(graphql_handler).get(move || async move {
             if graphiql {
-                Html(GraphiQLSource::build().endpoint("/graphql").finish()).into_response()
+                graphiql_page().into_response()
             } else {
                 axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
             }
@@ -57,7 +74,7 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
         "/graphql",
         post(graphql_handler_with_service).get(move || async move {
             if graphiql {
-                Html(GraphiQLSource::build().endpoint("/graphql").finish()).into_response()
+                graphiql_page().into_response()
             } else {
                 axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
             }
