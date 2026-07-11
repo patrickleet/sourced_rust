@@ -123,6 +123,9 @@ pub struct ScaffoldArgs {
     /// Generate placeholder read-model modules and register them in distributed_manifest().
     #[arg(long)]
     pub read_models: bool,
+    /// Generate src/query/ GraphQL skeleton, enable the graphql feature, and wire with_graphql.
+    #[arg(long)]
+    pub query_api: bool,
     /// Enable Distributed tracing spans and GitOps OTLP environment values.
     #[arg(long, visible_alias = "otel")]
     pub tracing: bool,
@@ -637,14 +640,25 @@ fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
     let distributed_path = resolve_distributed_path(args.distributed_path.as_deref(), &output_dir)?;
     let distributed_dependency_path = path_for_toml(&relative_path(&output_dir, &distributed_path));
 
+    // GraphQL execution needs a SQL store feature; promote in-memory → sqlite.
+    let store = {
+        let store = args.store.into();
+        if args.query_api && matches!(store, crate::StoreTarget::InMemory) {
+            crate::StoreTarget::Sqlite
+        } else {
+            store
+        }
+    };
+
     let spec = ServiceScaffoldSpec {
         name: args.name.clone(),
         transport: transport.into(),
-        store: args.store.into(),
+        store,
         bus: args.bus.map(Into::into),
         metrics: args.metrics.map(Into::into),
         models: args.model.clone(),
-        read_models: args.read_models,
+        read_models: args.read_models || args.query_api,
+        query_api: args.query_api,
         tracing: args.tracing,
         commands: args.command.clone(),
         events: args.event.clone(),
