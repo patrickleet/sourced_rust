@@ -28,6 +28,7 @@ pub(crate) struct HarnessOptions {
 pub(crate) enum HarnessMode {
     DescribeJson,
     SchemaSql(SchemaDialect),
+    SchemaGraphql,
 }
 
 impl HarnessMode {
@@ -36,6 +37,7 @@ impl HarnessMode {
             HarnessMode::DescribeJson => "describe-json",
             HarnessMode::SchemaSql(SchemaDialect::Postgres) => "schema-postgres",
             HarnessMode::SchemaSql(SchemaDialect::Sqlite) => "schema-sqlite",
+            HarnessMode::SchemaGraphql => "schema-graphql",
         }
     }
 }
@@ -166,6 +168,18 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
 "#
             )
         }
+        HarnessMode::SchemaGraphql => format!(
+            r#"fn main() {{
+    let manifest = {entrypoint}();
+    let envelope = distributed::DistributedManifestEnvelope::new(manifest);
+    let sdl = envelope
+        .project
+        .graphql_sdl()
+        .expect("manifest GraphQL SDL should render");
+    print!("{{}}", sdl);
+}}
+"#
+        ),
     }
 }
 

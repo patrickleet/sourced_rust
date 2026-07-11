@@ -579,6 +579,7 @@ mod tests {
                 foreign_keys: Vec::new(),
                 indexes: Vec::new(),
                 relationships: Vec::new(),
+                kind: crate::TableKind::ReadModel,
             });
         &SCHEMA
     }

@@ -1692,3 +1692,16 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 ## License
 
 MIT. See `LICENSE`.
+
+## GraphQL query service
+
+Enable with features `graphql` + `sqlite` and/or `postgres`. See [docs/graphql.md](docs/graphql.md) for the boundary contract, `src/query/` layout, permissions, and `dctl schema --format graphql`.
+
+```rust
+let engine = GraphqlEngine::from_manifest(&manifest, pool)?
+    .roles(&["user", "anonymous"])
+    .grant_all("user")
+    .build()?;
+let service = Service::new().routes(routes).with_graphql(engine);
+// POST /graphql
+```

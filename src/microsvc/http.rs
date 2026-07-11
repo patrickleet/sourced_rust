@@ -53,6 +53,32 @@ pub fn router(service: Arc<Service>) -> Router {
     #[cfg(feature = "metrics")]
     let router = router.route("/metrics", get(metrics_handler));
 
+    // GraphQL must be registered before the body-limit layer so the limit wraps it.
+    #[cfg(feature = "graphql")]
+    let router = {
+        if service.graphql_engine().is_some() {
+            let graphiql = service
+                .graphql_engine()
+                .map(|e| e.graphiql_enabled())
+                .unwrap_or(false);
+            let post_route = axum::routing::post(crate::graphql::http::microsvc_graphql_handler);
+            let route = if graphiql {
+                post_route.get(|| async {
+                    axum::response::Html(
+                        async_graphql::http::GraphiQLSource::build()
+                            .endpoint("/graphql")
+                            .finish(),
+                    )
+                })
+            } else {
+                post_route
+            };
+            router.route("/graphql", route)
+        } else {
+            router
+        }
+    };
+
     router
         // Pin the body limit explicitly rather than relying on axum's default;
         // the command handler buffers the JSON body into memory.
@@ -70,7 +96,19 @@ pub async fn serve(service: Arc<Service>, addr: &str) -> Result<(), std::io::Err
 /// `GET /health` — returns `{ "ok": true, "commands": [...] }`.
 async fn health_handler(State(service): State<Arc<Service>>) -> impl IntoResponse {
     let commands: Vec<&str> = service.command_names();
-    Json(json!({ "ok": true, "commands": commands }))
+    #[cfg(feature = "graphql")]
+    let body = {
+        let mut v = json!({ "ok": true, "commands": commands });
+        if service.graphql_engine().is_some() {
+            v.as_object_mut()
+                .unwrap()
+                .insert("graphql".into(), json!(true));
+        }
+        v
+    };
+    #[cfg(not(feature = "graphql"))]
+    let body = json!({ "ok": true, "commands": commands });
+    Json(body)
 }
 
 /// `GET /metrics` — returns Prometheus text metrics.
@@ -123,7 +161,7 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 /// client-supplied identity headers and inject only authenticated ones.
 /// Without that proxy, any client can set those headers and assume any
 /// identity/role. See the [`Session`] docs.
-fn session_from_headers(headers: &HeaderMap) -> Session {
+pub(crate) fn session_from_headers(headers: &HeaderMap) -> Session {
     let mut vars = std::collections::HashMap::new();
     for (name, value) in headers.iter() {
         if let Ok(v) = value.to_str() {

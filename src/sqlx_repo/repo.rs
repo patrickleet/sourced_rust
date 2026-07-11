@@ -227,6 +227,11 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
 pub struct SqlxRepository<DB: sqlx::Database> {
     pool: Pool<DB>,
     read_model_schemas: Arc<RwLock<TableSchemaRegistry>>,
+    read_model_change_tx: tokio::sync::broadcast::Sender<crate::ReadModelChange>,
+    /// When false, skips Postgres `pg_notify` (local broadcast still fires).
+    /// Opt-out via [`SqlxRepository::without_read_model_change_notify`]. Writers
+    /// that opt out silently break cross-process GraphQL subscriptions.
+    notify_enabled: bool,
 }
 
 impl<DB: sqlx::Database> Clone for SqlxRepository<DB> {
@@ -234,6 +239,8 @@ impl<DB: sqlx::Database> Clone for SqlxRepository<DB> {
         Self {
             pool: self.pool.clone(),
             read_model_schemas: Arc::clone(&self.read_model_schemas),
+            read_model_change_tx: self.read_model_change_tx.clone(),
+            notify_enabled: self.notify_enabled,
         }
     }
 }
@@ -263,10 +270,39 @@ where
 {
     /// Create a repository from an existing migrated pool.
     pub fn new(pool: Pool<DB>) -> Self {
+        let (read_model_change_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             pool,
             read_model_schemas: Arc::new(RwLock::new(TableSchemaRegistry::new())),
+            read_model_change_tx,
+            notify_enabled: true,
         }
+    }
+
+    /// Subscribe to read-model table changes (fires after successful write-plan commits).
+    ///
+    /// Lagging receivers observe [`tokio::sync::broadcast::error::RecvError::Lagged`]
+    /// and should treat that as all-dirty for subscription invalidation.
+    pub fn read_model_changes(&self) -> tokio::sync::broadcast::Receiver<crate::ReadModelChange> {
+        self.read_model_change_tx.subscribe()
+    }
+
+    /// Disable Postgres `pg_notify` emission on read-model commits (local broadcast
+    /// remains active). Default is ON.
+    ///
+    /// **Failure mode:** writer processes that opt out silently break
+    /// cross-process GraphQL subscriptions that rely on LISTEN/NOTIFY.
+    pub fn without_read_model_change_notify(mut self) -> Self {
+        self.notify_enabled = false;
+        self
+    }
+
+    pub fn publish_read_model_change(&self, change: crate::ReadModelChange) {
+        if change.is_empty() {
+            return;
+        }
+        // Zero receivers is a no-op (broadcast::send returns Err).
+        let _ = self.read_model_change_tx.send(change);
     }
 
     /// Open a pool without applying migrations.
@@ -626,7 +662,11 @@ where
 
             insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
 
+            let mut changed_tables = std::collections::BTreeSet::new();
             for plan in batch.read_model_plans {
+                for mutation in &plan.mutations {
+                    changed_tables.insert(mutation.table_name().to_string());
+                }
                 apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
             }
 
@@ -642,9 +682,21 @@ where
                 insert_inbox_receipt_in_tx(&mut tx, receipt).await?;
             }
 
+            if self.notify_enabled && !changed_tables.is_empty() {
+                DB::push_change_notify(&mut *tx, &changed_tables)
+                    .await
+                    .map_err(RepositoryError::from)?;
+            }
+
             tx.commit()
                 .await
                 .map_err(|err| repository_storage_error::<DB>("commit transaction", err))?;
+
+            if !changed_tables.is_empty() {
+                self.publish_read_model_change(crate::ReadModelChange {
+                    tables: changed_tables,
+                });
+            }
 
             for stream in batch.streams {
                 stream.entity.mark_committed();
@@ -721,7 +773,23 @@ where
         &self,
         plan: ReadModelWritePlan,
     ) -> impl Future<Output = Result<ReadModelCommitOutcome, ReadModelError>> + Send + '_ {
-        async move { commit_read_model_write_plan(&self.pool, plan).await }
+        async move {
+            let tables: std::collections::BTreeSet<String> = plan
+                .mutations
+                .iter()
+                .map(|m| m.table_name().to_string())
+                .collect();
+            let outcome = commit_read_model_write_plan(
+                &self.pool,
+                plan,
+                self.notify_enabled,
+            )
+            .await?;
+            if outcome.was_applied() && !tables.is_empty() {
+                self.publish_read_model_change(crate::ReadModelChange { tables });
+            }
+            Ok(outcome)
+        }
     }
 }
 

@@ -103,7 +103,7 @@ pub(crate) fn resolve_registered_read_model_schemas(
             })?;
         if matches!(relationship.kind, RelationshipKind::ManyToMany) {
             return Err(TableStoreError::Metadata(format!(
-                "many-to-many relationship `{}` includes are not supported until join metadata declares source and target keys",
+                "many-to-many relationship `{}` includes are not supported by the ORM include loader (join metadata may declare source and target keys; the GraphQL engine traverses m2m independently)",
                 relationship.field_name
             )));
         }
@@ -378,6 +378,18 @@ pub trait SqlxReadModelBackend: Database {
     /// specific read: Postgres has a native `BOOLEAN`, SQLite stores booleans as
     /// `INTEGER` and decodes `value != 0`.
     fn row_value(row: &Self::Row, column: &TableColumn) -> Result<RowValue, TableStoreError>;
+
+    /// Emit a dialect-specific change notification inside an open transaction
+    /// (Postgres: `pg_notify`; default: no-op). Delivery happens on commit.
+    fn push_change_notify<'e, E>(
+        _executor: E,
+        _tables: &std::collections::BTreeSet<String>,
+    ) -> impl std::future::Future<Output = Result<(), TableStoreError>> + Send
+    where
+        E: Executor<'e, Database = Self> + Send,
+    {
+        async { Ok(()) }
+    }
 }
 
 pub(crate) async fn begin_read_model_tx<DB: SqlxReadModelBackend>(
@@ -399,6 +411,7 @@ pub(crate) async fn commit_read_model_tx<DB: SqlxReadModelBackend>(
 pub(crate) async fn commit_read_model_write_plan<DB>(
     pool: &sqlx::Pool<DB>,
     plan: TableWritePlan,
+    notify_enabled: bool,
 ) -> Result<TableCommitOutcome, TableStoreError>
 where
     DB: SqlxReadModelBackend,
@@ -408,8 +421,16 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<<DB as Database>::Row>,
 {
     validate_sql_write_plan(&plan)?;
+    let tables: std::collections::BTreeSet<String> = plan
+        .mutations
+        .iter()
+        .map(|m| m.table_name().to_string())
+        .collect();
     let mut tx = begin_read_model_tx(pool).await?;
     let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
+    if notify_enabled && !tables.is_empty() {
+        DB::push_change_notify(&mut *tx, &tables).await?;
+    }
     commit_read_model_tx(tx).await?;
     Ok(outcome)
 }
