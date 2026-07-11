@@ -117,11 +117,12 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
 /// Extract session variables from HTTP headers.
 ///
 /// **Trust boundary (security-critical):** every request header is copied
-/// verbatim into the [`Session`] — including `x-hasura-user-id` and
-/// `x-hasura-role`. The framework does NOT authenticate. A trusted proxy in
-/// front of this service MUST strip any client-supplied `x-hasura-*` headers
-/// and inject only authenticated ones. Without that proxy, any client can set
-/// these headers and assume any identity/role. See the [`Session`] docs.
+/// verbatim into the [`Session`] — including identity claims (e.g. the
+/// convenience keys `x-user-id` / `x-role`). The framework does NOT
+/// authenticate. A trusted proxy in front of this service MUST strip any
+/// client-supplied identity headers and inject only authenticated ones.
+/// Without that proxy, any client can set those headers and assume any
+/// identity/role. See the [`Session`] docs.
 fn session_from_headers(headers: &HeaderMap) -> Session {
     let mut vars = std::collections::HashMap::new();
     for (name, value) in headers.iter() {

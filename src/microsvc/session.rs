@@ -1,37 +1,57 @@
-//! Session variables from the request context (e.g., Hasura session variables).
+//! Session variables from the request context.
+//!
+//! A [`Session`] is an opaque string map of claims the transport hands the
+//! handler. Keys and values are **deployment convention**, not a fixed wire
+//! protocol — any trusted gateway (JWT middleware, authenticating ingress,
+//! Hasura actions, custom BFF, …) can inject whatever claims your service
+//! needs.
 
 use std::collections::HashMap;
 
+/// Key used by [`Session::user_id`].
+///
+/// Convenience only — not required. Gateways map authenticated subject claims
+/// into this key, or handlers read gateway-specific names via [`Session::get`].
+pub const USER_ID_KEY: &str = "x-user-id";
+
+/// Key used by [`Session::role`].
+///
+/// Convenience only — not required. See [`USER_ID_KEY`].
+pub const ROLE_KEY: &str = "x-role";
+
 /// Parsed session variables from the incoming request.
 ///
-/// In a Hasura + Knative setup, these come from the JWT claims forwarded
-/// by Hasura as `session_variables` in the action payload:
+/// Built from whatever the transport provides: HTTP headers, gRPC metadata,
+/// bus message metadata, or a request body's `session_variables` map. The
+/// framework does not interpret most keys — handlers read what they need.
 ///
-/// ```json
-/// {
-///   "x-hasura-user-id": "user-42",
-///   "x-hasura-role": "customer"
-/// }
-/// ```
+/// [`Session::user_id`] / [`Session::role`] are thin helpers over
+/// [`USER_ID_KEY`] / [`ROLE_KEY`]. They are not a protocol. Example mappings
+/// a trusted edge might perform:
+///
+/// | Gateway | Example source claim | Inject as (for helpers) |
+/// |---|---|---|
+/// | JWT middleware | `sub` | `x-user-id` |
+/// | Custom ingress | `X-User-Id` | `x-user-id` (after auth) |
+/// | Hasura action | `x-hasura-user-id` | `x-user-id`, or read via `.get("x-hasura-user-id")` |
 ///
 /// # Trust boundary (security-critical)
 ///
 /// **This framework does NOT authenticate.** A `Session` is built from
 /// whatever the transport hands it — HTTP request headers, gRPC metadata, or
 /// the request payload's `session_variables`. None of that is verified here.
-/// Identity values such as `x-hasura-user-id` and `x-hasura-role` are
+/// Identity values (including those under [`USER_ID_KEY`] / [`ROLE_KEY`]) are
 /// trusted at face value by [`Session::user_id`], [`Session::role`], and any
 /// handler that reads them.
 ///
-/// You MUST deploy this behind a **trusted proxy / API gateway** (e.g.
-/// Hasura, or an authenticating ingress) that:
+/// You MUST deploy this behind a **trusted proxy / API gateway** that:
 ///
-/// - **Strips** any client-supplied `x-hasura-*` headers/metadata on inbound
+/// - **Strips** any client-supplied identity headers/metadata on inbound
 ///   requests, and
 /// - **Injects** only authenticated identity claims it has verified.
 ///
-/// Without that proxy, any caller can set `x-hasura-user-id` /
-/// `x-hasura-role` and assume any identity or role.
+/// Without that proxy, any caller can set identity keys and assume any
+/// identity or role.
 ///
 /// ## Source precedence
 ///
@@ -62,14 +82,18 @@ impl Session {
         Self { variables }
     }
 
-    /// Get the user ID (`x-hasura-user-id`).
+    /// Get the user ID under the convenience key [`USER_ID_KEY`].
+    ///
+    /// For gateway-specific claim names, use [`Session::get`] instead.
     pub fn user_id(&self) -> Option<&str> {
-        self.get("x-hasura-user-id")
+        self.get(USER_ID_KEY)
     }
 
-    /// Get the user role (`x-hasura-role`).
+    /// Get the role under the convenience key [`ROLE_KEY`].
+    ///
+    /// For gateway-specific claim names, use [`Session::get`] instead.
     pub fn role(&self) -> Option<&str> {
-        self.get("x-hasura-role")
+        self.get(ROLE_KEY)
     }
 
     /// Get a session variable by key.
@@ -106,23 +130,33 @@ mod tests {
     }
 
     #[test]
-    fn hasura_variables() {
+    fn convenience_identity_keys() {
         let mut vars = HashMap::new();
-        vars.insert("x-hasura-user-id".to_string(), "user-42".to_string());
-        vars.insert("x-hasura-role".to_string(), "customer".to_string());
+        vars.insert(USER_ID_KEY.to_string(), "user-42".to_string());
+        vars.insert(ROLE_KEY.to_string(), "customer".to_string());
         let session = Session::from_map(vars);
 
         assert_eq!(session.user_id(), Some("user-42"));
         assert_eq!(session.role(), Some("customer"));
-        assert!(session.has("x-hasura-user-id"));
-        assert!(!session.has("x-hasura-admin-secret"));
+        assert!(session.has(USER_ID_KEY));
+        assert!(!session.has("x-admin-secret"));
+    }
+
+    #[test]
+    fn arbitrary_gateway_keys_via_get() {
+        // Hasura (or any other gateway) claim names are not special — read
+        // them with get() if you keep the gateway's native names.
+        let mut session = Session::new();
+        session.set("x-hasura-user-id", "hasura-user");
+        assert_eq!(session.get("x-hasura-user-id"), Some("hasura-user"));
+        assert_eq!(session.user_id(), None); // convenience key not set
     }
 
     #[test]
     fn set_and_get() {
         let mut session = Session::new();
-        session.set("x-hasura-role", "admin");
-        assert_eq!(session.get("x-hasura-role"), Some("admin"));
+        session.set(ROLE_KEY, "admin");
+        assert_eq!(session.get(ROLE_KEY), Some("admin"));
         assert_eq!(session.role(), Some("admin"));
     }
 }

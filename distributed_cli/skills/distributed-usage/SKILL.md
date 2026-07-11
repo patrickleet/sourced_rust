@@ -229,7 +229,8 @@ Gotchas:
   app/environment. Names are validated: portable IDs only (`A-Za-z0-9_-`,
   `.` also allowed in namespaces, max 128 bytes).
 - `microsvc` does **not** authenticate. Deploy behind a trusted proxy that
-  strips client-supplied `x-hasura-*` headers and injects authenticated ones.
+  strips client-supplied identity headers and injects authenticated claims
+  (`Session` is an opaque map; `x-user-id` / `x-role` are convenience keys only).
 - `connect_and_migrate` applies migrations; plain `connect` does not create
   tables.
 

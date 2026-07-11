@@ -166,7 +166,7 @@ async fn metadata_flows_to_session() {
     });
     request
         .metadata_mut()
-        .insert("x-hasura-user-id", "user-42".parse().unwrap());
+        .insert("x-user-id", "user-42".parse().unwrap());
 
     let resp = client.dispatch(request).await.unwrap().into_inner();
 
@@ -186,7 +186,7 @@ async fn grpc_payload_session_variables_do_not_override_metadata() {
     let mut client = start_server(service).await;
 
     let mut payload_vars = std::collections::HashMap::new();
-    payload_vars.insert("x-hasura-user-id".to_string(), "attacker".to_string());
+    payload_vars.insert("x-user-id".to_string(), "attacker".to_string());
 
     let mut request = tonic::Request::new(GrpcRequest {
         command: "session.identify".into(),
@@ -195,7 +195,7 @@ async fn grpc_payload_session_variables_do_not_override_metadata() {
     });
     request
         .metadata_mut()
-        .insert("x-hasura-user-id", "trusted-user".parse().unwrap());
+        .insert("x-user-id", "trusted-user".parse().unwrap());
 
     let resp = client.dispatch(request).await.unwrap().into_inner();
 
@@ -206,8 +206,8 @@ async fn grpc_payload_session_variables_do_not_override_metadata() {
 }
 
 /// Payload-only session variables (no colliding metadata) still flow through,
-/// preserving the Hasura-action use case where verified claims arrive in the
-/// payload and no transport metadata is injected.
+/// supporting gateway action/webhook shapes where verified claims arrive in
+/// the payload and no transport metadata is injected.
 #[tokio::test]
 async fn grpc_payload_session_variables_apply_when_metadata_absent() {
     let service = counter_service();
@@ -215,7 +215,7 @@ async fn grpc_payload_session_variables_apply_when_metadata_absent() {
 
     let mut payload_vars = std::collections::HashMap::new();
     payload_vars.insert(
-        "x-hasura-user-id".to_string(),
+        "x-user-id".to_string(),
         "user-from-payload".to_string(),
     );
 
