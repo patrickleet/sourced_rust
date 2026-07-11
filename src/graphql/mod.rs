@@ -46,4 +46,6 @@ pub use http::{graphql_router, graphql_router_with_service};
 #[cfg(feature = "graphql")]
 pub use permissions::{select, ModelPermissions, SelectPermission};
 #[cfg(feature = "graphql")]
+pub use subscribe::ChangeHub;
+#[cfg(feature = "graphql")]
 pub use types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};

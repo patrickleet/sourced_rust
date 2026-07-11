@@ -166,7 +166,9 @@ macro_rules! graphql_models {
 pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
 // Re-export proc macros
-pub use distributed_macros::{aggregate, digest, sourced, ReadModel, Snapshot};
+pub use distributed_macros::{
+    aggregate, digest, sourced, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+};
 
 // Re-export enqueue macro (requires "emitter" feature)
 #[cfg(feature = "emitter")]

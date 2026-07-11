@@ -245,9 +245,7 @@ pub fn build_role_schema(
         mutation = Some(mut_obj);
     }
 
-    // Subscription root uses async-graphql's dedicated Subscription type
-    // (not Object). Phase-4 live push is wired via subscribe.rs; fields here
-    // stream the initial query result once (hash-gated re-push attaches later).
+    // Subscription root: live queries refreshed off ChangeHub (commit-path).
     use async_graphql::dynamic::{Subscription, SubscriptionField, SubscriptionFieldFuture};
     let mut subscription = Subscription::new("Subscription");
     let mut has_subscription = false;
@@ -262,13 +260,28 @@ pub fn build_role_schema(
             TypeRef::named_nn_list_nn(obj_name),
             move |ctx| {
                 let model = model_for_sub.clone();
+                // Extract owned data before the async block (stream is 'static).
+                let inner = ctx.data_opt::<Arc<EngineInner>>().cloned();
+                let session = ctx.data_opt::<Session>().cloned().unwrap_or_else(Session::new);
+                let selection = compile::selection_from_field(ctx.field());
                 SubscriptionFieldFuture::new(async move {
-                    let value = resolve_root(&ctx, &model, RootKind::List).await?;
-                    Ok(futures_util::stream::iter(std::iter::once(Ok(
-                        async_graphql::dynamic::FieldValue::value(
-                            value.unwrap_or(Value::Null),
-                        ),
-                    ))))
+                    let inner = inner.ok_or_else(|| {
+                        async_graphql::Error::new("GraphqlEngine not in request data")
+                    })?;
+                    let role = session
+                        .role()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| inner.anonymous_role.clone());
+                    let stream = super::subscribe::live_query_stream(
+                        inner,
+                        session,
+                        role,
+                        model,
+                        selection,
+                    )
+                    .await
+                    .map_err(async_graphql::Error::new)?;
+                    Ok(stream)
                 })
             },
         )
@@ -613,6 +626,28 @@ async fn resolve_root(
         .await
         .map_err(|_e| async_graphql::Error::new("internal error"))?;
     Ok(Some(value))
+}
+
+async fn resolve_subscription_live(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    model: &str,
+) -> Result<super::subscribe::LiveQueryStream, async_graphql::Error> {
+    let inner = ctx
+        .data_opt::<Arc<EngineInner>>()
+        .cloned()
+        .ok_or_else(|| async_graphql::Error::new("GraphqlEngine not in request data"))?;
+    let session = ctx
+        .data_opt::<Session>()
+        .cloned()
+        .unwrap_or_else(Session::new);
+    let role = session
+        .role()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| inner.anonymous_role.clone());
+    let selection = compile::selection_from_field(ctx.field());
+    super::subscribe::live_query_stream(inner, session, role, model.to_string(), selection)
+        .await
+        .map_err(async_graphql::Error::new)
 }
 
 async fn resolve_command(
