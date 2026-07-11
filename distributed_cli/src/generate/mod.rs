@@ -477,6 +477,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn tracing_scaffold_enables_otel_feature_and_gitops_env_values() {
         let mut s = spec("orders");
         s.tracing = true;
