@@ -98,7 +98,7 @@ pub(crate) struct EngineInner {
     pub graphiql: bool,
     pub commands: GraphqlCommands,
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
-    pub change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
+    pub change_hub: super::subscribe::ChangeHub,
     pub dialect: SqlDialect,
 }
 
@@ -186,6 +186,30 @@ impl GraphqlEngine {
     pub(crate) fn dialect(&self) -> SqlDialect {
         self.inner.dialect
     }
+
+    /// Hub used by live subscriptions (tests may publish directly).
+    pub fn change_hub(&self) -> &super::subscribe::ChangeHub {
+        &self.inner.change_hub
+    }
+
+    /// Execute a GraphQL subscription document as a stream of responses.
+    pub fn execute_stream(
+        &self,
+        session: &Session,
+        request: Request,
+    ) -> impl futures_util::Stream<Item = async_graphql::Response> + Send {
+        let role = resolve_role(session, &self.inner.anonymous_role);
+        let schema = self
+            .inner
+            .schemas
+            .get(&role)
+            .cloned()
+            .expect("role schema missing");
+        let request = request
+            .data(session.clone())
+            .data(std::sync::Arc::clone(&self.inner));
+        schema.execute_stream(request)
+    }
 }
 
 fn resolve_role(session: &Session, anonymous: &str) -> String {
@@ -222,6 +246,9 @@ impl GraphqlEngineBuilder {
             pending_errors: Vec::new(),
         }
     }
+
+    /// Access is via build(); hub is always created.
+
 
     pub fn model<M: RelationalReadModelIncludes>(mut self, perms: ModelPermissions<M>) -> Self {
         let schema = M::schema().clone();
@@ -549,6 +576,11 @@ impl GraphqlEngineBuilder {
             schemas.insert(role.clone(), schema);
         }
 
+        let change_hub = super::subscribe::ChangeHub::new();
+        if let Some(rx) = self.change_rx {
+            super::subscribe::spawn_change_forwarder(change_hub.clone(), rx);
+        }
+
         let inner = Arc::new(EngineInner {
             pool: self.pool,
             catalog: self.catalog,
@@ -566,14 +598,9 @@ impl GraphqlEngineBuilder {
             graphiql: self.graphiql,
             commands: self.commands,
             schemas,
-            change_rx: self.change_rx,
+            change_hub,
             dialect,
         });
-
-        // Spawn subscription dirty-marking if change stream present.
-        if inner.change_rx.is_some() {
-            super::subscribe::spawn_change_listener(Arc::clone(&inner));
-        }
 
         Ok(GraphqlEngine { inner })
     }
