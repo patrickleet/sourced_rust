@@ -624,14 +624,19 @@ async fn resolve_root(
     let selection = compile::selection_from_field(ctx.field());
     let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
-    let value = super::engine::execute_plan(&inner, &plan).await.map_err(|e| {
-        if e.contains("timeout") {
-            client_error("TIMEOUT", "statement timeout")
-        } else {
-            client_error("INTERNAL", "internal error")
-        }
-    })?;
+    let value = super::engine::execute_plan(&inner, &plan)
+        .await
+        .map_err(|e| client_error_for_execute_err(&e))?;
     Ok(Some(value))
+}
+
+/// Map executor error strings to stable client errors (`extensions.code`).
+pub(crate) fn client_error_for_execute_err(e: &str) -> async_graphql::Error {
+    if e.contains("timeout") {
+        client_error("TIMEOUT", "statement timeout")
+    } else {
+        client_error("INTERNAL", "internal error")
+    }
 }
 
 fn sanitize_compile_error(e: &str) -> String {
@@ -655,6 +660,45 @@ fn client_error(code: &str, message: impl Into<String>) -> async_graphql::Error 
     async_graphql::Error::new(message.into()).extend_with(move |_, ext| {
         ext.set("code", code.as_str());
     })
+}
+
+#[cfg(test)]
+mod execute_err_mapping_tests {
+    use super::client_error_for_execute_err;
+
+    #[test]
+    fn statement_timeout_maps_to_timeout_code() {
+        let err = client_error_for_execute_err("statement timeout");
+        assert_eq!(err.message, "statement timeout");
+        let code = err
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.get("code"))
+            .map(|v| format!("{v:?}"));
+        assert!(
+            code.as_deref()
+                .map(|c| c.contains("TIMEOUT"))
+                .unwrap_or(false),
+            "expected TIMEOUT extension, got {code:?}"
+        );
+    }
+
+    #[test]
+    fn other_errors_map_to_internal() {
+        let err = client_error_for_execute_err("sqlite execute: boom");
+        assert_eq!(err.message, "internal error");
+        let code = err
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.get("code"))
+            .map(|v| format!("{v:?}"));
+        assert!(
+            code.as_deref()
+                .map(|c| c.contains("INTERNAL"))
+                .unwrap_or(false),
+            "expected INTERNAL extension, got {code:?}"
+        );
+    }
 }
 
 async fn resolve_subscription_live(
