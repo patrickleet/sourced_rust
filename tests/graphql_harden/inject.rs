@@ -33,13 +33,13 @@ async fn s1_response_key_field_selection_safe_roundtrip() {
     assert_eq!(data["orders"].as_array().unwrap().len(), 3);
 }
 
-/// S2: unknown where keys soft-skip — must not inject identifiers or error-leak SQL.
+/// S2: unknown where keys fail closed under default strict_where (no silent ignore).
 #[tokio::test]
-async fn s2_unknown_where_key_soft_skips_without_sql_leak() {
+async fn s2_unknown_where_key_fails_closed_without_sql_leak() {
     let pool = seed_orders().await;
     let engine = engine_all_columns(pool);
     let s = session("user", "x");
-    // Unknown field `not_a_column` is ignored (current soft-skip semantics).
+    assert!(engine.strict_where());
     let resp = engine
         .execute(
             &s,
@@ -49,12 +49,10 @@ async fn s2_unknown_where_key_soft_skips_without_sql_leak() {
         )
         .await;
     assert_no_sql_leak(&resp);
-    // Query still runs for the valid predicate (open orders).
-    if resp.errors.is_empty() {
-        let data = serde_json::to_value(&resp.data).unwrap();
-        let orders = data["orders"].as_array().unwrap();
-        assert!(orders.iter().all(|o| o["status"] == "open"), "{data}");
-    }
+    assert!(
+        !resp.errors.is_empty(),
+        "unknown where key must not soft-skip under strict default"
+    );
 }
 
 /// S3: `_like` wildcards are bound parameters, not SQL concatenation.
@@ -142,9 +140,9 @@ async fn s6_pk_type_confusion_does_not_leak_sql() {
     assert_eq!(data["orders"].as_array().unwrap().len(), 3);
 }
 
-/// S2b: denied where column soft-skips (column not in allowlist).
+/// S2b: denied where column fails closed under default strict_where.
 #[tokio::test]
-async fn s2_denied_where_column_soft_skips() {
+async fn s2_denied_where_column_fails_closed() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["restricted"])
@@ -154,7 +152,6 @@ async fn s2_denied_where_column_soft_skips() {
         .build()
         .unwrap();
     let s = session("restricted", "x");
-    // total_cents not granted — soft-skip; status filter still applies.
     let resp = engine
         .execute(
             &s,
@@ -164,10 +161,8 @@ async fn s2_denied_where_column_soft_skips() {
         )
         .await;
     assert_no_sql_leak(&resp);
-    if resp.errors.is_empty() {
-        let data = serde_json::to_value(&resp.data).unwrap();
-        for o in data["orders"].as_array().unwrap() {
-            assert_eq!(o["status"], "open");
-        }
-    }
+    assert!(
+        !resp.errors.is_empty(),
+        "denied where column must not soft-skip under strict default"
+    );
 }

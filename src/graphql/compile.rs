@@ -181,7 +181,13 @@ pub fn compile_root(
         .and_then(value_as_u64)
         .unwrap_or(0);
 
-    let order_sql = compile_order_by(&entry.schema, selection.args.get("order_by"), alias, perm)?;
+    let order_sql = compile_order_by(
+        &entry.schema,
+        selection.args.get("order_by"),
+        alias,
+        perm,
+        inner.strict_where,
+    )?;
 
     let ops = inner.dialect.ops();
 
@@ -688,6 +694,7 @@ fn compile_relationship_aggregate_subquery(
         selection.args.get("order_by"),
         &child_alias,
         target_perm,
+        inner.strict_where,
     )?;
     let limit = resolve_limit(
         selection.args.get("limit"),
@@ -912,6 +919,7 @@ fn compile_relationship_subquery(
         selection.args.get("order_by"),
         &child_alias,
         target_perm,
+        inner.strict_where,
     )?;
     let projection = compile_object_projection(
         inner,
@@ -990,6 +998,7 @@ fn compile_m2m_subquery(
         selection.args.get("order_by"),
         &child_alias,
         target_perm,
+        inner.strict_where,
     )?;
     let projection = compile_object_projection(
         inner,
@@ -1048,16 +1057,23 @@ fn compile_order_by(
     order_arg: Option<&Value>,
     alias: &str,
     perm: &SelectPermission,
+    strict: bool,
 ) -> Result<String, String> {
     let mut parts = Vec::new();
     if let Some(Value::List(items)) = order_arg {
         for item in items {
             if let Value::Object(map) = item {
                 for (col, dir) in map {
-                    if !perm.allows_column(col) {
+                    if !schema.columns.iter().any(|c| c.column_name == *col) {
+                        if strict {
+                            return Err(format!("unknown order_by column `{col}`"));
+                        }
                         continue;
                     }
-                    if !schema.columns.iter().any(|c| c.column_name == *col) {
+                    if !perm.allows_column(col) {
+                        if strict {
+                            return Err(format!("ungranted order_by column `{col}`"));
+                        }
                         continue;
                     }
                     let dir_s = match dir {
@@ -1461,6 +1477,9 @@ fn compile_client_where(
             col_name => {
                 if let Some(col) = schema.columns.iter().find(|c| c.column_name == *col_name) {
                     if !perm.allows_column(col_name) {
+                        if inner.strict_where {
+                            return Err(format!("ungranted where column `{col_name}`"));
+                        }
                         continue;
                     }
                     if let Value::Object(ops) = val {
@@ -1485,7 +1504,14 @@ fn compile_client_where(
                     // Relationship predicate → EXISTS
                     let target = match inner.catalog.get(&rel.target_model) {
                         Some(t) => t,
-                        None => continue,
+                        None => {
+                            if inner.strict_where {
+                                return Err(format!(
+                                    "unknown where field `{col_name}` (relationship target missing)"
+                                ));
+                            }
+                            continue;
+                        }
                     };
                     tables.push(target.schema.table_name.clone());
                     let target_perm = match inner
@@ -1493,7 +1519,14 @@ fn compile_client_where(
                         .get(&(rel.target_model.clone(), role.to_string()))
                     {
                         Some(p) => &p.permission,
-                        None => continue,
+                        None => {
+                            if inner.strict_where {
+                                return Err(format!(
+                                    "ungranted where relationship `{col_name}`"
+                                ));
+                            }
+                            continue;
+                        }
                     };
                     let child_alias = format!("cw{depth}");
                     let inner_pred = compile_client_where(
@@ -1605,7 +1638,10 @@ fn compile_client_where(
                             ));
                         }
                     }
+                } else if inner.strict_where {
+                    return Err(format!("unknown where field `{col_name}`"));
                 }
+                // soft-skip: ignore unknown keys when strict_where is false
             }
         }
     }
@@ -1885,6 +1921,89 @@ mod security_tests {
             resolve_limit(Some(&Value::from(50u64)), Some(10), 100, 1000),
             10
         );
+    }
+}
+
+#[cfg(test)]
+mod strict_order_by_tests {
+    use super::*;
+    use crate::graphql::permissions::select;
+    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
+    use async_graphql::indexmap::IndexMap;
+    use async_graphql::Value as GqlValue;
+
+    fn item_schema() -> TableSchema {
+        TableSchema {
+            model_name: "Item".into(),
+            table_name: "items".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("id", "id", ColumnType::Text)
+                },
+                TableColumn::new("name", "name", ColumnType::Text),
+                TableColumn::new("secret", "secret", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    fn order_list(entries: Vec<(&str, &str)>) -> GqlValue {
+        let mut items = Vec::new();
+        for (col, dir) in entries {
+            let mut map = IndexMap::new();
+            map.insert(
+                async_graphql::Name::new(col),
+                GqlValue::Enum(async_graphql::Name::new(dir)),
+            );
+            items.push(GqlValue::Object(map));
+        }
+        GqlValue::List(items)
+    }
+
+    #[test]
+    fn strict_rejects_unknown_order_column() {
+        let schema = item_schema();
+        let perm = select().all_columns();
+        let arg = order_list(vec![("nope", "asc")]);
+        let err = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap_err();
+        assert!(err.contains("unknown order_by"), "{err}");
+    }
+
+    #[test]
+    fn strict_rejects_ungranted_order_column() {
+        let schema = item_schema();
+        let perm = select().columns(["id", "name"]);
+        let arg = order_list(vec![("secret", "asc")]);
+        let err = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap_err();
+        assert!(err.contains("ungranted order_by"), "{err}");
+    }
+
+    #[test]
+    fn soft_skip_ignores_unknown_and_ungranted_order() {
+        let schema = item_schema();
+        let perm = select().columns(["id", "name"]);
+        let arg = order_list(vec![("secret", "asc"), ("nope", "desc"), ("name", "desc")]);
+        let sql = compile_order_by(&schema, Some(&arg), "t0", &perm, false).unwrap();
+        assert!(sql.contains(r#"t0."name" DESC"#), "{sql}");
+        assert!(!sql.contains("secret"), "{sql}");
+        assert!(!sql.contains("nope"), "{sql}");
+        assert!(sql.contains(r#"t0."id" ASC"#), "pk tiebreak: {sql}");
+    }
+
+    #[test]
+    fn strict_accepts_granted_order_with_pk_tiebreak() {
+        let schema = item_schema();
+        let perm = select().all_columns();
+        let arg = order_list(vec![("name", "desc")]);
+        let sql = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap();
+        assert!(sql.contains(r#"t0."name" DESC"#), "{sql}");
+        assert!(sql.contains(r#"t0."id" ASC"#), "{sql}");
     }
 }
 

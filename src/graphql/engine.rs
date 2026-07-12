@@ -98,6 +98,9 @@ pub(crate) struct EngineInner {
     pub max_in_list: usize,
     /// Max length of a single `_and` / `_or` list in client `where` (breadth DoS).
     pub max_bool_width: usize,
+    /// When true (default), unknown/ungranted client `where` and `order_by`
+    /// keys fail the request instead of soft-skipping.
+    pub strict_where: bool,
     #[allow(dead_code)]
     pub introspection_for_anonymous: bool,
     pub statement_timeout: Duration,
@@ -125,6 +128,7 @@ pub struct GraphqlEngineBuilder {
     max_complexity: usize,
     max_in_list: usize,
     max_bool_width: usize,
+    strict_where: bool,
     introspection_for_anonymous: bool,
     statement_timeout: Duration,
     graphiql: bool,
@@ -162,6 +166,12 @@ impl GraphqlEngine {
 
     pub fn graphiql_enabled(&self) -> bool {
         self.inner.graphiql
+    }
+
+    /// Whether unknown/ungranted client `where` and `order_by` keys fail closed.
+    /// Default is `true` (see [`GraphqlEngineBuilder::strict_where`]).
+    pub fn strict_where(&self) -> bool {
+        self.inner.strict_where
     }
 
     pub async fn execute(&self, session: &Session, request: Request) -> Response {
@@ -282,6 +292,9 @@ impl GraphqlEngineBuilder {
             max_complexity: 500,
             max_in_list: 1000,
             max_bool_width: 256,
+            // Fail-closed by default for unshipped GA: unknown/ungranted filter
+            // and order keys must not silently no-op.
+            strict_where: true,
             introspection_for_anonymous: true,
             statement_timeout: Duration::from_secs(5),
             graphiql: false,
@@ -471,6 +484,14 @@ impl GraphqlEngineBuilder {
         self.max_bool_width = n;
         self
     }
+    /// Fail closed on unknown or ungranted client `where` / `order_by` keys.
+    ///
+    /// **Default: `true`.** Set `false` only for intentional Hasura-style
+    /// soft-skip of unknown keys (not recommended for production).
+    pub fn strict_where(mut self, on: bool) -> Self {
+        self.strict_where = on;
+        self
+    }
     pub fn introspection_for_anonymous(mut self, on: bool) -> Self {
         self.introspection_for_anonymous = on;
         self
@@ -645,6 +666,7 @@ impl GraphqlEngineBuilder {
             max_complexity: self.max_complexity,
             max_in_list: self.max_in_list,
             max_bool_width: self.max_bool_width,
+            strict_where: self.strict_where,
             introspection_for_anonymous: self.introspection_for_anonymous,
             statement_timeout: self.statement_timeout,
             graphiql: self.graphiql,

@@ -665,7 +665,12 @@ fn sanitize_compile_error(e: &str) -> String {
         "list too long".into()
     } else if e.contains("invalid GraphQL response key") {
         "invalid response key".into()
-    } else if e.contains("unknown comparison") {
+    } else if e.contains("unknown comparison")
+        || e.contains("unknown where field")
+        || e.contains("ungranted where")
+        || e.contains("unknown order_by")
+        || e.contains("ungranted order_by")
+    {
         "invalid filter".into()
     } else {
         "bad request".into()
@@ -735,6 +740,14 @@ mod execute_err_mapping_tests {
         );
         assert_eq!(
             sanitize_compile_error("unknown comparison op `_wat`"),
+            "invalid filter"
+        );
+        assert_eq!(
+            sanitize_compile_error("unknown where field `nope`"),
+            "invalid filter"
+        );
+        assert_eq!(
+            sanitize_compile_error("ungranted order_by column `secret`"),
             "invalid filter"
         );
         assert_eq!(sanitize_compile_error("SELECT * FROM secret"), "bad request");
