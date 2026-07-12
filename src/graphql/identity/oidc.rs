@@ -18,6 +18,9 @@ use crate::microsvc::Session;
 pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
+    /// Additional accepted audiences (e.g. multiple Keycloak confidential clients
+    /// whose client_credentials tokens carry distinct `azp` values).
+    pub extra_audiences: Vec<String>,
     pub jwks_uri: Option<String>,
     pub clock_skew: Duration,
     pub alg_allowlist: Vec<String>,
@@ -35,6 +38,7 @@ impl OidcConfig {
         Self {
             issuer: issuer.into(),
             audience: audience.into(),
+            extra_audiences: Vec::new(),
             jwks_uri: None,
             clock_skew: Duration::from_secs(60),
             alg_allowlist: vec!["RS256".into(), "ES256".into()],
@@ -43,6 +47,12 @@ impl OidcConfig {
             claim_map: ClaimMapConfig::default(),
             static_jwks: None,
         }
+    }
+
+    /// Accept additional audiences (multi-client M2M).
+    pub fn with_extra_audiences(mut self, audiences: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.extra_audiences = audiences.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn with_static_jwks(mut self, jwks: impl Into<String>) -> Self {
@@ -249,8 +259,14 @@ impl OidcValidator {
         let key = self.key_for_kid(&kid)?;
 
         let mut validation = Validation::new(header.alg);
-        validation.set_issuer(&[normalize_issuer(&self.config.issuer)]);
-        validation.set_audience(&[&self.config.audience]);
+        // Accept issuer with or without trailing slash (Authentik GLOBAL iss often
+        // ends with `/` while config may omit it, and vice versa).
+        let iss_norm = normalize_issuer(&self.config.issuer);
+        let iss_slash = format!("{iss_norm}/");
+        validation.set_issuer(&[&iss_norm, &iss_slash]);
+        // Audience is checked manually: some IdPs (Keycloak client_credentials)
+        // omit `aud` and put the client in `azp` / `client_id` instead.
+        validation.validate_aud = false;
         validation.leeway = self.config.clock_skew.as_secs();
         validation.validate_exp = true;
         validation.validate_nbf = true;
@@ -259,6 +275,13 @@ impl OidcValidator {
         let data = decode::<Value>(token, &key, &validation).map_err(|e| map_jwt_error(e))?;
 
         let claims = data.claims;
+        if !audience_matches(
+            &claims,
+            &self.config.audience,
+            &self.config.extra_audiences,
+        ) {
+            return Err(ValidationError::Audience);
+        }
         // token_use if present
         if let Some(tu) = claims.get("token_use").and_then(|v| v.as_str()) {
             if tu != "access" {
@@ -305,6 +328,48 @@ impl OidcValidator {
 
 fn normalize_issuer(iss: &str) -> String {
     iss.trim_end_matches('/').to_string()
+}
+
+/// True if any configured audience appears in `aud` (string or array), or — when
+/// `aud` is absent/empty/placeholder — in `azp` or `client_id` (Keycloak client_credentials).
+fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
+    let candidates: Vec<&str> = std::iter::once(expected)
+        .chain(extra.iter().map(|s| s.as_str()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
+    if let Some(aud) = claims.get("aud") {
+        match aud {
+            Value::String(s) if candidates.iter().any(|c| *c == s.as_str()) => return true,
+            Value::Array(arr) => {
+                if arr
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|s| candidates.contains(&s)))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        // aud present but no match — do not fall through to azp (prevents weak matches)
+        // unless aud is only "account" / empty placeholder used by some IdPs
+        let aud_placeholder = match aud {
+            Value::String(s) => s == "account" || s.is_empty(),
+            Value::Array(a) => a.is_empty()
+                || a
+                    .iter()
+                    .all(|v| matches!(v.as_str(), Some("account") | Some(""))),
+            _ => false,
+        };
+        if !aud_placeholder {
+            return false;
+        }
+    }
+    let azp = claims.get("azp").and_then(|v| v.as_str());
+    let client_id = claims.get("client_id").and_then(|v| v.as_str());
+    candidates.iter().any(|c| azp == Some(*c) || client_id == Some(*c))
 }
 
 fn raw_header_alg(token: &str) -> Result<String, ()> {
