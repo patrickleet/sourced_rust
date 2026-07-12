@@ -792,7 +792,7 @@ fn compile_filter_expr(
             let parts: Result<Vec<_>, _> = xs
                 .iter()
                 .map(|x| {
-                    compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth)
+                    compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth + 1)
                 })
                 .collect();
             Ok(format!("({})", parts?.join(" AND ")))
@@ -804,14 +804,14 @@ fn compile_filter_expr(
             let parts: Result<Vec<_>, _> = xs
                 .iter()
                 .map(|x| {
-                    compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth)
+                    compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth + 1)
                 })
                 .collect();
             Ok(format!("({})", parts?.join(" OR ")))
         }
         FilterExpr::Not(x) => Ok(format!(
             "NOT ({})",
-            compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth)?
+            compile_filter_expr(inner, session, schema, x, alias, binds, tables, depth + 1)?
         )),
         FilterExpr::Cmp { column, op, rhs } => {
             let col = schema
@@ -1020,7 +1020,7 @@ fn compile_client_where(
                 if let Value::List(items) = val {
                     for item in items {
                         preds.push(compile_client_where(
-                            inner, session, role, schema, perm, item, alias, binds, tables, depth,
+                            inner, session, role, schema, perm, item, alias, binds, tables, depth + 1,
                         )?);
                     }
                 }
@@ -1030,7 +1030,7 @@ fn compile_client_where(
                     let mut parts = Vec::new();
                     for item in items {
                         parts.push(compile_client_where(
-                            inner, session, role, schema, perm, item, alias, binds, tables, depth,
+                            inner, session, role, schema, perm, item, alias, binds, tables, depth + 1,
                         )?);
                     }
                     if !parts.is_empty() {
@@ -1042,7 +1042,7 @@ fn compile_client_where(
                 preds.push(format!(
                     "NOT ({})",
                     compile_client_where(
-                        inner, session, role, schema, perm, val, alias, binds, tables, depth,
+                        inner, session, role, schema, perm, val, alias, binds, tables, depth + 1,
                     )?
                 ));
             }

@@ -142,6 +142,103 @@ async fn json_looking_string_column_stays_string() {
 }
 
 #[tokio::test]
+async fn column_allowlist_denies_ungranted_fields() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["restricted", "user"])
+        .model::<OrderView>(
+            ModelPermissions::new()
+                .role(
+                    "restricted",
+                    select().columns(["order_id", "status"]),
+                )
+                .role("user", select().all_columns()),
+        )
+        .build()
+        .unwrap();
+
+    let restricted = session("restricted", "tenant-a");
+    // Schema for restricted must not expose customer_id / total_cents.
+    let resp = engine
+        .execute(
+            &restricted,
+            Request::new("{ orders { order_id status customer_id } }"),
+        )
+        .await;
+    assert!(
+        resp.is_err() || !resp.errors.is_empty(),
+        "customer_id must be unknown for restricted role: {:?}",
+        resp.errors
+    );
+    let msgs = resp
+        .errors
+        .iter()
+        .map(|e| e.message.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        msgs.contains("customer_id") || msgs.contains("unknown field"),
+        "expected unknown field for denied column, got {msgs}"
+    );
+
+    // Allowed columns still work.
+    let resp = engine
+        .execute(
+            &restricted,
+            Request::new("{ orders { order_id status } }"),
+        )
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    let row = &data["orders"][0];
+    assert!(row.get("order_id").is_some());
+    assert!(row.get("status").is_some());
+    assert!(row.get("customer_id").is_none());
+    assert!(row.get("total_cents").is_none());
+}
+
+#[tokio::test]
+async fn where_max_depth_rejected() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        // Selection { orders { order_id } } fits depth 2; where nests deeper.
+        .max_depth(2)
+        .build()
+        .unwrap();
+    let s = session("user", "tenant-a");
+    // Nested _and: d=1,2,3 — exceeds max_depth(2).
+    let q = r#"{
+      orders(where: { _and: [{ _and: [{ _and: [{ status: { _eq: "open" } }] }] }] }) {
+        order_id
+      }
+    }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(
+        resp.is_err() || !resp.errors.is_empty(),
+        "expected max depth error"
+    );
+    let msgs = resp
+        .errors
+        .iter()
+        .map(|e| e.message.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        msgs.contains("depth") || msgs.contains("bad request"),
+        "expected depth-related client error, got {msgs}"
+    );
+    for m in &resp.errors {
+        assert!(
+            !m.message.to_ascii_lowercase().contains("select"),
+            "must not leak SQL: {}",
+            m.message
+        );
+    }
+}
+
+#[tokio::test]
 async fn max_in_list_rejected() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
