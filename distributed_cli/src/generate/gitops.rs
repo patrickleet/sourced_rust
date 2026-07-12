@@ -143,7 +143,7 @@ impl Scaffold {
             return String::new();
         }
 
-        r#"            {{ if .Values.queryApi.enabled }}
+        r#"            {{ if and .Values.queryApi.enabled .Values.queryApi.databaseUrl }}
             - name: DATABASE_URL
               value: {{ .Values.queryApi.databaseUrl | quote }}
             {{ end }}

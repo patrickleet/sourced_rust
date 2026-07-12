@@ -63,6 +63,7 @@ impl SelectPermission {
             .is_some_and(|cols| cols.contains(name))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn allowed_columns_for<'a>(
         &self,
         schema_columns: impl Iterator<Item = &'a str>,

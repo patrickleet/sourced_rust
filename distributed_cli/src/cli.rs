@@ -644,6 +644,9 @@ fn run_scaffold(args: &ScaffoldArgs) -> Result<(), Box<dyn Error>> {
     let store = {
         let store = args.store.into();
         if args.query_api && matches!(store, crate::StoreTarget::InMemory) {
+            eprintln!(
+                "warning: --query-api requires a SQL store; promoting --store in-memory to sqlite"
+            );
             crate::StoreTarget::Sqlite
         } else {
             store

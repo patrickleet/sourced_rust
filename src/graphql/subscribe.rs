@@ -91,21 +91,15 @@ impl Stream for LiveQueryStream {
 }
 
 /// Build a live-query stream for a subscription root field.
-pub async fn live_query_stream(
+pub(crate) async fn live_query_stream(
     inner: Arc<EngineInner>,
     session: Session,
     role: String,
     model: String,
     selection: SelectionNode,
 ) -> Result<LiveQueryStream, String> {
-    let plan: SqlPlan = compile::compile_root(
-        &inner,
-        &session,
-        &role,
-        &model,
-        RootKind::List,
-        &selection,
-    )?;
+    let plan: SqlPlan =
+        compile::compile_root(&inner, &session, &role, &model, RootKind::List, &selection)?;
     let footprint = footprint_from_tables(&plan.tables_touched);
     let mut change_rx = inner.change_hub.subscribe();
     let (tx, rx) = mpsc::channel::<LiveItem>(8);
@@ -167,11 +161,7 @@ pub async fn live_query_stream(
                     }
                 }
                 Err(e) => {
-                    if tx
-                        .send(Err(async_graphql::Error::new(e)))
-                        .await
-                        .is_err()
-                    {
+                    if tx.send(Err(async_graphql::Error::new(e))).await.is_err() {
                         return;
                     }
                 }

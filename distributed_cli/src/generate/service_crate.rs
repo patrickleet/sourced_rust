@@ -223,9 +223,17 @@ pub fn service_manifest() -> ServiceManifest {{
     }
 
     pub(super) fn service_rs(&self) -> String {
+        let repo_import = if self.query_api {
+            match self.store {
+                StoreTarget::Postgres => "PostgresRepository",
+                _ => "SqliteRepository",
+            }
+        } else {
+            "InMemoryRepository"
+        };
         let mut manifest_imports = vec![
             "microsvc::{Routes, Service}",
-            "InMemoryRepository",
+            repo_import,
             "ServiceManifest",
         ];
         if self.metrics == Some(MetricsTarget::Prometheus) {
@@ -283,13 +291,10 @@ pub fn service_manifest() -> ServiceManifest {{
         if self.query_api {
             let (repo_ty, connect_default) = match self.store {
                 StoreTarget::Postgres => (
-                    "distributed::PostgresRepository",
+                    "PostgresRepository",
                     r#""postgres://postgres:postgres@127.0.0.1:5432/postgres""#,
                 ),
-                _ => (
-                    "distributed::SqliteRepository",
-                    r#""sqlite::memory:""#,
-                ),
+                _ => ("SqliteRepository", r#""sqlite::memory:""#),
             };
             return format!(
                 r#"use std::sync::Arc;
@@ -298,11 +303,7 @@ use distributed::{{{manifest_imports}}};
 
 use crate::handlers;
 
-pub type ServiceRepo = InMemoryRepository;
-
-pub fn in_memory() -> Arc<Service> {{
-    build(InMemoryRepository::new())
-}}
+pub type ServiceRepo = {repo_ty};
 
 pub fn build(repo: ServiceRepo) -> Arc<Service> {{
     let routes = distributed::routes!(
@@ -317,10 +318,10 @@ pub fn build(repo: ServiceRepo) -> Arc<Service> {{
 pub async fn build_with_graphql() -> Result<Arc<Service>, Box<dyn std::error::Error + Send + Sync>> {{
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| {connect_default}.to_string());
-    let store = {repo_ty}::connect(&database_url).await?;
-    let engine = crate::query::build_engine(store.pool().clone())?;
+    let repo = ServiceRepo::connect_and_migrate(&database_url).await?;
+    let engine = crate::query::build_engine(repo.pool().clone())?;
     let routes = distributed::routes!(
-        Routes::new().with_dependencies(InMemoryRepository::new()),
+        Routes::new().with_dependencies(repo),
 {registrations}    );
     Ok(Arc::new(
         Service::new()

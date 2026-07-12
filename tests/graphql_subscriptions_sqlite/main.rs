@@ -36,7 +36,11 @@ fn items_schema() -> TableSchema {
     }
 }
 
-async fn setup_fixed() -> (distributed::SqliteRepository, GraphqlEngine, sqlx::SqlitePool) {
+async fn setup_fixed() -> (
+    distributed::SqliteRepository,
+    GraphqlEngine,
+    sqlx::SqlitePool,
+) {
     let pool = SqlitePoolOptions::new()
         .connect("sqlite::memory:")
         .await
@@ -82,12 +86,7 @@ fn static_schema() -> &'static TableSchema {
     Box::leak(Box::new(items_schema()))
 }
 
-async fn upsert_item(
-    repo: &distributed::SqliteRepository,
-    id: &str,
-    name: &str,
-    status: &str,
-) {
+async fn upsert_item(repo: &distributed::SqliteRepository, id: &str, name: &str, status: &str) {
     let schema = static_schema();
     let mut values = RowValues::new();
     values.insert("id", RowValue::String(id.into()));
@@ -164,6 +163,29 @@ async fn hash_gate_no_push_when_result_unchanged() {
     assert!(
         next.is_err(),
         "hash gate must suppress push when payload unchanged"
+    );
+}
+
+#[tokio::test]
+async fn subscription_unknown_role_returns_error_response() {
+    let (_repo, engine, _pool) = setup_fixed().await;
+    let mut session = user_session();
+    session.set(ROLE_KEY, "ghost");
+
+    let request = Request::new(r#"subscription { items { id name status } }"#);
+    let mut stream = Box::pin(engine.execute_stream(&session, request));
+
+    let response = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("timeout waiting error")
+        .expect("stream ended");
+    assert!(
+        response.is_err(),
+        "unknown role must return an error response"
+    );
+    assert_eq!(
+        response.errors[0].message,
+        "role `ghost` is not configured for GraphQL"
     );
 }
 

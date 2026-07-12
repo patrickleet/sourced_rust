@@ -1,19 +1,17 @@
 //! Selection set → single SQL statement per root field (dialect-portable JSON tree).
+#![allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use async_graphql::Value;
 use serde_json::Value as JsonValue;
 
 use crate::microsvc::Session;
-use crate::table::{
-    resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableSchema,
-};
+use crate::table::{resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableSchema};
 
-use super::engine::{CatalogEntry, EngineInner, RoleModelPerm};
-use super::naming::is_valid_graphql_name;
+use super::engine::{CatalogEntry, EngineInner};
 use super::filter::{CmpOp, FilterExpr, LitValue, Operand};
+use super::naming::is_valid_graphql_name;
 use super::permissions::SelectPermission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,40 +84,7 @@ pub fn compile_root(
         .and_then(value_as_u64)
         .unwrap_or(0);
 
-    let where_sql = compile_where(
-        inner,
-        session,
-        role,
-        &entry.schema,
-        perm,
-        selection.args.get("where"),
-        alias,
-        &mut binds,
-        &mut tables,
-        0,
-    )?;
-
-    let order_sql = compile_order_by(
-        &entry.schema,
-        selection.args.get("order_by"),
-        alias,
-        perm,
-    )?;
-
-    let projection = compile_object_projection(
-        inner,
-        session,
-        role,
-        &entry.schema,
-        perm,
-        selection,
-        alias,
-        &mut binds,
-        &mut bytes_paths,
-        &mut tables,
-        "",
-        0,
-    )?;
+    let order_sql = compile_order_by(&entry.schema, selection.args.get("order_by"), alias, perm)?;
 
     let (json_agg, coalesce_empty, json_cast) = match inner.dialect {
         SqlDialect::Postgres => ("jsonb_agg", "'[]'::jsonb", ""),
@@ -129,6 +94,32 @@ pub fn compile_root(
 
     let sql = match kind {
         RootKind::List => {
+            let projection = compile_object_projection(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection,
+                alias,
+                &mut binds,
+                &mut bytes_paths,
+                &mut tables,
+                "",
+                0,
+            )?;
+            let where_sql = compile_where(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection.args.get("where"),
+                alias,
+                &mut binds,
+                &mut tables,
+                0,
+            )?;
             let agg_arg = if json_cast.is_empty() {
                 "root".to_string()
             } else {
@@ -148,12 +139,26 @@ pub fn compile_root(
             )
         }
         RootKind::ByPk => {
-            // PK equality already in where via args as field args.
+            let projection = compile_object_projection(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection,
+                alias,
+                &mut binds,
+                &mut bytes_paths,
+                &mut tables,
+                "",
+                0,
+            )?;
             let mut pk_preds = Vec::new();
             for pk in &entry.schema.primary_key.columns {
-                let v = selection.args.get(pk).ok_or_else(|| {
-                    format!("missing primary key argument `{pk}`")
-                })?;
+                let v = selection
+                    .args
+                    .get(pk)
+                    .ok_or_else(|| format!("missing primary key argument `{pk}`"))?;
                 let col = entry
                     .schema
                     .columns
@@ -165,6 +170,18 @@ pub fn compile_root(
                 let ph = placeholder(inner.dialect, binds.len());
                 pk_preds.push(format!("{alias}.\"{pk}\" = {ph}"));
             }
+            let where_sql = compile_where(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection.args.get("where"),
+                alias,
+                &mut binds,
+                &mut tables,
+                0,
+            )?;
             let pk_where = pk_preds.join(" AND ");
             let full_where = if where_sql == "TRUE" || where_sql == "true" {
                 pk_where
@@ -177,7 +194,18 @@ pub fn compile_root(
             )
         }
         RootKind::Aggregate => {
-            // Simplified aggregate: count + nodes.
+            let where_for_count = compile_where(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection.args.get("where"),
+                alias,
+                &mut binds,
+                &mut tables,
+                0,
+            )?;
             let nodes_proj = compile_object_projection(
                 inner,
                 session,
@@ -196,8 +224,20 @@ pub fn compile_root(
                 "nodes",
                 0,
             )?;
+            let where_for_nodes = compile_where(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection.args.get("where"),
+                alias,
+                &mut binds,
+                &mut tables,
+                0,
+            )?;
             format!(
-                "SELECT {build_obj}('aggregate', {build_obj}('count', (SELECT count(*) FROM \"{table}\" {alias} WHERE {where_sql})), 'nodes', coalesce((SELECT {json_agg}(n) FROM (SELECT {nodes_proj} AS n FROM \"{table}\" {alias} WHERE {where_sql} {order_sql} LIMIT {lim} OFFSET {off}) x), {coalesce_empty}))",
+                "SELECT {build_obj}('aggregate', {build_obj}('count', (SELECT count(*) FROM \"{table}\" {alias} WHERE {where_for_count})), 'nodes', coalesce((SELECT {json_agg}(n) FROM (SELECT {nodes_proj} AS n FROM \"{table}\" {alias} WHERE {where_for_nodes} {order_sql} LIMIT {lim} OFFSET {off}) x), {coalesce_empty}))",
                 build_obj = match inner.dialect {
                     SqlDialect::Postgres => "jsonb_build_object",
                     SqlDialect::Sqlite => "json_object",
@@ -310,8 +350,48 @@ fn compile_object_projection(
         }
     } else {
         for child in fields {
-            if child.field_name.ends_with("_aggregate") {
-                // Nested aggregate: simplified skip or count-only.
+            if let Some(rel_name) = child.field_name.strip_suffix("_aggregate") {
+                if let Some(rel) = schema
+                    .relationships
+                    .iter()
+                    .find(|r| r.field_name == rel_name)
+                {
+                    let target_entry = match inner.catalog.get(&rel.target_model) {
+                        Some(e) => e,
+                        None => continue,
+                    };
+                    let target_perm = match inner
+                        .permissions
+                        .get(&(rel.target_model.clone(), role.to_string()))
+                    {
+                        Some(p) if p.permission.allow_aggregations => &p.permission,
+                        _ => continue,
+                    };
+                    tables.push(target_entry.schema.table_name.clone());
+                    let child_path = if path_prefix.is_empty() {
+                        child.response_key.clone()
+                    } else {
+                        format!("{path_prefix}.{}", child.response_key)
+                    };
+                    let sub = compile_relationship_aggregate_subquery(
+                        inner,
+                        session,
+                        role,
+                        schema,
+                        alias,
+                        rel,
+                        target_entry,
+                        target_perm,
+                        child,
+                        binds,
+                        bytes_paths,
+                        tables,
+                        &child_path,
+                        depth + 1,
+                    )?;
+                    validate_response_key(&child.response_key)?;
+                    pairs.push((child.response_key.clone(), sub));
+                }
                 continue;
             }
             if let Some(col) = schema
@@ -384,6 +464,155 @@ fn compile_object_projection(
     Ok(chunked_json_object(inner.dialect, &pairs))
 }
 
+fn compile_relationship_aggregate_subquery(
+    inner: &EngineInner,
+    session: &Session,
+    role: &str,
+    source: &TableSchema,
+    source_alias: &str,
+    rel: &crate::table::RelationshipDef,
+    target: &CatalogEntry,
+    target_perm: &SelectPermission,
+    selection: &SelectionNode,
+    binds: &mut Vec<BindValue>,
+    bytes_paths: &mut Vec<String>,
+    tables: &mut Vec<String>,
+    path_prefix: &str,
+    depth: usize,
+) -> Result<String, String> {
+    let child_alias = format!("ta{depth}");
+    let fk = rel.foreign_key.as_deref().unwrap_or("");
+    let source_pk = source
+        .primary_key
+        .columns
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("id");
+
+    let (from_sql, join_pred) = match rel.kind {
+        RelationshipKind::HasMany => {
+            let target_fk = column_name_for(&target.schema, fk).unwrap_or(fk);
+            (
+                format!("\"{}\" {child_alias}", target.schema.table_name),
+                format!("{child_alias}.\"{target_fk}\" = {source_alias}.\"{source_pk}\""),
+            )
+        }
+        RelationshipKind::ManyToMany => {
+            let through_name = rel
+                .through
+                .as_deref()
+                .ok_or_else(|| "m2m missing through".to_string())?;
+            let through_model = inner
+                .by_table
+                .get(through_name)
+                .and_then(|m| inner.catalog.get(m))
+                .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
+            let target_fk =
+                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
+                    .map_err(|e| e.to_string())?;
+            let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
+            let target_pk = target
+                .schema
+                .primary_key
+                .columns
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("id");
+            let join_alias = format!("ja{depth}");
+            tables.push(through_name.to_string());
+            (
+                format!(
+                    "\"{}\" {child_alias} JOIN \"{through_name}\" {join_alias} ON {join_alias}.\"{target_fk}\" = {child_alias}.\"{target_pk}\"",
+                    target.schema.table_name
+                ),
+                format!("{join_alias}.\"{source_join_col}\" = {source_alias}.\"{source_pk}\""),
+            )
+        }
+        RelationshipKind::BelongsTo => {
+            return Err("belongs_to aggregate is not supported".into());
+        }
+    };
+
+    let where_for_count = compile_where(
+        inner,
+        session,
+        role,
+        &target.schema,
+        target_perm,
+        selection.args.get("where"),
+        &child_alias,
+        binds,
+        tables,
+        depth,
+    )?;
+    let nodes_selection = selection
+        .children
+        .iter()
+        .find(|c| c.field_name == "nodes")
+        .unwrap_or(selection);
+    let nodes_path = format!("{path_prefix}.nodes");
+    let nodes_proj = compile_object_projection(
+        inner,
+        session,
+        role,
+        &target.schema,
+        target_perm,
+        nodes_selection,
+        &child_alias,
+        binds,
+        bytes_paths,
+        tables,
+        &nodes_path,
+        depth,
+    )?;
+    let where_for_nodes = compile_where(
+        inner,
+        session,
+        role,
+        &target.schema,
+        target_perm,
+        selection.args.get("where"),
+        &child_alias,
+        binds,
+        tables,
+        depth,
+    )?;
+    let order_sql = compile_order_by(
+        &target.schema,
+        selection.args.get("order_by"),
+        &child_alias,
+        target_perm,
+    )?;
+    let limit = resolve_limit(
+        selection.args.get("limit"),
+        target_perm.limit,
+        inner.default_limit,
+        inner.max_limit,
+    );
+    let offset = selection
+        .args
+        .get("offset")
+        .and_then(value_as_u64)
+        .unwrap_or(0);
+
+    let (build_obj, json_agg, coalesce_empty) = match inner.dialect {
+        SqlDialect::Postgres => ("jsonb_build_object", "jsonb_agg", "'[]'::jsonb"),
+        SqlDialect::Sqlite => ("json_object", "json_group_array", "'[]'"),
+    };
+    let lim = {
+        binds.push(BindValue::I64(limit as i64));
+        placeholder(inner.dialect, binds.len())
+    };
+    let off = {
+        binds.push(BindValue::I64(offset as i64));
+        placeholder(inner.dialect, binds.len())
+    };
+
+    Ok(format!(
+        "{build_obj}('aggregate', {build_obj}('count', (SELECT count(*) FROM {from_sql} WHERE {join_pred} AND ({where_for_count}))), 'nodes', coalesce((SELECT {json_agg}(n) FROM (SELECT {nodes_proj} AS n FROM {from_sql} WHERE {join_pred} AND ({where_for_nodes}) {order_sql} LIMIT {lim} OFFSET {off}) nested_agg_rows), {coalesce_empty}))"
+    ))
+}
+
 fn column_json_expr(
     dialect: SqlDialect,
     alias: &str,
@@ -395,7 +624,7 @@ fn column_json_expr(
         (ColumnType::Timestamp, SqlDialect::Postgres) => format!("{q}::text"),
         (ColumnType::Bytes, SqlDialect::Postgres) => format!("encode({q}, 'base64')"),
         (ColumnType::Bytes, SqlDialect::Sqlite) => format!("hex({q})"),
-        (ColumnType::Json, SqlDialect::Postgres) => format!("{q}"),
+        (ColumnType::Json, SqlDialect::Postgres) => q.to_string(),
         _ => q,
     })
 }
@@ -494,13 +723,26 @@ fn compile_relationship_subquery(
     let fk = rel.foreign_key.as_deref().unwrap_or("");
     let fk_col = column_name_for(source, fk).unwrap_or(fk);
     let target_fk_col = column_name_for(&target.schema, fk).unwrap_or(fk);
+    let source_pk_col = source
+        .primary_key
+        .columns
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("id");
+    let target_pk_col = target
+        .schema
+        .primary_key
+        .columns
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("id");
 
     let join_pred = match rel.kind {
         RelationshipKind::HasMany => {
-            format!("{child_alias}.\"{target_fk_col}\" = {source_alias}.\"{fk_col}\"")
+            format!("{child_alias}.\"{target_fk_col}\" = {source_alias}.\"{source_pk_col}\"")
         }
         RelationshipKind::BelongsTo => {
-            format!("{child_alias}.\"{target_fk_col}\" = {source_alias}.\"{fk_col}\"")
+            format!("{child_alias}.\"{target_pk_col}\" = {source_alias}.\"{fk_col}\"")
         }
         RelationshipKind::ManyToMany => {
             let through_name = rel
@@ -512,13 +754,9 @@ fn compile_relationship_subquery(
                 .get(through_name)
                 .and_then(|m| inner.catalog.get(m))
                 .ok_or_else(|| format!("through table `{through_name}` not in catalog"))?;
-            let target_fk = resolve_m2m_target_foreign_key(
-                source,
-                rel,
-                &through_model.schema,
-                &target.schema,
-            )
-            .map_err(|e| e.to_string())?;
+            let target_fk =
+                resolve_m2m_target_foreign_key(source, rel, &through_model.schema, &target.schema)
+                    .map_err(|e| e.to_string())?;
             let source_join_col = column_name_for(&through_model.schema, fk).unwrap_or(fk);
             // Source PK for join (single-column assumption with FK fallback).
             let source_pk = source
@@ -559,18 +797,6 @@ fn compile_relationship_subquery(
         }
     };
 
-    let where_extra = compile_where(
-        inner,
-        session,
-        role,
-        &target.schema,
-        target_perm,
-        selection.args.get("where"),
-        &child_alias,
-        binds,
-        tables,
-        depth,
-    )?;
     let order_sql = compile_order_by(
         &target.schema,
         selection.args.get("order_by"),
@@ -589,6 +815,18 @@ fn compile_relationship_subquery(
         bytes_paths,
         tables,
         path_prefix,
+        depth,
+    )?;
+    let where_extra = compile_where(
+        inner,
+        session,
+        role,
+        &target.schema,
+        target_perm,
+        selection.args.get("where"),
+        &child_alias,
+        binds,
+        tables,
         depth,
     )?;
 
@@ -638,18 +876,6 @@ fn compile_m2m_subquery(
 ) -> Result<String, String> {
     let child_alias = format!("t{depth}");
     let j_alias = format!("j{depth}");
-    let where_extra = compile_where(
-        inner,
-        session,
-        role,
-        target_schema,
-        target_perm,
-        selection.args.get("where"),
-        &child_alias,
-        binds,
-        tables,
-        depth,
-    )?;
     let order_sql = compile_order_by(
         target_schema,
         selection.args.get("order_by"),
@@ -668,6 +894,18 @@ fn compile_m2m_subquery(
         bytes_paths,
         tables,
         path_prefix,
+        depth,
+    )?;
+    let where_extra = compile_where(
+        inner,
+        session,
+        role,
+        target_schema,
+        target_perm,
+        selection.args.get("where"),
+        &child_alias,
+        binds,
+        tables,
         depth,
     )?;
     let (json_agg, coalesce_empty) = match inner.dialect {
@@ -925,14 +1163,12 @@ fn compile_filter_expr(
             match rel.kind {
                 RelationshipKind::HasMany => {
                     let target_fk = column_name_for(&target.schema, fk).unwrap_or(fk);
-                    let source_col = column_name_for(schema, fk).unwrap_or(
-                        schema
-                            .primary_key
-                            .columns
-                            .first()
-                            .map(|s| s.as_str())
-                            .unwrap_or("id"),
-                    );
+                    let source_col = schema
+                        .primary_key
+                        .columns
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("id");
                     Ok(format!(
                         "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_fk}\" = {alias}.\"{source_col}\" AND ({inner_pred}))",
                         target.schema.table_name
@@ -940,15 +1176,13 @@ fn compile_filter_expr(
                 }
                 RelationshipKind::BelongsTo => {
                     let source_fk = column_name_for(schema, fk).unwrap_or(fk);
-                    let target_pk = column_name_for(&target.schema, fk).unwrap_or(
-                        target
-                            .schema
-                            .primary_key
-                            .columns
-                            .first()
-                            .map(|s| s.as_str())
-                            .unwrap_or("id"),
-                    );
+                    let target_pk = target
+                        .schema
+                        .primary_key
+                        .columns
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("id");
                     Ok(format!(
                         "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_pk}\" = {alias}.\"{source_fk}\" AND ({inner_pred}))",
                         target.schema.table_name
@@ -1020,7 +1254,16 @@ fn compile_client_where(
                 if let Value::List(items) = val {
                     for item in items {
                         preds.push(compile_client_where(
-                            inner, session, role, schema, perm, item, alias, binds, tables, depth + 1,
+                            inner,
+                            session,
+                            role,
+                            schema,
+                            perm,
+                            item,
+                            alias,
+                            binds,
+                            tables,
+                            depth + 1,
                         )?);
                     }
                 }
@@ -1030,7 +1273,16 @@ fn compile_client_where(
                     let mut parts = Vec::new();
                     for item in items {
                         parts.push(compile_client_where(
-                            inner, session, role, schema, perm, item, alias, binds, tables, depth + 1,
+                            inner,
+                            session,
+                            role,
+                            schema,
+                            perm,
+                            item,
+                            alias,
+                            binds,
+                            tables,
+                            depth + 1,
                         )?);
                     }
                     if !parts.is_empty() {
@@ -1042,7 +1294,16 @@ fn compile_client_where(
                 preds.push(format!(
                     "NOT ({})",
                     compile_client_where(
-                        inner, session, role, schema, perm, val, alias, binds, tables, depth + 1,
+                        inner,
+                        session,
+                        role,
+                        schema,
+                        perm,
+                        val,
+                        alias,
+                        binds,
+                        tables,
+                        depth + 1,
                     )?
                 ));
             }
@@ -1075,6 +1336,7 @@ fn compile_client_where(
                         Some(t) => t,
                         None => continue,
                     };
+                    tables.push(target.schema.table_name.clone());
                     let target_perm = match inner
                         .permissions
                         .get(&(rel.target_model.clone(), role.to_string()))
@@ -1125,7 +1387,43 @@ fn compile_client_where(
                             ));
                         }
                         RelationshipKind::ManyToMany => {
-                            // Simplified: skip if through missing
+                            let through = rel
+                                .through
+                                .as_deref()
+                                .ok_or_else(|| "m2m rel missing through".to_string())?;
+                            let through_entry = inner
+                                .by_table
+                                .get(through)
+                                .and_then(|m| inner.catalog.get(m))
+                                .ok_or_else(|| format!("through `{through}` missing"))?;
+                            let target_fk = resolve_m2m_target_foreign_key(
+                                schema,
+                                rel,
+                                &through_entry.schema,
+                                &target.schema,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            let source_join_col =
+                                column_name_for(&through_entry.schema, fk).unwrap_or(fk);
+                            let source_pk = schema
+                                .primary_key
+                                .columns
+                                .first()
+                                .map(|s| s.as_str())
+                                .unwrap_or("id");
+                            let target_pk = target
+                                .schema
+                                .primary_key
+                                .columns
+                                .first()
+                                .map(|s| s.as_str())
+                                .unwrap_or("id");
+                            let join_alias = format!("cwj{depth}");
+                            tables.push(through.to_string());
+                            preds.push(format!(
+                                "EXISTS (SELECT 1 FROM \"{through}\" {join_alias} JOIN \"{}\" {child_alias} ON {join_alias}.\"{target_fk}\" = {child_alias}.\"{target_pk}\" WHERE {join_alias}.\"{source_join_col}\" = {alias}.\"{source_pk}\" AND ({inner_pred}))",
+                                target.schema.table_name
+                            ));
                         }
                     }
                 }
@@ -1327,6 +1625,7 @@ pub fn selection_from_field(field: async_graphql::SelectionField<'_>) -> Selecti
 }
 
 /// Helper for pure unit tests without an engine.
+#[allow(dead_code)]
 pub fn compile_list_sql_for_test(
     dialect: SqlDialect,
     schema: &TableSchema,

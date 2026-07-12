@@ -1,4 +1,5 @@
 //! Per-role dynamic schema construction (async-graphql).
+#![allow(clippy::items_after_test_module, clippy::too_many_arguments)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use std::sync::Arc;
 use async_graphql::dynamic::{
     Field, FieldFuture, InputObject, InputValue, Object, Scalar, Schema, SchemaError, TypeRef,
 };
-use async_graphql::{Name, Value};
+use async_graphql::Value;
 
 use crate::microsvc::Session;
 use crate::table::{RelationshipKind, TableSchema};
@@ -31,7 +32,7 @@ pub fn build_role_schema(
     dialect: SqlDialect,
     disable_introspection: bool,
 ) -> Result<Schema, String> {
-    let _ = (by_table, dialect);
+    let _ = by_table;
 
     // Collect models granted to this role.
     let granted: Vec<(&str, &TableSchema, &SelectPermission)> = permissions
@@ -101,9 +102,7 @@ pub fn build_role_schema(
             TypeRef::named_nn_list_nn(obj_name.clone()),
             move |ctx| {
                 let model = model_for_resolver.clone();
-                FieldFuture::new(async move {
-                    resolve_root(&ctx, &model, RootKind::List).await
-                })
+                FieldFuture::new(async move { resolve_root(&ctx, &model, RootKind::List).await })
             },
         )
         .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
@@ -124,10 +123,8 @@ pub fn build_role_schema(
         for pk in &schema.primary_key.columns {
             if let Some(col) = schema.columns.iter().find(|c| c.column_name == *pk) {
                 if let Some(scalar) = scalar_type_name(&col.column_type) {
-                    pk_field = pk_field.argument(InputValue::new(
-                        pk.as_str(),
-                        TypeRef::named_nn(scalar),
-                    ));
+                    pk_field =
+                        pk_field.argument(InputValue::new(pk.as_str(), TypeRef::named_nn(scalar)));
                 }
             }
         }
@@ -141,9 +138,9 @@ pub fn build_role_schema(
             let model_for_agg = model_name.clone();
             let agg_field = Field::new(agg_name, TypeRef::named(agg_type), move |ctx| {
                 let model = model_for_agg.clone();
-                FieldFuture::new(async move {
-                    resolve_root(&ctx, &model, RootKind::Aggregate).await
-                })
+                FieldFuture::new(
+                    async move { resolve_root(&ctx, &model, RootKind::Aggregate).await },
+                )
             })
             .argument(InputValue::new("where", TypeRef::named(bool_exp)));
             query = query.field(agg_field);
@@ -156,33 +153,31 @@ pub fn build_role_schema(
             *scalar,
             "String" | "Boolean" | "BigInt" | "Float" | "JSON" | "Timestamptz" | "Bytea"
         ) {
-            let name = comparison_exp_name(scalar);
-            if !registered_inputs.contains_key(&name) {
-                let mut input = InputObject::new(name.clone());
+            let scalar_name = *scalar;
+            let name = comparison_exp_name(scalar_name);
+            registered_inputs.entry(name.clone()).or_insert_with(|| {
+                let mut input = InputObject::new(name);
                 for op in ["_eq", "_neq", "_gt", "_gte", "_lt", "_lte"] {
-                    input = input.field(InputValue::new(op, TypeRef::named(*scalar)));
+                    input = input.field(InputValue::new(op, TypeRef::named(scalar_name)));
                 }
                 // Optional lists: [T!] (not [T!]!)
+                input = input.field(InputValue::new("_in", TypeRef::named_nn_list(scalar_name)));
+                input = input.field(InputValue::new("_nin", TypeRef::named_nn_list(scalar_name)));
                 input = input.field(InputValue::new(
-                    "_in",
-                    TypeRef::named_nn_list(*scalar),
+                    "_is_null",
+                    TypeRef::named(TypeRef::BOOLEAN),
                 ));
-                input = input.field(InputValue::new(
-                    "_nin",
-                    TypeRef::named_nn_list(*scalar),
-                ));
-                input = input.field(InputValue::new("_is_null", TypeRef::named(TypeRef::BOOLEAN)));
-                if *scalar == "String" {
+                if scalar_name == "String" {
                     input = input.field(InputValue::new("_like", TypeRef::named("String")));
                     input = input.field(InputValue::new("_ilike", TypeRef::named("String")));
                 }
-                if *scalar == "JSON" && matches!(dialect, SqlDialect::Postgres) {
+                if scalar_name == "JSON" && matches!(dialect, SqlDialect::Postgres) {
                     input = input.field(InputValue::new("_contains", TypeRef::named("JSON")));
                     input = input.field(InputValue::new("_contained_in", TypeRef::named("JSON")));
                     input = input.field(InputValue::new("_has_key", TypeRef::named("String")));
                 }
-                registered_inputs.insert(name, input);
-            }
+                input
+            });
         }
     }
 
@@ -218,14 +213,10 @@ pub fn build_role_schema(
                 CommandOutput::Typed(t) => t.name.as_str(),
             };
             let cmd_name = cmd_name.clone();
-            let mut field = Field::new(
-                field_name,
-                TypeRef::named_nn(output_type),
-                move |ctx| {
-                    let cmd_name = cmd_name.clone();
-                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
-                },
-            );
+            let mut field = Field::new(field_name, TypeRef::named_nn(output_type), move |ctx| {
+                let cmd_name = cmd_name.clone();
+                FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
+            });
             match &cmd.input {
                 CommandInput::None => {}
                 CommandInput::Json => {
@@ -255,14 +246,15 @@ pub fn build_role_schema(
         let bool_exp = bool_exp_name(schema);
         let order_by = order_by_name(schema);
         let model_for_sub = (*model_name).to_string();
-        let field = SubscriptionField::new(
-            table,
-            TypeRef::named_nn_list_nn(obj_name),
-            move |ctx| {
+        let field =
+            SubscriptionField::new(table, TypeRef::named_nn_list_nn(obj_name), move |ctx| {
                 let model = model_for_sub.clone();
                 // Extract owned data before the async block (stream is 'static).
                 let inner = ctx.data_opt::<Arc<EngineInner>>().cloned();
-                let session = ctx.data_opt::<Session>().cloned().unwrap_or_else(Session::new);
+                let session = ctx
+                    .data_opt::<Session>()
+                    .cloned()
+                    .unwrap_or_else(Session::new);
                 let selection = compile::selection_from_field(ctx.field());
                 SubscriptionFieldFuture::new(async move {
                     let inner = inner.ok_or_else(|| {
@@ -272,36 +264,34 @@ pub fn build_role_schema(
                         .role()
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| inner.anonymous_role.clone());
-                    let stream = super::subscribe::live_query_stream(
-                        inner,
-                        session,
-                        role,
-                        model,
-                        selection,
-                    )
-                    .await
-                    .map_err(async_graphql::Error::new)?;
+                    let stream =
+                        super::subscribe::live_query_stream(inner, session, role, model, selection)
+                            .await
+                            .map_err(async_graphql::Error::new)?;
                     Ok(stream)
                 })
-            },
-        )
-        .argument(InputValue::new("where", TypeRef::named(bool_exp)))
-        .argument(InputValue::new(
-            "order_by",
-            TypeRef::named_nn_list(order_by),
-        ))
-        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-        .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+            })
+            .argument(InputValue::new("where", TypeRef::named(bool_exp)))
+            .argument(InputValue::new(
+                "order_by",
+                TypeRef::named_nn_list(order_by),
+            ))
+            .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+            .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
         subscription = subscription.field(field);
         has_subscription = true;
     }
 
     let mut builder = if let Some(m) = mutation {
         if has_subscription {
-            Schema::build(query.type_name(), Some(m.type_name()), Some(subscription.type_name()))
-                .register(query)
-                .register(m)
-                .register(subscription)
+            Schema::build(
+                query.type_name(),
+                Some(m.type_name()),
+                Some(subscription.type_name()),
+            )
+            .register(query)
+            .register(m)
+            .register(subscription)
         } else {
             Schema::build(query.type_name(), Some(m.type_name()), None)
                 .register(query)
@@ -348,6 +338,8 @@ fn ensure_object_type(
     if objects.contains_key(&name) {
         return;
     }
+    // Break relationship cycles while nested object fields are registered.
+    objects.insert(name.clone(), Object::new(name.clone()));
     let mut obj = Object::new(name.clone());
     for col in schema.columns.iter().filter(|c| !c.skipped) {
         if !perm.allows_column(&col.column_name) {
@@ -419,7 +411,7 @@ fn ensure_object_type(
                         FieldFuture::new(async move { passthrough(&ctx, &key) })
                     },
                 )
-                .argument(InputValue::new("where", TypeRef::named(bool_exp)))
+                .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
                 .argument(InputValue::new(
                     "order_by",
                     TypeRef::named_nn_list(order_by),
@@ -427,6 +419,18 @@ fn ensure_object_type(
                 .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
                 .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
                 obj = obj.field(field);
+                if target_perm.permission.allow_aggregations {
+                    ensure_aggregate_type(objects, &target.schema);
+                    let agg_key = format!("{}_aggregate", rel.field_name);
+                    let agg_type = format!("{}_aggregate", target.schema.table_name);
+                    let field_key = agg_key.clone();
+                    let agg_field = Field::new(agg_key, TypeRef::named(agg_type), move |ctx| {
+                        let key = field_key.clone();
+                        FieldFuture::new(async move { passthrough(&ctx, &key) })
+                    })
+                    .argument(InputValue::new("where", TypeRef::named(bool_exp)));
+                    obj = obj.field(agg_field);
+                }
             }
         }
     }
@@ -466,7 +470,10 @@ fn ensure_bool_exp(
         if let Some(scalar) = scalar_type_name(&col.column_type) {
             scalars.insert(scalar);
             let cmp = comparison_exp_name(scalar);
-            input = input.field(InputValue::new(col.column_name.as_str(), TypeRef::named(cmp)));
+            input = input.field(InputValue::new(
+                col.column_name.as_str(),
+                TypeRef::named(cmp),
+            ));
         }
     }
     for rel in &schema.relationships {
@@ -528,9 +535,11 @@ fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, schema: &TableS
     }
     let fields_name = format!("{}_aggregate_fields", schema.table_name);
     let mut fields_obj = Object::new(fields_name.clone());
-    fields_obj = fields_obj.field(Field::new("count", TypeRef::named_nn(TypeRef::INT), |ctx| {
-        FieldFuture::new(async move { passthrough(&ctx, "count") })
-    }));
+    fields_obj = fields_obj.field(Field::new(
+        "count",
+        TypeRef::named_nn(TypeRef::INT),
+        |ctx| FieldFuture::new(async move { passthrough(&ctx, "count") }),
+    ));
     objects.insert(fields_name.clone(), fields_obj);
 
     let mut agg_obj = Object::new(agg.clone());
@@ -540,11 +549,9 @@ fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, schema: &TableS
         |ctx| FieldFuture::new(async move { passthrough(&ctx, "aggregate") }),
     ));
     let obj = object_type_name(schema).to_string();
-    agg_obj = agg_obj.field(Field::new(
-        "nodes",
-        TypeRef::named_nn_list_nn(obj),
-        |ctx| FieldFuture::new(async move { passthrough(&ctx, "nodes") }),
-    ));
+    agg_obj = agg_obj.field(Field::new("nodes", TypeRef::named_nn_list_nn(obj), |ctx| {
+        FieldFuture::new(async move { passthrough(&ctx, "nodes") })
+    }));
     objects.insert(agg, agg_obj);
 }
 
@@ -699,28 +706,6 @@ mod execute_err_mapping_tests {
             "expected INTERNAL extension, got {code:?}"
         );
     }
-}
-
-async fn resolve_subscription_live(
-    ctx: &async_graphql::dynamic::ResolverContext<'_>,
-    model: &str,
-) -> Result<super::subscribe::LiveQueryStream, async_graphql::Error> {
-    let inner = ctx
-        .data_opt::<Arc<EngineInner>>()
-        .cloned()
-        .ok_or_else(|| async_graphql::Error::new("GraphqlEngine not in request data"))?;
-    let session = ctx
-        .data_opt::<Session>()
-        .cloned()
-        .unwrap_or_else(Session::new);
-    let role = session
-        .role()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| inner.anonymous_role.clone());
-    let selection = compile::selection_from_field(ctx.field());
-    super::subscribe::live_query_stream(inner, session, role, model.to_string(), selection)
-        .await
-        .map_err(async_graphql::Error::new)
 }
 
 async fn resolve_command(

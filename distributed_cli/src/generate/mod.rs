@@ -471,6 +471,26 @@ mod tests {
             service.contains("build_with_graphql") && service.contains("with_graphql"),
             "service must wire GraphQL: {service}"
         );
+        assert!(
+            service.contains("pub type ServiceRepo = SqliteRepository;"),
+            "query-api service must use the SQL repository type: {service}"
+        );
+        assert!(
+            service.contains("let repo = ServiceRepo::connect_and_migrate(&database_url).await?;"),
+            "build_with_graphql must open the persistent repository: {service}"
+        );
+        assert!(
+            service.contains("let engine = crate::query::build_engine(repo.pool().clone())?;"),
+            "build_with_graphql must build GraphQL from the repository pool: {service}"
+        );
+        assert!(
+            service.contains("Routes::new().with_dependencies(repo),"),
+            "build_with_graphql routes must use the persistent repository: {service}"
+        );
+        assert!(
+            !service.contains("Routes::new().with_dependencies(InMemoryRepository::new())"),
+            "build_with_graphql must not route commands to an in-memory repository: {service}"
+        );
         let main = contents(&project, "src/main.rs");
         assert!(
             main.contains("build_with_graphql"),
@@ -478,8 +498,7 @@ mod tests {
         );
         let query_mod = contents(&project, "src/query/mod.rs");
         assert!(
-            query_mod.contains(".graphiql(")
-                && query_mod.contains("graphiql_enabled_from_env"),
+            query_mod.contains(".graphiql(") && query_mod.contains("graphiql_enabled_from_env"),
             "query build_engine must wire GraphiQL via graphiql_enabled_from_env: {query_mod}"
         );
 
@@ -499,7 +518,7 @@ mod tests {
             deployment.contains(".Values.queryApi.databaseUrl"),
             "deployment must bind DATABASE_URL from values: {deployment}"
         );
-        assert!(deployment.contains(".Values.queryApi.enabled"));
+        assert!(deployment.contains("if and .Values.queryApi.enabled .Values.queryApi.databaseUrl"));
     }
 
     #[test]

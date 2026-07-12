@@ -434,6 +434,7 @@ impl crate::sqlx_repo::read_model::SqlxReadModelBackend for Postgres {
         })
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn push_change_notify<'e, E>(
         executor: E,
         tables: &std::collections::BTreeSet<String>,

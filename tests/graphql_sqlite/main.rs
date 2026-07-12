@@ -2,13 +2,10 @@
 
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
 
-use std::sync::Arc;
-
 use async_graphql::Request;
 use distributed::{
-    graphql::{col, claim, select, GraphqlEngine, ModelPermissions},
-    microsvc::Session,
-    ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema, ROLE_KEY, USER_ID_KEY,
+    graphql::GraphqlEngine, microsvc::Session, ColumnType, PrimaryKey, RelationshipDef,
+    RelationshipKind, TableColumn, TableKind, TableSchema, ROLE_KEY, USER_ID_KEY,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -70,18 +67,9 @@ fn session_role(role: &str, user: &str) -> Session {
 
 #[tokio::test]
 async fn list_filter_and_by_pk() {
-    let pool = setup_pool().await;
     let schema = orders_schema();
-    // Register via table_schema + grant_all path using from_manifest-like builder
-    let engine = GraphqlEngine::builder(pool)
-        .table_schema(schema.clone())
-        // need exposed registration — use grant after manual exposed insert
-        // Builder: table_schema is shadow; use from_manifest instead
-        ;
-    drop(engine);
 
-    let manifest = distributed::DistributedProjectManifest::new("orders")
-        .table_schema(schema);
+    let manifest = distributed::DistributedProjectManifest::new("orders").table_schema(schema);
     let pool = setup_pool().await;
     let engine = GraphqlEngine::from_manifest(&manifest, pool)
         .unwrap()
@@ -94,7 +82,9 @@ async fn list_filter_and_by_pk() {
     let resp = engine
         .execute(
             &session,
-            Request::new(r#"{ orders(where: { status: { _eq: "open" } }, limit: 10) { order_id status } }"#),
+            Request::new(
+                r#"{ orders(where: { status: { _eq: "open" } }, limit: 10) { order_id status } }"#,
+            ),
         )
         .await;
     assert!(!resp.is_err(), "{:?}", resp.errors);
@@ -114,11 +104,218 @@ async fn list_filter_and_by_pk() {
     assert_eq!(data["orders_by_pk"]["order_id"], "o1");
 }
 
+fn parent_schema() -> TableSchema {
+    TableSchema {
+        model_name: "ParentView".into(),
+        table_name: "parents".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn::new("name", "name", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "children".into(),
+            kind: RelationshipKind::HasMany,
+            target_model: "ChildView".into(),
+            foreign_key: Some("parent_id".into()),
+            through: None,
+            target_foreign_key: None,
+        }],
+        kind: TableKind::ReadModel,
+    }
+}
+
+fn child_schema() -> TableSchema {
+    TableSchema {
+        model_name: "ChildView".into(),
+        table_name: "children".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("child_id", "child_id", ColumnType::Text)
+            },
+            TableColumn::new("parent_id", "parent_id", ColumnType::Text),
+            TableColumn::new("name", "name", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["child_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    }
+}
+
+#[tokio::test]
+async fn sqlite_binds_follow_projection_then_where_order_for_relationships() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for sql in [
+        "CREATE TABLE parents (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE children (child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL)",
+        "INSERT INTO parents VALUES ('p1', 'P'), ('p2', 'Other')",
+        "INSERT INTO children VALUES ('c1', 'p1', 'C1'), ('c2', 'p1', 'C2'), ('c3', 'p2', 'C2')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+
+    let manifest = distributed::DistributedProjectManifest::new("rel")
+        .table_schema(parent_schema())
+        .table_schema(child_schema());
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .build()
+        .expect("build");
+
+    let session = session_role("user", "u1");
+    let resp = engine
+        .execute(
+            &session,
+            Request::new(
+                r#"{ parents(where: { name: { _eq: "P" } }) { id children(where: { name: { _eq: "C2" } }) { child_id name } } }"#,
+            ),
+        )
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    let parents = data["parents"].as_array().expect("parents");
+    assert_eq!(
+        parents.len(),
+        1,
+        "root where bind must match parent name: {data}"
+    );
+    let children = parents[0]["children"].as_array().expect("children");
+    assert_eq!(
+        children.len(),
+        1,
+        "nested where bind must match child name: {data}"
+    );
+    assert_eq!(children[0]["child_id"], "c2");
+
+    let sdl = engine.sdl_for_role("user").expect("user schema");
+    assert!(
+        sdl.contains("children_aggregate"),
+        "relationship aggregate field must be present in runtime SDL: {sdl}"
+    );
+
+    let resp = engine
+        .execute(
+            &session,
+            Request::new(
+                r#"{ parents(where: { name: { _eq: "P" } }) { id children_aggregate(where: { name: { _eq: "C2" } }) { aggregate { count } nodes { child_id name } } } }"#,
+            ),
+        )
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    let aggregate = &data["parents"][0]["children_aggregate"];
+    assert_eq!(aggregate["aggregate"]["count"], 1, "{data}");
+    let nodes = aggregate["nodes"].as_array().expect("aggregate nodes");
+    assert_eq!(nodes.len(), 1, "{data}");
+    assert_eq!(nodes[0]["child_id"], "c2");
+}
+
+fn author_schema() -> TableSchema {
+    TableSchema {
+        model_name: "AuthorView".into(),
+        table_name: "authors".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("id", "id", ColumnType::Text)
+            },
+            TableColumn::new("name", "name", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    }
+}
+
+fn post_schema() -> TableSchema {
+    TableSchema {
+        model_name: "PostView".into(),
+        table_name: "posts".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("post_id", "post_id", ColumnType::Text)
+            },
+            TableColumn::new("author_id", "author_id", ColumnType::Text),
+            TableColumn::new("title", "title", ColumnType::Text),
+        ],
+        primary_key: PrimaryKey::new(["post_id"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: vec![RelationshipDef {
+            field_name: "author".into(),
+            kind: RelationshipKind::BelongsTo,
+            target_model: "AuthorView".into(),
+            foreign_key: Some("author_id".into()),
+            through: None,
+            target_foreign_key: None,
+        }],
+        kind: TableKind::ReadModel,
+    }
+}
+
+#[tokio::test]
+async fn belongs_to_joins_source_fk_to_target_primary_key() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for sql in [
+        "CREATE TABLE authors (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE posts (post_id TEXT PRIMARY KEY, author_id TEXT NOT NULL, title TEXT NOT NULL)",
+        "INSERT INTO authors VALUES ('a1', 'Ada')",
+        "INSERT INTO posts VALUES ('p1', 'a1', 'GraphQL')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+
+    let manifest = distributed::DistributedProjectManifest::new("posts")
+        .table_schema(author_schema())
+        .table_schema(post_schema());
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .build()
+        .expect("build");
+
+    let session = session_role("user", "u1");
+    let resp = engine
+        .execute(
+            &session,
+            Request::new(r#"{ posts { post_id author { id name } } }"#),
+        )
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    assert_eq!(data["posts"][0]["author"]["id"], "a1");
+    assert_eq!(data["posts"][0]["author"]["name"], "Ada");
+}
+
 #[tokio::test]
 async fn permissions_filter_by_claim() {
     let schema = orders_schema();
-    let manifest = distributed::DistributedProjectManifest::new("orders")
-        .table_schema(schema.clone());
+    let manifest =
+        distributed::DistributedProjectManifest::new("orders").table_schema(schema.clone());
     let pool = setup_pool().await;
 
     // Value-based path: grant_all then we need typed permission — use builder
@@ -139,10 +336,12 @@ async fn permissions_filter_by_claim() {
     let resp = engine
         .execute(&anon, Request::new(r#"{ orders { order_id } }"#))
         .await;
-    assert!(resp.is_err() || {
-        let v = serde_json::to_value(&resp.data).unwrap();
-        v.get("orders").is_none()
-    });
+    assert!(
+        resp.is_err() || {
+            let v = serde_json::to_value(&resp.data).unwrap();
+            v.get("orders").is_none()
+        }
+    );
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ use distributed::graphql::{
     graphiql_enabled_from_env_vars, select, GraphqlEngine, ModelPermissions,
 };
 use distributed::microsvc::{router, Service};
-use distributed::{ReadModel, RelationalReadModel};
+use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 use tower::util::ServiceExt;
@@ -108,7 +108,10 @@ async fn post_graphql_with_role_returns_data() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(
-        v["data"]["http_items"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        v["data"]["http_items"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
         "response: {v}"
     );
 }
