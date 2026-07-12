@@ -8,6 +8,7 @@ priority: high
 tags: [graphql, query-layer, status, tracking]
 ---
 
+
 ## Overview
 
 Living **gap tracker** for the query-layer product package.  
@@ -29,7 +30,7 @@ Living **gap tracker** for the query-layer product package.
 **Work scheduling:** [[tasks/graphql-qs-harden-1]].  
 **Filesystem mirror:** `docs/query-layer/` (project after big updates).
 
-**Last reviewed:** 2026-07-11 · Code baseline: GraphQL QS on `tasks--graphql-qs-epic` / PR #127 (`feat!` GraphQL engine landed; harden gaps open).
+**Last reviewed:** 2026-07-11 · Code baseline: `ed45c44` on `tasks--graphql-qs-epic` / PR #127. **P0+P1 harden closed**; P2 open.
 
 ```mermaid
 flowchart LR
@@ -71,7 +72,7 @@ flowchart LR
 | Bound parameters for values | Never interpolate client values | Shipped | **done** | security |
 | Response keys / aliases in SQL | GraphQL Name allowlist; reject bad keys | `validate_response_key` in compile; unit tests | **done** | security · harden-2 |
 | JSON String fidelity | Strings that look like JSON stay strings | Object leaf strings preserved; array elements still deep-parsed | **done** | security · harden-3 |
-| `max_depth` on selection | Default 8 | async-graphql + projection depth | **partial** | security |
+| `max_depth` on selection | Default 8 | async-graphql + projection depth | **done** | security |
 | `max_depth` on where/filter/EXISTS | Same hard stop | compile_where / client_where depth check | **done** | security · harden-4 |
 | `max_in_list` / limit clamp | Defaults 1000 / 100 / 1000 | Enforced + graphql_harden tests | **done** | security · harden-4, 21 |
 | Client errors | BAD_REQUEST / FORBIDDEN / TIMEOUT / INTERNAL; no SQL leak | sanitize_compile_error + extensions.code | **done** | security · harden-5 |
@@ -87,7 +88,7 @@ flowchart LR
 | Deny-by-default roles | Ungranted models absent | Shipped | **done** | authorization |
 | Claim row filters | On all access paths incl. by_pk, aggregate | Mechanism exists | **partial** | authorization |
 | Isolation **proven** by tests | Multi-tenant claim e2e | `claim_row_filter_isolates_tenants` | **done** | authorization · harden-7 |
-| Column allowlists | Shape schema + SQL | Shipped; needs e2e proof | **partial** | authorization · harden-7 |
+| Column allowlists | Shape schema + SQL | `column_allowlist_denies_ungranted_fields` | **done** | authorization · harden-7 |
 | Trusted-identity mode | Optional strip client identity headers | Not shipped (default: all headers trusted) | **gap** | authorization · harden-19 |
 
 ---
@@ -161,7 +162,7 @@ flowchart LR
 | gap | ~20 |
 | n/a | 0 |
 
-**Overall product posture:** v1 **query surface and CQRS loop work**; **harden/security/ops evidence** still open. Use P0 rows first ([[tasks/graphql-qs-harden-1]] suggested order).
+**Overall product posture:** v1 surface + **P0/P1 harden closed** (security, AuthZ e2e, metrics, HTTP, goldens, timeouts). **P2 still open** (strict_where, WS, surface IR, trusted identity, complexity costs).
 
 ```mermaid
 pie title Gap tracker posture (approx)
@@ -192,3 +193,6 @@ When closing work:
 
 ### 2026-07-11 — harden implementation pass
 - Closed P0 + most P1 via graphql_harden/http/compile suites; P2 deferred (strict_where, WS, surface IR, trusted identity, complexity costs).
+
+### 2026-07-11 — skeptic closeout
+- Column allowlist e2e + where max_depth tests; children completed; P2 still deferred.
