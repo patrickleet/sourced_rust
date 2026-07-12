@@ -1,5 +1,6 @@
-> **Normative design package:** see `docs/query-layer/` (GitKB: `specs/query-layer/*`, index `specs/query-layer/index`).  
-> `docs/query-service-graphql.md` redirects to that package.
+> **Normative design package (GitKB only):** `specs/query-layer/*` — start at
+> `specs/query-layer/index`. Stub redirect: `specs/query-service-graphql`.
+> Do not mirror the package into this `docs/` tree.
 
 # GraphQL query service
 
