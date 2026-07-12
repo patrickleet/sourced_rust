@@ -447,20 +447,66 @@ async fn anonymous_introspection_allowed_when_flag_true() {
     );
 }
 
-/// harden-13: SQLite `statement_timeout` maps to client TIMEOUT on the execute path.
+/// harden-13: SQLite wall-clock budget on the real execute path.
+///
+/// Holds `BEGIN EXCLUSIVE` on a second pool connection so the engine SELECT
+/// blocks; `apply_statement_timeout` must elapse and map to client TIMEOUT.
+/// (No `Duration::ZERO` race against in-memory SQLite.)
 #[tokio::test]
 async fn sqlite_statement_timeout_returns_timeout_code() {
-    let pool = seed_orders().await;
-    // Zero budget: tokio::time::timeout elapses immediately around execute_sqlite.
-    let engine = GraphqlEngine::builder(pool)
+    use std::path::PathBuf;
+
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("graphql_harden_timeout");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("orders.db");
+    let url = format!("sqlite:{}?mode=rwc", db.display());
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE orders (
+            order_id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            total_cents INTEGER NOT NULL,
+            note TEXT NOT NULL
+        );
+        INSERT INTO orders VALUES
+            ('o1', 'tenant-a', 'open', 100, 'n');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Exclusive lock: other connections block even on SELECT until we release.
+    let mut hold = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN EXCLUSIVE")
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+
+    let engine = GraphqlEngine::builder(pool.clone())
         .roles(&["user"])
         .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
-        .statement_timeout(Duration::ZERO)
+        .statement_timeout(Duration::from_millis(80))
         .build()
         .unwrap();
+
     let resp = engine
-        .execute(&session("user", "x"), Request::new("{ orders { order_id } }"))
+        .execute(
+            &session("user", "x"),
+            Request::new("{ orders { order_id } }"),
+        )
         .await;
+
+    // Release lock so the pool can shut down cleanly.
+    let _ = sqlx::query("ROLLBACK").execute(&mut *hold).await;
+    drop(hold);
+
     assert!(
         !resp.errors.is_empty(),
         "expected timeout error; data={:?}",

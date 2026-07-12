@@ -1,5 +1,8 @@
 //! Dialect executors: run a SqlPlan and decode the single JSON column.
 
+use std::future::Future;
+use std::time::Duration;
+
 use async_graphql::Value;
 use serde_json::Value as JsonValue;
 
@@ -16,6 +19,24 @@ pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, S
         }
         #[allow(unreachable_patterns)]
         _ => Err("no database pool available for GraphQL execution".into()),
+    }
+}
+
+/// Wall-clock budget around a single statement future.
+///
+/// On elapse returns `Err("statement timeout")` — the stable string mapped to
+/// client `TIMEOUT` by [`super::schema::client_error_for_execute_err`].
+pub(crate) async fn apply_statement_timeout<T, F>(
+    timeout: Duration,
+    run: F,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    match tokio::time::timeout(timeout, run).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("statement timeout".into()),
     }
 }
 
@@ -50,16 +71,58 @@ async fn execute_sqlite(
         Ok::<_, String>(raw.unwrap_or_else(|| "null".into()))
     };
 
-    let text = match tokio::time::timeout(timeout, run).await {
-        Ok(Ok(t)) => t,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Err("statement timeout".into()),
-    };
+    let text = apply_statement_timeout(timeout, run).await?;
     let mut json: JsonValue =
         serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
     deep_parse_json_strings(&mut json);
     rewrite_hex_bytes(&mut json, &plan.bytes_hex_paths);
     Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
+}
+
+#[cfg(test)]
+mod statement_timeout_tests {
+    use super::apply_statement_timeout;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn elapses_to_statement_timeout_error() {
+        let run = async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok::<String, String>("never".into())
+        };
+        let handle = tokio::spawn(async move {
+            apply_statement_timeout(Duration::from_millis(1), run).await
+        });
+        tokio::time::advance(Duration::from_millis(5)).await;
+        let err = handle
+            .await
+            .expect("join")
+            .expect_err("budget must elapse");
+        assert_eq!(err, "statement timeout");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completes_when_under_budget() {
+        let run = async { Ok::<String, String>("ok".into()) };
+        let handle = tokio::spawn(async move {
+            apply_statement_timeout(Duration::from_secs(5), run).await
+        });
+        // Allow the ready future to be polled under paused time.
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let v: String = handle.await.expect("join").expect("under budget");
+        assert_eq!(v, "ok");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn propagates_inner_error() {
+        let run = async { Err::<String, String>("sqlite execute: boom".into()) };
+        let handle = tokio::spawn(async move {
+            apply_statement_timeout(Duration::from_secs(5), run).await
+        });
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let err = handle.await.expect("join").expect_err("inner err");
+        assert!(err.contains("boom"), "{err}");
+    }
 }
 
 /// Parse string-encoded JSON only for array elements (SQLite json_group_array
