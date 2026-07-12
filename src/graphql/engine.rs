@@ -96,6 +96,8 @@ pub(crate) struct EngineInner {
     #[allow(dead_code)]
     pub max_complexity: usize,
     pub max_in_list: usize,
+    /// Max length of a single `_and` / `_or` list in client `where` (breadth DoS).
+    pub max_bool_width: usize,
     #[allow(dead_code)]
     pub introspection_for_anonymous: bool,
     pub statement_timeout: Duration,
@@ -122,6 +124,7 @@ pub struct GraphqlEngineBuilder {
     max_depth: usize,
     max_complexity: usize,
     max_in_list: usize,
+    max_bool_width: usize,
     introspection_for_anonymous: bool,
     statement_timeout: Duration,
     graphiql: bool,
@@ -241,6 +244,7 @@ impl GraphqlEngineBuilder {
             max_depth: 8,
             max_complexity: 500,
             max_in_list: 1000,
+            max_bool_width: 256,
             introspection_for_anonymous: true,
             statement_timeout: Duration::from_secs(5),
             graphiql: false,
@@ -425,6 +429,11 @@ impl GraphqlEngineBuilder {
         self.max_in_list = n;
         self
     }
+    /// Cap width of a single `_and` / `_or` list in client `where` (default 256).
+    pub fn max_bool_width(mut self, n: usize) -> Self {
+        self.max_bool_width = n;
+        self
+    }
     pub fn introspection_for_anonymous(mut self, on: bool) -> Self {
         self.introspection_for_anonymous = on;
         self
@@ -584,6 +593,7 @@ impl GraphqlEngineBuilder {
             max_depth: self.max_depth,
             max_complexity: self.max_complexity,
             max_in_list: self.max_in_list,
+            max_bool_width: self.max_bool_width,
             introspection_for_anonymous: self.introspection_for_anonymous,
             statement_timeout: self.statement_timeout,
             graphiql: self.graphiql,
