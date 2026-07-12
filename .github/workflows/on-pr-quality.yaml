@@ -34,3 +34,6 @@ jobs:
 
   observability:
     uses: ./.github/workflows/integration-observability.yaml
+
+  graphql:
+    uses: ./.github/workflows/integration-graphql.yaml

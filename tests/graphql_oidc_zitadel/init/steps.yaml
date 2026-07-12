@@ -1,0 +1,21 @@
+FirstInstance:
+  MachineKeyPath: /machinekey/zitadel-admin-sa.json
+  Org:
+    Name: distributed-graphql-e2e
+    Human:
+      UserName: admin
+      FirstName: CI
+      LastName: Admin
+      Email:
+        Address: admin@localhost
+        Verified: true
+      Password: "Admin1234!"
+      PasswordChangeRequired: false
+    Machine:
+      Machine:
+        Username: zitadel-admin-sa
+        Name: Admin Service Account
+        Description: Bootstrap SA for GraphQL OIDC e2e
+      MachineKey:
+        Type: 1
+        ExpirationDate: "2029-01-01T00:00:00Z"

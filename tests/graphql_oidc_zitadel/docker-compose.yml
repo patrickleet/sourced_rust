@@ -1,0 +1,48 @@
+# Minimal Zitadel stack for GraphQL OIDC e2e (CI + local).
+# No login UI / Caddy — machine-user JWT-bearer mint only.
+#
+#   docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml up -d
+#   ./scripts/ci-bootstrap-graphql-oidc.sh
+#   set -a && source graphql-oidc.env && set +a
+#   ZITADEL_E2E=1 cargo test --test graphql_oidc_zitadel --features graphql,sqlite,metrics
+services:
+  zitadel-db:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: zitadel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    networks: [zitadel]
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.6.1
+    command: >-
+      start-from-init
+      --masterkey "MasterkeyNeedsToHave32Characters"
+      --tlsMode disabled
+      --config /init/zitadel.yaml
+      --steps /init/steps.yaml
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./init:/init:ro
+      - ./machinekey:/machinekey
+    healthcheck:
+      test: ["CMD", "zitadel", "ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [zitadel]
+
+networks:
+  zitadel:
