@@ -91,6 +91,45 @@ async fn pool() -> sqlx::SqlitePool {
 }
 
 #[tokio::test]
+async fn multi_column_primary_key_rejected_at_build() {
+    let schema = TableSchema {
+        model_name: "Composite".into(),
+        table_name: "composites".into(),
+        columns: vec![
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("a", "a", ColumnType::Text)
+            },
+            TableColumn {
+                primary_key: true,
+                ..TableColumn::new("b", "b", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["a", "b"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    };
+    let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);
+    let built = GraphqlEngine::from_manifest(&manifest, pool().await)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .build();
+    let err = match built {
+        Ok(_) => panic!("multi-col PK must fail build"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("multi-column") || msg.contains("single-column"),
+        "expected multi-col PK policy message, got {msg}"
+    );
+}
+
+#[tokio::test]
 async fn grant_all_builds_and_sdl_for_role() {
     let schema = simple_schema("Item", "items");
     let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);

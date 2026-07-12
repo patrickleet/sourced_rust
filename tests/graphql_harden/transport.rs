@@ -251,5 +251,42 @@ async fn graphql_metrics_increment_on_execute() {
         text.contains("distributed_graphql_request_total"),
         "metrics text missing graphql series: {text}"
     );
+    assert!(
+        text.contains("status=\"ok\"") || text.contains("status=\\\"ok\\\""),
+        "ok path should label status=ok: {text}"
+    );
+}
+
+/// BAD_REQUEST from max_bool_width should label metrics status=bad_request (when code present).
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn graphql_metrics_bad_request_status_label() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_bool_width(2)
+        .build()
+        .unwrap();
+    let s = session("user", "x");
+    let wide = (0..5)
+        .map(|i| format!(r#"{{ status: {{ _eq: "open{i}" }} }}"#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let q = format!(r#"{{ orders(where: {{ _or: [{wide}] }}) {{ order_id }} }}"#);
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(!resp.errors.is_empty(), "expected bool width rejection");
+    let text = distributed::metrics::prometheus_text();
+    assert!(
+        text.contains("status=\"bad_request\"")
+            || text.contains("bad_request")
+            || text.contains("status=\"error\""),
+        "expected bad_request (or error fallback) metric status, got excerpt: {}",
+        text.lines()
+            .filter(|l| l.contains("graphql"))
+            .take(8)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
