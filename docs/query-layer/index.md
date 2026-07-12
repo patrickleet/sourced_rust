@@ -84,6 +84,7 @@ so agents load only the domain they need — with full design depth in siblings.
 | [[specs/query-layer/implementation]] | Phases, public API signatures, build order, verify-first, diffs |
 | [[specs/query-layer/quality]] | Test plan + cross-cutting evidence |
 | [[specs/query-layer/decisions]] | Key decisions, Hasura parity audit, out-of-scope idioms, open questions |
+| [[specs/query-layer/state]] | **Desired vs current** gap tracker (keep updated as work lands) |
 
 ### How to read (agents)
 
@@ -91,6 +92,7 @@ so agents load only the domain they need — with full design depth in siblings.
 2. Domain doc for the behavior you change.
 3. [[specs/query-layer/implementation]] for exact public API signatures and module layout.
 4. [[specs/query-layer/quality]] for the evidence you must leave.
+5. [[specs/query-layer/state]] for what’s done vs still gap (update as you ship).
 5. Domain docs ending in **Agent seams** subsections — copy-pasteable public API
    patterns (metrics, AuthZ fixtures, WS, goldens). Prefer those over inventing seams.
 
