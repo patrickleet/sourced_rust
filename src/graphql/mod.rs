@@ -53,9 +53,11 @@ pub use filter::{claim, col, lit, rel, ClaimRef, ColRef, FilterExpr, LitValue, O
 pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
 #[cfg(feature = "graphql")]
 pub use identity::{
-    extract_bearer, map_claims_to_session, resolve_session, resolve_session_sync,
+    extract_bearer, map_claims_to_session, public_oidc_identity_from_env,
+    public_oidc_identity_from_env_vars, resolve_session, resolve_session_sync,
     strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode, OidcConfig,
     OidcValidator, TrustedProxyConfig, ValidationError, DEFAULT_IDENTITY_STRIP_HEADERS,
+    UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 #[cfg(feature = "graphql")]
 pub use permissions::{select, ModelPermissions, SelectPermission};

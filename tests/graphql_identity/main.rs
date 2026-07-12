@@ -457,12 +457,38 @@ async fn http_hybrid_invalid_bearer_401() {
 
 #[test]
 fn public_scaffold_default_is_oidc_bearer_not_dev() {
-    // D6: public default mode constant for scaffold generators.
-    let mode = IdentityMode::OidcBearer;
-    assert_ne!(mode, IdentityMode::DevHeaders);
-    let cfg = IdentityConfig::oidc_bearer(OidcConfig::new("http://iss", "aud"));
-    assert!(cfg.oidc.as_ref().unwrap().require_auth);
-    assert_eq!(cfg.mode, IdentityMode::OidcBearer);
+    // Drives shipped `public_oidc_identity_from_env_vars` (same function scaffold
+    // calls via `public_oidc_identity_from_env`) — D6 never DevHeaders.
+    use distributed::graphql::{
+        public_oidc_identity_from_env_vars, UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
+    };
+
+    let unset = public_oidc_identity_from_env_vars(None, None, None, None);
+    assert_eq!(unset.mode, IdentityMode::OidcBearer);
+    assert_ne!(unset.mode, IdentityMode::DevHeaders);
+    assert!(unset.oidc.as_ref().unwrap().require_auth);
+    assert_eq!(unset.oidc.as_ref().unwrap().issuer, UNSET_OIDC_ISSUER);
+    assert_eq!(unset.oidc.as_ref().unwrap().audience, UNSET_OIDC_AUDIENCE);
+
+    // Ambient headers alone must not authenticate under public default.
+    let headers = headers_from(&[("x-user-id", "attacker"), ("x-role", "admin")]);
+    assert_eq!(
+        resolve_session_sync(&headers, &unset).unwrap_err(),
+        AuthError::Unauthorized
+    );
+
+    let configured = public_oidc_identity_from_env_vars(
+        Some("http://localhost:8080"),
+        Some("graphql-api"),
+        None,
+        None,
+    );
+    assert_eq!(configured.mode, IdentityMode::OidcBearer);
+    assert!(configured.oidc.as_ref().unwrap().require_auth);
+    assert_eq!(
+        configured.oidc.as_ref().unwrap().issuer,
+        "http://localhost:8080"
+    );
 }
 
 #[test]

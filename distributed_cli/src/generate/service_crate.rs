@@ -595,10 +595,11 @@ pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, Graph
 {tighten_hint}    // GraphiQL policy lives in `distributed::graphql::graphiql_enabled_from_env`
     // (GRAPHIQL override; RUST_ENV/ENV/APP_ENV production → off; else on).
     let graphiql = distributed::graphql::graphiql_enabled_from_env();
-    // Public GraphQL identity default (D6/D7): OidcBearer + require_auth.
-    // Set OIDC_ISSUER / OIDC_AUDIENCE (and optional OIDC_JWKS_URI). For local
-    // GraphiQL with header spoofing only, switch to IdentityConfig::dev_headers().
-    let identity = public_oidc_identity_from_env();
+    // Public GraphQL identity (D6/D7): always OidcBearer + require_auth=true.
+    // Set OIDC_ISSUER + OIDC_AUDIENCE (or OIDC_CLIENT_ID). Unset → placeholder
+    // issuer (still OidcBearer; ambient headers never trusted). For local
+    // GraphiQL ambient headers only, pass IdentityMode::DevHeaders explicitly.
+    let identity = distributed::graphql::public_oidc_identity_from_env();
     GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
         .roles(roles::ALL)
         .grant_all(roles::USER)
@@ -606,43 +607,6 @@ pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, Graph
         .graphiql(graphiql)
         .identity(identity)
         .build()
-}}
-
-/// Scaffold default: OidcBearer when OIDC_ISSUER+OIDC_AUDIENCE are set; otherwise
-/// DevHeaders so local `cargo run` still works before OIDC is configured.
-fn public_oidc_identity_from_env() -> distributed::graphql::IdentityConfig {{
-    use distributed::graphql::{{IdentityConfig, OidcConfig}};
-    let issuer = std::env::var("OIDC_ISSUER").ok().filter(|s| !s.is_empty());
-    let audience = std::env::var("OIDC_AUDIENCE")
-        .or_else(|_| std::env::var("OIDC_CLIENT_ID"))
-        .ok()
-        .filter(|s| !s.is_empty());
-    match (issuer, audience) {{
-        (Some(iss), Some(aud)) => {{
-            let mut oidc = OidcConfig::new(iss, aud);
-            oidc.require_auth = true;
-            if let Ok(jwks) = std::env::var("OIDC_JWKS_URI") {{
-                if !jwks.is_empty() {{
-                    oidc.jwks_uri = Some(jwks);
-                }}
-            }}
-            IdentityConfig::oidc_bearer(oidc)
-        }}
-        _ => {{
-            // Fail-closed production: prefer setting OIDC_* env. Dev fallback only.
-            if std::env::var("RUST_ENV").ok().as_deref() == Some("production")
-                || std::env::var("ENV").ok().as_deref() == Some("production")
-            {{
-                // Still OidcBearer with placeholder — requests 401 until configured.
-                IdentityConfig::oidc_bearer(OidcConfig::new(
-                    "http://localhost/unset-oidc-issuer",
-                    "unset-audience",
-                ))
-            }} else {{
-                IdentityConfig::dev_headers()
-            }}
-        }}
-    }}
 }}
 "#
         )
