@@ -154,6 +154,15 @@ pub fn compile_root(
     kind: RootKind,
     selection: &SelectionNode,
 ) -> Result<SqlPlan, String> {
+    // Relationship-aware complexity before SQL (covers query + subscription paths).
+    let cost = super::complexity::estimate_root_complexity(inner, model_name, kind, selection)?;
+    if super::complexity::exceeds_budget(cost, inner.max_complexity) {
+        return Err(format!(
+            "query too complex (estimated {cost}, max {})",
+            inner.max_complexity
+        ));
+    }
+
     let entry = inner
         .catalog
         .get(model_name)

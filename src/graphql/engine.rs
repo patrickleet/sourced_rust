@@ -289,7 +289,7 @@ impl GraphqlEngineBuilder {
             default_limit: 100,
             max_limit: 1000,
             max_depth: 8,
-            max_complexity: 500,
+            max_complexity: super::complexity::DEFAULT_MAX_COMPLEXITY,
             max_in_list: 1000,
             max_bool_width: 256,
             // Fail-closed by default for unshipped GA: unknown/ungranted filter
@@ -471,6 +471,11 @@ impl GraphqlEngineBuilder {
         self.max_depth = n;
         self
     }
+    /// Maximum nested-selection complexity budget (default
+    /// [`super::complexity::DEFAULT_MAX_COMPLEXITY`]).
+    ///
+    /// Cost uses relationship-aware weights (see `complexity` module), not only
+    /// flat GraphQL field counts, so multi-level `has_many` trees are bounded.
     pub fn max_complexity(mut self, n: usize) -> Self {
         self.max_complexity = n;
         self

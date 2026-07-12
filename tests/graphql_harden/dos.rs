@@ -211,3 +211,279 @@ async fn d7_concurrent_with_timeout_bound_terminates() {
     .await;
     assert!(result.is_ok(), "concurrent suite must not hang");
 }
+
+/// Nested has_many fan-out exceeds relationship-aware complexity budget while
+/// staying under max_depth (proves weights, not only depth).
+#[tokio::test]
+async fn d8_nested_has_many_exceeds_complexity_budget() {
+    use distributed::{
+        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+    };
+    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::ReadModel;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("parents")]
+    struct ParentView {
+        #[id("parent_id")]
+        parent_id: String,
+        name: String,
+    }
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("children")]
+    struct ChildView {
+        #[id("child_id")]
+        child_id: String,
+        parent_id: String,
+        name: String,
+    }
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("grandchildren")]
+    struct GrandView {
+        #[id("grand_id")]
+        grand_id: String,
+        child_id: String,
+        name: String,
+    }
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE parents (parent_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE children (
+            child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL
+         );
+         CREATE TABLE grandchildren (
+            grand_id TEXT PRIMARY KEY, child_id TEXT NOT NULL, name TEXT NOT NULL
+         );
+         INSERT INTO parents VALUES ('p1', 'P');
+         INSERT INTO children VALUES ('c1', 'p1', 'C');
+         INSERT INTO grandchildren VALUES ('g1', 'c1', 'G');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut parent = ParentView::schema().clone();
+    parent.relationships = vec![RelationshipDef {
+        field_name: "children".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "ChildView".into(),
+        foreign_key: Some("parent_id".into()),
+        through: None,
+        target_foreign_key: None,
+    }];
+    let mut child = ChildView::schema().clone();
+    child.relationships = vec![RelationshipDef {
+        field_name: "grandchildren".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "GrandView".into(),
+        foreign_key: Some("child_id".into()),
+        through: None,
+        target_foreign_key: None,
+    }];
+    let grand = GrandView::schema().clone();
+    let manifest = DistributedProjectManifest::new("cx")
+        .table_schema(parent)
+        .table_schema(child)
+        .table_schema(grand);
+
+    // Default max_complexity (500) + max_depth high enough that depth is not the limit.
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .max_depth(8)
+        .permission::<ParentView>("user", select().all_columns())
+        .permission::<ChildView>("user", select().all_columns())
+        .permission::<GrandView>("user", select().all_columns())
+        .build()
+        .expect("build");
+
+    let s = session("user", "u");
+    // 3-level has_many: relationship weights push estimated cost above 500.
+    let q = r#"{
+      parents {
+        parent_id
+        children {
+          child_id
+          name
+          grandchildren {
+            grand_id
+            name
+          }
+        }
+      }
+    }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(
+        !resp.errors.is_empty(),
+        "3-level nested has_many must exceed complexity budget"
+    );
+    assert_no_sql_leak(&resp);
+    let msgs = error_messages(&resp);
+    assert!(
+        msgs.contains("complex") || msgs.contains("bad request"),
+        "expected complexity client error, got {msgs}"
+    );
+}
+
+/// Shallow nest stays under default complexity budget.
+#[tokio::test]
+async fn d8_shallow_nested_has_many_within_budget() {
+    use distributed::{
+        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+    };
+    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::ReadModel;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("parents")]
+    struct ParentView {
+        #[id("parent_id")]
+        parent_id: String,
+        name: String,
+    }
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("children")]
+    struct ChildView {
+        #[id("child_id")]
+        child_id: String,
+        parent_id: String,
+        name: String,
+    }
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE parents (parent_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE children (
+            child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL
+         );
+         INSERT INTO parents VALUES ('p1', 'P');
+         INSERT INTO children VALUES ('c1', 'p1', 'C');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut parent = ParentView::schema().clone();
+    parent.relationships = vec![RelationshipDef {
+        field_name: "children".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "ChildView".into(),
+        foreign_key: Some("parent_id".into()),
+        through: None,
+        target_foreign_key: None,
+    }];
+    let child = ChildView::schema().clone();
+    let manifest = DistributedProjectManifest::new("cx2")
+        .table_schema(parent)
+        .table_schema(child);
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .permission::<ParentView>("user", select().all_columns())
+        .permission::<ChildView>("user", select().all_columns())
+        .build()
+        .expect("build");
+
+    let s = session("user", "u");
+    let resp = engine
+        .execute(
+            &s,
+            Request::new("{ parents { parent_id children { child_id name } } }"),
+        )
+        .await;
+    assert!(
+        resp.errors.is_empty(),
+        "1-level nest must succeed under default budget: {:?}",
+        resp.errors
+    );
+}
+
+/// Explicit low max_complexity rejects modest nests (budget knob works).
+#[tokio::test]
+async fn d8_low_max_complexity_rejects_single_nest() {
+    use distributed::{
+        DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
+    };
+    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::ReadModel;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("parents")]
+    struct ParentView {
+        #[id("parent_id")]
+        parent_id: String,
+        name: String,
+    }
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+    #[table("children")]
+    struct ChildView {
+        #[id("child_id")]
+        child_id: String,
+        parent_id: String,
+        name: String,
+    }
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE parents (parent_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE children (
+            child_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL
+         );
+         INSERT INTO parents VALUES ('p1', 'P');
+         INSERT INTO children VALUES ('c1', 'p1', 'C');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut parent = ParentView::schema().clone();
+    parent.relationships = vec![RelationshipDef {
+        field_name: "children".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "ChildView".into(),
+        foreign_key: Some("parent_id".into()),
+        through: None,
+        target_foreign_key: None,
+    }];
+    let child = ChildView::schema().clone();
+    let manifest = DistributedProjectManifest::new("cx3")
+        .table_schema(parent)
+        .table_schema(child);
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .max_complexity(20)
+        .max_depth(8)
+        .permission::<ParentView>("user", select().all_columns())
+        .permission::<ChildView>("user", select().all_columns())
+        .build()
+        .expect("build");
+
+    let s = session("user", "u");
+    let resp = engine
+        .execute(
+            &s,
+            Request::new("{ parents { parent_id children { child_id name } } }"),
+        )
+        .await;
+    assert!(!resp.errors.is_empty(), "low budget must reject 1-level nest");
+    assert_no_sql_leak(&resp);
+    let msgs = error_messages(&resp);
+    assert!(
+        msgs.contains("complex") || msgs.contains("bad request"),
+        "{msgs}"
+    );
+}

@@ -661,6 +661,8 @@ fn sanitize_compile_error(e: &str) -> String {
     // Stable short messages; never return raw SQL.
     if e.contains("max depth") {
         "max depth exceeded".into()
+    } else if e.contains("too complex") || e.contains("query too complex") {
+        "query too complex".into()
     } else if e.contains("max_in_list")
         || e.contains("_in list")
         || e.contains("max_bool_width")
