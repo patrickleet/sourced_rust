@@ -1,4 +1,18 @@
 //! Selection set → single SQL statement per root field (dialect-portable JSON tree).
+//!
+//! # v1 join / PK assumptions
+//!
+//! Relationship SQL assumes **single-column primary keys** and a single
+//! `foreign_key` column per relationship:
+//! - **HasMany**: FK lives on the child → `child.fk = parent.pk`
+//! - **BelongsTo**: FK lives on the parent → `child.pk = parent.fk`
+//! - **ManyToMany**: through-table holds both FKs; join helpers emit
+//!   through→target ON + through→parent WHERE fragments
+//!
+//! Multi-column PKs/FKs are out of scope until a dedicated policy task lands
+//! (see maintain-3 / maintain-5). Join equality is centralized in
+//! [`join_predicate_direct`] / [`join_predicate_m2m_parent`] /
+//! [`join_predicate_m2m_target`]. Dialect SQL fragments live on [`DialectOps`].
 #![allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
 
 use std::collections::BTreeMap;
@@ -18,6 +32,89 @@ use super::permissions::SelectPermission;
 pub enum SqlDialect {
     Postgres,
     Sqlite,
+}
+
+/// Dialect-specific SQL fragment table (dedup-4).
+///
+/// Prefer `dialect.ops()` over ad-hoc match arms for JSON aggregate / object /
+/// empty-array / ILIKE strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialectOps {
+    pub json_agg: &'static str,
+    pub empty_array: &'static str,
+    pub build_object: &'static str,
+    /// SQLite wraps list roots with `json(...)`; Postgres leaves this empty.
+    pub json_cast_fn: Option<&'static str>,
+    /// Case-insensitive LIKE operator (`ILIKE` on PG; `LIKE` on SQLite).
+    pub ilike_op: &'static str,
+}
+
+impl SqlDialect {
+    pub fn ops(self) -> DialectOps {
+        match self {
+            SqlDialect::Postgres => DialectOps {
+                json_agg: "jsonb_agg",
+                empty_array: "'[]'::jsonb",
+                build_object: "jsonb_build_object",
+                json_cast_fn: None,
+                ilike_op: "ILIKE",
+            },
+            SqlDialect::Sqlite => DialectOps {
+                json_agg: "json_group_array",
+                empty_array: "'[]'",
+                build_object: "json_object",
+                // Ensures json_object TEXT is treated as JSON, not a JSON string.
+                json_cast_fn: Some("json"),
+                ilike_op: "LIKE",
+            },
+        }
+    }
+}
+
+/// Direct (non-m2m) join equality for HasMany / BelongsTo (dedup-2).
+///
+/// # Arguments
+/// - `fk_col`: resolved SQL column name of the foreign key
+///   (on child for HasMany, on parent for BelongsTo)
+pub(crate) fn join_predicate_direct(
+    kind: RelationshipKind,
+    parent_alias: &str,
+    child_alias: &str,
+    parent_pk: &str,
+    child_pk: &str,
+    fk_col: &str,
+) -> Result<String, String> {
+    match kind {
+        RelationshipKind::HasMany => Ok(format!(
+            "{child_alias}.\"{fk_col}\" = {parent_alias}.\"{parent_pk}\""
+        )),
+        RelationshipKind::BelongsTo => Ok(format!(
+            "{child_alias}.\"{child_pk}\" = {parent_alias}.\"{fk_col}\""
+        )),
+        RelationshipKind::ManyToMany => Err(
+            "m2m relationships use join_predicate_m2m_*, not join_predicate_direct".into(),
+        ),
+    }
+}
+
+/// Through-row → parent PK predicate for m2m joins.
+pub(crate) fn join_predicate_m2m_parent(
+    through_alias: &str,
+    source_join_col: &str,
+    parent_alias: &str,
+    parent_pk: &str,
+) -> String {
+    format!("{through_alias}.\"{source_join_col}\" = {parent_alias}.\"{parent_pk}\"")
+}
+
+/// Through-row → target PK ON-clause fragment for m2m joins.
+pub(crate) fn join_predicate_m2m_target(
+    through_alias: &str,
+    target_fk: &str,
+    child_alias: &str,
+    child_pk: &str,
+) -> String {
+    format!("{through_alias}.\"{target_fk}\" = {child_alias}.\"{child_pk}\"")
 }
 
 #[derive(Clone, Debug)]
@@ -86,11 +183,7 @@ pub fn compile_root(
 
     let order_sql = compile_order_by(&entry.schema, selection.args.get("order_by"), alias, perm)?;
 
-    let (json_agg, coalesce_empty, json_cast) = match inner.dialect {
-        SqlDialect::Postgres => ("jsonb_agg", "'[]'::jsonb", ""),
-        // json() ensures json_object TEXT is treated as JSON, not a JSON string.
-        SqlDialect::Sqlite => ("json_group_array", "'[]'", "json"),
-    };
+    let ops = inner.dialect.ops();
 
     let sql = match kind {
         RootKind::List => {
@@ -120,10 +213,11 @@ pub fn compile_root(
                 &mut tables,
                 0,
             )?;
-            let agg_arg = if json_cast.is_empty() {
-                "root".to_string()
-            } else {
-                format!("{json_cast}(root)")
+            let json_agg = ops.json_agg;
+            let coalesce_empty = ops.empty_array;
+            let agg_arg = match ops.json_cast_fn {
+                None => "root".to_string(),
+                Some(f) => format!("{f}(root)"),
             };
             format!(
                 "SELECT coalesce({json_agg}({agg_arg}), {coalesce_empty}) FROM (\n  SELECT {projection} AS root\n  FROM \"{}\" {alias}\n  WHERE {where_sql}\n  {order_sql}\n  LIMIT {} OFFSET {}\n) sub",
@@ -240,21 +334,20 @@ pub fn compile_root(
                 &mut tables,
                 0,
             )?;
+            let build_obj = ops.build_object;
+            let json_agg = ops.json_agg;
+            let coalesce_empty = ops.empty_array;
+            let table = entry.schema.table_name.as_str();
+            let lim = {
+                binds.push(BindValue::I64(limit as i64));
+                placeholder(inner.dialect, binds.len())
+            };
+            let off = {
+                binds.push(BindValue::I64(offset as i64));
+                placeholder(inner.dialect, binds.len())
+            };
             format!(
-                "SELECT {build_obj}('aggregate', {build_obj}('count', (SELECT count(*) FROM \"{table}\" {alias} WHERE {where_for_count})), 'nodes', coalesce((SELECT {json_agg}(n) FROM (SELECT {nodes_proj} AS n FROM \"{table}\" {alias} WHERE {where_for_nodes} {order_sql} LIMIT {lim} OFFSET {off}) x), {coalesce_empty}))",
-                build_obj = match inner.dialect {
-                    SqlDialect::Postgres => "jsonb_build_object",
-                    SqlDialect::Sqlite => "json_object",
-                },
-                table = entry.schema.table_name,
-                lim = {
-                    binds.push(BindValue::I64(limit as i64));
-                    placeholder(inner.dialect, binds.len())
-                },
-                off = {
-                    binds.push(BindValue::I64(offset as i64));
-                    placeholder(inner.dialect, binds.len())
-                },
+                "SELECT {build_obj}('aggregate', {build_obj}('count', (SELECT count(*) FROM \"{table}\" {alias} WHERE {where_for_count})), 'nodes', coalesce((SELECT {json_agg}(n) FROM (SELECT {nodes_proj} AS n FROM \"{table}\" {alias} WHERE {where_for_nodes} {order_sql} LIMIT {lim} OFFSET {off}) x), {coalesce_empty}))"
             )
         }
     };
@@ -498,7 +591,14 @@ fn compile_relationship_aggregate_subquery(
             let target_fk = column_name_for(&target.schema, fk).unwrap_or(fk);
             (
                 format!("\"{}\" {child_alias}", target.schema.table_name),
-                format!("{child_alias}.\"{target_fk}\" = {source_alias}.\"{source_pk}\""),
+                join_predicate_direct(
+                    RelationshipKind::HasMany,
+                    source_alias,
+                    &child_alias,
+                    source_pk,
+                    /* child_pk unused for has_many */ "",
+                    target_fk,
+                )?,
             )
         }
         RelationshipKind::ManyToMany => {
@@ -524,12 +624,14 @@ fn compile_relationship_aggregate_subquery(
                 .unwrap_or("id");
             let join_alias = format!("ja{depth}");
             tables.push(through_name.to_string());
+            let on_target =
+                join_predicate_m2m_target(&join_alias, &target_fk, &child_alias, target_pk);
             (
                 format!(
-                    "\"{}\" {child_alias} JOIN \"{through_name}\" {join_alias} ON {join_alias}.\"{target_fk}\" = {child_alias}.\"{target_pk}\"",
+                    "\"{}\" {child_alias} JOIN \"{through_name}\" {join_alias} ON {on_target}",
                     target.schema.table_name
                 ),
-                format!("{join_alias}.\"{source_join_col}\" = {source_alias}.\"{source_pk}\""),
+                join_predicate_m2m_parent(&join_alias, source_join_col, source_alias, source_pk),
             )
         }
         RelationshipKind::BelongsTo => {
@@ -599,10 +701,10 @@ fn compile_relationship_aggregate_subquery(
         .and_then(value_as_u64)
         .unwrap_or(0);
 
-    let (build_obj, json_agg, coalesce_empty) = match inner.dialect {
-        SqlDialect::Postgres => ("jsonb_build_object", "jsonb_agg", "'[]'::jsonb"),
-        SqlDialect::Sqlite => ("json_object", "json_group_array", "'[]'"),
-    };
+    let ops = inner.dialect.ops();
+    let build_obj = ops.build_object;
+    let json_agg = ops.json_agg;
+    let coalesce_empty = ops.empty_array;
     let lim = {
         binds.push(BindValue::I64(limit as i64));
         placeholder(inner.dialect, binds.len())
@@ -634,16 +736,10 @@ fn column_json_expr(
 }
 
 fn chunked_json_object(dialect: SqlDialect, pairs: &[(String, String)]) -> String {
+    let build = dialect.ops().build_object;
     if pairs.is_empty() {
-        return match dialect {
-            SqlDialect::Postgres => "jsonb_build_object()".into(),
-            SqlDialect::Sqlite => "json_object()".into(),
-        };
+        return format!("{build}()");
     }
-    let build = match dialect {
-        SqlDialect::Postgres => "jsonb_build_object",
-        SqlDialect::Sqlite => "json_object",
-    };
     let chunks: Vec<&[(String, String)]> = pairs.chunks(40).collect();
     if chunks.len() == 1 {
         return format!(
@@ -741,13 +837,23 @@ fn compile_relationship_subquery(
         .map(|s| s.as_str())
         .unwrap_or("id");
 
-    let join_pred = match rel.kind {
-        RelationshipKind::HasMany => {
-            format!("{child_alias}.\"{target_fk_col}\" = {source_alias}.\"{source_pk_col}\"")
-        }
-        RelationshipKind::BelongsTo => {
-            format!("{child_alias}.\"{target_pk_col}\" = {source_alias}.\"{fk_col}\"")
-        }
+    let join_pred = match &rel.kind {
+        RelationshipKind::HasMany => join_predicate_direct(
+            RelationshipKind::HasMany,
+            source_alias,
+            &child_alias,
+            source_pk_col,
+            target_pk_col,
+            target_fk_col,
+        )?,
+        RelationshipKind::BelongsTo => join_predicate_direct(
+            RelationshipKind::BelongsTo,
+            source_alias,
+            &child_alias,
+            source_pk_col,
+            target_pk_col,
+            fk_col,
+        )?,
         RelationshipKind::ManyToMany => {
             let through_name = rel
                 .through
@@ -834,10 +940,9 @@ fn compile_relationship_subquery(
         depth,
     )?;
 
-    let (json_agg, coalesce_empty) = match inner.dialect {
-        SqlDialect::Postgres => ("jsonb_agg", "'[]'::jsonb"),
-        SqlDialect::Sqlite => ("json_group_array", "'[]'"),
-    };
+    let ops = inner.dialect.ops();
+    let json_agg = ops.json_agg;
+    let coalesce_empty = ops.empty_array;
 
     match rel.kind {
         RelationshipKind::BelongsTo => Ok(format!(
@@ -912,16 +1017,18 @@ fn compile_m2m_subquery(
         tables,
         depth,
     )?;
-    let (json_agg, coalesce_empty) = match inner.dialect {
-        SqlDialect::Postgres => ("jsonb_agg", "'[]'::jsonb"),
-        SqlDialect::Sqlite => ("json_group_array", "'[]'"),
-    };
+    let ops = inner.dialect.ops();
+    let json_agg = ops.json_agg;
+    let coalesce_empty = ops.empty_array;
     binds.push(BindValue::I64(limit as i64));
     let lim = placeholder(inner.dialect, binds.len());
     binds.push(BindValue::I64(offset as i64));
     let off = placeholder(inner.dialect, binds.len());
+    let on_target = join_predicate_m2m_target(&j_alias, target_fk, &child_alias, target_pk);
+    let parent_pred =
+        join_predicate_m2m_parent(&j_alias, source_join_col, source_alias, source_pk);
     Ok(format!(
-        "(SELECT coalesce({json_agg}(obj), {coalesce_empty}) FROM (\n  SELECT {projection} AS obj\n  FROM \"{target_table}\" {child_alias}\n  JOIN \"{through_name}\" {j_alias} ON {j_alias}.\"{target_fk}\" = {child_alias}.\"{target_pk}\"\n  WHERE {j_alias}.\"{source_join_col}\" = {source_alias}.\"{source_pk}\"\n    AND ({where_extra})\n  {order_sql}\n  LIMIT {lim} OFFSET {off}\n) x)",
+        "(SELECT coalesce({json_agg}(obj), {coalesce_empty}) FROM (\n  SELECT {projection} AS obj\n  FROM \"{target_table}\" {child_alias}\n  JOIN \"{through_name}\" {j_alias} ON {on_target}\n  WHERE {parent_pred}\n    AND ({where_extra})\n  {order_sql}\n  LIMIT {lim} OFFSET {off}\n) x)",
         target_table = target_schema.table_name,
     ))
 }
@@ -1073,10 +1180,7 @@ fn compile_filter_expr(
                 CmpOp::Lt => "<",
                 CmpOp::Lte => "<=",
                 CmpOp::Like => "LIKE",
-                CmpOp::Ilike => match inner.dialect {
-                    SqlDialect::Postgres => "ILIKE",
-                    SqlDialect::Sqlite => "LIKE",
-                },
+                CmpOp::Ilike => inner.dialect.ops().ilike_op,
                 CmpOp::Contains => "@>",
                 CmpOp::ContainedIn => "<@",
                 CmpOp::HasKey => "?",
@@ -1173,8 +1277,16 @@ fn compile_filter_expr(
                         .first()
                         .map(|s| s.as_str())
                         .unwrap_or("id");
+                    let join_pred = join_predicate_direct(
+                        RelationshipKind::HasMany,
+                        alias,
+                        &child_alias,
+                        source_col,
+                        "",
+                        target_fk,
+                    )?;
                     Ok(format!(
-                        "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_fk}\" = {alias}.\"{source_col}\" AND ({inner_pred}))",
+                        "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {join_pred} AND ({inner_pred}))",
                         target.schema.table_name
                     ))
                 }
@@ -1187,8 +1299,16 @@ fn compile_filter_expr(
                         .first()
                         .map(|s| s.as_str())
                         .unwrap_or("id");
+                    let join_pred = join_predicate_direct(
+                        RelationshipKind::BelongsTo,
+                        alias,
+                        &child_alias,
+                        "",
+                        target_pk,
+                        source_fk,
+                    )?;
                     Ok(format!(
-                        "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_pk}\" = {alias}.\"{source_fk}\" AND ({inner_pred}))",
+                        "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {join_pred} AND ({inner_pred}))",
                         target.schema.table_name
                     ))
                 }
@@ -1223,8 +1343,12 @@ fn compile_filter_expr(
                         .map(|s| s.as_str())
                         .unwrap_or("id");
                     let j = format!("j{depth}");
+                    let on_target =
+                        join_predicate_m2m_target(&j, &target_fk, &child_alias, target_pk);
+                    let parent_pred =
+                        join_predicate_m2m_parent(&j, fk, alias, source_pk);
                     Ok(format!(
-                        "EXISTS (SELECT 1 FROM \"{through}\" {j} JOIN \"{}\" {child_alias} ON {j}.\"{target_fk}\" = {child_alias}.\"{target_pk}\" WHERE {j}.\"{fk}\" = {alias}.\"{source_pk}\" AND ({inner_pred}))",
+                        "EXISTS (SELECT 1 FROM \"{through}\" {j} JOIN \"{}\" {child_alias} ON {on_target} WHERE {parent_pred} AND ({inner_pred}))",
                         target.schema.table_name
                     ))
                 }
@@ -1385,8 +1509,16 @@ fn compile_client_where(
                                 .first()
                                 .map(|s| s.as_str())
                                 .unwrap_or("id");
+                            let join_pred = join_predicate_direct(
+                                RelationshipKind::HasMany,
+                                alias,
+                                &child_alias,
+                                source_col,
+                                "",
+                                target_fk,
+                            )?;
                             preds.push(format!(
-                                "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_fk}\" = {alias}.\"{source_col}\" AND ({inner_pred}))",
+                                "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {join_pred} AND ({inner_pred}))",
                                 target.schema.table_name
                             ));
                         }
@@ -1399,8 +1531,16 @@ fn compile_client_where(
                                 .first()
                                 .map(|s| s.as_str())
                                 .unwrap_or("id");
+                            let join_pred = join_predicate_direct(
+                                RelationshipKind::BelongsTo,
+                                alias,
+                                &child_alias,
+                                "",
+                                target_pk,
+                                source_fk,
+                            )?;
                             preds.push(format!(
-                                "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {child_alias}.\"{target_pk}\" = {alias}.\"{source_fk}\" AND ({inner_pred}))",
+                                "EXISTS (SELECT 1 FROM \"{}\" {child_alias} WHERE {join_pred} AND ({inner_pred}))",
                                 target.schema.table_name
                             ));
                         }
@@ -1438,8 +1578,20 @@ fn compile_client_where(
                                 .unwrap_or("id");
                             let join_alias = format!("cwj{depth}");
                             tables.push(through.to_string());
+                            let on_target = join_predicate_m2m_target(
+                                &join_alias,
+                                &target_fk,
+                                &child_alias,
+                                target_pk,
+                            );
+                            let parent_pred = join_predicate_m2m_parent(
+                                &join_alias,
+                                source_join_col,
+                                alias,
+                                source_pk,
+                            );
                             preds.push(format!(
-                                "EXISTS (SELECT 1 FROM \"{through}\" {join_alias} JOIN \"{}\" {child_alias} ON {join_alias}.\"{target_fk}\" = {child_alias}.\"{target_pk}\" WHERE {join_alias}.\"{source_join_col}\" = {alias}.\"{source_pk}\" AND ({inner_pred}))",
+                                "EXISTS (SELECT 1 FROM \"{through}\" {join_alias} JOIN \"{}\" {child_alias} ON {on_target} WHERE {parent_pred} AND ({inner_pred}))",
                                 target.schema.table_name
                             ));
                         }
@@ -1510,10 +1662,7 @@ fn compile_client_op(
                 "_lt" => "<",
                 "_lte" => "<=",
                 "_like" => "LIKE",
-                "_ilike" => match inner.dialect {
-                    SqlDialect::Postgres => "ILIKE",
-                    SqlDialect::Sqlite => "LIKE",
-                },
+                "_ilike" => inner.dialect.ops().ilike_op,
                 "_contains" => "@>",
                 "_contained_in" => "<@",
                 "_has_key" => "?",
@@ -1650,10 +1799,10 @@ pub fn compile_list_sql_for_test(
     where_sql: &str,
     limit: u64,
 ) -> String {
-    let (json_agg, coalesce_empty, build) = match dialect {
-        SqlDialect::Postgres => ("jsonb_agg", "'[]'::jsonb", "jsonb_build_object"),
-        SqlDialect::Sqlite => ("json_group_array", "'[]'", "json_object"),
-    };
+    let ops = dialect.ops();
+    let json_agg = ops.json_agg;
+    let coalesce_empty = ops.empty_array;
+    let build = ops.build_object;
     let pairs: Vec<String> = schema
         .columns
         .iter()
@@ -1706,5 +1855,123 @@ mod security_tests {
             resolve_limit(Some(&Value::from(50u64)), Some(10), 100, 1000),
             10
         );
+    }
+}
+
+#[cfg(test)]
+mod dialect_ops_tests {
+    use super::*;
+
+    #[test]
+    fn postgres_ops_table() {
+        let ops = SqlDialect::Postgres.ops();
+        assert_eq!(ops.json_agg, "jsonb_agg");
+        assert_eq!(ops.empty_array, "'[]'::jsonb");
+        assert_eq!(ops.build_object, "jsonb_build_object");
+        assert_eq!(ops.json_cast_fn, None);
+        assert_eq!(ops.ilike_op, "ILIKE");
+        assert_eq!(placeholder(SqlDialect::Postgres, 3), "$3");
+    }
+
+    #[test]
+    fn sqlite_ops_table() {
+        let ops = SqlDialect::Sqlite.ops();
+        assert_eq!(ops.json_agg, "json_group_array");
+        assert_eq!(ops.empty_array, "'[]'");
+        assert_eq!(ops.build_object, "json_object");
+        assert_eq!(ops.json_cast_fn, Some("json"));
+        assert_eq!(ops.ilike_op, "LIKE");
+        assert_eq!(placeholder(SqlDialect::Sqlite, 1), "?");
+    }
+}
+
+#[cfg(test)]
+mod join_predicate_tests {
+    use super::*;
+
+    #[test]
+    fn has_many_join() {
+        let sql = join_predicate_direct(
+            RelationshipKind::HasMany,
+            "t0",
+            "t1",
+            "order_id",
+            "line_id",
+            "order_id",
+        )
+        .unwrap();
+        assert_eq!(sql, r#"t1."order_id" = t0."order_id""#);
+    }
+
+    #[test]
+    fn belongs_to_join() {
+        let sql = join_predicate_direct(
+            RelationshipKind::BelongsTo,
+            "t0",
+            "t1",
+            "line_id",
+            "customer_id",
+            "customer_id",
+        )
+        .unwrap();
+        assert_eq!(sql, r#"t1."customer_id" = t0."customer_id""#);
+    }
+
+    #[test]
+    fn m2m_rejects_direct_helper() {
+        let err = join_predicate_direct(
+            RelationshipKind::ManyToMany,
+            "t0",
+            "t1",
+            "a",
+            "b",
+            "c",
+        )
+        .unwrap_err();
+        assert!(err.contains("m2m"), "{err}");
+    }
+
+    #[test]
+    fn m2m_fragments() {
+        assert_eq!(
+            join_predicate_m2m_target("j1", "post_id", "t1", "id"),
+            r#"j1."post_id" = t1."id""#
+        );
+        assert_eq!(
+            join_predicate_m2m_parent("j1", "user_id", "t0", "id"),
+            r#"j1."user_id" = t0."id""#
+        );
+    }
+}
+
+#[cfg(test)]
+mod parse_claim_tests {
+    use super::*;
+
+    #[test]
+    fn integer_claim_ok_and_fail() {
+        assert!(matches!(
+            parse_claim("42", &ColumnType::Integer).unwrap(),
+            BindValue::I64(42)
+        ));
+        assert!(parse_claim("nope", &ColumnType::Integer).is_err());
+    }
+
+    #[test]
+    fn bool_claim_variants() {
+        assert!(matches!(
+            parse_claim("true", &ColumnType::Boolean).unwrap(),
+            BindValue::Bool(true)
+        ));
+        assert!(matches!(
+            parse_claim("0", &ColumnType::Boolean).unwrap(),
+            BindValue::Bool(false)
+        ));
+        assert!(parse_claim("maybe", &ColumnType::Boolean).is_err());
+    }
+
+    #[test]
+    fn json_claim_rejected() {
+        assert!(parse_claim("{}", &ColumnType::Json).is_err());
     }
 }

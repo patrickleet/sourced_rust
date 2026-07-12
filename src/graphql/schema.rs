@@ -682,7 +682,7 @@ fn client_error(code: &str, message: impl Into<String>) -> async_graphql::Error 
 
 #[cfg(test)]
 mod execute_err_mapping_tests {
-    use super::client_error_for_execute_err;
+    use super::{client_error_for_execute_err, sanitize_compile_error};
 
     #[test]
     fn statement_timeout_maps_to_timeout_code() {
@@ -716,6 +716,28 @@ mod execute_err_mapping_tests {
                 .unwrap_or(false),
             "expected INTERNAL extension, got {code:?}"
         );
+    }
+
+    #[test]
+    fn sanitize_compile_error_table() {
+        assert_eq!(sanitize_compile_error("max depth exceeded"), "max depth exceeded");
+        assert_eq!(
+            sanitize_compile_error("_and list length 999 exceeds max_bool_width 256"),
+            "list too long"
+        );
+        assert_eq!(
+            sanitize_compile_error("_in list length 500 exceeds max_in_list 100"),
+            "list too long"
+        );
+        assert_eq!(
+            sanitize_compile_error("invalid GraphQL response key `x y`"),
+            "invalid response key"
+        );
+        assert_eq!(
+            sanitize_compile_error("unknown comparison op `_wat`"),
+            "invalid filter"
+        );
+        assert_eq!(sanitize_compile_error("SELECT * FROM secret"), "bad request");
     }
 }
 
