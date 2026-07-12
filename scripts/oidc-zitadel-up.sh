@@ -21,8 +21,12 @@ echo "==> Prepare machinekey dir (writable by container — FirstInstance key)"
 # (or the service runs as root — we do both for reliability).
 mkdir -p "$MACHINEKEY_DIR"
 chmod 777 "$MACHINEKEY_DIR"
-# Clear stale keys so FirstInstance can re-create cleanly after down -v
-find "$MACHINEKEY_DIR" -mindepth 1 -maxdepth 1 ! -name '.gitignore' -exec rm -rf {} + 2>/dev/null || true
+# Preserve FirstInstance admin SA key if present (Zitadel only writes it on first
+# init). Wipe only e2e keys so re-bootstrap can recreate machine keys safely.
+# Full reset: `docker compose -f ... down -v` then re-run this script.
+rm -rf "$MACHINEKEY_DIR/e2e"
+mkdir -p "$MACHINEKEY_DIR/e2e"
+chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
 
 echo "==> docker compose up"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
@@ -61,10 +65,31 @@ for i in $(seq 1 60); do
   fi
   sleep 2
   if [[ $i -eq 60 ]]; then
-    echo "ERROR: no machine key in $MACHINEKEY_DIR"
-    ls -la "$MACHINEKEY_DIR" || true
-    docker compose -f "$COMPOSE_FILE" logs --tail=80 zitadel || true
-    exit 1
+    # DB already initialized but host key was deleted → force FirstInstance rewrite
+    echo "    no admin SA key on host; recreating stack (down -v) so FirstInstance re-emits key"
+    docker compose -f "$COMPOSE_FILE" down -v || true
+    mkdir -p "$MACHINEKEY_DIR/e2e"
+    chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
+    docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+    for j in $(seq 1 90); do
+      shopt -s nullglob
+      keys=("$MACHINEKEY_DIR"/*.json)
+      shopt -u nullglob
+      if [[ ${#keys[@]} -gt 0 && -s "${keys[0]}" ]]; then
+        echo "    found ${keys[0]} after recreate"
+        break 2
+      fi
+      if curl -fsS "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
+        : # still waiting for key file
+      fi
+      sleep 2
+      if [[ $j -eq 90 ]]; then
+        echo "ERROR: no machine key in $MACHINEKEY_DIR after recreate"
+        ls -la "$MACHINEKEY_DIR" || true
+        docker compose -f "$COMPOSE_FILE" logs --tail=80 zitadel || true
+        exit 1
+      fi
+    done
   fi
 done
 
