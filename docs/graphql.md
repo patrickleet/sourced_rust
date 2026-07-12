@@ -1,3 +1,6 @@
+> **Normative design package:** see `docs/query-layer/` (GitKB: `specs/query-layer/*`, index `specs/query-layer/index`).  
+> `docs/query-service-graphql.md` redirects to that package.
+
 # GraphQL query service
 
 Auto-generated, **read-only** GraphQL over relational read models — Hasura-style
