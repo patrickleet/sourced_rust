@@ -33,7 +33,9 @@ target/llvm-cov/
 .dispatch-prefetch
 graphql-oidc.env
 
-# OIDC e2e local secrets / generated keys
+# OIDC e2e local secrets / generated env (never commit)
 graphql-oidc.env
+graphql-oidc-keycloak.env
+graphql-oidc-authentik.env
 tests/graphql_oidc_zitadel/machinekey/**
 !tests/graphql_oidc_zitadel/machinekey/.gitignore

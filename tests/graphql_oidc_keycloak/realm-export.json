@@ -1,0 +1,83 @@
+{
+  "realm": "graphql",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "customer", "description": "GraphQL customer" },
+      { "name": "admin", "description": "GraphQL admin" },
+      { "name": "user", "description": "GraphQL user" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "graphql-e2e-customer",
+      "name": "graphql-e2e-customer",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "customer-secret-e2e",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "graphql-e2e-admin",
+      "name": "graphql-e2e-admin",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "admin-secret-e2e",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-graphql-e2e-customer",
+      "enabled": true,
+      "serviceAccountClientId": "graphql-e2e-customer",
+      "realmRoles": ["customer"]
+    },
+    {
+      "username": "service-account-graphql-e2e-admin",
+      "enabled": true,
+      "serviceAccountClientId": "graphql-e2e-admin",
+      "realmRoles": ["admin"]
+    }
+  ]
+}
