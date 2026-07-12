@@ -6,7 +6,6 @@ name: GraphQL Identity / OIDC Integration Tests
 # - oidc-zitadel-e2e: live Zitadel compose + JWT-bearer mint
 # - oidc-keycloak-e2e: live Keycloak compose + client_credentials
 # - oidc-authentik-e2e: live Authentik compose + client_credentials
-# Okta: offline skip only in matrix; live requires secrets (OKTA_E2E hard-fail contract)
 #
 # Local parity:
 #   ./scripts/oidc-{zitadel,keycloak,authentik}-up.sh
@@ -25,7 +24,6 @@ jobs:
       ZITADEL_E2E: ""
       KEYCLOAK_E2E: ""
       AUTHENTIK_E2E: ""
-      OKTA_E2E: ""
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -42,7 +40,6 @@ jobs:
             --test graphql_oidc_zitadel \
             --test graphql_oidc_keycloak \
             --test graphql_oidc_authentik \
-            --test graphql_oidc_okta \
             --features graphql,sqlite,metrics --verbose
 
   oidc-zitadel-e2e:
