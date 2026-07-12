@@ -5,20 +5,21 @@ use std::sync::Arc;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 
-use crate::microsvc::{session_from_headers, Service, MAX_HTTP_BODY_BYTES};
+use crate::microsvc::{Service, MAX_HTTP_BODY_BYTES};
 
 use super::engine::GraphqlEngine;
+use super::identity::{resolve_session, AuthError, IdentityMode};
 
 /// HTML for the GraphiQL IDE served on `GET /graphql` when GraphiQL is enabled.
 ///
-/// Ships default identity headers so deny-by-default role grants work in local
-/// exploration (`x-role: user`, `x-user-id: demo`). Override them in the
-/// GraphiQL headers panel for other roles. A real gateway must still strip and
-/// re-inject identity headers — this is a local-dev convenience only.
+/// Default identity headers (`x-role: user`, `x-user-id: demo`) are injected
+/// only for local exploration. Production scaffolds use `OidcBearer` (D6) —
+/// these headers are **not** a security mechanism. GraphiQL is off under
+/// production env policy (`graphiql_enabled_from_env`).
 pub fn graphiql_page() -> Html<String> {
     Html(
         GraphiQLSource::build()
@@ -93,28 +94,45 @@ struct GraphqlHttpState {
     service: Option<Arc<Service>>,
 }
 
+fn unauthorized_response() -> Response {
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        [("content-type", "application/json")],
+        r#"{"errors":[{"message":"unauthorized","extensions":{"code":"UNAUTHENTICATED"}}]}"#,
+    )
+        .into_response()
+}
+
 async fn graphql_handler(
     State(engine): State<Arc<GraphqlEngine>>,
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
-) -> GraphQLResponse {
-    let session = session_from_headers(&headers);
+) -> Response {
+    let session = match resolve_session(&headers, engine.identity_config()).await {
+        Ok(s) => s,
+        Err(AuthError::Unauthorized) => return unauthorized_response(),
+    };
+    // GraphiQL demo headers only apply under DevHeaders; other modes ignore them for AuthZ.
+    let _ = engine.identity_config().mode == IdentityMode::DevHeaders;
     let response = engine.execute(&session, req.into_inner()).await;
-    response.into()
+    GraphQLResponse::from(response).into_response()
 }
 
 async fn graphql_handler_with_service(
     State(state): State<GraphqlHttpState>,
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
-) -> GraphQLResponse {
-    let session = session_from_headers(&headers);
+) -> Response {
+    let session = match resolve_session(&headers, state.engine.identity_config()).await {
+        Ok(s) => s,
+        Err(AuthError::Unauthorized) => return unauthorized_response(),
+    };
     let mut request = req.into_inner();
     if let Some(service) = &state.service {
         request = request.data(Arc::clone(service));
     }
     let response = state.engine.execute(&session, request).await;
-    response.into()
+    GraphQLResponse::from(response).into_response()
 }
 
 /// Handler used when GraphQL is mounted on the microsvc router.
@@ -122,12 +140,15 @@ pub async fn microsvc_graphql_handler(
     State(service): State<Arc<Service>>,
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
-) -> GraphQLResponse {
-    let session = session_from_headers(&headers);
+) -> Response {
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
+    let session = match resolve_session(&headers, engine.identity_config()).await {
+        Ok(s) => s,
+        Err(AuthError::Unauthorized) => return unauthorized_response(),
+    };
     let request = req.into_inner().data(Arc::clone(&service));
     let response = engine.execute(&session, request).await;
-    response.into()
+    GraphQLResponse::from(response).into_response()
 }

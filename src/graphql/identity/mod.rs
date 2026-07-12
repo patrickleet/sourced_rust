@@ -1,0 +1,29 @@
+//! GraphQL identity modes: TrustedProxy, OidcBearer, Hybrid, DevHeaders.
+//!
+//! Normative behavior: package spec `specs/query-layer/identity` (D1–D14, F1–F10).
+//! This module only populates [`Session`]; GraphQL RBAC is unchanged.
+
+mod claims;
+mod oidc;
+mod resolve;
+
+pub use claims::{map_claims_to_session, ClaimMapConfig};
+pub use oidc::{OidcConfig, OidcValidator, ValidationError};
+pub use resolve::{
+    extract_bearer, resolve_session, resolve_session_sync, strip_identity_headers, AuthError,
+    IdentityConfig, IdentityMode, TrustedProxyConfig, DEFAULT_IDENTITY_STRIP_HEADERS,
+};
+
+use crate::microsvc::Session;
+use axum::http::HeaderMap;
+
+/// Build a Session from all request headers (DevHeaders / mesh trust).
+pub fn session_from_all_headers(headers: &HeaderMap) -> Session {
+    let mut vars = std::collections::HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            vars.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    Session::from_map(vars)
+}
