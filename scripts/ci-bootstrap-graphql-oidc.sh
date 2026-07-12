@@ -72,28 +72,73 @@ SIGNATURE=$(printf '%s' "$SIGNING_INPUT" | openssl dgst -sha256 -sign "$TMPKEY" 
 JWT="${SIGNING_INPUT}.${SIGNATURE}"
 
 echo "==> Exchanging admin JWT for access token..."
-TOKEN_RESPONSE=$(curl -fsS -X POST "$ZITADEL_HOST/oauth/v2/token" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
-  --data-urlencode "scope=openid urn:zitadel:iam:org:project:id:zitadel:aud" \
-  --data-urlencode "assertion=$JWT")
-ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r .access_token)
-if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
-  echo "ERROR: token exchange failed"; echo "$TOKEN_RESPONSE" | jq .; exit 1
-fi
+ACCESS_TOKEN=""
+for i in $(seq 1 60); do
+  # Refresh short-lived assertion if needed
+  if [[ $i -gt 1 ]]; then
+    NOW=$(date +%s)
+    EXP=$((NOW + 60))
+    PAYLOAD=$(printf '{"iss":"%s","sub":"%s","aud":"%s","iat":%s,"exp":%s}' \
+      "$USER_ID" "$USER_ID" "$ZITADEL_HOST" "$NOW" "$EXP" | b64url)
+    SIGNING_INPUT="${HEADER}.${PAYLOAD}"
+    SIGNATURE=$(printf '%s' "$SIGNING_INPUT" | openssl dgst -sha256 -sign "$TMPKEY" | b64url)
+    JWT="${SIGNING_INPUT}.${SIGNATURE}"
+  fi
+  TOKEN_RESPONSE=$(curl -sS -X POST "$ZITADEL_HOST/oauth/v2/token" \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+    --data-urlencode "scope=openid urn:zitadel:iam:org:project:id:zitadel:aud" \
+    --data-urlencode "assertion=$JWT" || true)
+  ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty' 2>/dev/null || true)
+  if [[ -n "$ACCESS_TOKEN" && "$ACCESS_TOKEN" != "null" ]]; then
+    echo "    got access token (attempt $i)"
+    break
+  fi
+  sleep 2
+  if [[ $i -eq 60 ]]; then
+    echo "ERROR: token exchange failed"
+    echo "$TOKEN_RESPONSE" | jq . 2>/dev/null || echo "$TOKEN_RESPONSE"
+    exit 1
+  fi
+done
 
+# curl -f exits 22 on 4xx/5xx; management returns 503 while projections catch up
+# after /debug/ready. Retry with backoff until we get HTTP 200.
 api() {
   local method="$1" path="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -fsS -X "$method" "$ZITADEL_HOST$path" \
-      -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H 'Content-Type: application/json' \
-      -d "$body"
-  else
-    curl -fsS -X "$method" "$ZITADEL_HOST$path" \
-      -H "Authorization: Bearer $ACCESS_TOKEN"
-  fi
+  local attempt http_code out
+  for attempt in $(seq 1 45); do
+    if [[ -n "$body" ]]; then
+      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H 'Content-Type: application/json' \
+        -d "$body" || true)
+    else
+      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" || true)
+    fi
+    http_code=$(echo "$out" | tail -n1)
+    out=$(echo "$out" | sed '$d')
+    if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+    # 401/403 are not readiness races
+    if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+      echo "ERROR: management API $method $path → HTTP $http_code" >&2
+      echo "$out" >&2
+      return 1
+    fi
+    sleep 2
+  done
+  echo "ERROR: management API $method $path still not ready (last HTTP ${http_code:-none})" >&2
+  echo "$out" >&2
+  return 1
 }
+
+echo "==> Wait for management API (projects/_search) — /debug/ready is not enough"
+api POST /management/v1/projects/_search '{}' >/dev/null
+echo "    management API ready"
 
 echo "==> Ensure project $PROJECT_NAME"
 PROJECT_SEARCH=$(api POST /management/v1/projects/_search '{}')
