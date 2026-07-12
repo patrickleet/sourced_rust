@@ -1,0 +1,213 @@
+//! D* Resource-exhaustion red-team suite.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_graphql::Request;
+use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+
+use super::common::{
+    assert_no_sql_leak, engine_all_columns, error_messages, seed_orders, session, OrderView,
+};
+
+#[tokio::test]
+async fn where_max_depth_rejected() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_depth(2)
+        .build()
+        .unwrap();
+    let s = session("user", "tenant-a");
+    let q = r#"{
+      orders(where: { _and: [{ _and: [{ _and: [{ status: { _eq: "open" } }] }] }] }) {
+        order_id
+      }
+    }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(!resp.errors.is_empty(), "expected max depth error");
+    let msgs = error_messages(&resp);
+    assert!(
+        msgs.contains("depth") || msgs.contains("bad request"),
+        "expected depth-related client error, got {msgs}"
+    );
+    assert_no_sql_leak(&resp);
+}
+
+#[tokio::test]
+async fn max_in_list_rejected() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_in_list(3)
+        .build()
+        .unwrap();
+    let s = session("user", "x");
+    let q = r#"{ orders(where: { order_id: { _in: ["a","b","c","d"] } }) { order_id } }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(!resp.errors.is_empty(), "expected list-too-long style error");
+    assert_no_sql_leak(&resp);
+}
+
+#[tokio::test]
+async fn limit_clamped_by_max_limit() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_limit(1)
+        .default_limit(1)
+        .build()
+        .unwrap();
+    let s = session("user", "x");
+    let resp = engine
+        .execute(&s, Request::new("{ orders(limit: 100) { order_id } }"))
+        .await;
+    assert!(resp.errors.is_empty(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    assert_eq!(data["orders"].as_array().unwrap().len(), 1);
+}
+
+/// D5: wide `_or` list rejected by `max_bool_width`.
+#[tokio::test]
+async fn d5_wide_or_list_rejected_by_max_bool_width() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_bool_width(3)
+        .build()
+        .unwrap();
+    let s = session("user", "x");
+    // 4 disjuncts > max_bool_width 3
+    let q = r#"{
+      orders(where: { _or: [
+        { status: { _eq: "open" } },
+        { status: { _eq: "shipped" } },
+        { status: { _eq: "closed" } },
+        { status: { _eq: "x" } }
+      ] }) { order_id }
+    }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(
+        !resp.errors.is_empty(),
+        "expected breadth limit error for wide _or"
+    );
+    let msgs = error_messages(&resp);
+    assert!(
+        msgs.contains("list too long") || msgs.contains("bad request"),
+        "expected list-too-long style message, got {msgs}"
+    );
+    assert_no_sql_leak(&resp);
+}
+
+/// D5 complementary: `_and` width bound.
+#[tokio::test]
+async fn d5_wide_and_list_rejected_by_max_bool_width() {
+    let pool = seed_orders().await;
+    let engine = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .max_bool_width(2)
+        .build()
+        .unwrap();
+    let s = session("user", "x");
+    let q = r#"{
+      orders(where: { _and: [
+        { status: { _eq: "open" } },
+        { total_cents: { _gt: 0 } },
+        { order_id: { _neq: "" } }
+      ] }) { order_id }
+    }"#;
+    let resp = engine.execute(&s, Request::new(q)).await;
+    assert!(!resp.errors.is_empty(), "expected _and breadth error");
+    assert_no_sql_leak(&resp);
+}
+
+/// D7: concurrent executes complete without hang; short timeouts map cleanly.
+#[tokio::test]
+async fn d7_concurrent_queries_complete() {
+    let pool = seed_orders().await;
+    let engine = Arc::new(engine_all_columns(pool));
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let engine = Arc::clone(&engine);
+        handles.push(tokio::spawn(async move {
+            let s = session("user", "x");
+            let q = if i % 2 == 0 {
+                "{ orders { order_id } }"
+            } else {
+                r#"{ orders(where: { status: { _eq: "open" } }) { order_id status } }"#
+            };
+            let resp = engine.execute(&s, Request::new(q)).await;
+            assert_no_sql_leak(&resp);
+            resp.errors.is_empty()
+        }));
+    }
+    for h in handles {
+        assert!(h.await.expect("join"), "concurrent query should succeed");
+    }
+}
+
+/// D7b: concurrent queries under tight statement_timeout still terminate.
+#[tokio::test]
+async fn d7_concurrent_with_timeout_bound_terminates() {
+    use std::path::PathBuf;
+
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("graphql_harden_concurrent_to");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("orders.db");
+    let url = format!("sqlite:{}?mode=rwc", db.display());
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE orders (
+            order_id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            total_cents INTEGER NOT NULL,
+            note TEXT NOT NULL
+        );
+        INSERT INTO orders VALUES ('o1', 't', 'open', 1, 'n');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let engine = Arc::new(
+        GraphqlEngine::builder(pool)
+            .roles(&["user"])
+            .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+            .statement_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap(),
+    );
+
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let engine = Arc::clone(&engine);
+        handles.push(tokio::spawn(async move {
+            let s = session("user", "x");
+            let resp = engine
+                .execute(&s, Request::new("{ orders { order_id } }"))
+                .await;
+            assert_no_sql_leak(&resp);
+            // Success or timeout — both terminate.
+            true
+        }));
+    }
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        for h in handles {
+            assert!(h.await.expect("join"));
+        }
+    })
+    .await;
+    assert!(result.is_ok(), "concurrent suite must not hang");
+}

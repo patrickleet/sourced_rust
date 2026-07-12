@@ -634,7 +634,13 @@ async fn resolve_root(
     let value = super::engine::execute_plan(&inner, &plan)
         .await
         .map_err(|e| client_error_for_execute_err(&e))?;
-    Ok(Some(value))
+    // `None` (not `Some(Null)`) so nullable by_pk roots do not try to resolve
+    // non-null child fields on a null parent.
+    if matches!(value, Value::Null) {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
 }
 
 /// Map executor error strings to stable client errors (`extensions.code`).
@@ -650,7 +656,12 @@ fn sanitize_compile_error(e: &str) -> String {
     // Stable short messages; never return raw SQL.
     if e.contains("max depth") {
         "max depth exceeded".into()
-    } else if e.contains("max_in_list") || e.contains("_in list") {
+    } else if e.contains("max_in_list")
+        || e.contains("_in list")
+        || e.contains("max_bool_width")
+        || e.contains("_and list")
+        || e.contains("_or list")
+    {
         "list too long".into()
     } else if e.contains("invalid GraphQL response key") {
         "invalid response key".into()

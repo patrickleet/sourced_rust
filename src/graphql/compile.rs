@@ -139,20 +139,8 @@ pub fn compile_root(
             )
         }
         RootKind::ByPk => {
-            let projection = compile_object_projection(
-                inner,
-                session,
-                role,
-                &entry.schema,
-                perm,
-                selection,
-                alias,
-                &mut binds,
-                &mut bytes_paths,
-                &mut tables,
-                "",
-                0,
-            )?;
+            // Bind PK + permission/client where *before* projection so nested
+            // projection binds (if any) cannot steal placeholder positions from WHERE.
             let mut pk_preds = Vec::new();
             for pk in &entry.schema.primary_key.columns {
                 let v = selection
@@ -188,6 +176,20 @@ pub fn compile_root(
             } else {
                 format!("({pk_where}) AND ({where_sql})")
             };
+            let projection = compile_object_projection(
+                inner,
+                session,
+                role,
+                &entry.schema,
+                perm,
+                selection,
+                alias,
+                &mut binds,
+                &mut bytes_paths,
+                &mut tables,
+                "",
+                0,
+            )?;
             format!(
                 "SELECT {projection} FROM \"{}\" {alias} WHERE {full_where} LIMIT 1",
                 entry.schema.table_name
@@ -1252,6 +1254,13 @@ fn compile_client_where(
         match key.as_str() {
             "_and" => {
                 if let Value::List(items) = val {
+                    if items.len() > inner.max_bool_width {
+                        return Err(format!(
+                            "_and list length {} exceeds max_bool_width {}",
+                            items.len(),
+                            inner.max_bool_width
+                        ));
+                    }
                     for item in items {
                         preds.push(compile_client_where(
                             inner,
@@ -1270,6 +1279,13 @@ fn compile_client_where(
             }
             "_or" => {
                 if let Value::List(items) = val {
+                    if items.len() > inner.max_bool_width {
+                        return Err(format!(
+                            "_or list length {} exceeds max_bool_width {}",
+                            items.len(),
+                            inner.max_bool_width
+                        ));
+                    }
                     let mut parts = Vec::new();
                     for item in items {
                         parts.push(compile_client_where(

@@ -59,14 +59,19 @@ async fn execute_sqlite(
             };
         }
         // Read-only SELECT: no write transaction required.
+        // by_pk and filtered lookups may return zero rows → GraphQL null, not INTERNAL.
         let row = qb
-            .fetch_one(pool)
+            .fetch_optional(pool)
             .await
             .map_err(|e| format!("sqlite execute: {e}"))?;
-        let raw: Option<String> = row
-            .try_get::<Option<String>, _>(0)
-            .map_err(|e| format!("sqlite json column: {e}"))?;
-        Ok::<_, String>(raw.unwrap_or_else(|| "null".into()))
+        let raw: String = match row {
+            Some(r) => r
+                .try_get::<Option<String>, _>(0)
+                .map_err(|e| format!("sqlite json column: {e}"))?
+                .unwrap_or_else(|| "null".into()),
+            None => "null".into(),
+        };
+        Ok::<_, String>(raw)
     };
 
     let text = apply_statement_timeout(timeout, run).await?;
@@ -186,20 +191,23 @@ async fn execute_postgres(
         };
     }
     let row = qb
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("postgres execute: {e}"))?;
     tx.commit()
         .await
         .map_err(|e| format!("postgres commit: {e}"))?;
 
-    let text: String = row
-        .try_get::<String, _>(0)
-        .or_else(|_| {
-            row.try_get::<Option<String>, _>(0)
-                .map(|o| o.unwrap_or_else(|| "null".into()))
-        })
-        .map_err(|e| format!("postgres json column: {e}"))?;
+    let text: String = match row {
+        Some(r) => r
+            .try_get::<String, _>(0)
+            .or_else(|_| {
+                r.try_get::<Option<String>, _>(0)
+                    .map(|o| o.unwrap_or_else(|| "null".into()))
+            })
+            .map_err(|e| format!("postgres json column: {e}"))?,
+        None => "null".into(),
+    };
     let json: JsonValue = serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
     Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
 }
