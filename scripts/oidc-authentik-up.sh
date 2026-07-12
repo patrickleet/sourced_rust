@@ -85,11 +85,29 @@ if signing is None:
 assert signing is not None, "no CertificateKeyPair for JWT signing"
 
 # GLOBAL issuer so customer + admin tokens share one OIDC_ISSUER for e2e
-scope_qs = ScopeMapping.objects.filter(scope_name__in=["openid", "profile", "email"])
-if not scope_qs.exists():
-    scope_qs = ScopeMapping.objects.all()[:5]
+base_scopes = list(ScopeMapping.objects.filter(scope_name__in=["openid", "profile", "email"]))
+if not base_scopes:
+    base_scopes = list(ScopeMapping.objects.all()[:5])
 
-def ensure_m2m(name: str, client_id: str):
+# Groups for E1 isolation: static ScopeMapping injects groups claim on token
+# (client_credentials has no interactive user; expression returns engine role names).
+def groups_scope(name: str, roles: list):
+    expr = "return " + repr(roles)
+    m, _ = ScopeMapping.objects.update_or_create(
+        name=name,
+        defaults={
+            "scope_name": "groups",
+            "expression": expr,
+            "description": f"GraphQL e2e groups {roles}",
+        },
+    )
+    return m
+
+# Real Group objects (for documentation / future user assignment)
+g_customer, _ = Group.objects.get_or_create(name="customer")
+g_admin, _ = Group.objects.get_or_create(name="admin")
+
+def ensure_m2m(name: str, client_id: str, roles: list):
     with transaction.atomic():
         defaults = {
             "authorization_flow": auth_flow,
@@ -106,8 +124,8 @@ def ensure_m2m(name: str, client_id: str):
             name=f"{name}-provider",
             defaults=defaults,
         )
-        if scope_qs.exists():
-            provider.property_mappings.set(list(scope_qs))
+        mappings = list(base_scopes) + [groups_scope(f"{name}-groups", roles)]
+        provider.property_mappings.set(mappings)
         Application.objects.update_or_create(
             slug=name,
             defaults={
@@ -118,8 +136,8 @@ def ensure_m2m(name: str, client_id: str):
         )
         return provider
 
-cust = ensure_m2m("graphql-e2e-customer", "graphql-e2e-customer")
-adm = ensure_m2m("graphql-e2e-admin", "graphql-e2e-admin")
+cust = ensure_m2m("graphql-e2e-customer", "graphql-e2e-customer", ["customer"])
+adm = ensure_m2m("graphql-e2e-admin", "graphql-e2e-admin", ["admin"])
 
 cust.refresh_from_db()
 adm.refresh_from_db()
@@ -171,49 +189,118 @@ for i in $(seq 1 60); do
   fi
 done
 
-# Wait until client_credentials mints a token
-echo "==> Wait for client_credentials mint"
-for i in $(seq 1 60); do
-  code=$(curl -sS -o /tmp/ak-token.json -w '%{http_code}' -X POST "$TOKEN_URL" \
+# Wait until client_credentials mints tokens for BOTH clients (creates ak-*-client_credentials users)
+echo "==> Wait for client_credentials mint (customer + admin)"
+for label_id_sec in \
+  "customer:${CUSTOMER_CLIENT_ID}:${CUSTOMER_CLIENT_SECRET}" \
+  "admin:${ADMIN_CLIENT_ID}:${ADMIN_CLIENT_SECRET}"; do
+  label="${label_id_sec%%:*}"
+  rest="${label_id_sec#*:}"
+  cid="${rest%%:*}"
+  sec="${rest#*:}"
+  for i in $(seq 1 60); do
+    code=$(curl -sS -o /tmp/ak-token.json -w '%{http_code}' -X POST "$TOKEN_URL" \
+      -d "grant_type=client_credentials" \
+      -d "client_id=${cid}" \
+      -d "client_secret=${sec}" \
+      -d "scope=openid groups profile" || echo 000)
+    if [[ "$code" == "200" ]]; then
+      echo "    $label mint ready (${i}s)"
+      break
+    fi
+    sleep 2
+    if [[ $i -eq 60 ]]; then
+      echo "ERROR: client_credentials still failing for $label (HTTP $code)"
+      cat /tmp/ak-token.json 2>/dev/null || true
+      exit 1
+    fi
+  done
+done
+
+# Assign engine roles: Authentik creates ak-*-client_credentials users on first mint;
+# groups claim is sourced from user.ak_groups (static ScopeMapping alone is insufficient).
+echo "==> Assign customer/admin groups to M2M service users"
+docker compose -f "$COMPOSE" exec -T worker ak shell -c '
+from authentik.core.models import User, Group
+g_c, _ = Group.objects.get_or_create(name="customer")
+g_a, _ = Group.objects.get_or_create(name="admin")
+assigned = []
+for u in User.objects.filter(username__icontains="client_credentials"):
+    un = u.username.lower()
+    if "customer" in un:
+        u.ak_groups.set([g_c])
+        assigned.append((un, "customer"))
+    elif "admin" in un:
+        u.ak_groups.set([g_a])
+        assigned.append((un, "admin"))
+# also mint-created name pattern
+for u in User.objects.filter(name__icontains="client credentials"):
+    n = (u.name or "").lower() + " " + (u.username or "").lower()
+    if "customer" in n and not any(a[0]==u.username for a in assigned):
+        u.ak_groups.set([g_c]); assigned.append((u.username, "customer"))
+    if "admin" in n and "customer" not in n and not any(a[0]==u.username for a in assigned):
+        u.ak_groups.set([g_a]); assigned.append((u.username, "admin"))
+print("ASSIGNED", assigned)
+assert any(r=="customer" for _,r in assigned), "no customer M2M user found for group assignment"
+assert any(r=="admin" for _,r in assigned), "no admin M2M user found for group assignment"
+' 2>/tmp/authentik-groups.err || {
+  echo "ERROR: group assignment failed"
+  cat /tmp/authentik-groups.err || true
+  exit 1
+}
+
+# Re-mint and require non-empty groups claim
+echo "==> Verify groups claim on access tokens"
+for pair in "customer:${CUSTOMER_CLIENT_ID}:${CUSTOMER_CLIENT_SECRET}" "admin:${ADMIN_CLIENT_ID}:${ADMIN_CLIENT_SECRET}"; do
+  label="${pair%%:*}"
+  rest="${pair#*:}"
+  cid="${rest%%:*}"
+  sec="${rest#*:}"
+  code=$(curl -sS -o /tmp/ak-token-verify.json -w '%{http_code}' -X POST "$TOKEN_URL" \
     -d "grant_type=client_credentials" \
-    -d "client_id=${CUSTOMER_CLIENT_ID}" \
-    -d "client_secret=${CUSTOMER_CLIENT_SECRET}" \
-    -d "scope=openid" || echo 000)
-  if [[ "$code" == "200" ]]; then
-    echo "    mint ready (${i}s)"
-    break
+    -d "client_id=${cid}" \
+    -d "client_secret=${sec}" \
+    -d "scope=openid groups profile" || echo 000)
+  if [[ "$code" != "200" ]]; then
+    echo "ERROR: remint $label failed HTTP $code"
+    cat /tmp/ak-token-verify.json || true
+    exit 1
   fi
-  sleep 2
-  if [[ $i -eq 60 ]]; then
-    echo "ERROR: client_credentials still failing (HTTP $code)"
-    cat /tmp/ak-token.json 2>/dev/null || true
-    # Still write env so suite can hard-fail with diagnostics
-    cat > "$OUT" <<EOF
-AUTHENTIK_E2E=1
-OIDC_ISSUER=$ISSUER
-OIDC_AUDIENCE=$CUSTOMER_CLIENT_ID
-AUTHENTIK_TOKEN_URL=$TOKEN_URL
-AUTHENTIK_E2E_CUSTOMER_CLIENT_ID=$CUSTOMER_CLIENT_ID
-AUTHENTIK_E2E_CUSTOMER_CLIENT_SECRET=$CUSTOMER_CLIENT_SECRET
-AUTHENTIK_E2E_ADMIN_CLIENT_ID=$ADMIN_CLIENT_ID
-AUTHENTIK_E2E_ADMIN_CLIENT_SECRET=$ADMIN_CLIENT_SECRET
-EOF
+  groups=$(python3 - <<PY
+import json,base64
+tok=json.load(open("/tmp/ak-token-verify.json"))["access_token"]
+p=tok.split(".")[1]
+p += "=" * (-len(p) % 4)
+c=json.loads(base64.urlsafe_b64decode(p))
+print(c.get("groups"))
+PY
+)
+  echo "    $label groups=$groups"
+  if [[ "$groups" == "None" || "$groups" == "[]" || -z "$groups" ]]; then
+    echo "ERROR: $label token missing groups claim (got $groups)"
     exit 1
   fi
 done
 
-# Derive issuer + audience from minted token (authoritative for validation)
+# Derive issuer + audience from **customer** token (primary OIDC_AUDIENCE for E1 isolation)
+curl -sS -o /tmp/ak-token.json -X POST "$TOKEN_URL" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=${CUSTOMER_CLIENT_ID}" \
+  -d "client_secret=${CUSTOMER_CLIENT_SECRET}" \
+  -d "scope=openid groups profile" >/dev/null
 eval "$(python3 - <<PY
 import json,base64,shlex
 tok=json.load(open("/tmp/ak-token.json"))["access_token"]
 payload=tok.split(".")[1]
 payload += "=" * (-len(payload) % 4)
 claims=json.loads(base64.urlsafe_b64decode(payload))
-print("claims", {k: claims.get(k) for k in ("aud","azp","client_id","sub","iss","alg")}, file=__import__("sys").stderr)
+print("claims", {k: claims.get(k) for k in ("aud","azp","client_id","sub","iss","groups")}, file=__import__("sys").stderr)
 hdr=json.loads(base64.urlsafe_b64decode(tok.split(".")[0] + "=" * (-len(tok.split(".")[0]) % 4)))
 print("header", hdr, file=__import__("sys").stderr)
 if hdr.get("alg","").startswith("HS"):
     raise SystemExit("token still HS* — signing_key not applied")
+if not claims.get("groups"):
+    raise SystemExit("customer token missing groups after assignment")
 aud=claims.get("aud")
 azp=claims.get("azp")
 if isinstance(aud, list):
@@ -221,16 +308,11 @@ if isinstance(aud, list):
 elif not aud:
   aud = azp or "${CUSTOMER_CLIENT_ID}"
 iss = claims.get("iss") or "${ISSUER}"
-if not iss.endswith("/"):
-    # normalize only if discovery uses trailing slash convention
-    pass
 print(f"AUD={shlex.quote(str(aud))}")
-print(f"ISSUER={shlex.quote(str(iss) if str(iss).endswith('/') else str(iss)+'/')}")
-# keep issuer exactly as in token for validation (jsonwebtoken normalizes trailing slash)
 print(f"ISSUER_RAW={shlex.quote(str(iss))}")
 PY
 )"
-# Prefer exact iss claim from token (no forced trailing slash if token omits it)
+# Prefer exact iss claim from token
 ISSUER="${ISSUER_RAW:-$ISSUER}"
 
 # JWKS lives on application path even when iss is GLOBAL (origin)

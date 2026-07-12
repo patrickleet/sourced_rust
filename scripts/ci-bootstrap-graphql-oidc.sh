@@ -149,10 +149,20 @@ if [[ -z "$PROJECT_ID" ]]; then
 fi
 echo "    project=$PROJECT_ID"
 
-# Project roles admin + customer
+# Project roles admin + customer (required for E1 isolation via urn:zitadel:iam:org:project:roles)
+# Zitadel AddProjectRoleRequest uses **roleKey** (not key); search results use `key`.
+echo "==> Ensure project roles admin + customer"
 for role in admin customer; do
-  api POST "/management/v1/projects/$PROJECT_ID/roles" \
-    "$(jq -n --arg k "$role" --arg d "$role" '{key: $k, displayName: $d}')" >/dev/null 2>&1 || true
+  role_resp=$(api POST "/management/v1/projects/$PROJECT_ID/roles" \
+    "$(jq -n --arg k "$role" --arg d "$role" '{roleKey: $k, displayName: $d}')" 2>/dev/null || true)
+  roles_list=$(api POST "/management/v1/projects/$PROJECT_ID/roles/_search" '{}' 2>/dev/null || echo '{}')
+  if ! echo "$roles_list" | jq -e --arg k "$role" '.result[]? | select(.key == $k)' >/dev/null 2>&1; then
+    echo "ERROR: project role '$role' missing after create"
+    echo "create: $role_resp"
+    echo "list: $roles_list"
+    exit 1
+  fi
+  echo "    role ok: $role"
 done
 
 echo "==> Ensure OIDC app $APP_NAME (JWT access tokens + role assertion)"
@@ -217,10 +227,37 @@ create_machine_with_key() {
   fi
   echo "    user id: $uid" >&2
 
-  # Grant project role
-  api POST "/management/v1/users/$uid/grants" "$(jq -n \
-    --arg pid "$PROJECT_ID" --arg r "$role" \
-    '{projectId: $pid, roleKeys: [$r]}')" >/dev/null 2>&1 || true
+  # Grant project role (must succeed for E1 isolation claims)
+  echo "    granting project role $role" >&2
+  grant_body=$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" \
+    '{projectId: $pid, roleKeys: [$r]}')
+  grants=$(api POST "/management/v1/users/grants/_search" "$(jq -n --arg uid "$uid" \
+    '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
+  existing_grant=$(echo "$grants" | jq -r --arg pid "$PROJECT_ID" \
+    '.result[]? | select(.projectId == $pid) | .id // empty' | head -n1)
+  if [[ -n "$existing_grant" ]]; then
+    # One-shot update (do not use api() retry — 404 is not a readiness race)
+    http=$(curl -sS -o /tmp/zitadel-grant.json -w '%{http_code}' -X PUT \
+      "$ZITADEL_HOST/management/v1/users/$uid/grants/$existing_grant" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg r "$role" '{roleKeys: [$r]}')" || echo 000)
+    # 200/201 ok; 400 "has not been changed" means grant already has roleKeys
+    if [[ "$http" == "200" || "$http" == "201" ]]; then
+      echo "    updated grant $existing_grant → $role" >&2
+    elif [[ "$http" == "400" ]] && grep -q 'has not been changed' /tmp/zitadel-grant.json 2>/dev/null; then
+      echo "    grant $existing_grant already has role $role" >&2
+    else
+      echo "ERROR: update grant $existing_grant → $role failed HTTP $http" >&2
+      cat /tmp/zitadel-grant.json >&2 || true
+      exit 1
+    fi
+  else
+    grant_resp=$(api POST "/management/v1/users/$uid/grants" "$grant_body") || {
+      echo "ERROR: grant role $role to $uid failed" >&2
+      exit 1
+    }
+    echo "    grant created for role $role" >&2
+  fi
 
   # Machine key (JSON type 1) for JWT-bearer
   echo "    creating machine key → $key_out" >&2
@@ -266,6 +303,52 @@ ADMIN_UID=$(create_machine_with_key "graphql-e2e-admin" "admin" "$ADMIN_KEY")
 # Strip any accidental whitespace
 CUSTOMER_UID=$(echo "$CUSTOMER_UID" | tr -d '[:space:]')
 ADMIN_UID=$(echo "$ADMIN_UID" | tr -d '[:space:]')
+
+# Prove customer token carries project roles (E1 isolation depends on this)
+echo "==> Verify customer JWT-bearer token includes project roles claim"
+verify_roles() {
+  local keyfile="$1" uid="$2"
+  local kid key_pem now exp header payload sig jwt tok claims
+  kid=$(jq -r '.keyId // .key_id' "$keyfile")
+  key_pem=$(jq -r '.key' "$keyfile")
+  now=$(date +%s)
+  exp=$((now + 60))
+  header=$(printf '{"alg":"RS256","typ":"JWT","kid":"%s"}' "$kid" | b64url)
+  payload=$(printf '{"iss":"%s","sub":"%s","aud":["%s/oauth/v2/token","%s"],"iat":%s,"exp":%s}' \
+    "$uid" "$uid" "$ZITADEL_HOST" "$ZITADEL_HOST" "$now" "$exp" | b64url)
+  TMPV=$(mktemp)
+  printf '%s\n' "$key_pem" > "$TMPV"
+  sig=$(printf '%s' "${header}.${payload}" | openssl dgst -sha256 -sign "$TMPV" | b64url)
+  rm -f "$TMPV"
+  jwt="${header}.${payload}.${sig}"
+  tok=$(curl -sS -X POST "$ZITADEL_HOST/oauth/v2/token" \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+    --data-urlencode "scope=openid profile urn:zitadel:iam:org:project:id:${PROJECT_ID}:aud urn:zitadel:iam:org:project:roles urn:zitadel:iam:org:projects:roles" \
+    --data-urlencode "assertion=$jwt" | jq -r '.access_token // empty')
+  if [[ -z "$tok" ]]; then
+    echo "ERROR: could not mint verify token for $uid"
+    return 1
+  fi
+  claims=$(python3 -c "
+import json,base64,sys
+t=sys.argv[1].split('.')[1]
+t += '=' * (-len(t) % 4)
+print(json.dumps(json.loads(base64.urlsafe_b64decode(t))))
+" "$tok")
+  # Generic or project-scoped role object (either form is valid for claim map)
+  if ! echo "$claims" | jq -e '
+      (."urn:zitadel:iam:org:project:roles" | type == "object")
+      or ([to_entries[] | select(.key | test("^urn:zitadel:iam:org:project:[^:]+:roles$"))] | length > 0)
+    ' >/dev/null; then
+    echo "ERROR: access token missing Zitadel project roles claim (E1 isolation will fail)"
+    echo "$claims" | jq .
+    return 1
+  fi
+  echo "    roles claim present: $(echo "$claims" | jq -c '[to_entries[] | select(.key | contains("roles")) | {key, roles: (.value | keys)}]')"
+}
+verify_roles "$CUSTOMER_KEY" "$CUSTOMER_UID"
+verify_roles "$ADMIN_KEY" "$ADMIN_UID"
 
 # Zitadel JWT-bearer access tokens with project:id:{PROJECT}:aud put the
 # **project id** in `aud` (not the OIDC app client id). Validate against that.

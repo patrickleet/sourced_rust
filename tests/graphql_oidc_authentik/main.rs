@@ -111,10 +111,12 @@ async fn mint_client_credentials(
     client_id: &str,
     client_secret: &str,
 ) -> Result<(String, String), String> {
+    // Request `groups` so ScopeMapping injects customer/admin for E1 isolation.
     let body = format!(
-        "grant_type=client_credentials&client_id={}&client_secret={}",
+        "grant_type=client_credentials&client_id={}&client_secret={}&scope={}",
         urlencoding(client_id),
-        urlencoding(client_secret)
+        urlencoding(client_secret),
+        urlencoding("openid groups profile")
     );
     let resp = reqwest::Client::new()
         .post(token_url)

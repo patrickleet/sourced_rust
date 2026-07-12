@@ -4,15 +4,21 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use base64::Engine as _;
 use distributed::graphql::{
     graphql_router, resolve_session, select, AuthError, GraphqlEngine, IdentityConfig,
-    IdentityMode, ModelPermissions, OidcConfig, OidcValidator,
+    IdentityMode, ModelPermissions, OidcConfig, OidcValidator, ValidationError,
 };
 use distributed::ReadModel;
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use rsa::pkcs1::EncodeRsaPrivateKey;
+use rsa::traits::PublicKeyParts;
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::sqlite::SqlitePoolOptions;
 use tower::util::ServiceExt;
 
@@ -193,8 +199,22 @@ pub async fn run_e1_through_e8(
             .unwrap(),
     );
 
-    // E1 — valid token isolation
+    // E1 — valid token isolation (must map an engine role + own-row filter)
     {
+        let session = OidcValidator::new(oidc_cfg.clone())
+            .validate_and_map_async(&token_a)
+            .await
+            .expect("E1 validate");
+        assert_eq!(session.user_id(), Some(sub_a.as_str()), "E1 sub");
+        let role = session.role().map(|s| s.to_string());
+        assert!(
+            role.as_deref() == Some("customer")
+                || role.as_deref() == Some("user")
+                || role.as_deref() == Some("admin"),
+            "E1 token A must map an engine role (customer|user|admin), got {role:?}. \
+             Fix IdP bootstrap so access token carries roles/groups/realm_access.roles \
+             (or Zitadel project roles)."
+        );
         let (status, v) = post_graphql(
             Arc::clone(&engine),
             bearer_headers(&token_a),
@@ -202,27 +222,26 @@ pub async fn run_e1_through_e8(
         )
         .await;
         assert_eq!(status, StatusCode::OK, "E1 status: {v}");
-        // If role grants isolation, only subject-a rows; if admin/all, still must execute.
-        if let Some(arr) = v["data"]["oidc_e2e_items"].as_array() {
-            for row in arr {
-                if let Some(owner) = row["owner"].as_str() {
-                    // With claim filter roles, only own rows.
-                    if v["data"]["oidc_e2e_items"].as_array().map(|a| a.len()).unwrap_or(0) == 1 {
-                        assert_eq!(owner, sub_a, "E1 isolation: {v}");
-                    }
-                }
-            }
+        assert!(
+            v.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
+            "E1 GraphQL errors (role surface empty?): {v}"
+        );
+        let arr = v["data"]["oidc_e2e_items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("E1 missing data.oidc_e2e_items: {v}"));
+        if role.as_deref() == Some("admin") {
+            // Admin sees all rows; still must execute successfully.
+            assert!(!arr.is_empty(), "E1 admin must see rows: {v}");
         } else {
-            // Unknown field if role empty — still authenticated path (not 401)
-            eprintln!("E1 note: no data rows (role surface empty?): {v}");
+            // customer/user: row isolation to subject A only
+            assert_eq!(arr.len(), 1, "E1 isolation row count: {v}");
+            assert_eq!(
+                arr[0]["owner"].as_str(),
+                Some(sub_a.as_str()),
+                "E1 isolation owner: {v}"
+            );
         }
-        // Session subject from shipped validator
-        let session = OidcValidator::new(oidc_cfg.clone())
-            .validate_and_map_async(&token_a)
-            .await
-            .expect("E1 validate");
-        assert_eq!(session.user_id(), Some(sub_a.as_str()), "E1 sub");
-        eprintln!("E1 ok sub={sub_a}");
+        eprintln!("E1 ok sub={sub_a} role={role:?}");
     }
 
     // E2 — spoof headers ignored
@@ -267,34 +286,91 @@ pub async fn run_e1_through_e8(
         eprintln!("E4 ok");
     }
 
-    // E5 — expired / unusable token → 401 (unsigned expired-shaped JWT still fails closed)
+    // E5 — expired access token → ValidationError::Expired (signed JWT, exp in past).
+    // Uses static JWKS on the shipped validator so failure is expiry, not signature.
     {
-        let mut h = HeaderMap::new();
-        // Compact JWT with exp in the past (unsigned) — must not authenticate
-        h.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static(
-                "Bearer eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjF9.e30",
-            ),
+        let keys = mint_e5_rsa_keys();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let claims = json!({
+            "iss": oidc_cfg.issuer,
+            "aud": oidc_cfg.audience,
+            "sub": "expired-subject",
+            "exp": now - 120,
+            "iat": now - 3600,
+            "nbf": now - 3600,
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(keys.kid.clone());
+        let expired_token = encode(&header, &claims, &keys.encoding).expect("E5 sign");
+        let mut exp_cfg = OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience)
+            .with_static_jwks(&keys.jwks_json);
+        exp_cfg.clock_skew = std::time::Duration::from_secs(0);
+        let err = OidcValidator::new(exp_cfg)
+            .validate_token(&expired_token)
+            .expect_err("E5 must reject expired token");
+        assert!(
+            matches!(err, ValidationError::Expired),
+            "E5 must be Expired (not signature/malformed), got {err:?}"
+        );
+        // HTTP path with engine wired to the same static JWKS → 401
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE oidc_e2e_items (id TEXT PRIMARY KEY, owner TEXT NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut http_cfg = OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience)
+            .with_static_jwks(&keys.jwks_json);
+        http_cfg.require_auth = true;
+        http_cfg.clock_skew = std::time::Duration::from_secs(0);
+        http_cfg.claim_map.engine_roles = vec!["admin".into(), "customer".into(), "user".into()];
+        let exp_engine = Arc::new(
+            GraphqlEngine::builder(pool)
+                .roles(&["customer", "admin", "user"])
+                .model::<OidcE2eItem>(
+                    ModelPermissions::new().role("customer", select().all_columns()),
+                )
+                .identity(IdentityConfig::oidc_bearer(http_cfg))
+                .graphiql(false)
+                .build()
+                .unwrap(),
         );
         let (status, _) = post_graphql(
-            Arc::clone(&engine),
-            h,
+            exp_engine,
+            bearer_headers(&expired_token),
             r#"{"query":"{ oidc_e2e_items { id } }"}"#,
         )
         .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "E5");
-        eprintln!("E5 ok");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "E5 HTTP");
+        eprintln!("E5 ok (Expired + HTTP 401)");
     }
 
     // E6 — wrong audience config rejects valid token
     {
         let mut bad = oidc_cfg.clone();
         bad.audience = "definitely-wrong-audience-xyz".into();
+        // Multi-client configs carry extra_audiences (azp) — clear them so E6 is honest.
+        bad.extra_audiences.clear();
         let err = OidcValidator::new(bad)
             .validate_and_map_async(&token_a)
             .await;
         assert!(err.is_err(), "E6 wrong aud must fail");
+        assert!(
+            matches!(err, Err(ValidationError::Audience))
+                || err
+                    .as_ref()
+                    .err()
+                    .map(|e| e.to_string().contains("audience"))
+                    .unwrap_or(false),
+            "E6 expected Audience error, got {err:?}"
+        );
         eprintln!("E6 ok");
     }
 
@@ -334,4 +410,39 @@ pub async fn run_e1_through_e8(
 
     let _ = IdentityMode::OidcBearer;
     let _ = AuthError::Unauthorized;
+}
+
+// ── E5 helpers: signed expired JWT against static JWKS (shipped validate path) ─
+
+struct E5Keys {
+    encoding: EncodingKey,
+    jwks_json: String,
+    kid: String,
+}
+
+fn mint_e5_rsa_keys() -> E5Keys {
+    let mut rng = rand::thread_rng();
+    let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
+    let public = RsaPublicKey::from(&private);
+    let pem = private.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+    let encoding = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+    let kid = "e5-expired-kid".to_string();
+    let n = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.n().to_bytes_be());
+    let e = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.e().to_bytes_be());
+    let jwks_json = json!({
+        "keys": [{
+            "kty": "RSA",
+            "kid": kid,
+            "alg": "RS256",
+            "use": "sig",
+            "n": n,
+            "e": e
+        }]
+    })
+    .to_string();
+    E5Keys {
+        encoding,
+        jwks_json,
+        kid,
+    }
 }
