@@ -591,23 +591,9 @@ use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPool}};
 /// `DATABASE_URL` is used by `service::build_with_graphql`; defaults to an
 /// in-memory SQLite database when unset (dev only).
 pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, GraphqlBuildError> {{
-{tighten_hint}    // GraphiQL on by default for local exploration (`GET /graphql`).
-    // Set GRAPHIQL=0 (or false) in production to disable the IDE surface.
-    let graphiql = match std::env::var("GRAPHIQL") {{
-        Ok(v) => !matches!(
-            v.to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        ),
-        Err(_) => {{
-            let prod = std::env::var("RUST_ENV")
-                .or_else(|_| std::env::var("ENV"))
-                .or_else(|_| std::env::var("APP_ENV"))
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            // Local/dev default on; production-like default off.
-            !matches!(prod.as_str(), "production" | "prod")
-        }}
-    }};
+{tighten_hint}    // GraphiQL policy lives in `distributed::graphql::graphiql_enabled_from_env`
+    // (GRAPHIQL override; RUST_ENV/ENV/APP_ENV production → off; else on).
+    let graphiql = distributed::graphql::graphiql_enabled_from_env();
     GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
         .roles(roles::ALL)
         .grant_all(roles::USER)

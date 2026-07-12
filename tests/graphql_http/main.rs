@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{
+    graphiql_enabled_from_env_vars, select, GraphqlEngine, ModelPermissions,
+};
 use distributed::microsvc::{router, Service};
 use distributed::{ReadModel, RelationalReadModel};
 use serde::{Deserialize, Serialize};
@@ -108,5 +110,37 @@ async fn post_graphql_with_role_returns_data() {
     assert!(
         v["data"]["http_items"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
         "response: {v}"
+    );
+}
+
+/// harden-11: production-like env policy disables GraphiQL on the real HTTP path.
+///
+/// Drives shipped `graphiql_enabled_from_env_vars` (same function scaffold calls via
+/// `graphiql_enabled_from_env`) then mounts the engine with that boolean.
+#[tokio::test]
+async fn production_env_policy_disables_graphiql_http_get() {
+    // Pure policy (no process-env mutation): RUST_ENV=production → graphiql false.
+    let graphiql = graphiql_enabled_from_env_vars(None, Some("production"), None, None);
+    assert!(
+        !graphiql,
+        "RUST_ENV=production must disable GraphiQL in shipped policy"
+    );
+
+    let svc = service_with_graphiql(graphiql).await;
+    let app = router(svc);
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/graphql")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        "production policy must yield GET /graphql 405 (GraphiQL off)"
     );
 }
