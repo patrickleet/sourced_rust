@@ -12,6 +12,7 @@ use crate::table::{
 };
 
 use super::engine::{CatalogEntry, EngineInner, RoleModelPerm};
+use super::naming::is_valid_graphql_name;
 use super::filter::{CmpOp, FilterExpr, LitValue, Operand};
 use super::permissions::SelectPermission;
 
@@ -229,6 +230,14 @@ pub enum RootKind {
     Aggregate,
 }
 
+fn validate_response_key(key: &str) -> Result<(), String> {
+    if is_valid_graphql_name(key) {
+        Ok(())
+    } else {
+        Err(format!("invalid GraphQL response key `{key}`"))
+    }
+}
+
 fn placeholder(dialect: SqlDialect, n: usize) -> String {
     match dialect {
         SqlDialect::Postgres => format!("${n}"),
@@ -296,6 +305,7 @@ fn compile_object_projection(
                 };
                 bytes_paths.push(p);
             }
+            validate_response_key(&col.column_name)?;
             pairs.push((col.column_name.clone(), expr));
         }
     } else {
@@ -323,6 +333,7 @@ fn compile_object_projection(
                     };
                     bytes_paths.push(p);
                 }
+                validate_response_key(&child.response_key)?;
                 pairs.push((child.response_key.clone(), expr));
                 continue;
             }
@@ -364,6 +375,7 @@ fn compile_object_projection(
                     &child_path,
                     depth + 1,
                 )?;
+                validate_response_key(&child.response_key)?;
                 pairs.push((child.response_key.clone(), sub));
             }
         }
@@ -741,6 +753,9 @@ fn compile_where(
     tables: &mut Vec<String>,
     depth: usize,
 ) -> Result<String, String> {
+    if depth > inner.max_depth {
+        return Err("max depth exceeded".into());
+    }
     let mut preds = Vec::new();
     if let Some(filter) = &perm.filter {
         preds.push(compile_filter_expr(
@@ -992,6 +1007,9 @@ fn compile_client_where(
     tables: &mut Vec<String>,
     depth: usize,
 ) -> Result<String, String> {
+    if depth > inner.max_depth {
+        return Err("max depth exceeded".into());
+    }
     let Value::Object(map) = value else {
         return Ok("TRUE".into());
     };
@@ -1337,4 +1355,39 @@ pub fn compile_list_sql_for_test(
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use crate::graphql::naming::is_valid_graphql_name;
+
+    #[test]
+    fn response_key_validator_accepts_graphql_names() {
+        assert!(validate_response_key("order_id").is_ok());
+        assert!(validate_response_key("_x").is_ok());
+        assert!(validate_response_key("a1").is_ok());
+    }
+
+    #[test]
+    fn response_key_validator_rejects_injection_shaped_keys() {
+        assert!(validate_response_key("a', (SELECT 1), '").is_err());
+        assert!(validate_response_key("a b").is_err());
+        assert!(validate_response_key("").is_err());
+        assert!(validate_response_key("__proto__").is_err());
+        assert!(!is_valid_graphql_name("1bad"));
+    }
+
+    #[test]
+    fn resolve_limit_clamps_to_max() {
+        assert_eq!(resolve_limit(None, None, 100, 1000), 100);
+        assert_eq!(
+            resolve_limit(Some(&Value::from(9_000_000u64)), None, 100, 1000),
+            1000
+        );
+        assert_eq!(
+            resolve_limit(Some(&Value::from(50u64)), Some(10), 100, 1000),
+            10
+        );
+    }
 }

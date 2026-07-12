@@ -48,6 +48,14 @@ const OUTBOX_OLDEST_PENDING_AGE_FAMILY: MetricFamily = MetricFamily::gauge(
     metric_names::OUTBOX_OLDEST_PENDING_AGE_SECONDS,
     "Age in seconds of the oldest pending outbox message.",
 );
+const GRAPHQL_REQUEST_TOTAL_FAMILY: MetricFamily = MetricFamily::counter(
+    metric_names::GRAPHQL_REQUEST_TOTAL,
+    "Total GraphQL root-field executions by service, root_field, and status.",
+);
+const GRAPHQL_REQUEST_DURATION_FAMILY: MetricFamily = MetricFamily::histogram(
+    metric_names::GRAPHQL_REQUEST_DURATION_SECONDS,
+    "GraphQL root-field execution duration in seconds.",
+);
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
 
@@ -104,6 +112,21 @@ pub fn record_transport_failure(
         transport: transport.to_string(),
         failure_class: failure_class.to_string(),
         action: action.to_string(),
+    });
+}
+
+/// Record one GraphQL request (root field execution).
+pub fn record_graphql_request(
+    service: Option<&str>,
+    root_field: &str,
+    status: &str,
+    duration: Duration,
+) {
+    registry().record_graphql_request(GraphqlRequestKey {
+        service: service_label(service),
+        root_field: root_field.to_string(),
+        status: status.to_string(),
+        duration_seconds: duration.as_secs_f64(),
     });
 }
 
@@ -395,6 +418,8 @@ struct MetricsRegistry {
     outbox_messages_total: Mutex<BTreeMap<OutboxMessageKey, u64>>,
     outbox_pending_messages: Mutex<BTreeMap<String, f64>>,
     outbox_oldest_pending_age_seconds: Mutex<BTreeMap<String, f64>>,
+    graphql_request_total: Mutex<BTreeMap<GraphqlCounterKey, u64>>,
+    graphql_request_duration: Mutex<BTreeMap<GraphqlHistogramKey, Histogram>>,
 }
 
 impl MetricsRegistry {
@@ -442,6 +467,19 @@ impl MetricsRegistry {
         self.note_service(service);
     }
 
+    fn record_graphql_request(&self, key: GraphqlRequestKey) {
+        let service = key.service.clone();
+        self.lock(&self.graphql_request_total)
+            .entry(key.counter_key())
+            .and_modify(|value| *value += 1)
+            .or_insert(1);
+        self.lock(&self.graphql_request_duration)
+            .entry(key.histogram_key())
+            .or_insert_with(Histogram::new)
+            .observe(key.duration_seconds);
+        self.note_service(service);
+    }
+
     fn set_outbox_backlog(&self, service: String, pending: f64, oldest_pending_age: Option<f64>) {
         self.lock(&self.outbox_pending_messages)
             .insert(service.clone(), pending);
@@ -465,6 +503,8 @@ impl MetricsRegistry {
         let outbox_pending_messages = self.clone_locked(&self.outbox_pending_messages);
         let outbox_oldest_pending_age_seconds =
             self.clone_locked(&self.outbox_oldest_pending_age_seconds);
+        let graphql_request_total = self.clone_locked(&self.graphql_request_total);
+        let graphql_request_duration = self.clone_locked(&self.graphql_request_duration);
 
         MetricsSnapshot {
             families: vec![
@@ -531,6 +571,18 @@ impl MetricsRegistry {
                         })
                         .collect(),
                 ),
+                GRAPHQL_REQUEST_TOTAL_FAMILY.snapshot(
+                    graphql_request_total
+                        .iter()
+                        .map(|(key, value)| MetricSample::counter(key.labels(), *value))
+                        .collect(),
+                ),
+                GRAPHQL_REQUEST_DURATION_FAMILY.snapshot(
+                    graphql_request_duration
+                        .iter()
+                        .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
+                        .collect(),
+                )
             ],
         }
     }
@@ -942,6 +994,8 @@ mod tests {
                 metric_names::OUTBOX_MESSAGES_TOTAL,
                 metric_names::OUTBOX_PENDING_MESSAGES,
                 metric_names::OUTBOX_OLDEST_PENDING_AGE_SECONDS,
+                metric_names::GRAPHQL_REQUEST_TOTAL,
+                metric_names::GRAPHQL_REQUEST_DURATION_SECONDS,
             ]
         );
 
@@ -1069,3 +1123,63 @@ mod tests {
         names
     }
 }
+
+#[derive(Clone, Debug)]
+struct GraphqlRequestKey {
+    service: String,
+    root_field: String,
+    status: String,
+    duration_seconds: f64,
+}
+
+impl GraphqlRequestKey {
+    fn counter_key(&self) -> GraphqlCounterKey {
+        GraphqlCounterKey {
+            service: self.service.clone(),
+            root_field: self.root_field.clone(),
+            status: self.status.clone(),
+        }
+    }
+    fn histogram_key(&self) -> GraphqlHistogramKey {
+        GraphqlHistogramKey {
+            service: self.service.clone(),
+            root_field: self.root_field.clone(),
+            status: self.status.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GraphqlCounterKey {
+    service: String,
+    root_field: String,
+    status: String,
+}
+
+impl GraphqlCounterKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            ("root_field".to_string(), self.root_field.clone()),
+            (metric_labels::STATUS.to_string(), self.status.clone()),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GraphqlHistogramKey {
+    service: String,
+    root_field: String,
+    status: String,
+}
+
+impl GraphqlHistogramKey {
+    fn labels(&self) -> Vec<(String, String)> {
+        vec![
+            (metric_labels::SERVICE.to_string(), self.service.clone()),
+            ("root_field".to_string(), self.root_field.clone()),
+            (metric_labels::STATUS.to_string(), self.status.clone()),
+        ]
+    }
+}
+

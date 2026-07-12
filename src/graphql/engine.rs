@@ -221,7 +221,11 @@ fn resolve_role(session: &Session, anonymous: &str) -> String {
 }
 
 fn record_metrics(session: &Session, root_field: &str, status: &str, duration: Duration) {
-    let _ = (session, root_field, status, duration);
+    let _ = session;
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_graphql_request(None, root_field, status, duration);
+    #[cfg(not(feature = "metrics"))]
+    let _ = (root_field, status, duration);
 }
 
 impl GraphqlEngineBuilder {

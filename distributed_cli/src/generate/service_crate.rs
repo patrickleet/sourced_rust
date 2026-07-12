@@ -594,8 +594,19 @@ pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, Graph
 {tighten_hint}    // GraphiQL on by default for local exploration (`GET /graphql`).
     // Set GRAPHIQL=0 (or false) in production to disable the IDE surface.
     let graphiql = match std::env::var("GRAPHIQL") {{
-        Ok(v) => !matches!(v.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
-        Err(_) => true,
+        Ok(v) => !matches!(
+            v.to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => {{
+            let prod = std::env::var("RUST_ENV")
+                .or_else(|_| std::env::var("ENV"))
+                .or_else(|_| std::env::var("APP_ENV"))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            // Local/dev default on; production-like default off.
+            !matches!(prod.as_str(), "production" | "prod")
+        }}
     }};
     GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
         .roles(roles::ALL)
