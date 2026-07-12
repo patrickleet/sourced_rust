@@ -136,11 +136,24 @@ async fn mint_jwt_bearer(issuer: &str, key_path: &str, user_id: &str) -> Result<
     let assertion = jsonwebtoken::encode(&header, &assertion_claims, &encoding)
         .map_err(|e| format!("sign: {e}"))?;
 
+    // Prefer project-scoped audience so token `aud` matches GraphQL OIDC_AUDIENCE
+    // (Zitadel sets aud to project id when this scope is used).
+    let project_id = std::env::var("ZITADEL_PROJECT_ID")
+        .or_else(|_| std::env::var("OIDC_AUDIENCE"))
+        .unwrap_or_default();
+    let scope = if project_id.is_empty() {
+        "openid profile urn:zitadel:iam:org:project:roles".to_string()
+    } else {
+        format!(
+            "openid profile urn:zitadel:iam:org:project:id:{project_id}:aud urn:zitadel:iam:org:project:roles"
+        )
+    };
+
     let client = reqwest::Client::new();
     let body = format!(
         "grant_type={}&scope={}&assertion={}",
         urlencoding("urn:ietf:params:oauth:grant-type:jwt-bearer"),
-        urlencoding("openid profile urn:zitadel:iam:org:project:roles"),
+        urlencoding(&scope),
         urlencoding(&assertion),
     );
     let resp = client

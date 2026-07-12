@@ -3,7 +3,12 @@ name: GraphQL Identity / OIDC Integration Tests
 # Reusable workflow: wired from on-pr-quality and on-push-main.
 #
 # - identity-always-on: mock JWKS F1–F10 (no network / no Zitadel)
-# - oidc-zitadel-e2e: live Zitadel compose + JWT-bearer mint (D11)
+# - oidc-zitadel-e2e: live Zitadel compose + JWT-bearer mint (same path as local)
+#
+# Local parity:
+#   ./scripts/oidc-zitadel-up.sh
+#   set -a && source graphql-oidc.env && set +a
+#   cargo test --test graphql_oidc_zitadel --features graphql,sqlite,metrics
 on:
   workflow_call:
 
@@ -25,10 +30,8 @@ jobs:
           cargo test --test graphql_identity --features graphql,sqlite,metrics --verbose
       - name: Zitadel suite runs and skips cleanly without ZITADEL_E2E
         run: |
-          # Must execute the binary in CI even when offline (D12 soft-skip).
           cargo test --test graphql_oidc_zitadel --features graphql,sqlite,metrics --verbose
         env:
-          # Explicitly unset so skip path is what we assert.
           ZITADEL_E2E: ""
 
   oidc-zitadel-e2e:
@@ -46,25 +49,28 @@ jobs:
           toolchain: stable
       - name: Install bootstrap tools
         run: sudo apt-get update && sudo apt-get install -y jq openssl curl
-      - name: Start Zitadel (compose)
+      # Same entrypoint as local: prepares machinekey perms, compose up, wait, bootstrap.
+      - name: Start Zitadel + bootstrap (docker compose)
         run: |
-          mkdir -p tests/graphql_oidc_zitadel/machinekey
-          docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml up -d
-      - name: Bootstrap OIDC app + e2e machine users
-        run: |
-          chmod +x scripts/ci-bootstrap-graphql-oidc.sh
-          ./scripts/ci-bootstrap-graphql-oidc.sh
+          chmod +x scripts/oidc-zitadel-up.sh scripts/ci-bootstrap-graphql-oidc.sh
+          ./scripts/oidc-zitadel-up.sh
       - name: Run live Zitadel e2e suite
         run: |
           set -a
           # shellcheck disable=SC1091
           source graphql-oidc.env
           set +a
+          test -n "${ZITADEL_E2E:-}"
+          test -n "${OIDC_ISSUER:-}"
+          test -n "${GRAPHQL_E2E_CUSTOMER_KEY:-}"
           echo "ZITADEL_E2E=$ZITADEL_E2E OIDC_ISSUER=$OIDC_ISSUER"
           cargo test --test graphql_oidc_zitadel --features graphql,sqlite,metrics --verbose -- --nocapture
       - name: Dump Zitadel logs on failure
         if: failure()
-        run: docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml logs --tail=200 || true
+        run: |
+          docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml ps -a || true
+          docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml logs --tail=200 || true
+          ls -la tests/graphql_oidc_zitadel/machinekey || true
       - name: Tear down
         if: always()
         run: docker compose -f tests/graphql_oidc_zitadel/docker-compose.yml down -v || true

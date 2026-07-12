@@ -133,8 +133,14 @@ if [[ -z "$APP_ID" ]]; then
       idTokenRoleAssertion: true,
       idTokenUserinfoAssertion: true
     }')")
-  CLIENT_ID=$(echo "$APP_RESP" | jq -r .clientId)
-  APP_ID=$(echo "$APP_RESP" | jq -r .appId // .id // empty)
+  CLIENT_ID=$(echo "$APP_RESP" | jq -r '.clientId // empty')
+  APP_ID=$(echo "$APP_RESP" | jq -r '.appId // .id // empty')
+  echo "    create response clientId=$CLIENT_ID appId=$APP_ID"
+  if [[ -z "$CLIENT_ID" || "$CLIENT_ID" == "null" ]]; then
+    echo "ERROR: OIDC app create failed"
+    echo "$APP_RESP" | jq . 2>/dev/null || echo "$APP_RESP"
+    exit 1
+  fi
 else
   # Existing app: client id from search result
   CLIENT_ID=$(echo "$APP_SEARCH" | jq -r --arg n "$APP_NAME" \
@@ -147,21 +153,24 @@ fi
 echo "    client_id=$CLIENT_ID"
 
 create_machine_with_key() {
+  # Logs to stderr so only the user id is captured on stdout.
   local username="$1" role="$2" key_out="$3"
-  local search uid key_resp
+  local search uid key_resp key_json
 
   search=$(api POST /management/v1/users/_search "$(jq -n --arg n "$username" \
     '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
   uid=$(echo "$search" | jq -r '.result[0].id // empty')
   if [[ -z "$uid" ]]; then
-    echo "==> Creating machine user $username"
+    echo "==> Creating machine user $username" >&2
     uid=$(api POST /management/v1/users/machine "$(jq -n --arg u "$username" \
       '{userName: $u, name: $u, description: "GraphQL e2e", accessTokenType: "ACCESS_TOKEN_TYPE_JWT"}')" \
-      | jq -r .userId)
+      | jq -r '.userId // empty')
   fi
   if [[ -z "$uid" || "$uid" == "null" ]]; then
-    echo "ERROR: machine user $username"; exit 1
+    echo "ERROR: machine user $username" >&2
+    exit 1
   fi
+  echo "    user id: $uid" >&2
 
   # Grant project role
   api POST "/management/v1/users/$uid/grants" "$(jq -n \
@@ -169,37 +178,39 @@ create_machine_with_key() {
     '{projectId: $pid, roleKeys: [$r]}')" >/dev/null 2>&1 || true
 
   # Machine key (JSON type 1) for JWT-bearer
+  echo "    creating machine key → $key_out" >&2
   key_resp=$(api POST "/management/v1/users/$uid/keys" \
     "$(jq -n '{type: "KEY_TYPE_JSON", expirationDate: "2029-01-01T00:00:00Z"}')")
-  # Response may embed keyDetails as base64 or return key object
-  local key_json
-  if echo "$key_resp" | jq -e '.keyDetails' >/dev/null 2>&1; then
-    key_json=$(echo "$key_resp" | jq -r .keyDetails | base64 -d 2>/dev/null || echo "$key_resp" | jq -r .keyDetails)
-    # If still not JSON, try raw
-    if ! echo "$key_json" | jq -e . >/dev/null 2>&1; then
-      # keyDetails might already be object when re-encoded
-      key_json=$(echo "$key_resp" | jq -c '{keyId: .keyId, key: .key, userId: .userId}')
+
+  if echo "$key_resp" | jq -e '.keyId and .key' >/dev/null 2>&1; then
+    echo "$key_resp" | jq -c --arg uid "$uid" \
+      '{keyId: .keyId, key: .key, userId: $uid}' > "$key_out"
+  elif echo "$key_resp" | jq -e '.keyDetails' >/dev/null 2>&1; then
+    # keyDetails is often base64-encoded JSON machine key
+    key_json=$(echo "$key_resp" | jq -r '.keyDetails' | base64 -d 2>/dev/null || true)
+    if ! echo "$key_json" | jq -e '.keyId and .key' >/dev/null 2>&1; then
+      key_json=$(echo "$key_resp" | jq -r '.keyDetails')
+    fi
+    if echo "$key_json" | jq -e '.keyId and .key' >/dev/null 2>&1; then
+      echo "$key_json" | jq -c --arg uid "$uid" \
+        '. + {userId: (.userId // $uid)}' > "$key_out"
+    else
+      echo "ERROR: could not parse keyDetails for $username" >&2
+      echo "$key_resp" | jq . >&2 || echo "$key_resp" >&2
+      exit 1
     fi
   else
-    key_json=$(echo "$key_resp" | jq -c .)
-  fi
-
-  # Prefer structured fields
-  if echo "$key_resp" | jq -e '.keyId and .key' >/dev/null 2>&1; then
-    echo "$key_resp" | jq -c --arg uid "$uid" '{keyId: .keyId, key: .key, userId: $uid}' > "$key_out"
-  elif echo "$key_json" | jq -e . >/dev/null 2>&1; then
-    echo "$key_json" | jq -c --arg uid "$uid" '. + {userId: (.userId // $uid)}' > "$key_out"
-  else
-    echo "ERROR: unexpected key response for $username"
-    echo "$key_resp" | jq . || echo "$key_resp"
+    echo "ERROR: unexpected key response for $username" >&2
+    echo "$key_resp" | jq . >&2 || echo "$key_resp" >&2
     exit 1
   fi
 
-  # Ensure userId present
-  if [[ "$(jq -r .userId "$key_out")" == "null" || -z "$(jq -r .userId "$key_out")" ]]; then
-    jq --arg uid "$uid" '.userId = $uid' "$key_out" > "${key_out}.tmp" && mv "${key_out}.tmp" "$key_out"
+  if [[ ! -s "$key_out" ]]; then
+    echo "ERROR: empty key file $key_out" >&2
+    exit 1
   fi
-  echo "$uid"
+  # stdout: user id only
+  printf '%s\n' "$uid"
 }
 
 mkdir -p "$MACHINEKEY_DIR/e2e"
@@ -207,13 +218,19 @@ CUSTOMER_KEY="$MACHINEKEY_DIR/e2e/customer.json"
 ADMIN_KEY="$MACHINEKEY_DIR/e2e/admin.json"
 CUSTOMER_UID=$(create_machine_with_key "graphql-e2e-customer" "customer" "$CUSTOMER_KEY")
 ADMIN_UID=$(create_machine_with_key "graphql-e2e-admin" "admin" "$ADMIN_KEY")
+# Strip any accidental whitespace
+CUSTOMER_UID=$(echo "$CUSTOMER_UID" | tr -d '[:space:]')
+ADMIN_UID=$(echo "$ADMIN_UID" | tr -d '[:space:]')
 
+# Zitadel JWT-bearer access tokens with project:id:{PROJECT}:aud put the
+# **project id** in `aud` (not the OIDC app client id). Validate against that.
 umask 077
 cat > "$OUT" <<EOF
 ZITADEL_E2E=1
 OIDC_ISSUER=$ZITADEL_HOST
-OIDC_AUDIENCE=$CLIENT_ID
+OIDC_AUDIENCE=$PROJECT_ID
 OIDC_CLIENT_ID=$CLIENT_ID
+ZITADEL_PROJECT_ID=$PROJECT_ID
 GRAPHQL_E2E_CUSTOMER_KEY=$CUSTOMER_KEY
 GRAPHQL_E2E_ADMIN_KEY=$ADMIN_KEY
 GRAPHQL_E2E_CUSTOMER_USER_ID=$CUSTOMER_UID

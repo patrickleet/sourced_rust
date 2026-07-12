@@ -30,3 +30,9 @@ target/llvm-cov/
 .tmp/
 
 .claude/worktrees
+graphql-oidc.env
+
+# OIDC e2e local secrets / generated keys
+graphql-oidc.env
+tests/graphql_oidc_zitadel/machinekey/**
+!tests/graphql_oidc_zitadel/machinekey/.gitignore
