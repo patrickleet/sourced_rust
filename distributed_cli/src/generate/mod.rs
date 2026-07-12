@@ -478,8 +478,9 @@ mod tests {
         );
         let query_mod = contents(&project, "src/query/mod.rs");
         assert!(
-            query_mod.contains(".graphiql(") && query_mod.contains("GRAPHIQL"),
-            "query build_engine must wire GraphiQL from GRAPHIQL env: {query_mod}"
+            query_mod.contains(".graphiql(")
+                && query_mod.contains("graphiql_enabled_from_env"),
+            "query build_engine must wire GraphiQL via graphiql_enabled_from_env: {query_mod}"
         );
 
         // GitOps chart injects DATABASE_URL for query API (mirrors tracing OTEL env).

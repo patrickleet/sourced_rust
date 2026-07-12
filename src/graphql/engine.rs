@@ -610,6 +610,115 @@ impl GraphqlEngineBuilder {
     }
 }
 
+/// Resolve whether GraphiQL should be enabled from environment variables.
+///
+/// Policy (scaffold + operators):
+/// - `GRAPHIQL` if set: on unless value is `0` / `false` / `off` / `no` (case-insensitive)
+/// - else: **off** when `RUST_ENV` / `ENV` / `APP_ENV` is `production` or `prod`
+/// - else: **on** (local/dev default)
+///
+/// Pure inputs so tests do not mutate process env. See [`graphiql_enabled_from_env`].
+pub fn graphiql_enabled_from_env_vars(
+    graphiql: Option<&str>,
+    rust_env: Option<&str>,
+    env: Option<&str>,
+    app_env: Option<&str>,
+) -> bool {
+    if let Some(v) = graphiql {
+        return !matches!(
+            v.to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        );
+    }
+    let prod = rust_env
+        .or(env)
+        .or(app_env)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !matches!(prod.as_str(), "production" | "prod")
+}
+
+/// Read process env and apply [`graphiql_enabled_from_env_vars`].
+pub fn graphiql_enabled_from_env() -> bool {
+    graphiql_enabled_from_env_vars(
+        std::env::var("GRAPHIQL").ok().as_deref(),
+        std::env::var("RUST_ENV").ok().as_deref(),
+        std::env::var("ENV").ok().as_deref(),
+        std::env::var("APP_ENV").ok().as_deref(),
+    )
+}
+
+#[cfg(test)]
+mod graphiql_env_tests {
+    use super::graphiql_enabled_from_env_vars;
+
+    #[test]
+    fn production_rust_env_disables_graphiql() {
+        assert!(!graphiql_enabled_from_env_vars(
+            None,
+            Some("production"),
+            None,
+            None
+        ));
+        assert!(!graphiql_enabled_from_env_vars(None, Some("prod"), None, None));
+        assert!(!graphiql_enabled_from_env_vars(
+            None,
+            Some("PRODUCTION"),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn non_production_enables_graphiql_by_default() {
+        assert!(graphiql_enabled_from_env_vars(
+            None,
+            Some("development"),
+            None,
+            None
+        ));
+        assert!(graphiql_enabled_from_env_vars(None, None, None, None));
+    }
+
+    #[test]
+    fn explicit_graphiql_overrides_production() {
+        assert!(graphiql_enabled_from_env_vars(
+            Some("1"),
+            Some("production"),
+            None,
+            None
+        ));
+        assert!(!graphiql_enabled_from_env_vars(
+            Some("0"),
+            Some("development"),
+            None,
+            None
+        ));
+        assert!(!graphiql_enabled_from_env_vars(
+            Some("false"),
+            None,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn env_and_app_env_aliases() {
+        assert!(!graphiql_enabled_from_env_vars(
+            None,
+            None,
+            Some("production"),
+            None
+        ));
+        assert!(!graphiql_enabled_from_env_vars(
+            None,
+            None,
+            None,
+            Some("prod")
+        ));
+    }
+}
+
 fn validate_generated_names(
     catalog: &BTreeMap<String, CatalogEntry>,
 ) -> Result<(), GraphqlBuildError> {
