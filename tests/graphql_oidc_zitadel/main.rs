@@ -1,6 +1,8 @@
 //! Env-gated live Zitadel e2e (D11/D12).
 //!
-//! Skips cleanly unless `ZITADEL_E2E=1` (or `true`) **and** issuer is ready.
+//! - Without `ZITADEL_E2E=1`: suite runs and soft-skips (offline CI / unit matrix).
+//! - With `ZITADEL_E2E=1` + issuer ready + bootstrap env: **hard-fail** on mint/validate
+//!   errors (GitHub Actions live job).
 //! Token mint: JWT-bearer grant only (machine-user keys).
 
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
@@ -8,7 +10,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
+use distributed::graphql::{OidcConfig, OidcValidator};
 use serde_json::{json, Value};
 
 fn e2e_enabled() -> bool {
@@ -31,59 +33,71 @@ async fn issuer_ready(iss: &str) -> bool {
     let base = iss.trim_end_matches('/');
     let url = format!("{base}/debug/ready");
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(3))
         .build()
         .ok();
     let Some(client) = client else {
         return false;
     };
-    client.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false)
+    client
+        .get(&url)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
-/// D12: without ZITADEL_E2E, suite is a no-op success (this test always passes).
+/// Offline path: always runs in CI without Zitadel (D12).
 #[tokio::test]
 async fn zitadel_e2e_skips_when_not_gated() {
-    if !e2e_enabled() {
-        // Documented skip path for default CI.
-        eprintln!("ZITADEL_E2E not set — skipping live issuer tests (D12)");
+    if e2e_enabled() {
+        // Live path covered by `zitadel_e2e_live_jwt_bearer_mint`.
         return;
     }
-    let Some(iss) = issuer() else {
-        eprintln!("ZITADEL_E2E=1 but OIDC_ISSUER unset — skip");
-        return;
-    };
-    if !issuer_ready(&iss).await {
-        eprintln!("issuer not ready at {iss} — soft-skip (D12)");
+    eprintln!("ZITADEL_E2E not set — skip live path (D12); suite binary still executes in CI");
+}
+
+/// Live path: mint real access token via JWT-bearer and validate with shipped OIDC stack.
+#[tokio::test]
+async fn zitadel_e2e_live_jwt_bearer_mint() {
+    if !e2e_enabled() {
+        eprintln!("ZITADEL_E2E not set — skip live mint");
         return;
     }
 
-    // Live path: mint via JWT-bearer if machine keys present.
-    let customer_key = std::env::var("GRAPHQL_E2E_CUSTOMER_KEY").ok();
-    let customer_uid = std::env::var("GRAPHQL_E2E_CUSTOMER_USER_ID").ok();
+    let iss = issuer().expect("ZITADEL_E2E=1 requires OIDC_ISSUER");
+    assert!(
+        issuer_ready(&iss).await,
+        "ZITADEL_E2E=1 but issuer not ready at {iss}"
+    );
+
+    let key_path = std::env::var("GRAPHQL_E2E_CUSTOMER_KEY")
+        .expect("ZITADEL_E2E=1 requires GRAPHQL_E2E_CUSTOMER_KEY (path to machine key JSON)");
+    let uid = std::env::var("GRAPHQL_E2E_CUSTOMER_USER_ID")
+        .expect("ZITADEL_E2E=1 requires GRAPHQL_E2E_CUSTOMER_USER_ID");
     let audience = std::env::var("OIDC_AUDIENCE")
         .or_else(|_| std::env::var("OIDC_CLIENT_ID"))
-        .unwrap_or_default();
+        .expect("ZITADEL_E2E=1 requires OIDC_AUDIENCE or OIDC_CLIENT_ID");
 
-    let (Some(key_path), Some(uid)) = (customer_key, customer_uid) else {
-        eprintln!("GRAPHQL_E2E_* env incomplete — skip live mint");
-        return;
-    };
-    if audience.is_empty() {
-        eprintln!("OIDC_AUDIENCE missing — skip");
-        return;
-    }
-
-    let token = match mint_jwt_bearer(&iss, &key_path, &uid).await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("JWT-bearer mint failed (env present but stack incomplete): {e}");
-            return;
-        }
-    };
+    let token = mint_jwt_bearer(&iss, &key_path, &uid)
+        .await
+        .unwrap_or_else(|e| panic!("JWT-bearer mint failed: {e}"));
     assert!(!token.is_empty(), "access token empty");
-    // Validate token against live JWKS via discovery when possible.
-    let _ = audience;
-    eprintln!("ZITADEL_E2E live mint succeeded (token len={})", token.len());
+    eprintln!("minted access token (len={})", token.len());
+
+    // Validate via shipped OIDC path (discovery + JWKS, not a reimplemented oracle).
+    let oidc = OidcConfig::new(&iss, &audience);
+    let validator = OidcValidator::new(oidc);
+    let session = validator
+        .validate_and_map_async(&token)
+        .await
+        .unwrap_or_else(|e| panic!("shipped OIDC validate failed: {e}"));
+    assert_eq!(
+        session.user_id(),
+        Some(uid.as_str()),
+        "Session x-user-id must be JWT sub / machine user id"
+    );
+    eprintln!("live Zitadel → Session user_id={:?}", session.user_id());
 }
 
 /// Mint access token: grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer (D11).
@@ -110,12 +124,11 @@ async fn mint_jwt_bearer(issuer: &str, key_path: &str, user_id: &str) -> Result<
     let assertion_claims = json!({
         "iss": user_id,
         "sub": user_id,
-        "aud": token_url,
+        "aud": [token_url.clone(), iss],
         "iat": now,
         "exp": now + 60,
     });
 
-    // Sign with PEM from machine key using jsonwebtoken.
     let encoding = jsonwebtoken::EncodingKey::from_rsa_pem(private_pem.as_bytes())
         .map_err(|e| format!("pem: {e}"))?;
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
@@ -160,10 +173,4 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
-}
-
-// Silence unused import warning when ZITADEL path not taken in some toolchains.
-#[allow(dead_code)]
-fn _b64() {
-    let _ = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"x");
 }
