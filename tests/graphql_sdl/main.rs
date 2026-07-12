@@ -2,8 +2,8 @@
 
 use distributed::{
     graphql::{graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, SdlOptions},
-    ColumnType, ForeignKey, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn,
-    TableKind, TableSchema,
+    ColumnType, ForeignKey, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind,
+    TableSchema,
 };
 
 fn players() -> TableSchema {
@@ -138,7 +138,7 @@ fn omits_relationship_when_target_absent() {
 
 #[test]
 fn m2m_requires_through_error() {
-    let mut posts = TableSchema {
+    let posts = TableSchema {
         model_name: "Post".into(),
         table_name: "posts".into(),
         columns: vec![TableColumn {
@@ -231,7 +231,9 @@ fn manifest_graphql_sdl_method() {
 #[test]
 fn capture_sdl_to_scratch() {
     let path = std::env::var("GROK_SCRATCH_SDL").unwrap_or_else(|_| "/dev/null".into());
-    if path == "/dev/null" { return; }
+    if path == "/dev/null" {
+        return;
+    }
     let players = players();
     let weapons = weapons();
     let sdl = graphql_sdl_for_tables(&[players, weapons]).unwrap();

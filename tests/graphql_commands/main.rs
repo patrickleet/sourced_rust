@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use async_graphql::Request;
 use distributed::graphql::{
-    exposed_command, GraphqlCommands, GraphqlEngine, GraphqlInputType, GraphqlOutputType,
-    GraphqlTypeDef, GraphqlTypeField,
+    exposed_command, GraphqlCommands, GraphqlEngine, GraphqlTypeDef, GraphqlTypeField,
 };
 use distributed::microsvc::{Context, Routes, Service, Session, ROLE_KEY};
 use distributed::{
@@ -95,9 +94,9 @@ async fn mutation_handler_projection_query_loop() {
                     expected_version: ExpectedVersion::Any,
                     mode: RowWriteMode::Upsert,
                 })]);
-                repo.commit_write_plan(plan)
-                    .await
-                    .map_err(|e| distributed::microsvc::HandlerError::from(distributed::RepositoryError::from(e)))?;
+                repo.commit_write_plan(plan).await.map_err(|e| {
+                    distributed::microsvc::HandlerError::from(distributed::RepositoryError::from(e))
+                })?;
                 Ok(json!({ "id": id }))
             }
         });
@@ -126,10 +125,9 @@ async fn mutation_handler_projection_query_loop() {
     session.set(ROLE_KEY, "user");
 
     // 1) Mutation dispatches real handler → projects row
-    let mut_req = Request::new(
-        r#"mutation { create_item(input: { id: "item-1", name: "widget" }) }"#,
-    )
-    .data(Arc::clone(&service));
+    let mut_req =
+        Request::new(r#"mutation { create_item(input: { id: "item-1", name: "widget" }) }"#)
+            .data(Arc::clone(&service));
     let mut_resp = engine.execute(&session, mut_req).await;
     assert!(
         !mut_resp.is_err(),
@@ -144,10 +142,7 @@ async fn mutation_handler_projection_query_loop() {
 
     // 2) Query reads projected row on the same GraphQL endpoint/engine
     let q_resp = engine
-        .execute(
-            &session,
-            Request::new(r#"{ items { id name } }"#),
-        )
+        .execute(&session, Request::new(r#"{ items { id name } }"#))
         .await;
     assert!(!q_resp.is_err(), "query must succeed: {:?}", q_resp.errors);
     let q_data = serde_json::to_value(&q_resp.data).unwrap();
@@ -186,7 +181,7 @@ async fn no_mutation_root_for_role_without_commands() {
 
     let user_sdl = engine.sdl_for_role("user").expect("user schema");
     assert!(
-        user_sdl.contains("Mutation") || user_sdl.to_lowercase().contains("mutation"),
+        user_sdl.contains("type Mutation"),
         "user role with commands must expose Mutation root: {user_sdl}"
     );
 
@@ -196,6 +191,14 @@ async fn no_mutation_root_for_role_without_commands() {
         !anon_sdl.contains("type Mutation"),
         "anonymous role must not expose Mutation root: {anon_sdl}"
     );
+}
+
+#[test]
+#[should_panic(expected = "command `item.create` is already registered")]
+fn duplicate_command_names_panic_with_api_error() {
+    let _ = GraphqlCommands::new()
+        .command("item.create", exposed_command().input_json())
+        .command("item.create", exposed_command().input_json());
 }
 
 #[tokio::test]
@@ -240,7 +243,9 @@ async fn standalone_router_without_service_returns_no_dispatcher() {
     assert!(resp.is_err(), "must error without dispatcher");
     let err = format!("{:?}", resp.errors);
     assert!(
-        err.contains("dispatcher not configured") || err.contains("INTERNAL") || err.contains("not configured"),
+        err.contains("dispatcher not configured")
+            || err.contains("INTERNAL")
+            || err.contains("not configured"),
         "expected no-dispatcher error, got {err}"
     );
 }
@@ -273,8 +278,8 @@ fn graphql_type_def_mapping_golden() {
     assert!(input.fields[1].list);
 }
 
-
 #[derive(distributed::GraphqlInput)]
+#[allow(dead_code)]
 struct DerivedInput {
     id: String,
     count: i64,
@@ -282,6 +287,7 @@ struct DerivedInput {
 }
 
 #[derive(distributed::GraphqlOutput)]
+#[allow(dead_code)]
 struct DerivedOutput {
     ok: bool,
     id: String,

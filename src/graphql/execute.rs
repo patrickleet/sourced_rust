@@ -1,4 +1,5 @@
 //! Dialect executors: run a SqlPlan and decode the single JSON column.
+#![allow(clippy::items_after_test_module)]
 
 use std::future::Future;
 use std::time::Duration;
@@ -14,9 +15,7 @@ pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, S
         #[cfg(feature = "sqlite")]
         GraphqlPool::Sqlite(pool) => execute_sqlite(pool, plan, inner.statement_timeout).await,
         #[cfg(feature = "postgres")]
-        GraphqlPool::Postgres(pool) => {
-            execute_postgres(pool, plan, inner.statement_timeout).await
-        }
+        GraphqlPool::Postgres(pool) => execute_postgres(pool, plan, inner.statement_timeout).await,
         #[allow(unreachable_patterns)]
         _ => Err("no database pool available for GraphQL execution".into()),
     }
@@ -26,10 +25,7 @@ pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, S
 ///
 /// On elapse returns `Err("statement timeout")` — the stable string mapped to
 /// client `TIMEOUT` by [`super::schema::client_error_for_execute_err`].
-pub(crate) async fn apply_statement_timeout<T, F>(
-    timeout: Duration,
-    run: F,
-) -> Result<T, String>
+pub(crate) async fn apply_statement_timeout<T, F>(timeout: Duration, run: F) -> Result<T, String>
 where
     F: Future<Output = Result<T, String>>,
 {
@@ -67,7 +63,9 @@ async fn execute_sqlite(
             .fetch_one(pool)
             .await
             .map_err(|e| format!("sqlite execute: {e}"))?;
-        let raw: Option<String> = row.try_get(0).ok();
+        let raw: Option<String> = row
+            .try_get::<Option<String>, _>(0)
+            .map_err(|e| format!("sqlite json column: {e}"))?;
         Ok::<_, String>(raw.unwrap_or_else(|| "null".into()))
     };
 
@@ -90,23 +88,20 @@ mod statement_timeout_tests {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok::<String, String>("never".into())
         };
-        let handle = tokio::spawn(async move {
-            apply_statement_timeout(Duration::from_millis(1), run).await
-        });
+        let handle =
+            tokio::spawn(
+                async move { apply_statement_timeout(Duration::from_millis(1), run).await },
+            );
         tokio::time::advance(Duration::from_millis(5)).await;
-        let err = handle
-            .await
-            .expect("join")
-            .expect_err("budget must elapse");
+        let err = handle.await.expect("join").expect_err("budget must elapse");
         assert_eq!(err, "statement timeout");
     }
 
     #[tokio::test(start_paused = true)]
     async fn completes_when_under_budget() {
         let run = async { Ok::<String, String>("ok".into()) };
-        let handle = tokio::spawn(async move {
-            apply_statement_timeout(Duration::from_secs(5), run).await
-        });
+        let handle =
+            tokio::spawn(async move { apply_statement_timeout(Duration::from_secs(5), run).await });
         // Allow the ready future to be polled under paused time.
         tokio::time::advance(Duration::from_millis(1)).await;
         let v: String = handle.await.expect("join").expect("under budget");
@@ -116,9 +111,8 @@ mod statement_timeout_tests {
     #[tokio::test(start_paused = true)]
     async fn propagates_inner_error() {
         let run = async { Err::<String, String>("sqlite execute: boom".into()) };
-        let handle = tokio::spawn(async move {
-            apply_statement_timeout(Duration::from_secs(5), run).await
-        });
+        let handle =
+            tokio::spawn(async move { apply_statement_timeout(Duration::from_secs(5), run).await });
         tokio::time::advance(Duration::from_millis(1)).await;
         let err = handle.await.expect("join").expect_err("inner err");
         assert!(err.contains("boom"), "{err}");
@@ -206,8 +200,7 @@ async fn execute_postgres(
                 .map(|o| o.unwrap_or_else(|| "null".into()))
         })
         .map_err(|e| format!("postgres json column: {e}"))?;
-    let json: JsonValue =
-        serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
+    let json: JsonValue = serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
     Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
 }
 
@@ -245,7 +238,7 @@ fn rewrite_path(json: &mut JsonValue, parts: &[&str]) {
 }
 
 fn hex_to_base64(hex: &str) -> Option<String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);

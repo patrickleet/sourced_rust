@@ -154,6 +154,16 @@ impl From<i64> for Operand {
         Operand::Lit(LitValue::from(v))
     }
 }
+impl From<f64> for Operand {
+    fn from(v: f64) -> Self {
+        Operand::Lit(LitValue::from(v))
+    }
+}
+impl From<f32> for Operand {
+    fn from(v: f32) -> Self {
+        Operand::Lit(LitValue::from(v as f64))
+    }
+}
 impl From<bool> for Operand {
     fn from(v: bool) -> Self {
         Operand::Lit(LitValue::from(v))
@@ -258,6 +268,7 @@ impl FilterExpr {
             other_self => FilterExpr::Or(vec![other_self, other]),
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn not(self) -> FilterExpr {
         FilterExpr::Not(Box::new(self))
     }
@@ -326,5 +337,41 @@ impl FilterExpr {
             }
             _ => {}
         }
+    }
+}
+
+impl std::ops::Not for FilterExpr {
+    type Output = FilterExpr;
+
+    fn not(self) -> Self::Output {
+        FilterExpr::Not(Box::new(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{col, FilterExpr, LitValue, Operand};
+
+    #[test]
+    fn comparison_operands_accept_float_literals() {
+        let expr = col("price").gt(9.99);
+        let FilterExpr::Cmp {
+            rhs: Operand::Lit(LitValue::F64(value)),
+            ..
+        } = expr
+        else {
+            panic!("expected f64 literal operand");
+        };
+        assert!((value - 9.99).abs() < f64::EPSILON);
+
+        let expr = col("ratio").lt(0.5_f32);
+        let FilterExpr::Cmp {
+            rhs: Operand::Lit(LitValue::F64(value)),
+            ..
+        } = expr
+        else {
+            panic!("expected f32 literal operand to promote to f64");
+        };
+        assert!((value - 0.5).abs() < f64::EPSILON);
     }
 }

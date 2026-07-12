@@ -82,6 +82,9 @@ impl GraphqlCommands {
     }
 
     pub fn command(mut self, name: &str, mut c: ExposedCommand) -> Self {
+        if self.commands.iter().any(|(n, _)| n == name) {
+            panic!("command `{name}` is already registered");
+        }
         c.command_name = name.to_string();
         self.commands.push((name.to_string(), c));
         self

@@ -1,10 +1,13 @@
 //! GraphqlEngine builder, validation, and execute entrypoint.
+#![allow(clippy::items_after_test_module)]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_graphql::{Request, Response, ServerError, Value};
+use futures_util::stream::{self, BoxStream};
+use futures_util::StreamExt;
 
 use crate::manifest::DistributedProjectManifest;
 use crate::microsvc::Session;
@@ -14,12 +17,11 @@ use crate::table::{
 };
 
 use super::commands::GraphqlCommands;
-use super::compile::{self, SqlDialect, SqlPlan};
+use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
 use super::filter::{FilterExpr, Operand};
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
-    scalar_type_name,
 };
 use super::permissions::{select, ModelPermissions, SelectPermission};
 use super::schema as dyn_schema;
@@ -91,8 +93,10 @@ pub(crate) struct EngineInner {
     pub default_limit: u64,
     pub max_limit: u64,
     pub max_depth: usize,
+    #[allow(dead_code)]
     pub max_complexity: usize,
     pub max_in_list: usize,
+    #[allow(dead_code)]
     pub introspection_for_anonymous: bool,
     pub statement_timeout: Duration,
     pub graphiql: bool,
@@ -171,20 +175,12 @@ impl GraphqlEngine {
         let response = schema.execute(request).await;
         let status = if response.is_err() { "error" } else { "ok" };
         let root_field = match &response.data {
-            Value::Object(map) => map
-                .keys()
-                .next()
-                .map(|s| s.as_str())
-                .unwrap_or("_"),
+            Value::Object(map) => map.keys().next().map(|s| s.as_str()).unwrap_or("_"),
             _ => "_",
         };
         record_metrics(session, root_field, status, start.elapsed());
         let _ = role;
         response
-    }
-
-    pub(crate) fn dialect(&self) -> SqlDialect {
-        self.inner.dialect
     }
 
     /// Hub used by live subscriptions (tests may publish directly).
@@ -197,18 +193,21 @@ impl GraphqlEngine {
         &self,
         session: &Session,
         request: Request,
-    ) -> impl futures_util::Stream<Item = async_graphql::Response> + Send {
+    ) -> BoxStream<'static, async_graphql::Response> {
         let role = resolve_role(session, &self.inner.anonymous_role);
-        let schema = self
-            .inner
-            .schemas
-            .get(&role)
-            .cloned()
-            .expect("role schema missing");
+        let Some(schema) = self.inner.schemas.get(&role).cloned() else {
+            return stream::once(async move {
+                Response::from_errors(vec![ServerError::new(
+                    format!("role `{role}` is not configured for GraphQL"),
+                    None,
+                )])
+            })
+            .boxed();
+        };
         let request = request
             .data(session.clone())
             .data(std::sync::Arc::clone(&self.inner));
-        schema.execute_stream(request)
+        schema.execute_stream(request).boxed()
     }
 }
 
@@ -251,9 +250,6 @@ impl GraphqlEngineBuilder {
         }
     }
 
-    /// Access is via build(); hub is always created.
-
-
     pub fn model<M: RelationalReadModelIncludes>(mut self, perms: ModelPermissions<M>) -> Self {
         let schema = M::schema().clone();
         if let Err(e) = self.insert_catalog(schema.clone(), true) {
@@ -281,18 +277,16 @@ impl GraphqlEngineBuilder {
         }
         for (role, perm) in perms.entries {
             let key = (schema.model_name.clone(), role.clone());
-            if self.permissions.contains_key(&key) {
-                self.pending_errors.push(format!(
-                    "duplicate permission for model `{}` role `{role}`",
-                    schema.model_name
-                ));
-            } else {
-                self.permissions.insert(
-                    key,
-                    RoleModelPerm {
-                        permission: perm,
-                    },
-                );
+            match self.permissions.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(RoleModelPerm { permission: perm });
+                }
+                Entry::Occupied(_) => {
+                    self.pending_errors.push(format!(
+                        "duplicate permission for model `{}` role `{role}`",
+                        schema.model_name
+                    ));
+                }
             }
         }
         self
@@ -305,10 +299,7 @@ impl GraphqlEngineBuilder {
         self
     }
 
-    fn register_schema_exposed(
-        mut self,
-        schema: TableSchema,
-    ) -> Result<Self, GraphqlBuildError> {
+    fn register_schema_exposed(mut self, schema: TableSchema) -> Result<Self, GraphqlBuildError> {
         self.insert_catalog(schema, true)?;
         Ok(self)
     }
@@ -349,10 +340,8 @@ impl GraphqlEngineBuilder {
         }
         self.by_table
             .insert(schema.table_name.clone(), schema.model_name.clone());
-        self.catalog.insert(
-            schema.model_name.clone(),
-            CatalogEntry { schema, exposed },
-        );
+        self.catalog
+            .insert(schema.model_name.clone(), CatalogEntry { schema, exposed });
         Ok(())
     }
 
@@ -370,17 +359,17 @@ impl GraphqlEngineBuilder {
             .collect();
         for model in exposed {
             let key = (model.clone(), role.to_string());
-            if self.permissions.contains_key(&key) {
-                self.pending_errors.push(format!(
-                    "duplicate permission for model `{model}` role `{role}`"
-                ));
-            } else {
-                self.permissions.insert(
-                    key,
-                    RoleModelPerm {
+            match self.permissions.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(RoleModelPerm {
                         permission: select().all_columns().allow_aggregations(true),
-                    },
-                );
+                    });
+                }
+                Entry::Occupied(_) => {
+                    self.pending_errors.push(format!(
+                        "duplicate permission for model `{model}` role `{role}`"
+                    ));
+                }
             }
         }
         self
@@ -399,12 +388,15 @@ impl GraphqlEngineBuilder {
             return self;
         }
         let key = (model.clone(), role.to_string());
-        if self.permissions.contains_key(&key) {
-            self.pending_errors
-                .push(format!("duplicate permission for model `{model}` role `{role}`"));
-        } else {
-            self.permissions
-                .insert(key, RoleModelPerm { permission: p });
+        match self.permissions.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(RoleModelPerm { permission: p });
+            }
+            Entry::Occupied(_) => {
+                self.pending_errors.push(format!(
+                    "duplicate permission for model `{model}` role `{role}`"
+                ));
+            }
         }
         self
     }
@@ -449,15 +441,12 @@ impl GraphqlEngineBuilder {
         self.graphiql = on;
         self
     }
-    pub fn change_stream(
-        mut self,
-        rx: tokio::sync::broadcast::Receiver<ReadModelChange>,
-    ) -> Self {
+    pub fn change_stream(mut self, rx: tokio::sync::broadcast::Receiver<ReadModelChange>) -> Self {
         self.change_rx = Some(rx);
         self
     }
 
-    pub fn build(mut self) -> Result<GraphqlEngine, GraphqlBuildError> {
+    pub fn build(self) -> Result<GraphqlEngine, GraphqlBuildError> {
         if !self.pending_errors.is_empty() {
             return Err(GraphqlBuildError(self.pending_errors.join("; ")));
         }
@@ -483,9 +472,12 @@ impl GraphqlEngineBuilder {
             if !perm.all_columns {
                 if let Some(cols) = &perm.columns {
                     for col in cols {
-                        if !entry.schema.columns.iter().any(|c| {
-                            c.column_name == *col && !c.skipped
-                        }) {
+                        if !entry
+                            .schema
+                            .columns
+                            .iter()
+                            .any(|c| c.column_name == *col && !c.skipped)
+                        {
                             return Err(GraphqlBuildError(format!(
                                 "unknown column `{col}` in permission for `{model}` role `{role}`"
                             )));
@@ -519,10 +511,9 @@ impl GraphqlEngineBuilder {
                             entry.schema.model_name, rel.field_name
                         )));
                     }
-                    if let (Some(target), Some(through_name)) = (
-                        self.catalog.get(&rel.target_model),
-                        rel.through.as_deref(),
-                    ) {
+                    if let (Some(target), Some(through_name)) =
+                        (self.catalog.get(&rel.target_model), rel.through.as_deref())
+                    {
                         if let Some(through_model) = self.by_table.get(through_name) {
                             if let Some(through) = self.catalog.get(through_model) {
                                 resolve_m2m_target_foreign_key(
@@ -552,11 +543,7 @@ impl GraphqlEngineBuilder {
             }
         };
 
-        let mut roles: BTreeSet<String> = self
-            .permissions
-            .keys()
-            .map(|(_, r)| r.clone())
-            .collect();
+        let mut roles: BTreeSet<String> = self.permissions.keys().map(|(_, r)| r.clone()).collect();
         if let Some(declared) = &declared_roles {
             roles.extend(declared.iter().cloned());
         }
@@ -660,7 +647,12 @@ mod graphiql_env_tests {
             None,
             None
         ));
-        assert!(!graphiql_enabled_from_env_vars(None, Some("prod"), None, None));
+        assert!(!graphiql_enabled_from_env_vars(
+            None,
+            Some("prod"),
+            None,
+            None
+        ));
         assert!(!graphiql_enabled_from_env_vars(
             None,
             Some("PRODUCTION"),
@@ -798,9 +790,7 @@ fn validate_filter_inner(
                         "unknown column `{column}` in filter for `{model}` role `{role}`"
                     ))
                 })?;
-            if matches!(col.column_type, ColumnType::Json)
-                && matches!(rhs, Operand::Claim(_))
-            {
+            if matches!(col.column_type, ColumnType::Json) && matches!(rhs, Operand::Claim(_)) {
                 return Err(GraphqlBuildError(format!(
                     "claims cannot compare to Json columns (`{column}` on `{model}`)"
                 )));
@@ -853,14 +843,12 @@ fn validate_filter_inner(
 }
 
 /// Execute a compiled plan against the engine pool (used by root resolvers).
-pub(crate) async fn execute_plan(
-    inner: &EngineInner,
-    plan: &SqlPlan,
-) -> Result<Value, String> {
+pub(crate) async fn execute_plan(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, String> {
     execute::execute_sql(inner, plan).await
 }
 
 /// Public helper for tests: compile + naming surface.
+#[allow(dead_code)]
 pub fn core_sdl_for_catalog(tables: &[TableSchema]) -> Result<String, String> {
     graphql_sdl_for_tables_with_options(
         tables,

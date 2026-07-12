@@ -68,6 +68,7 @@ pub trait GraphqlOutputType {
 }
 
 // Builtin scalar mappings for free-standing helpers used by derives.
+#[allow(dead_code)]
 pub fn scalar_for_rust_type(ty: &str) -> Option<&'static str> {
     match ty {
         "String" | "str" => Some("String"),

@@ -6,7 +6,7 @@
 use async_graphql::Request;
 use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{Session, ROLE_KEY};
-use distributed::{ReadModel, RelationalReadModel};
+use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -37,13 +37,14 @@ async fn postgres_list_query_when_database_url_set() {
         .execute(&pool)
         .await
         .ok();
-    sqlx::query(
-        "CREATE TABLE gql_pg_smoke (id TEXT PRIMARY KEY, label TEXT NOT NULL);
-         INSERT INTO gql_pg_smoke VALUES ('1', 'hello');",
-    )
-    .execute(&pool)
-    .await
-    .expect("seed");
+    sqlx::query("CREATE TABLE gql_pg_smoke (id TEXT PRIMARY KEY, label TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("seed");
+    sqlx::query("INSERT INTO gql_pg_smoke VALUES ('1', 'hello')")
+        .execute(&pool)
+        .await
+        .expect("seed");
 
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])

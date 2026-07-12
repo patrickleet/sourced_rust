@@ -3,6 +3,7 @@
 //! The constants in this module are framework-owned labels, label values, and
 //! span names. They intentionally avoid request ids, trace ids, payload fields,
 //! aggregate ids, user ids, and other high-cardinality data.
+#![allow(clippy::items_after_test_module)]
 
 use crate::bus::FailureAction;
 

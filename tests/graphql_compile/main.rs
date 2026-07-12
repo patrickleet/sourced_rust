@@ -6,7 +6,7 @@
 use async_graphql::Request;
 use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{Session, ROLE_KEY};
-use distributed::{ReadModel, RelationalReadModel};
+use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -29,13 +29,14 @@ async fn engine() -> GraphqlEngine {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-         INSERT INTO items VALUES ('1', 'a'), ('2', 'b'), ('3', 'c');",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO items VALUES ('1', 'a'), ('2', 'b'), ('3', 'c')")
+        .execute(&pool)
+        .await
+        .unwrap();
     GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<ItemView>(ModelPermissions::new().role("user", select().all_columns()))
@@ -54,7 +55,10 @@ async fn list_and_by_pk_compile_and_execute() {
     assert_eq!(data["items"].as_array().unwrap().len(), 3);
 
     let resp = engine
-        .execute(&user(), Request::new(r#"{ items_by_pk(id: "2") { name } }"#))
+        .execute(
+            &user(),
+            Request::new(r#"{ items_by_pk(id: "2") { name } }"#),
+        )
         .await;
     assert!(!resp.is_err(), "{:?}", resp.errors);
     let data = serde_json::to_value(&resp.data).unwrap();

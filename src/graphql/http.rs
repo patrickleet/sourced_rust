@@ -69,7 +69,10 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
     }
 
     let graphiql = engine.graphiql_enabled();
-    let state = GraphqlHttpState { engine, service: Some(service) };
+    let state = GraphqlHttpState {
+        engine,
+        service: Some(service),
+    };
     let mut router = Router::new().route(
         "/graphql",
         post(graphql_handler_with_service).get(move || async move {
@@ -124,7 +127,7 @@ pub async fn microsvc_graphql_handler(
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
-    let mut request = req.into_inner().data(Arc::clone(&service));
+    let request = req.into_inner().data(Arc::clone(&service));
     let response = engine.execute(&session, request).await;
     response.into()
 }
