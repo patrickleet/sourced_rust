@@ -18,6 +18,8 @@ pub use sdl::{graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, SdlOp
 #[cfg(feature = "graphql")]
 mod commands;
 #[cfg(feature = "graphql")]
+mod complexity;
+#[cfg(feature = "graphql")]
 mod compile;
 #[cfg(feature = "graphql")]
 mod engine;
