@@ -27,10 +27,12 @@ find "$MACHINEKEY_DIR" -mindepth 1 -maxdepth 1 ! -name '.gitignore' -exec rm -rf
 echo "==> docker compose up"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
-echo "==> Wait for Zitadel ready at $ZITADEL_HOST"
+echo "==> Wait for Zitadel process (/debug/ready is early; bootstrap waits for management)"
 for i in $(seq 1 90); do
-  if curl -fsS "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
-    echo "    ready (${i}s)"
+  # Prefer healthz (documented on Zitadel banner); fall back to ready.
+  if curl -fsS "$ZITADEL_HOST/debug/healthz" >/dev/null 2>&1 \
+    || curl -fsS "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
+    echo "    probe ok (${i}s) — management readiness is enforced in bootstrap"
     break
   fi
   # Surface early container death (e.g. permission denied on machinekey)
@@ -42,7 +44,7 @@ for i in $(seq 1 90); do
   fi
   sleep 2
   if [[ $i -eq 90 ]]; then
-    echo "ERROR: Zitadel never became ready"
+    echo "ERROR: Zitadel never became reachable"
     docker compose -f "$COMPOSE_FILE" logs --tail=120 || true
     exit 1
   fi
@@ -66,7 +68,7 @@ for i in $(seq 1 60); do
   fi
 done
 
-echo "==> Bootstrap OIDC app + e2e users"
+echo "==> Bootstrap OIDC app + e2e users (retries management API until not 503)"
 chmod +x "$ROOT/scripts/ci-bootstrap-graphql-oidc.sh"
 "$ROOT/scripts/ci-bootstrap-graphql-oidc.sh"
 
