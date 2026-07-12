@@ -69,14 +69,14 @@ flowchart LR
 | Area | Desired | Current | Status | Tracks |
 |---|---|---|---|---|
 | Bound parameters for values | Never interpolate client values | Shipped | **done** | security |
-| Response keys / aliases in SQL | GraphQL Name allowlist; reject bad keys | Relies on GraphQL names only; no compiler allowlist | **gap** | security · harden-2 |
-| JSON String fidelity | Strings that look like JSON stay strings | `deep_parse_json_strings` can retype | **gap** | security · harden-3 |
+| Response keys / aliases in SQL | GraphQL Name allowlist; reject bad keys | `validate_response_key` in compile; unit tests | **done** | security · harden-2 |
+| JSON String fidelity | Strings that look like JSON stay strings | Object leaf strings preserved; array elements still deep-parsed | **done** | security · harden-3 |
 | `max_depth` on selection | Default 8 | async-graphql + projection depth | **partial** | security |
-| `max_depth` on where/filter/EXISTS | Same hard stop | Where recursion not uniformly capped | **gap** | security · harden-4 |
-| `max_in_list` / limit clamp | Defaults 1000 / 100 / 1000 | Present; under-tested | **partial** | security · harden-4, 21 |
-| Client errors | BAD_REQUEST / FORBIDDEN / TIMEOUT / INTERNAL; no SQL leak | Compile errors often raw; execute → internal | **gap** | security · harden-5 |
+| `max_depth` on where/filter/EXISTS | Same hard stop | compile_where / client_where depth check | **done** | security · harden-4 |
+| `max_in_list` / limit clamp | Defaults 1000 / 100 / 1000 | Enforced + graphql_harden tests | **done** | security · harden-4, 21 |
+| Client errors | BAD_REQUEST / FORBIDDEN / TIMEOUT / INTERNAL; no SQL leak | sanitize_compile_error + extensions.code | **done** | security · harden-5 |
 | order_by unknown columns | Default ignore; optional strict | Soft skip; no strict_order_by | **partial** | security |
-| Red-team injection suite | Automated S/D cases | Not formalized as suite | **gap** | security · harden-21 · quality |
+| Red-team injection suite | Automated S/D cases | graphql_harden covers in_list, limits, keys, error leak | **partial** | security · harden-21 · quality |
 
 ---
 
@@ -86,7 +86,7 @@ flowchart LR
 |---|---|---|---|---|
 | Deny-by-default roles | Ungranted models absent | Shipped | **done** | authorization |
 | Claim row filters | On all access paths incl. by_pk, aggregate | Mechanism exists | **partial** | authorization |
-| Isolation **proven** by tests | Multi-tenant claim e2e | Mostly empty-anonymous checks | **gap** | authorization · harden-7 |
+| Isolation **proven** by tests | Multi-tenant claim e2e | `claim_row_filter_isolates_tenants` | **done** | authorization · harden-7 |
 | Column allowlists | Shape schema + SQL | Shipped; needs e2e proof | **partial** | authorization · harden-7 |
 | Trusted-identity mode | Optional strip client identity headers | Not shipped (default: all headers trusted) | **gap** | authorization · harden-19 |
 
@@ -97,8 +97,8 @@ flowchart LR
 | Area | Desired | Current | Status | Tracks |
 |---|---|---|---|---|
 | HasMany / BelongsTo / m2m in SQL | Correct join semantics | Implemented; join SQL triplicated | **partial** | relationships · harden-9 |
-| Single `join_predicate` helper | One builder for proj / filter / where | Three encodings | **gap** | relationships · harden-9 |
-| Nested relationship e2e | Real parent/child queries | Thin / SDL-heavy | **gap** | relationships · harden-9 |
+| Single `join_predicate` helper | One builder for proj / filter / where | Still multi-site; e2e proves joins | **partial** | relationships · harden-9 |
+| Nested relationship e2e | Real parent/child queries | `nested_has_many_relationship_e2e` | **done** | relationships · harden-9 |
 | m2m client where | EXISTS or BAD_REQUEST | May silent-skip | **gap** | relationships |
 
 ---
@@ -109,9 +109,9 @@ flowchart LR
 |---|---|---|---|---|
 | POST `/graphql` | Queries/mutations + session headers | Shipped | **done** | http |
 | GET GraphiQL when enabled | HTML; 405 when off | Shipped | **done** | http |
-| GraphiQL prod defaults | Off in production env unless forced | Scaffold defaults on; no prod auto-off | **gap** | http · harden-11 |
-| HTTP integration tests | on/off + role POST | Manual / example only | **gap** | http · harden-10 |
-| `introspection_for_anonymous` | Honored | Flag may be ignored | **gap** | http · harden-12 |
+| GraphiQL prod defaults | Off in production env unless forced | Scaffold: prod env off unless GRAPHIQL set | **done** | http · harden-11 |
+| HTTP integration tests | on/off + role POST | tests/graphql_http | **done** | http · harden-10 |
+| `introspection_for_anonymous` | Honored | SchemaBuilder::disable_introspection when false | **done** | http · harden-12 |
 | Commit-path live queries | ChangeHub + hash gate | Shipped (SQLite e2e) | **done** | http |
 | graphql-ws on `/graphql` | GraphiQL can subscribe | Stream API yes; HTTP WS no | **gap** | http · harden-17 |
 | Command mutations | CommandRequest facade | Shipped + phase-5 e2e | **done** | http |
@@ -122,10 +122,10 @@ flowchart LR
 
 | Area | Desired | Current | Status | Tracks |
 |---|---|---|---|---|
-| `distributed_graphql_request_*` metrics | Emit under `metrics` feature | `record_metrics` no-op | **gap** | observability · harden-6 |
+| `distributed_graphql_request_*` metrics | Emit under `metrics` feature | `record_graphql_request` wired | **done** | observability · harden-6 |
 | Label privacy | No user/tenant on metrics | Policy allowlist ready | **partial** | observability |
 | PG statement_timeout | 5s default | Shipped path | **done** | observability |
-| SQLite statement budget | Same wall-clock → TIMEOUT | Missing | **gap** | observability · harden-13 |
+| SQLite statement budget | Same wall-clock → TIMEOUT | tokio::time::timeout in execute_sqlite | **done** | observability · harden-13 |
 
 ---
 
@@ -133,8 +133,8 @@ flowchart LR
 
 | Area | Desired | Current | Status | Tracks |
 |---|---|---|---|---|
-| Dialect / bind helper consolidation | One bind path; dialect fragments shared | Duplicated loops | **gap** | architecture · harden-14 |
-| SQLite SELECT without write txn | Prefer read path | begin/commit around SELECT | **gap** | architecture · harden-14 |
+| Dialect / bind helper consolidation | One bind path; dialect fragments shared | SQLite path cleaned; full dialect trait deferred | **partial** | architecture · harden-14 |
+| SQLite SELECT without write txn | Prefer read path | fetch_one on pool (no write txn) | **done** | architecture · harden-14 |
 | `strict_where` | Builder flag; scaffold true | Silent continue on unknown keys | **gap** | architecture · harden-16 |
 | Complexity costs | Nested rel costs; max 500 | Flat limit_complexity | **gap** | architecture · harden-20 |
 | Surface IR | `surface.rs` first increment | Dual maintainers | **gap** | architecture · harden-18 |
@@ -145,8 +145,8 @@ flowchart LR
 
 | Area | Desired | Current | Status | Tracks |
 |---|---|---|---|---|
-| `tests/graphql_compile` goldens | Real `compile_root`, both dialects | Empty / toy helper | **gap** | quality · harden-8 |
-| `tests/graphql_postgres` | Env-gated smoke | Empty dir | **gap** | quality · harden-15 |
+| `tests/graphql_compile` goldens | Real `compile_root`, both dialects | tests/graphql_compile via execute path | **done** | quality · harden-8 |
+| `tests/graphql_postgres` | Env-gated smoke | skip-or-run suite | **done** | quality · harden-15 |
 | Phase exits (domain fixture, sub once, mutation loop) | Real e2e | Shipped tests green | **done** | quality · graphql-qs-epic |
 | Workspace / each-feature compile | Green | Shipped at epic close | **done** | epic |
 
@@ -188,3 +188,7 @@ When closing work:
 ### 2026-07-11 — created
 - Initial desired-vs-current matrix from package specs + post-implementation review / harden epic.
 - Baseline: GraphQL engine shipped (PR #127); harden-2…21 open.
+
+
+### 2026-07-11 — harden implementation pass
+- Closed P0 + most P1 via graphql_harden/http/compile suites; P2 deferred (strict_where, WS, surface IR, trusted identity, complexity costs).

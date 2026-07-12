@@ -76,6 +76,8 @@ tonic-build = { version = "0.14", default-features = false, features = ["transpo
 
 [dev-dependencies]
 axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 # OTLP export e2e (tests/otel_export): a real SDK pipeline pointed at a
 # collector container, exercising the `otel` feature the way a service binary
 # would. Keep versions in lockstep with the optional `otel` feature deps.

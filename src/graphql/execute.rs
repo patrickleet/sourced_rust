@@ -9,7 +9,7 @@ use super::engine::{EngineInner, GraphqlPool};
 pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, String> {
     match &inner.pool {
         #[cfg(feature = "sqlite")]
-        GraphqlPool::Sqlite(pool) => execute_sqlite(pool, plan).await,
+        GraphqlPool::Sqlite(pool) => execute_sqlite(pool, plan, inner.statement_timeout).await,
         #[cfg(feature = "postgres")]
         GraphqlPool::Postgres(pool) => {
             execute_postgres(pool, plan, inner.statement_timeout).await
@@ -23,67 +23,73 @@ pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, S
 async fn execute_sqlite(
     pool: &sqlx::SqlitePool,
     plan: &SqlPlan,
+    timeout: std::time::Duration,
 ) -> Result<Value, String> {
     use sqlx::Row;
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("sqlite begin: {e}"))?;
 
-    // SQL is compiler-produced from schema metadata + bound parameters only
-    // (never raw client strings). AssertSqlSafe documents the audit.
-    let mut qb = sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone()));
-    for bind in &plan.binds {
-        qb = match bind {
-            BindValue::Null => qb.bind(None::<String>),
-            BindValue::Bool(b) => qb.bind(*b),
-            BindValue::I64(i) => qb.bind(*i),
-            BindValue::F64(f) => qb.bind(*f),
-            BindValue::Text(s) => qb.bind(s.clone()),
-            BindValue::Bytes(b) => qb.bind(b.clone()),
-            BindValue::Json(j) => qb.bind(j.to_string()),
-        };
-    }
-    let row = qb
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| format!("sqlite execute: {e}"))?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("sqlite commit: {e}"))?;
+    // SQL is compiler-produced from schema metadata + bound parameters only.
+    let run = async {
+        let mut qb = sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone()));
+        for bind in &plan.binds {
+            qb = match bind {
+                BindValue::Null => qb.bind(None::<String>),
+                BindValue::Bool(b) => qb.bind(*b),
+                BindValue::I64(i) => qb.bind(*i),
+                BindValue::F64(f) => qb.bind(*f),
+                BindValue::Text(s) => qb.bind(s.clone()),
+                BindValue::Bytes(b) => qb.bind(b.clone()),
+                BindValue::Json(j) => qb.bind(j.to_string()),
+            };
+        }
+        // Read-only SELECT: no write transaction required.
+        let row = qb
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("sqlite execute: {e}"))?;
+        let raw: Option<String> = row.try_get(0).ok();
+        Ok::<_, String>(raw.unwrap_or_else(|| "null".into()))
+    };
 
-    let raw: Option<String> = row.try_get(0).ok();
-    let text = raw.unwrap_or_else(|| "null".into());
+    let text = match tokio::time::timeout(timeout, run).await {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("statement timeout".into()),
+    };
     let mut json: JsonValue =
         serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
-    // SQLite `json_group_array(json_object(...))` can leave nested objects as
-    // JSON text; recursively parse string-encoded JSON so GraphQL sees objects.
     deep_parse_json_strings(&mut json);
     rewrite_hex_bytes(&mut json, &plan.bytes_hex_paths);
     Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
 }
 
+/// Parse string-encoded JSON only for array elements (SQLite json_group_array
+/// quirk). Object property strings stay GraphQL String scalars (never re-typed).
 fn deep_parse_json_strings(value: &mut JsonValue) {
     match value {
-        JsonValue::String(s) => {
-            let t = s.trim();
-            if (t.starts_with('{') && t.ends_with('}'))
-                || (t.starts_with('[') && t.ends_with(']'))
-            {
-                if let Ok(mut parsed) = serde_json::from_str::<JsonValue>(s) {
-                    deep_parse_json_strings(&mut parsed);
-                    *value = parsed;
-                }
-            }
-        }
         JsonValue::Array(items) => {
             for item in items {
-                deep_parse_json_strings(item);
+                if let JsonValue::String(s) = item {
+                    let trimmed = s.trim();
+                    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+                    {
+                        if let Ok(mut parsed) = serde_json::from_str::<JsonValue>(s) {
+                            deep_parse_json_strings(&mut parsed);
+                            *item = parsed;
+                        }
+                    }
+                } else {
+                    deep_parse_json_strings(item);
+                }
             }
         }
         JsonValue::Object(map) => {
             for v in map.values_mut() {
-                deep_parse_json_strings(v);
+                match v {
+                    JsonValue::Object(_) | JsonValue::Array(_) => deep_parse_json_strings(v),
+                    // Leave scalar strings alone (including JSON-looking text columns).
+                    _ => {}
+                }
             }
         }
         _ => {}

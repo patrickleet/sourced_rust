@@ -25,6 +25,9 @@ pub(crate) mod metric_names {
     pub(crate) const OUTBOX_PENDING_MESSAGES: &str = "distributed_outbox_pending_messages";
     pub(crate) const OUTBOX_OLDEST_PENDING_AGE_SECONDS: &str =
         "distributed_outbox_oldest_pending_age_seconds";
+    pub(crate) const GRAPHQL_REQUEST_TOTAL: &str = "distributed_graphql_request_total";
+    pub(crate) const GRAPHQL_REQUEST_DURATION_SECONDS: &str =
+        "distributed_graphql_request_duration_seconds";
 }
 
 #[cfg(feature = "metrics")]

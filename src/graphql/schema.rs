@@ -31,7 +31,7 @@ pub fn build_role_schema(
     dialect: SqlDialect,
     disable_introspection: bool,
 ) -> Result<Schema, String> {
-    let _ = (by_table, dialect, disable_introspection);
+    let _ = (by_table, dialect);
 
     // Collect models granted to this role.
     let granted: Vec<(&str, &TableSchema, &SelectPermission)> = permissions
@@ -326,11 +326,13 @@ pub fn build_role_schema(
         builder = builder.register(input);
     }
 
-    builder
+    let mut builder = builder
         .limit_depth(max_depth)
-        .limit_complexity(max_complexity)
-        .finish()
-        .map_err(|e: SchemaError| e.to_string())
+        .limit_complexity(max_complexity);
+    if disable_introspection {
+        builder = builder.disable_introspection();
+    }
+    builder.finish().map_err(|e: SchemaError| e.to_string())
 }
 
 fn ensure_object_type(
@@ -621,11 +623,38 @@ async fn resolve_root(
 
     let selection = compile::selection_from_field(ctx.field());
     let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
-        .map_err(|e| async_graphql::Error::new(e))?;
-    let value = super::engine::execute_plan(&inner, &plan)
-        .await
-        .map_err(|_e| async_graphql::Error::new("internal error"))?;
+        .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
+    let value = super::engine::execute_plan(&inner, &plan).await.map_err(|e| {
+        if e.contains("timeout") {
+            client_error("TIMEOUT", "statement timeout")
+        } else {
+            client_error("INTERNAL", "internal error")
+        }
+    })?;
     Ok(Some(value))
+}
+
+fn sanitize_compile_error(e: &str) -> String {
+    // Stable short messages; never return raw SQL.
+    if e.contains("max depth") {
+        "max depth exceeded".into()
+    } else if e.contains("max_in_list") || e.contains("_in list") {
+        "list too long".into()
+    } else if e.contains("invalid GraphQL response key") {
+        "invalid response key".into()
+    } else if e.contains("unknown comparison") {
+        "invalid filter".into()
+    } else {
+        "bad request".into()
+    }
+}
+
+fn client_error(code: &str, message: impl Into<String>) -> async_graphql::Error {
+    use async_graphql::ErrorExtensions;
+    let code = code.to_string();
+    async_graphql::Error::new(message.into()).extend_with(move |_, ext| {
+        ext.set("code", code.as_str());
+    })
 }
 
 async fn resolve_subscription_live(
