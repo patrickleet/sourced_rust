@@ -36,6 +36,29 @@ where
     }
 }
 
+/// Apply [`BindValue`]s to a sqlx query builder.
+///
+/// Shared by SQLite and Postgres executors so bind-order and type mapping stay
+/// in one place (dedup-3). Macro because sqlx `Query` is database-generic.
+macro_rules! apply_binds {
+    ($qb:expr, $binds:expr) => {{
+        let mut __qb = $qb;
+        for __bind in $binds {
+            __qb = match __bind {
+                BindValue::Null => __qb.bind(None::<String>),
+                BindValue::Bool(b) => __qb.bind(*b),
+                BindValue::I64(i) => __qb.bind(*i),
+                BindValue::F64(f) => __qb.bind(*f),
+                BindValue::Text(s) => __qb.bind(s.clone()),
+                BindValue::Bytes(b) => __qb.bind(b.clone()),
+                // No sqlx `json` feature — bind as text; compiler adds casts.
+                BindValue::Json(j) => __qb.bind(j.to_string()),
+            };
+        }
+        __qb
+    }};
+}
+
 #[cfg(feature = "sqlite")]
 async fn execute_sqlite(
     pool: &sqlx::SqlitePool,
@@ -46,18 +69,10 @@ async fn execute_sqlite(
 
     // SQL is compiler-produced from schema metadata + bound parameters only.
     let run = async {
-        let mut qb = sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone()));
-        for bind in &plan.binds {
-            qb = match bind {
-                BindValue::Null => qb.bind(None::<String>),
-                BindValue::Bool(b) => qb.bind(*b),
-                BindValue::I64(i) => qb.bind(*i),
-                BindValue::F64(f) => qb.bind(*f),
-                BindValue::Text(s) => qb.bind(s.clone()),
-                BindValue::Bytes(b) => qb.bind(b.clone()),
-                BindValue::Json(j) => qb.bind(j.to_string()),
-            };
-        }
+        let qb = apply_binds!(
+            sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone())),
+            &plan.binds
+        );
         // Read-only SELECT: no write transaction required.
         // by_pk and filtered lookups may return zero rows → GraphQL null, not INTERNAL.
         let row = qb
@@ -177,19 +192,10 @@ async fn execute_postgres(
     .await
     .map_err(|e| format!("statement_timeout: {e}"))?;
 
-    let mut qb = sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone()));
-    for bind in &plan.binds {
-        qb = match bind {
-            BindValue::Null => qb.bind(None::<String>),
-            BindValue::Bool(b) => qb.bind(*b),
-            BindValue::I64(i) => qb.bind(*i),
-            BindValue::F64(f) => qb.bind(*f),
-            BindValue::Text(s) => qb.bind(s.clone()),
-            BindValue::Bytes(b) => qb.bind(b.clone()),
-            // No sqlx `json` feature — bind as text; compiler adds ::jsonb casts.
-            BindValue::Json(j) => qb.bind(j.to_string()),
-        };
-    }
+    let qb = apply_binds!(
+        sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone())),
+        &plan.binds
+    );
     let row = qb
         .fetch_optional(&mut *tx)
         .await
