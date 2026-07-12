@@ -55,6 +55,16 @@ pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<
             collect_role_candidates(node, &mut candidates);
         }
     }
+    // Zitadel project-scoped role claims look like
+    // `urn:zitadel:iam:org:project:{projectId}:roles` (object of role keys).
+    // Always scan for them so adapters need not hardcode project ids.
+    if let Some(obj) = claims.as_object() {
+        for (k, v) in obj {
+            if k.starts_with("urn:zitadel:iam:org:project:") && k.ends_with(":roles") {
+                collect_role_candidates(v, &mut candidates);
+            }
+        }
+    }
 
     // Intersect with engine roles when configured.
     let allowlisted: Vec<String> = if config.engine_roles.is_empty() {

@@ -108,11 +108,13 @@ async fn mint_jwt_bearer(issuer: &str, key_path: &str, user_id: &str) -> Result<
     let project_id = std::env::var("ZITADEL_PROJECT_ID")
         .or_else(|_| std::env::var("OIDC_AUDIENCE"))
         .unwrap_or_default();
+    // `projects:roles` (plural) yields `urn:zitadel:iam:org:project:{id}:roles` on tokens.
     let scope = if project_id.is_empty() {
-        "openid profile urn:zitadel:iam:org:project:roles".to_string()
+        "openid profile urn:zitadel:iam:org:project:roles urn:zitadel:iam:org:projects:roles"
+            .to_string()
     } else {
         format!(
-            "openid profile urn:zitadel:iam:org:project:id:{project_id}:aud urn:zitadel:iam:org:project:roles"
+            "openid profile urn:zitadel:iam:org:project:id:{project_id}:aud urn:zitadel:iam:org:project:roles urn:zitadel:iam:org:projects:roles"
         )
     };
 
