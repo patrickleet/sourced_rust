@@ -251,8 +251,30 @@ async fn a5_nested_relationship_column_allowlist_denies() {
     assert!(children[0].get("name").is_none());
 }
 
-#[tokio::test]
-async fn nested_has_many_relationship_e2e() {
+fn parent_child_engine(pool: sqlx::SqlitePool) -> GraphqlEngine {
+    let mut parent = ParentView::schema().clone();
+    parent.relationships = vec![RelationshipDef {
+        field_name: "children".into(),
+        kind: RelationshipKind::HasMany,
+        target_model: "ChildView".into(),
+        foreign_key: Some("parent_id".into()),
+        through: None,
+        target_foreign_key: None,
+    }];
+    let child = ChildView::schema().clone();
+    let manifest = DistributedProjectManifest::new("rel")
+        .table_schema(parent)
+        .table_schema(child);
+
+    GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .build()
+        .expect("build")
+}
+
+async fn seed_parents_children() -> sqlx::SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .connect("sqlite::memory:")
         .await
@@ -270,28 +292,13 @@ async fn nested_has_many_relationship_e2e() {
     .execute(&pool)
     .await
     .unwrap();
+    pool
+}
 
-    let mut parent = ParentView::schema().clone();
-    parent.relationships = vec![RelationshipDef {
-        field_name: "children".into(),
-        kind: RelationshipKind::HasMany,
-        target_model: "ChildView".into(),
-        foreign_key: Some("parent_id".into()),
-        through: None,
-        target_foreign_key: None,
-    }];
-    let child = ChildView::schema().clone();
-    let manifest = DistributedProjectManifest::new("rel")
-        .table_schema(parent)
-        .table_schema(child);
-
-    let engine = GraphqlEngine::from_manifest(&manifest, pool)
-        .unwrap()
-        .roles(&["user"])
-        .grant_all("user")
-        .build()
-        .expect("build");
-
+#[tokio::test]
+async fn nested_has_many_relationship_e2e() {
+    let pool = seed_parents_children().await;
+    let engine = parent_child_engine(pool);
     let s = session("user", "u");
     let data = exec_json(
         &engine,
@@ -301,6 +308,35 @@ async fn nested_has_many_relationship_e2e() {
     .await;
     let children = data["parents"][0]["children"].as_array().unwrap();
     assert_eq!(children.len(), 2);
+}
+
+/// Regression: by_pk with nested has_many must keep SQLite `?` binds aligned
+/// (projection subquery LIMIT/OFFSET appear before outer WHERE in SQL text).
+#[tokio::test]
+async fn by_pk_with_nested_children_returns_row() {
+    let pool = seed_parents_children().await;
+    let engine = parent_child_engine(pool);
+    let s = session("user", "u");
+    let data = exec_json(
+        &engine,
+        &s,
+        r#"{ parents_by_pk(parent_id: "p1") { parent_id name children { child_id name } } }"#,
+    )
+    .await;
+    let row = &data["parents_by_pk"];
+    assert!(
+        !row.is_null(),
+        "parents_by_pk must return a row with nested children, got {data}"
+    );
+    assert_eq!(row["parent_id"], "p1");
+    assert_eq!(row["name"], "P");
+    let children = row["children"].as_array().expect("children array");
+    assert_eq!(children.len(), 2, "{data}");
+    let ids: Vec<_> = children
+        .iter()
+        .map(|c| c["child_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"c1") && ids.contains(&"c2"), "{data}");
 }
 
 #[tokio::test]
