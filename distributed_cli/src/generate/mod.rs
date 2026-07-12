@@ -504,6 +504,12 @@ mod tests {
                 && query_mod.contains("public_oidc_identity_from_env"),
             "query build_engine must wire GraphiQL + OIDC identity defaults: {query_mod}"
         );
+        // D6: generated public scaffold must wire library OidcBearer helper (not DevHeaders).
+        assert!(
+            query_mod.contains("public_oidc_identity_from_env()")
+                && !query_mod.contains("IdentityConfig::dev_headers"),
+            "public scaffold must call public_oidc_identity_from_env, not DevHeaders: {query_mod}"
+        );
 
         // GitOps chart injects DATABASE_URL for query API (mirrors tracing OTEL env).
         let values = contents(&project, ".gitops/deploy/values.yaml");

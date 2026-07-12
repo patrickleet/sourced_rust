@@ -77,19 +77,19 @@ Headers panel. See `docs/graphql.md`.
 
 ### Identity (public GraphQL)
 
-Scaffold default for production-oriented services: **`OidcBearer`** with
-`require_auth=true` when `OIDC_ISSUER` + `OIDC_AUDIENCE` (or `OIDC_CLIENT_ID`)
-are set. Local/dev without OIDC falls back to `DevHeaders` (ambient `x-user-id` /
-`x-role` — **not** a production security boundary).
+Scaffold **always** wires `public_oidc_identity_from_env()` → **`OidcBearer`** +
+`require_auth=true` (D6). Set `OIDC_ISSUER` + `OIDC_AUDIENCE` (or `OIDC_CLIENT_ID`).
+If unset, placeholder issuer still uses OidcBearer (401 without Bearer) — **never**
+ambient `DevHeaders` on the public scaffold path.
 
 | Mode | Use |
 |---|---|
 | `OidcBearer` | Public API — validate `Authorization: Bearer` JWT (access token) |
 | `Hybrid` | Bearer preferred; else gateway-injected headers |
 | `TrustedProxy` | Mesh — strip client identity denylist at process |
-| `DevHeaders` | Local GraphiQL / unit tests only |
+| `DevHeaders` | Local GraphiQL / unit tests only (explicit opt-in) |
 
-Wire via `.identity(IdentityConfig::oidc_bearer(...))` on the engine builder.
+Wire via `.identity(distributed::graphql::public_oidc_identity_from_env())`.
 Never trust raw client `x-user-id` / `x-role` on a public edge.
 
 Pass `change_stream(repo.read_model_changes())` for live subscriptions.
