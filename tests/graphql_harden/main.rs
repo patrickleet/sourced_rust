@@ -12,11 +12,13 @@
 //! | `transport` | T* introspection HTTP, mutation grants, GraphiQL policy |
 //! | `softskip` | Fail-closed where/order contracts (strict_where default) |
 //! | `residual` | A8/A12/S9/E4 residual post-quality-1 review |
+//! | `dialect` | Dialect-honest comparison ops (no PG JSON ops on SQLite) |
 
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
 
 mod authz;
 mod common;
+mod dialect;
 mod dos;
 mod errors;
 mod inject;

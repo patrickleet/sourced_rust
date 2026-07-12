@@ -16,8 +16,8 @@ use super::commands::{CommandInput, CommandOutput, GraphqlCommands};
 use super::compile::{self, RootKind, SqlDialect};
 use super::engine::{CatalogEntry, EngineInner, RoleModelPerm};
 use super::naming::{
-    bool_exp_name, by_pk_field, comparison_exp_name, object_type_name, order_by_name,
-    root_list_field, scalar_type_name, CUSTOM_SCALARS,
+    bool_exp_name, by_pk_field, comparison_exp_name, include_postgres_json_comparison_ops,
+    object_type_name, order_by_name, root_list_field, scalar_type_name, CUSTOM_SCALARS,
 };
 use super::permissions::SelectPermission;
 
@@ -171,7 +171,12 @@ pub fn build_role_schema(
                     input = input.field(InputValue::new("_like", TypeRef::named("String")));
                     input = input.field(InputValue::new("_ilike", TypeRef::named("String")));
                 }
-                if scalar_name == "JSON" && matches!(dialect, SqlDialect::Postgres) {
+                // Dialect-honest: PG jsonb ops only when engine dialect is Postgres.
+                let pg_json = include_postgres_json_comparison_ops(matches!(
+                    dialect,
+                    SqlDialect::Postgres
+                ));
+                if scalar_name == "JSON" && pg_json {
                     input = input.field(InputValue::new("_contains", TypeRef::named("JSON")));
                     input = input.field(InputValue::new("_contained_in", TypeRef::named("JSON")));
                     input = input.field(InputValue::new("_has_key", TypeRef::named("String")));

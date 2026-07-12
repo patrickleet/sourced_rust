@@ -12,9 +12,10 @@ use crate::table::{
 
 use super::naming::{
     aggregate_field, aggregate_fields_type_name, aggregate_type_name, avg_fields_type_name,
-    bool_exp_name, by_pk_field, comparison_exp_name, is_valid_graphql_name, max_fields_type_name,
-    min_fields_type_name, object_type_name, order_by_enum_values, order_by_name,
-    reserved_type_names, root_list_field, scalar_type_name, sum_fields_type_name, CUSTOM_SCALARS,
+    bool_exp_name, by_pk_field, comparison_exp_name, include_postgres_json_comparison_ops,
+    is_valid_graphql_name, max_fields_type_name, min_fields_type_name, object_type_name,
+    order_by_enum_values, order_by_name, reserved_type_names, root_list_field, scalar_type_name,
+    sum_fields_type_name, CUSTOM_SCALARS, POSTGRES_JSON_COMPARISON_OPS,
 };
 
 /// Options controlling which surface slices the renderer emits.
@@ -22,8 +23,11 @@ use super::naming::{
 pub struct SdlOptions {
     /// Emit `<table>_aggregate` roots and nested aggregate fields (phase 3).
     pub aggregates: bool,
-    /// Emit jsonb comparison operators on JSON comparison-exps (PG capability;
-    /// omitted from the dialect-independent artifact by default).
+    /// Emit Postgres `jsonb` comparison operators on `JSON_comparison_exp`.
+    ///
+    /// Must match the runtime engine dialect: **false for SQLite**, true for
+    /// Postgres. Defaults to false (SQLite / dialect-independent artifact).
+    /// See [`SdlOptions::sqlite`] / [`SdlOptions::postgres`].
     pub jsonb_operators: bool,
     /// Emit a Subscription root mirroring Query list/by_pk fields (phase 4).
     pub subscriptions: bool,
@@ -31,10 +35,25 @@ pub struct SdlOptions {
 
 impl Default for SdlOptions {
     fn default() -> Self {
+        Self::sqlite()
+    }
+}
+
+impl SdlOptions {
+    /// SDL for SQLite-backed engines (no PG JSON comparison ops).
+    pub fn sqlite() -> Self {
         Self {
-            // Current crate ships full surface; golden tests pin the growth.
             aggregates: true,
-            jsonb_operators: false,
+            jsonb_operators: include_postgres_json_comparison_ops(false),
+            subscriptions: true,
+        }
+    }
+
+    /// SDL for Postgres-backed engines (includes jsonb comparison ops).
+    pub fn postgres() -> Self {
+        Self {
+            aggregates: true,
+            jsonb_operators: include_postgres_json_comparison_ops(true),
             subscriptions: true,
         }
     }
@@ -288,10 +307,18 @@ fn emit_comparison_exp(out: &mut String, scalar: &str, jsonb_ops: bool) {
         out.push_str("  _like: String\n");
         out.push_str("  _ilike: String\n");
     }
+    // Keep field list in lockstep with runtime schema via shared constants.
     if *scalar == *"JSON" && jsonb_ops {
-        out.push_str("  _contains: JSON\n");
-        out.push_str("  _contained_in: JSON\n");
-        out.push_str("  _has_key: String\n");
+        debug_assert!(include_postgres_json_comparison_ops(true));
+        for op in POSTGRES_JSON_COMPARISON_OPS {
+            match *op {
+                "_contains" | "_contained_in" => {
+                    out.push_str(&format!("  {op}: JSON\n"));
+                }
+                "_has_key" => out.push_str("  _has_key: String\n"),
+                other => out.push_str(&format!("  {other}: JSON\n")),
+            }
+        }
     }
     out.push_str("}\n\n");
 }
