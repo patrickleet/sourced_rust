@@ -20,6 +20,7 @@ use super::commands::GraphqlCommands;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
 use super::filter::{FilterExpr, Operand};
+use super::identity::IdentityConfig;
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
 };
@@ -109,6 +110,8 @@ pub(crate) struct EngineInner {
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
     pub change_hub: super::subscribe::ChangeHub,
     pub dialect: SqlDialect,
+    /// Identity mode for HTTP session construction (see `identity` module).
+    pub identity: IdentityConfig,
 }
 
 pub struct GraphqlEngine {
@@ -135,6 +138,7 @@ pub struct GraphqlEngineBuilder {
     commands: GraphqlCommands,
     change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
     pending_errors: Vec<String>,
+    identity: IdentityConfig,
 }
 
 impl GraphqlEngine {
@@ -166,6 +170,11 @@ impl GraphqlEngine {
 
     pub fn graphiql_enabled(&self) -> bool {
         self.inner.graphiql
+    }
+
+    /// Identity configuration used by GraphQL HTTP handlers.
+    pub fn identity_config(&self) -> &IdentityConfig {
+        &self.inner.identity
     }
 
     /// Whether unknown/ungranted client `where` and `order_by` keys fail closed.
@@ -301,6 +310,8 @@ impl GraphqlEngineBuilder {
             commands: GraphqlCommands::new(),
             change_rx: None,
             pending_errors: Vec::new(),
+            // DevHeaders keeps ambient header tests/green; public scaffolds set OidcBearer (D6).
+            identity: IdentityConfig::dev_headers(),
         }
     }
 
@@ -513,6 +524,11 @@ impl GraphqlEngineBuilder {
         self.graphiql = on;
         self
     }
+    /// Configure GraphQL HTTP identity mode (TrustedProxy / OidcBearer / Hybrid / DevHeaders).
+    pub fn identity(mut self, config: IdentityConfig) -> Self {
+        self.identity = config;
+        self
+    }
     pub fn change_stream(mut self, rx: tokio::sync::broadcast::Receiver<ReadModelChange>) -> Self {
         self.change_rx = Some(rx);
         self
@@ -679,6 +695,7 @@ impl GraphqlEngineBuilder {
             schemas,
             change_hub,
             dialect,
+            identity: self.identity,
         });
 
         Ok(GraphqlEngine { inner })

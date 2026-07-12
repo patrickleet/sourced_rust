@@ -94,6 +94,8 @@ mod http;
 #[cfg(feature = "http")]
 pub use http::{router, serve};
 #[cfg(feature = "http")]
+// session_from_headers remains available for microsvc HTTP command path.
+#[allow(unused_imports)]
 pub(crate) use http::session_from_headers;
 
 // Knative / CloudEvents HTTP ingress (Service-coupled; the bus keeps only the

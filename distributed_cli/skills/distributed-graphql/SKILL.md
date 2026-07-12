@@ -75,6 +75,23 @@ GRAPHIQL=0 cargo run   # disable IDE in production
 Default GraphiQL headers: `x-role: user`, `x-user-id: demo`. Edit in the IDE
 Headers panel. See `docs/graphql.md`.
 
+### Identity (public GraphQL)
+
+Scaffold default for production-oriented services: **`OidcBearer`** with
+`require_auth=true` when `OIDC_ISSUER` + `OIDC_AUDIENCE` (or `OIDC_CLIENT_ID`)
+are set. Local/dev without OIDC falls back to `DevHeaders` (ambient `x-user-id` /
+`x-role` — **not** a production security boundary).
+
+| Mode | Use |
+|---|---|
+| `OidcBearer` | Public API — validate `Authorization: Bearer` JWT (access token) |
+| `Hybrid` | Bearer preferred; else gateway-injected headers |
+| `TrustedProxy` | Mesh — strip client identity denylist at process |
+| `DevHeaders` | Local GraphiQL / unit tests only |
+
+Wire via `.identity(IdentityConfig::oidc_bearer(...))` on the engine builder.
+Never trust raw client `x-user-id` / `x-role` on a public edge.
+
 Pass `change_stream(repo.read_model_changes())` for live subscriptions.
 
 Command mutations: register `GraphqlCommands` on the builder and use

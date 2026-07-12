@@ -30,6 +30,8 @@ mod filter;
 #[cfg(feature = "graphql")]
 pub mod http;
 #[cfg(feature = "graphql")]
+pub mod identity;
+#[cfg(feature = "graphql")]
 mod permissions;
 #[cfg(feature = "graphql")]
 mod schema;
@@ -49,6 +51,12 @@ pub use engine::{
 pub use filter::{claim, col, lit, rel, ClaimRef, ColRef, FilterExpr, LitValue, Operand};
 #[cfg(feature = "graphql")]
 pub use http::{graphiql_page, graphql_router, graphql_router_with_service};
+#[cfg(feature = "graphql")]
+pub use identity::{
+    extract_bearer, map_claims_to_session, resolve_session, resolve_session_sync,
+    strip_identity_headers, AuthError, ClaimMapConfig, IdentityConfig, IdentityMode, OidcConfig,
+    OidcValidator, TrustedProxyConfig, ValidationError, DEFAULT_IDENTITY_STRIP_HEADERS,
+};
 #[cfg(feature = "graphql")]
 pub use permissions::{select, ModelPermissions, SelectPermission};
 #[cfg(feature = "graphql")]
