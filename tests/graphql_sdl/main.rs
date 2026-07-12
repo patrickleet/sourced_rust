@@ -240,3 +240,44 @@ fn capture_sdl_to_scratch() {
     std::fs::write(&path, &sdl).unwrap();
     assert!(sdl.contains("type PlayerView"));
 }
+
+/// Default / SQLite SDL omits PG jsonb comparison operators (weapons has JSON meta).
+#[test]
+fn sqlite_sdl_omits_postgres_json_comparison_ops() {
+    let sdl = graphql_sdl_for_tables_with_options(&[weapons()], &SdlOptions::sqlite()).unwrap();
+    assert!(
+        sdl.contains("JSON_comparison_exp") || sdl.contains("input JSON_comparison_exp"),
+        "expected JSON comparison input: {sdl}"
+    );
+    assert!(
+        !sdl.contains("_contains"),
+        "SQLite SDL must not advertise _contains: {sdl}"
+    );
+    assert!(
+        !sdl.contains("_contained_in"),
+        "SQLite SDL must not advertise _contained_in: {sdl}"
+    );
+    assert!(
+        !sdl.contains("_has_key"),
+        "SQLite SDL must not advertise _has_key: {sdl}"
+    );
+    assert!(sdl.contains("_eq"), "portable _eq must remain: {sdl}");
+}
+
+/// Postgres-oriented SDL includes jsonb comparison operators.
+#[test]
+fn postgres_sdl_includes_json_comparison_ops() {
+    let sdl = graphql_sdl_for_tables_with_options(&[weapons()], &SdlOptions::postgres()).unwrap();
+    assert!(sdl.contains("_contains"), "{sdl}");
+    assert!(sdl.contains("_contained_in"), "{sdl}");
+    assert!(sdl.contains("_has_key"), "{sdl}");
+}
+
+/// Default SdlOptions matches SQLite policy.
+#[test]
+fn default_sdl_options_are_sqlite() {
+    let def = SdlOptions::default();
+    let sqlite = SdlOptions::sqlite();
+    assert_eq!(def.jsonb_operators, sqlite.jsonb_operators);
+    assert!(!def.jsonb_operators);
+}

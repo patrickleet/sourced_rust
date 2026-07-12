@@ -979,12 +979,6 @@ pub(crate) async fn execute_plan(inner: &EngineInner, plan: &SqlPlan) -> Result<
 /// Public helper for tests: compile + naming surface.
 #[allow(dead_code)]
 pub fn core_sdl_for_catalog(tables: &[TableSchema]) -> Result<String, String> {
-    graphql_sdl_for_tables_with_options(
-        tables,
-        &SdlOptions {
-            aggregates: true,
-            jsonb_operators: false,
-            subscriptions: true,
-        },
-    )
+    // Dialect-independent / SQLite-default SDL (no PG JSON ops).
+    graphql_sdl_for_tables_with_options(tables, &SdlOptions::sqlite())
 }

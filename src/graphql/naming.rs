@@ -86,6 +86,41 @@ pub fn comparison_exp_name(scalar: &str) -> String {
     format!("{scalar}_comparison_exp")
 }
 
+/// Portable comparison operators on every scalar's `*_comparison_exp`.
+///
+/// These compile on both SQLite and Postgres (with dialect-specific cast/ILIKE
+/// mapping handled at compile time).
+pub const PORTABLE_COMPARISON_OPS: &[&str] = &[
+    "_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_nin", "_is_null",
+];
+
+/// String-only comparison operators (portable; SQLite maps `_ilike` → `LIKE`).
+pub const STRING_COMPARISON_OPS: &[&str] = &["_like", "_ilike"];
+
+/// Postgres `jsonb` operators — only on `JSON_comparison_exp` when the engine
+/// dialect is Postgres. **Must not** appear on SQLite schema or SDL.
+pub const POSTGRES_JSON_COMPARISON_OPS: &[&str] =
+    &["_contains", "_contained_in", "_has_key"];
+
+/// Whether the GraphQL surface should advertise PG JSON comparison ops.
+///
+/// Pass `true` only for Postgres-backed engines (or SDL rendered for PG).
+pub fn include_postgres_json_comparison_ops(dialect_is_postgres: bool) -> bool {
+    dialect_is_postgres
+}
+
+/// Comparison-exp field names for a GraphQL scalar given dialect JSON-op policy.
+pub fn comparison_op_fields(scalar: &str, postgres_json_ops: bool) -> Vec<&'static str> {
+    let mut ops: Vec<&'static str> = PORTABLE_COMPARISON_OPS.to_vec();
+    if scalar == "String" {
+        ops.extend_from_slice(STRING_COMPARISON_OPS);
+    }
+    if scalar == "JSON" && postgres_json_ops {
+        ops.extend_from_slice(POSTGRES_JSON_COMPARISON_OPS);
+    }
+    ops
+}
+
 /// Custom scalars emitted once, alphabetically.
 pub const CUSTOM_SCALARS: &[&str] = &["BigInt", "Bytea", "JSON", "Timestamptz"];
 
@@ -134,5 +169,31 @@ mod tests {
         assert!(!is_valid_graphql_name("1players"));
         assert!(!is_valid_graphql_name("play-ers"));
         assert!(!is_valid_graphql_name(""));
+    }
+
+    #[test]
+    fn comparison_op_matrix_sqlite_omits_pg_json() {
+        assert!(!include_postgres_json_comparison_ops(false));
+        let json_ops = comparison_op_fields("JSON", false);
+        for op in POSTGRES_JSON_COMPARISON_OPS {
+            assert!(
+                !json_ops.contains(op),
+                "SQLite JSON comparison must not include {op}"
+            );
+        }
+        assert!(json_ops.contains(&"_eq"));
+        let string_ops = comparison_op_fields("String", false);
+        assert!(string_ops.contains(&"_like"));
+        assert!(string_ops.contains(&"_ilike"));
+        assert!(!string_ops.contains(&"_contains"));
+    }
+
+    #[test]
+    fn comparison_op_matrix_postgres_includes_json_ops() {
+        assert!(include_postgres_json_comparison_ops(true));
+        let json_ops = comparison_op_fields("JSON", true);
+        for op in POSTGRES_JSON_COMPARISON_OPS {
+            assert!(json_ops.contains(op), "PG JSON comparison missing {op}");
+        }
     }
 }

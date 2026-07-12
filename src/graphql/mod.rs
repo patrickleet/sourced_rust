@@ -9,8 +9,9 @@ pub mod naming;
 pub mod sdl;
 
 pub use naming::{
-    aggregate_field, by_pk_field, is_valid_graphql_name, object_type_name, root_list_field,
-    scalar_type_name,
+    aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,
+    is_valid_graphql_name, object_type_name, root_list_field, scalar_type_name,
+    POSTGRES_JSON_COMPARISON_OPS, PORTABLE_COMPARISON_OPS, STRING_COMPARISON_OPS,
 };
 pub use sdl::{graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, SdlOptions};
 
