@@ -1181,9 +1181,18 @@ fn compile_filter_expr(
                 CmpOp::Lte => "<=",
                 CmpOp::Like => "LIKE",
                 CmpOp::Ilike => inner.dialect.ops().ilike_op,
-                CmpOp::Contains => "@>",
-                CmpOp::ContainedIn => "<@",
-                CmpOp::HasKey => "?",
+                CmpOp::Contains => {
+                    require_postgres_json_op(inner.dialect, "_contains")?;
+                    "@>"
+                }
+                CmpOp::ContainedIn => {
+                    require_postgres_json_op(inner.dialect, "_contained_in")?;
+                    "<@"
+                }
+                CmpOp::HasKey => {
+                    require_postgres_json_op(inner.dialect, "_has_key")?;
+                    "?"
+                }
             };
             let cast_ph = cast_placeholder(inner.dialect, &col.column_type, &ph);
             Ok(format!("{col_ref} {sql_op} {cast_ph}"))
@@ -1663,9 +1672,18 @@ fn compile_client_op(
                 "_lte" => "<=",
                 "_like" => "LIKE",
                 "_ilike" => inner.dialect.ops().ilike_op,
-                "_contains" => "@>",
-                "_contained_in" => "<@",
-                "_has_key" => "?",
+                "_contains" => {
+                    require_postgres_json_op(inner.dialect, "_contains")?;
+                    "@>"
+                }
+                "_contained_in" => {
+                    require_postgres_json_op(inner.dialect, "_contained_in")?;
+                    "<@"
+                }
+                "_has_key" => {
+                    require_postgres_json_op(inner.dialect, "_has_key")?;
+                    "?"
+                }
                 _ => return Err(format!("unknown comparison op `{other}`")),
             };
             binds.push(value_to_bind(rhs, column_type)?);
@@ -1673,6 +1691,18 @@ fn compile_client_op(
             let cast_ph = cast_placeholder(inner.dialect, column_type, &ph);
             Ok(format!("{col_ref} {sql_op} {cast_ph}"))
         }
+    }
+}
+
+/// Postgres jsonb operators are not emitted on SQLite (would confuse the driver
+/// and risk opaque execute errors). Message must stay free of SQL fragments so
+/// [`super::schema::sanitize_compile_error`] maps to a stable client code.
+fn require_postgres_json_op(dialect: SqlDialect, op: &str) -> Result<(), String> {
+    match dialect {
+        SqlDialect::Postgres => Ok(()),
+        SqlDialect::Sqlite => Err(format!(
+            "unknown comparison op `{op}` is not supported on sqlite"
+        )),
     }
 }
 

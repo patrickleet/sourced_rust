@@ -10,6 +10,8 @@
 //! | `dos` | D* depth, in-list, bool-width, concurrency |
 //! | `errors` | E* leak + TIMEOUT |
 //! | `transport` | T* introspection HTTP, mutation grants, GraphiQL policy |
+//! | `softskip` | Soft-skip where/order contracts (until strict_where) |
+//! | `residual` | A8/A12/S9/E4 residual post-quality-1 review |
 
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
 
@@ -18,4 +20,6 @@ mod common;
 mod dos;
 mod errors;
 mod inject;
+mod residual;
+mod softskip;
 mod transport;
