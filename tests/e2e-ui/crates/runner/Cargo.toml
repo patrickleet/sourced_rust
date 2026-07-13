@@ -1,0 +1,15 @@
+[package]
+name = "e2e-runner"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Thin runner: SQLite + SqliteBus + HTTP + GraphQL"
+
+[[bin]]
+name = "e2e-ui"
+path = "src/main.rs"
+
+[dependencies]
+distributed = { workspace = true }
+e2e-service = { path = "../service" }
+tokio = { workspace = true }

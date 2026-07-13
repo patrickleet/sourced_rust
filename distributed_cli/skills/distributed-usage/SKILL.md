@@ -236,30 +236,29 @@ Gotchas:
 
 ## Multi-crate single-service layout (and later microservices)
 
-When a service grows past one aggregate, copy the **workshop-service** fixture
-layout under `tests/workshop-service/` (also documented in
-[[specs/workshop-domain]] and that folder’s README):
+Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README + `docs/layout.md`):
 
 ```text
 crates/
-  <bc>-domain/     # aggregates + events only
-  <bc2>-domain/
-  readmodels/      # all BC projections in one package
-  service/         # composable route bundles (handlers)
-  runner-*/        # thin bins: choose store + transport + bind
+  todo-domain/     # personal todos (owner-scoped)
+  chat-domain/     # lobby chat (shared room)
+  readmodels/      # projections + distributed_manifest
+  service/         # thin command handlers + event projectors + GraphQL
+  runner/          # store + bus + bind
+  suite/           # HTTP/GraphQL behavioral cases
+ui/                # SvelteKit: todos + chat with GraphQL subscriptions
 ```
 
-**Start as one process:** register every route bundle on a single `Service`
-(`build_full_service`). Domain unit tests stay pure; behavioral suite speaks
-HTTP/GraphQL only.
+Rules the fixture demonstrates:
 
-**Split into microservices without redefining the domain:** run the same
-handler modules in different processes (`build_catalog_service` vs
-`build_orders_service`). Share bus + event store + read-model tables. Add a
-gateway only for unified GraphQL and command routing by name prefix.
+- **Domain unit tests first** (`cargo test -p todo-domain`) — no repository
+- **Owner from session**, never from untrusted create body
+- **Projectors only** write read models (commands commit aggregate + outbox)
+- GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
+- **Subscriptions**: wire `SqliteRepository::read_model_changes()` into
+  `GraphqlEngineBuilder::change_stream`; clients use WebSocket `/graphql/ws`
 
-The same suite case IDs must pass for monolith and multi-service topologies
-(`cargo test -p workshop-suite --test behavioral` and `--test multi_service`).
+Run the full app: `cd tests/e2e-ui && make`. Suite: `make test`.
 
 ## Manifest entrypoint
 

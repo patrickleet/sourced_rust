@@ -54,20 +54,21 @@ pub fn router(service: Arc<Service>) -> Router {
     let router = router.route("/metrics", get(metrics_handler));
 
     // GraphQL must be registered before the body-limit layer so the limit wraps it.
+    // POST /graphql: queries/mutations. GET /graphql: GraphiQL.
+    // GET /graphql/ws: WebSocket subscriptions (graphql-ws protocol).
     #[cfg(feature = "graphql")]
     let router = {
         if service.graphql_engine().is_some() {
-            let graphiql = service
-                .graphql_engine()
-                .map(|e| e.graphiql_enabled())
-                .unwrap_or(false);
-            let post_route = axum::routing::post(crate::graphql::http::microsvc_graphql_handler);
-            let route = if graphiql {
-                post_route.get(|| async { crate::graphql::http::graphiql_page() })
-            } else {
-                post_route
-            };
-            router.route("/graphql", route)
+            router
+                .route(
+                    "/graphql",
+                    axum::routing::post(crate::graphql::http::microsvc_graphql_handler)
+                        .get(crate::graphql::http::microsvc_graphql_get),
+                )
+                .route(
+                    "/graphql/ws",
+                    axum::routing::get(crate::graphql::http::microsvc_graphql_ws),
+                )
         } else {
             router
         }
