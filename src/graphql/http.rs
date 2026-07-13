@@ -15,10 +15,14 @@ use axum::routing::post;
 use axum::Router;
 use futures_util::stream::BoxStream;
 
-use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES};
+use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, ROLE_KEY, USER_ID_KEY};
 
 use super::engine::GraphqlEngine;
 use super::identity::{resolve_session, AuthError, IdentityMode};
+
+/// DevHeaders baked into GraphiQL for local exploration (not production security).
+const GRAPHIQL_DEV_USER: &str = "demo";
+const GRAPHIQL_DEV_ROLE: &str = "user";
 
 /// HTML for the GraphiQL IDE served on `GET /graphql` when GraphiQL is enabled.
 ///
@@ -27,22 +31,31 @@ use super::identity::{resolve_session, AuthError, IdentityMode};
 /// these headers are **not** a security mechanism. GraphiQL is off under
 /// production env policy (`graphiql_enabled_from_env`).
 ///
-/// Subscriptions use the same `/graphql` path over WebSocket (`graphql-ws` /
-/// `graphql-transport-ws`).
+/// **Subscriptions:** GraphiQL runs them over WebSocket at `/graphql/ws`.
+/// Browsers cannot set custom WS headers; identity is supplied via
+/// `wsConnectionParams` → `connection_init` (and DevHeaders defaults if empty).
+///
+/// Note: do **not** put `?x-user-id=` query params in `subscription_endpoint` —
+/// GraphiQLSource HTML-escapes `=` / `&` (`&#x3D;`, `&amp;`), which breaks the URL.
 pub fn graphiql_page() -> Html<String> {
     Html(
         GraphiQLSource::build()
             .endpoint("/graphql")
-            // WebSocket subscriptions (graphql-ws / graphql-transport-ws).
             .subscription_endpoint("/graphql/ws")
-            .header("x-role", "user")
-            .header("x-user-id", "demo")
+            .header(ROLE_KEY, GRAPHIQL_DEV_ROLE)
+            .header(USER_ID_KEY, GRAPHIQL_DEV_USER)
+            // Sent as connection_init payload for graphql-transport-ws.
+            .ws_connection_param(USER_ID_KEY, GRAPHIQL_DEV_USER)
+            .ws_connection_param(ROLE_KEY, GRAPHIQL_DEV_ROLE)
             .title("Distributed GraphQL")
             .finish(),
     )
 }
 
-/// [`Executor`] that runs against a fixed session (for WebSocket subscriptions).
+/// [`Executor`] for WebSocket subscriptions.
+///
+/// Prefers a [`Session`] injected via `connection_init` / `session_data` (GraphiQL
+/// wsConnectionParams), then falls back to the session from the HTTP upgrade.
 #[derive(Clone)]
 pub struct GraphqlSessionExecutor {
     engine: Arc<GraphqlEngine>,
@@ -57,15 +70,24 @@ impl GraphqlSessionExecutor {
 
 impl Executor for GraphqlSessionExecutor {
     async fn execute(&self, request: Request) -> GqlResponse {
+        // Subscriptions must not go through execute() — that yields
+        // "Subscription root not found". GraphiQL should use the WS path only.
         self.engine.execute(&self.session, request).await
     }
 
     fn execute_stream(
         &self,
         request: Request,
-        _session_data: Option<Arc<Data>>,
+        session_data: Option<Arc<Data>>,
     ) -> BoxStream<'static, GqlResponse> {
-        self.engine.execute_stream(&self.session, request)
+        use std::any::TypeId;
+        let session = session_data
+            .as_ref()
+            .and_then(|d| d.get(&TypeId::of::<Session>()))
+            .and_then(|b| b.downcast_ref::<Session>())
+            .cloned()
+            .unwrap_or_else(|| self.session.clone());
+        self.engine.execute_stream(&session, request)
     }
 }
 
@@ -192,9 +214,6 @@ pub async fn microsvc_graphql_handler(
 }
 
 /// `GET /graphql` — GraphiQL HTML when not a WebSocket upgrade.
-///
-/// WebSocket upgrades are handled by [`microsvc_graphql_ws`] on the same path
-/// (registered separately via `on_upgrade` routing in microsvc).
 pub async fn microsvc_graphql_get(State(service): State<Arc<Service>>) -> Response {
     let graphiql = service
         .graphql_engine()
@@ -209,9 +228,10 @@ pub async fn microsvc_graphql_get(State(service): State<Arc<Service>>) -> Respon
 
 /// WebSocket upgrade for GraphQL subscriptions (`graphql-ws` / `graphql-transport-ws`).
 ///
-/// Identity: HTTP headers on the upgrade request (DevHeaders / Bearer), plus
-/// browser-friendly query params `x-user-id` / `x-role` (browsers cannot set
-/// custom WebSocket headers).
+/// Identity sources (later overrides earlier when present):
+/// 1. HTTP upgrade headers
+/// 2. Query string `x-user-id` / `x-role` (GraphiQL + browsers)
+/// 3. `connection_init` payload / GraphiQL `wsConnectionParams`
 pub async fn microsvc_graphql_ws(
     State(service): State<Arc<Service>>,
     headers: HeaderMap,
@@ -224,40 +244,127 @@ pub async fn microsvc_graphql_ws(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Merge query-string identity into a header map for resolve_session.
     let mut headers = headers;
-    if let Some(q) = uri.query() {
-        for pair in q.split('&') {
-            let mut it = pair.splitn(2, '=');
-            let k = it.next().unwrap_or("");
-            let v = it.next().unwrap_or("");
-            let v = urlencoding_decode(v);
-            match k {
-                "x-user-id" if !headers.contains_key("x-user-id") => {
-                    if let Ok(val) = axum::http::HeaderValue::from_str(&v) {
-                        headers.insert("x-user-id", val);
-                    }
-                }
-                "x-role" if !headers.contains_key("x-role") => {
-                    if let Ok(val) = axum::http::HeaderValue::from_str(&v) {
-                        headers.insert("x-role", val);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    merge_identity_query_params(&mut headers, uri.query());
 
     let session = match resolve_session(&headers, engine.identity_config()).await {
         Ok(s) => s,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
 
-    let executor = GraphqlSessionExecutor::new(engine, session);
+    // Ensure DevHeaders GraphiQL always has a usable role even if query parse failed.
+    let session = ensure_graphiql_dev_session(session, engine.identity_config().mode);
+
+    let executor = GraphqlSessionExecutor::new(Arc::clone(&engine), session.clone());
+    let mode = engine.identity_config().mode;
     upgrade
         .protocols(ALL_WEBSOCKET_PROTOCOLS)
-        .on_upgrade(move |socket| GraphQLWebSocket::new(socket, executor, protocol).serve())
+        .on_upgrade(move |socket| {
+            let base = session;
+            GraphQLWebSocket::new(socket, executor, protocol)
+                .on_connection_init(move |payload| {
+                    let base = base.clone();
+                    async move {
+                        let mut data = Data::default();
+                        let session = session_from_connection_init(base, &payload, mode);
+                        data.insert(session);
+                        Ok(data)
+                    }
+                })
+                .serve()
+        })
         .into_response()
+}
+
+fn ensure_graphiql_dev_session(mut session: Session, mode: IdentityMode) -> Session {
+    if mode != IdentityMode::DevHeaders {
+        return session;
+    }
+    if session.user_id().is_none() {
+        session.set(USER_ID_KEY, GRAPHIQL_DEV_USER);
+    }
+    if session.role().is_none() {
+        session.set(ROLE_KEY, GRAPHIQL_DEV_ROLE);
+    }
+    session
+}
+
+/// Merge `connection_init` / GraphiQL wsConnectionParams into the upgrade session.
+fn session_from_connection_init(
+    mut session: Session,
+    payload: &serde_json::Value,
+    mode: IdentityMode,
+) -> Session {
+    if mode != IdentityMode::DevHeaders {
+        // OIDC: allow Authorization in connection_init for WS clients that put the
+        // Bearer token there (GraphiQL Headers panel may not reach the upgrade).
+        if let Some(auth) = payload
+            .get("Authorization")
+            .or_else(|| payload.get("authorization"))
+            .and_then(|v| v.as_str())
+        {
+            session.set("authorization", auth);
+        }
+        if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
+            if let Some(auth) = headers
+                .get("Authorization")
+                .or_else(|| headers.get("authorization"))
+                .and_then(|v| v.as_str())
+            {
+                session.set("authorization", auth);
+            }
+        }
+        return session;
+    }
+
+    let apply = |session: &mut Session, key: &str, val: &str| {
+        if key.eq_ignore_ascii_case(USER_ID_KEY) || key.eq_ignore_ascii_case("x-user-id") {
+            session.set(USER_ID_KEY, val);
+        } else if key.eq_ignore_ascii_case(ROLE_KEY) || key.eq_ignore_ascii_case("x-role") {
+            session.set(ROLE_KEY, val);
+        }
+    };
+
+    if let Some(obj) = payload.as_object() {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                apply(&mut session, k, s);
+            }
+        }
+        if let Some(headers) = obj.get("headers").and_then(|h| h.as_object()) {
+            for (k, v) in headers {
+                if let Some(s) = v.as_str() {
+                    apply(&mut session, k, s);
+                }
+            }
+        }
+    }
+
+    ensure_graphiql_dev_session(session, mode)
+}
+
+fn merge_identity_query_params(headers: &mut HeaderMap, query: Option<&str>) {
+    let Some(q) = query else {
+        return;
+    };
+    for pair in q.split('&') {
+        let mut it = pair.splitn(2, '=');
+        let k = it.next().unwrap_or("");
+        let v = urlencoding_decode(it.next().unwrap_or(""));
+        match k {
+            "x-user-id" if !headers.contains_key("x-user-id") => {
+                if let Ok(val) = axum::http::HeaderValue::from_str(&v) {
+                    headers.insert("x-user-id", val);
+                }
+            }
+            "x-role" if !headers.contains_key("x-role") => {
+                if let Ok(val) = axum::http::HeaderValue::from_str(&v) {
+                    headers.insert("x-role", val);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn urlencoding_decode(s: &str) -> String {
@@ -294,4 +401,41 @@ fn urlencoding_decode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod connection_init_tests {
+    use super::*;
+    use crate::graphql::IdentityMode;
+    use serde_json::json;
+
+    #[test]
+    fn connection_init_sets_dev_headers() {
+        let session = session_from_connection_init(
+            Session::new(),
+            &json!({"x-user-id": "alice", "x-role": "user"}),
+            IdentityMode::DevHeaders,
+        );
+        assert_eq!(session.user_id(), Some("alice"));
+        assert_eq!(session.role(), Some("user"));
+    }
+
+    #[test]
+    fn connection_init_nested_headers() {
+        let session = session_from_connection_init(
+            Session::new(),
+            &json!({"headers": {"x-user-id": "bob", "x-role": "admin"}}),
+            IdentityMode::DevHeaders,
+        );
+        assert_eq!(session.user_id(), Some("bob"));
+        assert_eq!(session.role(), Some("admin"));
+    }
+
+    #[test]
+    fn empty_init_gets_graphiql_defaults_in_dev() {
+        let session =
+            session_from_connection_init(Session::new(), &json!({}), IdentityMode::DevHeaders);
+        assert_eq!(session.user_id(), Some(GRAPHIQL_DEV_USER));
+        assert_eq!(session.role(), Some(GRAPHIQL_DEV_ROLE));
+    }
 }
