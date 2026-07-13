@@ -1,0 +1,10 @@
+/* Custom media queries - injected globally via postcss-global-data */
+@custom-media --mobile (width < 480px);
+@custom-media --mobile-up (width >= 480px);
+@custom-media --tablet (width < 768px);
+@custom-media --tablet-up (width >= 768px);
+@custom-media --desktop (width < 1024px);
+@custom-media --desktop-up (width >= 1024px);
+@custom-media --wide (width < 1280px);
+@custom-media --wide-up (width >= 1280px);
+@custom-media --ultrawide (width >= 1600px);

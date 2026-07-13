@@ -1,0 +1,57 @@
+import { redirect } from '@sveltejs/kit';
+import type { RequestHandler } from './$types';
+import { env } from '$env/dynamic/private';
+
+function envFirst(names: string[]) {
+	for (const name of names) {
+		const value = env[name]?.trim();
+		if (value) return value;
+	}
+
+	return undefined;
+}
+
+function oidcIssuer() {
+	return envFirst(['OIDC_ISSUER', 'ZITADEL_ISSUER'])?.replace(/\/+$/, '');
+}
+
+async function endSessionEndpoint() {
+	const override = envFirst(['OIDC_END_SESSION_ENDPOINT']);
+	if (override) return override;
+
+	const issuer = oidcIssuer();
+	if (!issuer) return undefined;
+
+	try {
+		const response = await fetch(`${issuer}/.well-known/openid-configuration`);
+		if (!response.ok) return undefined;
+
+		const metadata = (await response.json()) as { end_session_endpoint?: string };
+		return metadata.end_session_endpoint;
+	} catch {
+		return undefined;
+	}
+}
+
+export const GET: RequestHandler = async (event) => {
+	const session = await event.locals.auth();
+	const idToken = session?.idToken;
+
+	event.cookies.delete('authjs.session-token', { path: '/' });
+	event.cookies.delete('authjs.callback-url', { path: '/' });
+	event.cookies.delete('authjs.csrf-token', { path: '/' });
+	event.cookies.delete('__Secure-authjs.session-token', { path: '/' });
+	event.cookies.delete('__Secure-authjs.callback-url', { path: '/' });
+	event.cookies.delete('__Secure-authjs.csrf-token', { path: '/' });
+
+	const logoutEndpoint = await endSessionEndpoint();
+	if (!logoutEndpoint) {
+		redirect(303, '/');
+	}
+
+	const endSessionUrl = new URL(logoutEndpoint);
+	if (idToken) endSessionUrl.searchParams.set('id_token_hint', idToken);
+	endSessionUrl.searchParams.set('post_logout_redirect_uri', event.url.origin);
+
+	redirect(303, endSessionUrl.toString());
+};

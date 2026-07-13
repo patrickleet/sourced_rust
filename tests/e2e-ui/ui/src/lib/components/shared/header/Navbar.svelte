@@ -1,0 +1,113 @@
+<script lang="ts">
+	import { page } from '$app/state';
+	import Auth from '$lib/components/shared/header/Auth.svelte';
+	import AccountMenu from '$lib/components/shared/menus/AccountMenu.svelte';
+
+	let isMenuOpen = $state(false);
+	let scrolled = $state(false);
+	let accountMenuOpen = $state(false);
+
+	const isAuthenticated = $derived(!!page.data.session?.user);
+	const currentPath = $derived(page.url.pathname);
+
+	const isActive = (path: string) => {
+		if (path === '/') return currentPath === '/';
+		return currentPath.startsWith(path);
+	};
+
+	const toggleAccountMenu = () => {
+		accountMenuOpen = !accountMenuOpen;
+	};
+
+	const toggleMenu = () => {
+		isMenuOpen = !isMenuOpen;
+	};
+
+	$effect(() => {
+		const handleScroll = () => {
+			scrolled = window.scrollY > 50;
+		};
+		if (typeof window !== 'undefined') {
+			window.addEventListener('scroll', handleScroll);
+			return () => window.removeEventListener('scroll', handleScroll);
+		}
+	});
+</script>
+
+<nav class="navbar" class:scrolled aria-label="main navigation">
+	<div class="navbar-container">
+		<div class="navbar-brand">
+			<a href="/" class="brand-link">
+				<span class="brand-mark" aria-hidden="true">df</span>
+				e2e-ui
+			</a>
+		</div>
+
+		<button
+			class="navbar-burger"
+			class:is-active={isMenuOpen}
+			aria-label="menu"
+			aria-expanded={isMenuOpen}
+			onclick={toggleMenu}
+		>
+			<span></span>
+			<span></span>
+			<span></span>
+		</button>
+
+		<div class="navbar-menu" class:is-active={isMenuOpen}>
+			<div class="navbar-links">
+				<a href="/" class="nav-link" class:active={isActive('/')} onclick={() => (isMenuOpen = false)}
+					>Home</a
+				>
+				<a
+					href="/#demos"
+					class="nav-link"
+					onclick={() => (isMenuOpen = false)}>Demos</a
+				>
+				<a
+					href="/#code"
+					class="nav-link"
+					onclick={() => (isMenuOpen = false)}>Code</a
+				>
+				{#if isAuthenticated}
+					<a
+						href="/todos"
+						class="nav-link"
+						class:active={isActive('/todos')}
+						onclick={() => (isMenuOpen = false)}>Todos</a
+					>
+					<a
+						href="/chat"
+						class="nav-link"
+						class:active={isActive('/chat')}
+						onclick={() => (isMenuOpen = false)}>Chat</a
+					>
+					<a
+						href="/session"
+						class="nav-link"
+						class:active={isActive('/session')}
+						onclick={() => (isMenuOpen = false)}>Session</a
+					>
+				{/if}
+			</div>
+
+			<div class="navbar-cta">
+				{#if !isAuthenticated}
+					<a
+						href="/signin?callbackUrl=/todos"
+						class="cta-button"
+						onclick={() => (isMenuOpen = false)}
+					>
+						<span>Sign In</span>
+					</a>
+				{/if}
+				<Auth onToggle={toggleAccountMenu} />
+			</div>
+		</div>
+	</div>
+</nav>
+
+{#if accountMenuOpen}
+	<AccountMenu bind:accountMenuOpen />
+{/if}
