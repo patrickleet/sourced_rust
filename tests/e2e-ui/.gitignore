@@ -8,3 +8,4 @@ ui/node_modules
 ui/build
 ui/.svelte-kit
 ui/.vite
+docker/login-client/pat

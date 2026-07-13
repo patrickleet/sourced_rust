@@ -65,7 +65,7 @@ export function subscribe(
         handlers.onNext(msg.payload);
         break;
       case 'error':
-        handlers.onError?.(msg.payload);
+        handlers.onError?.(msg.payload ?? 'subscription error');
         break;
       case 'complete':
         handlers.onComplete?.();
@@ -73,13 +73,21 @@ export function subscribe(
       case 'ping':
         ws.send(JSON.stringify({ type: 'pong' }));
         break;
+      case 'connection_error':
+        handlers.onError?.(msg.payload ?? 'connection_error');
+        break;
       default:
         break;
     }
   };
 
   ws.onerror = (e) => handlers.onError?.(e);
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    if (!closed && !ev.wasClean) {
+      handlers.onError?.(
+        `WebSocket closed (${ev.code}${ev.reason ? `: ${ev.reason}` : ''}) — check API /graphql/ws`
+      );
+    }
     if (!closed) handlers.onComplete?.();
   };
 

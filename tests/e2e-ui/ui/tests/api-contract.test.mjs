@@ -37,10 +37,49 @@ test('auth + WS modules use OIDC patterns', () => {
   assert.match(gql, /Bearer/);
 });
 
-test('no hops control-plane branding in home', () => {
+test('website auth shell + fixture routes present', () => {
+  // Auth shell is the-website's GET /signin
+  const signin = fs.readFileSync(new URL('../src/routes/signin/+server.ts', import.meta.url), 'utf8');
+  assert.match(signin, /\/auth\/signin\/oidc/);
+  assert.match(signin, /X-Auth-Return-Redirect/);
+  // Fixture pages added on top of website
+  assert.ok(fs.existsSync(new URL('../src/routes/todos/+page.svelte', import.meta.url)));
+  assert.ok(fs.existsSync(new URL('../src/routes/chat/+page.svelte', import.meta.url)));
+  assert.ok(!fs.existsSync(new URL('../src/routes/docs', import.meta.url)));
+  assert.ok(!fs.existsSync(new URL('../src/routes/control-plane', import.meta.url)));
+  const nav = fs.readFileSync(
+    new URL('../src/lib/components/shared/header/Navbar.svelte', import.meta.url),
+    'utf8'
+  );
+  assert.match(nav, /\/todos/);
+  assert.match(nav, /\/chat/);
+  assert.doesNotMatch(nav, /\/docs|\/control-plane|Pricing|two-paths|HopsBrand|hops-ops/i);
+});
+
+test('home is distributed template landing with demos + code samples', () => {
   const home = fs.readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
-  assert.doesNotMatch(home, /control-plane|hops-ops|XRD/i);
-  assert.match(home, /Fieldnote|todos|chat/i);
+  assert.match(home, /framework template|e2e-ui template/i);
+  assert.match(home, /make test|test-live|e2e/i);
+  assert.match(home, /GraphQL|subscription|connection_init|OIDC/i);
+  assert.match(home, /\/todos/);
+  assert.match(home, /\/chat/);
+  assert.match(home, /sampleSsr|sampleWs|serverGraphql|connection_init/);
+  assert.doesNotMatch(home, /Launch My Platform|HopsBrand|founder|listmonk/i);
+  // At least two distinct sample string constants
+  assert.match(home, /const sampleSsr/);
+  assert.match(home, /const sampleWs/);
+
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(css, /--df-accent|--df-ink/);
+  // Theme is not the old hops orange product identity as primary accent
+  assert.match(css, /#1f9e78|#0e171c/);
+
+  const footer = fs.readFileSync(
+    new URL('../src/lib/components/shared/Footer.svelte', import.meta.url),
+    'utf8'
+  );
+  assert.match(footer, /e2e-ui|Distributed template/i);
+  assert.doesNotMatch(footer, /HopsBrand|Ship products, not infrastructure/i);
 });
 
 test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, async () => {

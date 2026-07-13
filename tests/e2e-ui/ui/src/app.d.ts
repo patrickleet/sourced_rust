@@ -1,25 +1,13 @@
-import type { DefaultSession } from '@auth/core/types';
-
-declare module '@auth/sveltekit' {
-  interface Session {
-    accessToken?: string;
-    idToken?: string;
-    expiresAt?: number;
-    error?: string;
-    user?: DefaultSession['user'] & {
-      id?: string;
-      groups?: string[];
-      username?: string;
-    };
-  }
-}
-
+// See https://svelte.dev/docs/kit/types#app.d.ts
+// for information about these interfaces
 declare global {
-  namespace App {
-    // interface Error {}
-    // interface Locals {}
-    // interface PageData {}
-  }
+	namespace App {
+		// interface Error {}
+		// interface Locals {}
+		// interface PageData {}
+		// interface PageState {}
+		// interface Platform {}
+	}
 }
 
 export {};

@@ -1,0 +1,46 @@
+<script lang="ts">
+	import { browser } from '$app/environment';
+	import { page } from '$app/state';
+
+	const { children, onToggle }: { children?: any; onToggle: () => void } = $props();
+
+	const isAuthenticated = $derived(!!page.data.session?.user);
+	const user = $derived(page.data.session?.user);
+	const signInHref = $derived(
+		`/signin?callbackUrl=${encodeURIComponent(page.url.pathname + (browser ? page.url.search : ''))}`
+	);
+
+	const toggleMenu = () => {
+		onToggle();
+	};
+
+	const getInitials = (name: string | null | undefined, email: string | null | undefined): string => {
+		if (name) {
+			return name
+				.split(' ')
+				.map((n) => n[0])
+				.join('')
+				.toUpperCase()
+				.slice(0, 2);
+		}
+		return email ? email.charAt(0).toUpperCase() : 'U';
+	};
+</script>
+
+{#if isAuthenticated}
+	<button onclick={toggleMenu} class="auth-avatar" aria-label="User menu">
+		{#if user?.image}
+			<img src={user.image} alt="Avatar" class="auth-avatar-img" />
+		{:else}
+			<span class="auth-avatar-initials">
+				{getInitials(user?.name, user?.email)}
+			</span>
+		{/if}
+	</button>
+{:else}
+	<a href={signInHref} class="auth-signin-btn">Sign In</a>
+{/if}
+
+{#if children}
+	{@render children()}
+{/if}

@@ -1,6 +1,6 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail } from '@sveltejs/kit';
-import { engineRoleFromGroups } from '../../auth';
+import { engineRoleFromGroups } from '$lib/roles';
 import { serverCommand, serverGraphql } from '$lib/server/graphql';
 
 type ChatMsg = {
