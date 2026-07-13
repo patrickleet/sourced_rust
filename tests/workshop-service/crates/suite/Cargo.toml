@@ -1,0 +1,35 @@
+[package]
+name = "workshop-suite"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Shared behavioral suite: same cases vs monolith and multi-service"
+
+[[test]]
+name = "behavioral"
+path = "tests/behavioral.rs"
+
+[[test]]
+name = "multi_service"
+path = "tests/multi_service.rs"
+
+[dependencies]
+distributed = { workspace = true }
+workshop-service = { path = "../service" }
+workshop-readmodels = { path = "../readmodels" }
+workshop-catalog-domain = { path = "../catalog-domain" }
+workshop-orders-domain = { path = "../orders-domain" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+distributed = { workspace = true }
+workshop-service = { path = "../service" }
+workshop-readmodels = { path = "../readmodels" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }

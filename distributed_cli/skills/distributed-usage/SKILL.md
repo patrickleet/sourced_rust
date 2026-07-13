@@ -234,6 +234,33 @@ Gotchas:
 - `connect_and_migrate` applies migrations; plain `connect` does not create
   tables.
 
+## Multi-crate single-service layout (and later microservices)
+
+When a service grows past one aggregate, copy the **workshop-service** fixture
+layout under `tests/workshop-service/` (also documented in
+[[specs/workshop-domain]] and that folder’s README):
+
+```text
+crates/
+  <bc>-domain/     # aggregates + events only
+  <bc2>-domain/
+  readmodels/      # all BC projections in one package
+  service/         # composable route bundles (handlers)
+  runner-*/        # thin bins: choose store + transport + bind
+```
+
+**Start as one process:** register every route bundle on a single `Service`
+(`build_full_service`). Domain unit tests stay pure; behavioral suite speaks
+HTTP/GraphQL only.
+
+**Split into microservices without redefining the domain:** run the same
+handler modules in different processes (`build_catalog_service` vs
+`build_orders_service`). Share bus + event store + read-model tables. Add a
+gateway only for unified GraphQL and command routing by name prefix.
+
+The same suite case IDs must pass for monolith and multi-service topologies
+(`cargo test -p workshop-suite --test behavioral` and `--test multi_service`).
+
 ## Manifest entrypoint
 
 Every service should export `distributed_manifest()` registering its read
