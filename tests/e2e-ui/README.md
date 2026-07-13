@@ -18,7 +18,7 @@ A **copyable starting point** for a Distributed service + SvelteKit UI with:
 
 ```bash
 cd tests/e2e-ui
-make up          # Postgres :5433 + Zitadel :8080 + bootstrap → e2e-ui.env
+make up          # Postgres :5433 + Zitadel :18080 + bootstrap → e2e-ui.env
 set -a && source e2e-ui.env && set +a
 make run         # API :8791 + UI :5180
 ```

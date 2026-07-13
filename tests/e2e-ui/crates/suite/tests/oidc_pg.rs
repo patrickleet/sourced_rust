@@ -106,7 +106,43 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .send()
         .await
         .expect("http");
-    assert_eq!(unauth.status().as_u16(), 401, "unauth must 401 under OidcBearer");
+    assert_eq!(unauth.status().as_u16(), 401, "unauth GraphQL must 401 under OidcBearer");
+
+    // Command without Bearer but with spoofed identity headers must 401 (fail closed).
+    let spoof_cmd = client
+        .post(format!("{base}/todo.create"))
+        .header("content-type", "application/json")
+        .header("x-user-id", "spoofed-attacker")
+        .header("x-role", "admin")
+        .json(&json!({
+            "todo_id": format!(
+                "t-spoof-{}",
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+            ),
+            "title": "should not create"
+        }))
+        .send()
+        .await
+        .expect("spoof cmd");
+    assert_eq!(
+        spoof_cmd.status().as_u16(),
+        401,
+        "command with only spoof headers must 401, got body {}",
+        spoof_cmd.text().await.unwrap_or_default()
+    );
+
+    let noauth_cmd = client
+        .post(format!("{base}/todo.create"))
+        .header("content-type", "application/json")
+        .json(&json!({"todo_id": "t-noauth", "title": "nope"}))
+        .send()
+        .await
+        .expect("noauth cmd");
+    assert_eq!(
+        noauth_cmd.status().as_u16(),
+        401,
+        "command without Bearer must 401"
+    );
 
     let tid = format!(
         "t-oidc-{}",
