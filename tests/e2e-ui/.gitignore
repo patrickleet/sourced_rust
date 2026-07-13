@@ -1,0 +1,7 @@
+/target
+**/*.db
+.make-*
+ui/node_modules
+ui/build
+ui/.svelte-kit
+ui/.vite

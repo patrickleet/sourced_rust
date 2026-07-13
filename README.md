@@ -8,16 +8,13 @@ The core idea is explicit boundaries: aggregate event records are the write-side
 
 It is built with stateless vertical and horizontal scaling in cloud-native environments in mind. You can start with a single in-memory service and split it later into partitioned services backed by Postgres and a real broker — without rewriting the domain model.
 
-### Multi-crate layout reference
+### Multi-crate layout + UI e2e reference
 
-See **`tests/workshop-service/`** for a full nested workspace: two domain crates
-(catalog + orders), shared read models, a service library with composable
-handlers, monolith and multi-service runners, a shared HTTP/GraphQL behavioral
-suite, and a SvelteKit UI. Start as one service (`build_full_service`); split by
-**relocating handler registration** (`build_catalog_service` /
-`build_orders_service`) without redefining aggregates. Details:
-`tests/workshop-service/README.md`, `tests/workshop-service/docs/layout.md`, and
-the `distributed-usage` skill.
+See **`tests/e2e-ui/`** for a nested workspace you can copy: `todo-domain`
+(per-user todos), `chat-domain` (live lobby chat), shared read models, thin
+service handlers, a runner, an HTTP/GraphQL suite, and a SvelteKit UI. GraphQL
+**subscriptions** push over WebSocket (`/graphql/ws`) after projector commits.
+Details: `tests/e2e-ui/README.md` and the `distributed-usage` skill.
 
 ## At a Glance
 

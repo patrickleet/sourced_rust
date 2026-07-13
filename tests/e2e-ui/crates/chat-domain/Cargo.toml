@@ -1,0 +1,14 @@
+[package]
+name = "chat-domain"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "ChatMessage aggregate for live chat (subscription demo)"
+
+[dependencies]
+distributed = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

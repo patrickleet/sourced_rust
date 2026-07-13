@@ -1,0 +1,12 @@
+[package]
+name = "e2e-readmodels"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Todo read models (TodoView) + project manifest"
+
+[dependencies]
+distributed = { workspace = true }
+serde = { workspace = true }
+todo-domain = { path = "../todo-domain" }
+chat-domain = { path = "../chat-domain" }

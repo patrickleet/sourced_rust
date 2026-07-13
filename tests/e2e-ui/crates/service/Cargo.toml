@@ -1,0 +1,16 @@
+[package]
+name = "e2e-service"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Todo service library: commands, projectors, GraphQL"
+
+[dependencies]
+distributed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+todo-domain = { path = "../todo-domain" }
+chat-domain = { path = "../chat-domain" }
+e2e-readmodels = { path = "../readmodels" }
