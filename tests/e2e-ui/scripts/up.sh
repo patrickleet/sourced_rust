@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# Bring up e2e-ui Docker stack (app Postgres + Zitadel) and bootstrap OIDC.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DIST_ROOT="$(cd "$ROOT/../.." && pwd)"
+COMPOSE="$ROOT/docker/docker-compose.yml"
+MACHINEKEY_DIR="$ROOT/docker/machinekey"
+ZITADEL_HOST="${ZITADEL_HOST:-http://localhost:18080}"
+OUT="${E2E_UI_ENV:-$ROOT/e2e-ui.env}"
+UI_ORIGIN="${E2E_UI_ORIGIN:-http://127.0.0.1:5180}"
+API_ORIGIN="${E2E_API_ORIGIN:-http://127.0.0.1:8791}"
+PROJECT_NAME="${E2E_OIDC_PROJECT:-e2e-ui}"
+APP_NAME="${E2E_OIDC_APP:-e2e-ui-web}"
+API_APP_NAME="${E2E_OIDC_API_APP:-e2e-ui-api}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: $1 required"; exit 1; }; }
+need docker
+need jq
+need curl
+need openssl
+
+b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
+
+echo "==> machinekey dir"
+mkdir -p "$MACHINEKEY_DIR/e2e"
+chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
+# Preserve FirstInstance admin key; clear only e2e keys
+find "$MACHINEKEY_DIR" -mindepth 1 -maxdepth 1 ! -name 'e2e' ! -name '*.json' -exec rm -rf {} + 2>/dev/null || true
+rm -rf "$MACHINEKEY_DIR/e2e"
+mkdir -p "$MACHINEKEY_DIR/e2e"
+chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
+
+echo "==> docker compose up"
+docker compose -f "$COMPOSE" up -d --remove-orphans
+
+echo "==> Wait for app Postgres"
+for i in $(seq 1 60); do
+  if docker compose -f "$COMPOSE" exec -T app-db pg_isready -U e2e -d e2e_ui >/dev/null 2>&1; then
+    echo "    app-db ready"
+    break
+  fi
+  sleep 1
+  if [[ $i -eq 60 ]]; then
+    echo "ERROR: app-db not ready"
+    docker compose -f "$COMPOSE" logs --tail=40 app-db || true
+    exit 1
+  fi
+done
+
+echo "==> Wait for Zitadel"
+for i in $(seq 1 90); do
+  if curl -fsS "$ZITADEL_HOST/debug/healthz" >/dev/null 2>&1 \
+    || curl -fsS "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
+    echo "    zitadel probe ok (${i}s)"
+    break
+  fi
+  if ! docker compose -f "$COMPOSE" ps --status running --services 2>/dev/null | grep -q '^zitadel$'; then
+    echo "ERROR: zitadel not running"
+    docker compose -f "$COMPOSE" logs --tail=80 zitadel || true
+    exit 1
+  fi
+  sleep 2
+  if [[ $i -eq 90 ]]; then
+    echo "ERROR: Zitadel unreachable"
+    docker compose -f "$COMPOSE" logs --tail=100 zitadel || true
+    exit 1
+  fi
+done
+
+echo "==> Wait for FirstInstance machine key"
+KEYFILE=""
+for i in $(seq 1 60); do
+  shopt -s nullglob
+  keys=("$MACHINEKEY_DIR"/*.json)
+  shopt -u nullglob
+  if [[ ${#keys[@]} -gt 0 && -s "${keys[0]}" ]]; then
+    KEYFILE="${keys[0]}"
+    echo "    found $KEYFILE"
+    break
+  fi
+  sleep 2
+  if [[ $i -eq 60 ]]; then
+    echo "    recreating stack for FirstInstance key"
+    docker compose -f "$COMPOSE" down -v || true
+    mkdir -p "$MACHINEKEY_DIR/e2e" && chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
+    docker compose -f "$COMPOSE" up -d --remove-orphans
+    for j in $(seq 1 90); do
+      shopt -s nullglob
+      keys=("$MACHINEKEY_DIR"/*.json)
+      shopt -u nullglob
+      if [[ ${#keys[@]} -gt 0 && -s "${keys[0]}" ]]; then
+        KEYFILE="${keys[0]}"
+        break 2
+      fi
+      sleep 2
+    done
+  fi
+done
+if [[ -z "$KEYFILE" || ! -s "$KEYFILE" ]]; then
+  echo "ERROR: no admin SA key"
+  ls -la "$MACHINEKEY_DIR" || true
+  exit 1
+fi
+
+USER_ID=$(jq -r .userId "$KEYFILE")
+KEY_ID=$(jq -r .keyId "$KEYFILE")
+KEY_PEM=$(jq -r .key "$KEYFILE")
+
+mint_admin() {
+  local now exp header payload sig jwt
+  now=$(date +%s); exp=$((now + 60))
+  header=$(printf '{"alg":"RS256","typ":"JWT","kid":"%s"}' "$KEY_ID" | b64url)
+  payload=$(printf '{"iss":"%s","sub":"%s","aud":"%s","iat":%s,"exp":%s}' \
+    "$USER_ID" "$USER_ID" "$ZITADEL_HOST" "$now" "$exp" | b64url)
+  local tmp; tmp=$(mktemp)
+  printf '%s\n' "$KEY_PEM" > "$tmp"
+  sig=$(printf '%s' "${header}.${payload}" | openssl dgst -sha256 -sign "$tmp" | b64url)
+  rm -f "$tmp"
+  jwt="${header}.${payload}.${sig}"
+  curl -sS -X POST "$ZITADEL_HOST/oauth/v2/token" \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+    --data-urlencode "scope=openid urn:zitadel:iam:org:project:id:zitadel:aud" \
+    --data-urlencode "assertion=$jwt" | jq -r '.access_token // empty'
+}
+
+echo "==> Admin token"
+ACCESS_TOKEN=""
+for i in $(seq 1 45); do
+  ACCESS_TOKEN=$(mint_admin)
+  [[ -n "$ACCESS_TOKEN" && "$ACCESS_TOKEN" != "null" ]] && break
+  sleep 2
+done
+if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
+  echo "ERROR: admin token mint failed"
+  exit 1
+fi
+
+api() {
+  local method="$1" path="$2" body="${3:-}" out http_code attempt
+  for attempt in $(seq 1 45); do
+    if [[ -n "$body" ]]; then
+      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' -d "$body" || true)
+    else
+      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" || true)
+    fi
+    http_code=$(echo "$out" | tail -n1)
+    out=$(echo "$out" | sed '$d')
+    if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
+      printf '%s' "$out"; return 0
+    fi
+    if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+      echo "ERROR: $method $path → $http_code" >&2; echo "$out" >&2; return 1
+    fi
+    sleep 2
+  done
+  echo "ERROR: $method $path not ready (HTTP $http_code)" >&2; return 1
+}
+
+echo "==> Management API ready"
+api POST /management/v1/projects/_search '{}' >/dev/null
+
+echo "==> Project $PROJECT_NAME"
+PROJECT_SEARCH=$(api POST /management/v1/projects/_search '{}')
+PROJECT_ID=$(echo "$PROJECT_SEARCH" | jq -r --arg n "$PROJECT_NAME" \
+  '.result[]? | select(.name == $n) | .id' | head -n1)
+if [[ -z "$PROJECT_ID" ]]; then
+  PROJECT_ID=$(api POST /management/v1/projects "$(jq -n --arg n "$PROJECT_NAME" '{name: $n}')" | jq -r .id)
+fi
+echo "    project=$PROJECT_ID"
+
+echo "==> Roles user + admin"
+for role in user admin; do
+  api POST "/management/v1/projects/$PROJECT_ID/roles" \
+    "$(jq -n --arg k "$role" --arg d "$role" '{roleKey: $k, displayName: $d}')" >/dev/null 2>&1 || true
+done
+
+echo "==> Web OIDC app $APP_NAME (Auth.js browser login)"
+APP_SEARCH=$(api POST "/management/v1/projects/$PROJECT_ID/apps/_search" '{}')
+APP_ID=$(echo "$APP_SEARCH" | jq -r --arg n "$APP_NAME" '.result[]? | select(.name == $n) | .id' | head -n1)
+CLIENT_ID=""
+CLIENT_SECRET=""
+if [[ -z "$APP_ID" ]]; then
+  APP_RESP=$(api POST "/management/v1/projects/$PROJECT_ID/apps/oidc" "$(jq -n \
+    --arg name "$APP_NAME" \
+    --arg ui "$UI_ORIGIN" \
+    --arg api "$API_ORIGIN" \
+    '{
+      name: $name,
+      redirectUris: [
+        ($ui + "/auth/callback/oidc"),
+        ($ui + "/auth/callback"),
+        "http://127.0.0.1:5180/auth/callback/oidc",
+        "http://localhost:5180/auth/callback/oidc"
+      ],
+      responseTypes: ["OIDC_RESPONSE_TYPE_CODE"],
+      grantTypes: [
+        "OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
+        "OIDC_GRANT_TYPE_REFRESH_TOKEN"
+      ],
+      appType: "OIDC_APP_TYPE_WEB",
+      authMethodType: "OIDC_AUTH_METHOD_TYPE_BASIC",
+      postLogoutRedirectUris: [$ui + "/", "http://127.0.0.1:5180/", "http://localhost:5180/"],
+      version: "OIDC_VERSION_1_0",
+      devMode: true,
+      accessTokenType: "OIDC_TOKEN_TYPE_JWT",
+      accessTokenRoleAssertion: true,
+      idTokenRoleAssertion: true,
+      idTokenUserinfoAssertion: true
+    }')")
+  CLIENT_ID=$(echo "$APP_RESP" | jq -r '.clientId // empty')
+  CLIENT_SECRET=$(echo "$APP_RESP" | jq -r '.clientSecret // empty')
+  APP_ID=$(echo "$APP_RESP" | jq -r '.appId // .id // empty')
+  echo "    created web app clientId=$CLIENT_ID"
+else
+  CLIENT_ID=$(echo "$APP_SEARCH" | jq -r --arg n "$APP_NAME" \
+    '.result[]? | select(.name == $n) | .oidcConfig.clientId // empty' | head -n1)
+  echo "    existing web app clientId=$CLIENT_ID (secret only on create — re-create stack if missing)"
+fi
+if [[ -z "$CLIENT_ID" || "$CLIENT_ID" == "null" ]]; then
+  echo "ERROR: web client id missing"; exit 1
+fi
+
+# Store secret if we got one
+SECRET_FILE="$ROOT/docker/web-client.secret"
+if [[ -n "$CLIENT_SECRET" && "$CLIENT_SECRET" != "null" ]]; then
+  umask 077
+  printf '%s' "$CLIENT_SECRET" > "$SECRET_FILE"
+  echo "    wrote $SECRET_FILE"
+elif [[ -f "$SECRET_FILE" ]]; then
+  CLIENT_SECRET=$(cat "$SECRET_FILE")
+fi
+
+create_human() {
+  local username="$1" password="$2" role="$3" email="$4"
+  local search uid
+  search=$(api POST /management/v1/users/_search "$(jq -n --arg n "$username" \
+    '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
+  uid=$(echo "$search" | jq -r '.result[0].id // empty')
+  if [[ -z "$uid" ]]; then
+    echo "==> Human user $username"
+    uid=$(api POST /management/v1/users/human "$(jq -n \
+      --arg u "$username" --arg e "$email" --arg p "$password" \
+      '{
+        userName: $u,
+        profile: { firstName: $u, lastName: "E2E", displayName: $u },
+        email: { email: $e, isEmailVerified: true },
+        password: { password: $p, changeRequired: false }
+      }')" | jq -r '.userId // empty')
+  fi
+  [[ -n "$uid" && "$uid" != "null" ]] || { echo "ERROR: human $username"; exit 1; }
+  # Grant project role
+  grants=$(api POST /management/v1/users/grants/_search "$(jq -n --arg uid "$uid" \
+    '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
+  existing=$(echo "$grants" | jq -r --arg pid "$PROJECT_ID" \
+    '.result[]? | select(.projectId == $pid) | .id // empty' | head -n1)
+  if [[ -n "$existing" ]]; then
+    curl -sS -o /dev/null -X PUT \
+      "$ZITADEL_HOST/management/v1/users/$uid/grants/$existing" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg r "$role" '{roleKeys: [$r]}')" || true
+  else
+    api POST "/management/v1/users/$uid/grants" \
+      "$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" '{projectId: $pid, roleKeys: [$r]}')" >/dev/null
+  fi
+  echo "    $username → $uid ($role)"
+  printf '%s' "$uid"
+}
+
+echo "==> Human users (browser login)"
+ALICE_UID=$(create_human "alice" "Password1!" "user" "alice@e2e.local")
+BOB_UID=$(create_human "bob" "Password1!" "user" "bob@e2e.local")
+ADMIN_HUMAN_UID=$(create_human "admin" "Password1!" "admin" "admin@e2e.local")
+
+create_machine() {
+  local username="$1" role="$2" key_out="$3"
+  local search uid key_resp
+  search=$(api POST /management/v1/users/_search "$(jq -n --arg n "$username" \
+    '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
+  uid=$(echo "$search" | jq -r '.result[0].id // empty')
+  if [[ -z "$uid" ]]; then
+    uid=$(api POST /management/v1/users/machine "$(jq -n --arg u "$username" \
+      '{userName: $u, name: $u, description: "e2e-ui suite", accessTokenType: "ACCESS_TOKEN_TYPE_JWT"}')" \
+      | jq -r '.userId // empty')
+  fi
+  grants=$(api POST /management/v1/users/grants/_search "$(jq -n --arg uid "$uid" \
+    '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
+  existing=$(echo "$grants" | jq -r --arg pid "$PROJECT_ID" \
+    '.result[]? | select(.projectId == $pid) | .id // empty' | head -n1)
+  if [[ -n "$existing" ]]; then
+    curl -sS -o /dev/null -X PUT \
+      "$ZITADEL_HOST/management/v1/users/$uid/grants/$existing" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg r "$role" '{roleKeys: [$r]}')" || true
+  else
+    api POST "/management/v1/users/$uid/grants" \
+      "$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" '{projectId: $pid, roleKeys: [$r]}')" >/dev/null
+  fi
+  key_resp=$(api POST "/management/v1/users/$uid/keys" \
+    "$(jq -n '{type: "KEY_TYPE_JSON", expirationDate: "2029-01-01T00:00:00Z"}')")
+  if echo "$key_resp" | jq -e '.keyId and .key' >/dev/null 2>&1; then
+    echo "$key_resp" | jq -c --arg uid "$uid" '{keyId: .keyId, key: .key, userId: $uid}' > "$key_out"
+  elif echo "$key_resp" | jq -e '.keyDetails' >/dev/null 2>&1; then
+    key_json=$(echo "$key_resp" | jq -r '.keyDetails' | base64 -d 2>/dev/null || true)
+    echo "$key_json" | jq -c --arg uid "$uid" '. + {userId: (.userId // $uid)}' > "$key_out"
+  else
+    echo "ERROR: machine key for $username"; echo "$key_resp"; exit 1
+  fi
+  printf '%s' "$uid"
+}
+
+echo "==> Machine users (suite JWT-bearer)"
+USER_M_KEY="$MACHINEKEY_DIR/e2e/user-machine.json"
+ADMIN_M_KEY="$MACHINEKEY_DIR/e2e/admin-machine.json"
+USER_M_UID=$(create_machine "e2e-ui-user-m" "user" "$USER_M_KEY")
+ADMIN_M_UID=$(create_machine "e2e-ui-admin-m" "admin" "$ADMIN_M_KEY")
+
+# OIDC audience for JWT validation: project id (Zitadel project-scoped aud)
+DATABASE_URL="postgres://e2e:e2e@127.0.0.1:5433/e2e_ui"
+AUTH_SECRET="${AUTH_SECRET:-$(openssl rand -hex 32)}"
+
+umask 077
+# Quote values that contain spaces so `source e2e-ui.env` is safe.
+cat > "$OUT" <<EOF
+# Generated by scripts/up.sh — source before make run / make test-live
+E2E_STACK=1
+DATABASE_URL='$DATABASE_URL'
+OIDC_ISSUER='$ZITADEL_HOST'
+OIDC_AUDIENCE='$PROJECT_ID'
+OIDC_JWKS_URI='$ZITADEL_HOST/oauth/v2/keys'
+OIDC_CLIENT_ID='$CLIENT_ID'
+OIDC_CLIENT_SECRET='${CLIENT_SECRET:-}'
+AUTH_SECRET='$AUTH_SECRET'
+AUTH_TRUST_HOST=true
+OIDC_SCOPES='openid profile email offline_access urn:zitadel:iam:org:project:id:${PROJECT_ID}:aud urn:zitadel:iam:org:project:roles'
+ZITADEL_PROJECT_ID='$PROJECT_ID'
+E2E_UI_ORIGIN='$UI_ORIGIN'
+E2E_API_ORIGIN='$API_ORIGIN'
+E2E_MACHINE_USER_KEY='$USER_M_KEY'
+E2E_MACHINE_ADMIN_KEY='$ADMIN_M_KEY'
+E2E_MACHINE_USER_ID='$USER_M_UID'
+E2E_MACHINE_ADMIN_ID='$ADMIN_M_UID'
+E2E_HUMAN_ALICE=alice
+E2E_HUMAN_BOB=bob
+E2E_HUMAN_PASSWORD='Password1!'
+BIND='127.0.0.1:8791'
+EOF
+
+echo "==> Wrote $OUT"
+cat "$OUT"
+echo ""
+echo "Next:"
+echo "  set -a && source $OUT && set +a"
+echo "  cargo run -p e2e-runner"
+echo "  cd ui && npm run dev"
+echo "  Login: alice / Password1!  (or bob, admin)"

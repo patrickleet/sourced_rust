@@ -1,55 +1,100 @@
-# e2e-ui fixture
+# Fieldnote — e2e-ui template
 
-Multi-crate Distributed service + SvelteKit UI for end-to-end demos.
+A **copyable starting point** for a Distributed service + SvelteKit UI with:
 
-| Area | What |
-|------|------|
-| **Todos** | Per-user todos; GraphQL filter `owner_id = claim(x-user-id)` |
-| **Chat** | Shared lobby; **GraphQL subscriptions** push after projectors |
+| Pattern | Where |
+|---------|--------|
+| Multi-crate domain (todos + chat) | `crates/*-domain`, `readmodels`, `service` |
+| Projectors-only read models | command handlers never dual-write |
+| GraphQL RLS | `owner_id = claim(x-user-id)` on todos |
+| Live subscriptions | `subscription { chat_messages }` + ChangeHub |
+| **WebSocket auth** | Bearer access token in `connection_init` (OIDC best practice) |
+| **Real OIDC** | Zitadel in Docker + Auth.js |
+| **Postgres** | event store + bus + locks |
+| **SSR GraphQL** | `+page.server.ts` loads with session token (no Loading flash) |
+| Auth routes | sign-in, protected todos/chat, session inspector |
 
-## Run the full app
+## Quick start (full stack)
 
 ```bash
 cd tests/e2e-ui
-make
+make up          # Postgres :5433 + Zitadel :8080 + bootstrap → e2e-ui.env
+set -a && source e2e-ui.env && set +a
+make run         # API :8791 + UI :5180
 ```
 
-| | URL |
-|--|-----|
-| **UI** | http://127.0.0.1:5180 |
-| **Todos** | http://127.0.0.1:5180/ |
-| **Chat** | http://127.0.0.1:5180/chat |
-| **API** | http://127.0.0.1:8791 |
-| **GraphiQL** | http://127.0.0.1:8791/graphql |
-| **Subscriptions WS** | `ws://127.0.0.1:8791/graphql/ws` |
+| URL | What |
+|-----|------|
+| http://127.0.0.1:5180 | Fieldnote UI |
+| http://127.0.0.1:5180/todos | SSR todos (auth required) |
+| http://127.0.0.1:5180/chat | SSR seed + live WS sub |
+| http://127.0.0.1:5180/session | Session / token inspector |
+| http://127.0.0.1:8791/graphql | GraphiQL |
+| `ws://127.0.0.1:8791/graphql/ws` | Subscriptions |
 
-Ctrl-C stops API + UI. `make test` runs domain/suite/UI contracts.
+**Demo logins** (Zitadel): `alice` / `bob` / `admin` — password `Password1!`
+
+## Offline (no Docker)
+
+```bash
+# DevHeaders + SQLite memory/file
+cargo run -p e2e-runner
+# UI without OIDC still builds; sign-in needs make up for real OIDC
+cd ui && npm install && npm run dev
+```
+
+```bash
+make test        # domain + behavioral + structural UI (no Docker)
+make test-live   # OIDC isolation (E2E_STACK=1, needs make up + API up)
+```
+
+## WebSocket authentication (best practice)
+
+Browsers **cannot** set `Authorization` on the WebSocket upgrade handshake.
+
+| Mode | How identity is established |
+|------|-----------------------------|
+| **OidcBearer (production path)** | Upgrade is unauthenticated; client sends `connection_init` with `{ "authorization": "Bearer <access_token>" }` (or `accessToken` / `headers.Authorization`). Server validates JWT (same as HTTP). |
+| **DevHeaders (local)** | Upgrade headers, `?x-user-id=`, or GraphiQL `wsConnectionParams`. |
+
+The SvelteKit chat page uses the session access token in `connection_init`. Do **not** put long-lived tokens in URL query strings for production.
+
+## Architecture sketch
+
+```text
+Browser (SSR + client)
+  Auth.js → Zitadel OIDC  → access_token
+  GraphQL HTTP  Authorization: Bearer …
+  GraphQL WS    connection_init.authorization
+
+e2e-runner (Distributed)
+  OidcBearer identity
+  PostgresRepository + PostgresBus + PostgresLockManager
+  (or SQLite when DATABASE_URL=sqlite:…)
+  Projectors → ChangeHub → subscription pushes
+```
+
+## Env (`e2e-ui.env` from `make up`)
+
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | `postgres://e2e:e2e@127.0.0.1:5433/e2e_ui` |
+| `OIDC_ISSUER` | Zitadel base URL |
+| `OIDC_AUDIENCE` | Project id (JWT aud) |
+| `OIDC_CLIENT_ID` / `SECRET` | Auth.js web app |
+| `AUTH_SECRET` | Auth.js cookie encryption |
+| `E2E_MACHINE_*` | Suite JWT-bearer keys |
 
 ## Crate map
 
-| Path | Package | Role |
-|------|---------|------|
-| `crates/todo-domain` | `todo-domain` | Todo aggregate |
-| `crates/chat-domain` | `chat-domain` | ChatMessage aggregate |
-| `crates/readmodels` | `e2e-readmodels` | `todos` + `chat_messages` |
-| `crates/service` | `e2e-service` | Commands + projectors + GraphQL |
-| `crates/runner` | `e2e-runner` → bin `e2e-ui` | Process |
-| `crates/suite` | `e2e-suite` | Behavioral T1–T6 |
-| `ui/` | SvelteKit | Todos + chat subscription page |
+| Package | Role |
+|---------|------|
+| `todo-domain` / `chat-domain` | Aggregates |
+| `e2e-readmodels` | `todos`, `chat_messages` |
+| `e2e-service` | Handlers + GraphQL |
+| `e2e-runner` → bin `e2e-ui` | Process |
+| `e2e-suite` | Behavioral + gated OIDC |
 
-## Chat + subscriptions
+## Template usage
 
-1. Command `chat.post` commits aggregate + outbox (`chat_message.posted`).
-2. Projector upserts `chat_messages` (not dual-write from the command).
-3. Repo broadcasts `ReadModelChange` → GraphQL `ChangeHub`.
-4. Active `subscription { chat_messages(...) { ... } }` re-queries and pushes.
-
-Browser client: `ui/src/lib/graphql-ws.ts` (graphql-transport-ws) → `/graphql/ws`
-with `?x-user-id=&x-role=` (browsers cannot set custom WS headers).
-
-## Commands
-
-| Command | Effect |
-|---------|--------|
-| `todo.create` / `rename` / `complete` / `reopen` / `archive` | Personal todos |
-| `chat.post` | Post to a room (default `lobby`); author = session user |
+Copy this folder as a starting service: keep domain pure, swap `DATABASE_URL` / OIDC env for your IdP, and extend UI routes. Remove Fieldnote branding as needed — patterns stay.

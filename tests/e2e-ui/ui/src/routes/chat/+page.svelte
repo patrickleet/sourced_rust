@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { readSession } from '$lib/session';
-  import { identityHeaders } from '$lib/session';
+  import { invalidateAll } from '$app/navigation';
   import { subscribe } from '$lib/graphql-ws';
+  import { roleFromGroups } from '$lib/session';
 
   type ChatMsg = {
     message_id: string;
@@ -12,13 +12,16 @@
     created_at: string;
   };
 
-  const ROOM = 'lobby';
-  let session = $state(readSession());
+  let { data, form } = $props();
   let messages = $state<ChatMsg[]>([]);
-  let body = $state('');
-  let error = $state<string | null>(null);
-  let status = $state<'connecting' | 'live' | 'error'>('connecting');
+  let status = $state<'connecting' | 'live' | 'error' | 'idle'>('idle');
+  let subError = $state<string | null>(null);
   let unsub: (() => void) | null = null;
+
+  $effect(() => {
+    // Seed from SSR data; subscription keeps it live.
+    messages = data.messages;
+  });
 
   function applyPayload(payload: unknown) {
     const p = payload as {
@@ -26,123 +29,103 @@
       errors?: Array<{ message: string }>;
     };
     if (p?.errors?.length) {
-      error = p.errors[0].message;
+      subError = p.errors[0].message;
+      status = 'error';
       return;
     }
     const list = p?.data?.chat_messages;
     if (Array.isArray(list)) {
-      // Server may not order; sort by created_at then id.
       messages = [...list].sort((a, b) =>
         a.created_at === b.created_at
           ? a.message_id.localeCompare(b.message_id)
           : a.created_at.localeCompare(b.created_at)
       );
       status = 'live';
-      error = null;
+      subError = null;
     }
   }
 
-  function connect() {
-    unsub?.();
+  onMount(() => {
     status = 'connecting';
-    session = readSession();
+    const groups = data.session?.user?.groups;
     unsub = subscribe(
       `subscription {
-        chat_messages(where: { room_id: { _eq: "${ROOM}" } }) {
+        chat_messages(where: { room_id: { _eq: "${data.room}" } }) {
           message_id room_id author_id body created_at
         }
       }`,
-      session,
+      {
+        accessToken: data.accessToken ?? undefined,
+        userId: data.userId ?? undefined,
+        role: data.engineRole ?? roleFromGroups(groups)
+      },
       {
         onNext: applyPayload,
         onError: (e) => {
           status = 'error';
-          error = e instanceof Event ? 'WebSocket error' : String(e);
+          subError = e instanceof Event ? 'WebSocket error' : String(e);
         },
         onComplete: () => {
           if (status === 'live') status = 'connecting';
-        },
+        }
       }
     );
-  }
-
-  onMount(() => {
-    connect();
   });
 
-  onDestroy(() => {
-    unsub?.();
-  });
-
-  async function onSend(e: Event) {
-    e.preventDefault();
-    const text = body.trim();
-    if (!text) return;
-    const message_id = `m-${Date.now().toString(16)}`;
-    try {
-      error = null;
-      const res = await fetch('/chat.post', {
-        method: 'POST',
-        headers: identityHeaders(session),
-        body: JSON.stringify({ message_id, body: text, room_id: ROOM }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-      body = '';
-      // List updates via subscription push after projector commit — no poll.
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-  }
+  onDestroy(() => unsub?.());
 </script>
 
 <h1>Lobby chat</h1>
-<p>
-  Signed in as <code>{session.userId}</code>. Messages are shared in room
-  <code>{ROOM}</code>.
-</p>
-<p style="color: #666; font-size: 0.9rem">
-  Live list via GraphQL <strong>subscription</strong> on
-  <code>chat_messages</code> (WebSocket <code>/graphql/ws</code>). Open this page
-  in two browsers with different users to see pushes.
+<p class="muted">
+  Initial messages from SSR GraphQL. Live updates via WebSocket subscription with Bearer in
+  <code>connection_init</code>.
 </p>
 <p>
   Status:
   {#if status === 'live'}
-    <span style="color: #080">live</span>
+    <span class="pill live">live</span>
   {:else if status === 'connecting'}
-    <span style="color: #a60">connecting…</span>
+    <span class="pill warn">connecting</span>
+  {:else if status === 'error'}
+    <span class="pill" style="background: rgba(240,113,120,0.15); color: var(--danger)">error</span>
   {:else}
-    <span style="color: #a00">error</span>
+    <span class="pill">idle</span>
   {/if}
 </p>
 
-{#if error}
-  <p style="color: #a00">{error}</p>
+{#if data.gqlError}
+  <p class="error">SSR GraphQL: {data.gqlError}</p>
+{/if}
+{#if subError}
+  <p class="error">Subscription: {subError}</p>
+{/if}
+{#if form?.message}
+  <p class="error">{form.message}</p>
 {/if}
 
-<div
-  style="border: 1px solid #ddd; border-radius: 6px; min-height: 16rem; max-height: 24rem; overflow: auto; padding: 0.75rem; margin: 1rem 0; background: #fafafa"
->
+<div class="chat-log">
   {#if messages.length === 0}
-    <p style="color: #888">No messages yet — say hi.</p>
+    <p class="muted">No messages yet — say hello.</p>
   {:else}
     {#each messages as m (m.message_id)}
-      <div style="margin-bottom: 0.5rem">
+      <div class="chat-msg">
         <strong>{m.author_id}</strong>
-        <small style="color: #888"> {m.created_at}</small>
+        <span class="when">{m.created_at}</span>
         <div>{m.body}</div>
       </div>
     {/each}
   {/if}
 </div>
 
-<form onsubmit={onSend} style="display: flex; gap: 0.5rem">
-  <input
-    bind:value={body}
-    placeholder="Message the lobby…"
-    style="flex: 1; padding: 0.5rem"
-    autocomplete="off"
-  />
-  <button type="submit">Send</button>
+<form
+  method="POST"
+  action="?/post"
+  class="field"
+  onsubmit={() => {
+    // After progressive enhancement, invalidate to re-SSR if sub lags.
+    setTimeout(() => invalidateAll(), 200);
+  }}
+>
+  <input name="body" placeholder="Message the lobby…" required autocomplete="off" />
+  <button class="btn btn-primary" type="submit">Send</button>
 </form>

@@ -2,14 +2,13 @@
 
 use chat_domain::ChatMessage;
 use distributed::graphql::{
-    select, GraphqlEngine, IdentityConfig, ModelPermissions, OidcConfig,
+    select, GraphqlEngine, GraphqlPool, IdentityConfig, ModelPermissions, OidcConfig,
 };
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
 };
 use distributed::{AggregateBuilder, AggregateRepository, Queueable, QueuedRepository};
 use e2e_readmodels::{ChatMessageView, TodoView};
-use sqlx::SqlitePool;
 use todo_domain::Todo;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
@@ -56,10 +55,9 @@ where
 
 /// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
 ///
-/// Pass `change_stream` from `SqliteRepository::read_model_changes()` so
-/// subscription fields re-run after projector commits.
+/// Works with SQLite or Postgres pools (`GraphqlPool`).
 pub fn build_graphql_engine(
-    pool: SqlitePool,
+    pool: impl Into<GraphqlPool>,
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
@@ -78,12 +76,10 @@ pub fn build_graphql_engine(
         )
         .model::<ChatMessageView>(
             ModelPermissions::new()
-                // Shared lobby: any authenticated user can see all messages.
                 .role("user", select().all_columns())
                 .role("admin", select().all_columns()),
         )
         .identity(identity)
-        // graphiql(true) also raises max_depth so Docs introspection works.
         .graphiql(true);
     if let Some(rx) = change_rx {
         b = b.change_stream(rx);
@@ -95,12 +91,15 @@ pub fn dev_identity() -> IdentityConfig {
     IdentityConfig::dev_headers()
 }
 
+/// Prefer OidcBearer when `OIDC_ISSUER` + `OIDC_AUDIENCE` are set; else DevHeaders.
 pub fn identity_from_env() -> IdentityConfig {
     let iss = std::env::var("OIDC_ISSUER").unwrap_or_default();
     let aud = std::env::var("OIDC_AUDIENCE").unwrap_or_default();
     if iss.is_empty() || aud.is_empty() {
+        eprintln!("e2e-ui: OIDC_* unset — using DevHeaders (local only)");
         return dev_identity();
     }
+    eprintln!("e2e-ui: OidcBearer issuer={iss} audience={aud}");
     oidc_bearer_config(iss, aud, std::env::var("OIDC_JWKS_URI").ok(), None)
 }
 
@@ -117,11 +116,18 @@ pub fn oidc_bearer_config(
     if let Some(jwks) = static_jwks {
         oidc = oidc.with_static_jwks(jwks);
     }
+    // Accept client_id as extra audience when present.
+    if let Ok(cid) = std::env::var("OIDC_CLIENT_ID") {
+        if !cid.is_empty() {
+            oidc.extra_audiences = vec![cid];
+        }
+    }
     oidc.claim_map.engine_roles = vec!["user".into(), "admin".into()];
     oidc.claim_map.role_claims = vec![
         "groups".into(),
         "roles".into(),
         "realm_access.roles".into(),
+        "urn:zitadel:iam:org:project:roles".into(),
     ];
     IdentityConfig::oidc_bearer(oidc)
 }

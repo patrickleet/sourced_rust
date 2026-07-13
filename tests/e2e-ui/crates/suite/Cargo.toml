@@ -9,6 +9,10 @@ description = "HTTP/GraphQL behavioral suite for e2e-ui"
 name = "behavioral"
 path = "tests/behavioral.rs"
 
+[[test]]
+name = "oidc_pg"
+path = "tests/oidc_pg.rs"
+
 [dependencies]
 distributed = { workspace = true }
 e2e-service = { path = "../service" }
@@ -25,3 +29,5 @@ e2e-service = { path = "../service" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+jsonwebtoken = { workspace = true }
+

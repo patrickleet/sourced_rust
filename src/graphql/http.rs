@@ -228,10 +228,13 @@ pub async fn microsvc_graphql_get(State(service): State<Arc<Service>>) -> Respon
 
 /// WebSocket upgrade for GraphQL subscriptions (`graphql-ws` / `graphql-transport-ws`).
 ///
-/// Identity sources (later overrides earlier when present):
-/// 1. HTTP upgrade headers
-/// 2. Query string `x-user-id` / `x-role` (GraphiQL + browsers)
-/// 3. `connection_init` payload / GraphiQL `wsConnectionParams`
+/// **Auth best practice (OIDC):** browsers cannot set `Authorization` on the WS
+/// upgrade. Accept the upgrade, then require a Bearer access token in
+/// `connection_init` (payload `authorization` / `accessToken` / nested
+/// `headers.Authorization`). Validate with the same OidcBearer path as HTTP.
+///
+/// **DevHeaders (local):** identity from upgrade headers, query params, or
+/// GraphiQL `wsConnectionParams` (`x-user-id` / `x-role`).
 pub async fn microsvc_graphql_ws(
     State(service): State<Arc<Service>>,
     headers: HeaderMap,
@@ -244,29 +247,48 @@ pub async fn microsvc_graphql_ws(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let mut headers = headers;
-    merge_identity_query_params(&mut headers, uri.query());
+    let mut upgrade_headers = headers;
+    merge_identity_query_params(&mut upgrade_headers, uri.query());
+    let mode = engine.identity_config().mode;
 
-    let session = match resolve_session(&headers, engine.identity_config()).await {
-        Ok(s) => s,
-        Err(AuthError::Unauthorized) => return unauthorized_response(),
+    // OidcBearer: do not fail the upgrade without a token — auth happens in
+    // connection_init (graphql-ws best practice). DevHeaders: resolve now.
+    let upgrade_session = if mode == IdentityMode::OidcBearer || mode == IdentityMode::Hybrid {
+        Session::new()
+    } else {
+        match resolve_session(&upgrade_headers, engine.identity_config()).await {
+            Ok(s) => ensure_graphiql_dev_session(s, mode),
+            Err(AuthError::Unauthorized) => return unauthorized_response(),
+        }
     };
 
-    // Ensure DevHeaders GraphiQL always has a usable role even if query parse failed.
-    let session = ensure_graphiql_dev_session(session, engine.identity_config().mode);
-
-    let executor = GraphqlSessionExecutor::new(Arc::clone(&engine), session.clone());
-    let mode = engine.identity_config().mode;
+    let executor = GraphqlSessionExecutor::new(Arc::clone(&engine), upgrade_session.clone());
+    let engine_for_init = Arc::clone(&engine);
     upgrade
         .protocols(ALL_WEBSOCKET_PROTOCOLS)
         .on_upgrade(move |socket| {
-            let base = session;
+            let base = upgrade_session;
+            let upgrade_headers = upgrade_headers;
             GraphQLWebSocket::new(socket, executor, protocol)
                 .on_connection_init(move |payload| {
                     let base = base.clone();
+                    let engine = engine_for_init;
+                    let upgrade_headers = upgrade_headers;
                     async move {
+                        let session = match resolve_ws_session(
+                            &engine,
+                            &upgrade_headers,
+                            base,
+                            &payload,
+                        )
+                        .await
+                        {
+                            Ok(s) => s,
+                            Err(msg) => {
+                                return Err(async_graphql::Error::new(msg));
+                            }
+                        };
                         let mut data = Data::default();
-                        let session = session_from_connection_init(base, &payload, mode);
                         data.insert(session);
                         Ok(data)
                     }
@@ -274,6 +296,74 @@ pub async fn microsvc_graphql_ws(
                 .serve()
         })
         .into_response()
+}
+
+/// Resolve session for a GraphQL WS connection after `connection_init`.
+async fn resolve_ws_session(
+    engine: &GraphqlEngine,
+    upgrade_headers: &HeaderMap,
+    base: Session,
+    payload: &serde_json::Value,
+) -> Result<Session, String> {
+    let mode = engine.identity_config().mode;
+    match mode {
+        IdentityMode::OidcBearer | IdentityMode::Hybrid => {
+            let mut headers = upgrade_headers.clone();
+            if let Some(auth) = bearer_from_connection_init(payload) {
+                if let Ok(val) = axum::http::HeaderValue::from_str(&auth) {
+                    headers.insert(axum::http::header::AUTHORIZATION, val);
+                }
+            }
+            resolve_session(&headers, engine.identity_config())
+                .await
+                .map_err(|_| {
+                    "unauthorized: provide Authorization Bearer access_token in connection_init"
+                        .into()
+                })
+        }
+        IdentityMode::DevHeaders | IdentityMode::TrustedProxy => {
+            Ok(session_from_connection_init(base, payload, mode))
+        }
+    }
+}
+
+/// Extract Bearer token from connection_init payload (several client conventions).
+fn bearer_from_connection_init(payload: &serde_json::Value) -> Option<String> {
+    let pick = |v: &serde_json::Value| -> Option<String> {
+        let s = v.as_str()?.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if s.len() > 7 && s[..7].eq_ignore_ascii_case("bearer ") {
+            Some(s.to_string())
+        } else {
+            Some(format!("Bearer {s}"))
+        }
+    };
+    if let Some(s) = payload
+        .get("Authorization")
+        .or_else(|| payload.get("authorization"))
+        .and_then(pick)
+    {
+        return Some(s);
+    }
+    if let Some(s) = payload
+        .get("accessToken")
+        .or_else(|| payload.get("access_token"))
+        .and_then(pick)
+    {
+        return Some(s);
+    }
+    if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
+        if let Some(s) = headers
+            .get("Authorization")
+            .or_else(|| headers.get("authorization"))
+            .and_then(pick)
+        {
+            return Some(s);
+        }
+    }
+    None
 }
 
 fn ensure_graphiql_dev_session(mut session: Session, mode: IdentityMode) -> Session {
@@ -437,5 +527,23 @@ mod connection_init_tests {
             session_from_connection_init(Session::new(), &json!({}), IdentityMode::DevHeaders);
         assert_eq!(session.user_id(), Some(GRAPHIQL_DEV_USER));
         assert_eq!(session.role(), Some(GRAPHIQL_DEV_ROLE));
+    }
+
+    #[test]
+    fn bearer_from_connection_init_shapes() {
+        assert_eq!(
+            bearer_from_connection_init(&json!({"authorization": "Bearer abc"})).as_deref(),
+            Some("Bearer abc")
+        );
+        assert_eq!(
+            bearer_from_connection_init(&json!({"accessToken": "tok"})).as_deref(),
+            Some("Bearer tok")
+        );
+        assert_eq!(
+            bearer_from_connection_init(&json!({"headers": {"Authorization": "Bearer z"}}))
+                .as_deref(),
+            Some("Bearer z")
+        );
+        assert!(bearer_from_connection_init(&json!({})).is_none());
     }
 }

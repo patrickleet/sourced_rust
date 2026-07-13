@@ -77,7 +77,16 @@ pub fn map_claims_to_session(claims: &Value, config: &ClaimMapConfig) -> Result<
     };
 
     let x_roles = allowlisted.join(",");
-    let x_role = select_role(&allowlisted, &config.role_priority);
+    // Prefer explicit claim roles; if the subject is authenticated but no role
+    // claim matched engine roles, default to `user` when that role is configured
+    // (common for OIDC apps that assert roles asynchronously or omit them).
+    let x_role = select_role(&allowlisted, &config.role_priority).or_else(|| {
+        if config.engine_roles.iter().any(|e| e == "user") {
+            Some("user".into())
+        } else {
+            None
+        }
+    });
 
     let mut session = Session::new();
     session.set(USER_ID_KEY, sub);

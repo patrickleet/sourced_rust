@@ -204,17 +204,24 @@ async fn execute_postgres(
         .await
         .map_err(|e| format!("postgres commit: {e}"))?;
 
-    let text: String = match row {
-        Some(r) => r
-            .try_get::<String, _>(0)
-            .or_else(|_| {
-                r.try_get::<Option<String>, _>(0)
-                    .map(|o| o.unwrap_or_else(|| "null".into()))
-            })
-            .map_err(|e| format!("postgres json column: {e}"))?,
-        None => "null".into(),
+    // Postgres returns `json`/`jsonb` which sqlx decodes as `Json<T>` when the
+    // `json` feature is on; some plans also cast to text. Accept both.
+    let json: JsonValue = match row {
+        Some(r) => {
+            if let Ok(j) = r.try_get::<sqlx::types::Json<JsonValue>, _>(0) {
+                j.0
+            } else if let Ok(s) = r.try_get::<String, _>(0) {
+                serde_json::from_str(&s).map_err(|e| format!("json decode: {e}"))?
+            } else if let Ok(Some(s)) = r.try_get::<Option<String>, _>(0) {
+                serde_json::from_str(&s).map_err(|e| format!("json decode: {e}"))?
+            } else if let Ok(None) = r.try_get::<Option<String>, _>(0) {
+                JsonValue::Null
+            } else {
+                return Err("postgres json column: unsupported type".into());
+            }
+        }
+        None => JsonValue::Null,
     };
-    let json: JsonValue = serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
     Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
 }
 

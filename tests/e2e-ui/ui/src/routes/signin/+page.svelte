@@ -1,33 +1,31 @@
 <script lang="ts">
-  import { writeSession } from '$lib/session';
-
-  function submit(e: Event) {
-    e.preventDefault();
-    const fd = new FormData(e.target as HTMLFormElement);
-    writeSession({
-      userId: String(fd.get('userId') || 'alice'),
-      role: String(fd.get('role') || 'user'),
-    });
-    location.href = '/';
-  }
+  let { data } = $props();
 </script>
 
-<h1>Switch user</h1>
-<p>
-  Dev session cookies (<code>x-user-id</code> / <code>x-role</code>) — same trust model as
-  DevHeaders identity on the API. Production would use Auth.js / OIDC like the-website.
-</p>
-<form onsubmit={submit} style="display: grid; gap: 0.75rem; max-width: 20rem">
-  <label>
-    User id
-    <input name="userId" value="alice" style="width: 100%" />
-  </label>
-  <label>
-    Role
-    <select name="role">
-      <option value="user">user</option>
-      <option value="admin">admin</option>
-    </select>
-  </label>
-  <button type="submit">Continue</button>
-</form>
+<section class="card" style="max-width: 28rem; margin: 2rem auto">
+  <h1 style="margin-top: 0">Sign in</h1>
+  {#if data.error}
+    <p class="error">Auth error: {data.error}</p>
+  {/if}
+  {#if data.oidcConfigured}
+    <p class="muted">
+      Continues to your OIDC provider (Zitadel in the Docker stack). Demo humans:
+      <code>alice</code> / <code>bob</code> / <code>admin</code> — password
+      <code>Password1!</code>
+    </p>
+    <form method="POST" style="margin-top: 1.25rem">
+      <input type="hidden" name="callbackUrl" value={data.callbackUrl} />
+      <button class="btn btn-primary" type="submit" style="width: 100%">Continue with OIDC</button>
+    </form>
+  {:else}
+    <p class="muted">
+      OIDC is not configured (<code>OIDC_ISSUER</code> / <code>OIDC_CLIENT_ID</code>). Run
+      <code>make up</code> and source <code>e2e-ui.env</code>, or use DevHeaders against a local
+      runner for offline API tests.
+    </p>
+    <p class="muted" style="margin-top: 1rem">
+      Protected routes require a session. Offline: set
+      <code>AUTH_SECRET</code> and complete OIDC bootstrap.
+    </p>
+  {/if}
+</section>
