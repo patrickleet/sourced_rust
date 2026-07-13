@@ -4,7 +4,7 @@
 #
 # Ports:
 #   5433  app Postgres (event store, read models, bus)
-#   8080  Zitadel (OIDC)
+#   18080 Zitadel (OIDC; host port — container listens 8080)
 #   5432  Zitadel's internal Postgres (not published by default name collision avoided)
 services:
   app-db:
