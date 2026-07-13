@@ -83,6 +83,7 @@ pub fn build_graphql_engine(
                 .role("admin", select().all_columns()),
         )
         .identity(identity)
+        // graphiql(true) also raises max_depth so Docs introspection works.
         .graphiql(true);
     if let Some(rx) = change_rx {
         b = b.change_stream(rx);

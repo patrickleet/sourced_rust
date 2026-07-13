@@ -520,8 +520,25 @@ impl GraphqlEngineBuilder {
         self.statement_timeout = d;
         self
     }
+    /// Enable the GraphiQL IDE on `GET /graphql`.
+    ///
+    /// Also raises depth/complexity floors so GraphiQL's full introspection
+    /// query succeeds. The production default `max_depth` (8) is intentional
+    /// for client queries; GraphiQL's `TypeRef` fragment nests `ofType` seven
+    /// levels deep under `__schema.types.fields.type`, which exceeds 8 and
+    /// surfaces as "Query is nested too deep" / "Error fetching schema".
     pub fn graphiql(mut self, on: bool) -> Self {
         self.graphiql = on;
+        if on {
+            // Classic GraphiQL IntrospectionQuery depth is ~12–15.
+            if self.max_depth < 15 {
+                self.max_depth = 15;
+            }
+            // Full schema dump is large; keep a generous budget for the IDE only.
+            if self.max_complexity < 10_000 {
+                self.max_complexity = 10_000;
+            }
+        }
         self
     }
     /// Configure GraphQL HTTP identity mode (TrustedProxy / OidcBearer / Hybrid / DevHeaders).
