@@ -8,7 +8,6 @@ import fs from 'node:fs';
 const base = process.env.E2E_API_ORIGIN || process.env.E2E_BASE_URL;
 
 test('SSR is enabled (not SPA-only)', () => {
-  // adapter-node + no export const ssr = false in layout
   const pkg = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
   assert.match(pkg, /adapter-node/);
   const layoutTs = new URL('../src/routes/+layout.ts', import.meta.url);
@@ -38,11 +37,9 @@ test('auth + WS modules use OIDC patterns', () => {
 });
 
 test('website auth shell + fixture routes present', () => {
-  // Auth shell is the-website's GET /signin
   const signin = fs.readFileSync(new URL('../src/routes/signin/+server.ts', import.meta.url), 'utf8');
   assert.match(signin, /\/auth\/signin\/oidc/);
   assert.match(signin, /X-Auth-Return-Redirect/);
-  // Fixture pages added on top of website
   assert.ok(fs.existsSync(new URL('../src/routes/todos/+page.svelte', import.meta.url)));
   assert.ok(fs.existsSync(new URL('../src/routes/chat/+page.svelte', import.meta.url)));
   assert.ok(!fs.existsSync(new URL('../src/routes/docs', import.meta.url)));
@@ -53,26 +50,43 @@ test('website auth shell + fixture routes present', () => {
   );
   assert.match(nav, /\/todos/);
   assert.match(nav, /\/chat/);
-  assert.doesNotMatch(nav, /\/docs|\/control-plane|Pricing|two-paths|HopsBrand|hops-ops/i);
+  assert.doesNotMatch(nav, /\/docs|\/control-plane|Pricing|two-paths|HopsBrand|hops-ops|#demos|#code/i);
 });
 
-test('home is distributed template landing with demos + code samples', () => {
+test('home is distributed template landing with CQRS architecture samples', () => {
   const home = fs.readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
   assert.match(home, /framework template|e2e-ui template/i);
   assert.match(home, /make test|test-live|e2e/i);
-  assert.match(home, /GraphQL|subscription|connection_init|OIDC/i);
   assert.match(home, /\/todos/);
   assert.match(home, /\/chat/);
-  assert.match(home, /sampleSsr|sampleWs|serverGraphql|connection_init/);
-  assert.doesNotMatch(home, /Launch My Platform|HopsBrand|founder|listmonk/i);
-  // At least two distinct sample string constants
-  assert.match(home, /const sampleSsr/);
-  assert.match(home, /const sampleWs/);
+  assert.doesNotMatch(home, /Launch My Platform|HopsBrand|founder|listmonk|Systems Lab|lab-acid/i);
+
+  // Five architecture samples for todos CQRS path
+  assert.match(home, /const sampleAggregate/);
+  assert.match(home, /const sampleCommand/);
+  assert.match(home, /const sampleReadModel/);
+  assert.match(home, /const sampleProjector/);
+  assert.match(home, /const sampleService/);
+  assert.match(home, /data-sample="aggregate"/);
+  assert.match(home, /data-sample="command-handler"/);
+  assert.match(home, /data-sample="read-model"/);
+  assert.match(home, /data-sample="projection-handler"/);
+  assert.match(home, /data-sample="service-config"/);
+  // Real fixture roles
+  assert.match(home, /todo-domain|TodoFact|record_created/);
+  assert.match(home, /todo\.create|require_user|outbox/);
+  assert.match(home, /TodoView|#\[table\("todos"\)\]|ReadModel/);
+  assert.match(home, /project_todo|ReadModelWritePlanBuilder|todo\.created/);
+  assert.match(home, /build_service|run_postgres|run_sqlite|identity_from_env/);
 
   const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
-  assert.match(css, /--df-accent|--df-ink/);
-  // Theme is not the old hops orange product identity as primary accent
-  assert.match(css, /#1f9e78|#0e171c/);
+  assert.match(css, /Neutral wireframe|--wf-bg|--wf-ink/);
+  assert.match(css, /#f6f5f2|#1c1c1a/);
+  // Not Systems Lab acid identity
+  assert.doesNotMatch(css, /--lab-acid:\s*#c8f542|Systems Lab/);
+  assert.doesNotMatch(css, /#e69a2d/);
+  // Generous section spacing token
+  assert.match(css, /--wf-section-y|section-y/);
 
   const footer = fs.readFileSync(
     new URL('../src/lib/components/shared/Footer.svelte', import.meta.url),
@@ -88,7 +102,6 @@ test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, a
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: '{ todos { todo_id } }' })
   });
-  // OidcBearer require_auth → 401; DevHeaders may 200
   console.log(`live gql status=${res.status}`);
   assert.ok(res.status === 401 || res.status === 200, `unexpected ${res.status}`);
   if (res.status === 401) {

@@ -1,10 +1,10 @@
-<footer class="df-footer">
-	<div class="df-footer-inner">
+<footer class="lab-footer">
+	<div class="lab-footer-inner">
 		<div>
-			<div class="df-footer-brand">e2e-ui · Distributed template</div>
-			<p class="df-footer-tag">
-				Framework fixture: multi-crate CQRS, OIDC, SSR GraphQL, and live subscriptions —
-				run as e2e and kept current with the library.
+			<div class="lab-footer-brand">e2e-ui · Distributed template</div>
+			<p class="lab-footer-tag">
+				Framework fixture: multi-crate CQRS, OIDC, SSR GraphQL, and live subscriptions — run as e2e
+				and kept current with the library.
 			</p>
 		</div>
 		<div>
@@ -19,8 +19,8 @@
 			<h4>Template</h4>
 			<ul>
 				<li><a href="/#story">Why this exists</a></li>
+				<li><a href="/#architecture">Architecture</a></li>
 				<li><a href="/#run">How to run</a></li>
-				<li><a href="/#code">Code samples</a></li>
 				<li><a href="/signin?callbackUrl=/todos">Sign in</a></li>
 			</ul>
 		</div>
