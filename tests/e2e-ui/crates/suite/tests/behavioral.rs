@@ -11,7 +11,7 @@ use distributed::microsvc::serve;
 use distributed::{SqliteLockManager, SqliteRepository};
 use serde_json::json;
 use e2e_service::{
-    build_graphql_engine, build_service, distributed_manifest, identity_from_env,
+    build_graphql_engine, build_service, dev_identity, distributed_manifest,
 };
 use e2e_suite::{cases, graphql, post_command, post_command_raw, wait_ready};
 
@@ -32,8 +32,8 @@ async fn ensure_target() -> String {
     let bind = addr.to_string();
     let base = format!("http://{bind}");
 
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".into());
-    let repo = SqliteRepository::connect_and_migrate(&database_url)
+    // Always in-memory SQLite for offline suite (ignore compose DATABASE_URL=postgres).
+    let repo = SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .expect("repo");
     let registry = distributed_manifest().table_registry().expect("registry");
@@ -44,7 +44,8 @@ async fn ensure_target() -> String {
     let bus = InMemoryBus::new();
 
     let change_rx = repo.read_model_changes();
-    let gql = build_graphql_engine(repo.pool().clone(), identity_from_env(), Some(change_rx))
+    // Offline suite always uses DevHeaders (ignore ambient OIDC_* from make up).
+    let gql = build_graphql_engine(repo.pool().clone(), dev_identity(), Some(change_rx))
         .expect("gql");
     let service = Arc::new(
         build_service(repo.clone(), locks.clone(), repo.clone())

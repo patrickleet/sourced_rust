@@ -1,0 +1,10 @@
+import type { LayoutServerLoad } from './$types';
+import { isOidcConfigured } from '../auth';
+
+export const load: LayoutServerLoad = async ({ locals }) => {
+  const session = await locals.auth();
+  return {
+    session,
+    oidcConfigured: isOidcConfigured()
+  };
+};

@@ -1,0 +1,29 @@
+ExternalDomain: localhost
+ExternalPort: 18080
+ExternalSecure: false
+
+TLS:
+  Enabled: false
+
+Database:
+  postgres:
+    Host: zitadel-db
+    Port: 5432
+    Database: zitadel
+    MaxOpenConns: 20
+    MaxIdleConns: 10
+    MaxConnLifetime: 30m
+    MaxConnIdleTime: 5m
+    User:
+      Username: zitadel
+      Password: zitadel
+      SSL:
+        Mode: disable
+    Admin:
+      Username: postgres
+      Password: postgres
+      SSL:
+        Mode: disable
+
+# Listen on all interfaces so host CI can reach :8080.
+Port: 8080

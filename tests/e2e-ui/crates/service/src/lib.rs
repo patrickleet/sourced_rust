@@ -7,8 +7,10 @@
 mod bounds;
 mod deps;
 pub mod handlers;
+mod oidc_layer;
 mod service;
 
+pub use oidc_layer::serve_with_oidc;
 pub use service::{
     build_graphql_engine, build_service, dev_identity, identity_from_env, oidc_bearer_config,
 };

@@ -1,0 +1,61 @@
+# e2e-ui full stack: app Postgres + Zitadel (OIDC).
+#
+#   cd tests/e2e-ui && make up
+#
+# Ports:
+#   5433  app Postgres (event store, read models, bus)
+#   8080  Zitadel (OIDC)
+#   5432  Zitadel's internal Postgres (not published by default name collision avoided)
+services:
+  app-db:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: e2e
+      POSTGRES_PASSWORD: e2e
+      POSTGRES_DB: e2e_ui
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e -d e2e_ui"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [e2e]
+
+  zitadel-db:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: zitadel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    networks: [e2e]
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.6.1
+    user: "0:0"
+    command: >-
+      start-from-init
+      --masterkey "MasterkeyNeedsToHave32Characters"
+      --tlsMode disabled
+      --config /init/zitadel.yaml
+      --steps /init/steps.yaml
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    ports:
+      # Avoid clashes with other local Zitadel / services on 8080–8081
+      - "18080:8080"
+    volumes:
+      - ./zitadel-init:/init:ro
+      - ./machinekey:/machinekey
+    networks: [e2e]
+
+networks:
+  e2e:

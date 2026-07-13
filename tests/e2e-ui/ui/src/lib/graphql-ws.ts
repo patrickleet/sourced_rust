@@ -1,9 +1,6 @@
 /**
- * Minimal graphql-transport-ws client for GraphQL live queries.
- *
- * Connects same-origin to `/graphql/ws` (Vite proxies WS → API in dev).
- * Identity via query params (browsers cannot set custom WebSocket headers);
- * the server merges `x-user-id` / `x-role` into the upgrade session.
+ * graphql-transport-ws client.
+ * Auth: Bearer access token in connection_init (OIDC best practice for browsers).
  */
 
 export type GqlWsHandlers = {
@@ -15,25 +12,36 @@ export type GqlWsHandlers = {
 export function graphqlWsUrl(path = '/graphql/ws'): string {
   if (typeof window === 'undefined') return path;
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // Prefer same-origin so Vite proxies WS in dev.
   return `${proto}//${window.location.host}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-/** Subscribe; returns unsubscribe. */
 export function subscribe(
   query: string,
-  session: { userId: string; role: string },
+  auth: { accessToken?: string; userId?: string; role?: string },
   handlers: GqlWsHandlers
 ): () => void {
   const url = new URL(graphqlWsUrl('/graphql/ws'), window.location.href);
-  url.searchParams.set('x-user-id', session.userId);
-  url.searchParams.set('x-role', session.role);
+  // DevHeaders fallback only when no Bearer (offline demos).
+  if (!auth.accessToken && auth.userId) {
+    url.searchParams.set('x-user-id', auth.userId);
+    url.searchParams.set('x-role', auth.role ?? 'user');
+  }
 
   const ws = new WebSocket(url.toString(), 'graphql-transport-ws');
   const opId = '1';
   let closed = false;
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'connection_init', payload: {} }));
+    const payload: Record<string, string> = {};
+    if (auth.accessToken) {
+      payload.authorization = `Bearer ${auth.accessToken}`;
+      payload.accessToken = auth.accessToken;
+    } else if (auth.userId) {
+      payload['x-user-id'] = auth.userId;
+      payload['x-role'] = auth.role ?? 'user';
+    }
+    ws.send(JSON.stringify({ type: 'connection_init', payload }));
   };
 
   ws.onmessage = (ev) => {
@@ -49,7 +57,7 @@ export function subscribe(
           JSON.stringify({
             type: 'subscribe',
             id: opId,
-            payload: { query },
+            payload: { query }
           })
         );
         break;
