@@ -1,6 +1,7 @@
 <script lang="ts">
 	/**
-	 * Distributed framework template landing — e2e fixture home.
+	 * Distributed framework template — neutral wireframe home.
+	 * Architecture samples mirror real crates under tests/e2e-ui.
 	 */
 	import { page } from '$app/state';
 	import Footer from '$lib/components/shared/Footer.svelte';
@@ -20,7 +21,7 @@
 		{
 			title: 'Live lobby chat',
 			blurb:
-				'SSR seeds history; subscription { chat_messages } streams over /graphql/ws with Bearer in connection_init.',
+				'SSR seeds history; subscription { chat_messages } over /graphql/ws with Bearer in connection_init.',
 			where: 'ui/src/routes/chat · crates/chat-domain',
 			href: '/chat',
 			label: 'Open chat'
@@ -36,86 +37,129 @@
 		{
 			title: 'Real OIDC (Zitadel)',
 			blurb:
-				'Docker IdP + Auth.js web app. make up bootstraps clients, humans, and machine keys into e2e-ui.env.',
+				'Docker IdP + Auth.js. make up bootstraps clients, humans, and machine keys into e2e-ui.env.',
 			where: 'docker/ · scripts/up.sh · GET /signin',
 			href: '/signin?callbackUrl=/todos',
 			label: 'Sign in'
-		},
-		{
-			title: 'SSR GraphQL',
-			blurb:
-				'Protected pages load on the server with the session access token — hard refresh paints data, not a client Loading spinner.',
-			where: 'ui/src/lib/server/graphql.ts · +page.server.ts',
-			href: '/todos',
-			label: 'See SSR load'
-		},
-		{
-			title: 'Multi-crate CQRS',
-			blurb:
-				'Pure domains, projectors-only read models, handlers in e2e-service. Suite runs offline SQLite or live Postgres + OIDC.',
-			where: 'crates/* · e2e-suite · Makefile',
-			href: '#code',
-			label: 'Code samples'
 		}
 	];
 
-	const sampleSsr = `// Load with Bearer — no client Loading flash
-const session = await locals.auth();
-const result = await serverGraphql(
-  \`{ todos { todo_id title status } }\`,
-  { accessToken: session?.accessToken }
-);
-return { todos: result.data?.todos ?? [] };`;
+	// —— CQRS samples (truncated from real fixture crates) ——
+	const sampleAggregate = `// crates/todo-domain — aggregate owns invariants
+#[sourced(entity, events = "TodoEvent", aggregate_type = "todo")]
+impl Todo {
+  pub fn create(
+    &mut self,
+    todo_id: impl Into<String>,
+    owner_id: impl Into<String>, // auth user — not peer body
+    title: impl Into<String>,
+  ) -> Result<(), TodoError> {
+    // … validate empty id/owner/title …
+    self.record_created(todo_id, owner_id, title)?;
+    Ok(())
+  }
 
-	const sampleWs = `// Browsers cannot set Authorization on upgrade
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    type: 'connection_init',
-    payload: {
-      authorization: \`Bearer \${accessToken}\`
-    }
-  }));
-};`;
-
-	const sampleDomain = `// Owner is identity — never trusted from the body
-pub fn create(
-  &mut self,
-  owner_id: &str,
-  title: String,
-) -> Result<(), TodoError> {
-  self.record_created(owner_id, title)
+  #[event("todo.created")]
+  fn record_created(&mut self, todo_id: String, owner_id: String, title: String) {
+    self.todo_id = todo_id;
+    self.owner_id = owner_id;
+    self.title = title;
+    self.status = TodoStatus::Open;
+  }
 }`;
 
-	const sampleMake = `# Offline domain + behavioral + UI structural
-make test
+	const sampleCommand = `// crates/service/handlers/commands/create.rs — todo.create
+pub async fn handle(ctx: &Context<'_, TodoDeps<…>>) -> Result<Value, HandlerError> {
+  let owner = require_user(ctx.session())?; // identity from session
+  let input = ctx.input::<Input>()?;        // todo_id, title
 
-# Live OIDC + Postgres (stack must be up)
-make test-live`;
+  let mut todo = Todo::default();
+  todo.create(&input.todo_id, &owner, &input.title)?;
+
+  let fact = TodoFact::from_todo(&todo);
+  let outbox = OutboxMessage::encode(…, "todo.created", &fact)?;
+  ctx.repo().outbox(outbox).commit(&mut todo).await?;
+  // commands never write the read model
+  Ok(json!({ "todo_id": fact.todo_id, "status": fact.status }))
+}`;
+
+	const sampleReadModel = `// crates/readmodels — projected rows only
+#[derive(ReadModel)]
+#[table("todos")]
+pub struct TodoView {
+  #[id("todo_id")]
+  pub todo_id: String,
+  pub owner_id: String, // GraphQL filters: owner_id = claim(x-user-id)
+  pub title: String,
+  pub status: String,   // open | completed | archived
+}
+
+pub fn map_todo_fact(e: &TodoFact) -> TodoView {
+  TodoView {
+    todo_id: e.todo_id.clone(),
+    owner_id: e.owner_id.clone(),
+    title: e.title.clone(),
+    status: e.status.clone(),
+  }
+}`;
+
+	const sampleProjector = `// crates/service/handlers/events/project_todo.rs
+// Project any todo.* fact → todos read model
+pub const EVENTS: &[&str] = &[
+  "todo.created", "todo.renamed", "todo.completed",
+  "todo.reopened", "todo.archived",
+];
+
+pub async fn handle(ctx: &Context<'_, TodoDeps<…>>) -> Result<Value, HandlerError> {
+  let fact: TodoFact = decode_payload(ctx.message())?;
+  let row = map_fact(&fact);
+  let mut plan = ReadModelWritePlanBuilder::new();
+  plan.upsert(&row)?;
+  plan.commit(ctx.read_model_store()).await?;
+  Ok(json!({ "todo_id": fact.todo_id, "status": fact.status }))
+}`;
+
+	const sampleService = `// crates/service — one service, many hosts
+pub fn build_service(repo, locks, read_models) -> Service {
+  let todos = routes!(…, command create, …, events project_todo);
+  let chat  = routes!(…, command chat_post, event project_chat);
+  Service::new().named("e2e-ui").routes(todos).routes(chat)
+}
+
+// crates/runner — configure SQLite vs Postgres + identity
+let database_url = env::var("DATABASE_URL")
+  .unwrap_or_else(|_| "sqlite:./e2e-ui.db?mode=rwc".into());
+let identity = identity_from_env(); // OidcBearer or DevHeaders
+
+if database_url.starts_with("postgres") {
+  run_postgres(&database_url, &bind, identity).await
+} else {
+  run_sqlite(&database_url, &bind, identity).await
+}`;
 </script>
 
-<div class="df-home">
-	<section class="df-hero">
-		<div class="df-hero-inner">
-			<span class="df-pill">Distributed · e2e-ui template</span>
+<div class="wf-home">
+	<section class="wf-hero">
+		<div class="wf-hero-inner">
+			<span class="wf-kicker">Distributed · e2e-ui template</span>
 			<h1>
 				A <em>framework template</em> you run as full e2e tests — kept honest by the library.
 			</h1>
-			<p class="df-hero-lede">
-				Copyable starting point for a Distributed CQRS service + SvelteKit UI: multi-domain models,
-				GraphQL with row-level filters, WebSocket subscriptions, and real OIDC. The same folder is
-				the living suite — <code>make test</code> offline, <code>make test-live</code> against
-				Postgres + Zitadel.
+			<p class="wf-lede">
+				Neutral shell for envisioning your product: multi-crate CQRS, GraphQL with row-level
+				filters, WebSocket subscriptions, real OIDC. The same folder is the living suite —
+				<code>make test</code> offline, <code>make test-live</code> against Postgres + Zitadel.
 			</p>
-			<div class="df-actions">
+			<div class="wf-actions">
 				{#if signedIn}
-					<a class="df-btn df-btn-primary" href="/todos">Open todos</a>
-					<a class="df-btn df-btn-ghost" href="/chat">Lobby chat</a>
+					<a class="wf-btn wf-btn-primary" href="/todos">Open todos</a>
+					<a class="wf-btn wf-btn-ghost" href="/chat">Lobby chat</a>
 				{:else}
-					<a class="df-btn df-btn-primary" href="/signin?callbackUrl=/todos">Sign in with OIDC</a>
-					<a class="df-btn df-btn-ghost" href="#demos">What is demonstrated</a>
+					<a class="wf-btn wf-btn-primary" href="/signin?callbackUrl=/todos">Sign in with OIDC</a>
+					<a class="wf-btn wf-btn-ghost" href="#architecture">See architecture</a>
 				{/if}
 			</div>
-			<div class="df-meta-row">
+			<div class="wf-meta">
 				<span>tests/e2e-ui</span>
 				<span>API :8791</span>
 				<span>UI :5180</span>
@@ -124,149 +168,214 @@ make test-live`;
 		</div>
 	</section>
 
-	<section class="df-section" id="story">
-		<div class="df-section-head">
-			<h2>Template first, product second</h2>
+	<section class="wf-section" id="story">
+		<div class="wf-section-head">
+			<span class="wf-label">Why this exists</span>
+			<h2>Template first. Product later.</h2>
 			<p>
-				This site is not a product marketing shell. It is the UI surface of a fixture that ships
-				with the Distributed library: when patterns change, the e2e suite and this app move with
-				them. Use it as a blueprint — domains stay pure, runner wires persistence + identity, UI
-				proves the browser path.
+				Not a product marketing site — the UI face of a fixture that ships with Distributed. When
+				patterns change, the suite and this app move with them. Use it as a wireframe for your own
+				app’s structure.
 			</p>
 		</div>
-		<div class="df-grid df-grid-3">
-			<div class="df-card">
+		<div class="wf-cards">
+			<div class="wf-card">
 				<h3>Full e2e path</h3>
 				<p>
-					<code>make up</code> → Docker Postgres + Zitadel bootstrap. <code>make run</code> → API +
-					Auth.js UI. Humans alice/bob for interactive login; machine keys for suite JWT-bearer.
+					<code>make up</code> boots Postgres + Zitadel. <code>make run</code> serves API + UI.
+					Humans alice/bob for login; machine keys for suite JWT-bearer.
 				</p>
 			</div>
-			<div class="df-card">
+			<div class="wf-card">
 				<h3>Updated with the library</h3>
 				<p>
-					Behavioral suite + gated OIDC tests live beside the service. Offline
-					<code>make test</code> uses SQLite; live isolation needs the stack. Patterns here track
-					framework defaults (OidcBearer, projectors, ChangeHub).
+					Behavioral + gated OIDC tests live beside the service. Offline SQLite or live stack.
+					OidcBearer, projectors, ChangeHub track framework defaults.
 				</p>
 			</div>
-			<div class="df-card">
+			<div class="wf-card">
 				<h3>Copy and extend</h3>
 				<p>
-					Multi-crate layout: todo-domain, chat-domain, readmodels, service, runner, suite. Swap
-					DATABASE_URL / OIDC env for your IdP; keep handlers and UI routes as the map.
+					todo-domain, chat-domain, readmodels, service, runner, suite. Swap DATABASE_URL / OIDC
+					env; keep handlers and routes as the map.
 				</p>
 			</div>
 		</div>
 	</section>
 
-	<section class="df-band" id="run">
-		<div class="df-section">
-			<div class="df-section-head">
-				<h2>Run the template</h2>
+	<section class="wf-run" id="run">
+		<div class="wf-run-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Run</span>
+				<h2>Three commands. Full stack.</h2>
 				<p>
-					From <code>tests/e2e-ui</code> — full stack, then explore demos while signed in.
+					From <code>tests/e2e-ui</code>. Demo password after bootstrap:
+					<code>Password1!</code> (alice / bob / admin).
 				</p>
 			</div>
-			<div class="df-steps">
-				<div class="df-step">
+			<div class="wf-steps">
+				<div class="wf-step">
 					<h3>Bootstrap IdP + DB</h3>
-					<p>
-						<code>make up</code> writes <code>e2e-ui.env</code> with issuer, client, and machine
-						keys.
-					</p>
+					<p><code>make up</code> writes <code>e2e-ui.env</code> with issuer, client, machine keys.</p>
 				</div>
-				<div class="df-step">
+				<div class="wf-step">
 					<h3>API + UI</h3>
-					<p>
-						<code>make run</code> serves GraphQL on :8791 and SvelteKit on :5180 with env loaded.
-					</p>
+					<p><code>make run</code> — GraphQL :8791, SvelteKit :5180, env loaded.</p>
 				</div>
-				<div class="df-step">
+				<div class="wf-step">
 					<h3>Prove it</h3>
-					<p>
-						<code>make test</code> offline; <code>make test-live</code> for OIDC isolation. Demo
-						password: <code>Password1!</code>
-					</p>
+					<p><code>make test</code> offline; <code>make test-live</code> for OIDC isolation.</p>
 				</div>
 			</div>
 		</div>
 	</section>
 
-	<section class="df-section" id="demos">
-		<div class="df-section-head">
+	<section class="wf-section" id="demos">
+		<div class="wf-section-head">
+			<span class="wf-label">Live demos</span>
 			<h2>What is demonstrated — and where</h2>
 			<p>
-				Each capability maps to a UI route or crate path. Click through after
+				Each capability maps to a UI route or crate path. Open after
 				<code>make up && make run</code>.
 			</p>
 		</div>
-		<div class="df-grid df-grid-2">
-			{#each demos as d}
-				<article class="df-card">
-					<h3>{d.title}</h3>
-					<span class="df-where">{d.where}</span>
-					<p>{d.blurb}</p>
-					<a class="df-card-link" href={d.href}>{d.label} →</a>
-				</article>
+		<div class="wf-demos">
+			{#each demos as d, i}
+				<a class="wf-demo" href={d.href}>
+					<span class="wf-demo-i">{String(i + 1).padStart(2, '0')}</span>
+					<div>
+						<h3>{d.title}</h3>
+						<p>{d.blurb}</p>
+						<div class="wf-demo-where">{d.where}</div>
+					</div>
+					<span class="wf-demo-go">{d.label} →</span>
+				</a>
 			{/each}
 		</div>
 	</section>
 
-	<section class="df-section" id="code">
-		<div class="df-section-head">
-			<h2>Simplicity in the hot paths</h2>
+	<section class="wf-section" id="architecture">
+		<div class="wf-section-head">
+			<span class="wf-label">Architecture · todos</span>
+			<h2>One feature, five layers</h2>
 			<p>
-				Short excerpts from this fixture — SSR GraphQL with the session token, WebSocket identity,
-				and a domain command that never dual-writes.
+				How a todo flows through the fixture: pure aggregate → command handler → outbox fact →
+				projector → read model. The service crate composes routes; the runner picks SQLite or
+				Postgres and OIDC vs DevHeaders.
 			</p>
 		</div>
-		<div class="df-samples">
-			<div class="df-code">
-				<div class="df-code-bar">
-					<span>ui/src/routes/todos/+page.server.ts</span>
-					<em>SSR GraphQL</em>
+
+		<div class="wf-arch">
+			<article class="wf-sample" data-sample="aggregate">
+				<div class="wf-sample-meta">
+					<h3>1 · Aggregate</h3>
+					<p>
+						Domain owns invariants. Commands never dual-write; events are recorded on the entity.
+					</p>
+					<span class="wf-sample-path">crates/todo-domain/src/lib.rs</span>
 				</div>
-				<pre><code>{sampleSsr}</code></pre>
-			</div>
-			<div class="df-code">
-				<div class="df-code-bar">
-					<span>ui/src/lib/graphql-ws.ts</span>
-					<em>WS auth</em>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>todo-domain</span>
+						<em>Aggregate</em>
+					</div>
+					<pre><code>{sampleAggregate}</code></pre>
 				</div>
-				<pre><code>{sampleWs}</code></pre>
-			</div>
-			<div class="df-code">
-				<div class="df-code-bar">
-					<span>crates/todo-domain · command</span>
-					<em>CQRS</em>
+			</article>
+
+			<article class="wf-sample" data-sample="command-handler">
+				<div class="wf-sample-meta">
+					<h3>2 · Command handler</h3>
+					<p>
+						Microservice handler loads session identity, mutates the aggregate, commits with an
+						outbox message. No read-model writes here.
+					</p>
+					<span class="wf-sample-path"
+						>crates/service/src/handlers/commands/create.rs · todo.create</span
+					>
 				</div>
-				<pre><code>{sampleDomain}</code></pre>
-			</div>
-			<div class="df-code">
-				<div class="df-code-bar">
-					<span>Makefile · suite</span>
-					<em>e2e</em>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>handlers/commands/create.rs</span>
+						<em>Command handler</em>
+					</div>
+					<pre><code>{sampleCommand}</code></pre>
 				</div>
-				<pre><code>{sampleMake}</code></pre>
-			</div>
+			</article>
+
+			<article class="wf-sample" data-sample="read-model">
+				<div class="wf-sample-meta">
+					<h3>3 · Read model</h3>
+					<p>
+						Query-side table shape. GraphQL filters <code>owner_id</code> to the caller’s
+						<code>x-user-id</code> claim for users.
+					</p>
+					<span class="wf-sample-path">crates/readmodels/src/lib.rs · TodoView</span>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>e2e-readmodels</span>
+						<em>Read model</em>
+					</div>
+					<pre><code>{sampleReadModel}</code></pre>
+				</div>
+			</article>
+
+			<article class="wf-sample" data-sample="projection-handler">
+				<div class="wf-sample-meta">
+					<h3>4 · Projection handler</h3>
+					<p>
+						Event handlers are the only writers of read models. One projector covers all
+						<code>todo.*</code> facts via upsert.
+					</p>
+					<span class="wf-sample-path"
+						>crates/service/src/handlers/events/project_todo.rs</span
+					>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>handlers/events/project_todo.rs</span>
+						<em>Projection handler</em>
+					</div>
+					<pre><code>{sampleProjector}</code></pre>
+				</div>
+			</article>
+
+			<article class="wf-sample" data-sample="service-config">
+				<div class="wf-sample-meta">
+					<h3>5 · Service + runner modes</h3>
+					<p>
+						<code>build_service</code> wires command + event routes once. The runner chooses
+						SQLite vs Postgres storage and OidcBearer vs DevHeaders from env.
+					</p>
+					<span class="wf-sample-path"
+						>crates/service/src/service.rs · crates/runner/src/main.rs</span
+					>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>e2e-service + e2e-runner</span>
+						<em>Multi-mode config</em>
+					</div>
+					<pre><code>{sampleService}</code></pre>
+				</div>
+			</article>
 		</div>
 	</section>
 
-	<section class="df-cta-band">
+	<section class="wf-cta">
 		<h2>Exercise the live demos</h2>
 		<p>
 			Sign in (alice / bob / admin · Password1!), open todos or chat, then inspect the session.
-			GraphiQL stays on the API at <code>/graphql</code>.
 		</p>
-		<div class="df-actions">
+		<div class="wf-actions">
 			{#if signedIn}
-				<a class="df-btn df-btn-primary" href="/todos">Todos</a>
-				<a class="df-btn df-btn-ghost" href="/chat">Chat</a>
-				<a class="df-btn df-btn-ghost" href="/session">Session</a>
+				<a class="wf-btn wf-btn-primary" href="/todos">Todos</a>
+				<a class="wf-btn wf-btn-ghost" href="/chat">Chat</a>
+				<a class="wf-btn wf-btn-ghost" href="/session">Session</a>
 			{:else}
-				<a class="df-btn df-btn-primary" href="/signin?callbackUrl=/todos">Sign in</a>
-				<a class="df-btn df-btn-ghost" href="/session">Session</a>
+				<a class="wf-btn wf-btn-primary" href="/signin?callbackUrl=/todos">Sign in</a>
+				<a class="wf-btn wf-btn-ghost" href="/session">Session</a>
 			{/if}
 		</div>
 	</section>

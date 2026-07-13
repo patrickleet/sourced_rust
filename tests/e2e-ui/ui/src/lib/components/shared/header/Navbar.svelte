@@ -60,16 +60,6 @@
 				<a href="/" class="nav-link" class:active={isActive('/')} onclick={() => (isMenuOpen = false)}
 					>Home</a
 				>
-				<a
-					href="/#demos"
-					class="nav-link"
-					onclick={() => (isMenuOpen = false)}>Demos</a
-				>
-				<a
-					href="/#code"
-					class="nav-link"
-					onclick={() => (isMenuOpen = false)}>Code</a
-				>
 				{#if isAuthenticated}
 					<a
 						href="/todos"
