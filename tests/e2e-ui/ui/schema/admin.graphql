@@ -1,0 +1,235 @@
+# GENERATED — do not treat as hand-authored source of truth.
+# Source: e2e_service::build_graphql_engine + GraphqlEngine::sdl_for_role("admin")
+# Regenerate: `make export-sdl` or `npm run gen:schema` (from tests/e2e-ui)
+# Then: `cd ui && npm run gen:gql`  (or `make gen-gql` / `npm run gen`)
+#
+# Spec: hops GitKB specs/e2e-ui/rust-role-sdl-codegen
+
+scalar BigInt
+
+input BigInt_comparison_exp {
+	_eq: BigInt
+	_neq: BigInt
+	_gt: BigInt
+	_gte: BigInt
+	_lt: BigInt
+	_lte: BigInt
+	_in: [BigInt!]
+	_nin: [BigInt!]
+	_is_null: Boolean
+}
+
+scalar Bytea
+
+input Bytea_comparison_exp {
+	_eq: Bytea
+	_neq: Bytea
+	_gt: Bytea
+	_gte: Bytea
+	_lt: Bytea
+	_lte: Bytea
+	_in: [Bytea!]
+	_nin: [Bytea!]
+	_is_null: Boolean
+}
+
+type ChatMessageView {
+	message_id: String!
+	room_id: String!
+	author_id: String!
+	body: String!
+	created_at: String!
+}
+
+input ChatPostInput {
+	message_id: String!
+	body: String!
+	room_id: String!
+}
+
+type ChatPostPayload {
+	message_id: String!
+	room_id: String!
+	author_id: String!
+	body: String!
+	created_at: String!
+}
+
+scalar JSON
+
+input JSON_comparison_exp {
+	_eq: JSON
+	_neq: JSON
+	_gt: JSON
+	_gte: JSON
+	_lt: JSON
+	_lte: JSON
+	_in: [JSON!]
+	_nin: [JSON!]
+	_is_null: Boolean
+}
+
+type Mutation {
+	todos_create(input: TodoCreateInput!): TodoCreatePayload!
+	todos_complete(input: TodoCompleteInput!): TodoStatusPayload!
+	todos_archive(input: TodoArchiveInput!): TodoArchivePayload!
+	todos_rename(input: TodoRenameInput!): TodoRenamePayload!
+	todos_reopen(input: TodoReopenInput!): TodoReopenPayload!
+	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
+}
+
+type Query {
+	chat_messages(where: chat_messages_bool_exp, order_by: [chat_messages_order_by!], limit: Int, offset: Int): [ChatMessageView!]!
+	chat_messages_by_pk(message_id: String!): ChatMessageView
+	todos(where: todos_bool_exp, order_by: [todos_order_by!], limit: Int, offset: Int): [TodoView!]!
+	todos_by_pk(todo_id: String!): TodoView
+}
+
+input String_comparison_exp {
+	_eq: String
+	_neq: String
+	_gt: String
+	_gte: String
+	_lt: String
+	_lte: String
+	_in: [String!]
+	_nin: [String!]
+	_is_null: Boolean
+	_like: String
+	_ilike: String
+}
+
+type Subscription {
+	chat_messages(where: chat_messages_bool_exp, order_by: [chat_messages_order_by!], limit: Int, offset: Int): [ChatMessageView!]!
+	todos(where: todos_bool_exp, order_by: [todos_order_by!], limit: Int, offset: Int): [TodoView!]!
+}
+
+scalar Timestamptz
+
+input Timestamptz_comparison_exp {
+	_eq: Timestamptz
+	_neq: Timestamptz
+	_gt: Timestamptz
+	_gte: Timestamptz
+	_lt: Timestamptz
+	_lte: Timestamptz
+	_in: [Timestamptz!]
+	_nin: [Timestamptz!]
+	_is_null: Boolean
+}
+
+input TodoArchiveInput {
+	todo_id: String!
+}
+
+type TodoArchivePayload {
+	todo_id: String!
+	status: String!
+}
+
+input TodoCompleteInput {
+	todo_id: String!
+}
+
+input TodoCreateInput {
+	todo_id: String!
+	title: String!
+}
+
+type TodoCreatePayload {
+	todo_id: String!
+	owner_id: String!
+	title: String!
+	status: String!
+}
+
+input TodoRenameInput {
+	todo_id: String!
+	title: String!
+}
+
+type TodoRenamePayload {
+	todo_id: String!
+	title: String!
+	status: String!
+}
+
+input TodoReopenInput {
+	todo_id: String!
+}
+
+type TodoReopenPayload {
+	todo_id: String!
+	status: String!
+}
+
+type TodoStatusPayload {
+	todo_id: String!
+	status: String!
+}
+
+type TodoView {
+	todo_id: String!
+	owner_id: String!
+	title: String!
+	status: String!
+}
+
+input chat_messages_bool_exp {
+	_and: [chat_messages_bool_exp!]
+	_or: [chat_messages_bool_exp!]
+	_not: chat_messages_bool_exp
+	message_id: String_comparison_exp
+	room_id: String_comparison_exp
+	author_id: String_comparison_exp
+	body: String_comparison_exp
+	created_at: String_comparison_exp
+}
+
+input chat_messages_order_by {
+	message_id: order_by
+	room_id: order_by
+	author_id: order_by
+	body: order_by
+	created_at: order_by
+}
+
+enum order_by {
+	asc
+	asc_nulls_first
+	asc_nulls_last
+	desc
+	desc_nulls_first
+	desc_nulls_last
+}
+
+input todos_bool_exp {
+	_and: [todos_bool_exp!]
+	_or: [todos_bool_exp!]
+	_not: todos_bool_exp
+	todo_id: String_comparison_exp
+	owner_id: String_comparison_exp
+	title: String_comparison_exp
+	status: String_comparison_exp
+}
+
+input todos_order_by {
+	todo_id: order_by
+	owner_id: order_by
+	title: order_by
+	status: order_by
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+schema {
+	query: Query
+	mutation: Mutation
+	subscription: Subscription
+}

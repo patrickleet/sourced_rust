@@ -125,6 +125,7 @@ pub fn build_graphql_engine(
 
     let mut b = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])
+        // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<TodoView>(
             ModelPermissions::new()
                 .role(

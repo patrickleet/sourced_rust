@@ -44,6 +44,7 @@ test('website auth shell + fixture routes present', () => {
   assert.match(signin, /X-Auth-Return-Redirect/);
   assert.ok(fs.existsSync(new URL('../src/routes/todos/+page.svelte', import.meta.url)));
   assert.ok(fs.existsSync(new URL('../src/routes/chat/+page.svelte', import.meta.url)));
+  assert.ok(fs.existsSync(new URL('../src/routes/admin/+page.svelte', import.meta.url)));
   assert.ok(!fs.existsSync(new URL('../src/routes/docs', import.meta.url)));
   assert.ok(!fs.existsSync(new URL('../src/routes/control-plane', import.meta.url)));
   const nav = fs.readFileSync(
@@ -52,7 +53,35 @@ test('website auth shell + fixture routes present', () => {
   );
   assert.match(nav, /\/todos/);
   assert.match(nav, /\/chat/);
+  assert.match(nav, /\/admin|isAdmin|engineRole/);
   assert.doesNotMatch(nav, /\/docs|\/control-plane|Pricing|two-paths|HopsBrand|hops-ops|#demos|#code/i);
+  const layout = fs.readFileSync(
+    new URL('../src/routes/+layout.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(layout, /engineRole|engineRoleFromGroups/);
+});
+
+test('admin: role-gated all-owners todos view', () => {
+  assert.ok(fs.existsSync(new URL('../src/routes/admin/admin.gql', import.meta.url)));
+  const gql = fs.readFileSync(new URL('../src/routes/admin/admin.gql', import.meta.url), 'utf8');
+  assert.match(gql, /query AdminAllTodos|todos/);
+  const server = fs.readFileSync(
+    new URL('../src/routes/admin/+page.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(server, /admin|error\(403|engineRole/);
+  assert.match(server, /adminTodos|AdminAllTodos|loadQuery/);
+  const page = fs.readFileSync(new URL('../src/routes/admin/+page.svelte', import.meta.url), 'utf8');
+  assert.match(page, /owner_id|All field notes|admin/i);
+  const hooks = fs.readFileSync(new URL('../src/hooks.server.ts', import.meta.url), 'utf8');
+  assert.match(hooks, /\/admin/);
+  const service = fs.readFileSync(
+    new URL('../../crates/service/src/service.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(service, /role\("admin"/);
+  assert.match(service, /owner_id|claim\("x-user-id"\)/);
 });
 
 test('home is distributed template with 8-step unidirectional todos story', () => {

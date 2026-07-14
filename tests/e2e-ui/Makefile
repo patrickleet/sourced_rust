@@ -115,11 +115,13 @@ ui-build: ui-install
 ui-test: ui-install
 	cd ui && $(NPM) test
 
-## Role SDL for UI codegen (GraphqlEngine::sdl_for_role → ui/schema/user.graphql)
+## Role SDL for UI codegen (GraphqlEngine::sdl_for_role → ui/schema/*.graphql)
 export-sdl:
 	cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/user.graphql
+	GQL_ROLE=admin cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/admin.graphql
 
 ## Export role SDL + regenerate TypedDocumentNode from co-located *.gql
+## (codegen uses schema/user.graphql; admin.graphql is for compare / optional dual client)
 gen-gql: export-sdl ui-install
 	cd ui && $(NPM) run gen:gql
 
