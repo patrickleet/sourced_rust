@@ -27,7 +27,8 @@ const config: CodegenConfig = {
 				},
 				enumsAsTypes: true,
 				skipTypename: true,
-				documentMode: 'documentNode'
+				documentMode: 'documentNode',
+				useTypeImports: true
 			}
 		}
 	}
