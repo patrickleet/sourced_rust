@@ -5,7 +5,7 @@
 	 * SSR load and client refetch use the same `todos.query` reference.
 	 */
 	import { untrack } from 'svelte';
-	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { useGraphql } from '$lib/gql';
 	import { todosArchive, todosComplete, todosCreate } from '$lib/api/commands.generated';
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
@@ -121,11 +121,8 @@
 		todos = [{ todo_id, owner_id: me || 'me', title: text, status: 'open' }, ...todos];
 		title = '';
 
-		// Generated command client — no hand mutation document at the call site.
-		const result = await todosCreate(
-			{ todo_id, title: text },
-			{ url: '/graphql', auth: authFromPageData(data) }
-		);
+		// Generated command client — client owns URL + auth headers.
+		const result = await todosCreate({ todo_id, title: text }, gql);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
@@ -148,10 +145,7 @@
 		pending = { ...pending, [todo_id]: 'completed' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-		const result = await todosComplete(
-			{ todo_id },
-			{ url: '/graphql', auth: authFromPageData(data) }
-		);
+		const result = await todosComplete({ todo_id }, gql);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
@@ -174,10 +168,7 @@
 		pending = { ...pending, [todo_id]: 'archived' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
 
-		const result = await todosArchive(
-			{ todo_id },
-			{ url: '/graphql', auth: authFromPageData(data) }
-		);
+		const result = await todosArchive({ todo_id }, gql);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {

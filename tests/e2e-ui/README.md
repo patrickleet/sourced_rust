@@ -146,25 +146,30 @@ Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.genera
 
 ### Command client (typed functions over GraphQL wire)
 
-Day-to-day writes are **commands**, not GraphQL documents. The same Rust
-registry (`e2e_service::graphql_commands()`) that registers mutation fields
-exports a machine-readable catalog; a generator emits TypeScript functions
-(`todosCreate`, `todosComplete`, …) that POST GraphQL under the hood with
-caller-supplied auth. Queries/subscriptions stay document-first (`.gql`).
+Day-to-day writes are **commands**, not hand-authored mutation documents.
+The same Rust registry (`e2e_service::graphql_commands()`) exports a catalog;
+`make gen-commands` emits:
+
+| Artifact | Purpose |
+|----------|---------|
+| `ui/src/lib/api/commands.manifest.json` | Machine catalog from Rust |
+| `ui/src/lib/api/commands.operations.gql` | Copy-paste mutations for GraphiQL |
+| `ui/src/lib/api/commands.generated.ts` | Same documents + `todosCreate(input, gql)` |
+
+Co-located route `*.gql` files hold **queries/subscriptions** only. Command
+mutations live under `$lib/api/commands.operations.gql`.
 
 ```bash
-make export-commands   # → ui/src/lib/api/commands.manifest.json
-make gen-commands      # → ui/src/lib/api/commands.generated.ts
-make check-commands    # gen-commands + fail on drift
+make export-commands   # → commands.manifest.json
+make gen-commands      # → .operations.gql + .generated.ts
+make check-commands    # fail on drift
 ```
 
-Example:
+Example (bound client owns URL + auth):
 
 ```ts
-import { todosCreate } from '$lib/api/commands.generated';
-import { authFromPageData } from '$lib/gql';
-
-await todosCreate({ todo_id, title }, { url: '/graphql', auth: authFromPageData(data) });
+const gql = useGraphql(() => data);
+await todosCreate({ todo_id, title }, gql);
 ```
 
 See distributed GitKB: `specs/query-layer/references/command-client-dx` and

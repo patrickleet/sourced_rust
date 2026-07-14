@@ -4,7 +4,7 @@
 	 * Posts use generated `chatMessagesPost` (GraphQL wire under the hood).
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { useGraphql } from '$lib/gql';
 	import { chatMessagesPost } from '$lib/api/commands.generated';
 	import { subscribe } from '$lib/graphql-ws';
 	import { sessionDisplayName } from '$lib/session';
@@ -109,7 +109,7 @@
 		busy = true;
 		const result = await chatMessagesPost(
 			{ message_id, body, room_id: data.room },
-			{ url: '/graphql', auth: authFromPageData(data) }
+			gql
 		);
 		busy = false;
 		if (result.errors?.length || !result.data) {

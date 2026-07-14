@@ -1,34 +1,12 @@
-# Co-located todos operations (Houdini-inspired).
-# Source of truth — run `npm run gen:gql` after edits.
+# Co-located todos **queries** (Houdini-inspired).
+# Command mutations: see `$lib/api/commands.operations.gql` (generated from Rust).
+# Run `npm run gen:gql` after query edits; `make gen-commands` for mutations.
 
 query Todos {
   todos {
     todo_id
     owner_id
     title
-    status
-  }
-}
-
-mutation TodosCreate($todo_id: String!, $title: String!) {
-  todos_create(input: { todo_id: $todo_id, title: $title }) {
-    todo_id
-    owner_id
-    title
-    status
-  }
-}
-
-mutation TodosComplete($todo_id: String!) {
-  todos_complete(input: { todo_id: $todo_id }) {
-    todo_id
-    status
-  }
-}
-
-mutation TodosArchive($todo_id: String!) {
-  todos_archive(input: { todo_id: $todo_id }) {
-    todo_id
     status
   }
 }

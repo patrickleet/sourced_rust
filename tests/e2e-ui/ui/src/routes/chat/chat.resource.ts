@@ -1,12 +1,11 @@
 /**
- * Co-located lobby chat GraphQL ops — documents from `chat.gql` via codegen.
- * SSR load, WS subscribe, and browser post share generated document refs.
+ * Co-located lobby chat query + subscription — documents from `chat.gql`.
+ * Posts: `$lib/api/commands.generated` → `chatMessagesPost`.
  */
 import { defineResource } from '$lib/gql/define-resource';
 import {
 	ChatMessagesDocument,
 	ChatMessagesLiveDocument,
-	ChatPostDocument,
 	type ChatMessagesQuery
 } from './chat.generated';
 
@@ -24,12 +23,9 @@ export function sortChatMessages(list: ChatMsg[]): ChatMsg[] {
 	);
 }
 
-/** Lobby resource used by `routes/chat` (SSR seed + live sub + post). */
-export const chat = defineResource<ChatQueryData, { post: typeof ChatPostDocument }>({
+/** Lobby resource used by `routes/chat` (SSR seed + live sub). */
+export const chat = defineResource<ChatQueryData>({
 	query: ChatMessagesDocument,
 	subscription: ChatMessagesLiveDocument,
-	mutations: {
-		post: ChatPostDocument
-	},
 	select: (data) => sortChatMessages(data.chat_messages ?? [])
 });

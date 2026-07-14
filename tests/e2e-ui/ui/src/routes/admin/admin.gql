@@ -1,7 +1,7 @@
-# Admin-only page ops.
-# - Query: same `todos` field; admin role has no owner filter.
+# Admin-only page **query**.
+# - Same `todos` field; admin role has no owner filter.
 # - Bound with limit + order_by (do not load unbounded RM into the browser).
-# - Mutation: `todos_force_archive` is registered ONLY for role admin.
+# Force-archive mutation: `$lib/api/commands.operations.gql` (generated).
 
 query AdminAllTodos {
   todos(limit: 100, order_by: [{ todo_id: asc }]) {
@@ -9,14 +9,5 @@ query AdminAllTodos {
     owner_id
     title
     status
-  }
-}
-
-mutation AdminForceArchive($todo_id: String!) {
-  todos_force_archive(input: { todo_id: $todo_id }) {
-    todo_id
-    owner_id
-    status
-    archived_by
   }
 }

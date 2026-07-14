@@ -154,14 +154,13 @@ test('todos.resource is defineResource wired to todos.gql generated documents', 
   assert.match(src, /defineResource/);
   assert.match(src, /export const todos/);
   assert.match(src, /TodosDocument|todos\.generated/);
-  assert.match(src, /TodosCreateDocument/);
-  assert.match(src, /TodosCompleteDocument/);
-  assert.match(src, /TodosArchiveDocument/);
+  assert.doesNotMatch(src, /TodosCreateDocument|mutations:/);
   const gql = fs.readFileSync(path.join(root, 'src/routes/todos/todos.gql'), 'utf8');
   assert.match(gql, /todo_id/);
   assert.match(gql, /owner_id/);
   assert.match(gql, /title/);
   assert.match(gql, /status/);
+  assert.doesNotMatch(gql, /mutation /);
 });
 
 const chatResourceFile = path.join(root, 'src/routes/chat/chat.resource.ts');
@@ -174,12 +173,13 @@ test('chat.resource is defineResource wired to chat.gql generated documents', ()
   assert.match(src, /export const chat/);
   assert.match(src, /ChatMessagesDocument|chat\.generated/);
   assert.match(src, /ChatMessagesLiveDocument/);
-  assert.match(src, /ChatPostDocument/);
+  assert.doesNotMatch(src, /ChatPostDocument|mutations:/);
   assert.match(src, /LOBBY_ROOM/);
   const gql = fs.readFileSync(path.join(root, 'src/routes/chat/chat.gql'), 'utf8');
   assert.match(gql, /message_id/);
   assert.match(gql, /room_id/);
   assert.match(gql, /subscription/);
+  assert.doesNotMatch(gql, /mutation /);
 });
 
 test('documentToString prints TypedDocumentNode AST for the wire body', () => {
