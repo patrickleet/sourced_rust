@@ -10,11 +10,14 @@ It is built with stateless vertical and horizontal scaling in cloud-native envir
 
 ### Multi-crate layout + UI e2e reference
 
-See **`tests/e2e-ui/`** for a nested workspace you can copy: `todo-domain`
-(per-user todos), `chat-domain` (live lobby chat), shared read models, thin
-service handlers, a runner, an HTTP/GraphQL suite, and a SvelteKit UI. GraphQL
-**subscriptions** push over WebSocket (`/graphql/ws`) after projector commits.
-Details: `tests/e2e-ui/README.md` and the `distributed-usage` skill.
+See **`tests/e2e-ui/`** for a nested workspace you can copy: pure domain crates
+(`todo-domain`, `chat-domain`), projectors-only read models, thin command
+handlers, a GraphQL-only public API, behavioral suite, and a SvelteKit UI with
+OIDC (Zitadel), SSR queries, co-located `.gql` + codegen, and live
+**subscriptions** over WebSocket (`/graphql/ws`) after projector commits.
+Details: [`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), the
+`distributed-usage` skill, and [GraphQL query service](#graphql-query-service)
+below.
 
 ## At a Glance
 
@@ -27,10 +30,11 @@ Details: `tests/e2e-ui/README.md` and the `distributed-usage` skill.
 | Snapshots | `#[derive(Snapshot)]` and a snapshot cache speed up hydration for long streams. |
 | Outbox | Durable publication records committed atomically with aggregates. |
 | Read models | Query-optimized relational projections, committed atomically or updated eventually. |
+| GraphQL query service | Auto-generated, **read-only** GraphQL over read models: filters, order, pagination, relationships, role RBAC, live subscriptions, and command mutations that dispatch through `microsvc`. |
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
 | Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
-| Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, or direct dispatch. |
-| Service CLI | `dctl` scaffolds service crates, describes manifests, and renders SQL or Atlas schema artifacts. |
+| Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, GraphQL mutations, or direct dispatch. |
+| Service CLI | `dctl` scaffolds service crates, describes manifests, and renders SQL, Atlas, or GraphQL SDL artifacts. |
 | Pluggable infrastructure | Traits for storage, messaging, read models, snapshots, outbox publishing, and locking. |
 
 ## Use as a Dependency
@@ -407,6 +411,7 @@ network servers.
 | `emitter` | No | In-process event emission and `#[enqueue]`. |
 | `http` | No | Axum HTTP transport for `microsvc` + the Knative/CloudEvents ingress router. |
 | `grpc` | No | Tonic gRPC transport for `microsvc`. |
+| `graphql` | No | GraphQL query service over read models (pulls in `http` + WebSocket). Pair with `sqlite` and/or `postgres` for a dialect. |
 | `postgres` | No | `PostgresRepository` and the Postgres outbox/transport (`PostgresBus`). |
 | `sqlite` | No | `SqliteRepository` async SQL adapter and local durable transport (`SqliteBus`). |
 | `nats` | No | `NatsBus` (NATS JetStream source/publisher). |
@@ -431,8 +436,9 @@ network servers.
 - **OutboxMessage**: A durable publication work item for a domain event, integration event, command, or generic transport message. Supports optional `destination` for point-to-point routing and metadata propagation.
 - **OutboxDispatcher**: Drains durable outbox rows and publishes them to a transport, sharing one claim → publish → complete path.
 - **ReadModel**: Query-optimized relational projection state for UI/API reads. Read models may be updated atomically with a command or eventually from published messages.
+- **GraphqlEngine**: Deny-by-default GraphQL surface over registered read-model tables: role-scoped columns/row filters, optional command mutations, live subscriptions via `ChangeHub`, and identity modes (`OidcBearer`, `TrustedProxy`, `Hybrid`, `DevHeaders`).
 - **Bus / BusConsumer**: The service bus facade — `send`/`publish` (produce) and `listen`/`subscribe` (consume), implemented by a per-transport `*Bus` type.
-- **microsvc::Service**: Convention-based async command/event handler framework with pluggable transports (HTTP, gRPC, bus, direct dispatch).
+- **microsvc::Service**: Convention-based async command/event handler framework with pluggable transports (HTTP, gRPC, bus, GraphQL mutations, direct dispatch).
 
 ## Terminology And CQRS Boundaries
 
@@ -1374,6 +1380,222 @@ let loaded = repo
 
 See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, schema bootstrap, relationship includes, distributed idempotency, and non-goals.
 
+## GraphQL query service
+
+Auto-generated, **read-only** GraphQL over relational read models — Hasura-style
+filtering, ordering, pagination, relationships, role-based column allowlists and
+row filters, live subscriptions after projector commits, and **command mutations**
+that dispatch through the same `microsvc` handlers as HTTP/gRPC/bus (not table
+writes).
+
+Normative design lives in GitKB (`specs/query-layer/*`). Operator-facing contract
+and layout notes: [`docs/graphql.md`](docs/graphql.md). End-to-end template:
+[`tests/e2e-ui/`](tests/e2e-ui/) (see its README).
+
+### Enable
+
+```toml
+# Query engine + SQLite dialect (local / tests)
+distributed = { version = "0.1", features = ["graphql", "sqlite"] }
+
+# Production-shaped: GraphQL + Postgres repository/bus
+distributed = { version = "0.1", features = ["graphql", "postgres"] }
+```
+
+`graphql` implies `http` (Axum router, including `/graphql/ws`). SDL helpers under
+`distributed::graphql::{naming,sdl}` compile without the feature so
+`dctl schema --format graphql` works in tooling crates.
+
+### Scope
+
+| In | Out |
+|---|---|
+| `SELECT`-only query surface from `TableSchema` / read models | Table mutations / write-to-projection via GraphQL |
+| Role column allowlists + row filters (`claim(...)`) | Built-in user auth product (identity is injected) |
+| SQLite + Postgres dialects | Cross-service federation / remote schemas |
+| Command mutations (`CommandRequest` → handler) | Event-stream `_stream` cursors |
+| Live list subscriptions via commit-path invalidation | Querying outbox / event-store operational tables |
+
+### Mount on a service
+
+```rust,ignore
+use distributed::graphql::{
+    claim, col, select, exposed_command, GraphqlCommands, GraphqlEngine, ModelPermissions,
+};
+use distributed::microsvc::{Service, Session};
+
+let engine = GraphqlEngine::from_manifest(&manifest, pool)?
+    .roles(&["user", "admin", "anonymous"])
+    .model::<TodoView>(
+        ModelPermissions::new()
+            .role(
+                "user",
+                select()
+                    .all_columns()
+                    .filter(col("owner_id").eq(claim("x-user-id"))),
+            )
+            .role("admin", select().all_columns()), // no owner filter
+    )
+    .commands(
+        GraphqlCommands::new()
+            .command(
+                "todos_create",
+                exposed_command()
+                    .input::<CreateTodoInput>()
+                    .output::<TodoStatusPayload>()
+                    .roles(&["user", "admin"]),
+            )
+            // admin-only fields are absent from user role-scoped SDL
+            .command(
+                "todos_force_archive",
+                exposed_command()
+                    .input::<ForceArchiveInput>()
+                    .output::<TodoStatusPayload>()
+                    .roles(&["admin"]),
+            ),
+    )
+    .graphiql(true) // local only — see GraphiQL section
+    .build()?;
+
+let service = Service::new()
+    .routes(routes)
+    // Optional: GraphQL-only public edge — handlers stay reachable via
+    // GraphQL mutations / bus / direct dispatch, but not bare HTTP command routes.
+    .without_http_command_routes()
+    .with_graphql(engine);
+
+// POST /graphql           — queries + command mutations
+// GET  /graphql           — GraphiQL when enabled
+// GET  /graphql/ws        — subscriptions (graphql-transport-ws / graphql-ws)
+```
+
+### Permissions (deny by default)
+
+Roles see only columns and rows you grant. Unmentioned models/roles fail closed.
+Row filters can bind session claims (`claim("x-user-id")`, `claim("x-role")`, …)
+so multi-tenant RLS lives in the engine, not ad-hoc handler SQL.
+
+```rust,ignore
+use distributed::graphql::{select, col, claim, ModelPermissions};
+
+ModelPermissions::new()
+    .role(
+        "user",
+        select()
+            .all_columns()
+            .filter(col("owner_id").eq(claim("x-user-id"))),
+    )
+    .role("anonymous", select().columns(["id", "status"]));
+```
+
+### Identity
+
+GraphQL does not invent a second session model. It builds a `microsvc::Session`
+claim map using an [`IdentityMode`](src/graphql/identity/):
+
+| Mode | When to use |
+|---|---|
+| **`OidcBearer`** | Production public edge: validate JWT (`Authorization: Bearer …`); require auth for protected ops. Scaffolds / e2e-ui prefer this when `OIDC_*` is set. |
+| **`TrustedProxy`** | Mesh/gateway injects trusted headers; client-supplied identity headers are stripped. |
+| **`Hybrid`** | Bearer when present, else trusted proxy headers. |
+| **`DevHeaders`** | Local only: trust ambient `x-user-id` / `x-role` (and friends). **Never** on a public edge. |
+
+Session convenience keys for domain code are neutral (`x-user-id`, `x-role`);
+gateway-specific claim names remain readable via `Session::get(...)`. See the
+microsvc session docs above.
+
+**WebSocket subscriptions:** browsers cannot set `Authorization` on the upgrade.
+Clients send the access token in `connection_init` (`authorization` /
+`accessToken` / nested headers). Do not put long-lived tokens in query strings
+for production. e2e-ui chat demonstrates the OIDC path.
+
+### Command mutations vs HTTP commands
+
+Command fields on the GraphQL schema are an RPC facade: same guards, same
+handlers, same outbox/projector path as other transports. Prefer a
+**GraphQL-only public API** for browser apps (`.without_http_command_routes()`)
+so the edge is one protocol. Handler guards should require a session user
+(and role where needed); never trust client-supplied owner fields over the
+session principal.
+
+### Live subscriptions
+
+After projectors commit read-model rows, a `ChangeHub` invalidates matching
+subscriptions so clients receive updated lists without polling. Wire projectors
+to the same pool the engine uses; the e2e-ui chat subscription is the reference.
+
+### GraphiQL
+
+```bash
+cargo run --example graphiql --features "graphql,sqlite"
+# open http://127.0.0.1:4000/graphql  (override with GRAPHIQL_ADDR)
+```
+
+GraphiQL is a **developer** tool. Default headers in the playground trust
+`x-role` / `x-user-id` (DevHeaders-style). For real services:
+
+- Prefer **`graphiql(false)`** or env policy (`GRAPHIQL=0`, production
+  `RUST_ENV` / `graphiql_enabled_from_env`) so production never ships the IDE.
+- Treat GraphiQL + DevHeaders as local-only; pair public scaffolds with
+  `OidcBearer`.
+
+### SDL, role schemas, and CI
+
+```bash
+# Manifest → GraphQL SDL artifact (dialect-independent)
+dctl schema --format graphql --out schema.graphql
+git diff --exit-code schema.graphql   # drift gate
+
+# Role-scoped SDL from a running engine (UI codegen)
+let user_sdl = engine.sdl_for_role("user")?;
+let admin_sdl = engine.sdl_for_role("admin")?;
+```
+
+Role SDL is a **security-relevant** view of the schema: admin-only mutations
+must not appear on the user role. UI codegen may use the **admin superset** so
+admin routes typecheck; **runtime ACL remains the session engine role** — types
+in the client bundle are not a security boundary.
+
+In `tests/e2e-ui`:
+
+```bash
+make export-sdl   # ui/schema/{user,admin}.graphql from the engine
+make gen-gql      # export-sdl + TypedDocumentNode from co-located *.gql
+make check-gql    # fail on schema/generated drift
+```
+
+### Full-stack template (`tests/e2e-ui`)
+
+| Piece | Role |
+|---|---|
+| Domain crates | Pure aggregates (todos, chat) |
+| Projectors | Read models only — commands never dual-write |
+| GraphQL edge | Owner RLS, admin all-owners + force-archive, chat sub |
+| SvelteKit | Auth.js + Zitadel, SSR `loadQuery`, co-located `.gql` + `defineResource` |
+| Suite | GraphQL-only edge, IDOR, SDL split, OIDC isolation |
+
+```bash
+cd tests/e2e-ui
+make up && set -a && source e2e-ui.env && set +a && make run
+# UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
+make test         # domain + behavioral (no Docker)
+make check-gql    # schema/codegen clean
+```
+
+### Tests in this repo
+
+| Suite | Focus |
+|---|---|
+| `tests/graphql_*` | Engine, HTTP, SDL, dialects, harden (authz/DoS/inject), identity, OIDC providers |
+| `tests/e2e-ui` | Multi-crate product template + SvelteKit + behavioral security |
+| `examples/graphiql.rs` | Seeded local playground |
+
+```bash
+cargo test --test graphql_engine --features "graphql,sqlite"
+cargo test --test graphql_harden --features "graphql,sqlite"
+# OIDC provider tests need Docker IdPs — see each test's module docs
+```
+
 ## Snapshots
 
 As aggregates accumulate events, replaying from scratch gets expensive. The framework keeps aggregate events as the durable source of truth and stores repository snapshots as a rebuildable hydration cache. A snapshot cache record can be deleted and rebuilt from events without changing aggregate correctness.
@@ -1610,6 +1832,7 @@ src/
   commit_builder/ # Transactional batches for aggregates, outbox, and read models
   emitter/        # In-process event emitter helpers (feature = "emitter")
   entity/         # Entity, event records, metadata, upcasting codecs
+  graphql/        # Query service: engine, permissions, identity, SDL, HTTP/WS (feature = "graphql")
   in_memory_repo/   # In-memory repository (implements every async trait)
   lock/           # Lock + lock manager traits, in-memory locks
   microsvc/       # Command/event handler framework: service, context, session
@@ -1628,8 +1851,10 @@ docs/
   repositories.md
   transports.md
   read-models.md
+  graphql.md      # GraphQL boundary contract + quickstart
   postgres-event-store.md
   research-and-roadmap.md
+tests/e2e-ui/     # Full-stack CQRS + GraphQL + SvelteKit template (nested workspace)
 migrations/       # Explicit SQLite and Postgres migrations
 compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tests
 ```
@@ -1693,6 +1918,9 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 - `tests/read_models/` — relational read-model projections and atomic commits
 - `tests/distributed_read_model/` — multi-service projection over the bus + persistence matrix
 - `tests/microsvc/` — async handlers, dispatch, session, convention, HTTP, gRPC, and bus transports
+- `tests/graphql_*` — GraphQL engine, HTTP/WS, SDL, dialects, hardening, identity, multi-IdP OIDC
+- `tests/e2e-ui/` — multi-crate domain + GraphQL-only edge + SvelteKit OIDC template (nested workspace)
+- `examples/graphiql.rs` — seeded GraphiQL playground (`--features "graphql,sqlite"`)
 - `tests/sagas/` — saga orchestration and choreography with the outbox pattern
 - `tests/sqlite_repository/`, `tests/postgres_repository/` — durable SQL adapters
 - `tests/transport_conformance/`, `tests/{nats,rabbitmq,kafka,postgres,sqlite}_transport/`, `tests/knative_cloudevents/` — transport adapters and the shared conformance harness
@@ -1700,25 +1928,3 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 ## License
 
 MIT. See `LICENSE`.
-
-## GraphQL query service
-
-Enable with features `graphql` + `sqlite` and/or `postgres`. See [docs/graphql.md](docs/graphql.md) for the boundary contract, `src/query/` layout, permissions, and `dctl schema --format graphql`.
-
-```rust,ignore
-let engine = GraphqlEngine::from_manifest(&manifest, pool)?
-    .roles(&["user", "anonymous"])
-    .grant_all("user")
-    .graphiql(true) // GET /graphql → GraphiQL IDE
-    .build()?;
-let service = Service::new().routes(routes).with_graphql(engine);
-// POST /graphql  — queries / mutations
-// GET  /graphql  — GraphiQL when enabled
-```
-
-Local visual playground (seeded sample orders):
-
-```bash
-cargo run --example graphiql --features "graphql,sqlite"
-# open http://127.0.0.1:4000/graphql
-```
