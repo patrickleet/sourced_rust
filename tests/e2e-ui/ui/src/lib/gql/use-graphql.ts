@@ -2,11 +2,11 @@
  * Browser binder: page data → GqlAuth + createGraphqlClient (POST /graphql).
  * Keep getAuth lazy so accessToken stays current after session updates.
  */
-import { createGraphqlClient, type GraphqlClient } from './create-client';
-import { authFromPageData, type PageGraphqlData } from './auth-from-page';
+import { createGraphqlClient, type GraphqlClient } from './create-client.ts';
+import { authFromPageData, type PageGraphqlData } from './auth-from-page.ts';
 
-export type { PageGraphqlData } from './auth-from-page';
-export { authFromPageData } from './auth-from-page';
+export type { PageGraphqlData } from './auth-from-page.ts';
+export { authFromPageData } from './auth-from-page.ts';
 
 /**
  * Client bound to same-origin `/graphql` (Vite proxies to the API in dev).

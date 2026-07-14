@@ -126,20 +126,25 @@ test('home is distributed template with 8-step unidirectional todos story', () =
   assert.doesNotMatch(footer, /HopsBrand|Ship products, not infrastructure/i);
 });
 
-test('todos: co-located resource — same query SSR + browser mutations', () => {
+test('todos: co-located .gql + resource — same query SSR + browser mutations', () => {
+  assert.ok(fs.existsSync(new URL('../src/routes/todos/todos.gql', import.meta.url)));
+  assert.ok(fs.existsSync(new URL('../src/routes/todos/todos.generated.ts', import.meta.url)));
+  const gqlFile = fs.readFileSync(new URL('../src/routes/todos/todos.gql', import.meta.url), 'utf8');
+  assert.match(gqlFile, /query Todos/);
+  assert.match(gqlFile, /mutation TodosCreate/);
+  assert.match(gqlFile, /mutation TodosComplete/);
+  assert.match(gqlFile, /mutation TodosArchive/);
+
   const resource = fs.readFileSync(
     new URL('../src/routes/todos/todos.resource.ts', import.meta.url),
     'utf8'
   );
   assert.match(resource, /defineResource/);
   assert.match(resource, /export const todos/);
-  assert.match(resource, /query:/);
-  assert.match(resource, /create:|mutations:\s*\{[\s\S]*create/);
-  assert.match(resource, /complete:/);
-  assert.match(resource, /archive:/);
-  assert.match(resource, /todos_create/);
-  assert.match(resource, /todos_complete/);
-  assert.match(resource, /todos_archive/);
+  assert.match(resource, /TodosDocument|from '\.\/todos\.generated'/);
+  assert.match(resource, /TodosCreateDocument|TodosCompleteDocument|TodosArchiveDocument/);
+  // No hand-authored multi-line GraphQL strings in the resource
+  assert.doesNotMatch(resource, /mutation TodosCreate|query Todos \{/);
 
   const defineRes = fs.readFileSync(
     new URL('../src/lib/gql/define-resource.ts', import.meta.url),
@@ -181,13 +186,14 @@ test('todos: co-located resource — same query SSR + browser mutations', () => 
 
   // documents re-exports resource identity for chat-era imports
   const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
-  assert.match(docs, /todos\.query|TODOS_QUERY/);
+  assert.match(docs, /todos\.query|TODOS_QUERY|documentToString/);
   assert.match(docs, /todos\.resource|todos\.mutations/);
 
   // Unified request path (single Jack-style core)
   const request = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
   assert.match(request, /export async function requestGraphql/);
   assert.match(request, /buildAuthHeaders|authorization/);
+  assert.match(request, /documentToString/);
   const client = fs.readFileSync(new URL('../src/lib/gql/client.ts', import.meta.url), 'utf8');
   assert.match(client, /requestGraphql|createGraphqlClient|defineResource/);
   const createClient = fs.readFileSync(
@@ -197,22 +203,34 @@ test('todos: co-located resource — same query SSR + browser mutations', () => 
   assert.match(createClient, /export function createGraphqlClient/);
   const serverGql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
   assert.match(serverGql, /requestGraphql/);
+
+  const schema = fs.readFileSync(new URL('../schema/user.graphql', import.meta.url), 'utf8');
+  assert.match(schema, /type Query|todos_create|chat_messages/);
+  const pkg = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+  assert.match(pkg, /gen:gql|graphql-codegen/);
 });
 
 // DX contract lives in GitKB ([[specs/e2e-ui/sveltekit-dx]]), not the code tree.
 // Structural checks above assert the pilot modules the spec describes.
 
-test('chat: co-located resource — SSR query, WS subscription, browser post', () => {
+test('chat: co-located .gql + resource — SSR query, WS subscription, browser post', () => {
+  assert.ok(fs.existsSync(new URL('../src/routes/chat/chat.gql', import.meta.url)));
+  assert.ok(fs.existsSync(new URL('../src/routes/chat/chat.generated.ts', import.meta.url)));
+  const gqlFile = fs.readFileSync(new URL('../src/routes/chat/chat.gql', import.meta.url), 'utf8');
+  assert.match(gqlFile, /query ChatMessages/);
+  assert.match(gqlFile, /subscription ChatMessagesLive/);
+  assert.match(gqlFile, /mutation ChatPost/);
+
   const resource = fs.readFileSync(
     new URL('../src/routes/chat/chat.resource.ts', import.meta.url),
     'utf8'
   );
   assert.match(resource, /defineResource/);
   assert.match(resource, /export const chat/);
-  assert.match(resource, /subscription:/);
-  assert.match(resource, /post:|mutations:\s*\{[\s\S]*post/);
-  assert.match(resource, /chat_messages_post|CHAT_POST|chat_messages/);
+  assert.match(resource, /ChatMessagesDocument|from '\.\/chat\.generated'/);
+  assert.match(resource, /ChatMessagesLiveDocument|ChatPostDocument/);
   assert.match(resource, /LOBBY_ROOM|lobby/);
+  assert.doesNotMatch(resource, /subscription \{|mutation ChatPost\(/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/chat/+page.server.ts', import.meta.url),
@@ -233,7 +251,7 @@ test('chat: co-located resource — SSR query, WS subscription, browser post', (
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
 
   const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
-  assert.match(docs, /chat\.resource|chatResource|chat\.mutations/);
+  assert.match(docs, /chat\.resource|chat\.mutations|documentToString/);
 });
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {

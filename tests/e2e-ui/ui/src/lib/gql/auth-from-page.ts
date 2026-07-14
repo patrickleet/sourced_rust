@@ -2,7 +2,7 @@
  * Pure page-data → GqlAuth mapping (no createGraphqlClient import).
  * Safe for unit tests under node --experimental-strip-types.
  */
-import type { GqlAuth } from './types';
+import type { GqlAuth } from './types.ts';
 
 export type PageGraphqlData = {
 	accessToken?: string | null;

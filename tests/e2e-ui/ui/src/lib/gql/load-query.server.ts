@@ -1,11 +1,14 @@
 /**
  * SSR load helper for co-located resources.
  * `.server.ts` so private env / serverGraphql never enter the client bundle.
+ * Accepts string or TypedDocumentNode (from co-located .gql codegen).
  */
 import type { ServerLoadEvent } from '@sveltejs/kit';
+import type { TypedDocumentNode } from '@graphql-typed-document-node/core';
 import { engineRoleFromGroups } from '$lib/roles';
 import { serverGraphql } from '$lib/server/graphql';
-import type { GqlResult } from './types';
+import type { GqlDocument } from './document.ts';
+import type { GqlResult } from './types.ts';
 
 type AuthLocals = {
 	auth: () => Promise<{
@@ -19,7 +22,7 @@ type AuthLocals = {
  * Always returns session + accessToken + engineRole for the browser client binder.
  */
 export function loadQuery<TData, TMapped extends Record<string, unknown>>(
-	document: string,
+	document: GqlDocument | TypedDocumentNode<TData, Record<string, unknown>>,
 	map: (data: TData | undefined, result: GqlResult<TData>) => TMapped
 ) {
 	return async (event: ServerLoadEvent) => {

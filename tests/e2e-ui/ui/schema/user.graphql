@@ -1,0 +1,93 @@
+# Pilot role-SDL for e2e-ui GraphQL codegen (role: user).
+# Later: replace with `make export-sdl` / GraphqlEngine::sdl_for_role("user").
+# Keep aligned with crates/service GraphQL surface + read models.
+
+scalar JSON
+
+type Todo {
+  todo_id: String!
+  owner_id: String!
+  title: String!
+  status: String!
+}
+
+type ChatMessage {
+  message_id: String!
+  room_id: String!
+  author_id: String!
+  body: String!
+  created_at: String!
+}
+
+input StringEq {
+  _eq: String
+}
+
+input ChatMessagesWhere {
+  room_id: StringEq
+}
+
+input TodosCreateInput {
+  todo_id: String!
+  title: String!
+}
+
+input TodosCompleteInput {
+  todo_id: String!
+}
+
+input TodosArchiveInput {
+  todo_id: String!
+}
+
+input TodosRenameInput {
+  todo_id: String!
+  title: String!
+}
+
+input TodosReopenInput {
+  todo_id: String!
+}
+
+input ChatMessagesPostInput {
+  message_id: String!
+  body: String!
+  room_id: String!
+}
+
+type TodoCreatePayload {
+  todo_id: String!
+  owner_id: String!
+  title: String!
+  status: String!
+}
+
+type TodoStatusPayload {
+  todo_id: String!
+  status: String!
+}
+
+type Query {
+  todos: [Todo!]!
+  chat_messages(where: ChatMessagesWhere): [ChatMessage!]!
+}
+
+type Mutation {
+  todos_create(input: TodosCreateInput!): TodoCreatePayload
+  todos_complete(input: TodosCompleteInput!): TodoStatusPayload
+  todos_archive(input: TodosArchiveInput!): TodoStatusPayload
+  todos_rename(input: TodosRenameInput!): TodoCreatePayload
+  todos_reopen(input: TodosReopenInput!): TodoStatusPayload
+  chat_messages_post(input: ChatMessagesPostInput!): ChatMessage
+}
+
+type Subscription {
+  todos: [Todo!]!
+  chat_messages(where: ChatMessagesWhere): [ChatMessage!]!
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
