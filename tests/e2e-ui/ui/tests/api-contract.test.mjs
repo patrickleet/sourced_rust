@@ -94,7 +94,10 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
     new URL('../../crates/service/src/handlers/commands/force_archive.rs', import.meta.url),
     'utf8'
   );
-  assert.match(force, /require_admin|todo\.force_archive/);
+  assert.match(force, /todo\.force_archive/);
+  assert.match(force, /session_is_admin|session_has_user/);
+  // Session gates live in guard (bool), not only handle
+  assert.match(force, /fn guard[\s\S]*session_is_admin/);
   const codegen = fs.readFileSync(new URL('../codegen.ts', import.meta.url), 'utf8');
   assert.match(codegen, /admin\.graphql/);
 });

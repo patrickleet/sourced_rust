@@ -2,7 +2,8 @@
 //!
 //! Archives any todo by id without requiring the caller to be the owner.
 //! Domain still applies archive via the real `owner_id` on the aggregate
-//! (so projectors/events stay consistent). Session must carry role `admin`.
+//! (so projectors/events stay consistent). Session must carry role `admin`
+//! (enforced in `guard`; GraphQL also registers the field only for admin).
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::OutboxMessage;
@@ -11,7 +12,7 @@ use serde_json::{json, Value};
 use todo_domain::TodoFact;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_admin, require_user};
+use crate::handlers::util::{rejected, require_user, session_has_user, session_is_admin};
 
 pub const COMMAND: &str = "todo.force_archive";
 
@@ -35,7 +36,10 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
+    // Session checks belong here: missing admin/user → GuardRejected, not handle body.
     ctx.has_fields(&["todo_id"])
+        && session_has_user(ctx.session())
+        && session_is_admin(ctx.session())
 }
 
 pub async fn handle<R, L, S>(
@@ -46,9 +50,7 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
-    // Defense in depth: GraphQL only registers this field for role admin;
-    // reject if command is ever invoked without admin session role.
-    require_admin(ctx.session())?;
+    // Guard already required admin + user id; extract principal for the payload.
     let admin = require_user(ctx.session())?;
     let input = ctx.input::<TodoForceArchiveInput>()?;
 
