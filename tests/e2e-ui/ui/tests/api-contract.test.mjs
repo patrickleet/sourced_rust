@@ -370,6 +370,9 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.doesNotMatch(page, /chat\.mutations\.post|mutations\.post/);
   assert.match(page, /chat\.subscription|subscription/);
   assert.match(page, /subscribe/);
+  // WS auth for connection_init — must not drop this when refactoring HTTP commands.
+  assert.match(page, /authFromPageData/);
+  assert.match(page, /subscribe\([^)]*authFromPageData/);
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
 
