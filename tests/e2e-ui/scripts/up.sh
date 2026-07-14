@@ -34,12 +34,21 @@ chmod 777 "$MACHINEKEY_DIR" "$MACHINEKEY_DIR/e2e"
 echo "==> docker compose up"
 docker compose -f "$COMPOSE" up -d --remove-orphans
 
+# Heartbeat while waiting (stderr so command substitutions stay clean).
+wait_tick() {
+  local label="$1" n="$2" every="${3:-5}"
+  if (( n == 1 || n % every == 0 )); then
+    echo "    … $label (try $n)" >&2
+  fi
+}
+
 echo "==> Wait for app Postgres"
 for i in $(seq 1 60); do
   if docker compose -f "$COMPOSE" exec -T app-db pg_isready -U e2e -d e2e_ui >/dev/null 2>&1; then
-    echo "    app-db ready"
+    echo "    app-db ready (${i}s)"
     break
   fi
+  wait_tick "app-db" "$i" 10
   sleep 1
   if [[ $i -eq 60 ]]; then
     echo "ERROR: app-db not ready"
@@ -48,11 +57,11 @@ for i in $(seq 1 60); do
   fi
 done
 
-echo "==> Wait for Zitadel"
+echo "==> Wait for Zitadel (API via proxy; first boot can take ~30–90s)"
 for i in $(seq 1 90); do
-  if curl -fsS "$ZITADEL_HOST/debug/healthz" >/dev/null 2>&1 \
-    || curl -fsS "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
-    echo "    zitadel probe ok (${i}s)"
+  if curl -fsS --max-time 2 "$ZITADEL_HOST/debug/healthz" >/dev/null 2>&1 \
+    || curl -fsS --max-time 2 "$ZITADEL_HOST/debug/ready" >/dev/null 2>&1; then
+    echo "    zitadel probe ok (${i} tries)"
     break
   fi
   if ! docker compose -f "$COMPOSE" ps --status running --services 2>/dev/null | grep -q '^zitadel$'; then
@@ -60,6 +69,7 @@ for i in $(seq 1 90); do
     docker compose -f "$COMPOSE" logs --tail=80 zitadel || true
     exit 1
   fi
+  wait_tick "zitadel health" "$i" 5
   sleep 2
   if [[ $i -eq 90 ]]; then
     echo "ERROR: Zitadel unreachable"
@@ -79,6 +89,7 @@ for i in $(seq 1 60); do
     echo "    found $KEYFILE"
     break
   fi
+  wait_tick "machine key" "$i" 5
   sleep 2
   if [[ $i -eq 60 ]]; then
     echo "    recreating stack for FirstInstance key"
@@ -93,6 +104,7 @@ for i in $(seq 1 60); do
         KEYFILE="${keys[0]}"
         break 2
       fi
+      wait_tick "machine key (after recreate)" "$j" 5
       sleep 2
     done
   fi
@@ -118,18 +130,22 @@ mint_admin() {
   sig=$(printf '%s' "${header}.${payload}" | openssl dgst -sha256 -sign "$tmp" | b64url)
   rm -f "$tmp"
   jwt="${header}.${payload}.${sig}"
-  curl -sS -X POST "$ZITADEL_HOST/oauth/v2/token" \
+  curl -sS --max-time 10 -X POST "$ZITADEL_HOST/oauth/v2/token" \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
     --data-urlencode "scope=openid urn:zitadel:iam:org:project:id:zitadel:aud" \
-    --data-urlencode "assertion=$jwt" | jq -r '.access_token // empty'
+    --data-urlencode "assertion=$jwt" 2>/dev/null | jq -r '.access_token // empty'
 }
 
-echo "==> Admin token"
+echo "==> Admin token (JWT-bearer mint)"
 ACCESS_TOKEN=""
 for i in $(seq 1 45); do
   ACCESS_TOKEN=$(mint_admin)
-  [[ -n "$ACCESS_TOKEN" && "$ACCESS_TOKEN" != "null" ]] && break
+  if [[ -n "$ACCESS_TOKEN" && "$ACCESS_TOKEN" != "null" ]]; then
+    echo "    ok (try $i)"
+    break
+  fi
+  wait_tick "admin token" "$i" 3
   sleep 2
 done
 if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
@@ -137,14 +153,19 @@ if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
   exit 1
 fi
 
+# Management API helper.
+# - Retries transient 5xx / empty with progress.
+# - Treats 409 as success (idempotent re-bootstrap: role/user already exists).
+# - Does NOT silently spin for 90s on permanent client errors.
 api() {
   local method="$1" path="$2" body="${3:-}" out http_code attempt
-  for attempt in $(seq 1 45); do
+  local max_attempts=30
+  for attempt in $(seq 1 "$max_attempts"); do
     if [[ -n "$body" ]]; then
-      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+      out=$(curl -sS --max-time 15 -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
         -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' -d "$body" || true)
     else
-      out=$(curl -sS -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
+      out=$(curl -sS --max-time 15 -w '\n%{http_code}' -X "$method" "$ZITADEL_HOST$path" \
         -H "Authorization: Bearer $ACCESS_TOKEN" || true)
     fi
     http_code=$(echo "$out" | tail -n1)
@@ -152,9 +173,20 @@ api() {
     if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
       printf '%s' "$out"; return 0
     fi
+    # Already exists / conflict — fine for re-runs of make up
+    if [[ "$http_code" == "409" ]]; then
+      printf '%s' "$out"; return 0
+    fi
     if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
       echo "ERROR: $method $path → $http_code" >&2; echo "$out" >&2; return 1
     fi
+    # Permanent-ish client errors: fail fast (don't burn ~minutes)
+    if [[ "$http_code" =~ ^4[0-9][0-9]$ ]]; then
+      echo "ERROR: $method $path → HTTP $http_code" >&2
+      echo "$out" >&2
+      return 1
+    fi
+    wait_tick "$method $path (HTTP ${http_code:-?})" "$attempt" 3
     sleep 2
   done
   echo "ERROR: $method $path not ready (HTTP $http_code)" >&2; return 1
@@ -162,6 +194,57 @@ api() {
 
 echo "==> Management API ready"
 api POST /management/v1/projects/_search '{}' >/dev/null
+echo "    ok"
+
+# ---- login-client PAT (same as sites/the-website/scripts/setup-local-zitadel.sh) ----
+# Zitadel v4 login UI is a separate container; it needs IAM_LOGIN_CLIENT + PAT.
+LOGIN_CLIENT_DIR="$ROOT/docker/login-client"
+LOGIN_CLIENT_PAT_FILE="$LOGIN_CLIENT_DIR/pat"
+LOGIN_CLIENT_USERNAME="login-client"
+mkdir -p "$LOGIN_CLIENT_DIR"
+if [[ ! -s "$LOGIN_CLIENT_PAT_FILE" ]]; then
+  echo "==> login-client machine user + PAT (for /ui/v2/login)"
+  USER_SEARCH=$(api POST /management/v1/users/_search "$(jq -n --arg n "$LOGIN_CLIENT_USERNAME" \
+    '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
+  LOGIN_USER_ID=$(echo "$USER_SEARCH" | jq -r '.result[0].id // empty')
+  if [[ -z "$LOGIN_USER_ID" ]]; then
+    LOGIN_USER_RESP=$(api POST /management/v1/users/machine "$(jq -n \
+      --arg u "$LOGIN_CLIENT_USERNAME" \
+      '{userName: $u, name: "Login Client", description: "Service user for zitadel-login", accessTokenType: "ACCESS_TOKEN_TYPE_BEARER"}')")
+    LOGIN_USER_ID=$(echo "$LOGIN_USER_RESP" | jq -r .userId)
+    [[ -n "$LOGIN_USER_ID" && "$LOGIN_USER_ID" != "null" ]] || {
+      echo "ERROR: login-client create failed"; echo "$LOGIN_USER_RESP"; exit 1
+    }
+    api POST /admin/v1/members "$(jq -n --arg uid "$LOGIN_USER_ID" \
+      '{userId: $uid, roles: ["IAM_LOGIN_CLIENT"]}')" >/dev/null
+  fi
+  PAT_RESP=$(api POST "/management/v1/users/$LOGIN_USER_ID/pats" \
+    "$(jq -n '{expirationDate: "2029-01-01T00:00:00Z"}')")
+  LOGIN_PAT=$(echo "$PAT_RESP" | jq -r .token)
+  [[ -n "$LOGIN_PAT" && "$LOGIN_PAT" != "null" ]] || {
+    echo "ERROR: login-client PAT create failed"; echo "$PAT_RESP"; exit 1
+  }
+  umask 077
+  printf '%s' "$LOGIN_PAT" > "$LOGIN_CLIENT_PAT_FILE"
+  echo "    wrote $LOGIN_CLIENT_PAT_FILE"
+  echo "==> Restarting zitadel-login to pick up PAT"
+  docker compose -f "$COMPOSE" restart zitadel-login >/dev/null 2>&1 || true
+  echo "==> Wait for login UI (/ui/v2/login)"
+  for i in $(seq 1 30); do
+    code=$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' "$ZITADEL_HOST/ui/v2/login" || true)
+    if [[ "$code" == "200" || "$code" == "307" || "$code" == "302" ]]; then
+      echo "    login UI ready (HTTP $code)"
+      break
+    fi
+    wait_tick "login UI HTTP ${code:-?}" "$i" 5
+    sleep 1
+    if [[ $i -eq 30 ]]; then
+      echo "    WARN: login UI still HTTP $code — browser login may 502 until zitadel-login is healthy"
+    fi
+  done
+else
+  echo "==> login-client PAT already at $LOGIN_CLIENT_PAT_FILE"
+fi
 
 echo "==> Project $PROJECT_NAME"
 PROJECT_SEARCH=$(api POST /management/v1/projects/_search '{}')
@@ -172,10 +255,15 @@ if [[ -z "$PROJECT_ID" ]]; then
 fi
 echo "    project=$PROJECT_ID"
 
-echo "==> Roles user + admin"
+echo "==> Roles user + admin (409 = already exists, ok)"
 for role in user admin; do
-  api POST "/management/v1/projects/$PROJECT_ID/roles" \
-    "$(jq -n --arg k "$role" --arg d "$role" '{roleKey: $k, displayName: $d}')" >/dev/null 2>&1 || true
+  # api treats 409 as success so re-runs don't spin for minutes
+  if api POST "/management/v1/projects/$PROJECT_ID/roles" \
+    "$(jq -n --arg k "$role" --arg d "$role" '{roleKey: $k, displayName: $d}')" >/dev/null; then
+    echo "    role $role ok"
+  else
+    echo "    role $role skipped/failed (continuing)"
+  fi
 done
 
 echo "==> Web OIDC app $APP_NAME (Auth.js browser login)"
@@ -234,24 +322,41 @@ elif [[ -f "$SECRET_FILE" ]]; then
   CLIENT_SECRET=$(cat "$SECRET_FILE")
 fi
 
+# Humans MUST be created via human/_import with a flat password string.
+# Nested password objects leave users in USER_STATE_INITIAL with no password
+# (account picker shows a red dot; login never works).
 create_human() {
   local username="$1" password="$2" role="$3" email="$4"
-  local search uid
+  local search uid state
   search=$(api POST /management/v1/users/_search "$(jq -n --arg n "$username" \
     '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
   uid=$(echo "$search" | jq -r '.result[0].id // empty')
+  state=$(echo "$search" | jq -r '.result[0].state // empty')
+
+  # Drop broken INITIAL users (no password) so we can re-import.
+  if [[ -n "$uid" && "$state" == "USER_STATE_INITIAL" ]]; then
+    echo "    removing uninitialized $username ($uid)"
+    curl -sS -o /dev/null -X DELETE "$ZITADEL_HOST/management/v1/users/$uid" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" || true
+    uid=""
+  fi
+
   if [[ -z "$uid" ]]; then
-    echo "==> Human user $username"
-    uid=$(api POST /management/v1/users/human "$(jq -n \
+    echo "==> Human user $username (import + password)"
+    uid=$(api POST /management/v1/users/human/_import "$(jq -n \
       --arg u "$username" --arg e "$email" --arg p "$password" \
       '{
         userName: $u,
         profile: { firstName: $u, lastName: "E2E", displayName: $u },
         email: { email: $e, isEmailVerified: true },
-        password: { password: $p, changeRequired: false }
+        password: $p,
+        passwordChangeRequired: false
       }')" | jq -r '.userId // empty')
+  else
+    echo "    reusing human $username ($uid, $state)"
   fi
   [[ -n "$uid" && "$uid" != "null" ]] || { echo "ERROR: human $username"; exit 1; }
+
   # Grant project role
   grants=$(api POST /management/v1/users/grants/_search "$(jq -n --arg uid "$uid" \
     '{queries: [{userIdQuery: {userId: $uid}}]}')" 2>/dev/null || echo '{}')
@@ -266,14 +371,16 @@ create_human() {
     api POST "/management/v1/users/$uid/grants" \
       "$(jq -n --arg pid "$PROJECT_ID" --arg r "$role" '{projectId: $pid, roleKeys: [$r]}')" >/dev/null
   fi
-  echo "    $username → $uid ($role)"
   printf '%s' "$uid"
 }
 
-echo "==> Human users (browser login)"
+echo "==> Human users (browser login: alice, bob, admin)"
 ALICE_UID=$(create_human "alice" "Password1!" "user" "alice@e2e.local")
+echo "    alice → $ALICE_UID"
 BOB_UID=$(create_human "bob" "Password1!" "user" "bob@e2e.local")
+echo "    bob → $BOB_UID"
 ADMIN_HUMAN_UID=$(create_human "admin" "Password1!" "admin" "admin@e2e.local")
+echo "    admin → $ADMIN_HUMAN_UID"
 
 create_machine() {
   local username="$1" role="$2" key_out="$3"
@@ -316,7 +423,9 @@ echo "==> Machine users (suite JWT-bearer)"
 USER_M_KEY="$MACHINEKEY_DIR/e2e/user-machine.json"
 ADMIN_M_KEY="$MACHINEKEY_DIR/e2e/admin-machine.json"
 USER_M_UID=$(create_machine "e2e-ui-user-m" "user" "$USER_M_KEY")
+echo "    e2e-ui-user-m → $USER_M_UID"
 ADMIN_M_UID=$(create_machine "e2e-ui-admin-m" "admin" "$ADMIN_M_KEY")
+echo "    e2e-ui-admin-m → $ADMIN_M_UID"
 
 # OIDC audience for JWT validation: project id (Zitadel project-scoped aud)
 DATABASE_URL="postgres://e2e:e2e@127.0.0.1:5433/e2e_ui"

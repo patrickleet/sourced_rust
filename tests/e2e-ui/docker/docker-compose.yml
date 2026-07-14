@@ -1,11 +1,11 @@
 # e2e-ui full stack: app Postgres + Zitadel (OIDC).
+# Zitadel topology mirrors sites/the-website (API + login UI + Caddy proxy).
 #
 #   cd tests/e2e-ui && make up
 #
 # Ports:
 #   5433  app Postgres (event store, read models, bus)
-#   18080 Zitadel (OIDC; host port — container listens 8080)
-#   5432  Zitadel's internal Postgres (not published by default name collision avoided)
+#   18080 Zitadel via proxy (OIDC + /ui/v2/login + console)
 services:
   app-db:
     image: docker.io/library/postgres:16-alpine
@@ -49,12 +49,48 @@ services:
     depends_on:
       zitadel-db:
         condition: service_healthy
-    ports:
-      # Avoid clashes with other local Zitadel / services on 8080–8081
-      - "18080:8080"
+    # No host ports — browsers hit zitadel-proxy (same as the-website).
     volumes:
       - ./zitadel-init:/init:ro
       - ./machinekey:/machinekey
+    networks: [e2e]
+
+  # Zitadel v4 ships login UI as a separate Next.js service (the-website pattern).
+  # PAT at /login-client/pat is written by scripts/up.sh after Zitadel boots —
+  # container restarts until that file exists.
+  zitadel-login:
+    image: ghcr.io/zitadel/login:v3.0.1
+    restart: unless-stopped
+    environment:
+      ZITADEL_API_URL: http://zitadel-proxy:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ ! -s /login-client/pat ]; then
+          echo "Waiting for PAT at /login-client/pat — run make up / scripts/up.sh" >&2
+          exit 1
+        fi
+        export ZITADEL_SERVICE_USER_TOKEN="$$(cat /login-client/pat)"
+        exec node apps/login/server.js
+    depends_on:
+      zitadel:
+        condition: service_started
+    volumes:
+      - ./login-client:/login-client:ro
+    networks: [e2e]
+
+  zitadel-proxy:
+    image: caddy:2-alpine
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - zitadel
+      - zitadel-login
     networks: [e2e]
 
 networks:

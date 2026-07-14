@@ -23,7 +23,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const role = engineRoleFromGroups(session?.user?.groups);
 
 	const result = await serverGraphql<{ todos: Todo[] }>(
-		`{ todos { todo_id owner_id title status } }`,
+		`{
+			todos {
+				todo_id
+				owner_id
+				title
+				status
+			}
+		}`,
 		{
 			accessToken,
 			userId: accessToken ? undefined : session?.user?.id,

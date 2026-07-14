@@ -1,0 +1,17 @@
+# Mirrors sites/the-website/zitadel/Caddyfile — host port 18080 (ExternalPort).
+:8080 {
+	# Zitadel v4 login UI (Next.js) lives behind its own service.
+	handle /ui/v2/login* {
+		reverse_proxy zitadel-login:3000
+	}
+
+	# Everything else (console, API, OIDC, .well-known) → Zitadel server.
+	# Pin Host to ExternalDomain so internal callers hit the same instance
+	# the browser hits (Host=localhost:18080).
+	handle {
+		reverse_proxy zitadel:8080 {
+			header_up Host localhost:18080
+			header_up X-Forwarded-Host localhost:18080
+		}
+	}
+}

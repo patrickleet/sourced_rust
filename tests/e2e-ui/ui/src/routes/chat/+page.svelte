@@ -73,10 +73,14 @@
 		const groups = data.session?.user?.groups;
 		unsub = subscribe(
 			`subscription {
-        chat_messages(where: { room_id: { _eq: "${data.room}" } }) {
-          message_id room_id author_id body created_at
-        }
-      }`,
+				chat_messages(where: { room_id: { _eq: "${data.room}" } }) {
+					message_id
+					room_id
+					author_id
+					body
+					created_at
+				}
+			}`,
 			{
 				accessToken: data.accessToken ?? undefined,
 				userId: data.accessToken ? undefined : (data.userId ?? undefined),
