@@ -33,6 +33,13 @@ target/llvm-cov/
 .dispatch-prefetch
 graphql-oidc.env
 
+# ATC agent local cache (PR review prefetch)
+.dispatch-prefetch/
+
+# Make recipe PID/log files (e2e-ui already ignores under its dir)
+.make-*
+**/.make-*
+
 # OIDC e2e local secrets / generated env (never commit)
 graphql-oidc.env
 graphql-oidc-keycloak.env
