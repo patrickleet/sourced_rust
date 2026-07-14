@@ -205,9 +205,22 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(serverGql, /requestGraphql/);
 
   const schema = fs.readFileSync(new URL('../schema/user.graphql', import.meta.url), 'utf8');
-  assert.match(schema, /type Query|todos_create|chat_messages/);
+  // Role SDL is exported from Rust engine (not a permanent hand pilot)
+  assert.match(schema, /GENERATED|sdl_for_role|build_graphql_engine/);
+  assert.match(schema, /todos_create|chat_messages/);
+  assert.match(schema, /type Query|type Mutation/);
   const pkg = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
   assert.match(pkg, /gen:gql|graphql-codegen/);
+  assert.match(pkg, /gen:schema|e2e-export-sdl/);
+  const makefile = fs.readFileSync(new URL('../../Makefile', import.meta.url), 'utf8');
+  assert.match(makefile, /export-sdl/);
+  assert.match(makefile, /e2e-export-sdl/);
+  const exportBin = fs.readFileSync(
+    new URL('../../crates/runner/src/bin/export_sdl.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(exportBin, /sdl_for_role/);
+  assert.match(exportBin, /build_graphql_engine/);
 });
 
 // DX contract lives in GitKB ([[specs/e2e-ui/sveltekit-dx]]), not the code tree.
