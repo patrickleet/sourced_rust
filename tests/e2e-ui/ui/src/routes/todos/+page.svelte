@@ -1,11 +1,16 @@
 <script lang="ts">
 	/**
-	 * Optimistic todos: local list updates immediately; server success keeps it,
-	 * failure rolls back. Background invalidate merges projector state when ready.
+	 * Optimistic todos: browser + SSR share the same GraphQL documents.
+	 * Mutations POST /graphql from the client (Network tab shows /graphql).
 	 */
 	import { untrack } from 'svelte';
-	import { enhance, applyAction, type SubmitFunction } from '$app/forms';
-	import { invalidateAll } from '$app/navigation';
+	import { browserGraphql } from '$lib/gql/client';
+	import {
+		TODOS_ARCHIVE,
+		TODOS_COMPLETE,
+		TODOS_CREATE,
+		TODOS_QUERY
+	} from '$lib/gql/documents';
 
 	type Todo = {
 		todo_id: string;
@@ -14,12 +19,13 @@
 		status: string;
 	};
 
-	let { data, form } = $props();
+	let { data } = $props();
 
 	let title = $state('');
 	// Seed from SSR so first client paint matches server HTML (no empty flash).
 	let todos = $state<Todo[]>([...(data.todos ?? [])]);
 	let actionError = $state<string | null>(null);
+	let busy = $state(false);
 	/** Ids with unconfirmed optimistic status — local wins until server matches. */
 	let pending = $state<Record<string, string>>({});
 
@@ -27,17 +33,16 @@
 	const who = $derived(
 		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
 	);
+	const gqlAuth = $derived({
+		accessToken: data.accessToken ?? data.session?.accessToken,
+		userId: data.accessToken || data.session?.accessToken ? undefined : data.session?.user?.id,
+		role: data.engineRole
+	});
 
 	const open = $derived(todos.filter((t) => t.status === 'open'));
 	const done = $derived(todos.filter((t) => t.status === 'completed'));
 	const archived = $derived(todos.filter((t) => t.status === 'archived'));
 
-	/**
-	 * Reconcile load() data with local optimistic state:
-	 * - server is source of truth for confirmed ids
-	 * - pending ids keep local status until server catches up (projector lag)
-	 * - local-only pending creates stay visible until they appear on server
-	 */
 	function mergeFromServer(server: Todo[]) {
 		const serverById = new Map(server.map((t) => [t.todo_id, { ...t }]));
 		const nextPending = { ...pending };
@@ -46,7 +51,6 @@
 		for (const [id, s] of serverById) {
 			const want = nextPending[id];
 			if (want && s.status !== want) {
-				// Projector not caught up — keep optimistic status
 				const local = todos.find((t) => t.todo_id === id);
 				merged.set(id, local ? { ...local } : { ...s, status: want });
 			} else {
@@ -55,7 +59,6 @@
 			}
 		}
 
-		// Optimistic creates not yet in GraphQL
 		for (const local of todos) {
 			if (!merged.has(local.todo_id) && nextPending[local.todo_id]) {
 				merged.set(local.todo_id, { ...local });
@@ -63,7 +66,6 @@
 		}
 
 		pending = nextPending;
-		// Stable order: open, completed, archived; newest first within group
 		const rank = (s: string) => (s === 'open' ? 0 : s === 'completed' ? 1 : 2);
 		todos = [...merged.values()].sort((a, b) => {
 			const r = rank(a.status) - rank(b.status);
@@ -72,14 +74,9 @@
 		});
 	}
 
-	// Only re-merge when server load data changes — not when we mutate local todos.
 	$effect(() => {
 		const server = data.todos;
 		untrack(() => mergeFromServer(server));
-	});
-
-	$effect(() => {
-		if (form?.message) actionError = form.message;
 	});
 
 	function newTodoId() {
@@ -102,110 +99,105 @@
 		pending = snap.pending;
 	}
 
+	/** Same query as SSR load — reconcile after projector lag. */
+	async function refetchTodos() {
+		const result = await browserGraphql<{ todos: Todo[] }>(TODOS_QUERY, gqlAuth);
+		if (result.errors?.length) {
+			actionError = result.errors[0].message;
+			return;
+		}
+		mergeFromServer(result.data?.todos ?? []);
+	}
+
 	function scheduleReconcile() {
-		// Projector may lag; soft re-fetch does not wipe pending rows.
 		window.setTimeout(() => {
-			void invalidateAll();
+			void refetchTodos();
 		}, 300);
 		window.setTimeout(() => {
-			void invalidateAll();
+			void refetchTodos();
 		}, 1200);
 	}
 
-	function failMessage(result: { data?: unknown }, fallback: string) {
-		if (result.data && typeof result.data === 'object' && result.data !== null && 'message' in result.data) {
-			return String((result.data as { message?: string }).message ?? fallback);
-		}
-		return fallback;
-	}
-
-	const onCreate: SubmitFunction = ({ formData, cancel }) => {
-		const text = String(formData.get('title') || '').trim();
-		if (!text) {
-			cancel();
-			return;
-		}
+	async function onCreate(e: Event) {
+		e.preventDefault();
+		const text = title.trim();
+		if (!text || busy) return;
 
 		const todo_id = newTodoId();
-		formData.set('todo_id', todo_id);
-		formData.set('title', text);
-
 		const prev = snapshot();
 		actionError = null;
+		busy = true;
 		pending = { ...pending, [todo_id]: 'open' };
 		todos = [{ todo_id, owner_id: me || 'me', title: text, status: 'open' }, ...todos];
 		title = '';
 
-		return async ({ result }) => {
-			if (result.type === 'failure') {
-				restore(prev);
-				actionError = failMessage(result, 'create failed');
-				await applyAction(result);
-				return;
-			}
-			if (result.type === 'success') {
-				actionError = null;
-				// Keep pending until GraphQL lists this id with open status
-				scheduleReconcile();
-				return;
-			}
+		const result = await browserGraphql<{
+			todos_create?: Todo;
+		}>(TODOS_CREATE, gqlAuth, { todo_id, title: text });
+
+		busy = false;
+		if (result.errors?.length || !result.data?.todos_create) {
 			restore(prev);
-		};
-	};
+			actionError = result.errors?.[0]?.message ?? 'create failed';
+			return;
+		}
+		actionError = null;
+		scheduleReconcile();
+	}
 
-	const onComplete = (todo_id: string): SubmitFunction => {
-		return () => {
-			const prev = snapshot();
-			const target = todos.find((t) => t.todo_id === todo_id);
-			if (!target || target.status !== 'open') return;
+	async function onComplete(todo_id: string) {
+		if (busy) return;
+		const prev = snapshot();
+		const target = todos.find((t) => t.todo_id === todo_id);
+		if (!target || target.status !== 'open') return;
 
-			actionError = null;
-			pending = { ...pending, [todo_id]: 'completed' };
-			todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
+		actionError = null;
+		busy = true;
+		pending = { ...pending, [todo_id]: 'completed' };
+		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-			return async ({ result }) => {
-				if (result.type === 'failure') {
-					restore(prev);
-					actionError = failMessage(result, 'complete failed');
-					await applyAction(result);
-					return;
-				}
-				if (result.type === 'success') {
-					actionError = null;
-					scheduleReconcile();
-					return;
-				}
-				restore(prev);
-			};
-		};
-	};
+		const result = await browserGraphql<{ todos_complete?: { todo_id: string; status: string } }>(
+			TODOS_COMPLETE,
+			gqlAuth,
+			{ todo_id }
+		);
 
-	const onArchive = (todo_id: string): SubmitFunction => {
-		return () => {
-			const prev = snapshot();
-			const target = todos.find((t) => t.todo_id === todo_id);
-			if (!target || target.status === 'archived') return;
+		busy = false;
+		if (result.errors?.length || !result.data?.todos_complete) {
+			restore(prev);
+			actionError = result.errors?.[0]?.message ?? 'complete failed';
+			return;
+		}
+		actionError = null;
+		scheduleReconcile();
+	}
 
-			actionError = null;
-			pending = { ...pending, [todo_id]: 'archived' };
-			todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
+	async function onArchive(todo_id: string) {
+		if (busy) return;
+		const prev = snapshot();
+		const target = todos.find((t) => t.todo_id === todo_id);
+		if (!target || target.status === 'archived') return;
 
-			return async ({ result }) => {
-				if (result.type === 'failure') {
-					restore(prev);
-					actionError = failMessage(result, 'archive failed');
-					await applyAction(result);
-					return;
-				}
-				if (result.type === 'success') {
-					actionError = null;
-					scheduleReconcile();
-					return;
-				}
-				restore(prev);
-			};
-		};
-	};
+		actionError = null;
+		busy = true;
+		pending = { ...pending, [todo_id]: 'archived' };
+		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
+
+		const result = await browserGraphql<{ todos_archive?: { todo_id: string; status: string } }>(
+			TODOS_ARCHIVE,
+			gqlAuth,
+			{ todo_id }
+		);
+
+		busy = false;
+		if (result.errors?.length || !result.data?.todos_archive) {
+			restore(prev);
+			actionError = result.errors?.[0]?.message ?? 'archive failed';
+			return;
+		}
+		actionError = null;
+		scheduleReconcile();
+	}
 </script>
 
 <section class="fn-page">
@@ -216,25 +208,26 @@
 		</div>
 		<h1 class="fn-title">Field notes</h1>
 		<p class="fn-lede">
-			Tasks for <strong>{who}</strong>. GraphQL filters by your token
-			<code>sub</code> — only your rows show up.
+			Tasks for <strong>{who}</strong>. Same GraphQL
+			<code>TODOS_QUERY</code> / mutations on SSR and in the browser
+			(<code>POST /graphql</code>).
 		</p>
 	</header>
 
 	{#if data.gqlError}
 		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">GraphQL</span>
+			<span class="fn-alert-label">SSR GraphQL</span>
 			{data.gqlError}
 		</div>
 	{/if}
 	{#if actionError}
 		<div class="fn-alert" role="alert">
-			<span class="fn-alert-label">Action</span>
+			<span class="fn-alert-label">Mutation</span>
 			{actionError}
 		</div>
 	{/if}
 
-	<form method="POST" action="?/create" class="fn-composer" use:enhance={onCreate}>
+	<form class="fn-composer" onsubmit={onCreate}>
 		<label class="fn-sr" for="todo-title">New task</label>
 		<input
 			id="todo-title"
@@ -245,7 +238,7 @@
 			autocomplete="off"
 			bind:value={title}
 		/>
-		<button class="fn-btn fn-btn-primary" type="submit" disabled={!title.trim()}>
+		<button class="fn-btn fn-btn-primary" type="submit" disabled={!title.trim() || busy}>
 			<span>Add</span>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 				<path
@@ -290,14 +283,24 @@
 								<span class="fn-item-title">{t.title}</span>
 							</div>
 							<div class="fn-item-actions">
-								<form method="POST" action="?/complete" use:enhance={onComplete(t.todo_id)}>
-									<input type="hidden" name="todo_id" value={t.todo_id} />
-									<button class="fn-btn fn-btn-ghost" type="submit" title="Mark done">Done</button>
-								</form>
-								<form method="POST" action="?/archive" use:enhance={onArchive(t.todo_id)}>
-									<input type="hidden" name="todo_id" value={t.todo_id} />
-									<button class="fn-btn fn-btn-quiet" type="submit" title="Archive">Archive</button>
-								</form>
+								<button
+									class="fn-btn fn-btn-ghost"
+									type="button"
+									title="Mark done"
+									disabled={busy}
+									onclick={() => onComplete(t.todo_id)}
+								>
+									Done
+								</button>
+								<button
+									class="fn-btn fn-btn-quiet"
+									type="button"
+									title="Archive"
+									disabled={busy}
+									onclick={() => onArchive(t.todo_id)}
+								>
+									Archive
+								</button>
 							</div>
 						</li>
 					{/each}
@@ -331,10 +334,14 @@
 								<span class="fn-item-title">{t.title}</span>
 							</div>
 							<div class="fn-item-actions">
-								<form method="POST" action="?/archive" use:enhance={onArchive(t.todo_id)}>
-									<input type="hidden" name="todo_id" value={t.todo_id} />
-									<button class="fn-btn fn-btn-quiet" type="submit">Archive</button>
-								</form>
+								<button
+									class="fn-btn fn-btn-quiet"
+									type="button"
+									disabled={busy}
+									onclick={() => onArchive(t.todo_id)}
+								>
+									Archive
+								</button>
 							</div>
 						</li>
 					{/each}
@@ -375,7 +382,6 @@
 		padding: 6.5rem 1.25rem 4rem;
 		font-family: var(--font-body, 'Lexend', system-ui, sans-serif);
 		color: var(--ink);
-		/* No entrance opacity:0 — that re-runs on hydrate and flashes empty SSR HTML. */
 	}
 
 	.fn-header {
@@ -533,7 +539,7 @@
 		font-size: 0.8rem;
 	}
 
-	.fn-btn-ghost:hover {
+	.fn-btn-ghost:hover:not(:disabled) {
 		background: rgba(230, 154, 45, 0.28);
 	}
 
@@ -545,7 +551,7 @@
 		font-weight: 600;
 	}
 
-	.fn-btn-quiet:hover {
+	.fn-btn-quiet:hover:not(:disabled) {
 		background: rgba(26, 39, 68, 0.06);
 		color: var(--ink);
 	}
@@ -718,10 +724,6 @@
 		display: flex;
 		gap: 0.25rem;
 		flex-shrink: 0;
-	}
-
-	.fn-item-actions form {
-		margin: 0;
 	}
 
 	.fn-archive {
