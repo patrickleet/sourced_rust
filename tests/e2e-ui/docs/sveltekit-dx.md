@@ -258,6 +258,163 @@ Developer never hand-writes `fetch` headers or duplicates query strings.
 
 ---
 
+## 6b. Component-level GraphQL (the “decorator” vision)
+
+### Intent
+
+Treat the GraphQL document as **part of the component’s public contract**, not as a separate layer the component reaches into. One declaration:
+
+- runs on **SSR** to seed props / load data  
+- runs (or reuses the same document) on the **client** for mutations, refetch, and subscriptions  
+- keeps the **UI dumb**: render + call typed helpers; no `fetch`, no auth headers, no dual strings  
+
+This is the “decorator” idea: not TypeScript experimental decorators (Svelte components are not classes), but **co-located, convention-based sugar** that *behaves* like a decorator.
+
+### SvelteKit-native shapes (preferred over JS decorators)
+
+| Pattern | What it looks like | SSR | Client |
+|---------|-------------------|-----|--------|
+| **A. Co-located op module** | `Todos.gql.ts` next to `Todos.svelte` exports `query` + `mutations` | `load` imports `query` | component imports same module |
+| **B. `definePage` / `defineResource` helper** | One file declares query + mutations; generates load + hooks | Auto load | Auto `mutate` / `refetch` |
+| **C. Svelte 5 remote / universal load** | Single `+page.ts` (not only `.server`) runs on both when possible | Universal | Universal |
+| **D. Script-level registration** | `const todos = gql(TODOS_QUERY)` in component; compiler/plugin injects load | Plugin | Same handle |
+
+**Recommendation:** start with **A + B**. Explicit modules stay greppable and codegen-friendly; `defineResource` is the sugar layer.
+
+### Sketch: dumb component, one document module
+
+```ts
+// routes/todos/todos.ops.ts  (or Todos.gql.ts)
+import { gql } from '@distributed/sveltekit-graphql';
+
+export const todos = gql`
+  query Todos {
+    todos { todo_id owner_id title status }
+  }
+`.mutations({
+  create: gql`
+    mutation TodosCreate($todo_id: String!, $title: String!) {
+      todos_create(input: { todo_id: $todo_id, title: $title }) {
+        todo_id owner_id title status
+      }
+    }
+  `,
+  complete: gql`mutation TodosComplete($todo_id: String!) { … }`,
+});
+// After codegen: todos.query is TypedDocumentNode<TodosQuery, {}>
+//                 todos.create is TypedDocumentNode<…, TodosCreateVars>
+```
+
+```ts
+// routes/todos/+page.server.ts  — thin, convention-generated or one-liner
+import { loadQuery } from '$lib/gql';
+import { todos } from './todos.ops';
+
+export const load = loadQuery(todos.query, (data) => ({ todos: data.todos }));
+// loadQuery: auth from locals.auth(), serverGraphql under the hood
+```
+
+```svelte
+<!-- routes/todos/+page.svelte — dumb UI -->
+<script lang="ts">
+  import { todos } from './todos.ops';
+  import { useGraphql } from '$lib/gql';
+
+  let { data } = $props();
+  const gql = useGraphql(); // client bound to page session / accessToken
+
+  let list = $state(data.todos);
+
+  async function add(title: string) {
+    const todo_id = crypto.randomUUID();
+    // optimistic update optional helper later
+    await gql.request(todos.create, { todo_id, title });
+    const next = await gql.request(todos.query); // same query as SSR
+    list = next.data.todos;
+  }
+</script>
+
+{#each list as t}
+  <button onclick={() => gql.request(todos.complete, { todo_id: t.todo_id })}>Done</button>
+{/each}
+```
+
+**Invariant:** `todos.query` in SSR load and `gql.request(todos.query)` on the client are **the same document reference**. Hydration / reconcile cannot drift.
+
+### Sketch: even more sugar (`defineResource`)
+
+```ts
+// routes/todos/todos.resource.ts
+import { defineResource } from '@distributed/sveltekit-graphql/sveltekit';
+
+export const todos = defineResource({
+  query: `query Todos { todos { todo_id title status } }`,
+  mutations: {
+    create: `mutation($todo_id: String!, $title: String!) {
+      todos_create(input: { todo_id: $todo_id, title: $title }) { todo_id title status }
+    }`,
+  },
+  // optional: map SSR data → page props
+  select: (data) => data.todos,
+});
+
+// Auto-exports for convention:
+//   todos.load          → PageServerLoad
+//   todos.use()         → { data, create, complete, refetch, error, pending }
+```
+
+```svelte
+<script lang="ts">
+  import { todos } from './todos.resource';
+  const t = todos.use(); // binds to layout client + data.todos from load
+</script>
+
+<form onsubmit={(e) => { e.preventDefault(); t.create({ todo_id: id(), title }); }}>
+  …
+</form>
+```
+
+Under the hood:
+
+1. **Build / codegen** turns strings into typed documents (same pipeline as §5).  
+2. **Convention:** if `+page.server.ts` is missing, a Vite plugin or scaffold emits `export { load } from './todos.resource'` (or routes register resources in a manifest).  
+3. **Client:** `use()` always reuses the resource’s query for refetch; mutations are client → `POST /graphql` only.
+
+### Subscriptions as the same co-location
+
+```ts
+export const lobby = defineResource({
+  query: `query { chat_messages(where: { room_id: { _eq: "lobby" } }) { … } }`,
+  subscription: `subscription { chat_messages(where: { room_id: { _eq: "lobby" } }) { … } }`,
+  mutations: { post: `mutation ChatPost(…) { chat_messages_post(…) { … } }` },
+});
+```
+
+`lobby.use()` seeds from SSR query, opens WS with the **subscription document** (same selection set as query where possible — Distributed’s model already allows query↔subscription field parity).
+
+### What this deliberately avoids
+
+| Anti-pattern | Why |
+|--------------|-----|
+| SvelteKit form action as primary write path | Hides GraphQL; second transport; Network tab lies |
+| Different query strings in `+page.server.ts` vs `.svelte` | Hydration bugs, “works on server only” |
+| Class decorators on components | Not how Svelte works; brittle with Svelte 5 runes |
+| Full Apollo cache-as-truth | Commands + projectors already own truth; client cache is optional |
+
+### Relation to current e2e-ui
+
+Today we are at **level 0.5**:
+
+- Shared `documents.ts` (one place for strings) ✓  
+- SSR + browser use the same exports ✓  
+- Still **manual** `gqlAuth`, `browserGraphql`, load wiring  
+
+**Next step on the “decorator” path:** `defineResource` / co-located `*.ops.ts` + `loadQuery` so a page is ~10 lines of glue and the component never sees `fetch`.
+
+Add to backlog as **Must/Should:** `defineResource` + co-located ops convention (see §8).
+
+---
+
 ## 7. Pilot already done / in progress in this fixture
 
 | Item | Status |
@@ -281,22 +438,24 @@ Developer never hand-writes `fetch` headers or duplicates query strings.
 3. **Central `authFromSession` / `authFromPageData`** — kill per-route `gqlAuth` copies; use factory in `+layout`.
 4. **SDL export for e2e-ui** — `xtask` or test binary writing `schema.user.graphql` via `build_graphql_engine(...).sdl_for_role("user")`.
 5. ~~**Document this layout**~~ — **done:** this file + `layout.md` link.
+6. **`defineResource` / co-located ops (decorator DX)** — one module exports query + mutations; `loadQuery` + `use()` share documents; pilot on todos page.
 
 ### Should
 
-6. **graphql-codegen** (or gql.tada) wired in `ui/package.json` scripts against exported SDL.
-7. **Typed `subscribe`** reusing `GqlAuth` + generated subscription docs.
-8. **npm package scaffold** in-repo (`packages/sveltekit-graphql`) with the unified client + WS; e2e-ui depends via workspace path.
-9. **Vite proxy helper** exported from the package.
-10. **Error taxonomy** shared with API codes (`UNAUTHENTICATED`, etc.).
+7. **graphql-codegen** (or gql.tada) wired in `ui/package.json` scripts against exported SDL; resources type against generated docs.
+8. **Typed `subscribe`** co-located on the same resource as the seed query.
+9. **npm package scaffold** in-repo (`packages/sveltekit-graphql`) with client + `defineResource` + WS; e2e-ui depends via workspace path.
+10. **Vite proxy helper** exported from the package.
+11. **Error taxonomy** shared with API codes (`UNAUTHENTICATED`, etc.).
+12. **Scaffold / convention:** optional Vite plugin or CLI `distributed-gql page todos` that drops `todos.ops.ts` + thin `+page.server.ts`.
 
 ### Later
 
-11. Publish package to registry; version with Distributed releases.
-12. `dctl` / service `export-sdl` + `export-commands-json` as first-class CLI.
-13. Auth.js OIDC template package shared with the-website.
-14. Optimistic-list helpers (projector lag merge) as optional utilities.
-15. ESLint rule: no raw `fetch('/graphql')` outside client package.
+13. Publish package to registry; version with Distributed releases.
+14. `dctl` / service `export-sdl` + `export-commands-json` as first-class CLI.
+15. Auth.js OIDC template package shared with the-website.
+16. Optimistic-list helpers (projector lag merge) as optional utilities on `defineResource`.
+17. ESLint rule: no raw `fetch('/graphql')` outside client package; no duplicate document strings outside `*.ops.ts`.
 
 ---
 
