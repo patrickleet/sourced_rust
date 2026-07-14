@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "e2e-export-sdl"
 path = "src/bin/export_sdl.rs"
 
+[[bin]]
+name = "e2e-export-commands"
+path = "src/bin/export_commands.rs"
+
 [dependencies]
 distributed = { workspace = true }
 e2e-service = { path = "../service" }

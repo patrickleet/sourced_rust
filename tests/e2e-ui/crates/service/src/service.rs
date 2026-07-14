@@ -60,23 +60,15 @@ where
         .routes(chat)
 }
 
-/// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
-///
-/// All write paths are **command mutations** (not read-model writes). Owner/author is
-/// always the authenticated session principal. Roles: user, admin.
-///
-/// Works with SQLite or Postgres pools (`GraphqlPool`).
-pub fn build_graphql_engine(
-    pool: impl Into<GraphqlPool>,
-    identity: IdentityConfig,
-    change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
-) -> Result<GraphqlEngine, String> {
+/// GraphQL command registry for this fixture — single source of truth for
+/// engine mutations **and** `e2e-export-commands` / TypeScript command clients.
+pub fn graphql_commands() -> GraphqlCommands {
     use handlers::commands::{
         archive, chat_post, complete, create, force_archive, payloads, rename, reopen,
     };
 
     let app_roles = ["user", "admin"];
-    let commands = GraphqlCommands::new()
+    GraphqlCommands::new()
         .command(
             create::COMMAND,
             exposed_command()
@@ -133,7 +125,21 @@ pub fn build_graphql_engine(
                 .input::<chat_post::ChatPostInput>()
                 .output::<chat_post::ChatPostPayload>()
                 .roles(app_roles),
-        );
+        )
+}
+
+/// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
+///
+/// All write paths are **command mutations** (not read-model writes). Owner/author is
+/// always the authenticated session principal. Roles: user, admin.
+///
+/// Works with SQLite or Postgres pools (`GraphqlPool`).
+pub fn build_graphql_engine(
+    pool: impl Into<GraphqlPool>,
+    identity: IdentityConfig,
+    change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
+) -> Result<GraphqlEngine, String> {
+    let commands = graphql_commands();
 
     let mut b = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])

@@ -41,7 +41,10 @@ pub mod subscribe;
 mod types;
 
 #[cfg(feature = "graphql")]
-pub use commands::{exposed_command, ExposedCommand, GraphqlCommands};
+pub use commands::{
+    exposed_command, CommandCatalog, CommandCatalogEntry, CommandFieldCatalog, CommandTypeCatalog,
+    ExposedCommand, GraphqlCommands,
+};
 #[cfg(feature = "graphql")]
 pub use engine::{
     graphiql_enabled_from_env, graphiql_enabled_from_env_vars, GraphqlBuildError, GraphqlEngine,
