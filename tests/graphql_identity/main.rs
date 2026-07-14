@@ -11,8 +11,8 @@ use axum::http::{HeaderMap, HeaderValue};
 use base64::Engine;
 use distributed::graphql::{
     extract_bearer, graphql_router, map_claims_to_session, resolve_session_sync, select,
-    strip_identity_headers, AuthError, ClaimMapConfig, GraphqlEngine, IdentityConfig,
-    IdentityMode, ModelPermissions, OidcConfig, OidcValidator, DEFAULT_IDENTITY_STRIP_HEADERS,
+    strip_identity_headers, AuthError, ClaimMapConfig, GraphqlEngine, IdentityConfig, IdentityMode,
+    ModelPermissions, OidcConfig, OidcValidator, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
 use distributed::ReadModel;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -83,6 +83,15 @@ fn oidc_cfg(keys: &TestKeys) -> OidcConfig {
         .with_static_jwks(&keys.jwks_json)
         .engine_roles(&["admin", "customer", "user"])
 }
+
+const ES256_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt
+kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
+950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+
+-----END PRIVATE KEY-----"#;
+
+const ES256_X: &str = "w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ";
+const ES256_Y: &str = "wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4";
 
 fn headers_from(pairs: &[(&str, &str)]) -> HeaderMap {
     let mut h = HeaderMap::new();
@@ -206,6 +215,46 @@ fn f5_expired_rejected() {
     );
 }
 
+#[test]
+fn es256_jwks_key_validates_token_when_allowed_by_default() {
+    let kid = "ec-test-kid-1";
+    let jwks_json = json!({
+        "keys": [{
+            "kty": "EC",
+            "kid": kid,
+            "alg": "ES256",
+            "use": "sig",
+            "crv": "P-256",
+            "x": ES256_X,
+            "y": ES256_Y
+        }]
+    })
+    .to_string();
+    let cfg = OidcConfig::new("http://localhost:8080", "graphql-api")
+        .with_static_jwks(jwks_json)
+        .engine_roles(&["admin", "customer", "user"]);
+    let claims = json!({
+        "iss": "http://localhost:8080",
+        "aud": "graphql-api",
+        "sub": "user-ec-001",
+        "exp": now() + 3600,
+        "iat": now(),
+        "groups": ["customer"]
+    });
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some(kid.to_string());
+    let token = encode(
+        &header,
+        &claims,
+        &EncodingKey::from_ec_pem(ES256_PRIVATE_KEY.as_bytes()).unwrap(),
+    )
+    .unwrap();
+
+    let session = OidcValidator::new(cfg).validate_and_map(&token).unwrap();
+    assert_eq!(session.user_id(), Some("user-ec-001"));
+    assert_eq!(session.role(), Some("customer"));
+}
+
 // ── F1 success via full validate_and_map + spoof headers ignored ────────────
 
 #[test]
@@ -243,10 +292,7 @@ fn f1_valid_jwt_maps_session_spoof_headers_ignored() {
 fn f6_hybrid_missing_bearer_trusts_proxy_headers() {
     let keys = mint_keys();
     let cfg = IdentityConfig::hybrid(oidc_cfg(&keys));
-    let headers = headers_from(&[
-        ("x-user-id", "gateway-user-9"),
-        ("x-role", "customer"),
-    ]);
+    let headers = headers_from(&[("x-user-id", "gateway-user-9"), ("x-role", "customer")]);
     let session = resolve_session_sync(&headers, &cfg).unwrap();
     assert_eq!(session.user_id(), Some("gateway-user-9"));
     assert_eq!(session.role(), Some("customer"));
@@ -324,7 +370,10 @@ fn f10_trusted_proxy_strips_client_identity() {
 #[test]
 fn extract_bearer_empty_is_invalid() {
     let headers = headers_from(&[("authorization", "Bearer ")]);
-    assert_eq!(extract_bearer(&headers).unwrap_err(), AuthError::Unauthorized);
+    assert_eq!(
+        extract_bearer(&headers).unwrap_err(),
+        AuthError::Unauthorized
+    );
 }
 
 // ── HTTP 401 on real GraphQL router (OidcBearer) ─────────────────────────────
@@ -356,11 +405,10 @@ async fn engine_with_identity(identity: IdentityConfig) -> Arc<GraphqlEngine> {
             ModelPermissions::new()
                 .role(
                     "customer",
-                    select()
-                        .all_columns()
-                        .filter(distributed::graphql::col("owner").eq(
-                            distributed::graphql::claim("x-user-id"),
-                        )),
+                    select().all_columns().filter(
+                        distributed::graphql::col("owner")
+                            .eq(distributed::graphql::claim("x-user-id")),
+                    ),
                 )
                 .role("admin", select().all_columns())
                 .role("user", select().all_columns()),
@@ -383,9 +431,7 @@ async fn http_oidc_missing_bearer_returns_401() {
                 .method("POST")
                 .uri("/graphql")
                 .header("content-type", "application/json")
-                .body(axum::body::Body::from(
-                    r#"{"query":"{ id_items { id } }"}"#,
-                ))
+                .body(axum::body::Body::from(r#"{"query":"{ id_items { id } }"}"#))
                 .unwrap(),
         )
         .await
@@ -445,9 +491,7 @@ async fn http_hybrid_invalid_bearer_401() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer eyJhbGciOiJub25lIn0.e30.")
                 .header("x-role", "admin")
-                .body(axum::body::Body::from(
-                    r#"{"query":"{ id_items { id } }"}"#,
-                ))
+                .body(axum::body::Body::from(r#"{"query":"{ id_items { id } }"}"#))
                 .unwrap(),
         )
         .await
@@ -494,8 +538,7 @@ fn public_scaffold_default_is_oidc_bearer_not_dev() {
 #[test]
 fn gateway_secret_wrong_is_401() {
     let mut cfg = IdentityConfig::trusted_proxy();
-    cfg.trusted_proxy.gateway_secret_header =
-        Some(("x-gateway-secret".into(), "s3cret".into()));
+    cfg.trusted_proxy.gateway_secret_header = Some(("x-gateway-secret".into(), "s3cret".into()));
     let headers = headers_from(&[
         ("x-gateway-secret", "wrong"),
         ("x-user-id", "u"),

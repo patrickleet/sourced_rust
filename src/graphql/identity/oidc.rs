@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{
-    decode, decode_header, Algorithm, DecodingKey, Validation,
-};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -50,7 +48,10 @@ impl OidcConfig {
     }
 
     /// Accept additional audiences (multi-client M2M).
-    pub fn with_extra_audiences(mut self, audiences: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn with_extra_audiences(
+        mut self,
+        audiences: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         self.extra_audiences = audiences.into_iter().map(Into::into).collect();
         self
     }
@@ -117,10 +118,12 @@ struct JwksDoc {
 struct JwkKey {
     kid: Option<String>,
     kty: String,
-    #[allow(dead_code)]
     alg: Option<String>,
     n: Option<String>,
     e: Option<String>,
+    crv: Option<String>,
+    x: Option<String>,
+    y: Option<String>,
     #[allow(dead_code)]
     #[serde(rename = "use")]
     use_: Option<String>,
@@ -156,15 +159,25 @@ impl OidcValidator {
         let mut cache = self.cache.write().map_err(|_| ValidationError::Jwks)?;
         cache.clear();
         for key in doc.keys {
-            if key.kty != "RSA" {
-                continue;
-            }
-            let (Some(n), Some(e)) = (key.n.as_deref(), key.e.as_deref()) else {
-                continue;
+            let decoding_key = match key.kty.as_str() {
+                "RSA" if jwk_alg_matches(key.alg.as_deref(), "RS256") => {
+                    let (Some(n), Some(e)) = (key.n.as_deref(), key.e.as_deref()) else {
+                        continue;
+                    };
+                    DecodingKey::from_rsa_components(n, e).map_err(|_| ValidationError::Jwks)?
+                }
+                "EC" if key.crv.as_deref() == Some("P-256")
+                    && jwk_alg_matches(key.alg.as_deref(), "ES256") =>
+                {
+                    let (Some(x), Some(y)) = (key.x.as_deref(), key.y.as_deref()) else {
+                        continue;
+                    };
+                    DecodingKey::from_ec_components(x, y).map_err(|_| ValidationError::Jwks)?
+                }
+                _ => continue,
             };
-            let dk = DecodingKey::from_rsa_components(n, e).map_err(|_| ValidationError::Jwks)?;
             let kid = key.kid.unwrap_or_else(|| "_".into());
-            cache.insert(kid, dk);
+            cache.insert(kid, decoding_key);
         }
         *self.raw_jwks.write().map_err(|_| ValidationError::Jwks)? = Some(jwks.to_string());
         Ok(())
@@ -181,7 +194,9 @@ impl OidcValidator {
             }
         })?;
         if self.config.require_role && session.role().is_none() {
-            return Err(ValidationError::Other("require_role: no engine role".into()));
+            return Err(ValidationError::Other(
+                "require_role: no engine role".into(),
+            ));
         }
         Ok(session)
     }
@@ -275,11 +290,7 @@ impl OidcValidator {
         let data = decode::<Value>(token, &key, &validation).map_err(|e| map_jwt_error(e))?;
 
         let claims = data.claims;
-        if !audience_matches(
-            &claims,
-            &self.config.audience,
-            &self.config.extra_audiences,
-        ) {
+        if !audience_matches(&claims, &self.config.audience, &self.config.extra_audiences) {
             return Err(ValidationError::Audience);
         }
         // token_use if present
@@ -330,6 +341,10 @@ fn normalize_issuer(iss: &str) -> String {
     iss.trim_end_matches('/').to_string()
 }
 
+fn jwk_alg_matches(jwk_alg: Option<&str>, expected: &str) -> bool {
+    jwk_alg.map_or(true, |alg| alg.eq_ignore_ascii_case(expected))
+}
+
 /// True if any configured audience appears in `aud` (string or array), or — when
 /// `aud` is absent/empty/placeholder — in `azp` or `client_id` (Keycloak client_credentials).
 fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
@@ -357,10 +372,11 @@ fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
         // unless aud is only "account" / empty placeholder used by some IdPs
         let aud_placeholder = match aud {
             Value::String(s) => s == "account" || s.is_empty(),
-            Value::Array(a) => a.is_empty()
-                || a
-                    .iter()
-                    .all(|v| matches!(v.as_str(), Some("account") | Some(""))),
+            Value::Array(a) => {
+                a.is_empty()
+                    || a.iter()
+                        .all(|v| matches!(v.as_str(), Some("account") | Some("")))
+            }
             _ => false,
         };
         if !aud_placeholder {
@@ -369,7 +385,9 @@ fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
     }
     let azp = claims.get("azp").and_then(|v| v.as_str());
     let client_id = claims.get("client_id").and_then(|v| v.as_str());
-    candidates.iter().any(|c| azp == Some(*c) || client_id == Some(*c))
+    candidates
+        .iter()
+        .any(|c| azp == Some(*c) || client_id == Some(*c))
 }
 
 fn raw_header_alg(token: &str) -> Result<String, ()> {
@@ -406,7 +424,9 @@ fn map_jwt_error(e: jsonwebtoken::errors::Error) -> ValidationError {
         ErrorKind::InvalidAudience => ValidationError::Audience,
         ErrorKind::ExpiredSignature => ValidationError::Expired,
         ErrorKind::ImmatureSignature => ValidationError::NotYetValid,
-        ErrorKind::Base64(_) | ErrorKind::Utf8(_) | ErrorKind::Json(_) => ValidationError::Malformed,
+        ErrorKind::Base64(_) | ErrorKind::Utf8(_) | ErrorKind::Json(_) => {
+            ValidationError::Malformed
+        }
         _ => ValidationError::Other(e.to_string()),
     }
 }
