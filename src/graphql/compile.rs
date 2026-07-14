@@ -410,7 +410,9 @@ fn resolve_limit(
 
 fn value_as_u64(v: &Value) -> Option<u64> {
     match v {
-        Value::Number(n) => n.as_u64().or_else(|| n.as_i64().map(|i| i as u64)),
+        Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_i64().and_then(|i| u64::try_from(i).ok())),
         _ => None,
     }
 }
@@ -1930,6 +1932,12 @@ mod security_tests {
             resolve_limit(Some(&Value::from(50u64)), Some(10), 100, 1000),
             10
         );
+    }
+
+    #[test]
+    fn resolve_limit_ignores_negative_values() {
+        assert_eq!(resolve_limit(Some(&Value::from(-1)), None, 100, 1000), 100);
+        assert_eq!(value_as_u64(&Value::from(-1)), None);
     }
 }
 
