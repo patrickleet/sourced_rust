@@ -236,7 +236,7 @@ Gotchas:
 
 ## Multi-crate single-service layout (and later microservices)
 
-Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README + `docs/layout.md`):
+Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README; layout/rules in GitKB `specs/e2e-ui/layout`):
 
 ```text
 crates/

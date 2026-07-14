@@ -165,18 +165,8 @@ test('todos: shared GQL docs — SSR query, browser mutations', () => {
   assert.match(serverGql, /requestGraphql/);
 });
 
-test('DX spec documents SvelteKit GraphQL client and TS codegen path', () => {
-  const spec = fs.readFileSync(new URL('../../docs/sveltekit-dx.md', import.meta.url), 'utf8');
-  assert.match(spec, /SvelteKit \+ Distributed GraphQL/i);
-  assert.match(spec, /Current state inventory|inventory/i);
-  assert.match(spec, /browserGraphql|serverGraphql|graphql-ws|documents\.ts/);
-  assert.match(spec, /createGraphqlClient|unified|single.*client/i);
-  assert.match(spec, /npm package|@distributed\/sveltekit-graphql|package surface/i);
-  assert.match(spec, /sdl_for_role|GraphqlInput|graphql-codegen|TypeScript/i);
-  assert.match(spec, /Prioritized backlog|### Must|### Should|### Later/i);
-  // Spec must not invent modules as "exists" without labeling proposed
-  assert.match(spec, /lib\/gql\/client\.ts|gql\/documents\.ts|server\/graphql\.ts|graphql-ws\.ts/);
-});
+// DX contract lives in GitKB ([[specs/e2e-ui/sveltekit-dx]]), not the code tree.
+// Structural checks above assert the pilot modules the spec describes.
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {
   const service = fs.readFileSync(
