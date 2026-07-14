@@ -17,4 +17,8 @@
 
 ## UI
 
-SvelteKit SPA: todos (query + optimistic poll) and chat (live subscription).
+SvelteKit app: todos (SSR seed query + browser command mutations) and chat
+(live subscription + browser post mutation).
+
+**DX contract:** [sveltekit-dx.md](./sveltekit-dx.md) — unified GraphQL client
+recommendation, extractable package surface, and TS codegen from Distributed SDL.
