@@ -14,7 +14,7 @@ use e2e_service::{
 };
 use e2e_suite::{
     assert_http_commands_disabled, cases, graphql, graphql_raw, todos_archive, todos_complete,
-    todos_create, todos_force_archive, todos_rename, wait_ready,
+    todos_create, todos_force_archive, todos_rename, todos_reopen, wait_ready,
 };
 
 async fn ensure_target() -> String {
@@ -473,7 +473,7 @@ async fn t4_not_owner_rejected() {
         "{}: unexpected error: {err}",
         cases::NOT_OWNER
     );
-    // Rename/archive IDOR: bob must not succeed (same domain owner gate as complete).
+    // Rename/archive/reopen IDOR: bob must not succeed (same domain owner gate as complete).
     assert!(
         todos_rename(&base, &tid, "Hijacked", "bob", "user")
             .await
@@ -484,6 +484,12 @@ async fn t4_not_owner_rejected() {
     assert!(
         todos_archive(&base, &tid, "bob", "user").await.is_err(),
         "{}: archive should fail for bob",
+        cases::NOT_OWNER_MUTATES
+    );
+    // GraphQL todos_reopen path — real mutation helper, non-owner rejected.
+    assert!(
+        todos_reopen(&base, &tid, "bob", "user").await.is_err(),
+        "{}: reopen should fail for bob",
         cases::NOT_OWNER_MUTATES
     );
     let row = poll_todo(&base, "alice", &tid).await.expect("row");
