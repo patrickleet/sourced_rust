@@ -17,7 +17,8 @@
 	let { data, form } = $props();
 
 	let title = $state('');
-	let todos = $state<Todo[]>([]);
+	// Seed from SSR so first client paint matches server HTML (no empty flash).
+	let todos = $state<Todo[]>([...(data.todos ?? [])]);
 	let actionError = $state<string | null>(null);
 	/** Ids with unconfirmed optimistic status — local wins until server matches. */
 	let pending = $state<Record<string, string>>({});
@@ -374,18 +375,7 @@
 		padding: 6.5rem 1.25rem 4rem;
 		font-family: var(--font-body, 'Lexend', system-ui, sans-serif);
 		color: var(--ink);
-		animation: fn-in 0.55s var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
-	}
-
-	@keyframes fn-in {
-		from {
-			opacity: 0;
-			transform: translateY(12px);
-		}
-		to {
-			opacity: 1;
-			transform: none;
-		}
+		/* No entrance opacity:0 — that re-runs on hydrate and flashes empty SSR HTML. */
 	}
 
 	.fn-header {
@@ -617,19 +607,6 @@
 			var(--rule) calc(1.85rem + 1px)
 		);
 		background-position: 0 3.2rem;
-		animation: fn-panel-in 0.6s var(--ease-out-expo, ease) both;
-		animation-delay: calc(var(--stagger, 0) * 80ms);
-	}
-
-	@keyframes fn-panel-in {
-		from {
-			opacity: 0;
-			transform: translateY(10px) rotate(-0.4deg);
-		}
-		to {
-			opacity: 1;
-			transform: none;
-		}
 	}
 
 	.fn-panel-muted {
@@ -691,24 +668,11 @@
 		gap: 0.5rem 0.75rem;
 		padding: 0.55rem 0.35rem;
 		border-radius: 10px;
-		animation: fn-row 0.35s var(--ease-out-expo, ease) both;
-		animation-delay: calc(var(--i, 0) * 30ms);
 		transition: background 0.15s ease;
 	}
 
 	.fn-item:hover {
 		background: rgba(255, 255, 255, 0.55);
-	}
-
-	@keyframes fn-row {
-		from {
-			opacity: 0;
-			transform: translateX(-6px);
-		}
-		to {
-			opacity: 1;
-			transform: none;
-		}
 	}
 
 	.fn-item-main {

@@ -19,7 +19,15 @@ export const load: PageServerLoad = async ({ locals }) => {
   const role = engineRoleFromGroups(session?.user?.groups);
 
   const result = await serverGraphql<{ chat_messages: ChatMsg[] }>(
-    `{ chat_messages(where: { room_id: { _eq: "${ROOM}" } }) { message_id room_id author_id body created_at } }`,
+    `{
+      chat_messages(where: { room_id: { _eq: "${ROOM}" } }) {
+        message_id
+        room_id
+        author_id
+        body
+        created_at
+      }
+    }`,
     {
       accessToken,
       userId: accessToken ? undefined : session?.user?.id,

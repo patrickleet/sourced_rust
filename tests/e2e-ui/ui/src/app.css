@@ -111,19 +111,8 @@ body {
 	-webkit-font-smoothing: antialiased;
 }
 
-/* Soft wire grid */
-body::before {
-	content: '';
-	position: fixed;
-	inset: 0;
-	pointer-events: none;
-	z-index: 0;
-	background-image:
-		linear-gradient(var(--wf-line) 1px, transparent 1px),
-		linear-gradient(90deg, var(--wf-line) 1px, transparent 1px);
-	background-size: 40px 40px;
-	opacity: 0.45;
-}
+/* No global transparent overlay — solid page ground only.
+   Hero may use a local soft grid (see .wf-hero). */
 
 a {
 	color: var(--wf-accent);
@@ -421,19 +410,78 @@ main {
 	color: var(--wf-ink-muted);
 }
 
-/* —— Home: neutral wireframe —— */
+/* —— Home: solid alternating bands ——
+   Shared horizontal rhythm: hero + every band use the same gutter + --wf-max column.
+   Dark tokens are slightly lifted from pure ink so cream headings never match the ground. */
 .wf-home {
+	--wf-band-dark-bg: #262624;
+	--wf-band-dark-ink: #f4f2ec;
+	--wf-band-dark-soft: rgba(244, 242, 236, 0.72);
+	--wf-band-dark-muted: rgba(244, 242, 236, 0.48);
+	--wf-band-dark-line: rgba(244, 242, 236, 0.1);
+	--wf-band-dark-elev: #30302c;
+	--wf-measure: 38rem;
+
 	padding-top: 4.75rem;
+	background: var(--wf-bg);
 }
 
-.wf-hero {
-	padding: calc(var(--wf-section-y) * 0.85) var(--wf-gutter) var(--wf-section-y);
+.wf-band {
+	padding: var(--wf-section-y) var(--wf-gutter);
+}
+
+.wf-band-inner {
+	/* Same content column as hero-inner — continuous left edge */
+	max-width: var(--wf-max);
+	margin: 0 auto;
+}
+
+.wf-band-light {
+	background: var(--wf-bg);
+	color: var(--wf-ink);
 	border-bottom: 1px solid var(--wf-line);
 }
 
+.wf-band-dark {
+	background: var(--wf-band-dark-bg);
+	color: var(--wf-band-dark-ink);
+	border-bottom: 1px solid var(--wf-band-dark-line);
+}
+
+/* Hero: light + local soft grid; left-aligned to the shared band column */
+.wf-hero {
+	position: relative;
+	padding: calc(var(--wf-section-y) * 0.85) var(--wf-gutter) calc(var(--wf-section-y) * 0.95);
+	background: var(--wf-bg);
+	/* Soft bridge into the first dark band — no hard hairline snap */
+	border-bottom: none;
+	overflow: hidden;
+}
+
+.wf-hero::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background-image:
+		linear-gradient(var(--wf-line) 1px, transparent 1px),
+		linear-gradient(90deg, var(--wf-line) 1px, transparent 1px);
+	background-size: 48px 48px;
+	opacity: 0.4;
+	mask-image: linear-gradient(180deg, #000 30%, transparent 92%);
+}
+
 .wf-hero-inner {
-	max-width: 40rem;
+	position: relative;
+	/* Match .wf-band-inner width so copy shares the left edge with sections below */
+	max-width: var(--wf-max);
 	margin: 0 auto;
+	text-align: left;
+}
+
+.wf-hero-inner > .wf-lede,
+.wf-hero-inner > h1 {
+	max-width: var(--wf-measure);
 }
 
 .wf-kicker {
@@ -444,18 +492,18 @@ main {
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	color: var(--wf-ink-muted);
-	margin-bottom: 1.5rem;
+	margin-bottom: 1.35rem;
 	padding-bottom: 0.35rem;
 	border-bottom: 1px solid var(--wf-line-strong);
 }
 
 .wf-hero h1 {
-	margin: 0 0 1.35rem;
+	margin: 0 0 1.2rem;
 	font-family: var(--wf-serif);
-	font-size: clamp(2.15rem, 5vw, 3rem);
+	font-size: clamp(2.05rem, 4.6vw, 2.85rem);
 	font-weight: 500;
 	letter-spacing: -0.025em;
-	line-height: 1.15;
+	line-height: 1.16;
 	color: var(--wf-ink);
 }
 
@@ -466,8 +514,8 @@ main {
 }
 
 .wf-lede {
-	margin: 0 0 2rem;
-	font-size: 1.08rem;
+	margin: 0 0 1.85rem;
+	font-size: 1.06rem;
 	line-height: 1.65;
 	color: var(--wf-ink-soft);
 }
@@ -485,7 +533,7 @@ main {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.75rem;
-	margin-bottom: 2.25rem;
+	margin-bottom: 1.85rem;
 }
 
 .wf-btn {
@@ -500,7 +548,10 @@ main {
 	border-radius: 5px;
 	border: 1px solid transparent;
 	cursor: pointer;
-	transition: background 0.15s ease, border-color 0.15s ease;
+	transition:
+		background 0.18s var(--ease),
+		border-color 0.18s var(--ease),
+		color 0.18s var(--ease);
 }
 
 .wf-btn-primary {
@@ -521,20 +572,20 @@ main {
 
 .wf-btn-ghost:hover {
 	border-color: var(--wf-ink-muted);
-	background: rgba(28, 28, 26, 0.02);
+	background: rgba(28, 28, 26, 0.03);
 }
 
 .wf-meta {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 0.65rem 1.35rem;
+	gap: 0.55rem 1.25rem;
 	font-family: var(--wf-mono);
-	font-size: 0.75rem;
+	font-size: 0.72rem;
 	color: var(--wf-ink-muted);
 	letter-spacing: 0.02em;
 }
 
-/* Sections */
+/* Sections / heads — light defaults (dark overrides follow with higher specificity) */
 .wf-section {
 	padding: var(--wf-section-y) var(--wf-gutter);
 	max-width: var(--wf-max);
@@ -543,8 +594,8 @@ main {
 }
 
 .wf-section-head {
-	margin-bottom: 2.75rem;
-	max-width: 36rem;
+	margin-bottom: 2.5rem;
+	max-width: var(--wf-measure);
 }
 
 .wf-label {
@@ -555,16 +606,16 @@ main {
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--wf-ink-muted);
-	margin-bottom: 0.85rem;
+	margin-bottom: 0.8rem;
 }
 
 .wf-section-head h2 {
-	margin: 0 0 0.85rem;
+	margin: 0 0 0.8rem;
 	font-family: var(--wf-serif);
-	font-size: clamp(1.55rem, 3vw, 2rem);
+	font-size: clamp(1.5rem, 2.8vw, 1.95rem);
 	font-weight: 500;
 	letter-spacing: -0.02em;
-	line-height: 1.2;
+	line-height: 1.22;
 	color: var(--wf-ink);
 }
 
@@ -580,6 +631,87 @@ main {
 	background: rgba(28, 28, 26, 0.05);
 	padding: 0.1em 0.3em;
 	border-radius: 3px;
+}
+
+.wf-flow-map {
+	margin: 0;
+	padding-left: 1.25rem;
+	display: grid;
+	gap: 0.6rem;
+	font-size: 0.97rem;
+	line-height: 1.45;
+	max-width: 40rem;
+	color: var(--wf-ink-soft);
+}
+
+@media (min-width: 768px) {
+	.wf-flow-map {
+		grid-template-columns: 1fr 1fr;
+		column-gap: 2.25rem;
+		row-gap: 0.7rem;
+	}
+}
+
+.wf-story-step {
+	display: grid;
+	gap: 1.75rem;
+}
+
+@media (min-width: 960px) {
+	.wf-story-step {
+		grid-template-columns: minmax(15rem, 0.9fr) 1.4fr;
+		gap: 2.75rem;
+		align-items: start;
+	}
+}
+
+.wf-story-copy h2 {
+	margin: 0 0 0.9rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.4rem, 2.6vw, 1.8rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	line-height: 1.22;
+	color: var(--wf-ink);
+}
+
+.wf-why {
+	margin: 0 0 1.15rem;
+	font-size: 1.01rem;
+	line-height: 1.65;
+	color: var(--wf-ink-soft);
+}
+
+.wf-sample-path {
+	font-family: var(--wf-mono);
+	font-size: 0.72rem;
+	color: var(--wf-ink-muted);
+	display: block;
+	line-height: 1.45;
+}
+
+.wf-cta-band .wf-cta {
+	text-align: left;
+	max-width: var(--wf-measure);
+	margin: 0;
+}
+
+.wf-cta-band h2 {
+	margin: 0 0 0.75rem;
+	font-family: var(--wf-serif);
+	font-size: clamp(1.5rem, 3vw, 1.9rem);
+	font-weight: 500;
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-cta-band p {
+	margin: 0 0 1.65rem;
+	color: var(--wf-band-dark-soft);
+}
+
+.wf-cta-band .wf-actions {
+	justify-content: flex-start;
+	margin-bottom: 0;
 }
 
 /* Story cards — airy */
@@ -802,6 +934,14 @@ main {
 	line-height: 1.45;
 }
 
+/* Stack of single-file samples (one concept per block) */
+.wf-code-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	min-width: 0;
+}
+
 .wf-code {
 	background: var(--wf-code-bg);
 	border: 1px solid #2a2a28;
@@ -840,18 +980,29 @@ main {
 	font-size: 0.78rem;
 	line-height: 1.6;
 	color: var(--wf-code-fg);
+	background: transparent;
 	tab-size: 2;
 }
 
-/* CTA */
-.wf-cta {
+/* No pill/highlight on block samples — only the .wf-code surface */
+.wf-code code {
+	background: transparent;
+	border: none;
+	padding: 0;
+	border-radius: 0;
+	color: inherit;
+	font-size: inherit;
+}
+
+/* CTA (standalone light-page variant; band CTA uses .wf-cta-band overrides) */
+.wf-cta:not(.wf-band-inner) {
 	padding: var(--wf-section-y) var(--wf-gutter);
 	text-align: center;
 	max-width: var(--wf-max);
 	margin: 0 auto;
 }
 
-.wf-cta h2 {
+.wf-cta:not(.wf-band-inner) h2 {
 	margin: 0 0 0.75rem;
 	font-family: var(--wf-serif);
 	font-size: clamp(1.5rem, 3vw, 1.9rem);
@@ -859,7 +1010,7 @@ main {
 	letter-spacing: -0.02em;
 }
 
-.wf-cta p {
+.wf-cta:not(.wf-band-inner) p {
 	margin: 0 auto 1.75rem;
 	max-width: 28rem;
 	color: var(--wf-ink-soft);
@@ -867,9 +1018,130 @@ main {
 	line-height: 1.6;
 }
 
-.wf-cta .wf-actions {
+.wf-cta:not(.wf-band-inner) .wf-actions {
 	justify-content: center;
 	margin-bottom: 0;
+}
+
+/*
+ * Dark-band type cascade — LAST among home rules so it beats later light defaults
+ * (.wf-section-head h2, .wf-demo h3, .wf-story-copy h2, etc.).
+ * Headings use cream ink on lifted charcoal ground — never same as band bg.
+ */
+.wf-band-dark .wf-label {
+	color: var(--wf-band-dark-muted);
+}
+
+/* Triple-class selectors outrank any later single-class h2 ink rules */
+.wf-home .wf-band-dark h2,
+.wf-home .wf-band-dark .wf-section-head h2,
+.wf-home .wf-band-dark .wf-story-copy h2,
+.wf-home .wf-band-dark .wf-cta h2,
+.wf-home .wf-band-dark.wf-cta-band h2 {
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-section-head p,
+.wf-band-dark .wf-why,
+.wf-band-dark .wf-step p,
+.wf-band-dark .wf-demo p,
+.wf-band-dark .wf-card p,
+.wf-band-dark .wf-flow-map,
+.wf-band-dark .wf-cta p {
+	color: var(--wf-band-dark-soft);
+}
+
+.wf-band-dark .wf-demo-where,
+.wf-band-dark .wf-sample-path,
+.wf-band-dark .wf-demo-i,
+.wf-band-dark .wf-meta,
+.wf-band-dark .wf-step::before {
+	color: var(--wf-band-dark-muted);
+}
+
+.wf-band-dark .wf-card {
+	background: var(--wf-band-dark-elev);
+	border-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-card h3,
+.wf-band-dark .wf-step h3,
+.wf-band-dark .wf-demo h3 {
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-step {
+	border-top-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo {
+	border-bottom-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo:first-child {
+	border-top-color: var(--wf-band-dark-line);
+}
+
+.wf-band-dark .wf-demo:hover h3 {
+	color: #b8d4ef;
+}
+
+.wf-band-dark .wf-demo-go {
+	color: #b8d4ef;
+}
+
+.wf-band-dark .wf-btn-ghost {
+	color: var(--wf-band-dark-ink);
+	border-color: rgba(244, 242, 236, 0.28);
+}
+
+.wf-band-dark .wf-btn-ghost:hover {
+	border-color: rgba(244, 242, 236, 0.55);
+	background: rgba(255, 255, 255, 0.05);
+}
+
+.wf-band-dark .wf-btn-primary {
+	background: var(--wf-band-dark-ink);
+	color: var(--wf-band-dark-bg);
+	border-color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-btn-primary:hover {
+	background: #fff;
+	border-color: #fff;
+}
+
+/* Inline code only — never paint a second bg on .wf-code pre > code */
+.wf-band-dark :not(pre) > code,
+.wf-band-dark .wf-section-head code,
+.wf-band-dark .wf-step code,
+.wf-band-dark .wf-card code,
+.wf-band-dark .wf-why code,
+.wf-band-dark .wf-story-copy code {
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid var(--wf-band-dark-line);
+	color: var(--wf-band-dark-ink);
+}
+
+.wf-band-dark .wf-flow-map li::marker {
+	color: #9ec5e8;
+}
+
+.wf-band-light .wf-code {
+	box-shadow: 0 12px 32px rgba(28, 28, 26, 0.08);
+}
+
+.wf-band-dark .wf-code {
+	border-color: #1a1a18;
+	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+/* Keep block samples free of dark-band inline-code chrome */
+.wf-band-dark .wf-code code,
+.wf-band-dark .wf-code pre {
+	background: transparent;
+	border: none;
+	color: var(--wf-code-fg);
 }
 
 /* Footer */

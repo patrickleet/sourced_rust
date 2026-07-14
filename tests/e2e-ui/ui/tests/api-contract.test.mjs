@@ -53,7 +53,7 @@ test('website auth shell + fixture routes present', () => {
   assert.doesNotMatch(nav, /\/docs|\/control-plane|Pricing|two-paths|HopsBrand|hops-ops|#demos|#code/i);
 });
 
-test('home is distributed template landing with CQRS architecture samples', () => {
+test('home is distributed template with 8-step unidirectional todos story', () => {
   const home = fs.readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
   assert.match(home, /framework template|e2e-ui template/i);
   assert.match(home, /make test|test-live|e2e/i);
@@ -61,27 +61,55 @@ test('home is distributed template landing with CQRS architecture samples', () =
   assert.match(home, /\/chat/);
   assert.doesNotMatch(home, /Launch My Platform|HopsBrand|founder|listmonk|Systems Lab|lab-acid/i);
 
-  // Five architecture samples for todos CQRS path
-  assert.match(home, /const sampleAggregate/);
-  assert.match(home, /const sampleCommand/);
-  assert.match(home, /const sampleReadModel/);
-  assert.match(home, /const sampleProjector/);
-  assert.match(home, /const sampleService/);
-  assert.match(home, /data-sample="aggregate"/);
-  assert.match(home, /data-sample="command-handler"/);
-  assert.match(home, /data-sample="read-model"/);
-  assert.match(home, /data-sample="projection-handler"/);
-  assert.match(home, /data-sample="service-config"/);
-  // Real fixture roles
-  assert.match(home, /todo-domain|TodoFact|record_created/);
-  assert.match(home, /todo\.create|require_user|outbox/);
-  assert.match(home, /TodoView|#\[table\("todos"\)\]|ReadModel/);
-  assert.match(home, /project_todo|ReadModelWritePlanBuilder|todo\.created/);
-  assert.match(home, /build_service|run_postgres|run_sqlite|identity_from_env/);
+  // Full unidirectional story (8 steps) — one file/concept per code block
+  assert.match(home, /unidirectional/i);
+  assert.match(home, /id="story-flow"/);
+  assert.match(home, /type CodeBlock|blocks: CodeBlock\[\]|blocks:/);
+  assert.match(home, /wf-code-stack/);
+  assert.match(home, /\{#each step\.blocks as block\}/);
+  assert.match(home, /data-sample=\{step\.label\}/);
+  assert.match(home, /label: 'Auth session'/);
+  assert.match(home, /label: 'SSR \+ RBAC'/);
+  assert.match(home, /label: 'Hydration'/);
+  assert.match(home, /label: 'Subscription'/);
+  assert.match(home, /label: 'Commands not RM writes'/);
+  assert.match(home, /label: 'Command handler'/);
+  assert.match(home, /label: 'Projector'/);
+  assert.match(home, /label: 'Read path'/);
+
+  // Step 02 split into separate files (no merged mega-block)
+  assert.match(home, /file: 'todos\/\+page\.server\.ts'/);
+  assert.match(home, /file: 'ui\/src\/lib\/server\/graphql\.ts'/);
+  assert.match(home, /file: 'crates\/service\/src\/service\.rs'/);
+
+  // Step substance from real fixture code
+  assert.match(home, /accessToken|Auth\.js|OIDC|Zitadel/i);
+  assert.match(home, /Bearer|serverGraphql|authorization/i);
+  assert.match(home, /ModelPermissions|owner_id|claim\("x-user-id"\)|OidcBearer/);
+  assert.match(home, /data\.todos|hydration|mergeFromServer/i);
+  assert.match(home, /subscription|connection_init/);
+  assert.match(home, /anti-pattern|serverCommand|todo\.create/i);
+  assert.match(home, /require_user|outbox|TodoFact|todo\.created/);
+  assert.match(home, /project_todo|ReadModelWritePlanBuilder|map_fact/);
+  assert.match(home, /ChangeHub|Unidirectional|one direction/i);
+
+  // Solid alternating bands (not transparent page sections)
+  assert.match(home, /wf-band-light|wf-band-dark/);
+  assert.match(home, /wf-story-step|Step 0[1-8]/);
 
   const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
   assert.match(css, /Neutral wireframe|--wf-bg|--wf-ink/);
   assert.match(css, /#f6f5f2|#1c1c1a/);
+  assert.match(css, /\.wf-band-light|\.wf-band-dark/);
+  assert.match(css, /\.wf-story-step/);
+  // Dark-band headings beat light section-head ink (readable cream on charcoal)
+  assert.match(css, /--wf-band-dark-ink/);
+  assert.match(css, /--wf-band-dark-bg/);
+  assert.match(css, /\.wf-home \.wf-band-dark \.wf-section-head h2|\.wf-home \.wf-band-dark h2/);
+  assert.match(css, /var\(--wf-band-dark-ink\)/);
+  // Hero shares band content column (no center island → left snap)
+  assert.match(css, /\.wf-hero-inner[\s\S]{0,200}max-width:\s*var\(--wf-max\)/);
+  assert.match(css, /text-align:\s*left/);
   // Not Systems Lab acid identity
   assert.doesNotMatch(css, /--lab-acid:\s*#c8f542|Systems Lab/);
   assert.doesNotMatch(css, /#e69a2d/);
@@ -94,6 +122,21 @@ test('home is distributed template landing with CQRS architecture samples', () =
   );
   assert.match(footer, /e2e-ui|Distributed template/i);
   assert.doesNotMatch(footer, /HopsBrand|Ship products, not infrastructure/i);
+});
+
+test('todos seeds client state from SSR load data', () => {
+  const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
+  assert.match(page, /\$state<Todo\[\]>\(\[\.\.\.\(data\.todos/);
+  assert.match(page, /mergeFromServer/);
+  assert.match(page, /use:enhance/);
+  const server = fs.readFileSync(
+    new URL('../src/routes/todos/+page.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(server, /serverGraphql/);
+  assert.match(server, /accessToken/);
+  assert.match(server, /serverCommand/);
+  assert.match(server, /todo\.create/);
 });
 
 test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, async () => {
