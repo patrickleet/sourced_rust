@@ -4,23 +4,13 @@
  * Accepts string or TypedDocumentNode (from co-located .gql codegen).
  */
 import type { TypedDocumentNode } from '@graphql-typed-document-node/core';
+import { buildAuthHeaders } from './auth-headers.ts';
 import { documentToString, type GqlDocument } from './document.ts';
 import type { GqlAuth, GqlResult } from './types.ts';
 
 export type { GqlDocument } from './document.ts';
 export { documentToString } from './document.ts';
-
-export function buildAuthHeaders(auth: GqlAuth = {}): Record<string, string> {
-	const headers: Record<string, string> = { 'content-type': 'application/json' };
-	const token = auth.accessToken?.trim() || '';
-	if (token) {
-		headers.authorization = `Bearer ${token}`;
-	} else if (auth.userId) {
-		headers['x-user-id'] = auth.userId;
-		headers['x-role'] = auth.role ?? 'user';
-	}
-	return headers;
-}
+export { buildAuthHeaders } from './auth-headers.ts';
 
 /**
  * POST GraphQL document to `url`. Real entry point used by browser + SSR wrappers.

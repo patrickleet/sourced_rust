@@ -184,18 +184,21 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   // SSR is read-only seed — no form actions / command mutations
   assert.doesNotMatch(server, /export const actions|todos_create|serverCommand|\?\/create/);
 
-  // documents re-exports resource identity for chat-era imports
-  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
-  assert.match(docs, /todos\.query|TODOS_QUERY|documentToString/);
-  assert.match(docs, /todos\.resource|todos\.mutations/);
+  // Shared auth headers for HTTP + WS (DRY)
+  const authHeaders = fs.readFileSync(
+    new URL('../src/lib/gql/auth-headers.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(authHeaders, /export function buildAuthHeaders/);
+  assert.match(authHeaders, /wsConnectionInitPayload/);
+  assert.ok(!fs.existsSync(new URL('../src/lib/gql/documents.ts', import.meta.url)));
 
   // Unified request path (single Jack-style core)
   const request = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
   assert.match(request, /export async function requestGraphql/);
-  assert.match(request, /buildAuthHeaders|authorization/);
-  assert.match(request, /documentToString/);
-  const client = fs.readFileSync(new URL('../src/lib/gql/client.ts', import.meta.url), 'utf8');
-  assert.match(client, /requestGraphql|createGraphqlClient|defineResource/);
+  assert.match(request, /buildAuthHeaders|documentToString/);
+  const barrel = fs.readFileSync(new URL('../src/lib/gql/index.ts', import.meta.url), 'utf8');
+  assert.match(barrel, /useGraphql|defineResource|requestGraphql/);
   const createClient = fs.readFileSync(
     new URL('../src/lib/gql/create-client.ts', import.meta.url),
     'utf8'
@@ -203,6 +206,13 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(createClient, /export function createGraphqlClient/);
   const serverGql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
   assert.match(serverGql, /requestGraphql/);
+  const cleanEnv = fs.readFileSync(new URL('../src/lib/clean-env.ts', import.meta.url), 'utf8');
+  assert.match(cleanEnv, /export function cleanEnvValue/);
+  const loadQuery = fs.readFileSync(
+    new URL('../src/lib/gql/load-query.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(loadQuery, /authFromPageData/);
 
   const schema = fs.readFileSync(new URL('../schema/user.graphql', import.meta.url), 'utf8');
   // Role SDL is exported from Rust engine (not a permanent hand pilot)
@@ -263,8 +273,8 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
 
-  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
-  assert.match(docs, /chat\.resource|chat\.mutations|documentToString/);
+  const ws = fs.readFileSync(new URL('../src/lib/graphql-ws.ts', import.meta.url), 'utf8');
+  assert.match(ws, /wsConnectionInitPayload|auth-headers/);
 });
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {

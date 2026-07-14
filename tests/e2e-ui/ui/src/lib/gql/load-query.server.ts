@@ -1,12 +1,12 @@
 /**
  * SSR load helper for co-located resources.
  * `.server.ts` so private env / serverGraphql never enter the client bundle.
- * Accepts string or TypedDocumentNode (from co-located .gql codegen).
  */
 import type { ServerLoadEvent } from '@sveltejs/kit';
 import type { TypedDocumentNode } from '@graphql-typed-document-node/core';
 import { engineRoleFromGroups } from '$lib/roles';
 import { serverGraphql } from '$lib/server/graphql';
+import { authFromPageData } from './auth-from-page.ts';
 import type { GqlDocument } from './document.ts';
 import type { GqlResult } from './types.ts';
 
@@ -28,19 +28,16 @@ export function loadQuery<TData, TMapped extends Record<string, unknown>>(
 	return async (event: ServerLoadEvent) => {
 		const locals = event.locals as AuthLocals;
 		const session = await locals.auth();
-		const accessToken = session?.accessToken;
-		const role = engineRoleFromGroups(session?.user?.groups);
+		const accessToken = session?.accessToken ?? null;
+		const engineRole = engineRoleFromGroups(session?.user?.groups);
+		const auth = authFromPageData({ accessToken, session, engineRole });
 
-		const result = await serverGraphql<TData>(document, {
-			accessToken,
-			userId: accessToken ? undefined : session?.user?.id,
-			role
-		});
+		const result = await serverGraphql<TData>(document, auth);
 
 		return {
 			session,
-			accessToken: accessToken ?? null,
-			engineRole: role,
+			accessToken,
+			engineRole,
 			gqlError:
 				result.errors?.[0]?.message ?? (result.status >= 400 ? `HTTP ${result.status}` : null),
 			gqlStatus: result.status,

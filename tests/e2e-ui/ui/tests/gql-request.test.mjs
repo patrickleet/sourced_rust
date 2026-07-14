@@ -29,10 +29,12 @@ test('create-client.ts is a thin factory over requestGraphql', () => {
 
 const defineFile = path.join(root, 'src/lib/gql/define-resource.ts');
 const authFile = path.join(root, 'src/lib/gql/auth-from-page.ts');
+const authHeadersFile = path.join(root, 'src/lib/gql/auth-headers.ts');
 const useFile = path.join(root, 'src/lib/gql/use-graphql.ts');
 const resourceFile = path.join(root, 'src/routes/todos/todos.resource.ts');
 const defineUrl = pathToFileURL(defineFile).href;
 const authUrl = pathToFileURL(authFile).href;
+const authHeadersUrl = pathToFileURL(authHeadersFile).href;
 
 test('defineResource preserves document identity for query + mutations', () => {
   const script = `
@@ -75,6 +77,7 @@ test('authFromPageData + defineResource + requestGraphql is the browser mutation
 
   const script = `
     import { authFromPageData } from ${JSON.stringify(authUrl)};
+    import { buildAuthHeaders, wsConnectionInitPayload } from ${JSON.stringify(authHeadersUrl)};
     import { requestGraphql } from ${JSON.stringify(requestUrl)};
     import { defineResource } from ${JSON.stringify(defineUrl)};
 
@@ -92,6 +95,14 @@ test('authFromPageData + defineResource + requestGraphql is the browser mutation
       engineRole: 'admin'
     });
     if (b.userId !== 'dev' || b.role !== 'admin') throw new Error(JSON.stringify(b));
+
+    // HTTP + WS share the same auth mapping
+    const h = buildAuthHeaders({ accessToken: 'abc' });
+    if (h.authorization !== 'Bearer abc') throw new Error('http bearer');
+    const w = wsConnectionInitPayload({ accessToken: 'abc' });
+    if (w.authorization !== 'Bearer abc' || w.accessToken !== 'abc') throw new Error('ws bearer');
+    const d = buildAuthHeaders({ userId: 'u', role: 'admin' });
+    if (d['x-user-id'] !== 'u' || d['x-role'] !== 'admin') throw new Error('dev headers');
 
     const Q = '{ todos { todo_id } }';
     const CREATE = 'mutation TodosCreate { todos_create { todo_id } }';
@@ -128,7 +139,11 @@ test('authFromPageData + defineResource + requestGraphql is the browser mutation
   const r = spawnSync(
     process.execPath,
     ['--experimental-strip-types', '--input-type=module', '-e', script],
-    { encoding: 'utf8' }
+    {
+      encoding: 'utf8',
+      cwd: root,
+      env: { ...process.env, NODE_PATH: path.join(root, 'node_modules') }
+    }
   );
   assert.equal(r.status, 0, `stderr=${r.stderr}\nstdout=${r.stdout}`);
   assert.match(r.stdout, /use-graphql-ok/);

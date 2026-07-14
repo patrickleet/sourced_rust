@@ -1,5 +1,6 @@
 import { SvelteKitAuth } from '@auth/sveltekit';
 import { env } from '$env/dynamic/private';
+import { cleanEnvValue } from '$lib/clean-env';
 
 declare module '@auth/sveltekit' {
 	interface Session {
@@ -31,22 +32,6 @@ const DEFAULT_SESSION_COOKIE_SAME_SITE = 'strict';
 
 type TokenRecord = Record<string, unknown>;
 type SessionCookieSameSite = 'lax' | 'strict';
-
-/** Peel accidental outer quotes (Make-include / double-wrap pollution). */
-function cleanEnvValue(raw: string | undefined): string {
-	let s = (raw ?? '').trim();
-	for (let i = 0; i < 2; i++) {
-		if (
-			s.length >= 2 &&
-			((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"')))
-		) {
-			s = s.slice(1, -1).trim();
-		} else {
-			break;
-		}
-	}
-	return s;
-}
 
 function envFirst(names: string[], fallback = '') {
 	for (const name of names) {

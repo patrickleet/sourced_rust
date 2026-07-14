@@ -4,9 +4,9 @@
 	 * SSR load uses `chat.query`; WS uses `chat.subscription`; posts useGraphql → POST /graphql.
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { useGraphql } from '$lib/gql/use-graphql';
-	import { authFromPageData } from '$lib/gql/auth-from-page';
+	import { authFromPageData, useGraphql } from '$lib/gql';
 	import { subscribe } from '$lib/graphql-ws';
+	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
 
@@ -21,15 +21,9 @@
 	let busy = $state(false);
 
 	const me = $derived(data.userId ?? data.session?.user?.id ?? '');
-	const displayName = $derived(
-		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
-	);
+	const displayName = $derived(sessionDisplayName(data.session));
 
-	const gql = useGraphql(() => ({
-		accessToken: data.accessToken,
-		session: data.session,
-		engineRole: data.engineRole
-	}));
+	const gql = useGraphql(() => data);
 
 	$effect(() => {
 		messages = data.messages;
@@ -69,11 +63,7 @@
 		subError = null;
 		// Same selection set as SSR `chat.query` (resource co-location).
 		const subDoc = chat.subscription ?? chat.query;
-		unsub = subscribe(subDoc, authFromPageData({
-			accessToken: data.accessToken,
-			session: data.session,
-			engineRole: data.engineRole
-		}), {
+		unsub = subscribe(subDoc, authFromPageData(data), {
 			onNext: applyPayload,
 			onError: (e) => {
 				status = 'error';

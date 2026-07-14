@@ -1,8 +1,9 @@
 /**
- * Browser GraphQL — same-origin `/graphql` (Vite proxies to the API in dev).
- * Prefer createGraphqlClient when wiring app-wide; this keeps a one-liner for routes.
+ * Browser GraphQL one-liners + re-exports (compat).
+ * Prefer `import { useGraphql, defineResource } from '$lib/gql'`.
  */
 import { requestGraphql } from './request.ts';
+import type { GqlDocument } from './document.ts';
 import type { GqlAuth, GqlResult } from './types.ts';
 
 export type { GqlAuth, GqlResult } from './types.ts';
@@ -15,17 +16,13 @@ export { authFromPageData } from './auth-from-page.ts';
 export type { PageGraphqlData } from './auth-from-page.ts';
 export { documentToString } from './document.ts';
 export type { GqlDocument } from './document.ts';
-// Note: Vite/SvelteKit resolves extensionless imports; node tests import .ts URLs.
-// loadQuery lives in load-query.server.ts (server-only).
+export { buildAuthHeaders } from './auth-headers.ts';
 
-/**
- * Execute a GraphQL document from the browser.
- * Prefer co-located `*.gql` generated documents via useGraphql / resources.
- */
+/** Browser POST /graphql (prefer useGraphql in pages). */
 export async function browserGraphql<T = Record<string, unknown>>(
-  document: import('./document').GqlDocument,
-  auth: GqlAuth = {},
-  variables: Record<string, unknown> = {}
+	document: GqlDocument,
+	auth: GqlAuth = {},
+	variables: Record<string, unknown> = {}
 ): Promise<GqlResult<T>> {
-  return requestGraphql<T>('/graphql', document, auth, variables);
+	return requestGraphql<T>('/graphql', document, auth, variables);
 }
