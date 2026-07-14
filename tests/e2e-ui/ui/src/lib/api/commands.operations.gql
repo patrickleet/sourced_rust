@@ -1,0 +1,69 @@
+# GENERATED — do not edit by hand.
+# Source: e2e_service::graphql_commands() → commands.manifest.json
+# Regenerate: `make gen-commands` (from tests/e2e-ui)
+# Copy into GraphiQL; app code uses commands.generated.ts (same text).
+# Spec: distributed GitKB specs/query-layer/references/command-client-dx
+
+# todo.create — roles: user, admin
+mutation Command_todos_create($input: TodoCreateInput!) {
+  todos_create(input: $input) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}
+
+# todo.complete — roles: user, admin
+mutation Command_todos_complete($input: TodoCompleteInput!) {
+  todos_complete(input: $input) {
+    todo_id
+    status
+  }
+}
+
+# todo.archive — roles: user, admin
+mutation Command_todos_archive($input: TodoArchiveInput!) {
+  todos_archive(input: $input) {
+    todo_id
+    status
+  }
+}
+
+# todo.force_archive — roles: admin
+mutation Command_todos_force_archive($input: TodoForceArchiveInput!) {
+  todos_force_archive(input: $input) {
+    todo_id
+    owner_id
+    status
+    archived_by
+  }
+}
+
+# todo.rename — roles: user, admin
+mutation Command_todos_rename($input: TodoRenameInput!) {
+  todos_rename(input: $input) {
+    todo_id
+    title
+    status
+  }
+}
+
+# todo.reopen — roles: user, admin
+mutation Command_todos_reopen($input: TodoReopenInput!) {
+  todos_reopen(input: $input) {
+    todo_id
+    status
+  }
+}
+
+# chat.post — roles: user, admin
+mutation Command_chat_messages_post($input: ChatPostInput!) {
+  chat_messages_post(input: $input) {
+    message_id
+    room_id
+    author_id
+    body
+    created_at
+  }
+}

@@ -1,5 +1,5 @@
 /**
- * Command client: generator + generated module drive the real requestGraphql path.
+ * Command client: generator + generated module drive the real client.request path.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +13,7 @@ const uiRoot = path.resolve(here, '..');
 const genScript = path.join(uiRoot, 'scripts/gen-commands.mjs');
 const manifestPath = path.join(uiRoot, 'src/lib/api/commands.manifest.json');
 const generatedPath = path.join(uiRoot, 'src/lib/api/commands.generated.ts');
+const operationsGql = path.join(uiRoot, 'src/lib/api/commands.operations.gql');
 const pageSvelte = path.join(uiRoot, 'src/routes/todos/+page.svelte');
 
 test('commands.manifest.json lists create/complete and admin-only force_archive', () => {
@@ -25,40 +26,37 @@ test('commands.manifest.json lists create/complete and admin-only force_archive'
   assert.ok(byField.todos_force_archive, 'todos_force_archive missing');
   assert.deepEqual(byField.todos_create.roles.slice().sort(), ['admin', 'user']);
   assert.deepEqual(byField.todos_force_archive.roles, ['admin']);
-  assert.equal(byField.todos_create.input.fields.some((f) => f.name === 'title'), true);
 });
 
-test('generateCommandsTs produces todosCreate/todosComplete from real manifest', async () => {
-  const { generateCommandsTs, fieldToFnName } = await import(
-    pathToFileURL(genScript).href
-  );
+test('generateOperationsGql + generateCommandsTs share mutation text', async () => {
+  const { generateCommandsTs, generateOperationsGql, fieldToFnName, buildMutationOp } =
+    await import(pathToFileURL(genScript).href);
   assert.equal(fieldToFnName('todos_create'), 'todosCreate');
   const catalog = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const gql = generateOperationsGql(catalog);
   const ts = generateCommandsTs(catalog);
+  assert.match(gql, /mutation Command_todos_create/);
+  assert.match(gql, /todos_force_archive/);
   assert.match(ts, /export async function todosCreate/);
-  assert.match(ts, /export async function todosComplete/);
-  assert.match(ts, /requestGraphql/);
-  assert.match(ts, /todos_force_archive/);
-  assert.match(ts, /COMMAND_ROLES/);
+  assert.match(ts, /COMMAND_DOCS/);
+  assert.match(ts, /CommandClient/);
+  // Same op body in both artifacts
+  const { text } = buildMutationOp(catalog.commands[0]);
+  assert.ok(gql.includes(text));
+  assert.ok(ts.includes(text.split('\n')[0]));
 });
 
-test('generated todosCreate posts GraphQL mutation via real requestGraphql', async () => {
-  const requestFile = path.join(uiRoot, 'src/lib/gql/request.ts');
-  const genFile = generatedPath;
-  assert.ok(fs.existsSync(genFile), 'commands.generated.ts missing — run make gen-commands');
+test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
+  assert.ok(fs.existsSync(generatedPath), 'commands.generated.ts missing');
+  assert.ok(fs.existsSync(operationsGql), 'commands.operations.gql missing');
 
   const script = `
-    import { pathToFileURL } from 'node:url';
-    // Load generator-built module: rewrite relative imports for node strip-types.
-    // Instead import requestGraphql and call the same contract the generator emits.
-    import { requestGraphql } from ${JSON.stringify(pathToFileURL(requestFile).href)};
-
+    const mod = await import(${JSON.stringify(pathToFileURL(generatedPath).href)});
     let seen;
-    globalThis.fetch = async (url, init) => {
-      seen = { url, body: JSON.parse(init.body), headers: init.headers };
-      return {
-        status: 200,
-        json: async () => ({
+    const client = {
+      async request(document, variables) {
+        seen = { document, variables };
+        return {
           data: {
             todos_create: {
               todo_id: 't1',
@@ -66,33 +64,16 @@ test('generated todosCreate posts GraphQL mutation via real requestGraphql', asy
               title: 'hi',
               status: 'open'
             }
-          }
-        })
-      };
+          },
+          status: 200
+        };
+      }
     };
-
-    const document =
-      'mutation Command_todos_create($input: TodoCreateInput!) { todos_create(input: $input) { todo_id owner_id title status } }';
-    const result = await requestGraphql(
-      '/graphql',
-      document,
-      { accessToken: 'tok' },
-      { input: { todo_id: 't1', title: 'hi' } }
-    );
-    if (!result.data?.todos_create) throw new Error('missing data');
-    if (seen.url !== '/graphql') throw new Error('bad url');
-    if (!seen.body.query.includes('todos_create')) throw new Error('mutation missing');
-    if (seen.body.variables.input.title !== 'hi') throw new Error('vars missing');
-    if (!String(seen.headers.Authorization || seen.headers.authorization).includes('tok')) {
-      throw new Error('auth missing');
-    }
-    // Also load generated module and call todosCreate (shipped entry).
-    const mod = await import(${JSON.stringify(pathToFileURL(genFile).href)});
-    const r2 = await mod.todosCreate(
-      { todo_id: 't2', title: 'x' },
-      { url: '/graphql', auth: { accessToken: 'tok' } }
-    );
-    if (!r2.data || r2.data.todo_id !== 't1') throw new Error('todosCreate unwrap failed');
+    const r = await mod.todosCreate({ todo_id: 't1', title: 'hi' }, client);
+    if (!r.data || r.data.todo_id !== 't1') throw new Error('unwrap failed');
+    if (!String(seen.document).includes('todos_create')) throw new Error('doc missing');
+    if (seen.variables.input.title !== 'hi') throw new Error('vars');
+    if (mod.COMMAND_DOCS.todos_create !== seen.document) throw new Error('COMMAND_DOCS mismatch');
     if (typeof mod.todosComplete !== 'function') throw new Error('todosComplete missing');
     if (!mod.COMMAND_ROLES.todos_force_archive.includes('admin')) throw new Error('roles');
     console.log('command-client-ok');
@@ -107,27 +88,29 @@ test('generated todosCreate posts GraphQL mutation via real requestGraphql', asy
   assert.match(r.stdout, /command-client-ok/);
 });
 
-test('app pages use generated command functions for all writes', () => {
+test('app pages pass bound gql client into command functions', () => {
   const todos = fs.readFileSync(pageSvelte, 'utf8');
-  assert.match(todos, /from '\$lib\/api\/commands\.generated'/);
-  assert.match(todos, /todosCreate\s*\(/);
-  assert.match(todos, /todosComplete\s*\(/);
-  assert.match(todos, /todosArchive\s*\(/);
-  assert.doesNotMatch(todos, /todosResource\.mutations\./);
-  assert.doesNotMatch(todos, /mutation TodosCreate/);
+  assert.match(todos, /todosCreate\(\{ todo_id, title: text \}, gql\)|todosCreate\([^)]+, gql\)/);
+  assert.match(todos, /todosComplete\(\{ todo_id \}, gql\)/);
+  assert.match(todos, /todosArchive\(\{ todo_id \}, gql\)/);
+  assert.doesNotMatch(todos, /url:\s*['"]\/graphql['"]/);
+  assert.doesNotMatch(todos, /authFromPageData/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
-  assert.match(chat, /chatMessagesPost\s*\(/);
-  assert.doesNotMatch(chat, /chat\.mutations\.post|mutations\.post/);
+  assert.match(chat, /chatMessagesPost\(/);
+  assert.match(chat, /,\s*gql\s*\)/);
+  assert.doesNotMatch(chat, /url:\s*['"]\/graphql['"]/);
 
   const admin = fs.readFileSync(path.join(uiRoot, 'src/routes/admin/+page.svelte'), 'utf8');
-  assert.match(admin, /todosForceArchive\s*\(/);
-  assert.doesNotMatch(admin, /mutations\.forceArchive|adminTodos\.mutations/);
+  assert.match(admin, /todosForceArchive\(\{ todo_id \}, gql\)/);
+  assert.doesNotMatch(admin, /url:\s*['"]\/graphql['"]/);
 });
 
-test('generated mutations are multiline template strings', () => {
+test('generated mutations are multiline; operations.gql is copy-paste ready', () => {
   const gen = fs.readFileSync(generatedPath, 'utf8');
-  assert.match(gen, /const document = `\nmutation Command_todos_create/);
-  assert.match(gen, /todos_create\(input: \$input\) \{\n/);
-  assert.match(gen, /todo_id\n/);
+  const gql = fs.readFileSync(operationsGql, 'utf8');
+  assert.match(gen, /COMMAND_DOCS = \{/);
+  assert.match(gen, /"todos_create": `\nmutation Command_todos_create/);
+  assert.match(gql, /mutation Command_todos_create\(\$input: TodoCreateInput!\) \{/);
+  assert.match(gql, /todos_create\(input: \$input\) \{\n/);
 });

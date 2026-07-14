@@ -70,13 +70,18 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   assert.ok(fs.existsSync(new URL('../src/routes/admin/admin.gql', import.meta.url)));
   const gql = fs.readFileSync(new URL('../src/routes/admin/admin.gql', import.meta.url), 'utf8');
   assert.match(gql, /query AdminAllTodos|todos/);
-  assert.match(gql, /todos_force_archive|AdminForceArchive/);
+  assert.doesNotMatch(gql, /mutation |todos_force_archive/);
   assert.match(gql, /limit:\s*100|order_by/);
+  const ops = fs.readFileSync(
+    new URL('../src/lib/api/commands.operations.gql', import.meta.url),
+    'utf8'
+  );
+  assert.match(ops, /todos_force_archive/);
   const resource = fs.readFileSync(
     new URL('../src/routes/admin/admin.resource.ts', import.meta.url),
     'utf8'
   );
-  assert.match(resource, /forceArchive|AdminForceArchiveDocument/);
+  assert.doesNotMatch(resource, /forceArchive|AdminForceArchiveDocument|mutations:/);
   const server = fs.readFileSync(
     new URL('../src/routes/admin/+page.server.ts', import.meta.url),
     'utf8'
@@ -89,7 +94,7 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   assert.ok(gateIdx >= 0 && loadIdx > gateIdx, 'admin gate must run before await loadQuery');
   assert.match(server, /adminTodos|AdminAllTodos|loadQuery/);
   const page = fs.readFileSync(new URL('../src/routes/admin/+page.svelte', import.meta.url), 'utf8');
-  assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive/i);
+  assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive|todosForceArchive/i);
   const hooks = fs.readFileSync(new URL('../src/hooks.server.ts', import.meta.url), 'utf8');
   assert.match(hooks, /\/admin/);
   const service = fs.readFileSync(
@@ -221,9 +226,7 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.ok(fs.existsSync(new URL('../src/routes/todos/todos.generated.ts', import.meta.url)));
   const gqlFile = fs.readFileSync(new URL('../src/routes/todos/todos.gql', import.meta.url), 'utf8');
   assert.match(gqlFile, /query Todos/);
-  assert.match(gqlFile, /mutation TodosCreate/);
-  assert.match(gqlFile, /mutation TodosComplete/);
-  assert.match(gqlFile, /mutation TodosArchive/);
+  assert.doesNotMatch(gqlFile, /mutation Todos/);
 
   const resource = fs.readFileSync(
     new URL('../src/routes/todos/todos.resource.ts', import.meta.url),
@@ -232,7 +235,7 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(resource, /defineResource/);
   assert.match(resource, /export const todos/);
   assert.match(resource, /TodosDocument|from '\.\/todos\.generated'/);
-  assert.match(resource, /TodosCreateDocument|TodosCompleteDocument|TodosArchiveDocument/);
+  assert.doesNotMatch(resource, /mutations:|TodosCreateDocument/);
   // No hand-authored multi-line GraphQL strings in the resource
   assert.doesNotMatch(resource, /mutation TodosCreate|query Todos \{/);
 
@@ -337,7 +340,7 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   const gqlFile = fs.readFileSync(new URL('../src/routes/chat/chat.gql', import.meta.url), 'utf8');
   assert.match(gqlFile, /query ChatMessages/);
   assert.match(gqlFile, /subscription ChatMessagesLive/);
-  assert.match(gqlFile, /mutation ChatPost/);
+  assert.doesNotMatch(gqlFile, /mutation ChatPost/);
 
   const resource = fs.readFileSync(
     new URL('../src/routes/chat/chat.resource.ts', import.meta.url),
@@ -346,7 +349,8 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.match(resource, /defineResource/);
   assert.match(resource, /export const chat/);
   assert.match(resource, /ChatMessagesDocument|from '\.\/chat\.generated'/);
-  assert.match(resource, /ChatMessagesLiveDocument|ChatPostDocument/);
+  assert.doesNotMatch(resource, /ChatPostDocument|mutations:/);
+  assert.match(resource, /ChatMessagesLiveDocument/);
   assert.match(resource, /LOBBY_ROOM|lobby/);
   assert.doesNotMatch(resource, /subscription \{|mutation ChatPost\(/);
 

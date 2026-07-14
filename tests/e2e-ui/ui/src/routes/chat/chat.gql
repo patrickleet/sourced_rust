@@ -1,5 +1,6 @@
-# Co-located lobby chat operations (Houdini-inspired).
+# Co-located lobby chat **query + subscription**.
 # Room filter is fixed to lobby for the e2e-ui page; variables can expand later.
+# Post mutation: `$lib/api/commands.operations.gql` (generated).
 
 query ChatMessages {
   chat_messages(where: { room_id: { _eq: "lobby" } }) {
@@ -13,18 +14,6 @@ query ChatMessages {
 
 subscription ChatMessagesLive {
   chat_messages(where: { room_id: { _eq: "lobby" } }) {
-    message_id
-    room_id
-    author_id
-    body
-    created_at
-  }
-}
-
-mutation ChatPost($message_id: String!, $body: String!, $room_id: String!) {
-  chat_messages_post(
-    input: { message_id: $message_id, body: $body, room_id: $room_id }
-  ) {
     message_id
     room_id
     author_id
