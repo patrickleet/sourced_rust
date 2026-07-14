@@ -1,13 +1,12 @@
 <script lang="ts">
 	/**
 	 * Optimistic todos: co-located `todos` resource owns the **query** document.
-	 * Create/complete use generated command functions (GraphQL wire under the hood).
-	 * Archive still uses resource mutation document until fully migrated.
+	 * All writes use generated command functions (GraphQL wire under the hood).
 	 * SSR load and client refetch use the same `todos.query` reference.
 	 */
 	import { untrack } from 'svelte';
 	import { authFromPageData, useGraphql } from '$lib/gql';
-	import { todosCreate, todosComplete } from '$lib/api/commands.generated';
+	import { todosArchive, todosComplete, todosCreate } from '$lib/api/commands.generated';
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
@@ -175,13 +174,13 @@
 		pending = { ...pending, [todo_id]: 'archived' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
 
-		const result = await gql.request<{ todos_archive?: { todo_id: string; status: string } }>(
-			todosResource.mutations.archive,
-			{ todo_id }
+		const result = await todosArchive(
+			{ todo_id },
+			{ url: '/graphql', auth: authFromPageData(data) }
 		);
 
 		busy = false;
-		if (result.errors?.length || !result.data?.todos_archive) {
+		if (result.errors?.length || !result.data) {
 			restore(prev);
 			actionError = result.errors?.[0]?.message ?? 'archive failed';
 			return;

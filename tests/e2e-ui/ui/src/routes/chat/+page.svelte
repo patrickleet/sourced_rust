@@ -1,10 +1,11 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — co-located `chat` resource owns query, subscription, and post.
-	 * SSR load uses `chat.query`; WS uses `chat.subscription`; posts useGraphql → POST /graphql.
+	 * Lobby chat — co-located `chat` resource owns query + subscription.
+	 * Posts use generated `chatMessagesPost` (GraphQL wire under the hood).
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { chatMessagesPost } from '$lib/api/commands.generated';
 	import { subscribe } from '$lib/graphql-ws';
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
@@ -106,14 +107,13 @@
 		const message_id = `m-${Date.now().toString(16)}`;
 		sendError = null;
 		busy = true;
-		const result = await gql.request(chat.mutations.post, {
-			message_id,
-			body,
-			room_id: data.room
-		});
+		const result = await chatMessagesPost(
+			{ message_id, body, room_id: data.room },
+			{ url: '/graphql', auth: authFromPageData(data) }
+		);
 		busy = false;
-		if (result.errors?.length) {
-			sendError = result.errors[0].message;
+		if (result.errors?.length || !result.data) {
+			sendError = result.errors?.[0]?.message ?? 'send failed';
 			return;
 		}
 		draft = '';
