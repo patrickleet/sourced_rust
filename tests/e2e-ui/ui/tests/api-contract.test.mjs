@@ -202,6 +202,40 @@ test('todos: co-located resource — same query SSR + browser mutations', () => 
 // DX contract lives in GitKB ([[specs/e2e-ui/sveltekit-dx]]), not the code tree.
 // Structural checks above assert the pilot modules the spec describes.
 
+test('chat: co-located resource — SSR query, WS subscription, browser post', () => {
+  const resource = fs.readFileSync(
+    new URL('../src/routes/chat/chat.resource.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(resource, /defineResource/);
+  assert.match(resource, /export const chat/);
+  assert.match(resource, /subscription:/);
+  assert.match(resource, /post:|mutations:\s*\{[\s\S]*post/);
+  assert.match(resource, /chat_messages_post|CHAT_POST|chat_messages/);
+  assert.match(resource, /LOBBY_ROOM|lobby/);
+
+  const server = fs.readFileSync(
+    new URL('../src/routes/chat/+page.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(server, /loadQuery/);
+  assert.match(server, /from '\.\/chat\.resource'|from "\.\/chat\.resource"/);
+  assert.match(server, /chat\.query/);
+  assert.doesNotMatch(server, /export const actions|serverCommand|\?\/create/);
+
+  const page = fs.readFileSync(new URL('../src/routes/chat/+page.svelte', import.meta.url), 'utf8');
+  assert.match(page, /from '\.\/chat\.resource'|from "\.\/chat\.resource"/);
+  assert.match(page, /useGraphql/);
+  assert.match(page, /chat\.mutations\.post|mutations\.post/);
+  assert.match(page, /chat\.subscription|subscription/);
+  assert.match(page, /subscribe/);
+  assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
+  assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
+
+  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
+  assert.match(docs, /chat\.resource|chatResource|chat\.mutations/);
+});
+
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {
   const service = fs.readFileSync(
     new URL('../../crates/service/src/service.rs', import.meta.url),

@@ -1,21 +1,14 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — SSR seed + live WS subscription + client GraphQL mutations.
-	 * Same documents as SSR (`$lib/gql/documents`); posts go browser → POST /graphql.
+	 * Lobby chat — co-located `chat` resource owns query, subscription, and post.
+	 * SSR load uses `chat.query`; WS uses `chat.subscription`; posts useGraphql → POST /graphql.
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { browserGraphql } from '$lib/gql/client';
-	import { CHAT_POST, chatMessagesSubscription } from '$lib/gql/documents';
+	import { useGraphql } from '$lib/gql/use-graphql';
+	import { authFromPageData } from '$lib/gql/auth-from-page';
 	import { subscribe } from '$lib/graphql-ws';
-	import { roleFromGroups } from '$lib/roles';
-
-	type ChatMsg = {
-		message_id: string;
-		room_id: string;
-		author_id: string;
-		body: string;
-		created_at: string;
-	};
+	import { chat, sortChatMessages } from './chat.resource';
+	import type { ChatMsg } from './chat.resource';
 
 	let { data } = $props();
 	let messages = $state<ChatMsg[]>([...(data.messages ?? [])]);
@@ -31,11 +24,12 @@
 	const displayName = $derived(
 		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
 	);
-	const gqlAuth = $derived({
-		accessToken: data.accessToken ?? data.session?.accessToken,
-		userId: data.accessToken || data.session?.accessToken ? undefined : (data.userId ?? undefined),
-		role: data.engineRole ?? roleFromGroups(data.session?.user?.groups)
-	});
+
+	const gql = useGraphql(() => ({
+		accessToken: data.accessToken,
+		session: data.session,
+		engineRole: data.engineRole
+	}));
 
 	$effect(() => {
 		messages = data.messages;
@@ -63,11 +57,7 @@
 		}
 		const list = p?.data?.chat_messages;
 		if (Array.isArray(list)) {
-			messages = [...list].sort((a, b) =>
-				a.created_at === b.created_at
-					? a.message_id.localeCompare(b.message_id)
-					: a.created_at.localeCompare(b.created_at)
-			);
+			messages = sortChatMessages(list);
 			status = 'live';
 			subError = null;
 		}
@@ -77,7 +67,13 @@
 		unsub?.();
 		status = 'connecting';
 		subError = null;
-		unsub = subscribe(chatMessagesSubscription(data.room), gqlAuth, {
+		// Same selection set as SSR `chat.query` (resource co-location).
+		const subDoc = chat.subscription ?? chat.query;
+		unsub = subscribe(subDoc, authFromPageData({
+			accessToken: data.accessToken,
+			session: data.session,
+			engineRole: data.engineRole
+		}), {
 			onNext: applyPayload,
 			onError: (e) => {
 				status = 'error';
@@ -120,7 +116,7 @@
 		const message_id = `m-${Date.now().toString(16)}`;
 		sendError = null;
 		busy = true;
-		const result = await browserGraphql(CHAT_POST, gqlAuth, {
+		const result = await gql.request(chat.mutations.post, {
 			message_id,
 			body,
 			room_id: data.room
@@ -156,8 +152,9 @@
 			</div>
 		</div>
 		<p class="ch-lede">
-			SSR loads history; updates stream over <code>graphql-transport-ws</code> with Bearer in
-			<code>connection_init</code>. Signed in as <strong>{displayName}</strong>.
+			Co-located <code>chat.resource</code>: SSR seed + live
+			<code>graphql-transport-ws</code> (Bearer in <code>connection_init</code>) +
+			<code>POST /graphql</code> posts. Signed in as <strong>{displayName}</strong>.
 		</p>
 	</header>
 

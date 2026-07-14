@@ -148,6 +148,19 @@ test('todos.resource is defineResource with create/complete/archive + query', ()
   assert.match(src, /status/);
 });
 
+const chatResourceFile = path.join(root, 'src/routes/chat/chat.resource.ts');
+
+test('chat.resource is defineResource with query + subscription + post', () => {
+  const src = fs.readFileSync(chatResourceFile, 'utf8');
+  assert.match(src, /defineResource/);
+  assert.match(src, /export const chat/);
+  assert.match(src, /chatResource|LOBBY_ROOM/);
+  assert.match(src, /subscription/);
+  assert.match(src, /chat_messages_post|mutations/);
+  assert.match(src, /message_id/);
+  assert.match(src, /room_id/);
+});
+
 test('requestGraphql drives real fetch with Bearer, variables, and 401 path', () => {
   const script = `
     import { requestGraphql, buildAuthHeaders } from ${JSON.stringify(requestUrl)};
