@@ -27,6 +27,127 @@ test('create-client.ts is a thin factory over requestGraphql', () => {
   assert.match(src, /getAuth/);
 });
 
+const defineFile = path.join(root, 'src/lib/gql/define-resource.ts');
+const authFile = path.join(root, 'src/lib/gql/auth-from-page.ts');
+const useFile = path.join(root, 'src/lib/gql/use-graphql.ts');
+const resourceFile = path.join(root, 'src/routes/todos/todos.resource.ts');
+const defineUrl = pathToFileURL(defineFile).href;
+const authUrl = pathToFileURL(authFile).href;
+
+test('defineResource preserves document identity for query + mutations', () => {
+  const script = `
+    import { defineResource } from ${JSON.stringify(defineUrl)};
+
+    const Q = '{ todos { id } }';
+    const C = 'mutation { create }';
+    const r = defineResource({
+      query: Q,
+      mutations: { create: C, complete: 'mutation { complete }' },
+      select: (d) => d.todos
+    });
+    if (r.query !== Q) throw new Error('query identity broken');
+    if (r.mutations.create !== C) throw new Error('mutation identity broken');
+    if (typeof r.select !== 'function') throw new Error('select missing');
+    // Same reference when co-located resource reuses defineResource
+    const again = defineResource({ query: r.query, mutations: r.mutations });
+    if (again.query !== r.query) throw new Error('re-wrap broke query ref');
+    if (again.mutations.create !== r.mutations.create) throw new Error('re-wrap broke mut ref');
+    console.log('define-resource-ok');
+  `;
+  const r = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '-e', script],
+    { encoding: 'utf8' }
+  );
+  assert.equal(r.status, 0, `stderr=${r.stderr}\nstdout=${r.stdout}`);
+  assert.match(r.stdout, /define-resource-ok/);
+});
+
+test('authFromPageData + defineResource + requestGraphql is the browser mutation path', () => {
+  // useGraphql is createGraphqlClient({ getUrl: '/graphql', getAuth: authFromPageData }).
+  // Node cannot resolve extensionless relative imports in create-client; drive the
+  // same shipped requestGraphql + authFromPageData + defineResource entry points.
+  const useSrc = fs.readFileSync(useFile, 'utf8');
+  assert.match(useSrc, /export function useGraphql/);
+  assert.match(useSrc, /createGraphqlClient/);
+  assert.match(useSrc, /authFromPageData/);
+  assert.match(useSrc, /['"]\/graphql['"]/);
+
+  const script = `
+    import { authFromPageData } from ${JSON.stringify(authUrl)};
+    import { requestGraphql } from ${JSON.stringify(requestUrl)};
+    import { defineResource } from ${JSON.stringify(defineUrl)};
+
+    const a = authFromPageData({
+      accessToken: ' tok ',
+      session: { user: { id: 'u1' } },
+      engineRole: 'user'
+    });
+    if (a.accessToken !== ' tok ') throw new Error('token');
+    if (a.userId !== undefined) throw new Error('userId should be omitted when token set');
+
+    const b = authFromPageData({
+      accessToken: null,
+      session: { user: { id: 'dev' } },
+      engineRole: 'admin'
+    });
+    if (b.userId !== 'dev' || b.role !== 'admin') throw new Error(JSON.stringify(b));
+
+    const Q = '{ todos { todo_id } }';
+    const CREATE = 'mutation TodosCreate { todos_create { todo_id } }';
+    const resource = defineResource({
+      query: Q,
+      mutations: { create: CREATE, complete: 'c', archive: 'a' }
+    });
+
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body), headers: init.headers });
+      return {
+        status: 200,
+        json: async () => ({ data: { todos: [{ todo_id: '1' }], todos_create: { todo_id: '1' } } })
+      };
+    };
+
+    // Same wiring as useGraphql / createGraphqlClient
+    const clientRequest = async (document, variables = {}) => {
+      const auth = authFromPageData({ accessToken: 'abc', engineRole: 'user' });
+      return requestGraphql('/graphql', document, auth, variables);
+    };
+
+    const seed = await clientRequest(resource.query);
+    if (!seed.data?.todos) throw new Error(JSON.stringify(seed));
+    const mut = await clientRequest(resource.mutations.create, { todo_id: '1', title: 'x' });
+    if (!mut.data?.todos_create) throw new Error(JSON.stringify(mut));
+    if (calls[0].url !== '/graphql' || calls[0].body.query !== Q) throw new Error('query path');
+    if (calls[1].body.query !== CREATE) throw new Error('mutation path');
+    if (calls[0].body.query !== resource.query) throw new Error('SSR/client query identity');
+    if (calls[0].headers.authorization !== 'Bearer abc') throw new Error('bearer');
+    console.log('use-graphql-ok');
+  `;
+  const r = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '-e', script],
+    { encoding: 'utf8' }
+  );
+  assert.equal(r.status, 0, `stderr=${r.stderr}\nstdout=${r.stdout}`);
+  assert.match(r.stdout, /use-graphql-ok/);
+});
+
+test('todos.resource is defineResource with create/complete/archive + query', () => {
+  const src = fs.readFileSync(resourceFile, 'utf8');
+  assert.match(src, /defineResource/);
+  assert.match(src, /export const todos/);
+  assert.match(src, /todos_create/);
+  assert.match(src, /todos_complete/);
+  assert.match(src, /todos_archive/);
+  // Query selection includes todo fields used by UI
+  assert.match(src, /todo_id/);
+  assert.match(src, /owner_id/);
+  assert.match(src, /title/);
+  assert.match(src, /status/);
+});
+
 test('requestGraphql drives real fetch with Bearer, variables, and 401 path', () => {
   const script = `
     import { requestGraphql, buildAuthHeaders } from ${JSON.stringify(requestUrl)};

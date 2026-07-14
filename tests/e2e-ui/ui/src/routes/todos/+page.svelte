@@ -1,23 +1,15 @@
 <script lang="ts">
 	/**
-	 * Optimistic todos: browser + SSR share the same GraphQL documents.
-	 * Mutations POST /graphql from the client (Network tab shows /graphql).
+	 * Optimistic todos: co-located `todos` resource owns query + mutations.
+	 * SSR load and client refetch use the same `todos.query` reference.
+	 * Mutations POST /graphql via useGraphql (Network tab shows /graphql).
 	 */
 	import { untrack } from 'svelte';
-	import { browserGraphql } from '$lib/gql/client';
-	import {
-		TODOS_ARCHIVE,
-		TODOS_COMPLETE,
-		TODOS_CREATE,
-		TODOS_QUERY
-	} from '$lib/gql/documents';
+	import { useGraphql } from '$lib/gql/use-graphql';
+	import { todos as todosResource } from './todos.resource';
+	import type { TodoRow } from './todos.resource';
 
-	type Todo = {
-		todo_id: string;
-		owner_id: string;
-		title: string;
-		status: string;
-	};
+	type Todo = TodoRow;
 
 	let { data } = $props();
 
@@ -33,11 +25,13 @@
 	const who = $derived(
 		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
 	);
-	const gqlAuth = $derived({
-		accessToken: data.accessToken ?? data.session?.accessToken,
-		userId: data.accessToken || data.session?.accessToken ? undefined : data.session?.user?.id,
-		role: data.engineRole
-	});
+
+	/** Lazy auth so token/role track page data; same client for mutations + refetch. */
+	const gql = useGraphql(() => ({
+		accessToken: data.accessToken,
+		session: data.session,
+		engineRole: data.engineRole
+	}));
 
 	const open = $derived(todos.filter((t) => t.status === 'open'));
 	const done = $derived(todos.filter((t) => t.status === 'completed'));
@@ -99,9 +93,9 @@
 		pending = snap.pending;
 	}
 
-	/** Same query as SSR load — reconcile after projector lag. */
+	/** Same query document reference as SSR load (`todosResource.query`). */
 	async function refetchTodos() {
-		const result = await browserGraphql<{ todos: Todo[] }>(TODOS_QUERY, gqlAuth);
+		const result = await gql.request<{ todos: Todo[] }>(todosResource.query);
 		if (result.errors?.length) {
 			actionError = result.errors[0].message;
 			return;
@@ -131,9 +125,10 @@
 		todos = [{ todo_id, owner_id: me || 'me', title: text, status: 'open' }, ...todos];
 		title = '';
 
-		const result = await browserGraphql<{
-			todos_create?: Todo;
-		}>(TODOS_CREATE, gqlAuth, { todo_id, title: text });
+		const result = await gql.request<{ todos_create?: Todo }>(todosResource.mutations.create, {
+			todo_id,
+			title: text
+		});
 
 		busy = false;
 		if (result.errors?.length || !result.data?.todos_create) {
@@ -156,9 +151,8 @@
 		pending = { ...pending, [todo_id]: 'completed' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-		const result = await browserGraphql<{ todos_complete?: { todo_id: string; status: string } }>(
-			TODOS_COMPLETE,
-			gqlAuth,
+		const result = await gql.request<{ todos_complete?: { todo_id: string; status: string } }>(
+			todosResource.mutations.complete,
 			{ todo_id }
 		);
 
@@ -183,9 +177,8 @@
 		pending = { ...pending, [todo_id]: 'archived' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
 
-		const result = await browserGraphql<{ todos_archive?: { todo_id: string; status: string } }>(
-			TODOS_ARCHIVE,
-			gqlAuth,
+		const result = await gql.request<{ todos_archive?: { todo_id: string; status: string } }>(
+			todosResource.mutations.archive,
 			{ todo_id }
 		);
 
@@ -208,8 +201,8 @@
 		</div>
 		<h1 class="fn-title">Field notes</h1>
 		<p class="fn-lede">
-			Tasks for <strong>{who}</strong>. Same GraphQL
-			<code>TODOS_QUERY</code> / mutations on SSR and in the browser
+			Tasks for <strong>{who}</strong>. Co-located
+			<code>todos.resource</code> query + mutations on SSR and in the browser
 			(<code>POST /graphql</code>).
 		</p>
 	</header>

@@ -8,7 +8,13 @@ import type { GqlAuth, GqlResult } from './types';
 export type { GqlAuth, GqlResult } from './types';
 export { createGraphqlClient } from './create-client';
 export type { GraphqlClient, GraphqlClientOptions } from './create-client';
+export { defineResource } from './define-resource';
+export type { DefineResourceInput, GraphqlResource } from './define-resource';
+export { useGraphql } from './use-graphql';
+export { authFromPageData } from './auth-from-page';
+export type { PageGraphqlData } from './auth-from-page';
 // Note: Vite/SvelteKit resolves extensionless imports; node tests import .ts URLs.
+// loadQuery lives in load-query.server.ts (server-only).
 
 /**
  * Execute a GraphQL document from the browser.
