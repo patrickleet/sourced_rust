@@ -1,7 +1,7 @@
-# Admin-only page ops. Same GraphQL field as personal todos, but the engine
-# role `admin` has no owner_id row filter (see build_graphql_engine ModelPermissions).
-# User role can run this query too — they only receive their own rows; the /admin
-# route is gated so only admins open this UI.
+# Admin-only page ops.
+# - Query: same `todos` field; admin role has no owner filter.
+# - Mutation: `todos_force_archive` is registered ONLY for role admin
+#   (absent from user SDL / GraphQL schema for non-admins).
 
 query AdminAllTodos {
   todos {
@@ -9,5 +9,14 @@ query AdminAllTodos {
     owner_id
     title
     status
+  }
+}
+
+mutation AdminForceArchive($todo_id: String!) {
+  todos_force_archive(input: { todo_id: $todo_id }) {
+    todo_id
+    owner_id
+    status
+    archived_by
   }
 }

@@ -39,3 +39,14 @@ pub fn require_user(session: &Session) -> Result<String, HandlerError> {
         .map(|s| s.to_string())
         .ok_or_else(|| HandlerError::Unauthorized("missing x-user-id".into()))
 }
+
+/// Require engine role `admin` (`x-role` / OIDC claim map).
+pub fn require_admin(session: &Session) -> Result<(), HandlerError> {
+    match session.role() {
+        Some("admin") => Ok(()),
+        Some(other) => Err(HandlerError::Rejected(format!(
+            "admin role required, got `{other}`"
+        ))),
+        None => Err(HandlerError::Unauthorized("missing x-role".into())),
+    }
+}

@@ -42,6 +42,7 @@ where
         command handlers::commands::complete,
         command handlers::commands::reopen,
         command handlers::commands::archive,
+        command handlers::commands::force_archive,
         events handlers::events::project_todo,
     );
     let chat = distributed::routes!(
@@ -70,7 +71,9 @@ pub fn build_graphql_engine(
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
-    use handlers::commands::{archive, chat_post, complete, create, rename, reopen};
+    use handlers::commands::{
+        archive, chat_post, complete, create, force_archive, rename, reopen,
+    };
 
     let app_roles = ["user", "admin"];
     let commands = GraphqlCommands::new()
@@ -97,6 +100,15 @@ pub fn build_graphql_engine(
                 .input::<archive::TodoArchiveInput>()
                 .output::<archive::TodoArchivePayload>()
                 .roles(app_roles),
+        )
+        .command(
+            // Admin-only mutation: appears in admin SDL, not user SDL.
+            force_archive::COMMAND,
+            exposed_command()
+                .field_name("todos_force_archive")
+                .input::<force_archive::TodoForceArchiveInput>()
+                .output::<force_archive::TodoForceArchivePayload>()
+                .roles(["admin"]),
         )
         .command(
             rename::COMMAND,

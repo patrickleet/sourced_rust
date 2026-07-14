@@ -38,7 +38,7 @@ make run         # API :8791 + UI :5180
 | Login | Engine role | Notes |
 |-------|-------------|--------|
 | `alice` / `bob` | `user` | Personal `/todos` (owner filter) |
-| `admin` | `admin` | `/admin` — **all** field notes (no owner filter); nav link appears when `engineRole === admin` |
+| `admin` | `admin` | `/admin` — all owners' notes + **`todos_force_archive`** (admin-only mutation; absent from user SDL) |
 
 ## Offline (no Docker)
 
@@ -118,18 +118,25 @@ Normative design lives in the hops GitKB knowledge base, not this tree:
 
 ### UI GraphQL schema + codegen
 
-`ui/schema/user.graphql` is **generated** from the same GraphQL engine the API runs
-(`build_graphql_engine` + `sdl_for_role("user")`) — not a permanent hand-written pilot.
+Role SDL is **generated** from the same GraphQL engine the API runs
+(`build_graphql_engine` + `sdl_for_role`):
+
+| File | Role | Notes |
+|------|------|--------|
+| `ui/schema/user.graphql` | `user` | No `todos_force_archive` |
+| `ui/schema/admin.graphql` | `admin` | Superset — includes admin-only mutations |
+
+Codegen uses **admin** schema so co-located admin ops typecheck; runtime still enforces role.
 
 ```bash
 # from tests/e2e-ui
-make export-sdl          # Rust → ui/schema/user.graphql
+make export-sdl          # user + admin SDL
 make gen-gql             # export-sdl + TypedDocumentNode from co-located *.gql
 
 # or from ui/
-npm run gen:schema       # cargo e2e-export-sdl
-npm run gen:gql          # graphql-codegen
-npm run gen              # both
+npm run gen:schema
+npm run gen:gql
+npm run gen
 ```
 
 Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.generated.ts`.

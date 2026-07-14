@@ -1,15 +1,58 @@
 <script lang="ts">
 	/**
-	 * Admin: all field notes across owners.
-	 * GraphQL: same `todos` field as /todos; role `admin` has no owner filter.
+	 * Admin: all field notes + force-archive (admin-only GraphQL mutation).
 	 */
+	import { useGraphql } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
+	import { adminTodos } from './admin.resource';
+	import type { AdminTodoRow } from './admin.resource';
 
 	let { data } = $props();
 
+	let todos = $state<AdminTodoRow[]>([...(data.todos ?? [])]);
+	let actionError = $state<string | null>(null);
+	let busy = $state(false);
+
 	const who = $derived(sessionDisplayName(data.session));
-	const todos = $derived(data.todos ?? []);
 	const owners = $derived([...new Set(todos.map((t) => t.owner_id))].sort());
+	const open = $derived(todos.filter((t) => t.status !== 'archived'));
+
+	const gql = useGraphql(() => data);
+
+	$effect(() => {
+		todos = [...(data.todos ?? [])];
+	});
+
+	async function refetch() {
+		const result = await gql.request(adminTodos.query);
+		if (result.errors?.length) {
+			actionError = result.errors[0].message;
+			return;
+		}
+		todos = result.data?.todos ?? [];
+	}
+
+	async function forceArchive(todo_id: string) {
+		if (busy) return;
+		const target = todos.find((t) => t.todo_id === todo_id);
+		if (!target || target.status === 'archived') return;
+
+		actionError = null;
+		busy = true;
+		const result = await gql.request(adminTodos.mutations.forceArchive, { todo_id });
+		busy = false;
+
+		if (result.errors?.length || !result.data?.todos_force_archive) {
+			actionError = result.errors?.[0]?.message ?? 'force archive failed';
+			return;
+		}
+		// Optimistic local update; then reconcile with projector lag.
+		todos = todos.map((t) =>
+			t.todo_id === todo_id ? { ...t, status: 'archived' } : t
+		);
+		window.setTimeout(() => void refetch(), 300);
+		window.setTimeout(() => void refetch(), 1200);
+	}
 </script>
 
 <section class="ad-page">
@@ -21,12 +64,11 @@
 		<h1 class="ad-title">All field notes</h1>
 		<p class="ad-lede">
 			Signed in as <strong>{who}</strong> with engine role
-			<code>{data.engineRole}</code>. This route is UI-gated to
-			<code>admin</code>; the query is the same
-			<code>todos</code> field as personal notes, but
-			<code>ModelPermissions</code> omit the
-			<code>owner_id = claim(x-user-id)</code> filter for admins — so every
-			owner appears below.
+			<code>{data.engineRole}</code>. Query uses the same
+			<code>todos</code> field without the owner filter.
+			<strong>Force archive</strong> calls
+			<code>todos_force_archive</code> — registered only for role
+			<code>admin</code> (missing from the user GraphQL schema).
 		</p>
 	</header>
 
@@ -34,6 +76,12 @@
 		<div class="ad-alert" role="alert">
 			<strong>SSR GraphQL</strong>
 			<span>{data.gqlError}</span>
+		</div>
+	{/if}
+	{#if actionError}
+		<div class="ad-alert" role="alert">
+			<strong>Mutation</strong>
+			<span>{actionError}</span>
 		</div>
 	{/if}
 
@@ -45,6 +93,10 @@
 		<div class="ad-stat">
 			<span class="ad-stat-n">{owners.length}</span>
 			<span class="ad-stat-l">owners</span>
+		</div>
+		<div class="ad-stat">
+			<span class="ad-stat-n">{open.length}</span>
+			<span class="ad-stat-l">active</span>
 		</div>
 	</div>
 
@@ -59,6 +111,7 @@
 						<th>Title</th>
 						<th>Status</th>
 						<th>Id</th>
+						<th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -68,6 +121,20 @@
 							<td>{t.title}</td>
 							<td><span class="ad-status" data-status={t.status}>{t.status}</span></td>
 							<td class="ad-id">{t.todo_id}</td>
+							<td class="ad-actions">
+								{#if t.status !== 'archived'}
+									<button
+										type="button"
+										class="ad-btn"
+										disabled={busy}
+										onclick={() => forceArchive(t.todo_id)}
+									>
+										Force archive
+									</button>
+								{:else}
+									<span class="ad-muted">—</span>
+								{/if}
+							</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -76,8 +143,8 @@
 	{/if}
 
 	<p class="ad-foot">
-		Compare: as <code>user</code>, <code>&#123; todos &#123; owner_id &#125; &#125;</code> only
-		returns your rows (suite T2). As <code>admin</code>, the same selection returns every owner.
+		<code>user</code> role cannot call <code>todos_force_archive</code> (field absent from user
+		SDL). Suite T2c asserts that; admin mutation archives any owner's note.
 	</p>
 </section>
 
@@ -85,7 +152,7 @@
 	.ad-page {
 		--ink: var(--hops-navy, #1a2744);
 		--ink-soft: rgba(26, 39, 68, 0.62);
-		max-width: 52rem;
+		max-width: 56rem;
 		margin: 0 auto;
 		padding: 6.5rem 1.25rem 4rem;
 		font-family: var(--font-body, 'Lexend', system-ui, sans-serif);
@@ -125,7 +192,7 @@
 
 	.ad-lede {
 		margin: 0;
-		max-width: 40rem;
+		max-width: 42rem;
 		line-height: 1.55;
 		color: var(--ink-soft);
 		font-size: 1.02rem;
@@ -205,6 +272,7 @@
 		text-align: left;
 		padding: 0.7rem 0.9rem;
 		border-bottom: 1px solid rgba(26, 39, 68, 0.07);
+		vertical-align: middle;
 	}
 
 	.ad-table th {
@@ -230,7 +298,7 @@
 		font-family: var(--font-mono, ui-monospace, monospace);
 		font-size: 0.78em;
 		color: var(--ink-soft);
-		max-width: 8rem;
+		max-width: 7rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
@@ -253,6 +321,41 @@
 	.ad-status[data-status='completed'] {
 		background: rgba(56, 161, 105, 0.15);
 		color: #276749;
+	}
+
+	.ad-status[data-status='archived'] {
+		background: rgba(26, 39, 68, 0.08);
+		color: var(--ink-soft);
+	}
+
+	.ad-actions {
+		white-space: nowrap;
+	}
+
+	.ad-btn {
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 700;
+		border: none;
+		border-radius: 8px;
+		padding: 0.4rem 0.7rem;
+		cursor: pointer;
+		background: rgba(229, 62, 62, 0.12);
+		color: #9b2c2c;
+	}
+
+	.ad-btn:hover:not(:disabled) {
+		background: rgba(229, 62, 62, 0.22);
+	}
+
+	.ad-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.ad-muted {
+		color: var(--ink-soft);
+		font-size: 0.85rem;
 	}
 
 	.ad-foot {
