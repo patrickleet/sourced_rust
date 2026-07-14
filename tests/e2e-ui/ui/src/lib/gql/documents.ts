@@ -1,42 +1,17 @@
 /**
- * Shared GraphQL documents — used by SSR load and the browser.
- * Keep selection sets identical so hydrate / invalidate stay consistent.
+ * Shared GraphQL documents.
+ * Todos ops live in `routes/todos/todos.resource.ts` (co-located defineResource).
+ * Re-export here so any remaining imports keep the same string identity as `todos.query`.
  */
+import { todos } from '../../routes/todos/todos.resource';
 
-export const TODOS_QUERY = `{
-  todos {
-    todo_id
-    owner_id
-    title
-    status
-  }
-}`;
-
-export const TODOS_CREATE = `mutation TodosCreate($todo_id: String!, $title: String!) {
-  todos_create(input: { todo_id: $todo_id, title: $title }) {
-    todo_id
-    owner_id
-    title
-    status
-  }
-}`;
-
-export const TODOS_COMPLETE = `mutation TodosComplete($todo_id: String!) {
-  todos_complete(input: { todo_id: $todo_id }) {
-    todo_id
-    status
-  }
-}`;
-
-export const TODOS_ARCHIVE = `mutation TodosArchive($todo_id: String!) {
-  todos_archive(input: { todo_id: $todo_id }) {
-    todo_id
-    status
-  }
-}`;
+export const TODOS_QUERY = todos.query;
+export const TODOS_CREATE = todos.mutations.create;
+export const TODOS_COMPLETE = todos.mutations.complete;
+export const TODOS_ARCHIVE = todos.mutations.archive;
 
 export function chatMessagesQuery(room: string): string {
-  return `{
+	return `{
   chat_messages(where: { room_id: { _eq: "${room}" } }) {
     message_id
     room_id
@@ -48,7 +23,7 @@ export function chatMessagesQuery(room: string): string {
 }
 
 export function chatMessagesSubscription(room: string): string {
-  return `subscription {
+	return `subscription {
   chat_messages(where: { room_id: { _eq: "${room}" } }) {
     message_id
     room_id

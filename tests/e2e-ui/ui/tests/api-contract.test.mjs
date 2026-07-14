@@ -19,8 +19,8 @@ test('SSR is enabled (not SPA-only)', () => {
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
     'utf8'
   );
-  assert.match(todosServer, /serverGraphql|PageServerLoad/);
-  assert.match(todosServer, /accessToken/);
+  assert.match(todosServer, /loadQuery|serverGraphql|PageServerLoad/);
+  assert.match(todosServer, /todos\.query|accessToken/);
 });
 
 test('auth + WS modules use OIDC patterns', () => {
@@ -126,36 +126,70 @@ test('home is distributed template with 8-step unidirectional todos story', () =
   assert.doesNotMatch(footer, /HopsBrand|Ship products, not infrastructure/i);
 });
 
-test('todos: shared GQL docs — SSR query, browser mutations', () => {
-  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
-  assert.match(docs, /TODOS_QUERY/);
-  assert.match(docs, /TODOS_CREATE/);
-  assert.match(docs, /TODOS_COMPLETE/);
-  assert.match(docs, /TODOS_ARCHIVE/);
+test('todos: co-located resource — same query SSR + browser mutations', () => {
+  const resource = fs.readFileSync(
+    new URL('../src/routes/todos/todos.resource.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(resource, /defineResource/);
+  assert.match(resource, /export const todos/);
+  assert.match(resource, /query:/);
+  assert.match(resource, /create:|mutations:\s*\{[\s\S]*create/);
+  assert.match(resource, /complete:/);
+  assert.match(resource, /archive:/);
+  assert.match(resource, /todos_create/);
+  assert.match(resource, /todos_complete/);
+  assert.match(resource, /todos_archive/);
+
+  const defineRes = fs.readFileSync(
+    new URL('../src/lib/gql/define-resource.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(defineRes, /export function defineResource/);
+
+  const loadHelper = fs.readFileSync(
+    new URL('../src/lib/gql/load-query.server.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(loadHelper, /export function loadQuery/);
+  assert.match(loadHelper, /serverGraphql/);
+
+  const useGql = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
+  assert.match(useGql, /export function useGraphql/);
+  assert.match(useGql, /createGraphqlClient|\/graphql/);
 
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /\$state<Todo\[\]>\(\[\.\.\.\(data\.todos/);
   assert.match(page, /mergeFromServer/);
-  assert.match(page, /browserGraphql/);
-  assert.match(page, /TODOS_CREATE|TODOS_QUERY/);
-  assert.doesNotMatch(page, /use:enhance|\?\/create/);
+  assert.match(page, /useGraphql/);
+  assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
+  assert.match(page, /todosResource\.query|todos\.query/);
+  assert.match(page, /mutations\.create|mutations\.complete|mutations\.archive/);
+  assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
+  // Writes go through GraphQL client, not form actions
+  assert.match(page, /gql\.request|createGraphqlClient|useGraphql/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
     'utf8'
   );
-  assert.match(server, /serverGraphql/);
-  assert.match(server, /TODOS_QUERY/);
-  assert.match(server, /accessToken/);
-  // SSR is read-only seed — no form actions / mutations
-  assert.doesNotMatch(server, /export const actions|todos_create|serverCommand/);
+  assert.match(server, /loadQuery|todos\.query/);
+  assert.match(server, /from '\.\/todos\.resource'|from "\.\/todos\.resource"/);
+  assert.match(server, /todos\.query/);
+  // SSR is read-only seed — no form actions / command mutations
+  assert.doesNotMatch(server, /export const actions|todos_create|serverCommand|\?\/create/);
+
+  // documents re-exports resource identity for chat-era imports
+  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
+  assert.match(docs, /todos\.query|TODOS_QUERY/);
+  assert.match(docs, /todos\.resource|todos\.mutations/);
 
   // Unified request path (single Jack-style core)
   const request = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
   assert.match(request, /export async function requestGraphql/);
   assert.match(request, /buildAuthHeaders|authorization/);
   const client = fs.readFileSync(new URL('../src/lib/gql/client.ts', import.meta.url), 'utf8');
-  assert.match(client, /requestGraphql|createGraphqlClient/);
+  assert.match(client, /requestGraphql|createGraphqlClient|defineResource/);
   const createClient = fs.readFileSync(
     new URL('../src/lib/gql/create-client.ts', import.meta.url),
     'utf8'
