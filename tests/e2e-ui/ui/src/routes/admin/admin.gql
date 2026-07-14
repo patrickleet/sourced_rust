@@ -1,10 +1,10 @@
 # Admin-only page ops.
 # - Query: same `todos` field; admin role has no owner filter.
-# - Mutation: `todos_force_archive` is registered ONLY for role admin
-#   (absent from user SDL / GraphQL schema for non-admins).
+# - Bound with limit + order_by (do not load unbounded RM into the browser).
+# - Mutation: `todos_force_archive` is registered ONLY for role admin.
 
 query AdminAllTodos {
-  todos {
+  todos(limit: 100, order_by: [{ todo_id: asc }]) {
     todo_id
     owner_id
     title

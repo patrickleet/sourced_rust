@@ -1,20 +1,21 @@
 //! Command: `todo.force_archive` — **admin-only** GraphQL mutation.
 //!
-//! Archives any todo by id without requiring the caller to be the owner.
-//! Domain still applies archive via the real `owner_id` on the aggregate
-//! (so projectors/events stay consistent). Session must carry role `admin`
-//! (enforced in `guard`; GraphQL also registers the field only for admin).
+//! Emits `todo.force_archived` (distinct from owner `todo.archived`) so audit
+//! trails can tell admin intervention from self-service archive. Projector
+//! still upserts the same read-model shape.
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use todo_domain::TodoFact;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_user, session_has_user, session_is_admin};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
+use crate::handlers::util::{require_user, session_has_user, session_is_admin};
 
 pub const COMMAND: &str = "todo.force_archive";
+
+/// Outbox / projector event name — distinct from owner `todo.archived`.
+pub const FORCE_ARCHIVED_EVENT: &str = "todo.force_archived";
 
 #[derive(Debug, Deserialize, distributed::GraphqlInput)]
 pub struct TodoForceArchiveInput {
@@ -36,7 +37,6 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
-    // Session checks belong here: missing admin/user → GuardRejected, not handle body.
     ctx.has_fields(&["todo_id"])
         && session_has_user(ctx.session())
         && session_is_admin(ctx.session())
@@ -50,29 +50,14 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
-    // Guard already required admin + user id; extract principal for the payload.
     let admin = require_user(ctx.session())?;
     let input = ctx.input::<TodoForceArchiveInput>()?;
-
-    let mut todo = ctx
-        .repo()
-        .get(&input.todo_id)
-        .await?
-        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
+    let mut todo = load_todo(ctx, &input.todo_id).await?;
 
     // Domain archive is owner-scoped; use the aggregate's real owner (not admin id).
     let owner = todo.owner_id.clone();
-    todo.archive(&owner).map_err(rejected)?;
-
-    let fact = TodoFact::from_todo(&todo);
-    let outbox = OutboxMessage::encode(
-        format!("{}:todo.archived:{}", todo.todo_id, todo.entity.version()),
-        "todo.archived",
-        &fact,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-
-    ctx.repo().outbox(outbox).commit(&mut todo).await?;
+    todo.archive(&owner).map_err(map_domain)?;
+    let fact = commit_todo_event(ctx, &mut todo, FORCE_ARCHIVED_EVENT).await?;
 
     Ok(json!({
         "todo_id": fact.todo_id,

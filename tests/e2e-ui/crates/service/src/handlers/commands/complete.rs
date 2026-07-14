@@ -1,25 +1,18 @@
 //! Command: `todo.complete` — owner-only (aggregate enforces).
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use todo_domain::TodoFact;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_user, session_has_user};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain, status_json};
+use crate::handlers::util::{require_user, session_has_user};
 
 pub const COMMAND: &str = "todo.complete";
 
 #[derive(Debug, Deserialize, distributed::GraphqlInput)]
 pub struct TodoCompleteInput {
     pub todo_id: String,
-}
-
-#[derive(Debug, Serialize, distributed::GraphqlOutput)]
-pub struct TodoStatusPayload {
-    pub todo_id: String,
-    pub status: String,
 }
 
 pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
@@ -41,27 +34,8 @@ where
 {
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoCompleteInput>()?;
-
-    let mut todo = ctx
-        .repo()
-        .get(&input.todo_id)
-        .await?
-        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-
-    todo.complete(&owner).map_err(rejected)?;
-
-    let fact = TodoFact::from_todo(&todo);
-    let outbox = OutboxMessage::encode(
-        format!("{}:todo.completed:{}", todo.todo_id, todo.entity.version()),
-        "todo.completed",
-        &fact,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-
-    ctx.repo().outbox(outbox).commit(&mut todo).await?;
-
-    Ok(json!({
-        "todo_id": fact.todo_id,
-        "status": fact.status,
-    }))
+    let mut todo = load_todo(ctx, &input.todo_id).await?;
+    todo.complete(&owner).map_err(map_domain)?;
+    let fact = commit_todo_event(ctx, &mut todo, "todo.completed").await?;
+    Ok(status_json(&fact))
 }

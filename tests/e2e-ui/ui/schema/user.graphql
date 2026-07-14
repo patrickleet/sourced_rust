@@ -72,9 +72,9 @@ input JSON_comparison_exp {
 type Mutation {
 	todos_create(input: TodoCreateInput!): TodoCreatePayload!
 	todos_complete(input: TodoCompleteInput!): TodoStatusPayload!
-	todos_archive(input: TodoArchiveInput!): TodoArchivePayload!
+	todos_archive(input: TodoArchiveInput!): TodoStatusPayload!
 	todos_rename(input: TodoRenameInput!): TodoRenamePayload!
-	todos_reopen(input: TodoReopenInput!): TodoReopenPayload!
+	todos_reopen(input: TodoReopenInput!): TodoStatusPayload!
 	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
 }
 
@@ -122,11 +122,6 @@ input TodoArchiveInput {
 	todo_id: String!
 }
 
-type TodoArchivePayload {
-	todo_id: String!
-	status: String!
-}
-
 input TodoCompleteInput {
 	todo_id: String!
 }
@@ -156,11 +151,6 @@ type TodoRenamePayload {
 
 input TodoReopenInput {
 	todo_id: String!
-}
-
-type TodoReopenPayload {
-	todo_id: String!
-	status: String!
 }
 
 type TodoStatusPayload {

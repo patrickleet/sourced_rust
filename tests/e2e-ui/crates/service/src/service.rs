@@ -72,7 +72,7 @@ pub fn build_graphql_engine(
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
     use handlers::commands::{
-        archive, chat_post, complete, create, force_archive, rename, reopen,
+        archive, chat_post, complete, create, force_archive, payloads, rename, reopen,
     };
 
     let app_roles = ["user", "admin"];
@@ -90,7 +90,7 @@ pub fn build_graphql_engine(
             exposed_command()
                 .field_name("todos_complete")
                 .input::<complete::TodoCompleteInput>()
-                .output::<complete::TodoStatusPayload>()
+                .output::<payloads::TodoStatusPayload>()
                 .roles(app_roles),
         )
         .command(
@@ -98,7 +98,7 @@ pub fn build_graphql_engine(
             exposed_command()
                 .field_name("todos_archive")
                 .input::<archive::TodoArchiveInput>()
-                .output::<archive::TodoArchivePayload>()
+                .output::<payloads::TodoStatusPayload>()
                 .roles(app_roles),
         )
         .command(
@@ -123,7 +123,7 @@ pub fn build_graphql_engine(
             exposed_command()
                 .field_name("todos_reopen")
                 .input::<reopen::TodoReopenInput>()
-                .output::<reopen::TodoReopenPayload>()
+                .output::<payloads::TodoStatusPayload>()
                 .roles(app_roles),
         )
         .command(
@@ -156,7 +156,9 @@ pub fn build_graphql_engine(
         )
         .commands(commands)
         .identity(identity)
-        .graphiql(true);
+        // GraphiQL is a local template convenience. Disable with GRAPHIQL=0
+        // (never ship a public edge with GraphiQL + DevHeaders).
+        .graphiql(graphiql_enabled());
     if let Some(rx) = change_rx {
         b = b.change_stream(rx);
     }
@@ -165,6 +167,17 @@ pub fn build_graphql_engine(
 
 pub fn dev_identity() -> IdentityConfig {
     IdentityConfig::dev_headers()
+}
+
+/// GraphiQL IDE: on by default for the fixture; set `GRAPHIQL=0` to disable.
+pub fn graphiql_enabled() -> bool {
+    match std::env::var("GRAPHIQL") {
+        Ok(v) => {
+            let v = v.trim();
+            !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+        }
+        Err(_) => true,
+    }
 }
 
 /// Peel accidental outer quotes from env values (Make-include / double-wrap pollution).

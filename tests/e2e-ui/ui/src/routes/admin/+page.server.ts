@@ -1,18 +1,19 @@
 import { error } from '@sveltejs/kit';
 import { loadQuery } from '$lib/gql/load-query.server';
-import { engineRoleFromGroups } from '$lib/roles';
+import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
 import { adminTodos } from './admin.resource';
 import type { AdminAllTodosData } from './admin.resource';
 import type { PageServerLoad } from './$types';
 
 /**
- * Admin-only SSR seed: full todos list (no owner filter when engineRole is admin).
- * Non-admins get 403 — do not leak the all-owners view through this route.
+ * Admin-only SSR seed: todos list without owner filter when engineRole is admin.
+ * Non-admins get 403 **before** any GraphQL load — no foreign-todo SSR payload.
  */
 export const load: PageServerLoad = async (event) => {
 	const session = await event.locals.auth();
 	const engineRole = engineRoleFromGroups(session?.user?.groups);
-	if (engineRole !== 'admin') {
+	// Fail closed before loadQuery so non-admins never receive all-owners data.
+	if (!isAdminEngineRole(engineRole)) {
 		error(403, 'Admin role required — sign in as admin (Zitadel: admin / Password1!)');
 	}
 
@@ -26,6 +27,8 @@ export const load: PageServerLoad = async (event) => {
 	return {
 		...seeded,
 		/** Explicit for the page copy — always admin when load succeeds. */
-		isAdminView: true as const
+		isAdminView: true as const,
+		/** Client may show truncation note when list hits query limit (100). */
+		listLimit: 100 as const
 	};
 };
