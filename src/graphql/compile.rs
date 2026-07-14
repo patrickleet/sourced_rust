@@ -1381,8 +1381,10 @@ fn compile_filter_expr(
                     let j = format!("j{depth}");
                     let on_target =
                         join_predicate_m2m_target(&j, &target_fk, &child_alias, target_pk);
+                    let source_join_col =
+                        column_name_for(&through_entry.schema, fk).unwrap_or(fk);
                     let parent_pred =
-                        join_predicate_m2m_parent(&j, fk, alias, source_pk);
+                        join_predicate_m2m_parent(&j, source_join_col, alias, source_pk);
                     Ok(format!(
                         "EXISTS (SELECT 1 FROM \"{through}\" {j} JOIN \"{}\" {child_alias} ON {on_target} WHERE {parent_pred} AND ({inner_pred}))",
                         target.schema.table_name
