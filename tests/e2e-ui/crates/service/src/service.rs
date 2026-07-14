@@ -154,16 +154,32 @@ pub fn dev_identity() -> IdentityConfig {
     IdentityConfig::dev_headers()
 }
 
+/// Peel accidental outer quotes from env values (Make-include / double-wrap pollution).
+fn env_clean(name: &str) -> String {
+    let mut s = std::env::var(name).unwrap_or_default().trim().to_string();
+    for _ in 0..2 {
+        if s.len() >= 2
+            && ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
+        {
+            s = s[1..s.len() - 1].trim().to_string();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
 /// Prefer OidcBearer when `OIDC_ISSUER` + `OIDC_AUDIENCE` are set; else DevHeaders.
 pub fn identity_from_env() -> IdentityConfig {
-    let iss = std::env::var("OIDC_ISSUER").unwrap_or_default();
-    let aud = std::env::var("OIDC_AUDIENCE").unwrap_or_default();
+    let iss = env_clean("OIDC_ISSUER");
+    let aud = env_clean("OIDC_AUDIENCE");
     if iss.is_empty() || aud.is_empty() {
         eprintln!("e2e-ui: OIDC_* unset — using DevHeaders (local only)");
         return dev_identity();
     }
+    let jwks = env_clean("OIDC_JWKS_URI");
     eprintln!("e2e-ui: OidcBearer issuer={iss} audience={aud}");
-    oidc_bearer_config(iss, aud, std::env::var("OIDC_JWKS_URI").ok(), None)
+    oidc_bearer_config(iss, aud, if jwks.is_empty() { None } else { Some(jwks) }, None)
 }
 
 pub fn oidc_bearer_config(
@@ -179,11 +195,10 @@ pub fn oidc_bearer_config(
     if let Some(jwks) = static_jwks {
         oidc = oidc.with_static_jwks(jwks);
     }
-    // Accept client_id as extra audience when present.
-    if let Ok(cid) = std::env::var("OIDC_CLIENT_ID") {
-        if !cid.is_empty() {
-            oidc.extra_audiences = vec![cid];
-        }
+    // Accept client_id as extra audience when present (human OIDC access tokens).
+    let cid = env_clean("OIDC_CLIENT_ID");
+    if !cid.is_empty() {
+        oidc.extra_audiences = vec![cid];
     }
     oidc.claim_map.engine_roles = vec!["user".into(), "admin".into()];
     oidc.claim_map.role_claims = vec![

@@ -8,20 +8,16 @@
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
 	ui-install ui-build ui-test check clean help
 
+# Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
+# Recipes `source` the env file so values stay clean.
 BIND         ?= 127.0.0.1:8791
-API_PORT     := $(shell echo $(BIND) | sed 's/.*://')
-BASE_URL     ?= http://$(BIND)
+API_PORT     ?= 8791
+BASE_URL     ?= http://127.0.0.1:8791
 UI_PORT      ?= 5180
-UI_URL       ?= http://127.0.0.1:$(UI_PORT)
+UI_URL       ?= http://127.0.0.1:5180
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
 CARGO_TEST_FLAGS ?= -- --nocapture
-
-# Prefer env file from make up
-ifneq (,$(wildcard $(ENV_FILE)))
-  include $(ENV_FILE)
-  export
-endif
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
 
@@ -39,15 +35,20 @@ down:
 run: ui-install
 	@set -e; \
 	if [ -f $(ENV_FILE) ]; then set -a; . ./$(ENV_FILE); set +a; fi; \
-	lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-	lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	_bind="$${BIND:-127.0.0.1:8791}"; \
+	_api_port="$${_bind##*:}"; \
+	_base="$${E2E_API_ORIGIN:-http://$${_bind}}"; \
+	_ui_port="$(UI_PORT)"; \
+	_ui="$${E2E_UI_ORIGIN:-http://127.0.0.1:$${_ui_port}}"; \
+	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
-	echo "starting API ($(DATABASE_URL)) on $(BASE_URL) …"; \
+	echo "starting API ($${DATABASE_URL:-sqlite}) on $$_base …"; \
 	cargo run -p e2e-runner > .make-runner.log 2>&1 & \
 	echo $$! > .make-runner.pid; \
 	ok=0; \
 	for i in $$(seq 1 80); do \
-		code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST '$(BASE_URL)/graphql' \
+		code=$$(curl -s -o /dev/null -w '%{http_code}' -X POST "$${_base}/graphql" \
 			-H 'content-type: application/json' \
 			-d '{"query":"{ __typename }"}' 2>/dev/null || echo 000); \
 		if [ "$$code" = "200" ] || [ "$$code" = "401" ]; then ok=1; break; fi; \
@@ -57,22 +58,22 @@ run: ui-install
 		echo "API failed:"; tail -80 .make-runner.log; exit 1; \
 	fi; \
 	echo "API ready (HTTP probe $$code). starting UI …"; \
-	cd ui && $(NPM) run dev -- --host 127.0.0.1 --port $(UI_PORT) & \
+	cd ui && $(NPM) run dev -- --host 127.0.0.1 --port $$_ui_port & \
 	echo $$! > ../.make-ui.pid; \
 	cd ..; \
 	cleanup() { \
 		[ -f .make-ui.pid ] && kill $$(cat .make-ui.pid) 2>/dev/null || true; \
 		[ -f .make-runner.pid ] && kill $$(cat .make-runner.pid) 2>/dev/null || true; \
-		lsof -ti:$(API_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
-		lsof -ti:$(UI_PORT) 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+		lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
+		lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 		rm -f .make-runner.pid .make-ui.pid; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	echo ""; \
-	echo "  UI     $(UI_URL)"; \
-	echo "  API    $(BASE_URL)"; \
-	echo "  GraphiQL $(BASE_URL)/graphql"; \
-	echo "  WS     $(BASE_URL)/graphql/ws"; \
+	echo "  UI     $$_ui"; \
+	echo "  API    $$_base"; \
+	echo "  GraphiQL $$_base/graphql"; \
+	echo "  WS     $$_base/graphql/ws"; \
 	echo "  Ctrl-C stops both"; \
 	echo ""; \
 	wait $$(cat .make-ui.pid) 2>/dev/null || wait
