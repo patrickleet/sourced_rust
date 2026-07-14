@@ -5,7 +5,8 @@
 	 * Mutations POST /graphql via useGraphql (Network tab shows /graphql).
 	 */
 	import { untrack } from 'svelte';
-	import { useGraphql } from '$lib/gql/use-graphql';
+	import { useGraphql } from '$lib/gql';
+	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
 
@@ -22,16 +23,10 @@
 	let pending = $state<Record<string, string>>({});
 
 	const me = $derived(data.session?.user?.id ?? '');
-	const who = $derived(
-		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
-	);
+	const who = $derived(sessionDisplayName(data.session));
 
 	/** Lazy auth so token/role track page data; same client for mutations + refetch. */
-	const gql = useGraphql(() => ({
-		accessToken: data.accessToken,
-		session: data.session,
-		engineRole: data.engineRole
-	}));
+	const gql = useGraphql(() => data);
 
 	const open = $derived(todos.filter((t) => t.status === 'open'));
 	const done = $derived(todos.filter((t) => t.status === 'completed'));

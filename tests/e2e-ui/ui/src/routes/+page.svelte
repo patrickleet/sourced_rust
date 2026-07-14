@@ -232,13 +232,10 @@ todo.create(&input.todo_id, &owner, &input.title)?;`
 				{
 					file: 'ui · browser + SSR',
 					label: 'Same documents',
-					code: `// $lib/gql/documents.ts — one source of truth
-export const TODOS_QUERY = \`{ todos { … } }\`;
-export const TODOS_CREATE = \`mutation { todos_create(…) { … } }\`;
-
-// SSR load: serverGraphql(TODOS_QUERY, { accessToken })
-// Browser:  browserGraphql(TODOS_CREATE, auth, vars) → POST /graphql
-// (mutations are client → GraphQL API, not SvelteKit form actions)`
+					code: `// todos.gql → codegen → todos.resource (defineResource)
+// SSR:  loadQuery(todos.query, …)
+// Browser: useGraphql(() => data).request(todos.mutations.create, vars)
+// → POST /graphql (not SvelteKit form actions)`
 				}
 			]
 		},
