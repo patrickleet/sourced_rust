@@ -109,7 +109,7 @@ async fn s5_order_by_junk_direction_is_safe() {
         .execute(
             &s,
             Request::new(
-                r#"{ orders(order_by: [{ status: asc }]) { order_id status } }"#,
+                r#"{ orders(order_by: [{ status: totally_bogus_direction }]) { order_id status } }"#,
             ),
         )
         .await;
