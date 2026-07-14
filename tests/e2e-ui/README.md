@@ -98,3 +98,12 @@ e2e-runner (Distributed)
 ## Template usage
 
 Copy this folder as a starting service: keep domain pure, swap `DATABASE_URL` / OIDC env for your IdP, and extend UI routes. Remove Fieldnote branding as needed — patterns stay.
+
+## Design docs (GitKB)
+
+Normative design lives in the hops GitKB knowledge base, not this tree:
+
+| Spec | Content |
+|------|---------|
+| `specs/e2e-ui/layout` | Crate map, projector/RLS rules, UI surface |
+| `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, codegen, defineResource) |
