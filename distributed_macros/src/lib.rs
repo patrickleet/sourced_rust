@@ -1462,6 +1462,30 @@ pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     snapshot::derive_snapshot(input)
 }
 
+// ============================================================================
+// GraphqlInput / GraphqlOutput derives
+// ============================================================================
+
+/// Derive `GraphqlInputType` for command mutation input structs.
+#[proc_macro_derive(GraphqlInput)]
+pub fn derive_graphql_input(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DeriveInput);
+    match graphql_types::expand_graphql_input(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive `GraphqlOutputType` for command mutation output structs.
+#[proc_macro_derive(GraphqlOutput)]
+pub fn derive_graphql_output(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DeriveInput);
+    match graphql_types::expand_graphql_output(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1772,30 +1796,5 @@ mod tests {
             "got: {out}"
         );
         assert!(out.contains("replay_event"), "got: {out}");
-    }
-}
-
-
-// ============================================================================
-// GraphqlInput / GraphqlOutput derives
-// ============================================================================
-
-/// Derive `GraphqlInputType` for command mutation input structs.
-#[proc_macro_derive(GraphqlInput)]
-pub fn derive_graphql_input(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as DeriveInput);
-    match graphql_types::expand_graphql_input(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
-/// Derive `GraphqlOutputType` for command mutation output structs.
-#[proc_macro_derive(GraphqlOutput)]
-pub fn derive_graphql_output(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as DeriveInput);
-    match graphql_types::expand_graphql_output(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
     }
 }

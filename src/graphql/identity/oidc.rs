@@ -287,7 +287,7 @@ impl OidcValidator {
         validation.validate_nbf = true;
 
         // Decode as generic JSON claims.
-        let data = decode::<Value>(token, &key, &validation).map_err(|e| map_jwt_error(e))?;
+        let data = decode::<Value>(token, &key, &validation).map_err(map_jwt_error)?;
 
         let claims = data.claims;
         if !audience_matches(&claims, &self.config.audience, &self.config.extra_audiences) {
@@ -342,7 +342,7 @@ fn normalize_issuer(iss: &str) -> String {
 }
 
 fn jwk_alg_matches(jwk_alg: Option<&str>, expected: &str) -> bool {
-    jwk_alg.map_or(true, |alg| alg.eq_ignore_ascii_case(expected))
+    jwk_alg.is_none_or(|alg| alg.eq_ignore_ascii_case(expected))
 }
 
 /// True if any configured audience appears in `aud` (string or array), or — when
@@ -357,14 +357,13 @@ fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
     }
     if let Some(aud) = claims.get("aud") {
         match aud {
-            Value::String(s) if candidates.iter().any(|c| *c == s.as_str()) => return true,
-            Value::Array(arr) => {
+            Value::String(s) if candidates.contains(&s.as_str()) => return true,
+            Value::Array(arr)
                 if arr
                     .iter()
-                    .any(|v| v.as_str().is_some_and(|s| candidates.contains(&s)))
-                {
-                    return true;
-                }
+                    .any(|v| v.as_str().is_some_and(|s| candidates.contains(&s))) =>
+            {
+                return true;
             }
             _ => {}
         }
