@@ -4,7 +4,7 @@
 	 * Posts use generated `chatMessagesPost` (GraphQL wire under the hood).
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { useGraphql } from '$lib/gql';
+	import { authFromPageData, useGraphql } from '$lib/gql';
 	import { chatMessagesPost } from '$lib/api/commands.generated';
 	import { subscribe } from '$lib/graphql-ws';
 	import { sessionDisplayName } from '$lib/session';
