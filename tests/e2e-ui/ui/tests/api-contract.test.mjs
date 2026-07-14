@@ -35,7 +35,8 @@ test('auth + WS modules use OIDC patterns', () => {
   assert.match(hooks, /\/todos|\/chat|\/session/);
   const ws = fs.readFileSync(new URL('../src/lib/graphql-ws.ts', import.meta.url), 'utf8');
   assert.match(ws, /connection_init/);
-  assert.match(ws, /authorization|accessToken|Bearer/);
+  // Bearer/auth payload built via shared auth-headers helper (same as HTTP).
+  assert.match(ws, /wsConnectionInitPayload|authorization|accessToken|Bearer/);
   const gql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
   assert.match(gql, /requestGraphql|serverGraphql/);
   const req = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
@@ -369,10 +370,10 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.match(page, /useGraphql/);
   assert.doesNotMatch(page, /chat\.mutations\.post|mutations\.post/);
   assert.match(page, /chat\.subscription|subscription/);
-  assert.match(page, /subscribe/);
-  // WS auth for connection_init — must not drop this when refactoring HTTP commands.
-  assert.match(page, /authFromPageData/);
-  assert.match(page, /subscribe\([^)]*authFromPageData/);
+  // WS uses bound client — same auth as HTTP (no separate authFromPageData at call site).
+  assert.match(page, /gql\.subscribe\s*\(/);
+  assert.doesNotMatch(page, /from '\$lib\/graphql-ws'/);
+  assert.doesNotMatch(page, /authFromPageData/);
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
 

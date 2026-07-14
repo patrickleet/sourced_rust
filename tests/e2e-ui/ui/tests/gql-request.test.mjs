@@ -19,12 +19,15 @@ const requestFile = path.join(root, 'src/lib/gql/request.ts');
 const createFile = path.join(root, 'src/lib/gql/create-client.ts');
 const requestUrl = pathToFileURL(requestFile).href;
 
-test('create-client.ts is a thin factory over requestGraphql', () => {
+test('create-client.ts is a thin factory over requestGraphql + subscribe', () => {
   const src = fs.readFileSync(createFile, 'utf8');
   assert.match(src, /export function createGraphqlClient/);
   assert.match(src, /requestGraphql/);
   assert.match(src, /getUrl/);
   assert.match(src, /getAuth/);
+  // WS shares the same getAuth — no separate auth wiring at page call sites.
+  assert.match(src, /subscribe/);
+  assert.match(src, /subscribeWs|from '\$lib\/graphql-ws'/);
 });
 
 const defineFile = path.join(root, 'src/lib/gql/define-resource.ts');

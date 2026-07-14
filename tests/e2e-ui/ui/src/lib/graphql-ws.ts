@@ -1,13 +1,14 @@
 /**
  * graphql-transport-ws client.
- * Auth: Bearer in connection_init (same GqlAuth mapping as HTTP via auth-headers).
+ * Prefer `createGraphqlClient(...).subscribe` so auth/URL match HTTP.
+ * Low-level `subscribe` still accepts explicit GqlAuth for tests.
  */
 import {
 	applyWsDevHeaderParams,
 	wsConnectionInitPayload
-} from '$lib/gql/auth-headers';
-import { documentToString, type GqlDocument } from '$lib/gql/document';
-import type { GqlAuth } from '$lib/gql/types';
+} from './gql/auth-headers.ts';
+import { documentToString, type GqlDocument } from './gql/document.ts';
+import type { GqlAuth } from './gql/types.ts';
 
 export type GqlWsHandlers = {
 	onNext: (data: unknown) => void;
@@ -15,20 +16,61 @@ export type GqlWsHandlers = {
 	onComplete?: () => void;
 };
 
+export type SubscribeOptions = {
+	/**
+	 * HTTP GraphQL URL from the bound client (`/graphql` or absolute).
+	 * Used to derive the WebSocket endpoint (`…/graphql/ws`).
+	 */
+	httpUrl?: string;
+};
+
+/** Same-origin WS path (Vite proxies `/graphql` including `/graphql/ws`). */
 export function graphqlWsUrl(path = '/graphql/ws'): string {
 	if (typeof window === 'undefined') return path;
 	const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	// Prefer same-origin so Vite proxies WS in dev.
 	return `${proto}//${window.location.host}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+/**
+ * Map HTTP GraphQL URL → WebSocket subscription URL.
+ * `/graphql` → same-origin `/graphql/ws`
+ * `http://host:8791/graphql` → `ws://host:8791/graphql/ws`
+ */
+export function httpUrlToWsUrl(httpUrl: string): string {
+	const base =
+		typeof window !== 'undefined' ? window.location.href : 'http://127.0.0.1/';
+	try {
+		const u = new URL(httpUrl, base);
+		const path = u.pathname.replace(/\/$/, '');
+		const wsPath = path.endsWith('/ws') ? path : `${path}/ws`;
+		// Relative HTTP paths → same-origin WS (browser) or absolute ws URL (SSR/tests).
+		if (httpUrl.startsWith('/')) {
+			if (typeof window !== 'undefined') return graphqlWsUrl(wsPath);
+			return `ws://127.0.0.1${wsPath.startsWith('/') ? wsPath : `/${wsPath}`}`;
+		}
+		u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+		u.pathname = wsPath;
+		u.search = '';
+		u.hash = '';
+		return u.toString();
+	} catch {
+		return typeof window !== 'undefined'
+			? graphqlWsUrl('/graphql/ws')
+			: 'ws://127.0.0.1/graphql/ws';
+	}
 }
 
 export function subscribe(
 	document: GqlDocument,
 	auth: GqlAuth = {},
-	handlers: GqlWsHandlers
+	handlers: GqlWsHandlers,
+	options: SubscribeOptions = {}
 ): () => void {
 	const query = documentToString(document);
-	const url = new URL(graphqlWsUrl('/graphql/ws'), window.location.href);
+	const wsHref = options.httpUrl
+		? httpUrlToWsUrl(options.httpUrl)
+		: graphqlWsUrl('/graphql/ws');
+	const url = new URL(wsHref, typeof window !== 'undefined' ? window.location.href : wsHref);
 	applyWsDevHeaderParams(url, auth);
 
 	const ws = new WebSocket(url.toString(), 'graphql-transport-ws');
