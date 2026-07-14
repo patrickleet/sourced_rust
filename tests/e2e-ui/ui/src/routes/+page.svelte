@@ -187,48 +187,54 @@ ws.send(JSON.stringify({
 		{
 			n: '05',
 			title: 'Mutations that write the read model are an anti-pattern',
-			why: 'Direct GraphQL updates to todos would bypass the aggregate and invent a second source of truth. Instead, typed command mutations (or POST /todo.create) dispatch through the same handlers, stay role-gated, and remain explorably in GraphiQL — still with Bearer auth.',
-			path: 'command mutations · serverCommand()',
+			why: 'Direct GraphQL updates to the todos table invent a second source of truth. Create is a typed command mutation (todos_create → todo.create), role-gated to user/admin, with owner always taken from the authenticated session — never from client input.',
+			path: 'todos_create · todo.create · service.rs',
 			label: 'Commands not RM writes',
 			blocks: [
 				{
-					file: 'GraphiQL · command mutation',
-					label: 'Not RM write',
-					code: `// Anti-pattern: GraphQL that UPDATEs the todos table.
-// That invents a second source of truth and skips the aggregate.
-//
-// Instead — typed command mutation (role-gated, same handlers as HTTP):
+					file: 'GraphQL mutation',
+					label: 'todos_create',
+					code: `// Anti-pattern: mutation that UPDATEs todos rows.
+// Instead — command mutation (same handler as HTTP POST /todo.create):
 mutation {
-  todo_create(todo_id: "t-1", title: "Ship it") {
+  todos_create(input: { todo_id: "t-1", title: "Ship it" }) {
     todo_id
+    owner_id
+    title
     status
   }
-}`
+}
+// Roles: user, admin only. owner_id is NOT in input.`
 				},
 				{
-					file: 'ui/src/lib/server/graphql.ts',
-					label: 'HTTP command',
-					code: `// This fixture's UI uses the HTTP command surface
-export async function serverCommand(command, body, opts) {
-  if (opts.accessToken) {
-    headers.authorization = \`Bearer \${opts.accessToken}\`;
-  }
-  return fetch(\`\${apiBase()}/\${command}\`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
-}`
+					file: 'crates/service/src/service.rs',
+					label: 'Expose command',
+					code: `GraphqlCommands::new().command(
+  "todo.create",
+  exposed_command()
+    .field_name("todos_create")
+    .input::<TodoCreateInput>()
+    .output::<TodoCreatePayload>()
+    .roles(["user", "admin"]),
+)`
+				},
+				{
+					file: 'handlers/commands/create.rs',
+					label: 'Owner from session',
+					code: `// Owner is always the authenticated principal
+let owner = require_user(ctx.session())?;
+let input = ctx.input::<TodoCreateInput>()?;
+todo.create(&input.todo_id, &owner, &input.title)?;`
 				},
 				{
 					file: 'todos/+page.server.ts',
-					label: 'Form action',
-					code: `// actions.create → same Bearer + command handler
-const res = await serverCommand(
-  'todo.create',
-  { todo_id, title },
-  { accessToken: session.accessToken, role }
-);`
+					label: 'UI form action',
+					code: `// actions.create → GraphQL mutation (Bearer), not RM write
+await serverGraphql(\`mutation {
+  todos_create(input: { todo_id, title }) {
+    todo_id owner_id title status
+  }
+}\`, { accessToken: session.accessToken });`
 				}
 			]
 		},

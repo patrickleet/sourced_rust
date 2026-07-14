@@ -135,8 +135,30 @@ test('todos seeds client state from SSR load data', () => {
   );
   assert.match(server, /serverGraphql/);
   assert.match(server, /accessToken/);
-  assert.match(server, /serverCommand/);
-  assert.match(server, /todo\.create/);
+  // Create goes through command mutation (owner = session), not RM write
+  assert.match(server, /todos_create/);
+  assert.match(server, /mutation TodosCreate|todos_create\(input/);
+  // complete/archive may still use HTTP command surface
+  assert.match(server, /serverCommand|todo\.complete/);
+});
+
+test('GraphQL engine exposes todos_create as role-gated command mutation', () => {
+  // ui/tests → e2e-ui/crates
+  const service = fs.readFileSync(
+    new URL('../../crates/service/src/service.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(service, /todos_create/);
+  assert.match(service, /todo\.create|COMMAND/);
+  assert.match(service, /GraphqlCommands|exposed_command/);
+  assert.match(service, /roles\(\["user", "admin"\]\)/);
+  const create = fs.readFileSync(
+    new URL('../../crates/service/src/handlers/commands/create.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(create, /require_user/);
+  assert.match(create, /GraphqlInput|TodoCreateInput/);
+  assert.doesNotMatch(create, /owner_id.*input|input\.owner/);
 });
 
 test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, async () => {
