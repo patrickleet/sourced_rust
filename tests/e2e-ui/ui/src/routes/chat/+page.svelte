@@ -1,12 +1,11 @@
 <script lang="ts">
 	/**
 	 * Lobby chat — co-located `chat` resource owns query + subscription.
-	 * Posts use generated `chatMessagesPost` (GraphQL wire under the hood).
+	 * Posts: generated `chatMessagesPost`; live: `gql.subscribe` (same client auth as HTTP).
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { useGraphql } from '$lib/gql';
 	import { chatMessagesPost } from '$lib/api/commands.generated';
-	import { subscribe } from '$lib/graphql-ws';
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
@@ -63,8 +62,9 @@
 		status = 'connecting';
 		subError = null;
 		// Same selection set as SSR `chat.query` (resource co-location).
+		// Auth + WS URL come from the bound client (same as HTTP commands).
 		const subDoc = chat.subscription ?? chat.query;
-		unsub = subscribe(subDoc, authFromPageData(data), {
+		unsub = gql.subscribe(subDoc, {
 			onNext: applyPayload,
 			onError: (e) => {
 				status = 'error';

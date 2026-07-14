@@ -114,3 +114,20 @@ test('generated mutations are multiline; operations.gql is copy-paste ready', ()
   assert.match(gql, /mutation Command_todos_create\(\$input: TodoCreateInput!\) \{/);
   assert.match(gql, /todos_create\(input: \$input\) \{\n/);
 });
+
+test('httpUrlToWsUrl maps HTTP GraphQL paths to /graphql/ws', async () => {
+  const wsFile = path.join(uiRoot, 'src/lib/graphql-ws.ts');
+  const { httpUrlToWsUrl } = await import(pathToFileURL(wsFile).href);
+  const rel = httpUrlToWsUrl('/graphql');
+  assert.match(rel, /\/graphql\/ws$/);
+  assert.match(rel, /^ws:/);
+  assert.equal(httpUrlToWsUrl('http://127.0.0.1:8791/graphql'), 'ws://127.0.0.1:8791/graphql/ws');
+  assert.equal(httpUrlToWsUrl('https://api.example/graphql'), 'wss://api.example/graphql/ws');
+});
+
+test('chat page uses gql.subscribe (bound client), not raw authFromPageData', () => {
+  const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
+  assert.match(chat, /gql\.subscribe\s*\(/);
+  assert.doesNotMatch(chat, /authFromPageData/);
+  assert.doesNotMatch(chat, /from '\$lib\/graphql-ws'/);
+});
