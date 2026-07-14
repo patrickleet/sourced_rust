@@ -32,9 +32,25 @@ const DEFAULT_SESSION_COOKIE_SAME_SITE = 'strict';
 type TokenRecord = Record<string, unknown>;
 type SessionCookieSameSite = 'lax' | 'strict';
 
+/** Peel accidental outer quotes (Make-include / double-wrap pollution). */
+function cleanEnvValue(raw: string | undefined): string {
+	let s = (raw ?? '').trim();
+	for (let i = 0; i < 2; i++) {
+		if (
+			s.length >= 2 &&
+			((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"')))
+		) {
+			s = s.slice(1, -1).trim();
+		} else {
+			break;
+		}
+	}
+	return s;
+}
+
 function envFirst(names: string[], fallback = '') {
 	for (const name of names) {
-		const value = env[name]?.trim();
+		const value = cleanEnvValue(env[name]);
 		if (value) return value;
 	}
 
@@ -66,7 +82,14 @@ function oidcClientSecret() {
 }
 
 function oidcScopes() {
-	return envFirst(['OIDC_SCOPES'], DEFAULT_OIDC_SCOPES);
+	const fromEnv = envFirst(['OIDC_SCOPES']);
+	if (fromEnv) return fromEnv;
+	// Ensure project-scoped audience on access tokens when OIDC_AUDIENCE is known.
+	const aud = envFirst(['OIDC_AUDIENCE', 'ZITADEL_PROJECT_ID']);
+	if (aud) {
+		return `${DEFAULT_OIDC_SCOPES} urn:zitadel:iam:org:project:id:${aud}:aud urn:zitadel:iam:org:project:roles`;
+	}
+	return DEFAULT_OIDC_SCOPES;
 }
 
 function oidcTokenAuthMethod() {
