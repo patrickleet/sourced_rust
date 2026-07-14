@@ -429,6 +429,19 @@ echo "    e2e-ui-admin-m → $ADMIN_M_UID"
 
 # OIDC audience for JWT validation: project id (Zitadel project-scoped aud)
 DATABASE_URL="postgres://e2e:e2e@127.0.0.1:5433/e2e_ui"
+# Keep Auth.js session cookie decryption stable across re-bootstrap.
+# Rotating AUTH_SECRET → JWTSessionError: no matching decryption secret.
+if [[ -z "${AUTH_SECRET:-}" && -f "$OUT" ]]; then
+  _prev=$(grep -E '^AUTH_SECRET=' "$OUT" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  _prev="${_prev%\"}"
+  _prev="${_prev#\"}"
+  _prev="${_prev%\'}"
+  _prev="${_prev#\'}"
+  if [[ -n "$_prev" ]]; then
+    AUTH_SECRET="$_prev"
+    echo "==> Reusing AUTH_SECRET from existing $OUT (session cookies stay valid)"
+  fi
+fi
 AUTH_SECRET="${AUTH_SECRET:-$(openssl rand -hex 32)}"
 
 umask 077
