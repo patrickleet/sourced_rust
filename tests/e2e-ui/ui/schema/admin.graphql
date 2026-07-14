@@ -73,6 +73,7 @@ type Mutation {
 	todos_create(input: TodoCreateInput!): TodoCreatePayload!
 	todos_complete(input: TodoCompleteInput!): TodoStatusPayload!
 	todos_archive(input: TodoArchiveInput!): TodoArchivePayload!
+	todos_force_archive(input: TodoForceArchiveInput!): TodoForceArchivePayload!
 	todos_rename(input: TodoRenameInput!): TodoRenamePayload!
 	todos_reopen(input: TodoReopenInput!): TodoReopenPayload!
 	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
@@ -141,6 +142,17 @@ type TodoCreatePayload {
 	owner_id: String!
 	title: String!
 	status: String!
+}
+
+input TodoForceArchiveInput {
+	todo_id: String!
+}
+
+type TodoForceArchivePayload {
+	todo_id: String!
+	owner_id: String!
+	status: String!
+	archived_by: String!
 }
 
 input TodoRenameInput {

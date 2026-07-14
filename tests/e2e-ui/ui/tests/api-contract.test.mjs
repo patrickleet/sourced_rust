@@ -62,10 +62,16 @@ test('website auth shell + fixture routes present', () => {
   assert.match(layout, /engineRole|engineRoleFromGroups/);
 });
 
-test('admin: role-gated all-owners todos view', () => {
+test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   assert.ok(fs.existsSync(new URL('../src/routes/admin/admin.gql', import.meta.url)));
   const gql = fs.readFileSync(new URL('../src/routes/admin/admin.gql', import.meta.url), 'utf8');
   assert.match(gql, /query AdminAllTodos|todos/);
+  assert.match(gql, /todos_force_archive|AdminForceArchive/);
+  const resource = fs.readFileSync(
+    new URL('../src/routes/admin/admin.resource.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(resource, /forceArchive|AdminForceArchiveDocument/);
   const server = fs.readFileSync(
     new URL('../src/routes/admin/+page.server.ts', import.meta.url),
     'utf8'
@@ -73,7 +79,7 @@ test('admin: role-gated all-owners todos view', () => {
   assert.match(server, /admin|error\(403|engineRole/);
   assert.match(server, /adminTodos|AdminAllTodos|loadQuery/);
   const page = fs.readFileSync(new URL('../src/routes/admin/+page.svelte', import.meta.url), 'utf8');
-  assert.match(page, /owner_id|All field notes|admin/i);
+  assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive/i);
   const hooks = fs.readFileSync(new URL('../src/hooks.server.ts', import.meta.url), 'utf8');
   assert.match(hooks, /\/admin/);
   const service = fs.readFileSync(
@@ -81,7 +87,16 @@ test('admin: role-gated all-owners todos view', () => {
     'utf8'
   );
   assert.match(service, /role\("admin"/);
+  assert.match(service, /todos_force_archive|force_archive/);
+  assert.match(service, /\.roles\(\[\"admin\"\]\)|roles\(\[\"admin\"\]\)/);
   assert.match(service, /owner_id|claim\("x-user-id"\)/);
+  const force = fs.readFileSync(
+    new URL('../../crates/service/src/handlers/commands/force_archive.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(force, /require_admin|todo\.force_archive/);
+  const codegen = fs.readFileSync(new URL('../codegen.ts', import.meta.url), 'utf8');
+  assert.match(codegen, /admin\.graphql/);
 });
 
 test('home is distributed template with 8-step unidirectional todos story', () => {

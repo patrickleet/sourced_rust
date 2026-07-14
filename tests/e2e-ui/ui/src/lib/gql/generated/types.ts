@@ -79,6 +79,7 @@ export type Mutation = {
   todos_archive: TodoArchivePayload;
   todos_complete: TodoStatusPayload;
   todos_create: TodoCreatePayload;
+  todos_force_archive: TodoForceArchivePayload;
   todos_rename: TodoRenamePayload;
   todos_reopen: TodoReopenPayload;
 };
@@ -101,6 +102,11 @@ export type MutationTodos_CompleteArgs = {
 
 export type MutationTodos_CreateArgs = {
   input: TodoCreateInput;
+};
+
+
+export type MutationTodos_Force_ArchiveArgs = {
+  input: TodoForceArchiveInput;
 };
 
 
@@ -219,6 +225,18 @@ export type TodoCreatePayload = {
   owner_id: Scalars['String']['output'];
   status: Scalars['String']['output'];
   title: Scalars['String']['output'];
+  todo_id: Scalars['String']['output'];
+};
+
+export type TodoForceArchiveInput = {
+  todo_id: Scalars['String']['input'];
+};
+
+export type TodoForceArchivePayload = {
+  __typename?: 'TodoForceArchivePayload';
+  archived_by: Scalars['String']['output'];
+  owner_id: Scalars['String']['output'];
+  status: Scalars['String']['output'];
   todo_id: Scalars['String']['output'];
 };
 

@@ -143,6 +143,23 @@ pub async fn todos_archive(
     mutate(base, "todos_archive", &doc, user_id, role).await
 }
 
+/// Admin-only mutation (not present on the user role schema).
+pub async fn todos_force_archive(
+    base: &str,
+    todo_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<Value, String> {
+    let doc = format!(
+        r#"mutation {{
+          todos_force_archive(input: {{ todo_id: "{todo_id}" }}) {{
+            todo_id owner_id status archived_by
+          }}
+        }}"#
+    );
+    mutate(base, "todos_force_archive", &doc, user_id, role).await
+}
+
 pub async fn todos_rename(
     base: &str,
     todo_id: &str,
@@ -186,6 +203,7 @@ pub mod cases {
     pub const CREATE: &str = "T1_create_todo";
     pub const OWNER_ISOLATION: &str = "T2_owner_isolation";
     pub const ADMIN_SEES_ALL: &str = "T2b_admin_sees_all_owners";
+    pub const ADMIN_FORCE_ARCHIVE: &str = "T2c_admin_force_archive";
     pub const COMPLETE: &str = "T3_complete_todo";
     pub const NOT_OWNER: &str = "T4_not_owner_rejected";
     pub const UNAUTH: &str = "T5_unauthenticated_rejected";

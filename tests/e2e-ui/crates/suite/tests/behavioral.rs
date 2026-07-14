@@ -14,7 +14,7 @@ use e2e_service::{
 };
 use e2e_suite::{
     assert_http_commands_disabled, cases, graphql, graphql_raw, todos_archive, todos_complete,
-    todos_create, todos_rename, wait_ready,
+    todos_create, todos_force_archive, todos_rename, wait_ready,
 };
 
 async fn ensure_target() -> String {
@@ -254,6 +254,51 @@ async fn t2b_admin_sees_all_owners() {
         cases::ADMIN_SEES_ALL
     );
     eprintln!("{} ok alice={alice_id} bob={bob_id}", cases::ADMIN_SEES_ALL);
+}
+
+/// Admin-only mutation: force-archive another user's todo; user role cannot call it.
+#[tokio::test]
+async fn t2c_admin_force_archive() {
+    let base = ensure_target().await;
+    let tid = id("tfa");
+
+    todos_create(&base, &tid, "Alice will be forced", "alice", "user")
+        .await
+        .expect(cases::ADMIN_FORCE_ARCHIVE);
+    assert!(poll_todo(&base, "alice", &tid).await.is_some());
+
+    // User schema must not expose the field (or reject the call).
+    let user_attempt = todos_force_archive(&base, &tid, "alice", "user").await;
+    assert!(
+        user_attempt.is_err(),
+        "{}: user role must not force-archive (got ok: {user_attempt:?})",
+        cases::ADMIN_FORCE_ARCHIVE
+    );
+
+    let payload = todos_force_archive(&base, &tid, "admin-user", "admin")
+        .await
+        .unwrap_or_else(|e| panic!("{}: {e}", cases::ADMIN_FORCE_ARCHIVE));
+    assert_eq!(payload["todo_id"], tid);
+    assert_eq!(payload["owner_id"], "alice");
+    assert_eq!(payload["status"], "archived");
+    assert_eq!(payload["archived_by"], "admin-user");
+
+    let mut ok = false;
+    for _ in 0..100 {
+        if let Some(row) = poll_todo(&base, "alice", &tid).await {
+            if row["status"] == "archived" {
+                ok = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(
+        ok,
+        "{}: projected status not archived",
+        cases::ADMIN_FORCE_ARCHIVE
+    );
+    eprintln!("{} ok {tid}", cases::ADMIN_FORCE_ARCHIVE);
 }
 
 #[tokio::test]
