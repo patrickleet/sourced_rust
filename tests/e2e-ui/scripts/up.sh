@@ -198,53 +198,57 @@ echo "    ok"
 
 # ---- login-client PAT (same as sites/the-website/scripts/setup-local-zitadel.sh) ----
 # Zitadel v4 login UI is a separate container; it needs IAM_LOGIN_CLIENT + PAT.
+# Always mint a fresh PAT: after compose recreate the DB, an old pat file is
+# invalid and zitadel-login returns HTTP 500 (Errors.Token.Invalid AUTH-7fs1e).
 LOGIN_CLIENT_DIR="$ROOT/docker/login-client"
 LOGIN_CLIENT_PAT_FILE="$LOGIN_CLIENT_DIR/pat"
 LOGIN_CLIENT_USERNAME="login-client"
 mkdir -p "$LOGIN_CLIENT_DIR"
-if [[ ! -s "$LOGIN_CLIENT_PAT_FILE" ]]; then
-  echo "==> login-client machine user + PAT (for /ui/v2/login)"
-  USER_SEARCH=$(api POST /management/v1/users/_search "$(jq -n --arg n "$LOGIN_CLIENT_USERNAME" \
-    '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
-  LOGIN_USER_ID=$(echo "$USER_SEARCH" | jq -r '.result[0].id // empty')
-  if [[ -z "$LOGIN_USER_ID" ]]; then
-    LOGIN_USER_RESP=$(api POST /management/v1/users/machine "$(jq -n \
-      --arg u "$LOGIN_CLIENT_USERNAME" \
-      '{userName: $u, name: "Login Client", description: "Service user for zitadel-login", accessTokenType: "ACCESS_TOKEN_TYPE_BEARER"}')")
-    LOGIN_USER_ID=$(echo "$LOGIN_USER_RESP" | jq -r .userId)
-    [[ -n "$LOGIN_USER_ID" && "$LOGIN_USER_ID" != "null" ]] || {
-      echo "ERROR: login-client create failed"; echo "$LOGIN_USER_RESP"; exit 1
-    }
-    api POST /admin/v1/members "$(jq -n --arg uid "$LOGIN_USER_ID" \
-      '{userId: $uid, roles: ["IAM_LOGIN_CLIENT"]}')" >/dev/null
-  fi
-  PAT_RESP=$(api POST "/management/v1/users/$LOGIN_USER_ID/pats" \
-    "$(jq -n '{expirationDate: "2029-01-01T00:00:00Z"}')")
-  LOGIN_PAT=$(echo "$PAT_RESP" | jq -r .token)
-  [[ -n "$LOGIN_PAT" && "$LOGIN_PAT" != "null" ]] || {
-    echo "ERROR: login-client PAT create failed"; echo "$PAT_RESP"; exit 1
+echo "==> login-client machine user + fresh PAT (for /ui/v2/login)"
+USER_SEARCH=$(api POST /management/v1/users/_search "$(jq -n --arg n "$LOGIN_CLIENT_USERNAME" \
+  '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
+LOGIN_USER_ID=$(echo "$USER_SEARCH" | jq -r '.result[0].id // empty')
+if [[ -z "$LOGIN_USER_ID" ]]; then
+  LOGIN_USER_RESP=$(api POST /management/v1/users/machine "$(jq -n \
+    --arg u "$LOGIN_CLIENT_USERNAME" \
+    '{userName: $u, name: "Login Client", description: "Service user for zitadel-login", accessTokenType: "ACCESS_TOKEN_TYPE_BEARER"}')")
+  LOGIN_USER_ID=$(echo "$LOGIN_USER_RESP" | jq -r .userId)
+  [[ -n "$LOGIN_USER_ID" && "$LOGIN_USER_ID" != "null" ]] || {
+    echo "ERROR: login-client create failed"; echo "$LOGIN_USER_RESP"; exit 1
   }
-  umask 077
-  printf '%s' "$LOGIN_PAT" > "$LOGIN_CLIENT_PAT_FILE"
-  echo "    wrote $LOGIN_CLIENT_PAT_FILE"
-  echo "==> Restarting zitadel-login to pick up PAT"
-  docker compose -f "$COMPOSE" restart zitadel-login >/dev/null 2>&1 || true
-  echo "==> Wait for login UI (/ui/v2/login)"
-  for i in $(seq 1 30); do
-    code=$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' "$ZITADEL_HOST/ui/v2/login" || true)
-    if [[ "$code" == "200" || "$code" == "307" || "$code" == "302" ]]; then
-      echo "    login UI ready (HTTP $code)"
-      break
-    fi
-    wait_tick "login UI HTTP ${code:-?}" "$i" 5
-    sleep 1
-    if [[ $i -eq 30 ]]; then
-      echo "    WARN: login UI still HTTP $code — browser login may 502 until zitadel-login is healthy"
-    fi
-  done
+  api POST /admin/v1/members "$(jq -n --arg uid "$LOGIN_USER_ID" \
+    '{userId: $uid, roles: ["IAM_LOGIN_CLIENT"]}')" >/dev/null
+  echo "    created login-client user $LOGIN_USER_ID"
 else
-  echo "==> login-client PAT already at $LOGIN_CLIENT_PAT_FILE"
+  echo "    existing login-client user $LOGIN_USER_ID"
 fi
+PAT_RESP=$(api POST "/management/v1/users/$LOGIN_USER_ID/pats" \
+  "$(jq -n '{expirationDate: "2029-01-01T00:00:00Z"}')")
+LOGIN_PAT=$(echo "$PAT_RESP" | jq -r .token)
+[[ -n "$LOGIN_PAT" && "$LOGIN_PAT" != "null" ]] || {
+  echo "ERROR: login-client PAT create failed"; echo "$PAT_RESP"; exit 1
+}
+umask 077
+printf '%s' "$LOGIN_PAT" > "$LOGIN_CLIENT_PAT_FILE"
+chmod 600 "$LOGIN_CLIENT_PAT_FILE" 2>/dev/null || true
+echo "    wrote $LOGIN_CLIENT_PAT_FILE"
+echo "==> Restarting zitadel-login to pick up PAT"
+docker compose -f "$COMPOSE" up -d --force-recreate zitadel-login >/dev/null 2>&1 \
+  || docker compose -f "$COMPOSE" restart zitadel-login >/dev/null 2>&1 || true
+echo "==> Wait for login UI (/ui/v2/login)"
+for i in $(seq 1 40); do
+  code=$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' "$ZITADEL_HOST/ui/v2/login" || true)
+  # Healthy login UI: not 500/502 (empty path may 200/307/404 depending on version)
+  if [[ "$code" != "000" && "$code" != "500" && "$code" != "502" && "$code" != "503" ]]; then
+    echo "    login UI ready (HTTP $code)"
+    break
+  fi
+  wait_tick "login UI HTTP ${code:-?}" "$i" 5
+  sleep 1
+  if [[ $i -eq 40 ]]; then
+    echo "    WARN: login UI still HTTP $code — check: docker compose logs zitadel-login"
+  fi
+done
 
 echo "==> Project $PROJECT_NAME"
 PROJECT_SEARCH=$(api POST /management/v1/projects/_search '{}')
