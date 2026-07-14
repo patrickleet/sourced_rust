@@ -19,7 +19,7 @@
 			title: 'Todos — owner-scoped field notes',
 			blurb:
 				'SSR GraphQL with row-level RBAC, progressive form actions, optimistic UI over projector lag. The full unidirectional path below is this feature.',
-			where: '/todos · serverGraphql + serverCommand · todo.* handlers',
+			where: '/todos · GraphQL query + todos_* mutations',
 			label: 'Open todos'
 		},
 		{
@@ -187,15 +187,15 @@ ws.send(JSON.stringify({
 		{
 			n: '05',
 			title: 'Mutations that write the read model are an anti-pattern',
-			why: 'Direct GraphQL updates to the todos table invent a second source of truth. Create is a typed command mutation (todos_create → todo.create), role-gated to user/admin, with owner always taken from the authenticated session — never from client input.',
-			path: 'todos_create · todo.create · service.rs',
+			why: 'Direct GraphQL updates to the todos table invent a second source of truth. Writes are typed command mutations (todos_create → todo.create, …), role-gated to user/admin. Owner always comes from the session. There is no public POST /todo.* — GraphQL only.',
+			path: 'todos_* mutations · without_http_command_routes',
 			label: 'Commands not RM writes',
 			blocks: [
 				{
 					file: 'GraphQL mutation',
 					label: 'todos_create',
 					code: `// Anti-pattern: mutation that UPDATEs todos rows.
-// Instead — command mutation (same handler as HTTP POST /todo.create):
+// Command mutation (dispatches todo.create handler):
 mutation {
   todos_create(input: { todo_id: "t-1", title: "Ship it" }) {
     todo_id
@@ -204,19 +204,22 @@ mutation {
     status
   }
 }
-// Roles: user, admin only. owner_id is NOT in input.`
+// Also: todos_complete, todos_archive, todos_rename, …
+// Roles: user, admin. owner_id is NOT in input.`
 				},
 				{
 					file: 'crates/service/src/service.rs',
-					label: 'Expose command',
-					code: `GraphqlCommands::new().command(
-  "todo.create",
-  exposed_command()
-    .field_name("todos_create")
-    .input::<TodoCreateInput>()
-    .output::<TodoCreatePayload>()
-    .roles(["user", "admin"]),
-)`
+					label: 'GraphQL-only surface',
+					code: `Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes() // no POST /todo.*
+  .routes(todos)
+  .routes(chat);
+
+// Mutations register the same handlers:
+// todos_create → todo.create (owner = session)
+// todos_complete / archive / rename / reopen
+// chat_messages_post → chat.post`
 				},
 				{
 					file: 'handlers/commands/create.rs',
@@ -229,7 +232,7 @@ todo.create(&input.todo_id, &owner, &input.title)?;`
 				{
 					file: 'todos/+page.server.ts',
 					label: 'UI form action',
-					code: `// actions.create → GraphQL mutation (Bearer), not RM write
+					code: `// actions → GraphQL mutations only (Bearer)
 await serverGraphql(\`mutation {
   todos_create(input: { todo_id, title }) {
     todo_id owner_id title status

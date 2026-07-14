@@ -9,9 +9,8 @@ export default defineConfig({
 	server: {
 		port: 5180,
 		proxy: {
-			'/graphql': { target: api, changeOrigin: true, ws: true },
-			'/todo.': api,
-			'/chat.': api
+			// GraphQL-only public API (commands are mutations, not POST /todo.*)
+			'/graphql': { target: api, changeOrigin: true, ws: true }
 		}
 	}
 });

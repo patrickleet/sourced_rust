@@ -154,7 +154,9 @@ mod tests {
         assert!(skip_oidc_gate(&Method::GET, "/graphql/ws"));
         assert!(skip_oidc_gate(&Method::GET, "/graphql"));
         assert!(!skip_oidc_gate(&Method::POST, "/graphql"));
+        // HTTP command routes are disabled; still treat unknown POSTs as gated.
         assert!(!skip_oidc_gate(&Method::POST, "/todo.create"));
+        assert!(!skip_oidc_gate(&Method::POST, "/graphql"));
     }
 
     #[test]

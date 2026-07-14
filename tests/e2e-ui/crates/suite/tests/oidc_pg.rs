@@ -108,40 +108,38 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
         .expect("http");
     assert_eq!(unauth.status().as_u16(), 401, "unauth GraphQL must 401 under OidcBearer");
 
-    // Command without Bearer but with spoofed identity headers must 401 (fail closed).
-    let spoof_cmd = client
+    // HTTP command routes are not mounted (GraphQL-only surface).
+    let http_cmd = client
         .post(format!("{base}/todo.create"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {user_tok}"))
+        .json(&json!({"todo_id": "t-http-off", "title": "nope"}))
+        .send()
+        .await
+        .expect("http cmd");
+    assert!(
+        matches!(http_cmd.status().as_u16(), 404 | 405),
+        "POST /todo.create must not be mounted, got {}",
+        http_cmd.status()
+    );
+
+    // Mutation without Bearer but with spoofed identity headers must 401 (fail closed).
+    let spoof_mut = client
+        .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
         .header("x-user-id", "spoofed-attacker")
         .header("x-role", "admin")
         .json(&json!({
-            "todo_id": format!(
-                "t-spoof-{}",
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
-            ),
-            "title": "should not create"
+            "query": r#"mutation { todos_create(input: { todo_id: "t-spoof", title: "no" }) { todo_id } }"#
         }))
         .send()
         .await
-        .expect("spoof cmd");
+        .expect("spoof mut");
     assert_eq!(
-        spoof_cmd.status().as_u16(),
+        spoof_mut.status().as_u16(),
         401,
-        "command with only spoof headers must 401, got body {}",
-        spoof_cmd.text().await.unwrap_or_default()
-    );
-
-    let noauth_cmd = client
-        .post(format!("{base}/todo.create"))
-        .header("content-type", "application/json")
-        .json(&json!({"todo_id": "t-noauth", "title": "nope"}))
-        .send()
-        .await
-        .expect("noauth cmd");
-    assert_eq!(
-        noauth_cmd.status().as_u16(),
-        401,
-        "command without Bearer must 401"
+        "mutation with only spoof headers must 401, got body {}",
+        spoof_mut.text().await.unwrap_or_default()
     );
 
     let tid = format!(
@@ -152,17 +150,25 @@ async fn oidc_bearer_graphql_isolation_against_stack() {
             .as_millis()
     );
     let create = client
-        .post(format!("{base}/todo.create"))
+        .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {user_tok}"))
-        .json(&json!({"todo_id": tid, "title": "OIDC todo"}))
+        .json(&json!({
+            "query": format!(
+                r#"mutation {{ todos_create(input: {{ todo_id: "{tid}", title: "OIDC todo" }}) {{ todo_id owner_id title status }} }}"#
+            )
+        }))
         .send()
         .await
         .expect("create");
+    let create_body: serde_json::Value = create.json().await.expect("create json");
     assert!(
-        create.status().is_success(),
-        "create {}",
-        create.text().await.unwrap_or_default()
+        create_body.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
+        "create mutation errors: {create_body}"
+    );
+    assert_eq!(
+        create_body["data"]["todos_create"]["todo_id"], tid,
+        "{create_body}"
     );
 
     // Poll as the same user (owner-scoped) — proves projector + Bearer GraphQL.

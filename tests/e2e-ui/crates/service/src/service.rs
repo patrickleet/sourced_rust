@@ -51,14 +51,18 @@ where
         command handlers::commands::chat_post,
         event handlers::events::project_chat,
     );
-    Service::new().named("e2e-ui").routes(todos).routes(chat)
+    // GraphQL-only public surface — no POST /todo.* or POST /chat.* HTTP routes.
+    Service::new()
+        .named("e2e-ui")
+        .without_http_command_routes()
+        .routes(todos)
+        .routes(chat)
 }
 
 /// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
 ///
-/// Command mutations (Hasura-actions style) dispatch through the same handlers as
-/// HTTP — never write the read model. `todos_create` → `todo.create`; owner is the
-/// authenticated session user only (roles: user, admin).
+/// All write paths are **command mutations** (not read-model writes). Owner/author is
+/// always the authenticated session principal. Roles: user, admin.
 ///
 /// Works with SQLite or Postgres pools (`GraphqlPool`).
 pub fn build_graphql_engine(
@@ -66,15 +70,58 @@ pub fn build_graphql_engine(
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
-    let commands = GraphqlCommands::new().command(
-        handlers::commands::create::COMMAND,
-        exposed_command()
-            .field_name("todos_create")
-            .input::<handlers::commands::create::TodoCreateInput>()
-            .output::<handlers::commands::create::TodoCreatePayload>()
-            // Authenticated app roles only — not anonymous / unauthenticated schemas.
-            .roles(["user", "admin"]),
-    );
+    use handlers::commands::{archive, chat_post, complete, create, rename, reopen};
+
+    let app_roles = ["user", "admin"];
+    let commands = GraphqlCommands::new()
+        .command(
+            create::COMMAND,
+            exposed_command()
+                .field_name("todos_create")
+                .input::<create::TodoCreateInput>()
+                .output::<create::TodoCreatePayload>()
+                .roles(app_roles),
+        )
+        .command(
+            complete::COMMAND,
+            exposed_command()
+                .field_name("todos_complete")
+                .input::<complete::TodoCompleteInput>()
+                .output::<complete::TodoStatusPayload>()
+                .roles(app_roles),
+        )
+        .command(
+            archive::COMMAND,
+            exposed_command()
+                .field_name("todos_archive")
+                .input::<archive::TodoArchiveInput>()
+                .output::<archive::TodoArchivePayload>()
+                .roles(app_roles),
+        )
+        .command(
+            rename::COMMAND,
+            exposed_command()
+                .field_name("todos_rename")
+                .input::<rename::TodoRenameInput>()
+                .output::<rename::TodoRenamePayload>()
+                .roles(app_roles),
+        )
+        .command(
+            reopen::COMMAND,
+            exposed_command()
+                .field_name("todos_reopen")
+                .input::<reopen::TodoReopenInput>()
+                .output::<reopen::TodoReopenPayload>()
+                .roles(app_roles),
+        )
+        .command(
+            chat_post::COMMAND,
+            exposed_command()
+                .field_name("chat_messages_post")
+                .input::<chat_post::ChatPostInput>()
+                .output::<chat_post::ChatPostPayload>()
+                .roles(app_roles),
+        );
 
     let mut b = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])

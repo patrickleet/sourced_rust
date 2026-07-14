@@ -88,7 +88,7 @@ test('home is distributed template with 8-step unidirectional todos story', () =
   assert.match(home, /ModelPermissions|owner_id|claim\("x-user-id"\)|OidcBearer/);
   assert.match(home, /data\.todos|hydration|mergeFromServer/i);
   assert.match(home, /subscription|connection_init/);
-  assert.match(home, /anti-pattern|serverCommand|todo\.create/i);
+  assert.match(home, /anti-pattern|todos_create|todo\.create/i);
   assert.match(home, /require_user|outbox|TodoFact|todo\.created/);
   assert.match(home, /project_todo|ReadModelWritePlanBuilder|map_fact/);
   assert.match(home, /ChangeHub|Unidirectional|one direction/i);
@@ -135,23 +135,27 @@ test('todos seeds client state from SSR load data', () => {
   );
   assert.match(server, /serverGraphql/);
   assert.match(server, /accessToken/);
-  // Create goes through command mutation (owner = session), not RM write
+  // All writes go through GraphQL command mutations (no serverCommand / HTTP)
   assert.match(server, /todos_create/);
-  assert.match(server, /mutation TodosCreate|todos_create\(input/);
-  // complete/archive may still use HTTP command surface
-  assert.match(server, /serverCommand|todo\.complete/);
+  assert.match(server, /todos_complete/);
+  assert.match(server, /todos_archive/);
+  assert.doesNotMatch(server, /serverCommand/);
+  const gqlLib = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(gqlLib, /export async function serverCommand/);
 });
 
-test('GraphQL engine exposes todos_create as role-gated command mutation', () => {
-  // ui/tests → e2e-ui/crates
+test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {
   const service = fs.readFileSync(
     new URL('../../crates/service/src/service.rs', import.meta.url),
     'utf8'
   );
+  assert.match(service, /without_http_command_routes/);
   assert.match(service, /todos_create/);
-  assert.match(service, /todo\.create|COMMAND/);
+  assert.match(service, /todos_complete/);
+  assert.match(service, /todos_archive/);
+  assert.match(service, /todos_rename/);
+  assert.match(service, /chat_messages_post/);
   assert.match(service, /GraphqlCommands|exposed_command/);
-  assert.match(service, /roles\(\["user", "admin"\]\)/);
   const create = fs.readFileSync(
     new URL('../../crates/service/src/handlers/commands/create.rs', import.meta.url),
     'utf8'

@@ -21,7 +21,7 @@ pub struct TodoCreateInput {
     pub title: String,
 }
 
-/// GraphQL mutation payload (also returned from HTTP `POST /todo.create`).
+/// GraphQL mutation payload for `todos_create`.
 #[derive(Debug, Serialize, distributed::GraphqlOutput)]
 pub struct TodoCreatePayload {
     pub todo_id: String,

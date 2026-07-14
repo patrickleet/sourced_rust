@@ -478,6 +478,9 @@ pub struct Service {
     index: HashMap<MessageKind, HashMap<String, usize>>,
     handler_specs: Vec<HandlerSpec>,
     runner: Option<ServiceRunner>,
+    /// When false, HTTP does not mount `POST /{command}` (GraphQL / health only).
+    /// Commands remain dispatchable via GraphQL mutations and in-process `dispatch`.
+    http_command_routes: bool,
     #[cfg(feature = "graphql")]
     graphql: Option<std::sync::Arc<crate::graphql::GraphqlEngine>>,
 }
@@ -491,9 +494,24 @@ impl Service {
             index: HashMap::new(),
             handler_specs: Vec::new(),
             runner: None,
+            http_command_routes: true,
             #[cfg(feature = "graphql")]
             graphql: None,
         }
+    }
+
+    /// Disable `POST /{command}` HTTP routes.
+    ///
+    /// Use when the public surface is GraphQL-only (command mutations + queries).
+    /// Handlers stay registered for GraphQL dispatch and bus consumers.
+    pub fn without_http_command_routes(mut self) -> Self {
+        self.http_command_routes = false;
+        self
+    }
+
+    /// Whether the HTTP router mounts per-command `POST /{name}` routes.
+    pub fn http_command_routes_enabled(&self) -> bool {
+        self.http_command_routes
     }
 
     /// Attach a GraphQL query engine served at `POST /graphql`.

@@ -1,7 +1,7 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail } from '@sveltejs/kit';
 import { engineRoleFromGroups } from '$lib/roles';
-import { serverCommand, serverGraphql } from '$lib/server/graphql';
+import { serverGraphql } from '$lib/server/graphql';
 
 type ChatMsg = {
   message_id: string;
@@ -60,17 +60,36 @@ export const actions: Actions = {
     const body = String(fd.get('body') || '').trim();
     if (!body) return fail(400, { message: 'empty message' });
     const message_id = `m-${Date.now().toString(16)}`;
+    const accessToken = session.accessToken;
     const role = engineRoleFromGroups(session.user.groups);
-    const res = await serverCommand(
-      'chat.post',
-      { message_id, body, room_id: ROOM },
+    const result = await serverGraphql<{
+      chat_messages_post?: { message_id: string; body: string };
+    }>(
+      `mutation ChatPost($message_id: String!, $body: String!, $room_id: String!) {
+        chat_messages_post(input: {
+          message_id: $message_id
+          body: $body
+          room_id: $room_id
+        }) {
+          message_id
+          room_id
+          author_id
+          body
+          created_at
+        }
+      }`,
       {
-        accessToken: session.accessToken,
-        userId: session.accessToken ? undefined : session.user.id,
-        role
+        accessToken,
+        userId: accessToken ? undefined : session.user.id,
+        role,
+        variables: { message_id, body, room_id: ROOM }
       }
     );
-    if (!res.ok) return fail(res.status, { message: res.body?.error ?? 'post failed' });
+    if (result.errors?.length || !result.data?.chat_messages_post) {
+      return fail(result.status >= 400 ? result.status : 400, {
+        message: result.errors?.[0]?.message ?? 'post failed'
+      });
+    }
     return { ok: true };
   }
 };

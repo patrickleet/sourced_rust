@@ -1,4 +1,4 @@
-//! Behavioral suite — HTTP commands + GraphQL, per-user isolation.
+//! Behavioral suite — GraphQL-only commands + queries, per-user isolation.
 //!
 //! Set `E2E_BASE_URL` to hit an external process, or leave unset to boot
 //! an in-process service (SQLite memory + InMemoryBus + projector loop).
@@ -9,11 +9,13 @@ use std::time::Duration;
 use distributed::bus::{InMemoryBus, RunOptions};
 use distributed::microsvc::serve;
 use distributed::{SqliteLockManager, SqliteRepository};
-use serde_json::json;
 use e2e_service::{
     build_graphql_engine, build_service, dev_identity, distributed_manifest,
 };
-use e2e_suite::{cases, graphql, post_command, post_command_raw, wait_ready};
+use e2e_suite::{
+    assert_http_commands_disabled, cases, graphql, graphql_raw, todos_archive, todos_complete,
+    todos_create, todos_rename, wait_ready,
+};
 
 async fn ensure_target() -> String {
     if let Ok(url) = std::env::var("E2E_BASE_URL") {
@@ -117,18 +119,21 @@ fn id(prefix: &str) -> String {
 }
 
 #[tokio::test]
+async fn t0_http_command_routes_disabled() {
+    let base = ensure_target().await;
+    assert_http_commands_disabled(&base)
+        .await
+        .unwrap_or_else(|e| panic!("{}: {e}", cases::HTTP_OFF));
+    eprintln!("{} ok", cases::HTTP_OFF);
+}
+
+#[tokio::test]
 async fn t1_create_and_project() {
     let base = ensure_target().await;
     let tid = id("t");
-    let resp = post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": tid, "title": "Buy milk" }),
-        "alice",
-        "user",
-    )
-    .await
-    .unwrap_or_else(|e| panic!("{}: {e}", cases::CREATE));
+    let resp = todos_create(&base, &tid, "Buy milk", "alice", "user")
+        .await
+        .unwrap_or_else(|e| panic!("{}: {e}", cases::CREATE));
     assert_eq!(resp["todo_id"], tid);
     assert_eq!(resp["owner_id"], "alice");
     assert_eq!(resp["status"], "open");
@@ -141,40 +146,22 @@ async fn t1_create_and_project() {
     eprintln!("{} ok {tid}", cases::CREATE);
 }
 
-/// Create via GraphQL command mutation (`todos_create` → `todo.create`).
-/// Owner is always the session user — never taken from mutation input.
+/// Create via GraphQL command mutation; owner is always session user.
 #[tokio::test]
 async fn t1b_create_via_graphql_mutation() {
     let base = ensure_target().await;
     let tid = id("tgql");
-    let mutation = format!(
-        r#"mutation {{
-          todos_create(input: {{ todo_id: "{tid}", title: "Via GQL" }}) {{
-            todo_id
-            owner_id
-            title
-            status
-          }}
-        }}"#
-    );
-    let v = graphql(&base, &mutation, "alice", "user")
+    let payload = todos_create(&base, &tid, "Via GQL", "alice", "user")
         .await
         .unwrap_or_else(|e| panic!("todos_create mutation: {e}"));
-    assert!(
-        v.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
-        "mutation errors: {v}"
-    );
-    let payload = &v["data"]["todos_create"];
-    assert_eq!(payload["todo_id"], tid, "{v}");
-    assert_eq!(payload["owner_id"], "alice", "owner must be session user: {v}");
+    assert_eq!(payload["todo_id"], tid);
+    assert_eq!(payload["owner_id"], "alice");
     assert_eq!(payload["title"], "Via GQL");
-    assert_eq!(payload["status"], "open");
 
     let row = poll_todo(&base, "alice", &tid)
         .await
         .expect("mutation must project into todos read model");
     assert_eq!(row["owner_id"], "alice");
-    assert_eq!(row["title"], "Via GQL");
     eprintln!("todos_create ok {tid}");
 }
 
@@ -184,29 +171,16 @@ async fn t2_owner_isolation_graphql() {
     let alice_id = id("ta");
     let bob_id = id("tb");
 
-    post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": alice_id, "title": "Alice only" }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::OWNER_ISOLATION);
-    post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": bob_id, "title": "Bob only" }),
-        "bob",
-        "user",
-    )
-    .await
-    .expect(cases::OWNER_ISOLATION);
+    todos_create(&base, &alice_id, "Alice only", "alice", "user")
+        .await
+        .expect(cases::OWNER_ISOLATION);
+    todos_create(&base, &bob_id, "Bob only", "bob", "user")
+        .await
+        .expect(cases::OWNER_ISOLATION);
 
     assert!(poll_todo(&base, "alice", &alice_id).await.is_some());
     assert!(poll_todo(&base, "bob", &bob_id).await.is_some());
 
-    // Alice GraphQL must not include Bob's todo.
     let v = graphql(
         &base,
         "{ todos { todo_id owner_id } }",
@@ -238,26 +212,14 @@ async fn t2_owner_isolation_graphql() {
 async fn t3_complete_projects_status() {
     let base = ensure_target().await;
     let tid = id("tc");
-    post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": tid, "title": "Do thing" }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::COMPLETE);
+    todos_create(&base, &tid, "Do thing", "alice", "user")
+        .await
+        .expect(cases::COMPLETE);
     assert!(poll_todo(&base, "alice", &tid).await.is_some());
 
-    post_command(
-        &base,
-        "todo.complete",
-        json!({ "todo_id": tid }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::COMPLETE);
+    todos_complete(&base, &tid, "alice", "user")
+        .await
+        .expect(cases::COMPLETE);
 
     let mut ok = false;
     for _ in 0..100 {
@@ -277,28 +239,20 @@ async fn t3_complete_projects_status() {
 async fn t4_not_owner_rejected() {
     let base = ensure_target().await;
     let tid = id("to");
-    post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": tid, "title": "Alice task" }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::NOT_OWNER);
+    todos_create(&base, &tid, "Alice task", "alice", "user")
+        .await
+        .expect(cases::NOT_OWNER);
 
-    let (status, body) = post_command_raw(
-        &base,
-        "todo.complete",
-        json!({ "todo_id": tid }),
-        Some("bob"),
-        Some("user"),
-    )
-    .await
-    .expect(cases::NOT_OWNER);
-    assert_eq!(
-        status, 422,
-        "{}: expected 422 not-owner, got {status} {body}",
+    let err = todos_complete(&base, &tid, "bob", "user")
+        .await
+        .expect_err(cases::NOT_OWNER);
+    assert!(
+        err.to_lowercase().contains("reject")
+            || err.to_lowercase().contains("owner")
+            || err.to_lowercase().contains("forbidden")
+            || err.contains("422")
+            || err.contains("UNPROCESSABLE"),
+        "{}: unexpected error: {err}",
         cases::NOT_OWNER
     );
     eprintln!("{} ok", cases::NOT_OWNER);
@@ -307,18 +261,25 @@ async fn t4_not_owner_rejected() {
 #[tokio::test]
 async fn t5_unauthenticated_rejected() {
     let base = ensure_target().await;
-    let (status, body) = post_command_raw(
-        &base,
-        "todo.create",
-        json!({ "todo_id": id("tu"), "title": "no user" }),
-        None,
-        None,
-    )
-    .await
-    .expect(cases::UNAUTH);
-    assert_eq!(
-        status, 401,
-        "{}: expected 401, got {status} {body}",
+    let tid = id("tu");
+    let doc = format!(
+        r#"mutation {{
+          todos_create(input: {{ todo_id: "{tid}", title: "no user" }}) {{
+            todo_id
+          }}
+        }}"#
+    );
+    // DevHeaders with no identity → mutation fails (require_user).
+    let (status, body) = graphql_raw(&base, &doc).await.expect(cases::UNAUTH);
+    // Prefer GraphQL errors over HTTP 401 depending on identity mode.
+    let has_err = body
+        .get("errors")
+        .and_then(|e| e.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    assert!(
+        status == 401 || has_err,
+        "{}: expected 401 or GraphQL errors, got HTTP {status} {body}",
         cases::UNAUTH
     );
     eprintln!("{} ok", cases::UNAUTH);
@@ -328,26 +289,14 @@ async fn t5_unauthenticated_rejected() {
 async fn t6_lifecycle_rename_and_archive() {
     let base = ensure_target().await;
     let tid = id("tl");
-    post_command(
-        &base,
-        "todo.create",
-        json!({ "todo_id": tid, "title": "Draft" }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::LIFECYCLE);
+    todos_create(&base, &tid, "Draft", "alice", "user")
+        .await
+        .expect(cases::LIFECYCLE);
     assert!(poll_todo(&base, "alice", &tid).await.is_some());
 
-    post_command(
-        &base,
-        "todo.rename",
-        json!({ "todo_id": tid, "title": "Renamed" }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::LIFECYCLE);
+    todos_rename(&base, &tid, "Renamed", "alice", "user")
+        .await
+        .expect(cases::LIFECYCLE);
 
     let mut renamed = false;
     for _ in 0..100 {
@@ -361,15 +310,9 @@ async fn t6_lifecycle_rename_and_archive() {
     }
     assert!(renamed, "{}: rename not projected", cases::LIFECYCLE);
 
-    post_command(
-        &base,
-        "todo.archive",
-        json!({ "todo_id": tid }),
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::LIFECYCLE);
+    todos_archive(&base, &tid, "alice", "user")
+        .await
+        .expect(cases::LIFECYCLE);
 
     let mut archived = false;
     for _ in 0..100 {
@@ -383,16 +326,15 @@ async fn t6_lifecycle_rename_and_archive() {
     }
     assert!(archived, "{}: archive not projected", cases::LIFECYCLE);
 
-    // Complete after archive must fail.
-    let (status, _) = post_command_raw(
-        &base,
-        "todo.complete",
-        json!({ "todo_id": tid }),
-        Some("alice"),
-        Some("user"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(status, 422, "{}: complete after archive", cases::LIFECYCLE);
+    let err = todos_complete(&base, &tid, "alice", "user")
+        .await
+        .expect_err("complete after archive");
+    assert!(
+        err.to_lowercase().contains("reject")
+            || err.to_lowercase().contains("archiv")
+            || err.contains("UNPROCESSABLE"),
+        "{}: complete after archive: {err}",
+        cases::LIFECYCLE
+    );
     eprintln!("{} ok {tid}", cases::LIFECYCLE);
 }
