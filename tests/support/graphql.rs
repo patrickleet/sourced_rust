@@ -49,6 +49,7 @@ pub fn session(role: &str, user: &str) -> Session {
 
 pub async fn seed_orders() -> sqlx::SqlitePool {
     let pool = SqlitePoolOptions::new()
+        .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
