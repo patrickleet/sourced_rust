@@ -40,7 +40,17 @@ pub fn require_user(session: &Session) -> Result<String, HandlerError> {
         .ok_or_else(|| HandlerError::Unauthorized("missing x-user-id".into()))
 }
 
-/// Require engine role `admin` (`x-role` / OIDC claim map).
+/// Session has a non-empty user id (for `guard` — bool, not Result).
+pub fn session_has_user(session: &Session) -> bool {
+    session.user_id().is_some_and(|s| !s.is_empty())
+}
+
+/// Engine role is `admin` (`x-role` / OIDC claim map). For `guard`.
+pub fn session_is_admin(session: &Session) -> bool {
+    session.role() == Some("admin")
+}
+
+/// Require engine role `admin` (handler-path Result form).
 pub fn require_admin(session: &Session) -> Result<(), HandlerError> {
     match session.role() {
         Some("admin") => Ok(()),
