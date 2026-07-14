@@ -259,10 +259,12 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
   assert.match(page, /todosResource\.query|todos\.query/);
-  assert.match(page, /mutations\.create|mutations\.complete|mutations\.archive/);
+  // Create/complete: generated command functions (GraphQL wire under the hood).
+  assert.match(page, /todosCreate|todosComplete|commands\.generated/);
+  assert.match(page, /mutations\.archive|todosArchive/); // archive pilot may still use resource map
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
-  // Writes go through GraphQL client, not form actions
-  assert.match(page, /gql\.request|createGraphqlClient|useGraphql/);
+  // Writes go through GraphQL (command client or gql.request), not form actions
+  assert.match(page, /gql\.request|todosCreate|createGraphqlClient|useGraphql/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),

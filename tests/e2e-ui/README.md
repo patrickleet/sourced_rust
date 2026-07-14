@@ -142,7 +142,33 @@ npm run gen
 
 Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.generated.ts`.
 
-**Agent rule:** after changing `build_graphql_engine`, command handlers, or `*.gql`, run `make check-gql` and commit any schema/generated diffs. Do not hand-edit `schema/*.graphql` or `*.generated.ts` as source of truth.
+**Agent rule:** after changing `build_graphql_engine` / `graphql_commands()`, command handlers, or `*.gql`, run `make check-gql` **and** `make check-commands`, then commit any schema/generated diffs. Do not hand-edit `schema/*.graphql`, `*.generated.ts`, or `commands.generated.ts` as source of truth.
+
+### Command client (typed functions over GraphQL wire)
+
+Day-to-day writes are **commands**, not GraphQL documents. The same Rust
+registry (`e2e_service::graphql_commands()`) that registers mutation fields
+exports a machine-readable catalog; a generator emits TypeScript functions
+(`todosCreate`, `todosComplete`, …) that POST GraphQL under the hood with
+caller-supplied auth. Queries/subscriptions stay document-first (`.gql`).
+
+```bash
+make export-commands   # → ui/src/lib/api/commands.manifest.json
+make gen-commands      # → ui/src/lib/api/commands.generated.ts
+make check-commands    # gen-commands + fail on drift
+```
+
+Example:
+
+```ts
+import { todosCreate } from '$lib/api/commands.generated';
+import { authFromPageData } from '$lib/gql';
+
+await todosCreate({ todo_id, title }, { url: '/graphql', auth: authFromPageData(data) });
+```
+
+See distributed GitKB: `specs/query-layer/references/command-client-dx` and
+epic `tasks/graphql-qs-command-client-1`.
 
 ### Security template notes
 

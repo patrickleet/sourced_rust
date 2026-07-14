@@ -12,6 +12,6 @@ mod service;
 
 pub use oidc_layer::serve_with_oidc;
 pub use service::{
-    build_graphql_engine, build_service, dev_identity, identity_from_env, oidc_bearer_config,
+    build_graphql_engine, build_service, dev_identity, graphql_commands, identity_from_env, oidc_bearer_config,
 };
 pub use e2e_readmodels::distributed_manifest;

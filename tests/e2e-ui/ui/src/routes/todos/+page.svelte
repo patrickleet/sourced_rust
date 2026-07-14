@@ -1,11 +1,13 @@
 <script lang="ts">
 	/**
-	 * Optimistic todos: co-located `todos` resource owns query + mutations.
+	 * Optimistic todos: co-located `todos` resource owns the **query** document.
+	 * Create/complete use generated command functions (GraphQL wire under the hood).
+	 * Archive still uses resource mutation document until fully migrated.
 	 * SSR load and client refetch use the same `todos.query` reference.
-	 * Mutations POST /graphql via useGraphql (Network tab shows /graphql).
 	 */
 	import { untrack } from 'svelte';
-	import { useGraphql } from '$lib/gql';
+	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { todosCreate, todosComplete } from '$lib/api/commands.generated';
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
@@ -120,13 +122,14 @@
 		todos = [{ todo_id, owner_id: me || 'me', title: text, status: 'open' }, ...todos];
 		title = '';
 
-		const result = await gql.request<{ todos_create?: Todo }>(todosResource.mutations.create, {
-			todo_id,
-			title: text
-		});
+		// Generated command client — no hand mutation document at the call site.
+		const result = await todosCreate(
+			{ todo_id, title: text },
+			{ url: '/graphql', auth: authFromPageData(data) }
+		);
 
 		busy = false;
-		if (result.errors?.length || !result.data?.todos_create) {
+		if (result.errors?.length || !result.data) {
 			restore(prev);
 			actionError = result.errors?.[0]?.message ?? 'create failed';
 			return;
@@ -146,13 +149,13 @@
 		pending = { ...pending, [todo_id]: 'completed' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-		const result = await gql.request<{ todos_complete?: { todo_id: string; status: string } }>(
-			todosResource.mutations.complete,
-			{ todo_id }
+		const result = await todosComplete(
+			{ todo_id },
+			{ url: '/graphql', auth: authFromPageData(data) }
 		);
 
 		busy = false;
-		if (result.errors?.length || !result.data?.todos_complete) {
+		if (result.errors?.length || !result.data) {
 			restore(prev);
 			actionError = result.errors?.[0]?.message ?? 'complete failed';
 			return;

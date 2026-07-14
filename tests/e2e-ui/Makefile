@@ -6,7 +6,8 @@
 #   make test-live   # against stack (E2E_STACK=1)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	ui-install ui-build ui-test export-sdl gen-gql check-gql check clean help
+	ui-install ui-build ui-test export-sdl gen-gql check-gql \
+	export-commands gen-commands check-commands check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -143,7 +144,28 @@ check-gql: gen-gql
 	fi; \
 	echo "check-gql: schema + generated types clean"
 
-check: check-gql
+## Command catalog from graphql_commands() (same registry as the engine).
+export-commands:
+	cargo run -q -p e2e-runner --bin e2e-export-commands -- ui/src/lib/api/commands.manifest.json
+
+## Manifest → TypeScript command functions (todosCreate, todosComplete, …).
+gen-commands: export-commands ui-install
+	cd ui && $(NPM) run gen:commands
+
+## Fail if command manifest / generated client drift from git.
+check-commands: gen-commands
+	@set -e; \
+	ROOT=$$(git rev-parse --show-toplevel); \
+	if ! git -C "$$ROOT" diff --exit-code -- \
+		tests/e2e-ui/ui/src/lib/api/commands.manifest.json \
+		tests/e2e-ui/ui/src/lib/api/commands.generated.ts; then \
+		echo "ERROR: command client drift — run make gen-commands and commit"; \
+		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/src/lib/api || true; \
+		exit 1; \
+	fi; \
+	echo "check-commands: manifest + command client clean"
+
+check: check-gql check-commands
 	cargo check --workspace
 	cargo test -p todo-domain -p chat-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
@@ -159,8 +181,11 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make test-live  OIDC isolation against stack"
-	@echo "  make export-sdl role SDL → ui/schema/{user,admin}.graphql"
-	@echo "  make gen-gql    export-sdl + ui npm run gen:gql"
-	@echo "  make check-gql  gen-gql + fail on schema/generated drift"
+	@echo "  make export-sdl      role SDL → ui/schema/{user,admin}.graphql"
+	@echo "  make gen-gql         export-sdl + ui npm run gen:gql"
+	@echo "  make check-gql       gen-gql + fail on schema/generated drift"
+	@echo "  make export-commands command manifest from graphql_commands()"
+	@echo "  make gen-commands    manifest → TypeScript command functions"
+	@echo "  make check-commands  gen-commands + fail on client drift"
 	@echo "  make down       docker compose down"
 	@echo "  GRAPHIQL=0      disable GraphiQL when running the API"
