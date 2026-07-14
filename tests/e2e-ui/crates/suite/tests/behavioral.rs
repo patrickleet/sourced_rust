@@ -165,6 +165,60 @@ async fn t1b_create_via_graphql_mutation() {
     eprintln!("todos_create ok {tid}");
 }
 
+/// GraphQL create input has no owner_id; session principal is always the owner.
+#[tokio::test]
+async fn t1c_create_owner_from_session_not_input() {
+    let base = ensure_target().await;
+    let tid = id("towner");
+    // Extra owner_id field must not be accepted as spoof — schema rejects or ignores.
+    let spoof = format!(
+        r#"mutation {{
+          todos_create(input: {{ todo_id: "{tid}", title: "owned", owner_id: "evil" }}) {{
+            todo_id owner_id
+          }}
+        }}"#
+    );
+    let spoof_res = graphql(&base, &spoof, "alice", "user").await;
+    match spoof_res {
+        Ok(v) => {
+            // If engine ignores unknown input fields, owner must still be session.
+            if let Some(owner) = v["data"]["todos_create"]["owner_id"].as_str() {
+                assert_eq!(
+                    owner,
+                    "alice",
+                    "{}: owner spoofed: {v}",
+                    cases::CREATE_OWNER_SESSION
+                );
+            } else {
+                // GraphQL errors (unknown field) also acceptable
+                let errs = v.get("errors").and_then(|e| e.as_array());
+                assert!(
+                    errs.map(|a| !a.is_empty()).unwrap_or(false),
+                    "{}: expected errors or alice owner: {v}",
+                    cases::CREATE_OWNER_SESSION
+                );
+            }
+        }
+        Err(e) => {
+            assert!(
+                e.to_lowercase().contains("error")
+                    || e.contains("400")
+                    || e.contains("field")
+                    || e.contains("owner"),
+                "{}: unexpected: {e}",
+                cases::CREATE_OWNER_SESSION
+            );
+        }
+    }
+
+    let tid2 = id("towner2");
+    let payload = todos_create(&base, &tid2, "session owner", "alice", "user")
+        .await
+        .expect(cases::CREATE_OWNER_SESSION);
+    assert_eq!(payload["owner_id"], "alice");
+    eprintln!("{} ok", cases::CREATE_OWNER_SESSION);
+}
+
 #[tokio::test]
 async fn t2_owner_isolation_graphql() {
     let base = ensure_target().await;
@@ -267,11 +321,20 @@ async fn t2c_admin_force_archive() {
         .expect(cases::ADMIN_FORCE_ARCHIVE);
     assert!(poll_todo(&base, "alice", &tid).await.is_some());
 
-    // User schema must not expose the field (or reject the call).
+    // User role must not force-archive (field absent / rejected).
     let user_attempt = todos_force_archive(&base, &tid, "alice", "user").await;
     assert!(
         user_attempt.is_err(),
         "{}: user role must not force-archive (got ok: {user_attempt:?})",
+        cases::ADMIN_FORCE_ARCHIVE
+    );
+    // Denied call must not archive the row.
+    let after_deny = poll_todo(&base, "alice", &tid)
+        .await
+        .expect("todo exists after denied force-archive");
+    assert_ne!(
+        after_deny["status"], "archived",
+        "{}: user force-archive must not change status",
         cases::ADMIN_FORCE_ARCHIVE
     );
 
@@ -295,10 +358,72 @@ async fn t2c_admin_force_archive() {
     }
     assert!(
         ok,
-        "{}: projected status not archived",
+        "{}: projected status not archived after admin force",
         cases::ADMIN_FORCE_ARCHIVE
     );
     eprintln!("{} ok {tid}", cases::ADMIN_FORCE_ARCHIVE);
+}
+
+/// Role SDL: force-archive only on admin schema (engine source of truth).
+#[tokio::test]
+async fn t2d_sdl_role_split_force_archive() {
+    let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .expect("repo");
+    let registry = distributed_manifest().table_registry().expect("registry");
+    repo.bootstrap_table_schema_for_dev(&registry)
+        .await
+        .expect("bootstrap");
+    let engine = build_graphql_engine(repo.pool().clone(), dev_identity(), None).expect("gql");
+    let user_sdl = engine.sdl_for_role("user").expect("user sdl");
+    let admin_sdl = engine.sdl_for_role("admin").expect("admin sdl");
+    assert!(
+        !user_sdl.contains("todos_force_archive"),
+        "{}: user SDL must not expose force-archive",
+        cases::SDL_ROLE_SPLIT
+    );
+    assert!(
+        admin_sdl.contains("todos_force_archive"),
+        "{}: admin SDL must expose force-archive",
+        cases::SDL_ROLE_SPLIT
+    );
+    assert!(
+        admin_sdl.contains("todo.force_archived")
+            || admin_sdl.contains("TodoForceArchive")
+            || admin_sdl.contains("todos_force_archive"),
+        "{}: admin SDL mutation surface incomplete",
+        cases::SDL_ROLE_SPLIT
+    );
+    eprintln!("{} ok", cases::SDL_ROLE_SPLIT);
+}
+
+/// Admin todos query supports limit (bounded list).
+#[tokio::test]
+async fn t2e_admin_todos_respects_limit() {
+    let base = ensure_target().await;
+    for i in 0..5 {
+        let tid = id(&format!("lim{i}"));
+        todos_create(&base, &tid, &format!("n{i}"), "alice", "user")
+            .await
+            .expect(cases::ADMIN_QUERY_LIMIT);
+        assert!(poll_todo(&base, "alice", &tid).await.is_some());
+    }
+    let v = graphql(
+        &base,
+        "{ todos(limit: 2, order_by: [{ todo_id: asc }]) { todo_id } }",
+        "admin-user",
+        "admin",
+    )
+    .await
+    .expect(cases::ADMIN_QUERY_LIMIT);
+    let arr = v["data"]["todos"].as_array().expect("todos");
+    assert!(
+        arr.len() <= 2,
+        "{}: expected at most 2 rows, got {}: {v}",
+        cases::ADMIN_QUERY_LIMIT,
+        arr.len()
+    );
+    eprintln!("{} ok n={}", cases::ADMIN_QUERY_LIMIT, arr.len());
 }
 
 #[tokio::test]
@@ -348,7 +473,23 @@ async fn t4_not_owner_rejected() {
         "{}: unexpected error: {err}",
         cases::NOT_OWNER
     );
-    eprintln!("{} ok", cases::NOT_OWNER);
+    // Rename/archive IDOR: bob must not succeed (same domain owner gate as complete).
+    assert!(
+        todos_rename(&base, &tid, "Hijacked", "bob", "user")
+            .await
+            .is_err(),
+        "{}: rename should fail for bob",
+        cases::NOT_OWNER_MUTATES
+    );
+    assert!(
+        todos_archive(&base, &tid, "bob", "user").await.is_err(),
+        "{}: archive should fail for bob",
+        cases::NOT_OWNER_MUTATES
+    );
+    let row = poll_todo(&base, "alice", &tid).await.expect("row");
+    assert_eq!(row["title"], "Alice task");
+    assert_eq!(row["status"], "open");
+    eprintln!("{} + {} ok", cases::NOT_OWNER, cases::NOT_OWNER_MUTATES);
 }
 
 #[tokio::test]

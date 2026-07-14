@@ -16,6 +16,8 @@
 	const who = $derived(sessionDisplayName(data.session));
 	const owners = $derived([...new Set(todos.map((t) => t.owner_id))].sort());
 	const open = $derived(todos.filter((t) => t.status !== 'archived'));
+	const listLimit = $derived(data.listLimit ?? 100);
+	const atCap = $derived(todos.length >= listLimit);
 
 	const gql = useGraphql(() => data);
 
@@ -99,6 +101,13 @@
 			<span class="ad-stat-l">active</span>
 		</div>
 	</div>
+
+	{#if atCap}
+		<p class="ad-cap" role="status">
+			Showing first {listLimit} notes (bounded admin query). Refine filters or raise limit in
+			<code>admin.gql</code> if needed.
+		</p>
+	{/if}
 
 	{#if todos.length === 0}
 		<p class="ad-empty">No notes in the read model yet. Create some as alice/bob on /todos.</p>
@@ -251,6 +260,21 @@
 	.ad-empty {
 		color: var(--ink-soft);
 		font-style: italic;
+	}
+
+	.ad-cap {
+		font-size: 0.88rem;
+		color: var(--ink-soft);
+		margin: 0 0 1rem;
+		padding: 0.65rem 0.85rem;
+		border-radius: 10px;
+		background: rgba(230, 154, 45, 0.12);
+		border: 1px solid rgba(230, 154, 45, 0.28);
+	}
+
+	.ad-cap code {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.9em;
 	}
 
 	.ad-table-wrap {

@@ -18,6 +18,8 @@ pub const EVENTS: &[&str] = &[
     "todo.completed",
     "todo.reopened",
     "todo.archived",
+    // Admin force-archive (distinct audit event; same RM upsert as archived)
+    "todo.force_archived",
 ];
 
 pub fn guard<R, L, S>(_ctx: &Context<TodoDeps<R, L, S>>) -> bool

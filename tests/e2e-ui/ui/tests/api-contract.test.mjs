@@ -4,8 +4,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const base = process.env.E2E_API_ORIGIN || process.env.E2E_BASE_URL;
+const uiRoot = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
 
 test('SSR is enabled (not SPA-only)', () => {
   const pkg = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
@@ -67,6 +71,7 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   const gql = fs.readFileSync(new URL('../src/routes/admin/admin.gql', import.meta.url), 'utf8');
   assert.match(gql, /query AdminAllTodos|todos/);
   assert.match(gql, /todos_force_archive|AdminForceArchive/);
+  assert.match(gql, /limit:\s*100|order_by/);
   const resource = fs.readFileSync(
     new URL('../src/routes/admin/admin.resource.ts', import.meta.url),
     'utf8'
@@ -76,7 +81,12 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
     new URL('../src/routes/admin/+page.server.ts', import.meta.url),
     'utf8'
   );
-  assert.match(server, /admin|error\(403|engineRole/);
+  // 403 before loadQuery — non-admins never SSR all-owners data
+  assert.match(server, /isAdminEngineRole|error\(403/);
+  const body = server.slice(server.indexOf('export const load'));
+  const gateIdx = body.indexOf('isAdminEngineRole');
+  const loadIdx = body.indexOf('await loadQuery');
+  assert.ok(gateIdx >= 0 && loadIdx > gateIdx, 'admin gate must run before await loadQuery');
   assert.match(server, /adminTodos|AdminAllTodos|loadQuery/);
   const page = fs.readFileSync(new URL('../src/routes/admin/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive/i);
@@ -90,16 +100,49 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   assert.match(service, /todos_force_archive|force_archive/);
   assert.match(service, /\.roles\(\[\"admin\"\]\)|roles\(\[\"admin\"\]\)/);
   assert.match(service, /owner_id|claim\("x-user-id"\)/);
+  assert.match(service, /graphiql_enabled|GRAPHIQL/);
   const force = fs.readFileSync(
     new URL('../../crates/service/src/handlers/commands/force_archive.rs', import.meta.url),
     'utf8'
   );
   assert.match(force, /todo\.force_archive/);
   assert.match(force, /session_is_admin|session_has_user/);
-  // Session gates live in guard (bool), not only handle
   assert.match(force, /fn guard[\s\S]*session_is_admin/);
+  assert.match(force, /todo\.force_archived|FORCE_ARCHIVED/);
   const codegen = fs.readFileSync(new URL('../codegen.ts', import.meta.url), 'utf8');
   assert.match(codegen, /admin\.graphql/);
+  const todoCmd = fs.readFileSync(
+    new URL('../../crates/service/src/handlers/commands/todo_cmd.rs', import.meta.url),
+    'utf8'
+  );
+  assert.match(todoCmd, /commit_todo_event|load_todo/);
+  const makefile = fs.readFileSync(new URL('../../Makefile', import.meta.url), 'utf8');
+  assert.match(makefile, /check-gql/);
+});
+
+test('engineRoleFromGroups is exact membership (not substring)', () => {
+  const rolesUrl = pathToFileURL(path.join(uiRoot, 'src/lib/roles.ts')).href;
+  const script = `
+    import { engineRoleFromGroups, isAdminEngineRole } from ${JSON.stringify(rolesUrl)};
+    const eq = (a, b, m) => { if (a !== b) throw new Error(m + ': ' + a + ' !== ' + b); };
+    eq(engineRoleFromGroups(undefined), 'user', 'undef');
+    eq(engineRoleFromGroups([]), 'user', 'empty');
+    eq(engineRoleFromGroups(['user']), 'user', 'user');
+    eq(engineRoleFromGroups(['admin']), 'admin', 'admin');
+    eq(engineRoleFromGroups(['admins']), 'admin', 'admins');
+    eq(engineRoleFromGroups(['administrator']), 'user', 'administrator');
+    eq(engineRoleFromGroups(['not-admin']), 'user', 'not-admin');
+    eq(isAdminEngineRole('admin'), true, 'isAdmin');
+    eq(isAdminEngineRole('user'), false, 'isUser');
+    console.log('roles-ok');
+  `;
+  const r = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '-e', script],
+    { encoding: 'utf8', cwd: uiRoot }
+  );
+  assert.equal(r.status, 0, `stderr=${r.stderr}\nstdout=${r.stdout}`);
+  assert.match(r.stdout, /roles-ok/);
 });
 
 test('home is distributed template with 8-step unidirectional todos story', () => {

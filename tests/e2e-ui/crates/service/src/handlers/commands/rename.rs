@@ -1,13 +1,12 @@
 //! Command: `todo.rename` — owner-only (aggregate enforces).
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use todo_domain::TodoFact;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_user, session_has_user};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
+use crate::handlers::util::{require_user, session_has_user};
 
 pub const COMMAND: &str = "todo.rename";
 
@@ -43,25 +42,9 @@ where
 {
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoRenameInput>()?;
-
-    let mut todo = ctx
-        .repo()
-        .get(&input.todo_id)
-        .await?
-        .ok_or_else(|| HandlerError::NotFound(input.todo_id.clone()))?;
-
-    todo.rename(&owner, &input.title).map_err(rejected)?;
-
-    let fact = TodoFact::from_todo(&todo);
-    let outbox = OutboxMessage::encode(
-        format!("{}:todo.renamed:{}", todo.todo_id, todo.entity.version()),
-        "todo.renamed",
-        &fact,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-
-    ctx.repo().outbox(outbox).commit(&mut todo).await?;
-
+    let mut todo = load_todo(ctx, &input.todo_id).await?;
+    todo.rename(&owner, &input.title).map_err(map_domain)?;
+    let fact = commit_todo_event(ctx, &mut todo, "todo.renamed").await?;
     Ok(json!({
         "todo_id": fact.todo_id,
         "title": fact.title,

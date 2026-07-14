@@ -34,7 +34,10 @@ pub async fn graphql(
     user_id: &str,
     role: &str,
 ) -> Result<Value, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .post(format!("{base}/graphql"))
         .header("content-type", "application/json")
@@ -177,6 +180,22 @@ pub async fn todos_rename(
     mutate(base, "todos_rename", &doc, user_id, role).await
 }
 
+pub async fn todos_reopen(
+    base: &str,
+    todo_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<Value, String> {
+    let doc = format!(
+        r#"mutation {{
+          todos_reopen(input: {{ todo_id: "{todo_id}" }}) {{
+            todo_id status
+          }}
+        }}"#
+    );
+    mutate(base, "todos_reopen", &doc, user_id, role).await
+}
+
 /// Assert HTTP command routes are not mounted (GraphQL-only surface).
 pub async fn assert_http_commands_disabled(base: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
@@ -204,9 +223,13 @@ pub mod cases {
     pub const OWNER_ISOLATION: &str = "T2_owner_isolation";
     pub const ADMIN_SEES_ALL: &str = "T2b_admin_sees_all_owners";
     pub const ADMIN_FORCE_ARCHIVE: &str = "T2c_admin_force_archive";
+    pub const SDL_ROLE_SPLIT: &str = "T2d_sdl_role_split_force_archive";
+    pub const CREATE_OWNER_SESSION: &str = "T1c_create_owner_from_session";
     pub const COMPLETE: &str = "T3_complete_todo";
     pub const NOT_OWNER: &str = "T4_not_owner_rejected";
+    pub const NOT_OWNER_MUTATES: &str = "T4b_not_owner_rename_archive_reopen";
     pub const UNAUTH: &str = "T5_unauthenticated_rejected";
     pub const LIFECYCLE: &str = "T6_lifecycle_rename_archive";
     pub const HTTP_OFF: &str = "T0_http_commands_disabled";
+    pub const ADMIN_QUERY_LIMIT: &str = "T2e_admin_todos_limit";
 }

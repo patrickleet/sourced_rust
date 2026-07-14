@@ -60,3 +60,47 @@ pub fn require_admin(session: &Session) -> Result<(), HandlerError> {
         None => Err(HandlerError::Unauthorized("missing x-role".into())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
+
+    #[test]
+    fn session_has_user_requires_nonempty_id() {
+        let mut s = Session::new();
+        assert!(!session_has_user(&s));
+        s.set(USER_ID_KEY, "");
+        assert!(!session_has_user(&s));
+        s.set(USER_ID_KEY, "alice");
+        assert!(session_has_user(&s));
+    }
+
+    #[test]
+    fn session_is_admin_exact_role() {
+        let mut s = Session::new();
+        assert!(!session_is_admin(&s));
+        s.set(ROLE_KEY, "user");
+        assert!(!session_is_admin(&s));
+        s.set(ROLE_KEY, "admin");
+        assert!(session_is_admin(&s));
+    }
+
+    #[test]
+    fn require_admin_errors() {
+        let mut s = Session::new();
+        assert!(require_admin(&s).is_err());
+        s.set(ROLE_KEY, "user");
+        assert!(require_admin(&s).is_err());
+        s.set(ROLE_KEY, "admin");
+        assert!(require_admin(&s).is_ok());
+    }
+
+    #[test]
+    fn require_user_errors_and_returns_id() {
+        let mut s = Session::new();
+        assert!(require_user(&s).is_err());
+        s.set(USER_ID_KEY, "bob");
+        assert_eq!(require_user(&s).unwrap(), "bob");
+    }
+}

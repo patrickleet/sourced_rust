@@ -126,12 +126,13 @@ Role SDL is **generated** from the same GraphQL engine the API runs
 | `ui/schema/user.graphql` | `user` | No `todos_force_archive` |
 | `ui/schema/admin.graphql` | `admin` | Superset — includes admin-only mutations |
 
-Codegen uses **admin** schema so co-located admin ops typecheck; runtime still enforces role.
+Codegen uses **admin** schema so co-located admin ops typecheck; **runtime ACL is the session engine role** — a user token cannot call admin-only fields even if types exist in the bundle.
 
 ```bash
 # from tests/e2e-ui
-make export-sdl          # user + admin SDL
+make export-sdl          # user + admin SDL from GraphQL engine
 make gen-gql             # export-sdl + TypedDocumentNode from co-located *.gql
+make check-gql           # gen-gql + git diff --exit-code (CI / agents)
 
 # or from ui/
 npm run gen:schema
@@ -140,3 +141,11 @@ npm run gen
 ```
 
 Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.generated.ts`.
+
+**Agent rule:** after changing `build_graphql_engine`, command handlers, or `*.gql`, run `make check-gql` and commit any schema/generated diffs. Do not hand-edit `schema/*.graphql` or `*.generated.ts` as source of truth.
+
+### Security template notes
+
+- Set **`GRAPHIQL=0`** when not developing — GraphiQL is on by default for the fixture only.
+- If `OIDC_ISSUER` / `OIDC_AUDIENCE` are unset, the API falls back to **DevHeaders** (local only). Never expose that mode on a public edge.
+- UI `/admin` is a convenience gate; **GraphQL field roles + handler guards** are the security boundary.

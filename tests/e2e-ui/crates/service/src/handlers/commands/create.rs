@@ -4,13 +4,13 @@
 //! Owner cannot be spoofed via input — only `require_user(session)` is written.
 
 use distributed::microsvc::{Context, HandlerError};
-use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use todo_domain::{Todo, TodoFact};
+use todo_domain::Todo;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_user, session_has_user};
+use crate::handlers::commands::todo_cmd::{commit_todo_event, map_domain};
+use crate::handlers::util::{require_user, session_has_user};
 
 pub const COMMAND: &str = "todo.create";
 
@@ -60,17 +60,9 @@ where
 
     let mut todo = Todo::default();
     todo.create(&input.todo_id, &owner, &input.title)
-        .map_err(rejected)?;
+        .map_err(map_domain)?;
 
-    let fact = TodoFact::from_todo(&todo);
-    let outbox = OutboxMessage::encode(
-        format!("{}:todo.created:{}", todo.todo_id, todo.entity.version()),
-        "todo.created",
-        &fact,
-    )
-    .map_err(|e| HandlerError::Other(Box::new(e)))?;
-
-    ctx.repo().outbox(outbox).commit(&mut todo).await?;
+    let fact = commit_todo_event(ctx, &mut todo, "todo.created").await?;
 
     Ok(json!({
         "todo_id": fact.todo_id,

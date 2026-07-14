@@ -76,12 +76,12 @@ export type Json_Comparison_Exp = {
 export type Mutation = {
   __typename?: 'Mutation';
   chat_messages_post: ChatPostPayload;
-  todos_archive: TodoArchivePayload;
+  todos_archive: TodoStatusPayload;
   todos_complete: TodoStatusPayload;
   todos_create: TodoCreatePayload;
   todos_force_archive: TodoForceArchivePayload;
   todos_rename: TodoRenamePayload;
-  todos_reopen: TodoReopenPayload;
+  todos_reopen: TodoStatusPayload;
 };
 
 
@@ -205,12 +205,6 @@ export type TodoArchiveInput = {
   todo_id: Scalars['String']['input'];
 };
 
-export type TodoArchivePayload = {
-  __typename?: 'TodoArchivePayload';
-  status: Scalars['String']['output'];
-  todo_id: Scalars['String']['output'];
-};
-
 export type TodoCompleteInput = {
   todo_id: Scalars['String']['input'];
 };
@@ -254,12 +248,6 @@ export type TodoRenamePayload = {
 
 export type TodoReopenInput = {
   todo_id: Scalars['String']['input'];
-};
-
-export type TodoReopenPayload = {
-  __typename?: 'TodoReopenPayload';
-  status: Scalars['String']['output'];
-  todo_id: Scalars['String']['output'];
 };
 
 export type TodoStatusPayload = {

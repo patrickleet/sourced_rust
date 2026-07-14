@@ -6,7 +6,7 @@
 #   make test-live   # against stack (E2E_STACK=1)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	ui-install ui-build ui-test export-sdl gen-gql check clean help
+	ui-install ui-build ui-test export-sdl gen-gql check-gql check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -121,11 +121,29 @@ export-sdl:
 	GQL_ROLE=admin cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/admin.graphql
 
 ## Export role SDL + regenerate TypedDocumentNode from co-located *.gql
-## (codegen uses schema/user.graphql; admin.graphql is for compare / optional dual client)
+## Codegen uses schema/admin.graphql (field superset incl. admin-only mutations).
+## Runtime ACL is still the session engine role — user cannot call admin-only fields.
 gen-gql: export-sdl ui-install
 	cd ui && $(NPM) run gen:gql
 
-check:
+## Fail if engine SDL / generated TS drift from git (CI + agents).
+## Paths are relative to the Distributed git root (this worktree / repo).
+check-gql: gen-gql
+	@set -e; \
+	ROOT=$$(git rev-parse --show-toplevel); \
+	if ! git -C "$$ROOT" diff --exit-code -- \
+		tests/e2e-ui/ui/schema \
+		tests/e2e-ui/ui/src/lib/gql/generated \
+		tests/e2e-ui/ui/src/routes/todos/todos.generated.ts \
+		tests/e2e-ui/ui/src/routes/chat/chat.generated.ts \
+		tests/e2e-ui/ui/src/routes/admin/admin.generated.ts; then \
+		echo "ERROR: GraphQL schema/codegen drift — run make gen-gql and commit"; \
+		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/schema tests/e2e-ui/ui/src/routes tests/e2e-ui/ui/src/lib/gql/generated || true; \
+		exit 1; \
+	fi; \
+	echo "check-gql: schema + generated types clean"
+
+check: check-gql
 	cargo check --workspace
 	cargo test -p todo-domain -p chat-domain --no-run
 	cargo test -p e2e-suite --test behavioral --no-run
@@ -141,6 +159,8 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make test-live  OIDC isolation against stack"
-	@echo "  make export-sdl role user SDL → ui/schema/user.graphql (Rust engine)"
+	@echo "  make export-sdl role SDL → ui/schema/{user,admin}.graphql"
 	@echo "  make gen-gql    export-sdl + ui npm run gen:gql"
+	@echo "  make check-gql  gen-gql + fail on schema/generated drift"
 	@echo "  make down       docker compose down"
+	@echo "  GRAPHIQL=0      disable GraphiQL when running the API"
