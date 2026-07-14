@@ -1,7 +1,9 @@
 /**
  * graphql-transport-ws client.
  * Auth: Bearer access token in connection_init (OIDC best practice for browsers).
+ * Accepts string or TypedDocumentNode (from co-located .gql codegen).
  */
+import { documentToString, type GqlDocument } from '$lib/gql/document';
 
 export type GqlWsHandlers = {
   onNext: (data: unknown) => void;
@@ -17,10 +19,11 @@ export function graphqlWsUrl(path = '/graphql/ws'): string {
 }
 
 export function subscribe(
-  query: string,
-  auth: { accessToken?: string; userId?: string; role?: string },
+  document: GqlDocument,
+  auth: { accessToken?: string | null; userId?: string | null; role?: string | null },
   handlers: GqlWsHandlers
 ): () => void {
+  const query = documentToString(document);
   const url = new URL(graphqlWsUrl('/graphql/ws'), window.location.href);
   // DevHeaders fallback only when no Bearer (offline demos).
   if (!auth.accessToken && auth.userId) {

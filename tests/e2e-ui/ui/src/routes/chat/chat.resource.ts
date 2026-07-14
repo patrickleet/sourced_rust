@@ -1,59 +1,20 @@
 /**
- * Co-located lobby chat GraphQL ops — query, subscription, and post mutation.
- * SSR load, WS subscribe, and browser post share documents from this module.
+ * Co-located lobby chat GraphQL ops — documents from `chat.gql` via codegen.
+ * SSR load, WS subscribe, and browser post share generated document refs.
  */
 import { defineResource } from '$lib/gql/define-resource';
+import {
+	ChatMessagesDocument,
+	ChatMessagesLiveDocument,
+	ChatPostDocument,
+	type ChatMessagesQuery
+} from './chat.generated';
 
-export type ChatMsg = {
-	message_id: string;
-	room_id: string;
-	author_id: string;
-	body: string;
-	created_at: string;
-};
+export type ChatMsg = ChatMessagesQuery['chat_messages'][number];
+export type ChatQueryData = ChatMessagesQuery;
 
-export type ChatQueryData = {
-	chat_messages: ChatMsg[];
-};
-
-/** Default room for the e2e-ui lobby page. */
+/** Default room for the e2e-ui lobby page (matches chat.gql filter). */
 export const LOBBY_ROOM = 'lobby';
-
-const CHAT_POST = `mutation ChatPost($message_id: String!, $body: String!, $room_id: String!) {
-  chat_messages_post(input: {
-    message_id: $message_id
-    body: $body
-    room_id: $room_id
-  }) {
-    message_id
-    room_id
-    author_id
-    body
-    created_at
-  }
-}`;
-
-const messageSelection = `message_id
-    room_id
-    author_id
-    body
-    created_at`;
-
-function chatMessagesQuery(room: string): string {
-	return `{
-  chat_messages(where: { room_id: { _eq: "${room}" } }) {
-    ${messageSelection}
-  }
-}`;
-}
-
-function chatMessagesSubscription(room: string): string {
-	return `subscription {
-  chat_messages(where: { room_id: { _eq: "${room}" } }) {
-    ${messageSelection}
-  }
-}`;
-}
 
 export function sortChatMessages(list: ChatMsg[]): ChatMsg[] {
 	return [...list].sort((a, b) =>
@@ -63,20 +24,12 @@ export function sortChatMessages(list: ChatMsg[]): ChatMsg[] {
 	);
 }
 
-/**
- * Build a chat resource for a room. Query + subscription share the same
- * selection set; post mutation takes room_id as a variable.
- */
-export function chatResource(room: string) {
-	return defineResource<ChatQueryData, { post: string }>({
-		query: chatMessagesQuery(room),
-		subscription: chatMessagesSubscription(room),
-		mutations: {
-			post: CHAT_POST
-		},
-		select: (data) => sortChatMessages(data.chat_messages ?? [])
-	});
-}
-
 /** Lobby resource used by `routes/chat` (SSR seed + live sub + post). */
-export const chat = chatResource(LOBBY_ROOM);
+export const chat = defineResource<ChatQueryData, { post: typeof ChatPostDocument }>({
+	query: ChatMessagesDocument,
+	subscription: ChatMessagesLiveDocument,
+	mutations: {
+		post: ChatPostDocument
+	},
+	select: (data) => sortChatMessages(data.chat_messages ?? [])
+});

@@ -106,4 +106,14 @@ Normative design lives in the hops GitKB knowledge base, not this tree:
 | Spec | Content |
 |------|---------|
 | `specs/e2e-ui/layout` | Crate map, projector/RLS rules, UI surface |
-| `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, codegen, defineResource) |
+| `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, defineResource) |
+| `specs/e2e-ui/gql-codegen-dx` | Next-gen: co-located `.gql` + codegen (Houdini-inspired) |
+
+### UI GraphQL codegen (Houdini-style)
+
+```bash
+cd ui
+npm run gen:gql   # schema/user.graphql + src/**/*.gql → *.generated.ts
+```
+
+Edit co-located `routes/**/*.gql`, regenerate, commit `*.generated.ts`.

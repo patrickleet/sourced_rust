@@ -4,7 +4,7 @@
  */
 import { env } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
-import { requestGraphql } from '$lib/gql/request';
+import { requestGraphql, type GqlDocument } from '$lib/gql/request';
 import type { GqlAuth, GqlResult } from '$lib/gql/types';
 import { createGraphqlClient } from '$lib/gql/create-client';
 
@@ -40,10 +40,10 @@ export function graphqlHttpUrl(): string {
 }
 
 /**
- * SSR GraphQL — same documents as `$lib/gql/documents` + browserGraphql.
+ * SSR GraphQL — same documents as co-located `.gql` / resources + browser client.
  */
 export async function serverGraphql<T = Record<string, unknown>>(
-  document: string,
+  document: GqlDocument,
   opts: GqlAuth & { variables?: Record<string, unknown> } = {}
 ): Promise<GqlResult<T>> {
   const { variables, ...auth } = opts;

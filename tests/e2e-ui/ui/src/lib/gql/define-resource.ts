@@ -1,21 +1,23 @@
 /**
- * Co-located GraphQL resource helper (DX pilot).
- * Holds one query document + mutation documents so SSR and browser share
- * the same string references (no dual string drift).
+ * Co-located GraphQL resource helper.
+ * Holds one query document + mutations (+ optional subscription) so SSR and
+ * browser share the same document references. Prefer TypedDocumentNode from
+ * co-located `*.gql` codegen (`*.generated.ts`).
  */
+import type { GqlDocument } from './document.ts';
 
-export type ResourceMutations = Record<string, string>;
+export type ResourceMutations = Record<string, GqlDocument>;
 
 export type DefineResourceInput<
 	TData = Record<string, unknown>,
 	TMutations extends ResourceMutations = ResourceMutations
 > = {
-	/** GraphQL query document — same reference for SSR seed and client refetch */
-	query: string;
+	/** Query document — same reference for SSR seed and client refetch */
+	query: GqlDocument;
 	/** Named mutation documents (browser → POST /graphql) */
 	mutations?: TMutations;
 	/** Optional subscription document (same selection set as query when possible) */
-	subscription?: string;
+	subscription?: GqlDocument;
 	/** Map raw query data → page props (used by load helpers) */
 	select?: (data: TData) => unknown;
 };
@@ -24,9 +26,9 @@ export type GraphqlResource<
 	TData = Record<string, unknown>,
 	TMutations extends ResourceMutations = ResourceMutations
 > = {
-	query: string;
+	query: GqlDocument;
 	mutations: TMutations;
-	subscription?: string;
+	subscription?: GqlDocument;
 	select?: (data: TData) => unknown;
 };
 

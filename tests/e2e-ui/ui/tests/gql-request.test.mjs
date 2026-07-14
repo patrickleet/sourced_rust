@@ -134,31 +134,74 @@ test('authFromPageData + defineResource + requestGraphql is the browser mutation
   assert.match(r.stdout, /use-graphql-ok/);
 });
 
-test('todos.resource is defineResource with create/complete/archive + query', () => {
+test('todos.resource is defineResource wired to todos.gql generated documents', () => {
   const src = fs.readFileSync(resourceFile, 'utf8');
   assert.match(src, /defineResource/);
   assert.match(src, /export const todos/);
-  assert.match(src, /todos_create/);
-  assert.match(src, /todos_complete/);
-  assert.match(src, /todos_archive/);
-  // Query selection includes todo fields used by UI
-  assert.match(src, /todo_id/);
-  assert.match(src, /owner_id/);
-  assert.match(src, /title/);
-  assert.match(src, /status/);
+  assert.match(src, /TodosDocument|todos\.generated/);
+  assert.match(src, /TodosCreateDocument/);
+  assert.match(src, /TodosCompleteDocument/);
+  assert.match(src, /TodosArchiveDocument/);
+  const gql = fs.readFileSync(path.join(root, 'src/routes/todos/todos.gql'), 'utf8');
+  assert.match(gql, /todo_id/);
+  assert.match(gql, /owner_id/);
+  assert.match(gql, /title/);
+  assert.match(gql, /status/);
 });
 
 const chatResourceFile = path.join(root, 'src/routes/chat/chat.resource.ts');
+const documentFile = path.join(root, 'src/lib/gql/document.ts');
+const documentUrl = pathToFileURL(documentFile).href;
 
-test('chat.resource is defineResource with query + subscription + post', () => {
+test('chat.resource is defineResource wired to chat.gql generated documents', () => {
   const src = fs.readFileSync(chatResourceFile, 'utf8');
   assert.match(src, /defineResource/);
   assert.match(src, /export const chat/);
-  assert.match(src, /chatResource|LOBBY_ROOM/);
-  assert.match(src, /subscription/);
-  assert.match(src, /chat_messages_post|mutations/);
-  assert.match(src, /message_id/);
-  assert.match(src, /room_id/);
+  assert.match(src, /ChatMessagesDocument|chat\.generated/);
+  assert.match(src, /ChatMessagesLiveDocument/);
+  assert.match(src, /ChatPostDocument/);
+  assert.match(src, /LOBBY_ROOM/);
+  const gql = fs.readFileSync(path.join(root, 'src/routes/chat/chat.gql'), 'utf8');
+  assert.match(gql, /message_id/);
+  assert.match(gql, /room_id/);
+  assert.match(gql, /subscription/);
+});
+
+test('documentToString prints TypedDocumentNode AST for the wire body', () => {
+  const script = `
+    import { documentToString } from ${JSON.stringify(documentUrl)};
+    import { print } from 'graphql';
+
+    const ast = {
+      kind: 'Document',
+      definitions: [{
+        kind: 'OperationDefinition',
+        operation: 'query',
+        name: { kind: 'Name', value: 'Ping' },
+        selectionSet: {
+          kind: 'SelectionSet',
+          selections: [{ kind: 'Field', name: { kind: 'Name', value: '__typename' } }]
+        }
+      }]
+    };
+    const s = documentToString(ast);
+    if (typeof s !== 'string' || !s.includes('__typename')) throw new Error(s);
+    if (documentToString('raw { x }') !== 'raw { x }') throw new Error('string passthrough');
+    // print from graphql package is the implementation under documentToString for AST
+    if (print(ast) !== s) throw new Error('print mismatch');
+    console.log('document-to-string-ok');
+  `;
+  const r = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '-e', script],
+    {
+      encoding: 'utf8',
+      cwd: root,
+      env: { ...process.env, NODE_PATH: path.join(root, 'node_modules') }
+    }
+  );
+  assert.equal(r.status, 0, `stderr=${r.stderr}\nstdout=${r.stdout}`);
+  assert.match(r.stdout, /document-to-string-ok/);
 });
 
 test('requestGraphql drives real fetch with Bearer, variables, and 401 path', () => {
