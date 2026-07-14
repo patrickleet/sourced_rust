@@ -215,7 +215,10 @@ pub fn build_role_schema(
             let field_name = cmd.resolved_field_name(cmd_name);
             let output_type = match &cmd.output {
                 CommandOutput::Json => "JSON",
-                CommandOutput::Typed(t) => t.name.as_str(),
+                CommandOutput::Typed(t) => {
+                    ensure_command_output(&mut registered_objects, t, &mut scalars_needed);
+                    t.name.as_str()
+                }
             };
             let cmd_name = cmd_name.clone();
             let mut field = Field::new(field_name, TypeRef::named_nn(output_type), move |ctx| {
@@ -581,6 +584,43 @@ fn ensure_command_input(
         }
     }
     inputs.insert(tdef.name.clone(), input);
+}
+
+/// Register a typed command-mutation payload so field selection works on results.
+fn ensure_command_output(
+    objects: &mut BTreeMap<String, Object>,
+    tdef: &super::types::GraphqlTypeDef,
+    scalars: &mut std::collections::BTreeSet<&'static str>,
+) {
+    if objects.contains_key(&tdef.name) {
+        return;
+    }
+    // Placeholder first so nested object cycles cannot re-enter forever.
+    objects.insert(tdef.name.clone(), Object::new(tdef.name.clone()));
+    let mut obj = Object::new(tdef.name.clone());
+    for field in &tdef.fields {
+        if let Some(nested) = &field.nested {
+            ensure_command_output(objects, nested, scalars);
+        }
+        // Track custom scalars that need Scalar::new registration.
+        for s in CUSTOM_SCALARS {
+            if field.type_name == *s {
+                scalars.insert(*s);
+            }
+        }
+        let ty = match (field.list, field.nullable) {
+            (true, false) => TypeRef::named_nn_list_nn(field.type_name.as_str()),
+            (true, true) => TypeRef::named_nn_list(field.type_name.as_str()),
+            (false, false) => TypeRef::named_nn(field.type_name.as_str()),
+            (false, true) => TypeRef::named(field.type_name.as_str()),
+        };
+        let key = field.name.clone();
+        obj = obj.field(Field::new(field.name.as_str(), ty, move |ctx| {
+            let key = key.clone();
+            FieldFuture::new(async move { passthrough(&ctx, &key) })
+        }));
+    }
+    objects.insert(tdef.name.clone(), obj);
 }
 
 fn passthrough(

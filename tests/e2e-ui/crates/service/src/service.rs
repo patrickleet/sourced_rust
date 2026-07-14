@@ -2,7 +2,8 @@
 
 use chat_domain::ChatMessage;
 use distributed::graphql::{
-    select, GraphqlEngine, GraphqlPool, IdentityConfig, ModelPermissions, OidcConfig,
+    exposed_command, select, GraphqlCommands, GraphqlEngine, GraphqlPool, IdentityConfig,
+    ModelPermissions, OidcConfig,
 };
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
@@ -55,12 +56,26 @@ where
 
 /// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
 ///
+/// Command mutations (Hasura-actions style) dispatch through the same handlers as
+/// HTTP — never write the read model. `todos_create` → `todo.create`; owner is the
+/// authenticated session user only (roles: user, admin).
+///
 /// Works with SQLite or Postgres pools (`GraphqlPool`).
 pub fn build_graphql_engine(
     pool: impl Into<GraphqlPool>,
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
+    let commands = GraphqlCommands::new().command(
+        handlers::commands::create::COMMAND,
+        exposed_command()
+            .field_name("todos_create")
+            .input::<handlers::commands::create::TodoCreateInput>()
+            .output::<handlers::commands::create::TodoCreatePayload>()
+            // Authenticated app roles only — not anonymous / unauthenticated schemas.
+            .roles(["user", "admin"]),
+    );
+
     let mut b = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])
         .model::<TodoView>(
@@ -79,6 +94,7 @@ pub fn build_graphql_engine(
                 .role("user", select().all_columns())
                 .role("admin", select().all_columns()),
         )
+        .commands(commands)
         .identity(identity)
         .graphiql(true);
     if let Some(rx) = change_rx {

@@ -141,6 +141,43 @@ async fn t1_create_and_project() {
     eprintln!("{} ok {tid}", cases::CREATE);
 }
 
+/// Create via GraphQL command mutation (`todos_create` → `todo.create`).
+/// Owner is always the session user — never taken from mutation input.
+#[tokio::test]
+async fn t1b_create_via_graphql_mutation() {
+    let base = ensure_target().await;
+    let tid = id("tgql");
+    let mutation = format!(
+        r#"mutation {{
+          todos_create(input: {{ todo_id: "{tid}", title: "Via GQL" }}) {{
+            todo_id
+            owner_id
+            title
+            status
+          }}
+        }}"#
+    );
+    let v = graphql(&base, &mutation, "alice", "user")
+        .await
+        .unwrap_or_else(|e| panic!("todos_create mutation: {e}"));
+    assert!(
+        v.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
+        "mutation errors: {v}"
+    );
+    let payload = &v["data"]["todos_create"];
+    assert_eq!(payload["todo_id"], tid, "{v}");
+    assert_eq!(payload["owner_id"], "alice", "owner must be session user: {v}");
+    assert_eq!(payload["title"], "Via GQL");
+    assert_eq!(payload["status"], "open");
+
+    let row = poll_todo(&base, "alice", &tid)
+        .await
+        .expect("mutation must project into todos read model");
+    assert_eq!(row["owner_id"], "alice");
+    assert_eq!(row["title"], "Via GQL");
+    eprintln!("todos_create ok {tid}");
+}
+
 #[tokio::test]
 async fn t2_owner_isolation_graphql() {
     let base = ensure_target().await;

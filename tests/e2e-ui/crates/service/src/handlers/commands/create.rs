@@ -1,8 +1,11 @@
 //! Command: `todo.create` — owner is always the authenticated session user.
+//!
+//! GraphQL: exposed as mutation field `todos_create` (roles: user, admin).
+//! Owner cannot be spoofed via input — only `require_user(session)` is written.
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::OutboxMessage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use todo_domain::{Todo, TodoFact};
 
@@ -11,10 +14,20 @@ use crate::handlers::util::{rejected, require_user};
 
 pub const COMMAND: &str = "todo.create";
 
-#[derive(Debug, Deserialize)]
-pub struct Input {
+/// Mutation / command input — `owner_id` is never accepted from the client.
+#[derive(Debug, Deserialize, distributed::GraphqlInput)]
+pub struct TodoCreateInput {
     pub todo_id: String,
     pub title: String,
+}
+
+/// GraphQL mutation payload (also returned from HTTP `POST /todo.create`).
+#[derive(Debug, Serialize, distributed::GraphqlOutput)]
+pub struct TodoCreatePayload {
+    pub todo_id: String,
+    pub owner_id: String,
+    pub title: String,
+    pub status: String,
 }
 
 pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
@@ -34,8 +47,9 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
+    // Owner is always the authenticated principal — not client-supplied.
     let owner = require_user(ctx.session())?;
-    let input = ctx.input::<Input>()?;
+    let input = ctx.input::<TodoCreateInput>()?;
 
     if ctx.repo().get(&input.todo_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(

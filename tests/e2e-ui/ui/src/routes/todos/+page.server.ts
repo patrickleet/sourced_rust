@@ -55,22 +55,36 @@ export const actions: Actions = {
 		if (!title) return fail(400, { message: 'title required' });
 		const todo_id = todoIdFromForm(fd);
 		const role = engineRoleFromGroups(session.user.groups);
-		const res = await serverCommand(
-			'todo.create',
-			{ todo_id, title },
+		// Command mutation only — owner is session principal (not in input).
+		const result = await serverGraphql<{
+			todos_create?: { todo_id: string; owner_id: string; title: string; status: string };
+		}>(
+			`mutation TodosCreate($todo_id: String!, $title: String!) {
+				todos_create(input: { todo_id: $todo_id, title: $title }) {
+					todo_id
+					owner_id
+					title
+					status
+				}
+			}`,
 			{
 				accessToken: session.accessToken,
 				userId: session.accessToken ? undefined : session.user.id,
-				role
+				role,
+				variables: { todo_id, title }
 			}
 		);
-		if (!res.ok) {
-			return fail(res.status, {
-				message: (res.body as { error?: string })?.error ?? 'create failed',
+		if (result.errors?.length || !result.data?.todos_create) {
+			return fail(result.status >= 400 ? result.status : 400, {
+				message: result.errors?.[0]?.message ?? 'create failed',
 				todo_id
 			});
 		}
-		return { ok: true as const, todo_id, title };
+		return {
+			ok: true as const,
+			todo_id: result.data.todos_create.todo_id,
+			title: result.data.todos_create.title
+		};
 	},
 
 	complete: async ({ request, locals }) => {
