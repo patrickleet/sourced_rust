@@ -107,13 +107,23 @@ Normative design lives in the hops GitKB knowledge base, not this tree:
 |------|---------|
 | `specs/e2e-ui/layout` | Crate map, projector/RLS rules, UI surface |
 | `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, defineResource) |
-| `specs/e2e-ui/gql-codegen-dx` | Next-gen: co-located `.gql` + codegen (Houdini-inspired) |
+| `specs/e2e-ui/gql-codegen-dx` | Co-located `.gql` + graphql-codegen |
+| `specs/e2e-ui/rust-role-sdl-codegen` | Role SDL from Rust engine → UI schema |
 
-### UI GraphQL codegen (Houdini-style)
+### UI GraphQL schema + codegen
+
+`ui/schema/user.graphql` is **generated** from the same GraphQL engine the API runs
+(`build_graphql_engine` + `sdl_for_role("user")`) — not a permanent hand-written pilot.
 
 ```bash
-cd ui
-npm run gen:gql   # schema/user.graphql + src/**/*.gql → *.generated.ts
+# from tests/e2e-ui
+make export-sdl          # Rust → ui/schema/user.graphql
+make gen-gql             # export-sdl + TypedDocumentNode from co-located *.gql
+
+# or from ui/
+npm run gen:schema       # cargo e2e-export-sdl
+npm run gen:gql          # graphql-codegen
+npm run gen              # both
 ```
 
-Edit co-located `routes/**/*.gql`, regenerate, commit `*.generated.ts`.
+Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.generated.ts`.

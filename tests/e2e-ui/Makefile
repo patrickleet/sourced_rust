@@ -6,7 +6,7 @@
 #   make test-live   # against stack (E2E_STACK=1)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	ui-install ui-build ui-test check clean help
+	ui-install ui-build ui-test export-sdl gen-gql check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
 # Recipes `source` the env file so values stay clean.
@@ -115,6 +115,14 @@ ui-build: ui-install
 ui-test: ui-install
 	cd ui && $(NPM) test
 
+## Role SDL for UI codegen (GraphqlEngine::sdl_for_role → ui/schema/user.graphql)
+export-sdl:
+	cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/user.graphql
+
+## Export role SDL + regenerate TypedDocumentNode from co-located *.gql
+gen-gql: export-sdl ui-install
+	cd ui && $(NPM) run gen:gql
+
 check:
 	cargo check --workspace
 	cargo test -p todo-domain -p chat-domain --no-run
@@ -131,4 +139,6 @@ help:
 	@echo "  make run        API + UI (source e2e-ui.env when present)"
 	@echo "  make test       offline suite + UI structural"
 	@echo "  make test-live  OIDC isolation against stack"
+	@echo "  make export-sdl role user SDL → ui/schema/user.graphql (Rust engine)"
+	@echo "  make gen-gql    export-sdl + ui npm run gen:gql"
 	@echo "  make down       docker compose down"

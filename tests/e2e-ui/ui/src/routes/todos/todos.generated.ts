@@ -16,21 +16,21 @@ export type TodosCreateMutationVariables = Exact<{
 }>;
 
 
-export type TodosCreateMutation = { todos_create: { todo_id: string, owner_id: string, title: string, status: string } | null };
+export type TodosCreateMutation = { todos_create: { todo_id: string, owner_id: string, title: string, status: string } };
 
 export type TodosCompleteMutationVariables = Exact<{
   todo_id: string;
 }>;
 
 
-export type TodosCompleteMutation = { todos_complete: { todo_id: string, status: string } | null };
+export type TodosCompleteMutation = { todos_complete: { todo_id: string, status: string } };
 
 export type TodosArchiveMutationVariables = Exact<{
   todo_id: string;
 }>;
 
 
-export type TodosArchiveMutation = { todos_archive: { todo_id: string, status: string } | null };
+export type TodosArchiveMutation = { todos_archive: { todo_id: string, status: string } };
 
 
 export const TodosDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"Todos"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"todos"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"todo_id"}},{"kind":"Field","name":{"kind":"Name","value":"owner_id"}},{"kind":"Field","name":{"kind":"Name","value":"title"}},{"kind":"Field","name":{"kind":"Name","value":"status"}}]}}]}}]} as unknown as DocumentNode<TodosQuery, TodosQueryVariables>;
