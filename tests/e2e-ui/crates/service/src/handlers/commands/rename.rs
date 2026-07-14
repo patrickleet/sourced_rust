@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use todo_domain::TodoFact;
 
 use crate::deps::TodoDeps;
-use crate::handlers::util::{rejected, require_user};
+use crate::handlers::util::{rejected, require_user, session_has_user};
 
 pub const COMMAND: &str = "todo.rename";
 
@@ -30,7 +30,7 @@ where
     L: crate::bounds::Locks,
     S: Send + Sync + 'static,
 {
-    ctx.has_fields(&["todo_id", "title"])
+    ctx.has_fields(&["todo_id", "title"]) && session_has_user(ctx.session())
 }
 
 pub async fn handle<R, L, S>(
