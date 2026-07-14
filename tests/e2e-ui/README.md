@@ -27,12 +27,18 @@ make run         # API :8791 + UI :5180
 |-----|------|
 | http://127.0.0.1:5180 | Fieldnote UI |
 | http://127.0.0.1:5180/todos | SSR todos (auth required) |
+| http://127.0.0.1:5180/admin | Admin all-owners todos (admin role only) |
 | http://127.0.0.1:5180/chat | SSR seed + live WS sub |
 | http://127.0.0.1:5180/session | Session / token inspector |
 | http://127.0.0.1:8791/graphql | GraphiQL |
 | `ws://127.0.0.1:8791/graphql/ws` | Subscriptions |
 
 **Demo logins** (Zitadel): `alice` / `bob` / `admin` — password `Password1!`
+
+| Login | Engine role | Notes |
+|-------|-------------|--------|
+| `alice` / `bob` | `user` | Personal `/todos` (owner filter) |
+| `admin` | `admin` | `/admin` — **all** field notes (no owner filter); nav link appears when `engineRole === admin` |
 
 ## Offline (no Docker)
 

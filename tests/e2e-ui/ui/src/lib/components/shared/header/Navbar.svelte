@@ -8,6 +8,7 @@
 	let accountMenuOpen = $state(false);
 
 	const isAuthenticated = $derived(!!page.data.session?.user);
+	const isAdmin = $derived(page.data.engineRole === 'admin');
 	const currentPath = $derived(page.url.pathname);
 
 	const isActive = (path: string) => {
@@ -79,6 +80,14 @@
 						class:active={isActive('/session')}
 						onclick={() => (isMenuOpen = false)}>Session</a
 					>
+					{#if isAdmin}
+						<a
+							href="/admin"
+							class="nav-link nav-link-admin"
+							class:active={isActive('/admin')}
+							onclick={() => (isMenuOpen = false)}>Admin</a
+						>
+					{/if}
 				{/if}
 			</div>
 

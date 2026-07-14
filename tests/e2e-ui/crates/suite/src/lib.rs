@@ -185,6 +185,7 @@ pub async fn assert_http_commands_disabled(base: &str) -> Result<(), String> {
 pub mod cases {
     pub const CREATE: &str = "T1_create_todo";
     pub const OWNER_ISOLATION: &str = "T2_owner_isolation";
+    pub const ADMIN_SEES_ALL: &str = "T2b_admin_sees_all_owners";
     pub const COMPLETE: &str = "T3_complete_todo";
     pub const NOT_OWNER: &str = "T4_not_owner_rejected";
     pub const UNAUTH: &str = "T5_unauthenticated_rejected";

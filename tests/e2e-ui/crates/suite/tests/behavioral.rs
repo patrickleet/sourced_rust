@@ -208,6 +208,54 @@ async fn t2_owner_isolation_graphql() {
     eprintln!("{} ok", cases::OWNER_ISOLATION);
 }
 
+/// Admin role: same `todos` query has no owner filter — sees alice + bob rows.
+#[tokio::test]
+async fn t2b_admin_sees_all_owners() {
+    let base = ensure_target().await;
+    let alice_id = id("taa");
+    let bob_id = id("tbb");
+
+    todos_create(&base, &alice_id, "Alice note", "alice", "user")
+        .await
+        .expect(cases::ADMIN_SEES_ALL);
+    todos_create(&base, &bob_id, "Bob note", "bob", "user")
+        .await
+        .expect(cases::ADMIN_SEES_ALL);
+
+    assert!(poll_todo(&base, "alice", &alice_id).await.is_some());
+    assert!(poll_todo(&base, "bob", &bob_id).await.is_some());
+
+    let v = graphql(
+        &base,
+        "{ todos { todo_id owner_id title } }",
+        "admin-user",
+        "admin",
+    )
+    .await
+    .expect(cases::ADMIN_SEES_ALL);
+    let arr = v["data"]["todos"].as_array().expect("todos array");
+    let owners: Vec<&str> = arr
+        .iter()
+        .filter_map(|r| r["owner_id"].as_str())
+        .collect();
+    assert!(
+        arr.iter().any(|r| r["todo_id"] == alice_id),
+        "{}: admin missing alice todo: {v}",
+        cases::ADMIN_SEES_ALL
+    );
+    assert!(
+        arr.iter().any(|r| r["todo_id"] == bob_id),
+        "{}: admin missing bob todo: {v}",
+        cases::ADMIN_SEES_ALL
+    );
+    assert!(
+        owners.contains(&"alice") && owners.contains(&"bob"),
+        "{}: admin should see multiple owners, got {owners:?}",
+        cases::ADMIN_SEES_ALL
+    );
+    eprintln!("{} ok alice={alice_id} bob={bob_id}", cases::ADMIN_SEES_ALL);
+}
+
 #[tokio::test]
 async fn t3_complete_projects_status() {
     let base = ensure_target().await;
