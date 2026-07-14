@@ -145,16 +145,20 @@ export function generateCommandsTs(catalog) {
   lines.push('} as const;');
   lines.push('');
 
+  /** @type {Array<{ fn: string, hasInput: boolean, inType: string, outType: string }>} */
+  const fnMeta = [];
+
   for (const cmd of catalog.commands) {
     const fn = fieldToFnName(cmd.field_name);
     const inType = cmd.input?.name ?? 'Record<string, unknown>';
     const outType = cmd.output?.name ?? 'Record<string, unknown>';
     const hasInput = !!cmd.input;
+    fnMeta.push({ fn, hasInput, inType, outType });
 
     lines.push(`/**`);
     lines.push(` * ${cmd.command_name} → GraphQL \`${cmd.field_name}\``);
     lines.push(` * roles: ${(cmd.roles || []).join(', ') || '(any)'}`);
-    lines.push(` * @param client Bound GraphQL client (\`useGraphql(() => data)\`)`);
+    lines.push(` * Prefer \`client.commands.${fn}(…)\` via \`bindCommands\` / \`useGraphql\`.`);
     lines.push(` */`);
     if (hasInput) {
       lines.push(
@@ -179,6 +183,37 @@ export function generateCommandsTs(catalog) {
     lines.push(`}`);
     lines.push('');
   }
+
+  // Bound surface: client.commands.todosCreate(input)
+  lines.push('/** Commands pre-bound to a GraphQL client (URL + auth already configured). */');
+  lines.push('export type BoundCommands = {');
+  for (const m of fnMeta) {
+    if (m.hasInput) {
+      lines.push(
+        `  ${m.fn}: (input: ${m.inType}) => Promise<GqlResult<${m.outType}>>;`
+      );
+    } else {
+      lines.push(`  ${m.fn}: () => Promise<GqlResult<${m.outType}>>;`);
+    }
+  }
+  lines.push('};');
+  lines.push('');
+  lines.push('/**');
+  lines.push(' * Register all command helpers on a client once:');
+  lines.push(' * `const gql = useGraphql(() => data); await gql.commands.todosCreate(input)`');
+  lines.push(' */');
+  lines.push('export function bindCommands(client: CommandClient): BoundCommands {');
+  lines.push('  return {');
+  for (const m of fnMeta) {
+    if (m.hasInput) {
+      lines.push(`    ${m.fn}: (input) => ${m.fn}(input, client),`);
+    } else {
+      lines.push(`    ${m.fn}: () => ${m.fn}(client),`);
+    }
+  }
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
 
   return lines.join('\n');
 }

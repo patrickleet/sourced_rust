@@ -16,5 +16,8 @@ export type { GraphqlClient, GraphqlClientOptions } from './create-client.ts';
 export { defineResource } from './define-resource.ts';
 export type { DefineResourceInput, GraphqlResource } from './define-resource.ts';
 export { useGraphql, authFromPageData } from './use-graphql.ts';
-export type { PageGraphqlData } from './auth-from-page.ts';
+export type { AppGraphqlClient, PageGraphqlData } from './use-graphql.ts';
 export { browserGraphql } from './client.ts';
+// Re-export command binders for non-useGraphql call sites (tests, SSR factories).
+export { bindCommands } from '$lib/api/commands.generated';
+export type { BoundCommands, CommandClient } from '$lib/api/commands.generated';

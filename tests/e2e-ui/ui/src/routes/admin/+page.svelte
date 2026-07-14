@@ -3,7 +3,7 @@
 	 * Admin: all field notes + force-archive via generated command client.
 	 */
 	import { useGraphql } from '$lib/gql';
-	import { todosForceArchive } from '$lib/api/commands.generated';
+	
 	import { sessionDisplayName } from '$lib/session';
 	import { adminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
@@ -42,7 +42,7 @@
 
 		actionError = null;
 		busy = true;
-		const result = await todosForceArchive({ todo_id }, gql);
+		const result = await gql.commands.todosForceArchive({ todo_id });
 		busy = false;
 
 		if (result.errors?.length || !result.data) {

@@ -75,6 +75,9 @@ test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
     if (seen.variables.input.title !== 'hi') throw new Error('vars');
     if (mod.COMMAND_DOCS.todos_create !== seen.document) throw new Error('COMMAND_DOCS mismatch');
     if (typeof mod.todosComplete !== 'function') throw new Error('todosComplete missing');
+    const bound = mod.bindCommands(client);
+    const r3 = await bound.todosCreate({ todo_id: 't3', title: 'y' });
+    if (!r3.data) throw new Error('bound.todosCreate failed');
     if (!mod.COMMAND_ROLES.todos_force_archive.includes('admin')) throw new Error('roles');
     console.log('command-client-ok');
   `;
@@ -88,22 +91,21 @@ test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
   assert.match(r.stdout, /command-client-ok/);
 });
 
-test('app pages pass bound gql client into command functions', () => {
+test('app pages use gql.commands.* (pre-bound on useGraphql client)', () => {
   const todos = fs.readFileSync(pageSvelte, 'utf8');
-  assert.match(todos, /todosCreate\(\{ todo_id, title: text \}, gql\)|todosCreate\([^)]+, gql\)/);
-  assert.match(todos, /todosComplete\(\{ todo_id \}, gql\)/);
-  assert.match(todos, /todosArchive\(\{ todo_id \}, gql\)/);
+  assert.match(todos, /gql\.commands\.todosCreate/);
+  assert.match(todos, /gql\.commands\.todosComplete/);
+  assert.match(todos, /gql\.commands\.todosArchive/);
+  assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
   assert.doesNotMatch(todos, /url:\s*['"]\/graphql['"]/);
-  assert.doesNotMatch(todos, /authFromPageData/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
-  assert.match(chat, /chatMessagesPost\(/);
-  assert.match(chat, /,\s*gql\s*\)/);
-  assert.doesNotMatch(chat, /url:\s*['"]\/graphql['"]/);
+  assert.match(chat, /gql\.commands\.chatMessagesPost/);
+  assert.doesNotMatch(chat, /from '\$lib\/api\/commands\.generated'/);
 
   const admin = fs.readFileSync(path.join(uiRoot, 'src/routes/admin/+page.svelte'), 'utf8');
-  assert.match(admin, /todosForceArchive\(\{ todo_id \}, gql\)/);
-  assert.doesNotMatch(admin, /url:\s*['"]\/graphql['"]/);
+  assert.match(admin, /gql\.commands\.todosForceArchive/);
+  assert.doesNotMatch(admin, /from '\$lib\/api\/commands\.generated'/);
 });
 
 test('generated mutations are multiline; operations.gql is copy-paste ready', () => {

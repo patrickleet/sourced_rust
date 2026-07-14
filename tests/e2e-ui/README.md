@@ -154,7 +154,7 @@ The same Rust registry (`e2e_service::graphql_commands()`) exports a catalog;
 |----------|---------|
 | `ui/src/lib/api/commands.manifest.json` | Machine catalog from Rust |
 | `ui/src/lib/api/commands.operations.gql` | Copy-paste mutations for GraphiQL |
-| `ui/src/lib/api/commands.generated.ts` | Same documents + `todosCreate(input, gql)` |
+| `ui/src/lib/api/commands.generated.ts` | Same documents + `bindCommands` → `gql.commands.*` |
 
 Co-located route `*.gql` files hold **queries/subscriptions** only. Command
 mutations live under `$lib/api/commands.operations.gql`.
@@ -165,11 +165,13 @@ make gen-commands      # → .operations.gql + .generated.ts
 make check-commands    # fail on drift
 ```
 
-Example (bound client owns URL + auth):
+Example (commands pre-bound on the client):
 
 ```ts
 const gql = useGraphql(() => data);
-await todosCreate({ todo_id, title }, gql);
+await gql.commands.todosCreate({ todo_id, title });
+await gql.commands.chatMessagesPost({ message_id, body, room_id });
+gql.subscribe(chat.subscription!, { onNext });
 ```
 
 See distributed GitKB: `specs/query-layer/references/command-client-dx` and

@@ -166,7 +166,7 @@ mutation Command_chat_messages_post($input: ChatPostInput!) {
 /**
  * todo.create → GraphQL `todos_create`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosCreate(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosCreate(input: TodoCreateInput, client: CommandClient): Promise<GqlResult<TodoCreatePayload>> {
   const result = await client.request<{ todos_create?: TodoCreatePayload }>(COMMAND_DOCS["todos_create"], { input });
@@ -180,7 +180,7 @@ export async function todosCreate(input: TodoCreateInput, client: CommandClient)
 /**
  * todo.complete → GraphQL `todos_complete`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosComplete(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosComplete(input: TodoCompleteInput, client: CommandClient): Promise<GqlResult<TodoStatusPayload>> {
   const result = await client.request<{ todos_complete?: TodoStatusPayload }>(COMMAND_DOCS["todos_complete"], { input });
@@ -194,7 +194,7 @@ export async function todosComplete(input: TodoCompleteInput, client: CommandCli
 /**
  * todo.archive → GraphQL `todos_archive`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosArchive(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosArchive(input: TodoArchiveInput, client: CommandClient): Promise<GqlResult<TodoStatusPayload>> {
   const result = await client.request<{ todos_archive?: TodoStatusPayload }>(COMMAND_DOCS["todos_archive"], { input });
@@ -208,7 +208,7 @@ export async function todosArchive(input: TodoArchiveInput, client: CommandClien
 /**
  * todo.force_archive → GraphQL `todos_force_archive`
  * roles: admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosForceArchive(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosForceArchive(input: TodoForceArchiveInput, client: CommandClient): Promise<GqlResult<TodoForceArchivePayload>> {
   const result = await client.request<{ todos_force_archive?: TodoForceArchivePayload }>(COMMAND_DOCS["todos_force_archive"], { input });
@@ -222,7 +222,7 @@ export async function todosForceArchive(input: TodoForceArchiveInput, client: Co
 /**
  * todo.rename → GraphQL `todos_rename`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosRename(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosRename(input: TodoRenameInput, client: CommandClient): Promise<GqlResult<TodoRenamePayload>> {
   const result = await client.request<{ todos_rename?: TodoRenamePayload }>(COMMAND_DOCS["todos_rename"], { input });
@@ -236,7 +236,7 @@ export async function todosRename(input: TodoRenameInput, client: CommandClient)
 /**
  * todo.reopen → GraphQL `todos_reopen`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.todosReopen(…)` via `bindCommands` / `useGraphql`.
  */
 export async function todosReopen(input: TodoReopenInput, client: CommandClient): Promise<GqlResult<TodoStatusPayload>> {
   const result = await client.request<{ todos_reopen?: TodoStatusPayload }>(COMMAND_DOCS["todos_reopen"], { input });
@@ -250,7 +250,7 @@ export async function todosReopen(input: TodoReopenInput, client: CommandClient)
 /**
  * chat.post → GraphQL `chat_messages_post`
  * roles: user, admin
- * @param client Bound GraphQL client (`useGraphql(() => data)`)
+ * Prefer `client.commands.chatMessagesPost(…)` via `bindCommands` / `useGraphql`.
  */
 export async function chatMessagesPost(input: ChatPostInput, client: CommandClient): Promise<GqlResult<ChatPostPayload>> {
   const result = await client.request<{ chat_messages_post?: ChatPostPayload }>(COMMAND_DOCS["chat_messages_post"], { input });
@@ -258,5 +258,32 @@ export async function chatMessagesPost(input: ChatPostInput, client: CommandClie
     data: result.data?.chat_messages_post,
     errors: result.errors,
     status: result.status
+  };
+}
+
+/** Commands pre-bound to a GraphQL client (URL + auth already configured). */
+export type BoundCommands = {
+  todosCreate: (input: TodoCreateInput) => Promise<GqlResult<TodoCreatePayload>>;
+  todosComplete: (input: TodoCompleteInput) => Promise<GqlResult<TodoStatusPayload>>;
+  todosArchive: (input: TodoArchiveInput) => Promise<GqlResult<TodoStatusPayload>>;
+  todosForceArchive: (input: TodoForceArchiveInput) => Promise<GqlResult<TodoForceArchivePayload>>;
+  todosRename: (input: TodoRenameInput) => Promise<GqlResult<TodoRenamePayload>>;
+  todosReopen: (input: TodoReopenInput) => Promise<GqlResult<TodoStatusPayload>>;
+  chatMessagesPost: (input: ChatPostInput) => Promise<GqlResult<ChatPostPayload>>;
+};
+
+/**
+ * Register all command helpers on a client once:
+ * `const gql = useGraphql(() => data); await gql.commands.todosCreate(input)`
+ */
+export function bindCommands(client: CommandClient): BoundCommands {
+  return {
+    todosCreate: (input) => todosCreate(input, client),
+    todosComplete: (input) => todosComplete(input, client),
+    todosArchive: (input) => todosArchive(input, client),
+    todosForceArchive: (input) => todosForceArchive(input, client),
+    todosRename: (input) => todosRename(input, client),
+    todosReopen: (input) => todosReopen(input, client),
+    chatMessagesPost: (input) => chatMessagesPost(input, client),
   };
 }
