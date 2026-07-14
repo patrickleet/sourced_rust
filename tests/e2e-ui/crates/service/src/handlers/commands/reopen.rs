@@ -1,8 +1,8 @@
-//! Command: `todo.reopen`.
+//! Command: `todo.reopen` — owner-only (aggregate enforces).
 
 use distributed::microsvc::{Context, HandlerError};
 use distributed::OutboxMessage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use todo_domain::TodoFact;
 
@@ -11,9 +11,15 @@ use crate::handlers::util::{rejected, require_user};
 
 pub const COMMAND: &str = "todo.reopen";
 
-#[derive(Debug, Deserialize)]
-pub struct Input {
+#[derive(Debug, Deserialize, distributed::GraphqlInput)]
+pub struct TodoReopenInput {
     pub todo_id: String,
+}
+
+#[derive(Debug, Serialize, distributed::GraphqlOutput)]
+pub struct TodoReopenPayload {
+    pub todo_id: String,
+    pub status: String,
 }
 
 pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
@@ -34,7 +40,7 @@ where
     S: Send + Sync + 'static,
 {
     let owner = require_user(ctx.session())?;
-    let input = ctx.input::<Input>()?;
+    let input = ctx.input::<TodoReopenInput>()?;
 
     let mut todo = ctx
         .repo()

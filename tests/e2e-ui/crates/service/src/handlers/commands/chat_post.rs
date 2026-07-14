@@ -3,7 +3,7 @@
 use chat_domain::{ChatMessage, ChatMessagePosted};
 use distributed::microsvc::{Context, HandlerError};
 use distributed::OutboxMessage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::deps::ChatDeps;
@@ -11,8 +11,8 @@ use crate::handlers::util::{rejected, require_user};
 
 pub const COMMAND: &str = "chat.post";
 
-#[derive(Debug, Deserialize)]
-pub struct Input {
+#[derive(Debug, Deserialize, distributed::GraphqlInput)]
+pub struct ChatPostInput {
     pub message_id: String,
     pub body: String,
     #[serde(default = "default_room")]
@@ -21,6 +21,15 @@ pub struct Input {
 
 fn default_room() -> String {
     "lobby".into()
+}
+
+#[derive(Debug, Serialize, distributed::GraphqlOutput)]
+pub struct ChatPostPayload {
+    pub message_id: String,
+    pub room_id: String,
+    pub author_id: String,
+    pub body: String,
+    pub created_at: String,
 }
 
 pub fn guard<R, L, S>(ctx: &Context<ChatDeps<R, L, S>>) -> bool
@@ -41,7 +50,7 @@ where
     S: Send + Sync + 'static,
 {
     let author = require_user(ctx.session())?;
-    let input = ctx.input::<Input>()?;
+    let input = ctx.input::<ChatPostInput>()?;
 
     if ctx.repo().get(&input.message_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(

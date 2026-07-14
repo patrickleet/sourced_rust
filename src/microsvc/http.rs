@@ -46,20 +46,26 @@ use super::session::Session;
 use super::MAX_HTTP_BODY_BYTES;
 
 /// Build an axum `Router` that dispatches commands via the given service.
+///
+/// By default mounts `POST /{command}`. Call [`Service::without_http_command_routes`]
+/// for GraphQL-only surfaces (health + GraphQL; no per-command HTTP).
 pub fn router(service: Arc<Service>) -> Router {
-    let router = Router::new()
-        .route("/health", get(health_handler))
-        .route("/{command}", axum::routing::post(command_handler));
+    let mut router = Router::new().route("/health", get(health_handler));
+    if service.http_command_routes_enabled() {
+        router = router.route("/{command}", axum::routing::post(command_handler));
+    }
     #[cfg(feature = "metrics")]
-    let router = router.route("/metrics", get(metrics_handler));
+    {
+        router = router.route("/metrics", get(metrics_handler));
+    }
 
     // GraphQL must be registered before the body-limit layer so the limit wraps it.
     // POST /graphql: queries/mutations. GET /graphql: GraphiQL.
     // GET /graphql/ws: WebSocket subscriptions (graphql-ws protocol).
     #[cfg(feature = "graphql")]
-    let router = {
+    {
         if service.graphql_engine().is_some() {
-            router
+            router = router
                 .route(
                     "/graphql",
                     axum::routing::post(crate::graphql::http::microsvc_graphql_handler)
@@ -68,11 +74,9 @@ pub fn router(service: Arc<Service>) -> Router {
                 .route(
                     "/graphql/ws",
                     axum::routing::get(crate::graphql::http::microsvc_graphql_ws),
-                )
-        } else {
-            router
+                );
         }
-    };
+    }
 
     router
         // Pin the body limit explicitly rather than relying on axum's default;

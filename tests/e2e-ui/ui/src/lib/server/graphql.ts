@@ -49,24 +49,3 @@ export async function serverGraphql<T = Record<string, unknown>>(
   };
   return { data: body.data, errors: body.errors, status: res.status };
 }
-
-export async function serverCommand(
-  command: string,
-  body: Record<string, unknown>,
-  opts: { accessToken?: string | null; userId?: string; role?: string }
-) {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (opts.accessToken) {
-    headers.authorization = `Bearer ${opts.accessToken}`;
-  } else if (opts.userId) {
-    headers['x-user-id'] = opts.userId;
-    headers['x-role'] = opts.role ?? 'user';
-  }
-  const res = await fetch(`${apiBase()}/${command}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
-  const json = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, body: json };
-}
