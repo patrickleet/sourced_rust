@@ -95,7 +95,7 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
   assert.ok(gateIdx >= 0 && loadIdx > gateIdx, 'admin gate must run before await loadQuery');
   assert.match(server, /adminTodos|AdminAllTodos|loadQuery/);
   const page = fs.readFileSync(new URL('../src/routes/admin/+page.svelte', import.meta.url), 'utf8');
-  assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive|todosForceArchive/i);
+  assert.match(page, /owner_id|All field notes|admin|forceArchive|Force archive|todosForceArchive|gql\.commands/i);
   const hooks = fs.readFileSync(new URL('../src/hooks.server.ts', import.meta.url), 'utf8');
   assert.match(hooks, /\/admin/);
   const service = fs.readFileSync(
@@ -264,10 +264,9 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
   assert.match(page, /todosResource\.query|todos\.query/);
   // Writes: generated command functions (GraphQL wire under the hood).
-  assert.match(page, /commands\.generated/);
-  assert.match(page, /todosCreate/);
-  assert.match(page, /todosComplete/);
-  assert.match(page, /todosArchive/);
+  assert.match(page, /gql\.commands\.todosCreate/);
+  assert.match(page, /gql\.commands\.todosComplete/);
+  assert.match(page, /gql\.commands\.todosArchive/);
   assert.doesNotMatch(page, /mutations\.(create|complete|archive)/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
   // Query refetch still uses GraphQL client; writes use command client
@@ -366,7 +365,7 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
 
   const page = fs.readFileSync(new URL('../src/routes/chat/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /from '\.\/chat\.resource'|from "\.\/chat\.resource"/);
-  assert.match(page, /chatMessagesPost|commands\.generated/);
+  assert.match(page, /gql\.commands\.chatMessagesPost/);
   assert.match(page, /useGraphql/);
   assert.doesNotMatch(page, /chat\.mutations\.post|mutations\.post/);
   assert.match(page, /chat\.subscription|subscription/);
@@ -415,3 +414,11 @@ test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, a
     assert.match(text, /unauth|UNAUTHENTICATED/i);
   }
 });
+
+test('useGraphql attaches bindCommands as client.commands', () => {
+  const use = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
+  assert.match(use, /bindCommands/);
+  assert.match(use, /commands:\s*bindCommands/);
+  assert.match(use, /AppGraphqlClient/);
+});
+

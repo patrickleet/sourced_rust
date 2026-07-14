@@ -5,7 +5,7 @@
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { useGraphql } from '$lib/gql';
-	import { chatMessagesPost } from '$lib/api/commands.generated';
+	
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
@@ -107,10 +107,11 @@
 		const message_id = `m-${Date.now().toString(16)}`;
 		sendError = null;
 		busy = true;
-		const result = await chatMessagesPost(
-			{ message_id, body, room_id: data.room },
-			gql
-		);
+		const result = await gql.commands.chatMessagesPost({
+			message_id,
+			body,
+			room_id: data.room
+		});
 		busy = false;
 		if (result.errors?.length || !result.data) {
 			sendError = result.errors?.[0]?.message ?? 'send failed';

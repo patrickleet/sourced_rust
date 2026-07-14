@@ -6,7 +6,7 @@
 	 */
 	import { untrack } from 'svelte';
 	import { useGraphql } from '$lib/gql';
-	import { todosArchive, todosComplete, todosCreate } from '$lib/api/commands.generated';
+	
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
@@ -122,7 +122,7 @@
 		title = '';
 
 		// Generated command client — client owns URL + auth headers.
-		const result = await todosCreate({ todo_id, title: text }, gql);
+		const result = await gql.commands.todosCreate({ todo_id, title: text });
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
@@ -145,7 +145,7 @@
 		pending = { ...pending, [todo_id]: 'completed' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-		const result = await todosComplete({ todo_id }, gql);
+		const result = await gql.commands.todosComplete({ todo_id });
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
@@ -168,7 +168,7 @@
 		pending = { ...pending, [todo_id]: 'archived' };
 		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
 
-		const result = await todosArchive({ todo_id }, gql);
+		const result = await gql.commands.todosArchive({ todo_id });
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
