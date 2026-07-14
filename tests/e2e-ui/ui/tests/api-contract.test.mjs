@@ -33,7 +33,9 @@ test('auth + WS modules use OIDC patterns', () => {
   assert.match(ws, /connection_init/);
   assert.match(ws, /authorization|accessToken|Bearer/);
   const gql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
-  assert.match(gql, /Bearer/);
+  assert.match(gql, /requestGraphql|serverGraphql/);
+  const req = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
+  assert.match(req, /Bearer|authorization/);
 });
 
 test('website auth shell + fixture routes present', () => {
@@ -148,8 +150,32 @@ test('todos: shared GQL docs — SSR query, browser mutations', () => {
   // SSR is read-only seed — no form actions / mutations
   assert.doesNotMatch(server, /export const actions|todos_create|serverCommand/);
 
+  // Unified request path (single Jack-style core)
+  const request = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
+  assert.match(request, /export async function requestGraphql/);
+  assert.match(request, /buildAuthHeaders|authorization/);
   const client = fs.readFileSync(new URL('../src/lib/gql/client.ts', import.meta.url), 'utf8');
-  assert.match(client, /fetch\(['"]\/graphql['"]/);
+  assert.match(client, /requestGraphql|createGraphqlClient/);
+  const createClient = fs.readFileSync(
+    new URL('../src/lib/gql/create-client.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(createClient, /export function createGraphqlClient/);
+  const serverGql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
+  assert.match(serverGql, /requestGraphql/);
+});
+
+test('DX spec documents SvelteKit GraphQL client and TS codegen path', () => {
+  const spec = fs.readFileSync(new URL('../../docs/sveltekit-dx.md', import.meta.url), 'utf8');
+  assert.match(spec, /SvelteKit \+ Distributed GraphQL/i);
+  assert.match(spec, /Current state inventory|inventory/i);
+  assert.match(spec, /browserGraphql|serverGraphql|graphql-ws|documents\.ts/);
+  assert.match(spec, /createGraphqlClient|unified|single.*client/i);
+  assert.match(spec, /npm package|@distributed\/sveltekit-graphql|package surface/i);
+  assert.match(spec, /sdl_for_role|GraphqlInput|graphql-codegen|TypeScript/i);
+  assert.match(spec, /Prioritized backlog|### Must|### Should|### Later/i);
+  // Spec must not invent modules as "exists" without labeling proposed
+  assert.match(spec, /lib\/gql\/client\.ts|gql\/documents\.ts|server\/graphql\.ts|graphql-ws\.ts/);
 });
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {
