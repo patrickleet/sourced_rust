@@ -30,6 +30,7 @@ use super::permissions::SelectPermission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SqlDialect {
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     Postgres,
     Sqlite,
 }
