@@ -4,9 +4,12 @@
 
 use async_graphql::Request;
 use distributed::{
-    graphql::GraphqlEngine, microsvc::Session, ColumnType, PrimaryKey, RelationshipDef,
-    RelationshipKind, TableColumn, TableKind, TableSchema, ROLE_KEY, USER_ID_KEY,
+    graphql::{col, rel, select, GraphqlEngine, ModelPermissions},
+    microsvc::Session,
+    ColumnType, ForeignKey, PrimaryKey, ReadModel, RelationshipDef, RelationshipKind, TableColumn,
+    TableKind, TableSchema, ROLE_KEY, USER_ID_KEY,
 };
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 
 fn orders_schema() -> TableSchema {
@@ -65,6 +68,51 @@ fn session_role(role: &str, user: &str) -> Session {
     s
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("m2m_players")]
+struct M2mPlayer {
+    #[id("player_id")]
+    player_id: String,
+    name: String,
+    #[readmodel(
+        many_to_many = "M2mWeapon",
+        through = "m2m_player_weapon_links",
+        foreign_key = "player_id"
+    )]
+    weapons: Vec<M2mWeapon>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[table("m2m_weapons")]
+struct M2mWeapon {
+    #[id("weapon_id")]
+    weapon_id: String,
+    name: String,
+}
+
+fn m2m_link_schema() -> TableSchema {
+    TableSchema {
+        model_name: "M2mPlayerWeaponLink".into(),
+        table_name: "m2m_player_weapon_links".into(),
+        columns: vec![
+            TableColumn {
+                foreign_key: Some(ForeignKey::new("m2m_players", "player_id")),
+                ..TableColumn::new("player_id", "player_ref", ColumnType::Text)
+            },
+            TableColumn {
+                foreign_key: Some(ForeignKey::new("m2m_weapons", "weapon_id")),
+                ..TableColumn::new("weapon_id", "weapon_ref", ColumnType::Text)
+            },
+        ],
+        primary_key: PrimaryKey::new(["player_ref", "weapon_ref"]),
+        version_column: None,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+        relationships: Vec::new(),
+        kind: TableKind::ReadModel,
+    }
+}
+
 #[tokio::test]
 async fn list_filter_and_by_pk() {
     let schema = orders_schema();
@@ -102,6 +150,50 @@ async fn list_filter_and_by_pk() {
     assert!(!resp.is_err(), "{:?}", resp.errors);
     let data = serde_json::to_value(&resp.data).unwrap();
     assert_eq!(data["orders_by_pk"]["order_id"], "o1");
+}
+
+#[tokio::test]
+async fn m2m_permission_filter_resolves_through_field_names_to_columns() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for sql in [
+        "CREATE TABLE m2m_players (player_id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE m2m_weapons (weapon_id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE m2m_player_weapon_links (player_ref TEXT NOT NULL, weapon_ref TEXT NOT NULL)",
+        "INSERT INTO m2m_players VALUES ('p1', 'Ada'), ('p2', 'Grace')",
+        "INSERT INTO m2m_weapons VALUES ('w1', 'Compiler'), ('w2', 'Debugger')",
+        "INSERT INTO m2m_player_weapon_links VALUES ('p1', 'w1'), ('p2', 'w2')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+
+    let engine = GraphqlEngine::builder(pool)
+        .table_schema(m2m_link_schema())
+        .model::<M2mPlayer>(
+            ModelPermissions::new().role(
+                "user",
+                select()
+                    .all_columns()
+                    .filter(rel("weapons", col("weapon_id").eq("w1"))),
+            ),
+        )
+        .model::<M2mWeapon>(ModelPermissions::new().role("user", select().all_columns()))
+        .roles(&["user"])
+        .build()
+        .expect("build");
+
+    let session = session_role("user", "u1");
+    let resp = engine
+        .execute(&session, Request::new("{ m2m_players { player_id name } }"))
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+
+    let data = serde_json::to_value(&resp.data).unwrap();
+    let players = data["m2m_players"].as_array().expect("players");
+    assert_eq!(players.len(), 1, "{data}");
+    assert_eq!(players[0]["player_id"], "p1");
 }
 
 fn parent_schema() -> TableSchema {
