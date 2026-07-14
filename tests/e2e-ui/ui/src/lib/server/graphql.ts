@@ -42,8 +42,13 @@ export type GqlResult<T> = {
   status: number;
 };
 
+/**
+ * SSR GraphQL — same documents as `$lib/gql/documents` + browserGraphql.
+ * Hits the API origin directly (not the Vite proxy).
+ */
 export async function serverGraphql<T = Record<string, unknown>>(
-  query: string,
+  /** Same document string the browser uses */
+  document: string,
   opts: {
     accessToken?: string | null;
     /** DevHeaders fallback when OIDC is not configured (local offline only). */
@@ -66,7 +71,7 @@ export async function serverGraphql<T = Record<string, unknown>>(
   const res = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ query, variables: opts.variables ?? {} })
+    body: JSON.stringify({ query: document, variables: opts.variables ?? {} })
   });
   const body = (await res.json().catch(() => ({}))) as {
     data?: T;

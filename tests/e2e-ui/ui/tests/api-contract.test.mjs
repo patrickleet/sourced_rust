@@ -124,24 +124,32 @@ test('home is distributed template with 8-step unidirectional todos story', () =
   assert.doesNotMatch(footer, /HopsBrand|Ship products, not infrastructure/i);
 });
 
-test('todos seeds client state from SSR load data', () => {
+test('todos: shared GQL docs — SSR query, browser mutations', () => {
+  const docs = fs.readFileSync(new URL('../src/lib/gql/documents.ts', import.meta.url), 'utf8');
+  assert.match(docs, /TODOS_QUERY/);
+  assert.match(docs, /TODOS_CREATE/);
+  assert.match(docs, /TODOS_COMPLETE/);
+  assert.match(docs, /TODOS_ARCHIVE/);
+
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /\$state<Todo\[\]>\(\[\.\.\.\(data\.todos/);
   assert.match(page, /mergeFromServer/);
-  assert.match(page, /use:enhance/);
+  assert.match(page, /browserGraphql/);
+  assert.match(page, /TODOS_CREATE|TODOS_QUERY/);
+  assert.doesNotMatch(page, /use:enhance|\?\/create/);
+
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
     'utf8'
   );
   assert.match(server, /serverGraphql/);
+  assert.match(server, /TODOS_QUERY/);
   assert.match(server, /accessToken/);
-  // All writes go through GraphQL command mutations (no serverCommand / HTTP)
-  assert.match(server, /todos_create/);
-  assert.match(server, /todos_complete/);
-  assert.match(server, /todos_archive/);
-  assert.doesNotMatch(server, /serverCommand/);
-  const gqlLib = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(gqlLib, /export async function serverCommand/);
+  // SSR is read-only seed — no form actions / mutations
+  assert.doesNotMatch(server, /export const actions|todos_create|serverCommand/);
+
+  const client = fs.readFileSync(new URL('../src/lib/gql/client.ts', import.meta.url), 'utf8');
+  assert.match(client, /fetch\(['"]\/graphql['"]/);
 });
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {

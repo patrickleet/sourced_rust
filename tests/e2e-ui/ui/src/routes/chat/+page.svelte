@@ -1,11 +1,11 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — SSR seed + live WS subscription.
-	 * Client must NOT import auth.ts (private env); roles live in $lib/roles.
+	 * Lobby chat — SSR seed + live WS subscription + client GraphQL mutations.
+	 * Same documents as SSR (`$lib/gql/documents`); posts go browser → POST /graphql.
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { enhance } from '$app/forms';
-	import { invalidateAll } from '$app/navigation';
+	import { browserGraphql } from '$lib/gql/client';
+	import { CHAT_POST, chatMessagesSubscription } from '$lib/gql/documents';
 	import { subscribe } from '$lib/graphql-ws';
 	import { roleFromGroups } from '$lib/roles';
 
@@ -17,18 +17,25 @@
 		created_at: string;
 	};
 
-	let { data, form } = $props();
-	let messages = $state<ChatMsg[]>([]);
+	let { data } = $props();
+	let messages = $state<ChatMsg[]>([...(data.messages ?? [])]);
 	let status = $state<'connecting' | 'live' | 'error' | 'idle'>('idle');
 	let subError = $state<string | null>(null);
+	let sendError = $state<string | null>(null);
 	let unsub: (() => void) | null = null;
 	let logEl: HTMLDivElement | undefined = $state();
 	let draft = $state('');
+	let busy = $state(false);
 
 	const me = $derived(data.userId ?? data.session?.user?.id ?? '');
 	const displayName = $derived(
 		data.session?.user?.username ?? data.session?.user?.name ?? data.session?.user?.email ?? 'you'
 	);
+	const gqlAuth = $derived({
+		accessToken: data.accessToken ?? data.session?.accessToken,
+		userId: data.accessToken || data.session?.accessToken ? undefined : (data.userId ?? undefined),
+		role: data.engineRole ?? roleFromGroups(data.session?.user?.groups)
+	});
 
 	$effect(() => {
 		messages = data.messages;
@@ -70,35 +77,18 @@
 		unsub?.();
 		status = 'connecting';
 		subError = null;
-		const groups = data.session?.user?.groups;
-		unsub = subscribe(
-			`subscription {
-				chat_messages(where: { room_id: { _eq: "${data.room}" } }) {
-					message_id
-					room_id
-					author_id
-					body
-					created_at
-				}
-			}`,
-			{
-				accessToken: data.accessToken ?? undefined,
-				userId: data.accessToken ? undefined : (data.userId ?? undefined),
-				role: data.engineRole ?? roleFromGroups(groups)
+		unsub = subscribe(chatMessagesSubscription(data.room), gqlAuth, {
+			onNext: applyPayload,
+			onError: (e) => {
+				status = 'error';
+				if (e instanceof Event) subError = 'WebSocket error — is the API running on :8791?';
+				else if (Array.isArray(e)) subError = JSON.stringify(e);
+				else subError = String(e);
 			},
-			{
-				onNext: applyPayload,
-				onError: (e) => {
-					status = 'error';
-					if (e instanceof Event) subError = 'WebSocket error — is the API running on :8791?';
-					else if (Array.isArray(e)) subError = JSON.stringify(e);
-					else subError = String(e);
-				},
-				onComplete: () => {
-					if (status === 'live') status = 'connecting';
-				}
+			onComplete: () => {
+				if (status === 'live') status = 'connecting';
 			}
-		);
+		});
 	}
 
 	onMount(() => {
@@ -121,6 +111,27 @@
 		} catch {
 			return iso;
 		}
+	}
+
+	async function onSend(e: Event) {
+		e.preventDefault();
+		const body = draft.trim();
+		if (!body || busy) return;
+		const message_id = `m-${Date.now().toString(16)}`;
+		sendError = null;
+		busy = true;
+		const result = await browserGraphql(CHAT_POST, gqlAuth, {
+			message_id,
+			body,
+			room_id: data.room
+		});
+		busy = false;
+		if (result.errors?.length) {
+			sendError = result.errors[0].message;
+			return;
+		}
+		draft = '';
+		// Subscription should push the projected row; soft reconnect if laggy.
 	}
 </script>
 
@@ -163,10 +174,10 @@
 			<button type="button" class="ch-link-btn" onclick={connect}>Retry</button>
 		</div>
 	{/if}
-	{#if form?.message}
+	{#if sendError}
 		<div class="ch-alert" role="alert">
-			<strong>Send</strong>
-			<span>{form.message}</span>
+			<strong>Mutation</strong>
+			<span>{sendError}</span>
 		</div>
 	{/if}
 
@@ -191,20 +202,7 @@
 			{/if}
 		</div>
 
-		<form
-			method="POST"
-			action="?/post"
-			class="ch-composer"
-			use:enhance={() => {
-				return async ({ result, update }) => {
-					draft = '';
-					await update();
-					if (result.type === 'success') {
-						setTimeout(() => invalidateAll(), 150);
-					}
-				};
-			}}
-		>
+		<form class="ch-composer" onsubmit={onSend}>
 			<label class="ch-sr" for="chat-body">Message</label>
 			<input
 				id="chat-body"
@@ -215,7 +213,7 @@
 				autocomplete="off"
 				bind:value={draft}
 			/>
-			<button class="ch-send" type="submit" disabled={!draft.trim()}>
+			<button class="ch-send" type="submit" disabled={!draft.trim() || busy}>
 				Send
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 					<path

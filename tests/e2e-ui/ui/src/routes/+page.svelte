@@ -230,14 +230,15 @@ let input = ctx.input::<TodoCreateInput>()?;
 todo.create(&input.todo_id, &owner, &input.title)?;`
 				},
 				{
-					file: 'todos/+page.server.ts',
-					label: 'UI form action',
-					code: `// actions → GraphQL mutations only (Bearer)
-await serverGraphql(\`mutation {
-  todos_create(input: { todo_id, title }) {
-    todo_id owner_id title status
-  }
-}\`, { accessToken: session.accessToken });`
+					file: 'ui · browser + SSR',
+					label: 'Same documents',
+					code: `// $lib/gql/documents.ts — one source of truth
+export const TODOS_QUERY = \`{ todos { … } }\`;
+export const TODOS_CREATE = \`mutation { todos_create(…) { … } }\`;
+
+// SSR load: serverGraphql(TODOS_QUERY, { accessToken })
+// Browser:  browserGraphql(TODOS_CREATE, auth, vars) → POST /graphql
+// (mutations are client → GraphQL API, not SvelteKit form actions)`
 				}
 			]
 		},

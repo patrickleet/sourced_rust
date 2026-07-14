@@ -1,6 +1,6 @@
-import type { Actions, PageServerLoad } from './$types';
-import { fail } from '@sveltejs/kit';
+import type { PageServerLoad } from './$types';
 import { engineRoleFromGroups } from '$lib/roles';
+import { chatMessagesQuery } from '$lib/gql/documents';
 import { serverGraphql } from '$lib/server/graphql';
 
 type ChatMsg = {
@@ -13,27 +13,17 @@ type ChatMsg = {
 
 const ROOM = 'lobby';
 
+/** SSR seed — same selection as browser subscription / posts. */
 export const load: PageServerLoad = async ({ locals }) => {
   const session = await locals.auth();
   const accessToken = session?.accessToken;
   const role = engineRoleFromGroups(session?.user?.groups);
 
-  const result = await serverGraphql<{ chat_messages: ChatMsg[] }>(
-    `{
-      chat_messages(where: { room_id: { _eq: "${ROOM}" } }) {
-        message_id
-        room_id
-        author_id
-        body
-        created_at
-      }
-    }`,
-    {
-      accessToken,
-      userId: accessToken ? undefined : session?.user?.id,
-      role
-    }
-  );
+  const result = await serverGraphql<{ chat_messages: ChatMsg[] }>(chatMessagesQuery(ROOM), {
+    accessToken,
+    userId: accessToken ? undefined : session?.user?.id,
+    role
+  });
 
   const messages = [...(result.data?.chat_messages ?? [])].sort((a, b) =>
     a.created_at === b.created_at
@@ -50,46 +40,4 @@ export const load: PageServerLoad = async ({ locals }) => {
     userId: session?.user?.id ?? null,
     gqlError: result.errors?.[0]?.message ?? (result.status >= 400 ? `HTTP ${result.status}` : null)
   };
-};
-
-export const actions: Actions = {
-  post: async ({ request, locals }) => {
-    const session = await locals.auth();
-    if (!session?.user) return fail(401, { message: 'unauthorized' });
-    const fd = await request.formData();
-    const body = String(fd.get('body') || '').trim();
-    if (!body) return fail(400, { message: 'empty message' });
-    const message_id = `m-${Date.now().toString(16)}`;
-    const accessToken = session.accessToken;
-    const role = engineRoleFromGroups(session.user.groups);
-    const result = await serverGraphql<{
-      chat_messages_post?: { message_id: string; body: string };
-    }>(
-      `mutation ChatPost($message_id: String!, $body: String!, $room_id: String!) {
-        chat_messages_post(input: {
-          message_id: $message_id
-          body: $body
-          room_id: $room_id
-        }) {
-          message_id
-          room_id
-          author_id
-          body
-          created_at
-        }
-      }`,
-      {
-        accessToken,
-        userId: accessToken ? undefined : session.user.id,
-        role,
-        variables: { message_id, body, room_id: ROOM }
-      }
-    );
-    if (result.errors?.length || !result.data?.chat_messages_post) {
-      return fail(result.status >= 400 ? result.status : 400, {
-        message: result.errors?.[0]?.message ?? 'post failed'
-      });
-    }
-    return { ok: true };
-  }
 };
