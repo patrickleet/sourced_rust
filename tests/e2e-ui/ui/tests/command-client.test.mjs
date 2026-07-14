@@ -107,14 +107,27 @@ test('generated todosCreate posts GraphQL mutation via real requestGraphql', asy
   assert.match(r.stdout, /command-client-ok/);
 });
 
-test('todos +page.svelte create/complete use generated command functions', () => {
-  const src = fs.readFileSync(pageSvelte, 'utf8');
-  assert.match(src, /from '\$lib\/api\/commands\.generated'/);
-  assert.match(src, /todosCreate\s*\(/);
-  assert.match(src, /todosComplete\s*\(/);
-  // Primary create/complete call sites must not pass mutation documents.
-  assert.doesNotMatch(src, /todosResource\.mutations\.create/);
-  assert.doesNotMatch(src, /todosResource\.mutations\.complete/);
-  assert.doesNotMatch(src, /mutation TodosCreate/);
-  assert.doesNotMatch(src, /todos_create\(input:/);
+test('app pages use generated command functions for all writes', () => {
+  const todos = fs.readFileSync(pageSvelte, 'utf8');
+  assert.match(todos, /from '\$lib\/api\/commands\.generated'/);
+  assert.match(todos, /todosCreate\s*\(/);
+  assert.match(todos, /todosComplete\s*\(/);
+  assert.match(todos, /todosArchive\s*\(/);
+  assert.doesNotMatch(todos, /todosResource\.mutations\./);
+  assert.doesNotMatch(todos, /mutation TodosCreate/);
+
+  const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
+  assert.match(chat, /chatMessagesPost\s*\(/);
+  assert.doesNotMatch(chat, /chat\.mutations\.post|mutations\.post/);
+
+  const admin = fs.readFileSync(path.join(uiRoot, 'src/routes/admin/+page.svelte'), 'utf8');
+  assert.match(admin, /todosForceArchive\s*\(/);
+  assert.doesNotMatch(admin, /mutations\.forceArchive|adminTodos\.mutations/);
+});
+
+test('generated mutations are multiline template strings', () => {
+  const gen = fs.readFileSync(generatedPath, 'utf8');
+  assert.match(gen, /const document = `\nmutation Command_todos_create/);
+  assert.match(gen, /todos_create\(input: \$input\) \{\n/);
+  assert.match(gen, /todo_id\n/);
 });

@@ -94,7 +94,16 @@ export const COMMAND_ROLES = {
  * roles: user, admin
  */
 export async function todosCreate(input: TodoCreateInput, opts: CommandRequestOpts): Promise<GqlResult<TodoCreatePayload>> {
-  const document = "mutation Command_todos_create($input: TodoCreateInput!) { todos_create(input: $input) { todo_id owner_id title status } }";
+  const document = `
+mutation Command_todos_create($input: TodoCreateInput!) {
+  todos_create(input: $input) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}
+`;
   const result = await requestGraphql<{ todos_create?: TodoCreatePayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_create,
@@ -108,7 +117,14 @@ export async function todosCreate(input: TodoCreateInput, opts: CommandRequestOp
  * roles: user, admin
  */
 export async function todosComplete(input: TodoCompleteInput, opts: CommandRequestOpts): Promise<GqlResult<TodoStatusPayload>> {
-  const document = "mutation Command_todos_complete($input: TodoCompleteInput!) { todos_complete(input: $input) { todo_id status } }";
+  const document = `
+mutation Command_todos_complete($input: TodoCompleteInput!) {
+  todos_complete(input: $input) {
+    todo_id
+    status
+  }
+}
+`;
   const result = await requestGraphql<{ todos_complete?: TodoStatusPayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_complete,
@@ -122,7 +138,14 @@ export async function todosComplete(input: TodoCompleteInput, opts: CommandReque
  * roles: user, admin
  */
 export async function todosArchive(input: TodoArchiveInput, opts: CommandRequestOpts): Promise<GqlResult<TodoStatusPayload>> {
-  const document = "mutation Command_todos_archive($input: TodoArchiveInput!) { todos_archive(input: $input) { todo_id status } }";
+  const document = `
+mutation Command_todos_archive($input: TodoArchiveInput!) {
+  todos_archive(input: $input) {
+    todo_id
+    status
+  }
+}
+`;
   const result = await requestGraphql<{ todos_archive?: TodoStatusPayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_archive,
@@ -136,7 +159,16 @@ export async function todosArchive(input: TodoArchiveInput, opts: CommandRequest
  * roles: admin
  */
 export async function todosForceArchive(input: TodoForceArchiveInput, opts: CommandRequestOpts): Promise<GqlResult<TodoForceArchivePayload>> {
-  const document = "mutation Command_todos_force_archive($input: TodoForceArchiveInput!) { todos_force_archive(input: $input) { todo_id owner_id status archived_by } }";
+  const document = `
+mutation Command_todos_force_archive($input: TodoForceArchiveInput!) {
+  todos_force_archive(input: $input) {
+    todo_id
+    owner_id
+    status
+    archived_by
+  }
+}
+`;
   const result = await requestGraphql<{ todos_force_archive?: TodoForceArchivePayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_force_archive,
@@ -150,7 +182,15 @@ export async function todosForceArchive(input: TodoForceArchiveInput, opts: Comm
  * roles: user, admin
  */
 export async function todosRename(input: TodoRenameInput, opts: CommandRequestOpts): Promise<GqlResult<TodoRenamePayload>> {
-  const document = "mutation Command_todos_rename($input: TodoRenameInput!) { todos_rename(input: $input) { todo_id title status } }";
+  const document = `
+mutation Command_todos_rename($input: TodoRenameInput!) {
+  todos_rename(input: $input) {
+    todo_id
+    title
+    status
+  }
+}
+`;
   const result = await requestGraphql<{ todos_rename?: TodoRenamePayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_rename,
@@ -164,7 +204,14 @@ export async function todosRename(input: TodoRenameInput, opts: CommandRequestOp
  * roles: user, admin
  */
 export async function todosReopen(input: TodoReopenInput, opts: CommandRequestOpts): Promise<GqlResult<TodoStatusPayload>> {
-  const document = "mutation Command_todos_reopen($input: TodoReopenInput!) { todos_reopen(input: $input) { todo_id status } }";
+  const document = `
+mutation Command_todos_reopen($input: TodoReopenInput!) {
+  todos_reopen(input: $input) {
+    todo_id
+    status
+  }
+}
+`;
   const result = await requestGraphql<{ todos_reopen?: TodoStatusPayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.todos_reopen,
@@ -178,7 +225,17 @@ export async function todosReopen(input: TodoReopenInput, opts: CommandRequestOp
  * roles: user, admin
  */
 export async function chatMessagesPost(input: ChatPostInput, opts: CommandRequestOpts): Promise<GqlResult<ChatPostPayload>> {
-  const document = "mutation Command_chat_messages_post($input: ChatPostInput!) { chat_messages_post(input: $input) { message_id room_id author_id body created_at } }";
+  const document = `
+mutation Command_chat_messages_post($input: ChatPostInput!) {
+  chat_messages_post(input: $input) {
+    message_id
+    room_id
+    author_id
+    body
+    created_at
+  }
+}
+`;
   const result = await requestGraphql<{ chat_messages_post?: ChatPostPayload }>(opts.url, document, opts.auth ?? {}, { input });
   return {
     data: result.data?.chat_messages_post,

@@ -72,15 +72,29 @@ export function generateCommandsTs(catalog) {
     const inType = cmd.input?.name ?? 'Record<string, unknown>';
     const outType = cmd.output?.name ?? 'Record<string, unknown>';
     const hasInput = !!cmd.input;
-    const sel = selectionSet(cmd.output);
+    const selLines = selectionSetLines(cmd.output);
     const inputTypeGql = cmd.input ? `${cmd.input.name}!` : null;
 
-    let mutation;
-    if (hasInput) {
-      mutation = `mutation Command_${cmd.field_name}($input: ${inputTypeGql}) { ${cmd.field_name}(input: $input) ${sel} }`;
-    } else {
-      mutation = `mutation Command_${cmd.field_name} { ${cmd.field_name} ${sel} }`;
-    }
+    // Multiline GraphQL for human-readable generated source (template literal).
+    // Selection set is nested under the field for normal GraphQL style.
+    const fieldLine = hasInput
+      ? `  ${cmd.field_name}(input: $input)`
+      : `  ${cmd.field_name}`;
+    const fieldWithSel =
+      selLines.length === 0
+        ? [fieldLine]
+        : [
+            `${fieldLine} {`,
+            ...selLines.slice(1, -1).map((l) => `  ${l}`), // indent field names one more level
+            `  }`,
+          ];
+    const mutLines = hasInput
+      ? [
+          `mutation Command_${cmd.field_name}($input: ${inputTypeGql}) {`,
+          ...fieldWithSel,
+          `}`,
+        ]
+      : [`mutation Command_${cmd.field_name} {`, ...fieldWithSel, `}`];
 
     lines.push(`/**`);
     lines.push(` * ${cmd.command_name} → GraphQL \`${cmd.field_name}\``);
@@ -95,7 +109,12 @@ export function generateCommandsTs(catalog) {
         `export async function ${fn}(opts: CommandRequestOpts): Promise<GqlResult<${outType}>> {`
       );
     }
-    lines.push(`  const document = ${JSON.stringify(mutation)};`);
+    lines.push(`  const document = \``);
+    for (const ml of mutLines) {
+      // Escape backticks/$ in generated GraphQL (none expected in field names).
+      lines.push(ml.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${'));
+    }
+    lines.push(`\`;`);
     if (hasInput) {
       lines.push(
         `  const result = await requestGraphql<{ ${cmd.field_name}?: ${outType} }>(opts.url, document, opts.auth ?? {}, { input });`
@@ -151,12 +170,14 @@ export function fieldToFnName(field) {
 }
 
 /**
+ * Multiline selection set lines (no trailing commas) for readable GraphQL.
  * @param {object | null | undefined} output
+ * @returns {string[]}
  */
-function selectionSet(output) {
-  if (!output?.fields?.length) return '';
-  const fields = output.fields.map((f) => f.name).join(' ');
-  return `{ ${fields} }`;
+function selectionSetLines(output) {
+  if (!output?.fields?.length) return [];
+  const inner = output.fields.map((f) => `  ${f.name}`);
+  return ['{', ...inner, '}'];
 }
 
 function main() {

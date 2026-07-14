@@ -1,8 +1,9 @@
 <script lang="ts">
 	/**
-	 * Admin: all field notes + force-archive (admin-only GraphQL mutation).
+	 * Admin: all field notes + force-archive via generated command client.
 	 */
-	import { useGraphql } from '$lib/gql';
+	import { authFromPageData, useGraphql } from '$lib/gql';
+	import { todosForceArchive } from '$lib/api/commands.generated';
 	import { sessionDisplayName } from '$lib/session';
 	import { adminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
@@ -41,10 +42,13 @@
 
 		actionError = null;
 		busy = true;
-		const result = await gql.request(adminTodos.mutations.forceArchive, { todo_id });
+		const result = await todosForceArchive(
+			{ todo_id },
+			{ url: '/graphql', auth: authFromPageData(data) }
+		);
 		busy = false;
 
-		if (result.errors?.length || !result.data?.todos_force_archive) {
+		if (result.errors?.length || !result.data) {
 			actionError = result.errors?.[0]?.message ?? 'force archive failed';
 			return;
 		}

@@ -259,12 +259,15 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
   assert.match(page, /todosResource\.query|todos\.query/);
-  // Create/complete: generated command functions (GraphQL wire under the hood).
-  assert.match(page, /todosCreate|todosComplete|commands\.generated/);
-  assert.match(page, /mutations\.archive|todosArchive/); // archive pilot may still use resource map
+  // Writes: generated command functions (GraphQL wire under the hood).
+  assert.match(page, /commands\.generated/);
+  assert.match(page, /todosCreate/);
+  assert.match(page, /todosComplete/);
+  assert.match(page, /todosArchive/);
+  assert.doesNotMatch(page, /mutations\.(create|complete|archive)/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
-  // Writes go through GraphQL (command client or gql.request), not form actions
-  assert.match(page, /gql\.request|todosCreate|createGraphqlClient|useGraphql/);
+  // Query refetch still uses GraphQL client; writes use command client
+  assert.match(page, /useGraphql|gql\.request|todosCreate/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
@@ -358,8 +361,9 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
 
   const page = fs.readFileSync(new URL('../src/routes/chat/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /from '\.\/chat\.resource'|from "\.\/chat\.resource"/);
+  assert.match(page, /chatMessagesPost|commands\.generated/);
   assert.match(page, /useGraphql/);
-  assert.match(page, /chat\.mutations\.post|mutations\.post/);
+  assert.doesNotMatch(page, /chat\.mutations\.post|mutations\.post/);
   assert.match(page, /chat\.subscription|subscription/);
   assert.match(page, /subscribe/);
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
