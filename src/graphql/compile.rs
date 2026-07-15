@@ -26,7 +26,7 @@ use crate::table::{resolve_m2m_target_foreign_key, ColumnType, RelationshipKind,
 use super::engine::{CatalogEntry, EngineInner};
 use super::filter::{CmpOp, FilterExpr, LitValue, Operand};
 use super::naming::is_valid_graphql_name;
-use super::permissions::SelectPermission;
+use super::permissions::ReadPermission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SqlDialect {
@@ -423,7 +423,7 @@ fn compile_object_projection(
     session: &Session,
     role: &str,
     schema: &TableSchema,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     selection: &SelectionNode,
     alias: &str,
     binds: &mut Vec<BindValue>,
@@ -479,7 +479,7 @@ fn compile_object_projection(
                         .permissions
                         .get(&(rel.target_model.clone(), role.to_string()))
                     {
-                        Some(p) if p.permission.allow_aggregations => &p.permission,
+                        Some(p) if p.permission.aggregations => &p.permission,
                         _ => continue,
                     };
                     tables.push(target_entry.schema.table_name.clone());
@@ -587,7 +587,7 @@ fn compile_relationship_aggregate_subquery(
     source_alias: &str,
     rel: &crate::table::RelationshipDef,
     target: &CatalogEntry,
-    target_perm: &SelectPermission,
+    target_perm: &ReadPermission,
     selection: &SelectionNode,
     binds: &mut Vec<BindValue>,
     bytes_paths: &mut Vec<String>,
@@ -818,7 +818,7 @@ fn compile_relationship_subquery(
     source_alias: &str,
     rel: &crate::table::RelationshipDef,
     target: &CatalogEntry,
-    target_perm: &SelectPermission,
+    target_perm: &ReadPermission,
     selection: &SelectionNode,
     binds: &mut Vec<BindValue>,
     bytes_paths: &mut Vec<String>,
@@ -993,7 +993,7 @@ fn compile_m2m_subquery(
     target_fk: &str,
     target_schema: &TableSchema,
     target_pk: &str,
-    target_perm: &SelectPermission,
+    target_perm: &ReadPermission,
     selection: &SelectionNode,
     binds: &mut Vec<BindValue>,
     bytes_paths: &mut Vec<String>,
@@ -1068,7 +1068,7 @@ fn compile_order_by(
     schema: &TableSchema,
     order_arg: Option<&Value>,
     alias: &str,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     strict: bool,
 ) -> Result<String, String> {
     let mut parts = Vec::new();
@@ -1123,7 +1123,7 @@ fn compile_where(
     session: &Session,
     role: &str,
     schema: &TableSchema,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     client_where: Option<&Value>,
     alias: &str,
     binds: &mut Vec<BindValue>,
@@ -1134,7 +1134,7 @@ fn compile_where(
         return Err("max depth exceeded".into());
     }
     let mut preds = Vec::new();
-    if let Some(filter) = &perm.filter {
+    if let Some(filter) = &perm.row_filter {
         preds.push(compile_filter_expr(
             inner, session, schema, filter, alias, binds, tables, depth,
         )?);
@@ -1401,7 +1401,7 @@ fn compile_client_where(
     session: &Session,
     role: &str,
     schema: &TableSchema,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     value: &Value,
     alias: &str,
     binds: &mut Vec<BindValue>,
@@ -1947,7 +1947,7 @@ mod security_tests {
 #[cfg(test)]
 mod strict_order_by_tests {
     use super::*;
-    use crate::graphql::permissions::select;
+    use crate::graphql::permissions::read;
     use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
     use async_graphql::indexmap::IndexMap;
     use async_graphql::Value as GqlValue;
@@ -1989,7 +1989,7 @@ mod strict_order_by_tests {
     #[test]
     fn strict_rejects_unknown_order_column() {
         let schema = item_schema();
-        let perm = select().all_columns();
+        let perm = read().all_columns();
         let arg = order_list(vec![("nope", "asc")]);
         let err = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap_err();
         assert!(err.contains("unknown order_by"), "{err}");
@@ -1998,7 +1998,7 @@ mod strict_order_by_tests {
     #[test]
     fn strict_rejects_ungranted_order_column() {
         let schema = item_schema();
-        let perm = select().columns(["id", "name"]);
+        let perm = read().columns(["id", "name"]);
         let arg = order_list(vec![("secret", "asc")]);
         let err = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap_err();
         assert!(err.contains("ungranted order_by"), "{err}");
@@ -2007,7 +2007,7 @@ mod strict_order_by_tests {
     #[test]
     fn soft_skip_ignores_unknown_and_ungranted_order() {
         let schema = item_schema();
-        let perm = select().columns(["id", "name"]);
+        let perm = read().columns(["id", "name"]);
         let arg = order_list(vec![("secret", "asc"), ("nope", "desc"), ("name", "desc")]);
         let sql = compile_order_by(&schema, Some(&arg), "t0", &perm, false).unwrap();
         assert!(sql.contains(r#"t0."name" DESC"#), "{sql}");
@@ -2019,7 +2019,7 @@ mod strict_order_by_tests {
     #[test]
     fn strict_accepts_granted_order_with_pk_tiebreak() {
         let schema = item_schema();
-        let perm = select().all_columns();
+        let perm = read().all_columns();
         let arg = order_list(vec![("name", "desc")]);
         let sql = compile_order_by(&schema, Some(&arg), "t0", &perm, true).unwrap();
         assert!(sql.contains(r#"t0."name" DESC"#), "{sql}");

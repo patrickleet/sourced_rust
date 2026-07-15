@@ -642,7 +642,7 @@ pub fn commands() -> GraphqlCommands {
         format!(
             r#"//! Permissions for `{view}`.
 
-use distributed::graphql::{{select, ModelPermissions}};
+use distributed::graphql::{{read, ModelPermissions}};
 
 use crate::read_models::{view};
 
@@ -652,7 +652,7 @@ pub fn permissions() -> ModelPermissions<{view}> {{
     ModelPermissions::new()
         // Deny-by-default until roles are granted. grant_all(USER) in mod.rs
         // covers the scaffold default; tighten columns/filters here for prod.
-        .role(super::roles::USER, select().all_columns().allow_aggregations(true))
+        .grant(super::roles::USER, read().all_columns().aggregations())
 }}
 "#,
             view = model.view_ident,

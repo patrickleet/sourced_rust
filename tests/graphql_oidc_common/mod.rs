@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use base64::Engine as _;
 use distributed::graphql::{
-    graphql_router, resolve_session, select, AuthError, GraphqlEngine, IdentityConfig,
+    graphql_router, resolve_session, read, AuthError, GraphqlEngine, IdentityConfig,
     IdentityMode, ModelPermissions, OidcConfig, OidcValidator, ValidationError,
 };
 use distributed::ReadModel;
@@ -79,15 +79,13 @@ pub async fn engine_oidc(oidc: OidcConfig) -> Arc<GraphqlEngine> {
             .roles(&["customer", "admin", "user"])
             .model::<OidcE2eItem>(
                 ModelPermissions::new()
-                    .role(
-                        "customer",
-                        select().all_columns().filter(
+                    .grant("customer", read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
                     )
-                    .role("admin", select().all_columns())
-                    .role("user", select().all_columns()),
+                    .grant("admin", read().all_columns())
+                    .grant("user", read().all_columns()),
             )
             .identity(IdentityConfig::oidc_bearer(oidc))
             .graphiql(false)
@@ -177,21 +175,17 @@ pub async fn run_e1_through_e8(
             .roles(&["customer", "admin", "user"])
             .model::<OidcE2eItem>(
                 ModelPermissions::new()
-                    .role(
-                        "customer",
-                        select().all_columns().filter(
+                    .grant("customer", read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
                     )
-                    .role(
-                        "user",
-                        select().all_columns().filter(
+                    .grant("user", read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
                     )
-                    .role("admin", select().all_columns()),
+                    .grant("admin", read().all_columns()),
             )
             .identity(IdentityConfig::oidc_bearer(oidc_cfg.clone()))
             .graphiql(false)
@@ -335,7 +329,7 @@ pub async fn run_e1_through_e8(
             GraphqlEngine::builder(pool)
                 .roles(&["customer", "admin", "user"])
                 .model::<OidcE2eItem>(
-                    ModelPermissions::new().role("customer", select().all_columns()),
+                    ModelPermissions::new().grant("customer", read().all_columns()),
                 )
                 .identity(IdentityConfig::oidc_bearer(http_cfg))
                 .graphiql(false)

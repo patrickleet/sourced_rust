@@ -63,7 +63,7 @@ pub use identity::{
     UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 #[cfg(feature = "graphql")]
-pub use permissions::{select, ModelPermissions, SelectPermission};
+pub use permissions::{read, ModelPermissions, ReadPermission};
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;
 #[cfg(feature = "graphql")]

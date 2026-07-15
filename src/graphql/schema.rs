@@ -19,7 +19,7 @@ use super::naming::{
     bool_exp_name, by_pk_field, comparison_exp_name, include_postgres_json_comparison_ops,
     object_type_name, order_by_name, root_list_field, scalar_type_name, CUSTOM_SCALARS,
 };
-use super::permissions::SelectPermission;
+use super::permissions::ReadPermission;
 
 pub fn build_role_schema(
     role: &str,
@@ -35,7 +35,7 @@ pub fn build_role_schema(
     let _ = by_table;
 
     // Collect models granted to this role.
-    let granted: Vec<(&str, &TableSchema, &SelectPermission)> = permissions
+    let granted: Vec<(&str, &TableSchema, &ReadPermission)> = permissions
         .iter()
         .filter(|((_, r), _)| r == role)
         .filter_map(|((model, _), perm)| {
@@ -131,7 +131,7 @@ pub fn build_role_schema(
         query = query.field(pk_field);
 
         // Aggregate root when allowed
-        if perm.allow_aggregations {
+        if perm.aggregations {
             let agg_name = format!("{}_aggregate", schema.table_name);
             let agg_type = format!("{}_aggregate", schema.table_name);
             ensure_aggregate_type(&mut registered_objects, schema);
@@ -339,7 +339,7 @@ fn ensure_object_type(
     catalog: &BTreeMap<String, CatalogEntry>,
     permissions: &BTreeMap<(String, String), RoleModelPerm>,
     role: &str,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     scalars: &mut std::collections::BTreeSet<&'static str>,
 ) {
     let name = object_type_name(schema).to_string();
@@ -427,7 +427,7 @@ fn ensure_object_type(
                 .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
                 .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
                 obj = obj.field(field);
-                if target_perm.permission.allow_aggregations {
+                if target_perm.permission.aggregations {
                     ensure_aggregate_type(objects, &target.schema);
                     let agg_key = format!("{}_aggregate", rel.field_name);
                     let agg_type = format!("{}_aggregate", target.schema.table_name);
@@ -451,7 +451,7 @@ fn ensure_bool_exp(
     catalog: &BTreeMap<String, CatalogEntry>,
     permissions: &BTreeMap<(String, String), RoleModelPerm>,
     role: &str,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
     scalars: &mut std::collections::BTreeSet<&'static str>,
 ) {
     let name = bool_exp_name(schema);
@@ -517,7 +517,7 @@ fn ensure_bool_exp(
 fn ensure_order_by_input(
     inputs: &mut BTreeMap<String, InputObject>,
     schema: &TableSchema,
-    perm: &SelectPermission,
+    perm: &ReadPermission,
 ) {
     let name = order_by_name(schema);
     if inputs.contains_key(&name) {

@@ -2,7 +2,7 @@
 
 use chat_domain::ChatMessage;
 use distributed::graphql::{
-    exposed_command, select, GraphqlCommands, GraphqlEngine, GraphqlPool, IdentityConfig,
+    exposed_command, read, GraphqlCommands, GraphqlEngine, GraphqlPool, IdentityConfig,
     ModelPermissions, OidcConfig,
 };
 use distributed::microsvc::{
@@ -146,19 +146,17 @@ pub fn build_graphql_engine(
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<TodoView>(
             ModelPermissions::new()
-                .role(
-                    "user",
-                    select().all_columns().filter(
+                .grant("user", read().all_columns().rows(
                         distributed::graphql::col("owner_id")
                             .eq(distributed::graphql::claim("x-user-id")),
                     ),
                 )
-                .role("admin", select().all_columns()),
+                .grant("admin", read().all_columns()),
         )
         .model::<ChatMessageView>(
             ModelPermissions::new()
-                .role("user", select().all_columns())
-                .role("admin", select().all_columns()),
+                .grant("user", read().all_columns())
+                .grant("admin", read().all_columns()),
         )
         .commands(commands)
         .identity(identity)

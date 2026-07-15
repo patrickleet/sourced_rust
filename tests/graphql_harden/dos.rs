@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 
 use super::common::{
     assert_no_sql_leak, engine_all_columns, error_messages, seed_orders, session, OrderView,
@@ -15,7 +15,7 @@ async fn where_max_depth_rejected() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_depth(2)
         .build()
         .unwrap();
@@ -40,7 +40,7 @@ async fn max_in_list_rejected() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_in_list(3)
         .build()
         .unwrap();
@@ -56,7 +56,7 @@ async fn limit_clamped_by_max_limit() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_limit(1)
         .default_limit(1)
         .build()
@@ -76,7 +76,7 @@ async fn d5_wide_or_list_rejected_by_max_bool_width() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_bool_width(3)
         .build()
         .unwrap();
@@ -109,7 +109,7 @@ async fn d5_wide_and_list_rejected_by_max_bool_width() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_bool_width(2)
         .build()
         .unwrap();
@@ -184,7 +184,7 @@ async fn d7_concurrent_with_timeout_bound_terminates() {
     let engine = Arc::new(
         GraphqlEngine::builder(pool)
             .roles(&["user"])
-            .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+            .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
             .statement_timeout(Duration::from_secs(2))
             .build()
             .unwrap(),
@@ -219,7 +219,7 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
@@ -296,9 +296,9 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
         .unwrap()
         .roles(&["user"])
         .max_depth(8)
-        .permission::<ParentView>("user", select().all_columns())
-        .permission::<ChildView>("user", select().all_columns())
-        .permission::<GrandView>("user", select().all_columns())
+        .permission::<ParentView>("user", read().all_columns())
+        .permission::<ChildView>("user", read().all_columns())
+        .permission::<GrandView>("user", read().all_columns())
         .build()
         .expect("build");
 
@@ -336,7 +336,7 @@ async fn d8_shallow_nested_has_many_within_budget() {
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
@@ -388,8 +388,8 @@ async fn d8_shallow_nested_has_many_within_budget() {
     let engine = GraphqlEngine::from_manifest(&manifest, pool)
         .unwrap()
         .roles(&["user"])
-        .permission::<ParentView>("user", select().all_columns())
-        .permission::<ChildView>("user", select().all_columns())
+        .permission::<ParentView>("user", read().all_columns())
+        .permission::<ChildView>("user", read().all_columns())
         .build()
         .expect("build");
 
@@ -413,7 +413,7 @@ async fn d8_low_max_complexity_rejects_single_nest() {
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{select, GraphqlEngine};
+    use distributed::graphql::{read, GraphqlEngine};
     use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
@@ -467,8 +467,8 @@ async fn d8_low_max_complexity_rejects_single_nest() {
         .roles(&["user"])
         .max_complexity(20)
         .max_depth(8)
-        .permission::<ParentView>("user", select().all_columns())
-        .permission::<ChildView>("user", select().all_columns())
+        .permission::<ParentView>("user", read().all_columns())
+        .permission::<ChildView>("user", read().all_columns())
         .build()
         .expect("build");
 

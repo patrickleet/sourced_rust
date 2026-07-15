@@ -39,7 +39,7 @@ src/query/
 ## Quickstart
 
 ```rust
-use distributed::graphql::{select, col, claim, GraphqlEngine};
+use distributed::graphql::{read, col, claim, GraphqlEngine};
 use distributed::microsvc::{Service, Session};
 
 let engine = GraphqlEngine::from_manifest(&manifest, pool)?
@@ -82,14 +82,21 @@ Change them in GraphiQL’s **Headers** panel to exercise other roles.
 
 ## Permissions (deny by default)
 
+**Grant** a role · **columns** they may see · **rows** they may access.
+Omitting a role is deny. No separate `.deny()` ACL — tighten `.rows(...)` or
+column allowlists instead.
+
 ```rust
-use distributed::graphql::{select, col, claim, ModelPermissions};
+use distributed::graphql::{read, col, claim, ModelPermissions};
 
 ModelPermissions::new()
-    .role("user", select()
-        .all_columns()
-        .filter(col("customer_id").eq(claim("x-user-id"))))
-    .role("anonymous", select().columns(["order_id", "status"]));
+    .grant(
+        "user",
+        read()
+            .all_columns()
+            .rows(col("customer_id").eq(claim("x-user-id"))),
+    )
+    .grant("anonymous", read().columns(["order_id", "status"]));
 ```
 
 ## SDL artifact

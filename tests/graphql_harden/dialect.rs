@@ -6,7 +6,7 @@
 
 use async_graphql::Request;
 use distributed::graphql::{
-    comparison_op_fields, include_postgres_json_comparison_ops, select, GraphqlEngine,
+    comparison_op_fields, include_postgres_json_comparison_ops, read, GraphqlEngine,
     ModelPermissions, POSTGRES_JSON_COMPARISON_OPS,
 };
 use distributed::ReadModel;
@@ -42,7 +42,7 @@ async fn seed_docs() -> sqlx::SqlitePool {
 fn engine(pool: sqlx::SqlitePool) -> GraphqlEngine {
     GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<DocView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<DocView>(ModelPermissions::new().grant("user", read().all_columns()))
         .build()
         .unwrap()
 }

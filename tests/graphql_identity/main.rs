@@ -10,8 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::http::{HeaderMap, HeaderValue};
 use base64::Engine;
 use distributed::graphql::{
-    extract_bearer, graphql_router, map_claims_to_session, resolve_session_sync, select,
-    strip_identity_headers, AuthError, ClaimMapConfig, GraphqlEngine, IdentityConfig, IdentityMode,
+    extract_bearer, graphql_router, map_claims_to_session, resolve_session_sync, read, strip_identity_headers, AuthError, ClaimMapConfig, GraphqlEngine, IdentityConfig, IdentityMode,
     ModelPermissions, OidcConfig, OidcValidator, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
 use distributed::ReadModel;
@@ -403,15 +402,13 @@ async fn engine_with_identity(identity: IdentityConfig) -> Arc<GraphqlEngine> {
         .roles(&["customer", "admin", "user"])
         .model::<IdItem>(
             ModelPermissions::new()
-                .role(
-                    "customer",
-                    select().all_columns().filter(
+                .grant("customer", read().all_columns().rows(
                         distributed::graphql::col("owner")
                             .eq(distributed::graphql::claim("x-user-id")),
                     ),
                 )
-                .role("admin", select().all_columns())
-                .role("user", select().all_columns()),
+                .grant("admin", read().all_columns())
+                .grant("user", read().all_columns()),
         )
         .identity(identity)
         .graphiql(false)

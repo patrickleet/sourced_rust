@@ -27,17 +27,17 @@ src/query/
 2. Add `src/query/<table>.rs`:
 
 ```rust
-use distributed::graphql::{select, col, claim, ModelPermissions};
+use distributed::graphql::{read, col, claim, ModelPermissions};
 use crate::read_models::OrderView;
 
 pub type Model = OrderView;
 
 pub fn permissions() -> ModelPermissions<OrderView> {
     ModelPermissions::new()
-        .role("user", select()
+        .grant("user", read()
             .all_columns()
-            .filter(col("customer_id").eq(claim("x-user-id"))))
-        .role("anonymous", select().columns(["order_id", "status"]))
+            .rows(col("customer_id").eq(claim("x-user-id"))))
+        .grant("anonymous", read().columns(["order_id", "status"]))
 }
 ```
 

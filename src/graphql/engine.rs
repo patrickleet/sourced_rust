@@ -24,7 +24,7 @@ use super::identity::IdentityConfig;
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
 };
-use super::permissions::{select, ModelPermissions, SelectPermission};
+use super::permissions::{read, ModelPermissions, ReadPermission};
 use super::schema as dyn_schema;
 use super::sdl::{graphql_sdl_for_tables_with_options, SdlOptions};
 
@@ -81,7 +81,7 @@ pub(crate) struct CatalogEntry {
 
 #[derive(Clone)]
 pub(crate) struct RoleModelPerm {
-    pub permission: SelectPermission,
+    pub permission: ReadPermission,
 }
 
 pub(crate) struct EngineInner {
@@ -427,7 +427,7 @@ impl GraphqlEngineBuilder {
             match self.permissions.entry(key) {
                 Entry::Vacant(entry) => {
                     entry.insert(RoleModelPerm {
-                        permission: select().all_columns().allow_aggregations(true),
+                        permission: read().all_columns().aggregations(),
                     });
                 }
                 Entry::Occupied(_) => {
@@ -443,7 +443,7 @@ impl GraphqlEngineBuilder {
     pub fn permission<M: RelationalReadModelIncludes>(
         mut self,
         role: &str,
-        p: SelectPermission,
+        p: ReadPermission,
     ) -> Self {
         let model = M::schema().model_name.clone();
         if !self.catalog.contains_key(&model) {
@@ -591,7 +591,7 @@ impl GraphqlEngineBuilder {
                 }
             }
 
-            if let Some(filter) = &perm.filter {
+            if let Some(filter) = &perm.row_filter {
                 validate_filter(
                     filter,
                     &entry.schema,

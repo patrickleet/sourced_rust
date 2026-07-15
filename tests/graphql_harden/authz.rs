@@ -2,7 +2,7 @@
 //! Drives shipped `GraphqlEngine::execute`.
 
 use async_graphql::Request;
-use distributed::graphql::{claim, col, select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{claim, col, read, GraphqlEngine, ModelPermissions};
 use distributed::{
     DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
 };
@@ -19,11 +19,9 @@ async fn claim_row_filter_isolates_tenants() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "anonymous"])
         .model::<OrderView>(
-            ModelPermissions::new().role(
-                "user",
-                select()
+            ModelPermissions::new().grant("user", read()
                     .all_columns()
-                    .filter(col("customer_id").eq(claim("x-user-id"))),
+                    .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
         )
         .build()
@@ -61,11 +59,9 @@ async fn a2_claim_filter_on_by_pk_isolates_tenants() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().role(
-                "user",
-                select()
+            ModelPermissions::new().grant("user", read()
                     .all_columns()
-                    .filter(col("customer_id").eq(claim("x-user-id"))),
+                    .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
         )
         .build()
@@ -101,12 +97,10 @@ async fn a3_claim_filter_on_aggregate_count() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().role(
-                "user",
-                select()
+            ModelPermissions::new().grant("user", read()
                     .all_columns()
-                    .allow_aggregations(true)
-                    .filter(col("customer_id").eq(claim("x-user-id"))),
+                    .aggregations()
+                    .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
         )
         .build()
@@ -145,8 +139,8 @@ async fn column_allowlist_denies_ungranted_fields() {
         .roles(&["restricted", "user"])
         .model::<OrderView>(
             ModelPermissions::new()
-                .role("restricted", select().columns(["order_id", "status"]))
-                .role("user", select().all_columns()),
+                .grant("restricted", read().columns(["order_id", "status"]))
+                .grant("user", read().all_columns()),
         )
         .build()
         .unwrap();
@@ -215,8 +209,8 @@ async fn a5_nested_relationship_column_allowlist_denies() {
     let engine = GraphqlEngine::from_manifest(&manifest, pool)
         .unwrap()
         .roles(&["user"])
-        .permission::<ParentView>("user", select().all_columns())
-        .permission::<ChildView>("user", select().columns(["child_id", "parent_id"]))
+        .permission::<ParentView>("user", read().all_columns())
+        .permission::<ChildView>("user", read().columns(["child_id", "parent_id"]))
         .build()
         .expect("build");
 
