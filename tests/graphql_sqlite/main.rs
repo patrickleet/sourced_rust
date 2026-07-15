@@ -194,6 +194,54 @@ async fn m2m_permission_filter_resolves_through_field_names_to_columns() {
     assert_eq!(players[0]["player_id"], "p1");
 }
 
+/// Client `where` with m2m relationship predicate (EXISTS through join table).
+#[tokio::test]
+async fn m2m_client_where_relationship_predicate() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for sql in [
+        "CREATE TABLE m2m_players (player_id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE m2m_weapons (weapon_id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE m2m_player_weapon_links (player_ref TEXT NOT NULL, weapon_ref TEXT NOT NULL)",
+        "INSERT INTO m2m_players VALUES ('p1', 'Ada'), ('p2', 'Grace'), ('p3', 'Both')",
+        "INSERT INTO m2m_weapons VALUES ('w1', 'Compiler'), ('w2', 'Debugger')",
+        "INSERT INTO m2m_player_weapon_links VALUES ('p1', 'w1'), ('p2', 'w2'), ('p3', 'w1'), ('p3', 'w2')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+
+    let engine = GraphqlEngine::builder(pool)
+        .table_schema(m2m_link_schema())
+        .model::<M2mPlayer>(ModelPermissions::new().grant("user", read().all_columns()))
+        .model::<M2mWeapon>(ModelPermissions::new().grant("user", read().all_columns()))
+        .roles(&["user"])
+        .build()
+        .expect("build");
+
+    let session = session_role("user", "u1");
+    let resp = engine
+        .execute(
+            &session,
+            Request::new(
+                r#"{ m2m_players(where: { weapons: { weapon_id: { _eq: "w1" } } }) { player_id name } }"#,
+            ),
+        )
+        .await;
+    assert!(!resp.is_err(), "{:?}", resp.errors);
+    let data = serde_json::to_value(&resp.data).unwrap();
+    let players = data["m2m_players"].as_array().expect("players");
+    let ids: Vec<&str> = players
+        .iter()
+        .map(|p| p["player_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"p1"), "p1 has w1: {data}");
+    assert!(ids.contains(&"p3"), "p3 has w1: {data}");
+    assert!(!ids.contains(&"p2"), "p2 only has w2: {data}");
+    assert_eq!(ids.len(), 2, "{data}");
+}
+
 fn parent_schema() -> TableSchema {
     TableSchema {
         model_name: "ParentView".into(),

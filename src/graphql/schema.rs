@@ -688,6 +688,19 @@ async fn resolve_root(
     }
 }
 
+/// Closed set of engine-authored GraphQL `extensions.code` values (v1 freeze).
+/// Async-graphql document validation may still emit uncoded errors.
+#[allow(dead_code)] // public contract constant; asserted in unit tests
+pub const ENGINE_ERROR_CODES: &[&str] = &[
+    "BAD_REQUEST",
+    "FORBIDDEN",
+    "TIMEOUT",
+    "INTERNAL",
+    "UNAUTHORIZED", // command mutations
+    "NOT_FOUND",    // command mutations
+    "REJECTED",     // command mutations
+];
+
 /// Map executor error strings to stable client errors (`extensions.code`).
 pub(crate) fn client_error_for_execute_err(e: &str) -> async_graphql::Error {
     if e.contains("timeout") {
@@ -734,7 +747,24 @@ fn client_error(code: &str, message: impl Into<String>) -> async_graphql::Error 
 
 #[cfg(test)]
 mod execute_err_mapping_tests {
-    use super::{client_error_for_execute_err, sanitize_compile_error};
+    use super::{client_error_for_execute_err, sanitize_compile_error, ENGINE_ERROR_CODES};
+
+    #[test]
+    fn engine_error_codes_closed_set_v1() {
+        // Freeze: expanding this set is a client-breaking change.
+        assert_eq!(
+            ENGINE_ERROR_CODES,
+            &[
+                "BAD_REQUEST",
+                "FORBIDDEN",
+                "TIMEOUT",
+                "INTERNAL",
+                "UNAUTHORIZED",
+                "NOT_FOUND",
+                "REJECTED",
+            ]
+        );
+    }
 
     #[test]
     fn statement_timeout_maps_to_timeout_code() {
