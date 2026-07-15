@@ -651,7 +651,7 @@ pub type Model = {view};
 pub fn permissions() -> ModelPermissions<{view}> {{
     ModelPermissions::new()
         // Deny-by-default until roles are granted. grant_all(USER) in mod.rs
-        // covers the scaffold default; tighten columns/filters here for prod.
+        // covers the scaffold default; tighten .columns(...) / .rows(...) for prod.
         .grant(super::roles::USER, read().all_columns().aggregations())
 }}
 "#,
