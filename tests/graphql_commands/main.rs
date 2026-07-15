@@ -248,6 +248,168 @@ async fn standalone_router_without_service_returns_no_dispatcher() {
             || err.contains("not configured"),
         "expected no-dispatcher error, got {err}"
     );
+    let code = resp.errors[0]
+        .extensions
+        .as_ref()
+        .and_then(|ext| ext.get("code"))
+        .map(|v| format!("{v}"));
+    assert!(
+        code.as_deref().is_some_and(|c| c.contains("INTERNAL")),
+        "no-dispatcher must set extensions.code=INTERNAL, got {code:?}"
+    );
+}
+
+/// Empty-role schema returns FORBIDDEN with extensions.code (frozen contract).
+#[tokio::test]
+async fn empty_role_forbidden_sets_extensions_code() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, _sourced_version INTEGER NOT NULL DEFAULT 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let manifest =
+        distributed::DistributedProjectManifest::new("items").table_schema(items_schema());
+    // Role "nobody" is declared but never granted any model → empty grant surface.
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user", "nobody"])
+        .grant_all("user")
+        .build()
+        .expect("build");
+
+    let mut session = Session::new();
+    session.set(ROLE_KEY, "nobody");
+    let resp = engine
+        .execute(&session, Request::new("{ _empty }"))
+        .await;
+    assert!(resp.is_err(), "empty role must error");
+    let err = &resp.errors[0];
+    assert!(
+        err.message.contains("no GraphQL grants") || err.message.contains("FORBIDDEN"),
+        "message: {}",
+        err.message
+    );
+    let code = err
+        .extensions
+        .as_ref()
+        .and_then(|ext| ext.get("code"))
+        .map(|v| format!("{v}"));
+    assert!(
+        code.as_deref().is_some_and(|c| c.contains("FORBIDDEN")),
+        "empty role must set extensions.code=FORBIDDEN, got {code:?} err={err:?}"
+    );
+}
+
+/// Command mutation maps handler HTTP status → extensions.code (+ status).
+#[tokio::test]
+async fn command_mutation_errors_set_extensions_code_and_status() {
+    use distributed::microsvc::HandlerError;
+
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, _sourced_version INTEGER NOT NULL DEFAULT 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    async fn assert_code(
+        engine: &GraphqlEngine,
+        service: &Arc<Service>,
+        session: &Session,
+        status_hint: &str,
+        expect_code: &str,
+        expect_status: i64,
+    ) {
+        let req = Request::new(format!(
+            r#"mutation {{ fail_cmd(input: {{ want: "{status_hint}" }}) }}"#
+        ))
+        .data(Arc::clone(service));
+        let resp = engine.execute(session, req).await;
+        assert!(
+            resp.is_err(),
+            "expected error for {status_hint}, got {:?}",
+            resp.data
+        );
+        let err = &resp.errors[0];
+        let ext = err.extensions.as_ref().expect("extensions present");
+        let code = ext.get("code").map(|v| format!("{v}"));
+        let status = ext.get("status").map(|v| format!("{v}"));
+        assert!(
+            code.as_deref().is_some_and(|c| c.contains(expect_code)),
+            "want extensions.code={expect_code} for {status_hint}, got code={code:?} msg={}",
+            err.message
+        );
+        assert!(
+            status
+                .as_deref()
+                .is_some_and(|s| s.contains(&expect_status.to_string())),
+            "want extensions.status={expect_status} for {status_hint}, got {status:?}"
+        );
+        // Message must not embed [CODE] bracket form (legacy).
+        assert!(
+            !err.message.contains(&format!("[{expect_code}]")),
+            "legacy [CODE] in message: {}",
+            err.message
+        );
+    }
+
+    let routes = Routes::new()
+        .command("item.fail")
+        .handle(|ctx: &Context<()>| {
+            let want = ctx
+                .raw_input()
+                .get("want")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            async move {
+                match want.as_str() {
+                    "401" => Err(HandlerError::Unauthorized("nope".into())),
+                    "404" => Err(HandlerError::NotFound("missing".into())),
+                    "422" => Err(HandlerError::Rejected("invalid".into())),
+                    "400" => Err(HandlerError::DecodeFailed("bad".into())),
+                    "500" => Err(HandlerError::Other(Box::new(std::io::Error::other("boom")))),
+                    _ => Ok(json!({ "ok": true })),
+                }
+            }
+        });
+    let service = Arc::new(Service::new().routes(routes));
+
+    let commands = GraphqlCommands::new().command(
+        "item.fail",
+        exposed_command()
+            .field_name("fail_cmd")
+            .input_json()
+            .roles(["user"]),
+    );
+    let manifest =
+        distributed::DistributedProjectManifest::new("items").table_schema(items_schema());
+    let engine = GraphqlEngine::from_manifest(&manifest, pool)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .commands(commands)
+        .build()
+        .expect("build");
+
+    let mut session = Session::new();
+    session.set(ROLE_KEY, "user");
+
+    assert_code(&engine, &service, &session, "401", "UNAUTHORIZED", 401).await;
+    assert_code(&engine, &service, &session, "404", "NOT_FOUND", 404).await;
+    assert_code(&engine, &service, &session, "422", "REJECTED", 422).await;
+    assert_code(&engine, &service, &session, "400", "BAD_REQUEST", 400).await;
+    assert_code(&engine, &service, &session, "500", "INTERNAL", 500).await;
 }
 
 #[test]

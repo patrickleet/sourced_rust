@@ -187,15 +187,16 @@ pub fn build_role_schema(
     }
 
     // Empty-role Query must still define ≥1 field (async-graphql requirement).
-    // Spec: empty role → FORBIDDEN fixed response on any selection.
+    // Spec: empty role → FORBIDDEN with extensions.code (no query surface).
     if granted.is_empty() {
         query = query.field(Field::new(
             "_empty",
             TypeRef::named_nn(TypeRef::BOOLEAN),
             |_| {
                 FieldFuture::new(async {
-                    Err::<Option<Value>, _>(async_graphql::Error::new(
-                        "FORBIDDEN: role has no GraphQL grants",
+                    Err::<Option<Value>, _>(client_error(
+                        "FORBIDDEN",
+                        "role has no GraphQL grants",
                     ))
                 })
             },
@@ -745,6 +746,20 @@ fn client_error(code: &str, message: impl Into<String>) -> async_graphql::Error 
     })
 }
 
+/// Command-mutation errors also carry numeric HTTP `extensions.status`.
+fn client_error_with_status(
+    code: &str,
+    status: u16,
+    message: impl Into<String>,
+) -> async_graphql::Error {
+    use async_graphql::ErrorExtensions;
+    let code = code.to_string();
+    async_graphql::Error::new(message.into()).extend_with(move |_, ext| {
+        ext.set("code", code.as_str());
+        ext.set("status", status as i32);
+    })
+}
+
 #[cfg(test)]
 mod execute_err_mapping_tests {
     use super::{client_error_for_execute_err, sanitize_compile_error, ENGINE_ERROR_CODES};
@@ -764,6 +779,34 @@ mod execute_err_mapping_tests {
                 "REJECTED",
             ]
         );
+    }
+
+    #[test]
+    fn command_status_code_maps_http_to_frozen_codes() {
+        use super::command_status_code;
+        assert_eq!(command_status_code(400), "BAD_REQUEST");
+        assert_eq!(command_status_code(401), "UNAUTHORIZED");
+        assert_eq!(command_status_code(403), "FORBIDDEN");
+        assert_eq!(command_status_code(404), "NOT_FOUND");
+        assert_eq!(command_status_code(422), "REJECTED");
+        // Undocumented 4xx (e.g. 409) → BAD_REQUEST, never CONFLICT
+        assert_eq!(command_status_code(409), "BAD_REQUEST");
+        assert_eq!(command_status_code(418), "BAD_REQUEST");
+        assert_eq!(command_status_code(500), "INTERNAL");
+        assert_eq!(command_status_code(503), "INTERNAL");
+        for code in [
+            command_status_code(400),
+            command_status_code(401),
+            command_status_code(404),
+            command_status_code(422),
+            command_status_code(409),
+            command_status_code(500),
+        ] {
+            assert!(
+                ENGINE_ERROR_CODES.contains(&code),
+                "command_status_code emitted undocumented code {code}"
+            );
+        }
     }
 
     #[test]
@@ -843,7 +886,8 @@ async fn resolve_command(
         .unwrap_or_else(Session::new);
     let service = ctx.data_opt::<Arc<Service>>();
     let Some(service) = service else {
-        return Err(async_graphql::Error::new(
+        return Err(client_error(
+            "INTERNAL",
             "command dispatcher not configured (use graphql_router_with_service)",
         ));
     };
@@ -853,7 +897,7 @@ async fn resolve_command(
         .get("input")
         .map(|v| v.deserialize::<serde_json::Value>())
         .transpose()
-        .map_err(|e| async_graphql::Error::new(format!("{e:?}")))?
+        .map_err(|e| client_error("BAD_REQUEST", format!("invalid command input: {e:?}")))?
         .unwrap_or(serde_json::json!({}));
 
     let request = CommandRequest {
@@ -862,8 +906,9 @@ async fn resolve_command(
         session_variables: session.variables().clone(),
     };
     let response = service.dispatch_request(&request).await;
-    // Map status → GraphQL error codes
+    // Map status → GraphQL error with extensions.code (+ status) — frozen v1 contract.
     if response.status >= 400 {
+        let code = command_status_code(response.status);
         let msg = if response.status >= 500 {
             "internal error".to_string()
         } else {
@@ -874,24 +919,25 @@ async fn resolve_command(
                 .unwrap_or("request failed")
                 .to_string()
         };
-        return Err(async_graphql::Error::new(format!(
-            "{msg} [{}]",
-            status_code_name(response.status)
-        )));
+        return Err(client_error_with_status(code, response.status, msg));
     }
     Value::from_json(response.body)
         .map(Some)
-        .map_err(|e| async_graphql::Error::new(format!("response encode: {e}")))
+        .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")))
 }
 
-fn status_code_name(status: u16) -> &'static str {
+/// Map HTTP command status → frozen `extensions.code` (see security/http specs).
+///
+/// 400→BAD_REQUEST, 401→UNAUTHORIZED, 404→NOT_FOUND, 422→REJECTED,
+/// other 4xx→BAD_REQUEST, 5xx→INTERNAL. No undocumented codes (e.g. CONFLICT).
+pub(crate) fn command_status_code(status: u16) -> &'static str {
     match status {
         400 => "BAD_REQUEST",
         401 => "UNAUTHORIZED",
         403 => "FORBIDDEN",
         404 => "NOT_FOUND",
-        409 => "CONFLICT",
-        _ if status >= 500 => "INTERNAL",
-        _ => "BAD_REQUEST",
+        422 => "REJECTED",
+        s if (400..500).contains(&s) => "BAD_REQUEST",
+        _ => "INTERNAL",
     }
 }
