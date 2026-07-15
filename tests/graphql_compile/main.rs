@@ -4,7 +4,7 @@
 #![cfg(all(feature = "graphql", feature = "sqlite"))]
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{Session, ROLE_KEY};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ async fn engine() -> GraphqlEngine {
         .unwrap();
     GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<ItemView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<ItemView>(ModelPermissions::new().grant("user", read().all_columns()))
         .build()
         .unwrap()
 }

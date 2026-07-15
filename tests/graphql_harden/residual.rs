@@ -1,7 +1,7 @@
 //! Residual red-team cases from post-quality-1 review (A8/A12/S9/E4/E6).
 
 use async_graphql::Request;
-use distributed::graphql::{claim, col, select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{claim, col, read, GraphqlEngine, ModelPermissions};
 use distributed::{
     DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
 };
@@ -50,7 +50,7 @@ async fn a8_nested_has_many_without_child_grant_is_unknown_field() {
     let engine = GraphqlEngine::from_manifest(&manifest, pool)
         .unwrap()
         .roles(&["user"])
-        .permission::<ParentView>("user", select().all_columns())
+        .permission::<ParentView>("user", read().all_columns())
         .build()
         .expect("build");
 
@@ -119,7 +119,7 @@ async fn a12_rel_where_without_target_grant_is_unknown_field() {
     let engine = GraphqlEngine::from_manifest(&manifest, pool)
         .unwrap()
         .roles(&["user"])
-        .permission::<ParentView>("user", select().all_columns())
+        .permission::<ParentView>("user", read().all_columns())
         // no ChildView permission
         .build()
         .expect("build");
@@ -185,11 +185,9 @@ async fn e4_missing_claim_header_is_stable_without_sql_leak() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().role(
-                "user",
-                select()
+            ModelPermissions::new().grant("user", read()
                     .all_columns()
-                    .filter(col("customer_id").eq(claim("x-user-id"))),
+                    .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
         )
         .build()

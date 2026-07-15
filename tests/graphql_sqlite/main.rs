@@ -4,7 +4,7 @@
 
 use async_graphql::Request;
 use distributed::{
-    graphql::{col, rel, select, GraphqlEngine, ModelPermissions},
+    graphql::{col, rel, read, GraphqlEngine, ModelPermissions},
     microsvc::Session,
     ColumnType, ForeignKey, PrimaryKey, ReadModel, RelationshipDef, RelationshipKind, TableColumn,
     TableKind, TableSchema, ROLE_KEY, USER_ID_KEY,
@@ -172,14 +172,12 @@ async fn m2m_permission_filter_resolves_through_field_names_to_columns() {
     let engine = GraphqlEngine::builder(pool)
         .table_schema(m2m_link_schema())
         .model::<M2mPlayer>(
-            ModelPermissions::new().role(
-                "user",
-                select()
+            ModelPermissions::new().grant("user", read()
                     .all_columns()
-                    .filter(rel("weapons", col("weapon_id").eq("w1"))),
+                    .rows(rel("weapons", col("weapon_id").eq("w1"))),
             ),
         )
-        .model::<M2mWeapon>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<M2mWeapon>(ModelPermissions::new().grant("user", read().all_columns()))
         .roles(&["user"])
         .build()
         .expect("build");

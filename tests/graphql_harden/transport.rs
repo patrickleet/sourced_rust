@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_graphql::Request;
 use distributed::graphql::{
-    exposed_command, graphiql_enabled_from_env_vars, select, GraphqlCommands, GraphqlEngine,
+    exposed_command, graphiql_enabled_from_env_vars, read, GraphqlCommands, GraphqlEngine,
     ModelPermissions,
 };
 use distributed::microsvc::{router, Service, Session};
@@ -21,7 +21,7 @@ async fn anonymous_introspection_disabled_when_flag_false() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "anonymous"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .introspection_for_anonymous(false)
         .build()
         .unwrap();
@@ -58,7 +58,7 @@ async fn anonymous_introspection_allowed_when_flag_true() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "anonymous"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .introspection_for_anonymous(true)
         .build()
         .unwrap();
@@ -77,7 +77,7 @@ async fn t3_introspection_over_http_respects_role() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "anonymous"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .introspection_for_anonymous(false)
         .graphiql(false)
         .build()
@@ -169,9 +169,7 @@ async fn t4_mutation_absent_without_command_grant() {
 
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])
-        .model::<Item>(ModelPermissions::new().role("user", select().all_columns()).role(
-            "admin",
-            select().all_columns(),
+        .model::<Item>(ModelPermissions::new().grant("user", read().all_columns()).grant("admin", read().all_columns(),
         ))
         .commands(cmds)
         .build()
@@ -214,7 +212,7 @@ async fn production_env_policy_disables_graphiql_http_get() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .graphiql(graphiql)
         .build()
         .unwrap();
@@ -239,7 +237,7 @@ async fn graphql_metrics_increment_on_execute() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .build()
         .unwrap();
     let s = session("user", "x");
@@ -264,7 +262,7 @@ async fn graphql_metrics_bad_request_status_label() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_bool_width(2)
         .build()
         .unwrap();

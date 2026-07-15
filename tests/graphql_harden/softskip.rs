@@ -9,7 +9,7 @@
 //! reject keys absent from `*_bool_exp` / `*_order_by` before compile runs.
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 
 use super::common::{
     assert_no_sql_leak, engine_all_columns, error_messages, extension_code, seed_orders, session,
@@ -61,9 +61,7 @@ async fn strict_denied_where_column_errors() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["restricted"])
         .model::<OrderView>(
-            ModelPermissions::new().role(
-                "restricted",
-                select().columns(["order_id", "status"]),
+            ModelPermissions::new().grant("restricted", read().columns(["order_id", "status"]),
             ),
         )
         .build()
@@ -143,7 +141,7 @@ async fn soft_skip_mode_is_opt_in_only() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .strict_where(false)
         .build()
         .unwrap();

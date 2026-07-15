@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 
 use super::common::{
     assert_no_sql_leak, engine_all_columns, error_messages, extension_code, seed_orders, session,
@@ -17,7 +17,7 @@ async fn compile_errors_do_not_leak_sql() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .max_in_list(1)
         .build()
         .unwrap();
@@ -69,7 +69,7 @@ async fn e3_sqlite_statement_timeout_returns_timeout_code() {
 
     let engine = GraphqlEngine::builder(pool.clone())
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .statement_timeout(Duration::from_millis(80))
         .build()
         .unwrap();

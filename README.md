@@ -1420,7 +1420,7 @@ distributed = { version = "0.1", features = ["graphql", "postgres"] }
 
 ```rust,ignore
 use distributed::graphql::{
-    claim, col, select, exposed_command, GraphqlCommands, GraphqlEngine, ModelPermissions,
+    claim, col, read, exposed_command, GraphqlCommands, GraphqlEngine, ModelPermissions,
 };
 use distributed::microsvc::{Service, Session};
 
@@ -1428,13 +1428,11 @@ let engine = GraphqlEngine::from_manifest(&manifest, pool)?
     .roles(&["user", "admin", "anonymous"])
     .model::<TodoView>(
         ModelPermissions::new()
-            .role(
-                "user",
-                select()
+            .grant("user", read()
                     .all_columns()
-                    .filter(col("owner_id").eq(claim("x-user-id"))),
+                    .rows(col("owner_id").eq(claim("x-user-id"))),
             )
-            .role("admin", select().all_columns()), // no owner filter
+            .grant("admin", read().all_columns()), // no owner filter
     )
     .commands(
         GraphqlCommands::new()
@@ -1471,22 +1469,26 @@ let service = Service::new()
 
 ### Permissions (deny by default)
 
-Roles see only columns and rows you grant. Unmentioned models/roles fail closed.
-Row filters can bind session claims (`claim("x-user-id")`, `claim("x-role")`, …)
-so multi-tenant RLS lives in the engine, not ad-hoc handler SQL.
+Three axes — **grant** a role, **columns** they may see, **rows** they may access.
+Unmentioned models/roles fail closed (that is the deny). There is no separate
+`.deny()` list: omit the role, narrow columns, or tighten `.rows(...)`.
 
 ```rust,ignore
-use distributed::graphql::{select, col, claim, ModelPermissions};
+use distributed::graphql::{read, col, claim, ModelPermissions};
 
 ModelPermissions::new()
-    .role(
+    .grant(
         "user",
-        select()
+        read()
             .all_columns()
-            .filter(col("owner_id").eq(claim("x-user-id"))),
+            .rows(col("owner_id").eq(claim("x-user-id"))),
     )
-    .role("anonymous", select().columns(["id", "status"]));
+    .grant("admin", read().all_columns()) // all rows
+    .grant("anonymous", read().columns(["id", "status"]));
 ```
+
+Row predicates can bind session claims (`claim("x-user-id")`, …) so multi-tenant
+RLS lives in the engine, not ad-hoc handler SQL.
 
 ### Identity
 

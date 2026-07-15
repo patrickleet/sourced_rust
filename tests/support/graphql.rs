@@ -5,7 +5,7 @@
 #![allow(dead_code)] // each including target uses a subset
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,7 @@ pub async fn seed_orders() -> sqlx::SqlitePool {
 pub fn engine_all_columns(pool: sqlx::SqlitePool) -> GraphqlEngine {
     GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<OrderView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .build()
         .unwrap()
 }

@@ -4,7 +4,7 @@
 #![cfg(all(feature = "graphql", feature = "postgres"))]
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{Session, ROLE_KEY};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
@@ -48,7 +48,7 @@ async fn postgres_list_query_when_database_url_set() {
 
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
-        .model::<SmokeView>(ModelPermissions::new().role("user", select().all_columns()))
+        .model::<SmokeView>(ModelPermissions::new().grant("user", read().all_columns()))
         .build()
         .expect("build");
 

@@ -1,7 +1,7 @@
 //! S* Injection red-team suite — real `GraphqlEngine::execute` only.
 
 use async_graphql::Request;
-use distributed::graphql::{select, GraphqlEngine, ModelPermissions};
+use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 
 use super::common::{
     assert_no_sql_leak, engine_all_columns, exec_json, seed_orders, session,
@@ -147,7 +147,7 @@ async fn s2_denied_where_column_fails_closed() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["restricted"])
         .model::<OrderView>(
-            ModelPermissions::new().role("restricted", select().columns(["order_id", "status"])),
+            ModelPermissions::new().grant("restricted", read().columns(["order_id", "status"])),
         )
         .build()
         .unwrap();
