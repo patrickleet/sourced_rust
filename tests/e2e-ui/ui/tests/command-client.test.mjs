@@ -99,7 +99,7 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.match(todos, /gql\.commands\.todosComplete/);
   assert.match(todos, /gql\.commands\.todosArchive/);
   assert.match(todos, /result:\s*\{\s*kind:\s*'fact'/);
-  assert.match(todos, /reconcile:\s*\{\s*kind:\s*'refetch'/);
+  assert.match(todos, /reconcile:\s*\{\s*kind:\s*'none'/);
   assert.match(todos, /list\.target\(/);
   assert.doesNotMatch(todos, /seedQueryCache|readQueryList|syncFromCache/);
   assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
@@ -118,6 +118,7 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.match(admin, /gql\.store\s*\(/);
   assert.match(admin, /gql\.commands\.todosForceArchive/);
   assert.match(admin, /list\.target\(/);
+  assert.match(admin, /reconcile:\s*\{\s*kind:\s*'none'/);
   assert.doesNotMatch(admin, /seedQueryCache|readQueryList/);
 });
 

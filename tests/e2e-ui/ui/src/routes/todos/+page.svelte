@@ -1,8 +1,8 @@
 <script lang="ts">
 	/**
-	 * Field notes — document store (cache transparent) + command pipeline.
-	 * List: `gql.store` → `$list.data` (optimistic / refetch follow the cache).
-	 * Writes: fact/ack + refetch reconcile (async projectors).
+	 * Field notes — document store + command pipeline.
+	 * Writes: optimistic → network → fact; no immediate refetch (async projectors).
+	 * Soft delayed refetch only so cache eventually matches RM.
 	 */
 	import { onDestroy } from 'svelte';
 	import { useGraphql, fx } from '$lib/gql';
@@ -62,10 +62,18 @@
 		return `t-${rand}`;
 	}
 
-	const factReconcile = {
+	// Never reconcile: 'refetch' on the command path — RM is not ready yet.
+	const factOpts = {
 		result: { kind: 'fact' as const },
-		reconcile: { kind: 'refetch' as const, document: list.document }
+		reconcile: { kind: 'none' as const }
 	};
+
+	/** After projector lag, refresh cache (merge preserves optimistic if still ahead). */
+	function scheduleProjectorCatchUp() {
+		window.setTimeout(() => {
+			void list.refetch();
+		}, 800);
+	}
 
 	async function onCreate(e: Event) {
 		e.preventDefault();
@@ -80,7 +88,7 @@
 		const result = await gql.commands.todosCreate(
 			{ todo_id, title: text },
 			{
-				...factReconcile,
+				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: {
@@ -99,10 +107,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'create failed';
 			return;
 		}
-		// Projector lag: second refetch after the pipeline's immediate one.
-		window.setTimeout(() => {
-			void list.refetch();
-		}, 900);
+		scheduleProjectorCatchUp();
 	}
 
 	async function onComplete(todo_id: string) {
@@ -116,7 +121,7 @@
 		const result = await gql.commands.todosComplete(
 			{ todo_id },
 			{
-				...factReconcile,
+				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'completed' }
@@ -130,9 +135,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'complete failed';
 			return;
 		}
-		window.setTimeout(() => {
-			void list.refetch();
-		}, 900);
+		scheduleProjectorCatchUp();
 	}
 
 	async function onArchive(todo_id: string) {
@@ -146,7 +149,7 @@
 		const result = await gql.commands.todosArchive(
 			{ todo_id },
 			{
-				...factReconcile,
+				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
@@ -160,9 +163,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'archive failed';
 			return;
 		}
-		window.setTimeout(() => {
-			void list.refetch();
-		}, 900);
+		scheduleProjectorCatchUp();
 	}
 </script>
 
@@ -175,8 +176,8 @@
 		<h1 class="fn-title">Field notes</h1>
 		<p class="fn-lede">
 			Tasks for <strong>{who}</strong>. List via <code>gql.store</code>
-			(<code>$list.data</code>); writes via <code>gql.commands.*</code> pipeline
-			(optimistic → fact → refetch). Cache is transparent — no manual seed/sync.
+			(<code>$list.data</code>); writes via <code>gql.commands.*</code>
+			(optimistic → fact, no immediate refetch).
 		</p>
 	</header>
 

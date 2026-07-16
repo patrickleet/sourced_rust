@@ -13,6 +13,7 @@ import {
   applyProjectionPayload,
   fx,
   rollback,
+  writeServerDataPreservingPending,
   type CacheOp,
   type CacheTarget,
   type CommandPolicy,
@@ -172,17 +173,18 @@ export async function runCommandPipeline<T = Record<string, unknown>>(
   if (browser && ops.length) applyCacheOps(deps.cache, ops);
   deps.runEffects?.(effects);
 
-  // Reconcile (subscription is usually already running; refetch optional)
+  // Reconcile (subscription is usually already running; refetch optional).
+  // For async projectors: immediate refetch often returns pre-projection rows.
+  // Never clobber pending optimistic status (archive/complete flicker).
   if (browser && merged.reconcileKind === 'refetch' && merged.reconcileDoc && deps.refetch) {
     const refetched = await deps.refetch(merged.reconcileDoc, merged.reconcileVars);
     if (refetched.data && !refetched.errors?.length) {
-      const key = cacheKey(merged.reconcileDoc, merged.reconcileVars);
-      deps.cache.set(key, {
-        data: refetched.data,
-        updatedAt: Date.now(),
-        pending: false,
-        optimistic: false
-      });
+      writeServerDataPreservingPending(
+        deps.cache,
+        merged.reconcileDoc,
+        merged.reconcileVars,
+        refetched.data
+      );
     }
   } else if (browser && merged.reconcileKind === 'invalidate' && merged.reconcileDoc) {
     deps.cache.invalidate(cacheKey(merged.reconcileDoc, merged.reconcileVars));

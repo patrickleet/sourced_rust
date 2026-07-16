@@ -28,6 +28,7 @@ import { documentToString } from './document.ts';
 import type { QueryCache } from './cache/query-cache.ts';
 import { cacheKey } from './cache/query-cache.ts';
 import type { CacheTarget } from './cache/ops.ts';
+import { writeServerDataPreservingPending } from './cache/ops.ts';
 import type { GraphqlClient } from './create-client.ts';
 
 export type StoreStatus = 'idle' | 'connecting' | 'live' | 'error';
@@ -226,14 +227,9 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 			emit();
 			return;
 		}
-		// Prefer client write-through; still write here so plain mock clients work.
+		// Merge server data under pending optimistic rows (async projectors).
 		if (result.data !== undefined && result.data !== null) {
-			qcache.set(key, {
-				data: result.data,
-				updatedAt: Date.now(),
-				optimistic: false,
-				pending: false
-			});
+			writeServerDataPreservingPending(qcache, docStr, variables, result.data);
 		}
 		error = null;
 		emit();

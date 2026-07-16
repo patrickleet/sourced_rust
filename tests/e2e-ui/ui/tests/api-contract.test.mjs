@@ -45,8 +45,14 @@ test('auth + WS modules use OIDC patterns', () => {
 
 test('website auth shell + fixture routes present', () => {
   const signin = fs.readFileSync(new URL('../src/routes/signin/+server.ts', import.meta.url), 'utf8');
-  assert.match(signin, /\/auth\/signin\/oidc/);
-  assert.match(signin, /X-Auth-Return-Redirect/);
+  assert.match(signin, /startOidcSignIn|auth\/signin\/oidc/);
+  const oidcStart = fs.readFileSync(
+    new URL('../src/lib/server/oidc-start.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(oidcStart, /\/auth\/signin\/oidc/);
+  assert.match(oidcStart, /X-Auth-Return-Redirect/);
+  assert.match(oidcStart, /assertOidcReady|well-known\/openid-configuration/);
   assert.ok(fs.existsSync(new URL('../src/routes/todos/+page.svelte', import.meta.url)));
   assert.ok(fs.existsSync(new URL('../src/routes/chat/+page.svelte', import.meta.url)));
   assert.ok(fs.existsSync(new URL('../src/routes/admin/+page.svelte', import.meta.url)));
@@ -264,7 +270,7 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(page, /\$list\.data/);
   assert.match(page, /optimistic:/);
   assert.match(page, /result:\s*\{\s*kind:\s*'fact'/);
-  assert.match(page, /reconcile:\s*\{\s*kind:\s*'refetch'/);
+  assert.match(page, /reconcile:\s*\{\s*kind:\s*'none'/);
   assert.doesNotMatch(page, /function mergeFromServer|seedQueryCache|readQueryList/);
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);

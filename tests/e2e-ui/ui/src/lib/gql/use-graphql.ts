@@ -72,7 +72,7 @@ export type UseGraphqlOptions = {
  * @example Command with optimistic list patch
  * await gql.commands.todosCreate(input, {
  *   result: { kind: 'fact' },
- *   reconcile: { kind: 'refetch', document: list.document },
+ *   reconcile: { kind: 'none' }, // async projectors — do not refetch on command success
  *   optimistic: { targets: [list.target('todos', 'todo_id')], row },
  * });
  */

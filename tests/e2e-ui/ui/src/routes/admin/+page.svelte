@@ -51,7 +51,8 @@
 			{ todo_id },
 			{
 				result: { kind: 'fact' },
-				reconcile: { kind: 'refetch', document: list.document },
+				// Async projector — never refetch on the command path.
+				reconcile: { kind: 'none' },
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
@@ -67,9 +68,10 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'force archive failed';
 			return;
 		}
+		// Soft catch-up after projector lag (not on the command success path).
 		window.setTimeout(() => {
 			void list.refetch();
-		}, 900);
+		}, 800);
 	}
 </script>
 

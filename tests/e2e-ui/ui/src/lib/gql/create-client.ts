@@ -18,7 +18,7 @@ import { requestGraphql, type GqlDocument } from './request.ts';
 import { documentToString } from './document.ts';
 import type { GqlAuth, GqlResult } from './types.ts';
 import type { QueryCache } from './cache/query-cache.ts';
-import { cacheKey } from './cache/query-cache.ts';
+import { writeServerDataPreservingPending } from './cache/ops.ts';
 
 export type GraphqlClientOptions = {
 	/** Absolute API URL or same-origin path, e.g. `/graphql` or `http://127.0.0.1:8791/graphql` */
@@ -73,6 +73,7 @@ export function createGraphqlClient(opts: GraphqlClientOptions): GraphqlClient {
 				(variables ?? {}) as TVariables
 			);
 			// Query write-through only — mutations go through the command pipeline.
+			// Preserve pending optimistic rows (async projector lag).
 			if (
 				opts.cache &&
 				writeThrough &&
@@ -80,16 +81,12 @@ export function createGraphqlClient(opts: GraphqlClientOptions): GraphqlClient {
 				!result.errors?.length &&
 				!looksLikeMutation(document)
 			) {
-				const key = cacheKey(
+				writeServerDataPreservingPending(
+					opts.cache,
 					documentToString(document as GqlDocument),
-					(variables ?? {}) as Record<string, unknown>
+					(variables ?? {}) as Record<string, unknown>,
+					result.data
 				);
-				opts.cache.set(key, {
-					data: result.data,
-					updatedAt: Date.now(),
-					optimistic: false,
-					pending: false
-				});
 			}
 			return result;
 		},
@@ -105,13 +102,12 @@ export function createGraphqlClient(opts: GraphqlClientOptions): GraphqlClient {
 							errors?: unknown[];
 						};
 						if (p.data && !p.errors?.length) {
-							const key = cacheKey(documentToString(document), {});
-							opts.cache.set(key, {
-								data: p.data,
-								updatedAt: Date.now(),
-								optimistic: false,
-								pending: false
-							});
+							writeServerDataPreservingPending(
+								opts.cache,
+								documentToString(document),
+								{},
+								p.data
+							);
 						}
 					}
 					handlers.onNext?.(payload);
