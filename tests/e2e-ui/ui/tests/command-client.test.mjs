@@ -91,33 +91,34 @@ test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
   assert.match(r.stdout, /command-client-ok/);
 });
 
-test('app pages use gql.commands.* pipeline (optimistic + fact/ack + reconcile)', () => {
+test('app pages use gql.store/live + commands pipeline (cache transparent)', () => {
   const todos = fs.readFileSync(pageSvelte, 'utf8');
+  assert.match(todos, /gql\.store\s*\(/);
+  assert.match(todos, /\$list\.data/);
   assert.match(todos, /gql\.commands\.todosCreate/);
   assert.match(todos, /gql\.commands\.todosComplete/);
   assert.match(todos, /gql\.commands\.todosArchive/);
   assert.match(todos, /result:\s*\{\s*kind:\s*'fact'/);
   assert.match(todos, /reconcile:\s*\{\s*kind:\s*'refetch'/);
-  assert.match(todos, /optimistic:/);
-  assert.match(todos, /QueryCache|gql\.cache|seedQueryCache/);
+  assert.match(todos, /list\.target\(/);
+  assert.doesNotMatch(todos, /seedQueryCache|readQueryList|syncFromCache/);
   assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
-  assert.doesNotMatch(todos, /url:\s*['"]\/graphql['"]/);
-  // No hand-rolled pending map / mergeFromServer — pipeline owns latency compensation
   assert.doesNotMatch(todos, /function mergeFromServer/);
-  assert.doesNotMatch(todos, /let pending = \$state/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
+  assert.match(chat, /gql\.live\s*\(/);
+  assert.match(chat, /\$lobby\.(data|status)/);
   assert.match(chat, /gql\.commands\.chatMessagesPost/);
-  assert.match(chat, /optimistic:/);
-  assert.match(chat, /result:\s*\{\s*kind:\s*'fact'/);
+  assert.match(chat, /lobby\.target\(/);
   assert.match(chat, /reconcile:\s*\{\s*kind:\s*'subscription'/);
+  assert.doesNotMatch(chat, /seedQueryCache|gql\.subscribe\s*\(/);
   assert.doesNotMatch(chat, /from '\$lib\/api\/commands\.generated'/);
 
   const admin = fs.readFileSync(path.join(uiRoot, 'src/routes/admin/+page.svelte'), 'utf8');
+  assert.match(admin, /gql\.store\s*\(/);
   assert.match(admin, /gql\.commands\.todosForceArchive/);
-  assert.match(admin, /optimistic:/);
-  assert.match(admin, /reconcile:\s*\{\s*kind:\s*'refetch'/);
-  assert.doesNotMatch(admin, /from '\$lib\/api\/commands\.generated'/);
+  assert.match(admin, /list\.target\(/);
+  assert.doesNotMatch(admin, /seedQueryCache|readQueryList/);
 });
 
 test('generated mutations are multiline; operations.gql is copy-paste ready', () => {
@@ -139,9 +140,10 @@ test('httpUrlToWsUrl maps HTTP GraphQL paths to /graphql/ws', async () => {
   assert.equal(httpUrlToWsUrl('https://api.example/graphql'), 'wss://api.example/graphql/ws');
 });
 
-test('chat page uses gql.subscribe (bound client), not raw authFromPageData', () => {
+test('chat page uses gql.live (not raw subscribe / authFromPageData)', () => {
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
-  assert.match(chat, /gql\.subscribe\s*\(/);
+  assert.match(chat, /gql\.live\s*\(/);
+  assert.doesNotMatch(chat, /gql\.subscribe\s*\(/);
   assert.doesNotMatch(chat, /authFromPageData/);
   assert.doesNotMatch(chat, /from '\$lib\/graphql-ws'/);
 });
