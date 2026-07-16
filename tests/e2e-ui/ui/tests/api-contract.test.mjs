@@ -259,23 +259,22 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(useGql, /createGraphqlClient|\/graphql/);
 
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
-  assert.match(page, /\$state<Todo\[\]>\(\[\.\.\.\(data\.todos/);
-  // Command pipeline + QueryCache (not hand-rolled mergeFromServer)
-  assert.match(page, /seedQueryCache|gql\.cache|QueryCache/);
+  // Document store (Houdini-style) — cache transparent
+  assert.match(page, /gql\.store\s*\(/);
+  assert.match(page, /\$list\.data/);
   assert.match(page, /optimistic:/);
   assert.match(page, /result:\s*\{\s*kind:\s*'fact'/);
   assert.match(page, /reconcile:\s*\{\s*kind:\s*'refetch'/);
-  assert.doesNotMatch(page, /function mergeFromServer/);
+  assert.doesNotMatch(page, /function mergeFromServer|seedQueryCache|readQueryList/);
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
   assert.match(page, /todosResource\.query|todos\.query/);
-  // Writes: generated command functions through pipeline.
   assert.match(page, /gql\.commands\.todosCreate/);
   assert.match(page, /gql\.commands\.todosComplete/);
   assert.match(page, /gql\.commands\.todosArchive/);
   assert.doesNotMatch(page, /mutations\.(create|complete|archive)/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
-  assert.match(page, /useGraphql|gql\.request|todosCreate/);
+  assert.match(page, /useGraphql|list\.refetch|todosCreate/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
@@ -374,8 +373,10 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.match(page, /useGraphql/);
   assert.doesNotMatch(page, /chat\.mutations\.post|mutations\.post/);
   assert.match(page, /chat\.subscription|subscription/);
-  // WS uses bound client — same auth as HTTP (no separate authFromPageData at call site).
-  assert.match(page, /gql\.subscribe\s*\(/);
+  // Live document store owns WS + cache (no raw gql.subscribe / authFromPageData).
+  assert.match(page, /gql\.live\s*\(/);
+  assert.match(page, /\$lobby\.(data|status)/);
+  assert.doesNotMatch(page, /gql\.subscribe\s*\(/);
   assert.doesNotMatch(page, /from '\$lib\/graphql-ws'/);
   assert.doesNotMatch(page, /authFromPageData/);
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
@@ -420,11 +421,13 @@ test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, a
   }
 });
 
-test('useGraphql attaches bindCommandsPipeline as client.commands', () => {
+test('useGraphql attaches pipeline commands + store/live helpers', () => {
   const use = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
   assert.match(use, /bindCommandsPipeline/);
   assert.match(use, /commands:\s*bindCommandsPipeline/);
   assert.match(use, /QueryCache/);
+  assert.match(use, /createDocumentStore|\.store\s*=|\bstore\b/);
+  assert.match(use, /\blive\b/);
   assert.match(use, /AppGraphqlClient/);
 });
 

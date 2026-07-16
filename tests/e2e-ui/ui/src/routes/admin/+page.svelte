@@ -1,31 +1,20 @@
 <script lang="ts">
 	/**
-	 * Admin: all field notes + force-archive via command pipeline + QueryCache.
+	 * Admin: document store + force-archive command pipeline.
 	 */
-	import { onMount } from 'svelte';
-	import {
-		useGraphql,
-		effect,
-		listTarget,
-		seedQueryCache,
-		readQueryList,
-		queryDocString
-	} from '$lib/gql';
+	import { onDestroy } from 'svelte';
+	import { useGraphql, effect } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { adminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
 
 	let { data } = $props();
 
-	let todos = $state<AdminTodoRow[]>([...(data.todos ?? [])]);
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
 
 	const who = $derived(sessionDisplayName(data.session));
-	const owners = $derived([...new Set(todos.map((t) => t.owner_id))].sort());
-	const open = $derived(todos.filter((t) => t.status !== 'archived'));
 	const listLimit = $derived(data.listLimit ?? 100);
-	const atCap = $derived(todos.length >= listLimit);
 
 	const gql = useGraphql(() => data, {
 		runEffects: (effects) => {
@@ -35,28 +24,25 @@
 		}
 	});
 
-	const adminDoc = queryDocString(adminTodos.query);
-	const adminTarget = listTarget(adminTodos.query, 'todos', 'todo_id');
-
-	function syncFromCache() {
-		const list = readQueryList<AdminTodoRow>(gql.cache, adminTodos.query, 'todos');
-		todos = list.length ? list : [...(data.todos ?? [])];
-	}
-
-	onMount(() => {
-		const key = seedQueryCache(gql.cache, adminTodos.query, { todos: data.todos ?? [] });
-		syncFromCache();
-		return gql.cache.subscribe(key, () => syncFromCache());
+	const list = gql.store({
+		document: adminTodos.query,
+		initialData: { todos: data.todos ?? [] },
+		select: (d: { todos?: AdminTodoRow[] }) => d?.todos ?? []
 	});
 
 	$effect(() => {
-		seedQueryCache(gql.cache, adminTodos.query, { todos: data.todos ?? [] });
-		syncFromCache();
+		list.seed({ todos: data.todos ?? [] });
 	});
+
+	onDestroy(() => list.destroy());
+
+	const owners = $derived([...new Set($list.data.map((t) => t.owner_id))].sort());
+	const open = $derived($list.data.filter((t) => t.status !== 'archived'));
+	const atCap = $derived($list.data.length >= listLimit);
 
 	async function forceArchive(todo_id: string) {
 		if (busy) return;
-		const target = todos.find((t) => t.todo_id === todo_id);
+		const target = $list.data.find((t) => t.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
@@ -65,9 +51,9 @@
 			{ todo_id },
 			{
 				result: { kind: 'fact' },
-				reconcile: { kind: 'refetch', document: adminDoc },
+				reconcile: { kind: 'refetch', document: list.document },
 				optimistic: {
-					targets: [adminTarget],
+					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
 				},
 				onError: ({ errors }) => [
@@ -82,7 +68,7 @@
 			return;
 		}
 		window.setTimeout(() => {
-			void gql.request(adminTodos.query);
+			void list.refetch();
 		}, 900);
 	}
 </script>
@@ -119,7 +105,7 @@
 
 	<div class="ad-stats">
 		<div class="ad-stat">
-			<span class="ad-stat-n">{todos.length}</span>
+			<span class="ad-stat-n">{$list.data.length}</span>
 			<span class="ad-stat-l">notes</span>
 		</div>
 		<div class="ad-stat">
@@ -139,7 +125,7 @@
 		</p>
 	{/if}
 
-	{#if todos.length === 0}
+	{#if $list.data.length === 0}
 		<p class="ad-empty">No notes in the read model yet. Create some as alice/bob on /todos.</p>
 	{:else}
 		<div class="ad-table-wrap">
@@ -154,7 +140,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each todos as t (t.todo_id)}
+					{#each $list.data as t (t.todo_id)}
 						<tr>
 							<td class="ad-owner">{t.owner_id}</td>
 							<td>{t.title}</td>

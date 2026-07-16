@@ -1,7 +1,12 @@
 /**
  * Browser binder: page data → GqlAuth + createGraphqlClient (POST /graphql).
- * Attaches generated command helpers as `client.commands.*` through the
- * command result pipeline when a browser QueryCache is available.
+ *
+ * Cache is **transparent** (Houdini-style):
+ * - `gql.store` / `gql.live` seed + follow the QueryCache automatically
+ * - `request` / `subscribe` write-through into the cache
+ * - `gql.commands.*` pipeline patches the same cache keys
+ *
+ * Pages should not call seedQueryCache / cache.subscribe by hand.
  */
 import { createGraphqlClient, type GraphqlClient } from './create-client.ts';
 import { authFromPageData, type PageGraphqlData } from './auth-from-page.ts';
@@ -12,18 +17,38 @@ import {
 } from './bind-commands-pipeline.ts';
 import { QueryCache } from './cache/query-cache.ts';
 import type { Effect } from './cache/ops.ts';
+import {
+	createDocumentStore,
+	type DocumentStore,
+	type DocumentStoreOptions
+} from './document-store.ts';
 
 export type { PageGraphqlData } from './auth-from-page.ts';
 export { authFromPageData } from './auth-from-page.ts';
 
-/** Bound HTTP + WS client with pipelined command functions + shared cache. */
+/** Bound HTTP + WS client with pipelined commands + document stores. */
 export type AppGraphqlClient = GraphqlClient & {
 	commands: PipelinedBoundCommands;
+	/** Shared browser query cache (escape hatch; prefer store/live). */
 	cache: QueryCache;
+	/**
+	 * Follow a query document in the cache (SSR seed + refetch/optimistic updates).
+	 * Use `$store.data` in templates.
+	 */
+	store: <TData = Record<string, unknown>, TSelected = TData>(
+		options: DocumentStoreOptions<TData, TSelected>
+	) => DocumentStore<TSelected>;
+	/**
+	 * Like `store` + automatic GraphQL subscription for the same document.
+	 * Connection status is on `$store.status`.
+	 */
+	live: <TData = Record<string, unknown>, TSelected = TData>(
+		options: Omit<DocumentStoreOptions<TData, TSelected>, 'live'>
+	) => DocumentStore<TSelected>;
 };
 
 export type UseGraphqlOptions = {
-	/** Override / seed the shared browser cache (default: new QueryCache). */
+	/** Override the shared browser cache (default: new QueryCache). */
 	cache?: QueryCache;
 	/** Per-command default result/reconcile policies. */
 	policies?: CommandPolicyMap;
@@ -32,16 +57,24 @@ export type UseGraphqlOptions = {
 };
 
 /**
- * Client bound to same-origin `/graphql` (Vite proxies to the API in dev).
- * Pass a getter so reactive page data is read on each request / subscribe.
+ * Client bound to same-origin `/graphql`.
  *
- * @example
+ * @example Chat (cache transparent)
  * const gql = useGraphql(() => data);
- * await gql.commands.todosCreate(
- *   { todo_id, title },
- *   { optimistic: { targets: [...], row }, result: { kind: 'fact' }, reconcile: { kind: 'refetch', document } }
- * );
- * gql.subscribe(chat.subscription, { onNext });
+ * const lobby = gql.live({
+ *   document: chat.subscription ?? chat.query,
+ *   initialData: { chat_messages: data.messages },
+ *   select: (d) => d.chat_messages ?? [],
+ * });
+ * // {$lobby.data} {$lobby.status}
+ * onDestroy(() => lobby.destroy());
+ *
+ * @example Command with optimistic list patch
+ * await gql.commands.todosCreate(input, {
+ *   result: { kind: 'fact' },
+ *   reconcile: { kind: 'refetch', document: list.document },
+ *   optimistic: { targets: [list.target('todos', 'todo_id')], row },
+ * });
  */
 export function useGraphql(
 	getData: () => PageGraphqlData,
@@ -54,9 +87,24 @@ export function useGraphql(
 		cache,
 		writeThrough: true
 	});
+
+	function store<TData = Record<string, unknown>, TSelected = TData>(
+		storeOpts: DocumentStoreOptions<TData, TSelected>
+	): DocumentStore<TSelected> {
+		return createDocumentStore(client, storeOpts);
+	}
+
+	function live<TData = Record<string, unknown>, TSelected = TData>(
+		storeOpts: Omit<DocumentStoreOptions<TData, TSelected>, 'live'>
+	): DocumentStore<TSelected> {
+		return createDocumentStore(client, { ...storeOpts, live: true });
+	}
+
 	return {
 		...client,
 		cache,
+		store,
+		live,
 		commands: bindCommandsPipeline(client, {
 			cache,
 			policies: options.policies,

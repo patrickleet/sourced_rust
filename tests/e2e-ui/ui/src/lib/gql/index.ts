@@ -46,6 +46,17 @@ export type {
 	ReconcileKind,
 	CommandPipelineOptions
 } from './cache/index.ts';
+
+/** Houdini-style document store (prefer over manual cache helpers). */
+export { createDocumentStore } from './document-store.ts';
+export type {
+	DocumentStore,
+	DocumentStoreOptions,
+	DocumentStoreSnapshot,
+	StoreStatus
+} from './document-store.ts';
+
+/** Escape-hatch cache helpers — prefer `gql.store` / `gql.live`. */
 export {
 	seedQueryCache,
 	readQueryList,

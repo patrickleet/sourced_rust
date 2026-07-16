@@ -1,29 +1,17 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — co-located `chat` resource + command pipeline.
-	 * Posts: `gql.commands.chatMessagesPost` (optimistic + fact; reconcile via subscription).
-	 * Live: `gql.subscribe` write-through into QueryCache.
+	 * Lobby chat — Houdini-style document store (cache is transparent).
+	 * Live list: `gql.live(...)` → `$lobby.data` / `$lobby.status`
+	 * Posts: command pipeline with optimistic row against the same store document.
 	 */
-	import { onDestroy, onMount, tick } from 'svelte';
-	import {
-		useGraphql,
-		effect,
-		listTarget,
-		seedQueryCache,
-		readQueryList,
-		queryDocString
-	} from '$lib/gql';
+	import { onDestroy, tick } from 'svelte';
+	import { useGraphql, effect } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
 
 	let { data } = $props();
-	let messages = $state<ChatMsg[]>([...(data.messages ?? [])]);
-	let status = $state<'connecting' | 'live' | 'error' | 'idle'>('idle');
-	let subError = $state<string | null>(null);
 	let sendError = $state<string | null>(null);
-	let unsub: (() => void) | null = null;
-	let unsubCache: (() => void) | null = null;
 	let logEl: HTMLDivElement | undefined = $state();
 	let draft = $state('');
 	let busy = $state(false);
@@ -40,12 +28,21 @@
 	});
 
 	const subDoc = chat.subscription ?? chat.query;
-	const chatTarget = listTarget(subDoc, 'chat_messages', 'message_id');
 
-	function syncFromCache() {
-		const list = readQueryList<ChatMsg>(gql.cache, subDoc, 'chat_messages');
-		messages = sortChatMessages(list.length ? list : (data.messages ?? []));
-	}
+	/** Cache + live subscription — no manual seed/subscribe/sync. */
+	const lobby = gql.live({
+		document: subDoc,
+		initialData: { chat_messages: data.messages ?? [] },
+		select: (d: { chat_messages?: ChatMsg[] }) =>
+			sortChatMessages(d?.chat_messages ?? [])
+	});
+
+	// Keep seed in sync if load re-runs (navigation / invalidate).
+	$effect(() => {
+		lobby.seed({ chat_messages: data.messages ?? [] });
+	});
+
+	onDestroy(() => lobby.destroy());
 
 	async function scrollBottom() {
 		await tick();
@@ -53,58 +50,8 @@
 	}
 
 	$effect(() => {
-		messages;
+		$lobby.data;
 		void scrollBottom();
-	});
-
-	function applyPayload(payload: unknown) {
-		const p = payload as {
-			data?: { chat_messages?: ChatMsg[] };
-			errors?: Array<{ message: string }>;
-		};
-		if (p?.errors?.length) {
-			subError = p.errors[0].message;
-			status = 'error';
-			return;
-		}
-		// subscribe write-through already updated cache; sync UI.
-		if (p?.data?.chat_messages) {
-			status = 'live';
-			subError = null;
-			syncFromCache();
-		}
-	}
-
-	function connect() {
-		unsub?.();
-		status = 'connecting';
-		subError = null;
-		unsub = gql.subscribe(subDoc, {
-			onNext: applyPayload,
-			onError: (e) => {
-				status = 'error';
-				if (e instanceof Event) subError = 'WebSocket error — is the API running on :8791?';
-				else if (Array.isArray(e)) subError = JSON.stringify(e);
-				else subError = String(e);
-			},
-			onComplete: () => {
-				if (status === 'live') status = 'connecting';
-			}
-		});
-	}
-
-	onMount(() => {
-		const key = seedQueryCache(gql.cache, subDoc, {
-			chat_messages: data.messages ?? []
-		});
-		syncFromCache();
-		unsubCache = gql.cache.subscribe(key, () => syncFromCache());
-		connect();
-	});
-
-	onDestroy(() => {
-		unsub?.();
-		unsubCache?.();
 	});
 
 	function shortId(id: string) {
@@ -138,17 +85,13 @@
 			created_at: new Date().toISOString()
 		};
 		const result = await gql.commands.chatMessagesPost(
+			{ message_id, body, room_id: data.room },
 			{
-				message_id,
-				body,
-				room_id: data.room
-			},
-			{
-				// Fact-shaped payload; live list truth from subscription write-through.
 				result: { kind: 'fact' },
-				reconcile: { kind: 'subscription', document: queryDocString(subDoc) },
+				// Sub already live — no extra network; optimistic stays until push.
+				reconcile: { kind: 'subscription', document: lobby.document },
 				optimistic: {
-					targets: [chatTarget],
+					targets: [lobby.target('chat_messages', 'message_id')],
 					row: optimisticRow
 				},
 				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'send failed')]
@@ -170,13 +113,13 @@
 				<div class="ch-kicker">Room · {data.room}</div>
 				<h1 class="ch-title">Lobby</h1>
 			</div>
-			<div class="ch-status" data-state={status}>
+			<div class="ch-status" data-state={$lobby.status}>
 				<span class="ch-pulse" aria-hidden="true"></span>
-				{#if status === 'live'}
+				{#if $lobby.status === 'live'}
 					Live
-				{:else if status === 'connecting'}
+				{:else if $lobby.status === 'connecting'}
 					Connecting…
-				{:else if status === 'error'}
+				{:else if $lobby.status === 'error'}
 					Offline
 				{:else}
 					Idle
@@ -184,9 +127,8 @@
 			</div>
 		</div>
 		<p class="ch-lede">
-			Co-located <code>chat.resource</code>: SSR seed + live
-			<code>gql.subscribe</code> (cache write-through) +
-			<code>gql.commands.chatMessagesPost</code> pipeline. Signed in as
+			<code>gql.live</code> owns the list (cache + subscription write-through). Posts use
+			<code>gql.commands.*</code> with optimistic rows against the same document. Signed in as
 			<strong>{displayName}</strong>.
 		</p>
 	</header>
@@ -197,11 +139,11 @@
 			<span>{data.gqlError}</span>
 		</div>
 	{/if}
-	{#if subError}
+	{#if $lobby.error}
 		<div class="ch-alert" role="alert">
 			<strong>Subscription</strong>
-			<span>{subError}</span>
-			<button type="button" class="ch-link-btn" onclick={connect}>Retry</button>
+			<span>{$lobby.error}</span>
+			<button type="button" class="ch-link-btn" onclick={() => lobby.connect()}>Retry</button>
 		</div>
 	{/if}
 	{#if sendError}
@@ -213,13 +155,13 @@
 
 	<div class="ch-shell">
 		<div class="ch-log" bind:this={logEl} role="log" aria-live="polite" aria-relevant="additions">
-			{#if messages.length === 0}
+			{#if $lobby.data.length === 0}
 				<div class="ch-empty">
 					<div class="ch-empty-icon" aria-hidden="true">◇</div>
 					<p>No messages yet. Say hello to the lobby.</p>
 				</div>
 			{:else}
-				{#each messages as m, i (m.message_id)}
+				{#each $lobby.data as m, i (m.message_id)}
 					{@const mine = me && m.author_id === me}
 					<article class="ch-msg" class:mine style="--i: {i}">
 						<header class="ch-msg-meta">
@@ -529,7 +471,9 @@
 		background: #fff;
 		color: var(--ink);
 		outline: none;
-		transition: border-color 0.15s ease, box-shadow 0.15s ease;
+		transition:
+			border-color 0.15s ease,
+			box-shadow 0.15s ease;
 	}
 
 	.ch-input:focus {
