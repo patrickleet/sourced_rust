@@ -378,6 +378,39 @@ create_human() {
   printf '%s' "$uid"
 }
 
+# Allow self-registration on the hosted login UI (Create account → OIDC → Register).
+# Default Zitadel policy often has allowRegister=false.
+echo "==> Login policy: allowRegister + username/password"
+LOGIN_POL=$(curl -sS "$ZITADEL_HOST/management/v1/policies/login" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' || echo '{}')
+# Prefer update custom policy; fall back to add if only IAM default exists.
+REG_BODY=$(jq -n '{
+  allowRegister: true,
+  allowUsernamePassword: true,
+  allowExternalIdp: true,
+  forceMfa: false,
+  passwordCheckLifetime: false,
+  hidePasswordReset: false,
+  ignoreUnknownUsernames: false,
+  defaultRedirectUri: "",
+  passwordlessType: "PASSWORDLESS_TYPE_ALLOWED",
+  forceMfaLocalOnly: false
+}')
+# Try org custom login policy update first
+if ! curl -sS -o /tmp/e2e-login-pol.out -w '%{http_code}' -X PUT \
+  "$ZITADEL_HOST/management/v1/policies/login" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d "$REG_BODY" | grep -qE '^(200|201)$'; then
+  # Create custom policy if update failed (e.g. still on default-only)
+  code=$(curl -sS -o /tmp/e2e-login-pol.out -w '%{http_code}' -X POST \
+    "$ZITADEL_HOST/management/v1/policies/login" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+    -d "$REG_BODY" || true)
+  echo "    login policy create/update HTTP $code (body: $(head -c 200 /tmp/e2e-login-pol.out 2>/dev/null || true))"
+else
+  echo "    allowRegister=true (updated)"
+fi
+
 echo "==> Human users (browser login: alice, bob, admin)"
 ALICE_UID=$(create_human "alice" "Password1!" "user" "alice@e2e.local")
 echo "    alice → $ALICE_UID"
