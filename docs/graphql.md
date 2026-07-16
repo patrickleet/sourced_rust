@@ -114,3 +114,7 @@ git diff --exit-code schema.graphql   # CI gate
 - Event streaming (`_stream` cursors)
 - Remote schemas / joins
 - Querying operational tables (`outbox_messages`, event store, …)
+
+## Pre-release work (surface IR + client cache)
+
+See [pre-release-surface-ir-and-client-cache.md](./pre-release-surface-ir-and-client-cache.md) and GitKB `specs/query-layer/v1/*`.
