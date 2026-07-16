@@ -97,6 +97,29 @@ Pass `change_stream(repo.read_model_changes())` for live subscriptions.
 Command mutations: register `GraphqlCommands` on the builder and use
 `graphql_router_with_service` / `with_graphql` so `Request::data` carries `Service`.
 
+### Command return modes (ack / fact / projection)
+
+**Command success does not imply projection visibility.**
+
+| Handler topology | Return payload | Client `result.kind` |
+|------------------|----------------|----------------------|
+| Events/outbox only; projector separate (**default Seeker / e2e-ui todos**) | ack or domain-fact fields only | `ack` / `fact` + reconcile (subscription/refetch) |
+| Handler commits **read model in the same request** | view-shaped JSON matching GraphQL output / RM columns | `projection` — client may apply payload now |
+
+Rules:
+
+1. If you **write** the read model in the command, **return it** (view-shaped). Prefer
+   `stage_projection_and_payload(&mut plan, &view)` so upsert + JSON cannot drift, or
+   `projection_return_value(&view)` after you commit the same row.
+2. If projection is a **separate** event handler, return **ack/fact only** — do **not**
+   invent a full list row the RM has not stored.
+3. e2e-ui `todos.create` returns fact-shaped `TodoCreatePayload` — treat as **`fact`**,
+   not projection-from-store.
+
+Surface IR: SDL is built via `build_surface` → `graphql_sdl_from_surface` (shared inventory
+for dialect-honest comparison ops and role grants). Runtime schema still partially dual
+until full IR wire-up.
+
 ## SDL artifact (CI gate)
 
 ```bash

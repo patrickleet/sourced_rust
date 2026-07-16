@@ -21,3 +21,22 @@ export { browserGraphql } from './client.ts';
 // Re-export command binders for non-useGraphql call sites (tests, SSR factories).
 export { bindCommands } from '$lib/api/commands.generated';
 export type { BoundCommands, CommandClient } from '$lib/api/commands.generated';
+
+/** Browser query cache + command result pipeline (ack/fact/projection). */
+export {
+	QueryCache,
+	cacheKey,
+	runCommandPipeline,
+	effect,
+	applyCacheOps,
+	rollback
+} from './cache/index.ts';
+export type {
+	CacheOp,
+	CacheTarget,
+	CommandPolicy,
+	Effect,
+	ResultKind,
+	ReconcileKind,
+	CommandPipelineOptions
+} from './cache/index.ts';
