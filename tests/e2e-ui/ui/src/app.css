@@ -1252,3 +1252,34 @@ main {
 	--rule: rgba(28, 28, 26, 0.06);
 	--shadow: var(--df-shadow-sm);
 }
+
+/* Auth / OIDC configuration error (/?error=Configuration) */
+.wf-auth-banner {
+	margin: 0 0 1.25rem;
+	padding: 1rem 1.15rem;
+	border-radius: 10px;
+	background: rgba(229, 62, 62, 0.1);
+	border: 1px solid rgba(229, 62, 62, 0.35);
+	color: #7b1e1e;
+	text-align: left;
+	font-size: 0.92rem;
+	line-height: 1.45;
+}
+.wf-auth-banner strong {
+	display: block;
+	margin-bottom: 0.35rem;
+	font-size: 0.95rem;
+}
+.wf-auth-banner p {
+	margin: 0 0 0.65rem;
+}
+.wf-auth-banner ol {
+	margin: 0;
+	padding-left: 1.2rem;
+}
+.wf-auth-banner code {
+	font-size: 0.85em;
+	padding: 0.05em 0.3em;
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.06);
+}

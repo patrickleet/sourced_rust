@@ -9,6 +9,8 @@
 
 	const session = $derived(page.data.session);
 	const signedIn = $derived(!!session?.user);
+	/** Auth.js bounce when OIDC/IdP is misconfigured or Zitadel is down. */
+	const authConfigError = $derived(page.url.searchParams.get('error') === 'Configuration');
 
 	/** One file / one concept per code block — never merge paths in a single sample. */
 	type CodeBlock = { file: string; label: string; code: string };
@@ -358,6 +360,29 @@ subscription {
 	<!-- Hero: allowed soft/transparent grid treatment -->
 	<section class="wf-hero">
 		<div class="wf-hero-inner">
+			{#if authConfigError}
+				<div class="wf-auth-banner" role="alert">
+					<strong>Identity provider unavailable</strong>
+					<p>
+						Sign-in / create-account need Zitadel. Docker was not reachable (or OIDC env is
+						missing), so Auth.js returned <code>error=Configuration</code>.
+					</p>
+					<ol>
+						<li>Start Docker / Colima</li>
+						<li>
+							<code>cd tests/e2e-ui && make up</code> — boots Postgres + Zitadel and enables
+							self-registration
+						</li>
+						<li>
+							<code>source e2e-ui.env && make run</code> — API + UI with OIDC
+						</li>
+						<li>
+							Demo logins: <code>alice</code> / <code>bob</code> / <code>admin</code> ·
+							<code>Password1!</code>
+						</li>
+					</ol>
+				</div>
+			{/if}
 			<span class="wf-kicker">Distributed · e2e-ui template</span>
 			<h1>
 				A <em>framework template</em> you run as full e2e tests — kept honest by the library.
