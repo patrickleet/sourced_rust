@@ -232,3 +232,131 @@ export function applyProjectionPayload(
   }));
   return applyCacheOps(cache, ops);
 }
+
+/**
+ * Write a server query/subscription payload into the cache **without** clobbering
+ * optimistic rows that the projector has not caught up to yet.
+ *
+ * Fixes archive/complete flicker: optimistic → immediate refetch (stale RM) → late refetch.
+ * While `pending`/`optimistic`, keep local rows that still differ from server by PK.
+ */
+export function writeServerDataPreservingPending(
+  cache: QueryCache,
+  document: string,
+  variables: Record<string, unknown> | undefined,
+  serverData: unknown,
+  /** List path on the document, e.g. "todos". When omitted, tries common roots. */
+  listPath?: string,
+  by = 'todo_id'
+): void {
+  const key = cacheKey(document, variables);
+  const prev = cache.get(key);
+  const now = Date.now();
+
+  if (!prev?.pending && !prev?.optimistic) {
+    cache.set(key, {
+      data: serverData,
+      updatedAt: now,
+      pending: false,
+      optimistic: false
+    });
+    return;
+  }
+
+  const prevData = prev.data;
+  if (
+    !prevData ||
+    typeof prevData !== 'object' ||
+    !serverData ||
+    typeof serverData !== 'object'
+  ) {
+    // Can't merge — keep optimistic until a later refetch
+    return;
+  }
+
+  const path =
+    listPath ??
+    (Array.isArray((serverData as Record<string, unknown>).todos)
+      ? 'todos'
+      : Array.isArray((serverData as Record<string, unknown>).chat_messages)
+        ? 'chat_messages'
+        : undefined);
+
+  if (!path) {
+    // Non-list document: keep pending local data
+    return;
+  }
+
+  const serverList = getAt(serverData, path);
+  const localList = getAt(prevData, path);
+  if (!Array.isArray(serverList) || !Array.isArray(localList)) {
+    return;
+  }
+
+  const serverById = new Map<unknown, Record<string, unknown>>();
+  for (const row of serverList) {
+    if (row && typeof row === 'object') {
+      const r = row as Record<string, unknown>;
+      serverById.set(r[by], r);
+    }
+  }
+
+  const localById = new Map<unknown, Record<string, unknown>>();
+  for (const row of localList) {
+    if (row && typeof row === 'object') {
+      const r = row as Record<string, unknown>;
+      localById.set(r[by], r);
+    }
+  }
+
+  const merged: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+
+  // Prefer server order; overlay optimistic when server still lags
+  for (const sRow of serverList) {
+    if (!sRow || typeof sRow !== 'object') continue;
+    const s = sRow as Record<string, unknown>;
+    const id = s[by];
+    seen.add(id);
+    const local = localById.get(id);
+    if (local && shallowRowDiffers(local, s)) {
+      merged.push({ ...local });
+    } else {
+      merged.push({ ...s });
+    }
+  }
+
+  // Optimistic creates not yet on server
+  for (const [id, local] of localById) {
+    if (!seen.has(id) && !serverById.has(id)) {
+      merged.push({ ...local });
+    }
+  }
+
+  let stillPending = false;
+  for (const row of merged) {
+    const id = row[by];
+    const s = serverById.get(id);
+    if (!s || shallowRowDiffers(row, s)) {
+      stillPending = true;
+      break;
+    }
+  }
+
+  const data = setAt(serverData, path, merged);
+  cache.set(key, {
+    data,
+    updatedAt: now,
+    pending: stillPending,
+    optimistic: stillPending
+  });
+}
+
+/** True if any shared key differs (status, title, …). */
+function shallowRowDiffers(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (a[k] !== b[k]) return true;
+  }
+  return false;
+}

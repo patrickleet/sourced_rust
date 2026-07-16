@@ -3,6 +3,7 @@ export {
   applyCacheOp,
   applyCacheOps,
   applyProjectionPayload,
+  writeServerDataPreservingPending,
   fx,
   rollback,
   type CacheOp,
