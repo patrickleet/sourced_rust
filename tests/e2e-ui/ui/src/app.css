@@ -259,6 +259,25 @@ main {
 	background: #2a2a28;
 }
 
+/* Secondary nav CTA — next to primary Sign in */
+.cta-button-outline {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.48rem 0.9rem;
+	font-weight: 600;
+	font-size: 0.875rem;
+	text-decoration: none;
+	color: var(--wf-ink);
+	background: transparent;
+	border: 1px solid var(--wf-line-strong);
+	border-radius: 5px;
+}
+
+.cta-button-outline:hover {
+	border-color: var(--wf-ink-muted);
+	background: rgba(28, 28, 26, 0.04);
+}
+
 @media (min-width: 768px) {
 	.navbar-burger {
 		display: none;

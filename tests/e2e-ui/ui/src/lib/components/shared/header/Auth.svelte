@@ -45,7 +45,7 @@
 		{/if}
 	</button>
 {:else}
-	<a href={signInHref} class="auth-signin-btn">Sign In</a>
+	<a href={signInHref} class="cta-button">Sign in</a>
 {/if}
 
 {#if children}
