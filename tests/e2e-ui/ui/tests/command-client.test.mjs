@@ -91,20 +91,32 @@ test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
   assert.match(r.stdout, /command-client-ok/);
 });
 
-test('app pages use gql.commands.* (pre-bound on useGraphql client)', () => {
+test('app pages use gql.commands.* pipeline (optimistic + fact/ack + reconcile)', () => {
   const todos = fs.readFileSync(pageSvelte, 'utf8');
   assert.match(todos, /gql\.commands\.todosCreate/);
   assert.match(todos, /gql\.commands\.todosComplete/);
   assert.match(todos, /gql\.commands\.todosArchive/);
+  assert.match(todos, /result:\s*\{\s*kind:\s*'fact'/);
+  assert.match(todos, /reconcile:\s*\{\s*kind:\s*'refetch'/);
+  assert.match(todos, /optimistic:/);
+  assert.match(todos, /QueryCache|gql\.cache|seedQueryCache/);
   assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
   assert.doesNotMatch(todos, /url:\s*['"]\/graphql['"]/);
+  // No hand-rolled pending map / mergeFromServer — pipeline owns latency compensation
+  assert.doesNotMatch(todos, /function mergeFromServer/);
+  assert.doesNotMatch(todos, /let pending = \$state/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
   assert.match(chat, /gql\.commands\.chatMessagesPost/);
+  assert.match(chat, /optimistic:/);
+  assert.match(chat, /result:\s*\{\s*kind:\s*'fact'/);
+  assert.match(chat, /reconcile:\s*\{\s*kind:\s*'subscription'/);
   assert.doesNotMatch(chat, /from '\$lib\/api\/commands\.generated'/);
 
   const admin = fs.readFileSync(path.join(uiRoot, 'src/routes/admin/+page.svelte'), 'utf8');
   assert.match(admin, /gql\.commands\.todosForceArchive/);
+  assert.match(admin, /optimistic:/);
+  assert.match(admin, /reconcile:\s*\{\s*kind:\s*'refetch'/);
   assert.doesNotMatch(admin, /from '\$lib\/api\/commands\.generated'/);
 });
 

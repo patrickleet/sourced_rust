@@ -1,12 +1,13 @@
 <script lang="ts">
 	/**
-	 * Optimistic todos: co-located `todos` resource owns the **query** document.
-	 * All writes use generated command functions (GraphQL wire under the hood).
-	 * SSR load and client refetch use the same `todos.query` reference.
+	 * Field notes — co-located `todos` query + command pipeline.
+	 *
+	 * Writes: `gql.commands.*` through optimistic → network → result.kind (fact/ack)
+	 * → reconcile (refetch). Read model is async (projectors); command success ≠ list truth.
+	 * List UI is driven by the document-keyed QueryCache.
 	 */
-	import { untrack } from 'svelte';
-	import { useGraphql } from '$lib/gql';
-	
+	import { onMount } from 'svelte';
+	import { useGraphql, effect, listTarget, seedQueryCache, readQueryList, queryDocString } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
@@ -16,58 +17,52 @@
 	let { data } = $props();
 
 	let title = $state('');
-	// Seed from SSR so first client paint matches server HTML (no empty flash).
 	let todos = $state<Todo[]>([...(data.todos ?? [])]);
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
-	/** Ids with unconfirmed optimistic status — local wins until server matches. */
-	let pending = $state<Record<string, string>>({});
 
 	const me = $derived(data.session?.user?.id ?? '');
 	const who = $derived(sessionDisplayName(data.session));
 
-	/** Lazy auth so token/role track page data; same client for mutations + refetch. */
-	const gql = useGraphql(() => data);
-
-	const open = $derived(todos.filter((t) => t.status === 'open'));
-	const done = $derived(todos.filter((t) => t.status === 'completed'));
-	const archived = $derived(todos.filter((t) => t.status === 'archived'));
-
-	function mergeFromServer(server: Todo[]) {
-		const serverById = new Map(server.map((t) => [t.todo_id, { ...t }]));
-		const nextPending = { ...pending };
-		const merged = new Map<string, Todo>();
-
-		for (const [id, s] of serverById) {
-			const want = nextPending[id];
-			if (want && s.status !== want) {
-				const local = todos.find((t) => t.todo_id === id);
-				merged.set(id, local ? { ...local } : { ...s, status: want });
-			} else {
-				merged.set(id, s);
-				if (want && s.status === want) delete nextPending[id];
+	const gql = useGraphql(() => data, {
+		runEffects: (effects) => {
+			for (const e of effects) {
+				if (e.kind === 'alert') actionError = e.message;
 			}
 		}
+	});
 
-		for (const local of todos) {
-			if (!merged.has(local.todo_id) && nextPending[local.todo_id]) {
-				merged.set(local.todo_id, { ...local });
-			}
-		}
+	const todosDoc = queryDocString(todosResource.query);
+	const todosTarget = listTarget(todosResource.query, 'todos', 'todo_id');
 
-		pending = nextPending;
+	function syncFromCache() {
+		const list = readQueryList<Todo>(gql.cache, todosResource.query, 'todos');
 		const rank = (s: string) => (s === 'open' ? 0 : s === 'completed' ? 1 : 2);
-		todos = [...merged.values()].sort((a, b) => {
+		todos = [...list].sort((a, b) => {
 			const r = rank(a.status) - rank(b.status);
 			if (r !== 0) return r;
 			return b.todo_id.localeCompare(a.todo_id);
 		});
 	}
 
-	$effect(() => {
-		const server = data.todos;
-		untrack(() => mergeFromServer(server));
+	// Seed cache from SSR so first paint + pipeline share one list document.
+	seedQueryCache(gql.cache, todosResource.query, { todos: data.todos ?? [] });
+	onMount(() => {
+		const key = seedQueryCache(gql.cache, todosResource.query, { todos: data.todos ?? [] });
+		syncFromCache();
+		return gql.cache.subscribe(key, () => syncFromCache());
 	});
+
+	// When SvelteKit invalidates/reloads, re-seed.
+	$effect(() => {
+		const server = data.todos ?? [];
+		seedQueryCache(gql.cache, todosResource.query, { todos: server });
+		syncFromCache();
+	});
+
+	const open = $derived(todos.filter((t) => t.status === 'open'));
+	const done = $derived(todos.filter((t) => t.status === 'completed'));
+	const archived = $derived(todos.filter((t) => t.status === 'archived'));
 
 	function newTodoId() {
 		const rand =
@@ -77,36 +72,11 @@
 		return `t-${rand}`;
 	}
 
-	function snapshot(): { todos: Todo[]; pending: Record<string, string> } {
-		return {
-			todos: todos.map((t) => ({ ...t })),
-			pending: { ...pending }
-		};
-	}
-
-	function restore(snap: { todos: Todo[]; pending: Record<string, string> }) {
-		todos = snap.todos;
-		pending = snap.pending;
-	}
-
-	/** Same query document reference as SSR load (`todosResource.query`). */
-	async function refetchTodos() {
-		const result = await gql.request<{ todos: Todo[] }>(todosResource.query);
-		if (result.errors?.length) {
-			actionError = result.errors[0].message;
-			return;
-		}
-		mergeFromServer(result.data?.todos ?? []);
-	}
-
-	function scheduleReconcile() {
-		window.setTimeout(() => {
-			void refetchTodos();
-		}, 300);
-		window.setTimeout(() => {
-			void refetchTodos();
-		}, 1200);
-	}
+	const factReconcile = {
+		result: { kind: 'fact' as const },
+		// Async projectors: refetch after command success (not invent full row from ack).
+		reconcile: { kind: 'refetch' as const, document: todosDoc }
+	};
 
 	async function onCreate(e: Event) {
 		e.preventDefault();
@@ -114,70 +84,96 @@
 		if (!text || busy) return;
 
 		const todo_id = newTodoId();
-		const prev = snapshot();
 		actionError = null;
 		busy = true;
-		pending = { ...pending, [todo_id]: 'open' };
-		todos = [{ todo_id, owner_id: me || 'me', title: text, status: 'open' }, ...todos];
 		title = '';
 
-		// Generated command client — client owns URL + auth headers.
-		const result = await gql.commands.todosCreate({ todo_id, title: text });
+		const result = await gql.commands.todosCreate(
+			{ todo_id, title: text },
+			{
+				...factReconcile,
+				optimistic: {
+					targets: [todosTarget],
+					row: {
+						todo_id,
+						owner_id: me || 'me',
+						title: text,
+						status: 'open'
+					}
+				},
+				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'create failed')]
+			}
+		);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
-			restore(prev);
-			actionError = result.errors?.[0]?.message ?? 'create failed';
+			if (!actionError) actionError = result.errors?.[0]?.message ?? 'create failed';
 			return;
 		}
-		actionError = null;
-		scheduleReconcile();
+		// Second delayed refetch for projector lag (pipeline does one immediate refetch).
+		window.setTimeout(() => {
+			void gql.request(todosResource.query);
+		}, 900);
 	}
 
 	async function onComplete(todo_id: string) {
 		if (busy) return;
-		const prev = snapshot();
 		const target = todos.find((t) => t.todo_id === todo_id);
 		if (!target || target.status !== 'open') return;
 
 		actionError = null;
 		busy = true;
-		pending = { ...pending, [todo_id]: 'completed' };
-		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'completed' } : t));
 
-		const result = await gql.commands.todosComplete({ todo_id });
+		const result = await gql.commands.todosComplete(
+			{ todo_id },
+			{
+				...factReconcile,
+				optimistic: {
+					targets: [todosTarget],
+					row: { ...target, status: 'completed' }
+				},
+				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'complete failed')]
+			}
+		);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
-			restore(prev);
-			actionError = result.errors?.[0]?.message ?? 'complete failed';
+			if (!actionError) actionError = result.errors?.[0]?.message ?? 'complete failed';
 			return;
 		}
-		actionError = null;
-		scheduleReconcile();
+		window.setTimeout(() => {
+			void gql.request(todosResource.query);
+		}, 900);
 	}
 
 	async function onArchive(todo_id: string) {
 		if (busy) return;
-		const prev = snapshot();
 		const target = todos.find((t) => t.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
 		busy = true;
-		pending = { ...pending, [todo_id]: 'archived' };
-		todos = todos.map((t) => (t.todo_id === todo_id ? { ...t, status: 'archived' } : t));
 
-		const result = await gql.commands.todosArchive({ todo_id });
+		const result = await gql.commands.todosArchive(
+			{ todo_id },
+			{
+				...factReconcile,
+				optimistic: {
+					targets: [todosTarget],
+					row: { ...target, status: 'archived' }
+				},
+				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'archive failed')]
+			}
+		);
 
 		busy = false;
 		if (result.errors?.length || !result.data) {
-			restore(prev);
-			actionError = result.errors?.[0]?.message ?? 'archive failed';
+			if (!actionError) actionError = result.errors?.[0]?.message ?? 'archive failed';
 			return;
 		}
-		actionError = null;
-		scheduleReconcile();
+		window.setTimeout(() => {
+			void gql.request(todosResource.query);
+		}, 900);
 	}
 </script>
 
@@ -190,8 +186,9 @@
 		<h1 class="fn-title">Field notes</h1>
 		<p class="fn-lede">
 			Tasks for <strong>{who}</strong>. Co-located
-			<code>todos.resource</code> query + mutations on SSR and in the browser
-			(<code>POST /graphql</code>).
+			<code>todos.resource</code> query + <code>gql.commands.*</code> pipeline
+			(optimistic → fact/ack → refetch). Async projectors; list truth lives in the
+			browser <code>QueryCache</code>.
 		</p>
 	</header>
 

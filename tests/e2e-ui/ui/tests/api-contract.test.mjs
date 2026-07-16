@@ -102,9 +102,10 @@ test('admin: role-gated all-owners todos view + force-archive mutation', () => {
     new URL('../../crates/service/src/service.rs', import.meta.url),
     'utf8'
   );
-  assert.match(service, /role\("admin"/);
+  // Admin grant uses grant/read API (not legacy role("admin")).
+  assert.match(service, /grant\("admin"|role\("admin"/);
   assert.match(service, /todos_force_archive|force_archive/);
-  assert.match(service, /\.roles\(\[\"admin\"\]\)|roles\(\[\"admin\"\]\)/);
+  assert.match(service, /\.roles\(\[\"admin\"\]\)|roles\(\[\"admin\"\]\)|roles\(\["admin"\]\)/);
   assert.match(service, /owner_id|claim\("x-user-id"\)/);
   assert.match(service, /graphiql_enabled|GRAPHIQL/);
   const force = fs.readFileSync(
@@ -184,7 +185,7 @@ test('home is distributed template with 8-step unidirectional todos story', () =
   assert.match(home, /accessToken|Auth\.js|OIDC|Zitadel/i);
   assert.match(home, /Bearer|serverGraphql|authorization/i);
   assert.match(home, /ModelPermissions|owner_id|claim\("x-user-id"\)|OidcBearer/);
-  assert.match(home, /data\.todos|hydration|mergeFromServer/i);
+  assert.match(home, /data\.todos|hydration|QueryCache|optimistic/i);
   assert.match(home, /subscription|connection_init/);
   assert.match(home, /anti-pattern|todos_create|todo\.create/i);
   assert.match(home, /require_user|outbox|TodoFact|todo\.created/);
@@ -259,17 +260,21 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
 
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
   assert.match(page, /\$state<Todo\[\]>\(\[\.\.\.\(data\.todos/);
-  assert.match(page, /mergeFromServer/);
+  // Command pipeline + QueryCache (not hand-rolled mergeFromServer)
+  assert.match(page, /seedQueryCache|gql\.cache|QueryCache/);
+  assert.match(page, /optimistic:/);
+  assert.match(page, /result:\s*\{\s*kind:\s*'fact'/);
+  assert.match(page, /reconcile:\s*\{\s*kind:\s*'refetch'/);
+  assert.doesNotMatch(page, /function mergeFromServer/);
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
   assert.match(page, /todosResource\.query|todos\.query/);
-  // Writes: generated command functions (GraphQL wire under the hood).
+  // Writes: generated command functions through pipeline.
   assert.match(page, /gql\.commands\.todosCreate/);
   assert.match(page, /gql\.commands\.todosComplete/);
   assert.match(page, /gql\.commands\.todosArchive/);
   assert.doesNotMatch(page, /mutations\.(create|complete|archive)/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
-  // Query refetch still uses GraphQL client; writes use command client
   assert.match(page, /useGraphql|gql\.request|todosCreate/);
 
   const server = fs.readFileSync(
@@ -415,10 +420,11 @@ test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, a
   }
 });
 
-test('useGraphql attaches bindCommands as client.commands', () => {
+test('useGraphql attaches bindCommandsPipeline as client.commands', () => {
   const use = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
-  assert.match(use, /bindCommands/);
-  assert.match(use, /commands:\s*bindCommands/);
+  assert.match(use, /bindCommandsPipeline/);
+  assert.match(use, /commands:\s*bindCommandsPipeline/);
+  assert.match(use, /QueryCache/);
   assert.match(use, /AppGraphqlClient/);
 });
 
