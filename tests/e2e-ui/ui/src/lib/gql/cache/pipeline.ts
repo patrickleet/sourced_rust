@@ -11,7 +11,7 @@ import { cacheKey } from './query-cache.ts';
 import {
   applyCacheOps,
   applyProjectionPayload,
-  effect,
+  fx,
   rollback,
   type CacheOp,
   type CacheTarget,
@@ -124,7 +124,7 @@ export async function runCommandPipeline<T = Record<string, unknown>>(
   if (result.errors?.length) {
     if (browser && snaps.length) rollback(deps.cache, snaps);
     const errItems = opts.onError?.({ errors: result.errors }) ?? [
-      effect.alert(result.errors[0]?.message ?? 'Failed')
+      fx.alert(result.errors[0]?.message ?? 'Failed')
     ];
     const { ops, effects } = splitOps(errItems);
     if (browser && ops.length) applyCacheOps(deps.cache, ops);
@@ -193,5 +193,5 @@ export async function runCommandPipeline<T = Record<string, unknown>>(
   return result;
 }
 
-export { effect };
+export { fx };
 export type { CacheOp, Effect, CommandPolicy, ResultKind, ReconcileKind };

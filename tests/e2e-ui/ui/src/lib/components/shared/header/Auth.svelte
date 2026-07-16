@@ -1,8 +1,15 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
+	import type { Snippet } from 'svelte';
 
-	const { children, onToggle }: { children?: any; onToggle: () => void } = $props();
+	const {
+		children,
+		onToggle
+	}: {
+		children?: Snippet;
+		onToggle: () => void;
+	} = $props();
 
 	const isAuthenticated = $derived(!!page.data.session?.user);
 	const user = $derived(page.data.session?.user);
@@ -28,7 +35,7 @@
 </script>
 
 {#if isAuthenticated}
-	<button onclick={toggleMenu} class="auth-avatar" aria-label="User menu">
+	<button type="button" onclick={toggleMenu} class="auth-avatar" aria-label="User menu">
 		{#if user?.image}
 			<img src={user.image} alt="Avatar" class="auth-avatar-img" />
 		{:else}

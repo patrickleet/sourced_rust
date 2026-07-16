@@ -3,7 +3,7 @@
 	 * Admin: document store + force-archive command pipeline.
 	 */
 	import { onDestroy } from 'svelte';
-	import { useGraphql, effect } from '$lib/gql';
+	import { useGraphql, fx } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { adminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
@@ -57,7 +57,7 @@
 					row: { ...target, status: 'archived' }
 				},
 				onError: ({ errors }) => [
-					effect.alert(errors[0]?.message ?? 'force archive failed')
+					fx.alert(errors[0]?.message ?? 'force archive failed')
 				]
 			}
 		);

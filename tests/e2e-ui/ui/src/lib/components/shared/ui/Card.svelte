@@ -120,10 +120,6 @@
 	letter-spacing: 0.05em;
 }
 
-.card-body {
-	/* padding applied via class */
-}
-
 /* Light theme */
 .theme-light {
 	background: var(--hops-bg-white);

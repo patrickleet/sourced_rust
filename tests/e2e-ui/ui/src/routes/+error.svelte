@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/shared/ui';
 
 	let mounted = $state(false);
@@ -17,30 +17,34 @@
 		'SUGGESTION: Did you mean /home?'
 	];
 
-	onMount(() => {
-		mounted = true;
+	// Svelte 5: prefer $effect over onMount for client-only setup.
+	$effect(() => {
+		if (!browser) return;
 
-		// Typewriter effect for terminal
+		mounted = true;
 		let lineIndex = 0;
+		let typeTimer: ReturnType<typeof setTimeout> | undefined;
 		const typeNextLine = () => {
 			if (lineIndex < errorMessages.length) {
-				terminalLines = [...terminalLines, errorMessages[lineIndex]];
+				terminalLines = [...terminalLines, errorMessages[lineIndex]!];
 				lineIndex++;
-				setTimeout(typeNextLine, lineIndex === 1 ? 800 : 400);
+				typeTimer = setTimeout(typeNextLine, lineIndex === 1 ? 800 : 400);
 			}
 		};
-		setTimeout(typeNextLine, 600);
+		const startTimer = setTimeout(typeNextLine, 600);
 
-		// Random glitch effect
 		const glitchInterval = setInterval(() => {
 			glitchActive = true;
 			setTimeout(() => (glitchActive = false), 150);
 		}, 3000 + Math.random() * 2000);
 
-		return () => clearInterval(glitchInterval);
+		return () => {
+			clearTimeout(startTimer);
+			if (typeTimer) clearTimeout(typeTimer);
+			clearInterval(glitchInterval);
+		};
 	});
 
-	// Status code - could be 404, 500, etc.
 	const status = $derived(page.status);
 	const message = $derived(page.error?.message || 'Page not found');
 </script>

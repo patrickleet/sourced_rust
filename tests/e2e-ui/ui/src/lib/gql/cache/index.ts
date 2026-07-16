@@ -3,7 +3,7 @@ export {
   applyCacheOp,
   applyCacheOps,
   applyProjectionPayload,
-  effect,
+  fx,
   rollback,
   type CacheOp,
   type CacheTarget,

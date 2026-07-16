@@ -33,7 +33,7 @@ export {
 	QueryCache,
 	cacheKey,
 	runCommandPipeline,
-	effect,
+	fx,
 	applyCacheOps,
 	rollback
 } from './cache/index.ts';

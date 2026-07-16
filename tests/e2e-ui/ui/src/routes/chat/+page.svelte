@@ -5,7 +5,7 @@
 	 * Posts: command pipeline with optimistic row against the same store document.
 	 */
 	import { onDestroy, tick } from 'svelte';
-	import { useGraphql, effect } from '$lib/gql';
+	import { useGraphql, fx } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
@@ -16,7 +16,7 @@
 	let draft = $state('');
 	let busy = $state(false);
 
-	const me = $derived(data.userId ?? data.session?.user?.id ?? '');
+	const me = $derived(data.session?.user?.id ?? '');
 	const displayName = $derived(sessionDisplayName(data.session));
 
 	const gql = useGraphql(() => data, {
@@ -94,7 +94,7 @@
 					targets: [lobby.target('chat_messages', 'message_id')],
 					row: optimisticRow
 				},
-				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'send failed')]
+				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'send failed')]
 			}
 		);
 		busy = false;
