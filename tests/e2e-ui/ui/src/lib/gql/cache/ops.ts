@@ -46,7 +46,11 @@ export type Effect =
   | { kind: 'alert'; message: string }
   | { kind: 'goto'; path: string };
 
-export const effect = {
+/**
+ * UI side-effect constructors for the command pipeline.
+ * Named `fx` (not `effect`) so pages never shadow Svelte 5's `$effect` rune.
+ */
+export const fx = {
   toast: (message: string): Effect => ({ kind: 'toast', message }),
   alert: (message: string): Effect => ({ kind: 'alert', message }),
   goto: (path: string): Effect => ({ kind: 'goto', path })

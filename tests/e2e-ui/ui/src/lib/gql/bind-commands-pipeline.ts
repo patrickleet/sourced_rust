@@ -159,12 +159,16 @@ export function bindCommandsPipeline(
 				}
 			);
 
+			const errors = result.errors?.map((e) => ({
+				message: e.message ?? 'GraphQL error',
+				extensions: e.extensions
+			}));
 			return {
 				data: unwrapField<O>(
 					result.data as Record<string, unknown> | null | undefined,
 					field
 				),
-				errors: result.errors ?? undefined,
+				errors,
 				status: 200
 			};
 		};

@@ -91,9 +91,11 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 	options: DocumentStoreOptions<TData, TSelected>
 ): DocumentStore<TSelected> {
 	const cache = client.cache;
-	if (!cache) {
+	if (cache === undefined) {
 		throw new Error('createDocumentStore requires a GraphqlClient with cache');
 	}
+	// Narrow for TS after the guard (client.cache is optional on the type).
+	const qcache: QueryCache = cache;
 
 	const docStr = documentToString(options.document);
 	const variables = options.variables;
@@ -108,11 +110,11 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 	let destroyed = false;
 
 	function readRaw(): unknown {
-		return cache.get(key)?.data;
+		return qcache.get(key)?.data;
 	}
 
 	function snapshot(): DocumentStoreSnapshot<TSelected> {
-		const entry = cache.get(key);
+		const entry = qcache.get(key);
 		const raw = (entry?.data ?? options.initialData ?? null) as TData;
 		let data: TSelected;
 		try {
@@ -138,12 +140,12 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 	function seed(data: unknown) {
 		if (destroyed) return;
 		// Don't clobber a fresher optimistic/pending entry with older SSR.
-		const existing = cache.get(key);
+		const existing = qcache.get(key);
 		if (existing?.optimistic || existing?.pending) {
 			emit();
 			return;
 		}
-		cache.set(key, {
+		qcache.set(key, {
 			data,
 			updatedAt: Date.now(),
 			optimistic: false,
@@ -156,7 +158,7 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 		seed(options.initialData);
 	}
 
-	unsubCache = cache.subscribe(key, () => emit());
+	unsubCache = qcache.subscribe(key, () => emit());
 
 	function connect() {
 		if (destroyed || !options.live) return;
@@ -178,8 +180,8 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 					status = 'live';
 					error = null;
 					// Ensure write-through even if client was built without cache (defensive)
-					if (!cache.get(key)?.data && p.data) {
-						cache.set(key, {
+					if (!qcache.get(key)?.data && p.data) {
+						qcache.set(key, {
 							data: p.data,
 							updatedAt: Date.now(),
 							optimistic: false,
@@ -226,7 +228,7 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 		}
 		// Prefer client write-through; still write here so plain mock clients work.
 		if (result.data !== undefined && result.data !== null) {
-			cache.set(key, {
+			qcache.set(key, {
 				data: result.data,
 				updatedAt: Date.now(),
 				optimistic: false,

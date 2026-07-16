@@ -5,7 +5,7 @@
 	 * Writes: fact/ack + refetch reconcile (async projectors).
 	 */
 	import { onDestroy } from 'svelte';
-	import { useGraphql, effect } from '$lib/gql';
+	import { useGraphql, fx } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
@@ -90,7 +90,7 @@
 						status: 'open'
 					}
 				},
-				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'create failed')]
+				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'create failed')]
 			}
 		);
 
@@ -121,7 +121,7 @@
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'completed' }
 				},
-				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'complete failed')]
+				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'complete failed')]
 			}
 		);
 
@@ -151,7 +151,7 @@
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
 				},
-				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'archive failed')]
+				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'archive failed')]
 			}
 		);
 

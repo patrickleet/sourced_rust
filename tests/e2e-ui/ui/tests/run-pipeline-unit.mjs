@@ -9,7 +9,7 @@ import {
   applyCacheOps,
   rollback,
   runCommandPipeline,
-  effect
+  fx
 } from '../src/lib/gql/cache/index.ts';
 
 const TODOS_DOC = 'query Todos { todos { todo_id title status } }';
@@ -107,7 +107,7 @@ await checkAsync('error path rolls back optimistic and runs onError effect', asy
         row: { todo_id: 'x', title: 't', status: 'open' }
       },
       result: { kind: 'ack' },
-      onError: ({ errors }) => [effect.alert(errors[0].message)]
+      onError: ({ errors }) => [fx.alert(errors[0].message)]
     }
   );
   assert.ok(result.errors?.length);
@@ -188,8 +188,8 @@ await checkAsync('onSuccess toast is Effect and not run on error', async () => {
     {},
     {
       result: { kind: 'ack' },
-      onSuccess: () => [effect.toast('Created')],
-      onError: () => [effect.alert('Failed')]
+      onSuccess: () => [fx.toast('Created')],
+      onError: () => [fx.alert('Failed')]
     }
   );
   assert.equal(effects.length, 1);

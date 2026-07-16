@@ -105,7 +105,8 @@ export function useGraphql(
 		cache,
 		store,
 		live,
-		commands: bindCommandsPipeline(client, {
+		// GraphqlClient.request is a structural match for CommandClient.
+		commands: bindCommandsPipeline(client as import('$lib/api/commands.generated').CommandClient, {
 			cache,
 			policies: options.policies,
 			runEffects: options.runEffects
