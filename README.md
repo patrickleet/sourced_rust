@@ -902,7 +902,7 @@ repositories, read models, the outbox, locks, and `SqliteBus` for tests, demos,
 and small single-node deployments. Postgres is the low-ops starter for production:
 a single Postgres cluster can back repositories, read models, the outbox, **and**
 the durable transport (`PostgresBus`). See
-[`docs/repositories.md`](docs/repositories.md) for the full guide.
+GitKB `specs/framework/repositories` for the full guide.
 
 ## Outbox Pattern
 
@@ -1068,7 +1068,7 @@ bus.listen(
 Retryable failures (e.g. transient `NotFound`) are nacked for redelivery; the runner
 never silently acks a handler error.
 
-See [`docs/transports.md`](docs/transports.md) for the full transport
+See GitKB `specs/framework/transports` for the full transport
 layer, the two confirmation thresholds (producer publish vs consumer ack), and the
 low-level `MessageSource` / `MessagePublisher` / `run_source` boundary the
 facade is built on.
@@ -1378,7 +1378,7 @@ let loaded = repo
     .await?;
 ```
 
-See [`docs/read-models.md`](docs/read-models.md) for the full guide, including relational metadata, schema bootstrap, relationship includes, distributed idempotency, and non-goals.
+See GitKB `specs/framework/read-models` for the full guide, including relational metadata, schema bootstrap, relationship includes, distributed idempotency, and non-goals.
 
 ## GraphQL query service
 
@@ -1389,7 +1389,7 @@ that dispatch through the same `microsvc` handlers as HTTP/gRPC/bus (not table
 writes).
 
 Normative design lives in GitKB (`specs/query-layer/*`). Operator-facing contract
-and layout notes: [`docs/graphql.md`](docs/graphql.md). End-to-end template:
+and layout notes: GitKB `specs/query-layer/index`. End-to-end template:
 [`tests/e2e-ui/`](tests/e2e-ui/) (see its README).
 
 ### Enable
@@ -1796,7 +1796,7 @@ endpoint and, when paired with `--gitops`, emits Prometheus Operator
 `ServiceMonitor` and `PrometheusRule` templates for HTTP services. The generated
 values keep those CRDs disabled until an environment explicitly enables them.
 Bus-only and worker services can expose the same registry on a side port with
-`distributed::metrics::serve_http`. See [`docs/metrics.md`](docs/metrics.md) for
+`distributed::metrics::serve_http`. See GitKB `specs/framework/metrics` for
 metric names, label rules, and GitOps details.
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
@@ -1849,13 +1849,6 @@ src/
   lib.rs          # Public exports
 distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
-docs/
-  repositories.md
-  transports.md
-  read-models.md
-  graphql.md      # GraphQL boundary contract + quickstart
-  postgres-event-store.md
-  research-and-roadmap.md
 tests/e2e-ui/     # Full-stack CQRS + GraphQL + SvelteKit template (nested workspace)
 migrations/       # Explicit SQLite and Postgres migrations
 compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tests

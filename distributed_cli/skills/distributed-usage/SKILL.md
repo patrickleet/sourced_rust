@@ -277,7 +277,7 @@ Keep it updated when adding read models or tables; see the
 ## References
 
 - Framework guide: the `distributed` crate README (https://crates.io/crates/distributed)
-- Read models: `docs/read-models.md`; transports: `docs/transports.md`;
-  repositories: `docs/repositories.md` in the Distributed repo
+- Read models: `GitKB specs/framework/read-models`; transports: `GitKB specs/framework/transports`;
+  repositories: `GitKB specs/framework/repositories` in the Distributed repo
 - CI/GitOps scaffolding: the `distributed-ci` skill
 - Schema and manifest tooling: the `distributed-schema` skill
