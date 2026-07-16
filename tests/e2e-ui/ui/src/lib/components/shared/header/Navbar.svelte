@@ -94,11 +94,11 @@
 			<div class="navbar-cta">
 				{#if !isAuthenticated}
 					<a
-						href="/signin?callbackUrl=/todos"
-						class="cta-button"
+						href="/signup?callbackUrl=/todos"
+						class="cta-button-outline"
 						onclick={() => (isMenuOpen = false)}
 					>
-						<span>Sign In</span>
+						Create account
 					</a>
 				{/if}
 				<Auth onToggle={toggleAccountMenu} />
