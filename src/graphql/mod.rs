@@ -6,14 +6,26 @@
 //! `feature = "graphql"`.
 
 pub mod naming;
+pub mod projection_return;
 pub mod sdl;
+pub mod surface;
 
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,
     is_valid_graphql_name, object_type_name, root_list_field, scalar_type_name,
     POSTGRES_JSON_COMPARISON_OPS, PORTABLE_COMPARISON_OPS, STRING_COMPARISON_OPS,
 };
-pub use sdl::{graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, SdlOptions};
+pub use sdl::{
+    graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, graphql_sdl_from_surface,
+    SdlOptions,
+};
+pub use projection_return::{
+    projection_return_value, stage_projection_and_payload, ProjectionPayload,
+};
+pub use surface::{
+    build_surface, surface_for_role, RoleGrant, RootField, RootKind, Surface, SurfaceDialect,
+    SurfaceModel, SurfaceOptions,
+};
 
 #[cfg(feature = "graphql")]
 mod commands;

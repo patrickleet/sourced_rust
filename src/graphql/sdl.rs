@@ -60,11 +60,47 @@ impl SdlOptions {
 }
 
 /// Render GraphQL SDL for the given tables (ReadModel only; operational filtered).
+///
+/// Builds the shared [[surface]] IR first, then emits SDL only from that IR so
+/// dialect ops and model set cannot diverge from `build_surface`.
 pub fn graphql_sdl_for_tables(tables: &[TableSchema]) -> Result<String, String> {
     graphql_sdl_for_tables_with_options(tables, &SdlOptions::default())
 }
 
 pub fn graphql_sdl_for_tables_with_options(
+    tables: &[TableSchema],
+    options: &SdlOptions,
+) -> Result<String, String> {
+    let surface_opts = super::surface::SurfaceOptions {
+        dialect: if options.jsonb_operators {
+            super::surface::SurfaceDialect::Postgres
+        } else {
+            super::surface::SurfaceDialect::Sqlite
+        },
+        aggregates: options.aggregates,
+        subscriptions: options.subscriptions,
+    };
+    let surface = super::surface::build_surface(tables, &surface_opts)?;
+    graphql_sdl_from_surface(&surface)
+}
+
+/// Emit GraphQL SDL from a pre-built surface IR (role-filtered or full catalog).
+pub fn graphql_sdl_from_surface(surface: &super::surface::Surface) -> Result<String, String> {
+    let tables = surface.schemas();
+    let options = surface_options_to_sdl(surface);
+    graphql_sdl_from_read_models(&tables, &options)
+}
+
+fn surface_options_to_sdl(surface: &super::surface::Surface) -> SdlOptions {
+    SdlOptions {
+        aggregates: surface.aggregates,
+        jsonb_operators: include_postgres_json_comparison_ops(surface.dialect.is_postgres()),
+        subscriptions: surface.subscriptions,
+    }
+}
+
+/// Internal renderer over an already IR-filtered set of read models.
+fn graphql_sdl_from_read_models(
     tables: &[TableSchema],
     options: &SdlOptions,
 ) -> Result<String, String> {
