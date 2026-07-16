@@ -224,7 +224,15 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 			emit();
 			return;
 		}
-		// request write-through updates cache; emit if needed
+		// Prefer client write-through; still write here so plain mock clients work.
+		if (result.data !== undefined && result.data !== null) {
+			cache.set(key, {
+				data: result.data,
+				updatedAt: Date.now(),
+				optimistic: false,
+				pending: false
+			});
+		}
 		error = null;
 		emit();
 	}
