@@ -73,7 +73,7 @@ GRAPHIQL=0 cargo run   # disable IDE in production
 ```
 
 Default GraphiQL headers: `x-role: user`, `x-user-id: demo`. Edit in the IDE
-Headers panel. See `GitKB specs/query-layer/index`.
+Headers panel. See `README § GraphQL query service`.
 
 ### Identity (public GraphQL)
 
@@ -116,5 +116,5 @@ Emits `src/query/` skeleton + `graphql` feature + `DATABASE_URL` / pool wiring n
 
 ## Reference
 
-- Framework docs: `GitKB specs/query-layer/index` in the Distributed repo
+- Framework docs: `README § GraphQL query service` in the Distributed repo
 - Spec: `specs/query-service-graphql` (normative)

@@ -236,7 +236,7 @@ Gotchas:
 
 ## Multi-crate single-service layout (and later microservices)
 
-Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README; layout/rules in GitKB `specs/e2e-ui/layout`):
+Copy the **e2e-ui** fixture under `tests/e2e-ui/` (README; see `tests/e2e-ui/README.md`):
 
 ```text
 crates/
@@ -277,7 +277,7 @@ Keep it updated when adding read models or tables; see the
 ## References
 
 - Framework guide: the `distributed` crate README (https://crates.io/crates/distributed)
-- Read models: `GitKB specs/framework/read-models`; transports: `GitKB specs/framework/transports`;
-  repositories: `GitKB specs/framework/repositories` in the Distributed repo
+- Read models: `README § Read Models`; transports: `README § Event Bus / transports`;
+  repositories: `README § Repositories` in the Distributed repo
 - CI/GitOps scaffolding: the `distributed-ci` skill
 - Schema and manifest tooling: the `distributed-schema` skill

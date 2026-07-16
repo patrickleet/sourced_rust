@@ -901,8 +901,25 @@ SQLite is the no-extra-process local durable path: one SQLite database can back
 repositories, read models, the outbox, locks, and `SqliteBus` for tests, demos,
 and small single-node deployments. Postgres is the low-ops starter for production:
 a single Postgres cluster can back repositories, read models, the outbox, **and**
-the durable transport (`PostgresBus`). See
-GitKB `specs/framework/repositories` for the full guide.
+the durable transport (`PostgresBus`).
+
+### Repository traits (async-only)
+
+Streams are keyed by full **stream identity** `(aggregate_type, aggregate_id)`,
+not bare IDs. Prefer an explicit durable `aggregate_type` in production
+(`impl_aggregate!(..., aggregate_type = "...")` or the sourced/aggregate macros).
+
+| Trait | Role |
+| --- | --- |
+| `GetStream` | Load one or more event streams by identity |
+| `TransactionalCommit` | Commit `CommitBatch` (streams, read-model write plans, snapshots) in one backend transaction |
+| `ReadModelWritePlanStore` / `RelationalReadModelQueryStore` | Relational projection write + PK load surfaces for adapters |
+| `SnapshotStore` | Rebuildable snapshot cache by stream identity |
+| `OutboxStore` | Claim/update durable outbox rows (workers; not aggregate rehydration) |
+
+`InMemoryRepository` (plus in-memory read-model/snapshot stores) is the behavioral
+reference for conformance tests — not a production I/O adapter. SQL adapters
+implement the same traits with `sqlx`.
 
 ## Outbox Pattern
 
@@ -1068,10 +1085,34 @@ bus.listen(
 Retryable failures (e.g. transient `NotFound`) are nacked for redelivery; the runner
 never silently acks a handler error.
 
-See GitKB `specs/framework/transports` for the full transport
-layer, the two confirmation thresholds (producer publish vs consumer ack), and the
-low-level `MessageSource` / `MessagePublisher` / `run_source` boundary the
-facade is built on.
+### Transport boundaries (producer vs consumer)
+
+`microsvc` owns registration, guards, typed decoding, and dispatch. **Transport
+adapters** own receive/ack/retry/publish and topic mapping. Shared vocabulary lives
+in `bus` (no concrete broker dependency).
+
+| Type | Purpose |
+| --- | --- |
+| `TransportError` / `TransportErrorKind` | Retryable vs permanent — drives redelivery vs failure policy |
+| `FailurePolicy` / `FailureAction` | Permanent failure: `Retry`, `DeadLetter`, `Park`, `LogAndAck`, `Stop` |
+| `RunOptions` / `ConsumerDeliveryMode` | Idempotent dispatch by default; optional inbox hook |
+| `TransportCapabilities` | Per-transport durability, confirms, retry ownership, ack kind |
+| `MessageSource` + `run_source` | Pull loop: dispatch then settle only after the handler finishes |
+| `MessagePublisher` + `OutboxDispatcher` | Publish threshold for outbox completion; claim → publish → complete |
+
+**Two confirmation thresholds** (do not collapse them):
+
+1. **Producer publish** — when an outbox row may be marked published (SQL commit,
+   broker confirm/ack, Knative 2xx, in-memory accept). Unknown outcomes stay retryable.
+2. **Consumer ack** — only after the handler (and optional inbox receipt) committed.
+   Never silently ack a handler error.
+
+```rust,ignore
+use distributed::bus::{run_source, RunOptions};
+
+// Low-level receive loop (facade buses wrap this)
+run_source(service, source, RunOptions::idempotent()).await?;
+```
 
 ## Microservice Framework (`microsvc`)
 
@@ -1378,7 +1419,21 @@ let loaded = repo
     .await?;
 ```
 
-See GitKB `specs/framework/read-models` for the full guide, including relational metadata, schema bootstrap, relationship includes, distributed idempotency, and non-goals.
+### Relational metadata, includes, and schema
+
+- **Derive:** `#[derive(ReadModel)]` + `#[table("...")]` (or `#[readmodel(table = "...")]`)
+  emit `RelationalReadModel` metadata, row conversion, PKs, indexes, FKs, and an
+  adapter-owned version column. Use `#[id]`, `#[index]` / `#[unique]`,
+  `#[readmodel(jsonb)]`, and relationship attributes (`has_many` / `belongs_to` /
+  `many_to_many` + `foreign_key` / `through`).
+- **Writes:** `ReadModelWritePlan` / workspace `upsert` + `commit` (same transaction
+  as events when staged on `CommitBatch`).
+- **Internal loads:** PK-anchored includes —
+  `store.workspace().load(...).include(...).one()` (one-level, opt-in).
+- **Schema lifecycle:** `ReadModelSchemaRegistry` + adapter for migration artifacts
+  and startup verification; `dctl schema` / `distributed_manifest()` for SQL.
+- **Non-goals:** public query APIs belong on the GraphQL layer below (not the ORM
+  include loader); do not write projections outside the projection path.
 
 ## GraphQL query service
 
@@ -1388,9 +1443,9 @@ row filters, live subscriptions after projector commits, and **command mutations
 that dispatch through the same `microsvc` handlers as HTTP/gRPC/bus (not table
 writes).
 
-Normative design lives in GitKB (`specs/query-layer/*`). Operator-facing contract
-and layout notes: GitKB `specs/query-layer/index`. End-to-end template:
-[`tests/e2e-ui/`](tests/e2e-ui/) (see its README).
+End-to-end template: [`tests/e2e-ui/`](tests/e2e-ui/) (see its README). Scaffold
+with `dctl scaffold … --query-api`. Example playground:
+`cargo run --example graphiql --features "graphql,sqlite"`.
 
 ### Enable
 
@@ -1796,8 +1851,15 @@ endpoint and, when paired with `--gitops`, emits Prometheus Operator
 `ServiceMonitor` and `PrometheusRule` templates for HTTP services. The generated
 values keep those CRDs disabled until an environment explicitly enables them.
 Bus-only and worker services can expose the same registry on a side port with
-`distributed::metrics::serve_http`. See GitKB `specs/framework/metrics` for
-metric names, label rules, and GitOps details.
+`distributed::metrics::serve_http("0.0.0.0:9100", Some("orders-worker")).await?`,
+or compose `distributed::metrics::http_router_for_service("orders-worker")` into
+an existing Axum app. Scrape `GET /metrics` (Prometheus text). Keep `/metrics` on
+a **private** listener — unauthenticated by design.
+
+**Label policy (closed set):** `service`, `message_kind`, `message`, `status`,
+`transport`, `outcome`, `failure_class`, `action`, plus GraphQL `root_field` when
+applicable. Do **not** label metrics with `user_id`, `tenant_id`, free-form paths,
+or raw command input (unknown commands bucket as `message=unknown`).
 
 `describe`/`schema` compile your crate and call its `distributed_manifest()`
 entrypoint (override with `--entrypoint`), which registers the [read
