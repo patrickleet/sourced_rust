@@ -16,11 +16,17 @@ export type { GraphqlClient, GraphqlClientOptions } from './create-client.ts';
 export { defineResource } from './define-resource.ts';
 export type { DefineResourceInput, GraphqlResource } from './define-resource.ts';
 export { useGraphql, authFromPageData } from './use-graphql.ts';
-export type { AppGraphqlClient, PageGraphqlData } from './use-graphql.ts';
+export type { AppGraphqlClient, PageGraphqlData, UseGraphqlOptions } from './use-graphql.ts';
 export { browserGraphql } from './client.ts';
 // Re-export command binders for non-useGraphql call sites (tests, SSR factories).
 export { bindCommands } from '$lib/api/commands.generated';
 export type { BoundCommands, CommandClient } from '$lib/api/commands.generated';
+export { bindCommandsPipeline } from './bind-commands-pipeline.ts';
+export type {
+	PipelinedBoundCommands,
+	CommandCallOptions,
+	CommandPolicyMap
+} from './bind-commands-pipeline.ts';
 
 /** Browser query cache + command result pipeline (ack/fact/projection). */
 export {
@@ -40,3 +46,9 @@ export type {
 	ReconcileKind,
 	CommandPipelineOptions
 } from './cache/index.ts';
+export {
+	seedQueryCache,
+	readQueryList,
+	queryDocString,
+	listTarget
+} from './cache-helpers.ts';

@@ -1,9 +1,16 @@
 <script lang="ts">
 	/**
-	 * Admin: all field notes + force-archive via generated command client.
+	 * Admin: all field notes + force-archive via command pipeline + QueryCache.
 	 */
-	import { useGraphql } from '$lib/gql';
-	
+	import { onMount } from 'svelte';
+	import {
+		useGraphql,
+		effect,
+		listTarget,
+		seedQueryCache,
+		readQueryList,
+		queryDocString
+	} from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { adminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
@@ -20,20 +27,32 @@
 	const listLimit = $derived(data.listLimit ?? 100);
 	const atCap = $derived(todos.length >= listLimit);
 
-	const gql = useGraphql(() => data);
-
-	$effect(() => {
-		todos = [...(data.todos ?? [])];
+	const gql = useGraphql(() => data, {
+		runEffects: (effects) => {
+			for (const e of effects) {
+				if (e.kind === 'alert') actionError = e.message;
+			}
+		}
 	});
 
-	async function refetch() {
-		const result = await gql.request(adminTodos.query);
-		if (result.errors?.length) {
-			actionError = result.errors[0].message;
-			return;
-		}
-		todos = result.data?.todos ?? [];
+	const adminDoc = queryDocString(adminTodos.query);
+	const adminTarget = listTarget(adminTodos.query, 'todos', 'todo_id');
+
+	function syncFromCache() {
+		const list = readQueryList<AdminTodoRow>(gql.cache, adminTodos.query, 'todos');
+		todos = list.length ? list : [...(data.todos ?? [])];
 	}
+
+	onMount(() => {
+		const key = seedQueryCache(gql.cache, adminTodos.query, { todos: data.todos ?? [] });
+		syncFromCache();
+		return gql.cache.subscribe(key, () => syncFromCache());
+	});
+
+	$effect(() => {
+		seedQueryCache(gql.cache, adminTodos.query, { todos: data.todos ?? [] });
+		syncFromCache();
+	});
 
 	async function forceArchive(todo_id: string) {
 		if (busy) return;
@@ -42,19 +61,29 @@
 
 		actionError = null;
 		busy = true;
-		const result = await gql.commands.todosForceArchive({ todo_id });
+		const result = await gql.commands.todosForceArchive(
+			{ todo_id },
+			{
+				result: { kind: 'fact' },
+				reconcile: { kind: 'refetch', document: adminDoc },
+				optimistic: {
+					targets: [adminTarget],
+					row: { ...target, status: 'archived' }
+				},
+				onError: ({ errors }) => [
+					effect.alert(errors[0]?.message ?? 'force archive failed')
+				]
+			}
+		);
 		busy = false;
 
 		if (result.errors?.length || !result.data) {
-			actionError = result.errors?.[0]?.message ?? 'force archive failed';
+			if (!actionError) actionError = result.errors?.[0]?.message ?? 'force archive failed';
 			return;
 		}
-		// Optimistic local update; then reconcile with projector lag.
-		todos = todos.map((t) =>
-			t.todo_id === todo_id ? { ...t, status: 'archived' } : t
-		);
-		window.setTimeout(() => void refetch(), 300);
-		window.setTimeout(() => void refetch(), 1200);
+		window.setTimeout(() => {
+			void gql.request(adminTodos.query);
+		}, 900);
 	}
 </script>
 

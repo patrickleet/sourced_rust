@@ -1,11 +1,18 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — co-located `chat` resource owns query + subscription.
-	 * Posts: generated `chatMessagesPost`; live: `gql.subscribe` (same client auth as HTTP).
+	 * Lobby chat — co-located `chat` resource + command pipeline.
+	 * Posts: `gql.commands.chatMessagesPost` (optimistic + fact; reconcile via subscription).
+	 * Live: `gql.subscribe` write-through into QueryCache.
 	 */
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { useGraphql } from '$lib/gql';
-	
+	import {
+		useGraphql,
+		effect,
+		listTarget,
+		seedQueryCache,
+		readQueryList,
+		queryDocString
+	} from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
@@ -16,6 +23,7 @@
 	let subError = $state<string | null>(null);
 	let sendError = $state<string | null>(null);
 	let unsub: (() => void) | null = null;
+	let unsubCache: (() => void) | null = null;
 	let logEl: HTMLDivElement | undefined = $state();
 	let draft = $state('');
 	let busy = $state(false);
@@ -23,11 +31,21 @@
 	const me = $derived(data.userId ?? data.session?.user?.id ?? '');
 	const displayName = $derived(sessionDisplayName(data.session));
 
-	const gql = useGraphql(() => data);
-
-	$effect(() => {
-		messages = data.messages;
+	const gql = useGraphql(() => data, {
+		runEffects: (effects) => {
+			for (const e of effects) {
+				if (e.kind === 'alert') sendError = e.message;
+			}
+		}
 	});
+
+	const subDoc = chat.subscription ?? chat.query;
+	const chatTarget = listTarget(subDoc, 'chat_messages', 'message_id');
+
+	function syncFromCache() {
+		const list = readQueryList<ChatMsg>(gql.cache, subDoc, 'chat_messages');
+		messages = sortChatMessages(list.length ? list : (data.messages ?? []));
+	}
 
 	async function scrollBottom() {
 		await tick();
@@ -49,11 +67,11 @@
 			status = 'error';
 			return;
 		}
-		const list = p?.data?.chat_messages;
-		if (Array.isArray(list)) {
-			messages = sortChatMessages(list);
+		// subscribe write-through already updated cache; sync UI.
+		if (p?.data?.chat_messages) {
 			status = 'live';
 			subError = null;
+			syncFromCache();
 		}
 	}
 
@@ -61,9 +79,6 @@
 		unsub?.();
 		status = 'connecting';
 		subError = null;
-		// Same selection set as SSR `chat.query` (resource co-location).
-		// Auth + WS URL come from the bound client (same as HTTP commands).
-		const subDoc = chat.subscription ?? chat.query;
 		unsub = gql.subscribe(subDoc, {
 			onNext: applyPayload,
 			onError: (e) => {
@@ -79,10 +94,18 @@
 	}
 
 	onMount(() => {
+		const key = seedQueryCache(gql.cache, subDoc, {
+			chat_messages: data.messages ?? []
+		});
+		syncFromCache();
+		unsubCache = gql.cache.subscribe(key, () => syncFromCache());
 		connect();
 	});
 
-	onDestroy(() => unsub?.());
+	onDestroy(() => {
+		unsub?.();
+		unsubCache?.();
+	});
 
 	function shortId(id: string) {
 		if (!id) return '?';
@@ -107,18 +130,36 @@
 		const message_id = `m-${Date.now().toString(16)}`;
 		sendError = null;
 		busy = true;
-		const result = await gql.commands.chatMessagesPost({
+		const optimisticRow = {
 			message_id,
+			room_id: data.room,
+			author_id: me || 'me',
 			body,
-			room_id: data.room
-		});
+			created_at: new Date().toISOString()
+		};
+		const result = await gql.commands.chatMessagesPost(
+			{
+				message_id,
+				body,
+				room_id: data.room
+			},
+			{
+				// Fact-shaped payload; live list truth from subscription write-through.
+				result: { kind: 'fact' },
+				reconcile: { kind: 'subscription', document: queryDocString(subDoc) },
+				optimistic: {
+					targets: [chatTarget],
+					row: optimisticRow
+				},
+				onError: ({ errors }) => [effect.alert(errors[0]?.message ?? 'send failed')]
+			}
+		);
 		busy = false;
 		if (result.errors?.length || !result.data) {
-			sendError = result.errors?.[0]?.message ?? 'send failed';
+			if (!sendError) sendError = result.errors?.[0]?.message ?? 'send failed';
 			return;
 		}
 		draft = '';
-		// Subscription should push the projected row; soft reconnect if laggy.
 	}
 </script>
 
@@ -144,8 +185,9 @@
 		</div>
 		<p class="ch-lede">
 			Co-located <code>chat.resource</code>: SSR seed + live
-			<code>graphql-transport-ws</code> (Bearer in <code>connection_init</code>) +
-			<code>POST /graphql</code> posts. Signed in as <strong>{displayName}</strong>.
+			<code>gql.subscribe</code> (cache write-through) +
+			<code>gql.commands.chatMessagesPost</code> pipeline. Signed in as
+			<strong>{displayName}</strong>.
 		</p>
 	</header>
 
