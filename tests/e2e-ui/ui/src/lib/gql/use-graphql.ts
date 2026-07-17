@@ -58,11 +58,53 @@ export type UseGraphqlOptions = {
 	runEffects?: (effects: Effect[]) => void;
 };
 
-/** Identity key for C-U18 cache isolation (token sub or DevHeaders userId+role). */
-function authIdentityKey(auth: import('./types.ts').GqlAuth): string {
+/**
+ * Identity key for C-U18 cache isolation.
+ * Bearer: JWT `payload.sub` when parseable (RS256 JWTs share a header prefix — do **not**
+ * key on token.slice(0, N)). Non-JWT tokens: hash of the full token string.
+ * DevHeaders: userId + role.
+ */
+export function authIdentityKey(auth: import('./types.ts').GqlAuth): string {
 	const token = auth.accessToken?.trim() || '';
-	if (token) return `bearer:${token.slice(0, 24)}`;
+	if (token) {
+		const sub = jwtPayloadSub(token);
+		if (sub) return `sub:${sub}`;
+		return `bearer:${hashString(token)}`;
+	}
 	return `dev:${auth.userId ?? ''}:${auth.role ?? ''}`;
+}
+
+/** Decode JWT payload `sub` (middle segment). Null if not a 3-part JWT or no sub. */
+export function jwtPayloadSub(token: string): string | null {
+	const parts = token.split('.');
+	if (parts.length !== 3 || !parts[1]) return null;
+	try {
+		const json = base64UrlDecode(parts[1]);
+		const payload = JSON.parse(json) as { sub?: unknown };
+		return typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : null;
+	} catch {
+		return null;
+	}
+}
+
+function base64UrlDecode(segment: string): string {
+	const pad = segment.length % 4 === 0 ? '' : '='.repeat(4 - (segment.length % 4));
+	const b64 = segment.replace(/-/g, '+').replace(/_/g, '/') + pad;
+	if (typeof atob === 'function') {
+		return atob(b64);
+	}
+	// Node unit tests
+	return Buffer.from(b64, 'base64').toString('utf8');
+}
+
+/** FNV-1a 32-bit — enough to distinguish opaque bearer strings without leaking full token in keys. */
+function hashString(s: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return (h >>> 0).toString(16);
 }
 
 /**
