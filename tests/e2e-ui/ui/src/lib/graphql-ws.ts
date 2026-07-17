@@ -22,6 +22,8 @@ export type SubscribeOptions = {
 	 * Used to derive the WebSocket endpoint (`…/graphql/ws`).
 	 */
 	httpUrl?: string;
+	/** GraphQL variables for the subscription operation (must match document-store cache key). */
+	variables?: Record<string, unknown>;
 };
 
 /** Same-origin WS path (Vite proxies `/graphql` including `/graphql/ws`). */
@@ -99,7 +101,10 @@ export function subscribe(
 					JSON.stringify({
 						type: 'subscribe',
 						id: opId,
-						payload: { query }
+						payload: {
+							query,
+							variables: options.variables ?? {}
+						}
 					})
 				);
 				break;

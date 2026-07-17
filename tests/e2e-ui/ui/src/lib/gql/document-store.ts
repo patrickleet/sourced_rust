@@ -11,23 +11,18 @@
  *
  *   const lobby = gql.live({
  *     document: chat.subscription ?? chat.query,
+ *     list: { at: 'chat_messages', by: 'message_id' },
  *     initialData: { chat_messages: data.messages },
  *     select: (d) => sortChatMessages(d.chat_messages ?? []),
  *   });
  *   // {$lobby.data}  {$lobby.status}
- *
- *   await gql.commands.chatMessagesPost(input, {
- *     result: { kind: 'fact' },
- *     reconcile: { kind: 'subscription', document: lobby.document },
- *     optimistic: { targets: [lobby.target('chat_messages', 'message_id')], row },
- *   });
  */
 
 import type { GqlDocument } from './document.ts';
 import { documentToString } from './document.ts';
 import type { QueryCache } from './cache/query-cache.ts';
 import { cacheKey } from './cache/query-cache.ts';
-import type { CacheTarget } from './cache/ops.ts';
+import type { CacheTarget, ListMergeSpec } from './cache/ops.ts';
 import { writeServerDataPreservingPending } from './cache/ops.ts';
 import type { GraphqlClient } from './create-client.ts';
 
@@ -57,6 +52,11 @@ export type DocumentStoreOptions<TData = Record<string, unknown>, TSelected = TD
 	 * Cache write-through is automatic; UI follows the cache.
 	 */
 	live?: boolean;
+	/**
+	 * List path + PK for pending merge on refetch / subscription write-through.
+	 * Required for list documents that use optimistic/pending (todos, chat, …).
+	 */
+	list?: ListMergeSpec;
 };
 
 export type DocumentStore<TSelected = unknown> = {
@@ -67,15 +67,22 @@ export type DocumentStore<TSelected = unknown> = {
 	/** GraphQL source string (for command reconcile / policies). */
 	readonly document: string;
 	readonly variables: Record<string, unknown> | undefined;
+	/** List merge spec when configured. */
+	readonly list: ListMergeSpec | undefined;
 	/** Cache target for optimistic list upserts. */
 	target: (at: string, by: string) => CacheTarget;
 	/** Replace SSR seed / external server data without dropping optimistic if newer. */
 	seed: (data: unknown) => void;
 	/** Force HTTP refetch of the same document (write-through updates cache → UI). */
 	refetch: () => Promise<void>;
+	/**
+	 * Soft catch-up after async projectors. Cancelled on `destroy()`.
+	 * Never use as command-path reconcile: 'refetch'.
+	 */
+	scheduleCatchUp: (delayMs?: number) => void;
 	/** (Re)connect live subscription. */
 	connect: () => void;
-	/** Tear down cache listener + WS. Call from onDestroy. */
+	/** Tear down cache listener + WS + catch-up timer. Call from onDestroy. */
 	destroy: () => void;
 };
 
@@ -95,11 +102,11 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 	if (cache === undefined) {
 		throw new Error('createDocumentStore requires a GraphqlClient with cache');
 	}
-	// Narrow for TS after the guard (client.cache is optional on the type).
 	const qcache: QueryCache = cache;
 
 	const docStr = documentToString(options.document);
 	const variables = options.variables;
+	const list = options.list;
 	const key = cacheKey(docStr, variables);
 	const select = (options.select ?? identity) as (data: TData) => TSelected;
 
@@ -108,11 +115,8 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 	let error: string | null = null;
 	let unsubCache: (() => void) | null = null;
 	let unsubWs: (() => void) | null = null;
+	let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
 	let destroyed = false;
-
-	function readRaw(): unknown {
-		return qcache.get(key)?.data;
-	}
 
 	function snapshot(): DocumentStoreSnapshot<TSelected> {
 		const entry = qcache.get(key);
@@ -140,7 +144,6 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 
 	function seed(data: unknown) {
 		if (destroyed) return;
-		// Don't clobber a fresher optimistic/pending entry with older SSR.
 		const existing = qcache.get(key);
 		if (existing?.optimistic || existing?.pending) {
 			emit();
@@ -154,7 +157,6 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 		});
 	}
 
-	// Initial seed
 	if (options.initialData !== undefined) {
 		seed(options.initialData);
 	}
@@ -167,72 +169,97 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 		status = 'connecting';
 		error = null;
 		emit();
-		unsubWs = client.subscribe(options.document, {
-			onNext: (payload) => {
-				const p = payload as { data?: unknown; errors?: Array<{ message?: string }> };
-				if (p?.errors?.length) {
+		unsubWs = client.subscribe(
+			options.document,
+			{
+				onNext: (payload) => {
+					const p = payload as { data?: unknown; errors?: Array<{ message?: string }> };
+					if (p?.errors?.length) {
+						status = 'error';
+						error = p.errors[0]?.message ?? 'subscription error';
+						emit();
+						return;
+					}
+					if (p?.data !== undefined) {
+						status = 'live';
+						error = null;
+						// createClient write-through uses same variables+list; emit if already present
+						if (!qcache.get(key)?.data && p.data) {
+							qcache.set(key, {
+								data: p.data,
+								updatedAt: Date.now(),
+								optimistic: false,
+								pending: false
+							});
+						} else {
+							emit();
+						}
+					}
+				},
+				onError: (e) => {
 					status = 'error';
-					error = p.errors[0]?.message ?? 'subscription error';
-					emit();
-					return;
-				}
-				// createClient already write-throughs data into cache; just mark live.
-				if (p?.data !== undefined) {
-					status = 'live';
-					error = null;
-					// Ensure write-through even if client was built without cache (defensive)
-					if (!qcache.get(key)?.data && p.data) {
-						qcache.set(key, {
-							data: p.data,
-							updatedAt: Date.now(),
-							optimistic: false,
-							pending: false
-						});
+					if (e instanceof Event) {
+						error = 'WebSocket error — is the API running?';
+					} else if (Array.isArray(e)) {
+						error = JSON.stringify(e);
 					} else {
+						error = String(e);
+					}
+					emit();
+				},
+				onComplete: () => {
+					if (status === 'live') {
+						status = 'connecting';
 						emit();
 					}
 				}
 			},
-			onError: (e) => {
-				status = 'error';
-				if (e instanceof Event) {
-					error = 'WebSocket error — is the API running?';
-				} else if (Array.isArray(e)) {
-					error = JSON.stringify(e);
-				} else {
-					error = String(e);
-				}
-				emit();
-			},
-			onComplete: () => {
-				if (status === 'live') {
-					status = 'connecting';
-					emit();
-				}
-			}
-		});
+			{ variables, list }
+		);
 	}
 
 	if (options.live && typeof window !== 'undefined') {
-		// Defer to next microtask so callers can attach subscribe first.
 		queueMicrotask(() => {
 			if (!destroyed) connect();
 		});
 	}
 
 	async function refetch() {
-		const result = await client.request(options.document, variables as never);
+		if (destroyed) return;
+		const result = await client.request(
+			options.document,
+			variables as never,
+			list ? { list } : undefined
+		);
+		if (destroyed) return;
 		if (result.errors?.length) {
 			error = result.errors[0]?.message ?? 'refetch failed';
 			emit();
 			return;
 		}
-		// Merge server data under pending optimistic rows (async projectors).
 		if (result.data !== undefined && result.data !== null) {
-			writeServerDataPreservingPending(qcache, docStr, variables, result.data);
+			writeServerDataPreservingPending(
+				qcache,
+				docStr,
+				variables,
+				result.data,
+				list ? { list } : undefined
+			);
 		}
 		error = null;
 		emit();
+	}
+
+	function scheduleCatchUp(delayMs = 800) {
+		if (destroyed) return;
+		if (catchUpTimer !== null) {
+			clearTimeout(catchUpTimer);
+			catchUpTimer = null;
+		}
+		catchUpTimer = setTimeout(() => {
+			catchUpTimer = null;
+			if (!destroyed) void refetch();
+		}, delayMs);
 	}
 
 	return {
@@ -246,14 +273,20 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 		get: snapshot,
 		document: docStr,
 		variables,
+		list,
 		target(at: string, by: string): CacheTarget {
 			return { document: docStr, variables, at, by };
 		},
 		seed,
 		refetch,
+		scheduleCatchUp,
 		connect,
 		destroy() {
 			destroyed = true;
+			if (catchUpTimer !== null) {
+				clearTimeout(catchUpTimer);
+				catchUpTimer = null;
+			}
 			unsubCache?.();
 			unsubCache = null;
 			unsubWs?.();

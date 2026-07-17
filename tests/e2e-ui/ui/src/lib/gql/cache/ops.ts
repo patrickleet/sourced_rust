@@ -59,9 +59,23 @@ export const fx = {
 export type ResultKind = 'ack' | 'fact' | 'projection' | 'none';
 export type ReconcileKind = 'subscription' | 'refetch' | 'invalidate' | 'none';
 
+/** How to merge server list data under pending optimistic rows (required for list docs). */
+export type ListMergeSpec = {
+  /** Dot path to the list on the document, e.g. `"todos"`. */
+  at: string;
+  /** Primary key field on each row, e.g. `"todo_id"`. */
+  by: string;
+};
+
 export type CommandPolicy = {
   result?: { kind: ResultKind; apply?: { targets: CacheTarget[] } };
-  reconcile?: { kind: ReconcileKind; document?: string; variables?: Record<string, unknown> };
+  reconcile?: {
+    kind: ReconcileKind;
+    document?: string;
+    variables?: Record<string, unknown>;
+    /** Required when reconciling list documents with pending optimistic rows. */
+    list?: ListMergeSpec;
+  };
   optimistic?: {
     targets: CacheTarget[];
     row?: Record<string, unknown>;
@@ -233,6 +247,15 @@ export function applyProjectionPayload(
   return applyCacheOps(cache, ops);
 }
 
+export type WriteServerOptions = {
+  /**
+   * List merge for pending/optimistic entries.
+   * **Required** for list documents under pending — no silent `todos`/`todo_id` guessing.
+   * When omitted while pending, local cache is left unchanged (safe).
+   */
+  list?: ListMergeSpec;
+};
+
 /**
  * Write a server query/subscription payload into the cache **without** clobbering
  * optimistic rows that the projector has not caught up to yet.
@@ -245,9 +268,7 @@ export function writeServerDataPreservingPending(
   document: string,
   variables: Record<string, unknown> | undefined,
   serverData: unknown,
-  /** List path on the document, e.g. "todos". When omitted, tries common roots. */
-  listPath?: string,
-  by = 'todo_id'
+  options?: WriteServerOptions
 ): void {
   const key = cacheKey(document, variables);
   const prev = cache.get(key);
@@ -274,18 +295,14 @@ export function writeServerDataPreservingPending(
     return;
   }
 
-  const path =
-    listPath ??
-    (Array.isArray((serverData as Record<string, unknown>).todos)
-      ? 'todos'
-      : Array.isArray((serverData as Record<string, unknown>).chat_messages)
-        ? 'chat_messages'
-        : undefined);
-
-  if (!path) {
-    // Non-list document: keep pending local data
+  const list = options?.list;
+  if (!list?.at || !list?.by) {
+    // No explicit list merge — never invent path/PK; keep pending local data.
     return;
   }
+
+  const path = list.at;
+  const by = list.by;
 
   const serverList = getAt(serverData, path);
   const localList = getAt(prevData, path);

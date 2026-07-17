@@ -11,6 +11,8 @@ export {
   type CommandPolicy,
   type Effect,
   type ResultKind,
-  type ReconcileKind
+  type ReconcileKind,
+  type ListMergeSpec,
+  type WriteServerOptions
 } from './ops.ts';
 export { runCommandPipeline, type CommandPipelineOptions, type PipelineDeps } from './pipeline.ts';

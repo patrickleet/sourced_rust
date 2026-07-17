@@ -1,4 +1,4 @@
-//! Helpers for **same-tx projection** command returns.
+//! Helpers for **same-tx projection** command returns (**library / optional topology**).
 //!
 //! # Product rule
 //!
@@ -9,6 +9,14 @@
 //!
 //! If you write the read model in the command handler, **return it**.
 //! If you do not, do **not** invent a full list row — return ack/fact only.
+//!
+//! # When to use these helpers
+//!
+//! - **Use** [`stage_projection_and_payload`] / [`projection_return_value`] only when the
+//!   command handler **intentionally** commits the read model in the same request
+//!   (e.g. game / same-tx demos) and the client policy is `result.kind = projection`.
+//! - **Do not use** for default async projector commands (e2e-ui todos, chat posts).
+//!   Those return fact/ack and reconcile via subscription or delayed refetch.
 //!
 //! e2e-ui todos create returns fact-shaped fields from the domain fact — treat as
 //! **`fact`**, not projection-from-store (projectors are separate event handlers).

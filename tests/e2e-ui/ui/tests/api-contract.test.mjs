@@ -265,12 +265,12 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(useGql, /createGraphqlClient|\/graphql/);
 
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
-  // Document store (Houdini-style) — cache transparent
+  // Document store (Houdini-style) — cache transparent; policies from e2eCommandPolicies
   assert.match(page, /gql\.store\s*\(/);
   assert.match(page, /\$list\.data/);
   assert.match(page, /optimistic:/);
-  assert.match(page, /result:\s*\{\s*kind:\s*'fact'/);
-  assert.match(page, /reconcile:\s*\{\s*kind:\s*'none'/);
+  assert.match(page, /list:\s*\{\s*at:\s*'todos'/);
+  assert.match(page, /scheduleCatchUp/);
   assert.doesNotMatch(page, /function mergeFromServer|seedQueryCache|readQueryList/);
   assert.match(page, /useGraphql/);
   assert.match(page, /todos\.resource|todosResource|from '\.\/todos\.resource'/);
@@ -280,7 +280,21 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.match(page, /gql\.commands\.todosArchive/);
   assert.doesNotMatch(page, /mutations\.(create|complete|archive)/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
-  assert.match(page, /useGraphql|list\.refetch|todosCreate/);
+  assert.match(page, /useGraphql|todosCreate/);
+
+  const policies = fs.readFileSync(
+    new URL('../src/lib/gql/command-policies.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(policies, /e2eCommandPolicies/);
+  assert.match(policies, /kind:\s*'fact'/);
+  assert.match(policies, /kind:\s*'none'/);
+
+  const useGqlFull = fs.readFileSync(
+    new URL('../src/lib/gql/use-graphql.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(useGqlFull, /e2eCommandPolicies/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
@@ -435,5 +449,6 @@ test('useGraphql attaches pipeline commands + store/live helpers', () => {
   assert.match(use, /createDocumentStore|\.store\s*=|\bstore\b/);
   assert.match(use, /\blive\b/);
   assert.match(use, /AppGraphqlClient/);
+  assert.match(use, /e2eCommandPolicies/);
 });
 
