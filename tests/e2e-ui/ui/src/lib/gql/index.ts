@@ -56,10 +56,4 @@ export type {
 	StoreStatus
 } from './document-store.ts';
 
-/** Escape-hatch cache helpers — prefer `gql.store` / `gql.live`. */
-export {
-	seedQueryCache,
-	readQueryList,
-	queryDocString,
-	listTarget
-} from './cache-helpers.ts';
+export { e2eCommandPolicies } from './command-policies.ts';

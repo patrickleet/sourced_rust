@@ -32,6 +32,7 @@
 	/** Cache + live subscription — no manual seed/subscribe/sync. */
 	const lobby = gql.live({
 		document: subDoc,
+		list: { at: 'chat_messages', by: 'message_id' },
 		initialData: { chat_messages: data.messages ?? [] },
 		select: (d: { chat_messages?: ChatMsg[] }) =>
 			sortChatMessages(d?.chat_messages ?? [])
@@ -87,9 +88,7 @@
 		const result = await gql.commands.chatMessagesPost(
 			{ message_id, body, room_id: data.room },
 			{
-				result: { kind: 'fact' },
-				// Sub already live — no extra network; optimistic stays until push.
-				reconcile: { kind: 'subscription', document: lobby.document },
+				// Policies default fact + subscription; sub is already live.
 				optimistic: {
 					targets: [lobby.target('chat_messages', 'message_id')],
 					row: optimisticRow

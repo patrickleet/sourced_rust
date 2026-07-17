@@ -98,19 +98,27 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.match(todos, /gql\.commands\.todosCreate/);
   assert.match(todos, /gql\.commands\.todosComplete/);
   assert.match(todos, /gql\.commands\.todosArchive/);
-  assert.match(todos, /result:\s*\{\s*kind:\s*'fact'/);
-  assert.match(todos, /reconcile:\s*\{\s*kind:\s*'none'/);
+  assert.match(todos, /list:\s*\{\s*at:\s*'todos',\s*by:\s*'todo_id'/);
+  assert.match(todos, /list\.scheduleCatchUp|scheduleCatchUp/);
   assert.match(todos, /list\.target\(/);
   assert.doesNotMatch(todos, /seedQueryCache|readQueryList|syncFromCache/);
   assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
   assert.doesNotMatch(todos, /function mergeFromServer/);
+
+  const policies = fs.readFileSync(
+    path.join(uiRoot, 'src/lib/gql/command-policies.ts'),
+    'utf8'
+  );
+  assert.match(policies, /todosCreate/);
+  assert.match(policies, /kind:\s*'fact'/);
+  assert.match(policies, /kind:\s*'none'/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
   assert.match(chat, /gql\.live\s*\(/);
   assert.match(chat, /\$lobby\.(data|status)/);
   assert.match(chat, /gql\.commands\.chatMessagesPost/);
   assert.match(chat, /lobby\.target\(/);
-  assert.match(chat, /reconcile:\s*\{\s*kind:\s*'subscription'/);
+  assert.match(chat, /list:\s*\{\s*at:\s*'chat_messages'/);
   assert.doesNotMatch(chat, /seedQueryCache|gql\.subscribe\s*\(/);
   assert.doesNotMatch(chat, /from '\$lib\/api\/commands\.generated'/);
 
@@ -118,7 +126,7 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.match(admin, /gql\.store\s*\(/);
   assert.match(admin, /gql\.commands\.todosForceArchive/);
   assert.match(admin, /list\.target\(/);
-  assert.match(admin, /reconcile:\s*\{\s*kind:\s*'none'/);
+  assert.match(admin, /scheduleCatchUp/);
   assert.doesNotMatch(admin, /seedQueryCache|readQueryList/);
 });
 

@@ -26,6 +26,7 @@
 
 	const list = gql.store({
 		document: adminTodos.query,
+		list: { at: 'todos', by: 'todo_id' },
 		initialData: { todos: data.todos ?? [] },
 		select: (d: { todos?: AdminTodoRow[] }) => d?.todos ?? []
 	});
@@ -50,9 +51,6 @@
 		const result = await gql.commands.todosForceArchive(
 			{ todo_id },
 			{
-				result: { kind: 'fact' },
-				// Async projector — never refetch on the command path.
-				reconcile: { kind: 'none' },
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
@@ -68,10 +66,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'force archive failed';
 			return;
 		}
-		// Soft catch-up after projector lag (not on the command success path).
-		window.setTimeout(() => {
-			void list.refetch();
-		}, 800);
+		list.scheduleCatchUp();
 	}
 </script>
 

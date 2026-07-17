@@ -179,11 +179,13 @@ export async function runCommandPipeline<T = Record<string, unknown>>(
   if (browser && merged.reconcileKind === 'refetch' && merged.reconcileDoc && deps.refetch) {
     const refetched = await deps.refetch(merged.reconcileDoc, merged.reconcileVars);
     if (refetched.data && !refetched.errors?.length) {
+      const reconcileList = (opts.reconcile ?? opts.policy?.reconcile)?.list;
       writeServerDataPreservingPending(
         deps.cache,
         merged.reconcileDoc,
         merged.reconcileVars,
-        refetched.data
+        refetched.data,
+        reconcileList ? { list: reconcileList } : undefined
       );
     }
   } else if (browser && merged.reconcileKind === 'invalidate' && merged.reconcileDoc) {

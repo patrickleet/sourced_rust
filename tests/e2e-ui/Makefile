@@ -45,7 +45,7 @@ run: ui-install
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
 	echo "starting API ($${DATABASE_URL:-sqlite}) on $$_base …"; \
-	cargo run -p e2e-runner > .make-runner.log 2>&1 & \
+	cargo run -p e2e-runner --bin e2e-ui > .make-runner.log 2>&1 & \
 	echo $$! > .make-runner.pid; \
 	ok=0; \
 	for i in $$(seq 1 80); do \

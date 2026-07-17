@@ -16,8 +16,8 @@ pub use naming::{
     POSTGRES_JSON_COMPARISON_OPS, PORTABLE_COMPARISON_OPS, STRING_COMPARISON_OPS,
 };
 pub use sdl::{
-    graphql_sdl_for_tables, graphql_sdl_for_tables_with_options, graphql_sdl_from_surface,
-    SdlOptions,
+    graphql_sdl_for_role, graphql_sdl_for_tables, graphql_sdl_for_tables_with_options,
+    graphql_sdl_from_surface, SdlOptions,
 };
 pub use projection_return::{
     projection_return_value, stage_projection_and_payload, ProjectionPayload,

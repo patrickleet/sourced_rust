@@ -91,6 +91,34 @@ pub fn graphql_sdl_from_surface(surface: &super::surface::Surface) -> Result<Str
     graphql_sdl_from_read_models(&tables, &options)
 }
 
+/// Production path for **role-filtered** SDL (gap A10).
+///
+/// ```text
+/// build_surface → surface_for_role → graphql_sdl_from_surface
+/// ```
+///
+/// Prefer this over filtering full SDL as text. `grants` maps model_name →
+/// [`RoleGrant`](super::surface::RoleGrant) for the role.
+pub fn graphql_sdl_for_role(
+    tables: &[TableSchema],
+    options: &SdlOptions,
+    role: &str,
+    grants: &std::collections::BTreeMap<String, super::surface::RoleGrant>,
+) -> Result<String, String> {
+    let surface_opts = super::surface::SurfaceOptions {
+        dialect: if options.jsonb_operators {
+            super::surface::SurfaceDialect::Postgres
+        } else {
+            super::surface::SurfaceDialect::Sqlite
+        },
+        aggregates: options.aggregates,
+        subscriptions: options.subscriptions,
+    };
+    let full = super::surface::build_surface(tables, &surface_opts)?;
+    let role_surface = super::surface::surface_for_role(&full, role, grants);
+    graphql_sdl_from_surface(&role_surface)
+}
+
 fn surface_options_to_sdl(surface: &super::surface::Surface) -> SdlOptions {
     SdlOptions {
         aggregates: surface.aggregates,

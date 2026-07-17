@@ -40,6 +40,7 @@
 
 	const list = gql.store({
 		document: todosResource.query,
+		list: { at: 'todos', by: 'todo_id' },
 		initialData: { todos: data.todos ?? [] },
 		select: (d: { todos?: Todo[] }) => sortTodos(d?.todos ?? [])
 	});
@@ -62,19 +63,6 @@
 		return `t-${rand}`;
 	}
 
-	// Never reconcile: 'refetch' on the command path — RM is not ready yet.
-	const factOpts = {
-		result: { kind: 'fact' as const },
-		reconcile: { kind: 'none' as const }
-	};
-
-	/** After projector lag, refresh cache (merge preserves optimistic if still ahead). */
-	function scheduleProjectorCatchUp() {
-		window.setTimeout(() => {
-			void list.refetch();
-		}, 800);
-	}
-
 	async function onCreate(e: Event) {
 		e.preventDefault();
 		const text = title.trim();
@@ -88,7 +76,6 @@
 		const result = await gql.commands.todosCreate(
 			{ todo_id, title: text },
 			{
-				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: {
@@ -107,7 +94,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'create failed';
 			return;
 		}
-		scheduleProjectorCatchUp();
+		list.scheduleCatchUp();
 	}
 
 	async function onComplete(todo_id: string) {
@@ -121,7 +108,6 @@
 		const result = await gql.commands.todosComplete(
 			{ todo_id },
 			{
-				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'completed' }
@@ -135,7 +121,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'complete failed';
 			return;
 		}
-		scheduleProjectorCatchUp();
+		list.scheduleCatchUp();
 	}
 
 	async function onArchive(todo_id: string) {
@@ -149,7 +135,6 @@
 		const result = await gql.commands.todosArchive(
 			{ todo_id },
 			{
-				...factOpts,
 				optimistic: {
 					targets: [list.target('todos', 'todo_id')],
 					row: { ...target, status: 'archived' }
@@ -163,7 +148,7 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'archive failed';
 			return;
 		}
-		scheduleProjectorCatchUp();
+		list.scheduleCatchUp();
 	}
 </script>
 

@@ -6,7 +6,7 @@
  * - `request` / `subscribe` write-through into the cache
  * - `gql.commands.*` pipeline patches the same cache keys
  *
- * Pages should not call seedQueryCache / cache.subscribe by hand.
+ * Pages should not call manual cache seed helpers by hand — use gql.store / gql.live.
  */
 import { createGraphqlClient, type GraphqlClient } from './create-client.ts';
 import { authFromPageData, type PageGraphqlData } from './auth-from-page.ts';
@@ -22,9 +22,11 @@ import {
 	type DocumentStore,
 	type DocumentStoreOptions
 } from './document-store.ts';
+import { e2eCommandPolicies } from './command-policies.ts';
 
 export type { PageGraphqlData } from './auth-from-page.ts';
 export { authFromPageData } from './auth-from-page.ts';
+export { e2eCommandPolicies } from './command-policies.ts';
 
 /** Bound HTTP + WS client with pipelined commands + document stores. */
 export type AppGraphqlClient = GraphqlClient & {
@@ -69,12 +71,11 @@ export type UseGraphqlOptions = {
  * // {$lobby.data} {$lobby.status}
  * onDestroy(() => lobby.destroy());
  *
- * @example Command with optimistic list patch
+ * @example Command with optimistic list patch (policies default fact + none)
  * await gql.commands.todosCreate(input, {
- *   result: { kind: 'fact' },
- *   reconcile: { kind: 'none' }, // async projectors — do not refetch on command success
  *   optimistic: { targets: [list.target('todos', 'todo_id')], row },
  * });
+ * list.scheduleCatchUp(); // soft delayed refetch after projector lag
  */
 export function useGraphql(
 	getData: () => PageGraphqlData,
@@ -108,7 +109,7 @@ export function useGraphql(
 		// GraphqlClient.request is a structural match for CommandClient.
 		commands: bindCommandsPipeline(client as import('$lib/api/commands.generated').CommandClient, {
 			cache,
-			policies: options.policies,
+			policies: options.policies ?? e2eCommandPolicies,
 			runEffects: options.runEffects
 		})
 	};

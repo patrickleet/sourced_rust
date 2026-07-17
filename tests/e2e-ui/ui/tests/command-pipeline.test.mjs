@@ -42,3 +42,13 @@ test('pipeline unit suite (strip-types)', () => {
     `pipeline unit runner failed:\n${r.stdout}\n${r.stderr}`
   );
 });
+
+test('systems-harden unit suite (strip-types)', () => {
+  const harden = path.join(uiRoot, 'tests/systems-harden-unit.mjs');
+  const hr = spawnSync(process.execPath, ['--experimental-strip-types', harden], {
+    encoding: 'utf8',
+    cwd: uiRoot
+  });
+  assert.equal(hr.status, 0, `systems-harden unit failed:\n${hr.stdout}\n${hr.stderr}`);
+  assert.match(hr.stdout, /# pass|# tests|ok -/);
+});

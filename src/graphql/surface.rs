@@ -718,4 +718,64 @@ mod tests {
             .relationships
             .is_empty());
     }
+
+    /// Production path: build_surface → surface_for_role → SDL (gap A10).
+    #[test]
+    fn role_sdl_production_path_omits_ungranted_columns() {
+        use super::super::sdl::{graphql_sdl_for_role, SdlOptions};
+
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            "OrderView".to_string(),
+            RoleGrant::columns(["order_id", "status"]),
+        );
+        let sdl = graphql_sdl_for_role(
+            &[orders()],
+            &SdlOptions::sqlite(),
+            "user",
+            &grants,
+        )
+        .expect("role sdl");
+
+        // Granted
+        assert!(
+            sdl.contains("order_id") && sdl.contains("status"),
+            "expected granted columns in SDL: {sdl}"
+        );
+        // Ungranted column fields must not appear on the object type body.
+        // (meta / customer_id were not granted)
+        assert!(
+            !sdl.contains("customer_id"),
+            "ungranted customer_id leaked into role SDL: {sdl}"
+        );
+        assert!(
+            !sdl.contains("meta"),
+            "ungranted meta leaked into role SDL: {sdl}"
+        );
+        // SQLite: no PG JSON ops even if JSON columns were granted
+        for forbidden in ["_contains", "_contained_in", "_has_key"] {
+            assert!(
+                !sdl.contains(forbidden),
+                "SQLite role SDL must not expose {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn role_sdl_empty_grants_has_no_query_roots() {
+        use super::super::sdl::{graphql_sdl_for_role, SdlOptions};
+
+        let sdl = graphql_sdl_for_role(
+            &[orders()],
+            &SdlOptions::sqlite(),
+            "anon",
+            &BTreeMap::new(),
+        )
+        .expect("empty role sdl");
+        // No list roots for orders when model ungranted
+        assert!(
+            !sdl.contains("orders(") && !sdl.contains("orders:"),
+            "empty grants should not expose orders roots: {sdl}"
+        );
+    }
 }
