@@ -4,6 +4,8 @@
  * (from tests/e2e-ui/ui)
  */
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   QueryCache,
   cacheKey,
@@ -19,6 +21,9 @@ import { looksLikeMutation, createGraphqlClient } from '../src/lib/gql/create-cl
 import { createDocumentStore } from '../src/lib/gql/document-store.ts';
 import { e2eCommandPolicies } from '../src/lib/gql/command-policies.ts';
 import { bindCommandsPipeline } from '../src/lib/gql/bind-commands-pipeline.ts';
+import { authIdentityKey, useGraphql } from '../src/lib/gql/use-graphql.ts';
+
+const uiRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const TODOS_DOC = 'query Todos { todos { todo_id title status } }';
 const CREATE_DOC =
@@ -425,26 +430,80 @@ check('C-U18 cache.clear drops all entries (identity switch)', () => {
   assert.equal(cache.get(cacheKey(TODOS_DOC, {})), undefined);
 });
 
-check('C-U18 useGraphql getAuth clears cache when identity changes', async () => {
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const { fileURLToPath } = await import('node:url');
-  const root = path.dirname(fileURLToPath(import.meta.url));
-  const src = fs.readFileSync(path.join(root, '../src/lib/gql/use-graphql.ts'), 'utf8');
-  assert.match(src, /authIdentityKey|cache\.clear/);
-  assert.match(src, /lastAuthId/);
+/** Minimal JWT-shaped token: same RS256 header, different payload.sub (C-U18). */
+function jwtLike(sub) {
+  const b64url = (obj) =>
+    Buffer.from(JSON.stringify(obj))
+      .toString('base64')
+      .replace(/=/g, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+  // Shared JOSE header — old buggy key used token.slice(0,24) which is this prefix only
+  const header = b64url({ alg: 'RS256', typ: 'JWT' });
+  const payload = b64url({ sub, iss: 'https://example.test' });
+  return `${header}.${payload}.fakesig`;
+}
+
+check('C-U18 authIdentityKey uses JWT sub not shared header prefix', () => {
+  const tokA = jwtLike('alice');
+  const tokB = jwtLike('bob');
+  // Same JOSE header bytes — buggy slice(0,24) would collapse these
+  assert.equal(tokA.slice(0, 24), tokB.slice(0, 24));
+  const ka = authIdentityKey({ accessToken: tokA });
+  const kb = authIdentityKey({ accessToken: tokB });
+  assert.equal(ka, 'sub:alice');
+  assert.equal(kb, 'sub:bob');
+  assert.notEqual(ka, kb);
 });
+
+await checkAsync(
+  'C-U18 useGraphql request clears shared cache when JWT sub changes',
+  async () => {
+    const tokAlice = jwtLike('alice');
+    const tokBob = jwtLike('bob');
+    assert.equal(tokAlice.slice(0, 24), tokBob.slice(0, 24), 'fixture: shared header');
+
+    const cache = new QueryCache();
+    let page = { accessToken: tokAlice, session: null, engineRole: 'user' };
+    const gql = useGraphql(() => page, { cache });
+
+    const key = cacheKey(TODOS_DOC, {});
+    cache.set(key, {
+      data: { todos: [{ todo_id: 'alice-secret', title: 'private' }] },
+      updatedAt: 1
+    });
+    assert.ok(cache.get(key), 'seeded alice cache');
+
+    // Switch principal (same JOSE header, different sub)
+    page = { accessToken: tokBob, session: null, engineRole: 'user' };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      status: 200,
+      json: async () => ({ data: { __typename: 'Query' } })
+    });
+    try {
+      // request → getAuth → should clear on identity change
+      await gql.request('query Ping { __typename }');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    assert.equal(
+      cache.get(key),
+      undefined,
+      'alice document must not remain after bob identity switch'
+    );
+  }
+);
 
 // structural: no cache-helpers export
 check('B14 index does not export seedQueryCache', async () => {
   const fs = await import('node:fs');
-  const path = await import('node:path');
-  const { fileURLToPath } = await import('node:url');
-  const root = path.dirname(fileURLToPath(import.meta.url));
-  const idx = fs.readFileSync(path.join(root, '../src/lib/gql/index.ts'), 'utf8');
+  const idx = fs.readFileSync(path.join(uiRoot, '../src/lib/gql/index.ts'), 'utf8');
   assert.doesNotMatch(idx, /seedQueryCache|cache-helpers/);
   assert.match(idx, /e2eCommandPolicies/);
-  assert.ok(!fs.existsSync(path.join(root, '../src/lib/gql/cache-helpers.ts')));
+  assert.ok(!fs.existsSync(path.join(uiRoot, '../src/lib/gql/cache-helpers.ts')));
 });
 
 console.log(`# tests ${passed}`);
