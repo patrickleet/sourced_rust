@@ -58,6 +58,13 @@ export type UseGraphqlOptions = {
 	runEffects?: (effects: Effect[]) => void;
 };
 
+/** Identity key for C-U18 cache isolation (token sub or DevHeaders userId+role). */
+function authIdentityKey(auth: import('./types.ts').GqlAuth): string {
+	const token = auth.accessToken?.trim() || '';
+	if (token) return `bearer:${token.slice(0, 24)}`;
+	return `dev:${auth.userId ?? ''}:${auth.role ?? ''}`;
+}
+
 /**
  * Client bound to same-origin `/graphql`.
  *
@@ -81,10 +88,23 @@ export function useGraphql(
 	getData: () => PageGraphqlData,
 	options: UseGraphqlOptions = {}
 ): AppGraphqlClient {
+	// Prefer a fresh QueryCache per binder so identity switches (new page load /
+	// remount after login) do not reuse another principal's document keys (C-U18).
+	// Callers may still pass a shared `options.cache` for tests; clear it on auth id change.
 	const cache = options.cache ?? new QueryCache();
+	let lastAuthId = authIdentityKey(authFromPageData(getData()));
+	const getAuth = () => {
+		const auth = authFromPageData(getData());
+		const id = authIdentityKey(auth);
+		if (id !== lastAuthId) {
+			cache.clear();
+			lastAuthId = id;
+		}
+		return auth;
+	};
 	const client = createGraphqlClient({
 		getUrl: () => '/graphql',
-		getAuth: () => authFromPageData(getData()),
+		getAuth,
 		cache,
 		writeThrough: true
 	});

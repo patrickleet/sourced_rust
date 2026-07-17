@@ -320,6 +320,23 @@ impl RoleGrant {
     }
 }
 
+/// Build a role→grant map for one role from `(model_name, role) → grant` entries.
+///
+/// Entries whose role does not match are ignored. Used by export/SDL and engine
+/// adapters that already store grants keyed by `(model, role)`.
+pub fn role_grants_for_role(
+    role: &str,
+    model_role_grants: &BTreeMap<(String, String), RoleGrant>,
+) -> BTreeMap<String, RoleGrant> {
+    let mut out = BTreeMap::new();
+    for ((model, r), grant) in model_role_grants {
+        if r == role {
+            out.insert(model.clone(), grant.clone());
+        }
+    }
+    out
+}
+
 /// Apply role grants: drop ungranted models and columns (and relationships to
 /// dropped models). Aggregate roots omitted when `aggregations` is false.
 ///
@@ -777,5 +794,80 @@ mod tests {
             !sdl.contains("orders(") && !sdl.contains("orders:"),
             "empty grants should not expose orders roots: {sdl}"
         );
+    }
+
+    /// A7: role×dialect inventory + IR→SDL ops stay aligned (portable fixture).
+    #[test]
+    fn a7_role_dialect_parity_inventory_and_sdl_ops() {
+        use super::super::sdl::{graphql_sdl_for_role, SdlOptions};
+
+        let full_sqlite = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
+        let full_pg = build_surface(&[orders()], &SurfaceOptions::postgres()).unwrap();
+
+        // Dialect honesty on full surface
+        let sqlite_json = full_sqlite.comparison_ops_for_scalar("JSON");
+        let pg_json = full_pg.comparison_ops_for_scalar("JSON");
+        assert!(sqlite_json.contains(&"_eq"));
+        assert!(!sqlite_json.contains(&"_contains"));
+        assert!(pg_json.contains(&"_contains"));
+
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            "OrderView".to_string(),
+            RoleGrant::columns(["order_id", "status"]),
+        );
+
+        for (opts, dialect_label) in [
+            (SdlOptions::sqlite(), "sqlite"),
+            (SdlOptions::postgres(), "postgres"),
+        ] {
+            let full = build_surface(
+                &[orders()],
+                &SurfaceOptions {
+                    dialect: if opts.jsonb_operators {
+                        SurfaceDialect::Postgres
+                    } else {
+                        SurfaceDialect::Sqlite
+                    },
+                    aggregates: opts.aggregates,
+                    subscriptions: opts.subscriptions,
+                },
+            )
+            .unwrap();
+            let role_s = surface_for_role(&full, "user", &grants);
+            let roots: Vec<_> = role_s.query_root_names();
+            assert!(
+                roots.contains(&"orders") && roots.contains(&"orders_by_pk"),
+                "{dialect_label}: missing list/by_pk roots {roots:?}"
+            );
+            assert!(
+                !roots.iter().any(|n| n.contains("aggregate")),
+                "{dialect_label}: aggregate without grant"
+            );
+            let cols: Vec<_> = role_s
+                .models
+                .get("OrderView")
+                .unwrap()
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect();
+            assert_eq!(cols, vec!["order_id", "status"]);
+
+            let sdl = graphql_sdl_for_role(&[orders()], &opts, "user", &grants).unwrap();
+            assert!(
+                sdl.contains("order_id") && !sdl.contains("customer_id"),
+                "{dialect_label}: SDL column leak: {sdl}"
+            );
+            // SQLite role SDL never exposes PG JSON ops even if dialect flag wrong on unused scalars
+            if !opts.jsonb_operators {
+                for forbidden in ["_contains", "_contained_in", "_has_key"] {
+                    assert!(
+                        !sdl.contains(forbidden),
+                        "{dialect_label}: {forbidden} in SDL"
+                    );
+                }
+            }
+        }
     }
 }

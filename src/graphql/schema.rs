@@ -16,10 +16,13 @@ use super::commands::{CommandInput, CommandOutput, GraphqlCommands};
 use super::compile::{self, RootKind, SqlDialect};
 use super::engine::{CatalogEntry, EngineInner, RoleModelPerm};
 use super::naming::{
-    bool_exp_name, by_pk_field, comparison_exp_name, include_postgres_json_comparison_ops,
-    object_type_name, order_by_name, root_list_field, scalar_type_name, CUSTOM_SCALARS,
+    bool_exp_name, comparison_exp_name, object_type_name, order_by_name, scalar_type_name,
+    CUSTOM_SCALARS,
 };
-use super::permissions::ReadPermission;
+use super::permissions::{role_grants_from_model_role_perms, ReadPermission};
+use super::surface::{
+    build_surface, surface_for_role, RootKind as SurfaceRootKind, SurfaceDialect, SurfaceOptions,
+};
 
 pub fn build_role_schema(
     role: &str,
@@ -34,16 +37,39 @@ pub fn build_role_schema(
 ) -> Result<Schema, String> {
     let _ = by_table;
 
-    // Collect models granted to this role.
-    let granted: Vec<(&str, &TableSchema, &ReadPermission)> = permissions
+    // --- A4: field inventory from surface IR (role-filtered) ---
+    let tables: Vec<TableSchema> = catalog
+        .values()
+        .filter(|e| e.exposed)
+        .map(|e| e.schema.clone())
+        .collect();
+    let surface_opts = SurfaceOptions {
+        dialect: match dialect {
+            SqlDialect::Sqlite => SurfaceDialect::Sqlite,
+            SqlDialect::Postgres => SurfaceDialect::Postgres,
+        },
+        aggregates: true,
+        subscriptions: true,
+    };
+    let full_surface = build_surface(&tables, &surface_opts)?;
+    let grants = role_grants_from_model_role_perms(
+        role,
+        permissions
+            .iter()
+            .map(|(k, v)| (k, &v.permission)),
+    );
+    let role_surface = surface_for_role(&full_surface, role, &grants);
+
+    // Granted models: IR inventory + original ReadPermission (row filters / execute).
+    let granted: Vec<(String, TableSchema, ReadPermission)> = role_surface
+        .models
         .iter()
-        .filter(|((_, r), _)| r == role)
-        .filter_map(|((model, _), perm)| {
-            let entry = catalog.get(model)?;
-            if !entry.exposed {
-                return None;
-            }
-            Some((model.as_str(), &entry.schema, &perm.permission))
+        .filter_map(|(model_name, model)| {
+            let perm = permissions
+                .get(&(model_name.clone(), role.to_string()))
+                .map(|p| p.permission.clone())
+                .unwrap_or_else(super::permissions::read);
+            Some((model_name.clone(), model.schema.clone(), perm))
         })
         .collect();
 
@@ -67,11 +93,16 @@ pub fn build_role_schema(
         .item("desc_nulls_first")
         .item("desc_nulls_last");
 
-    for (model_name, schema, perm) in &granted {
-        let model_name = (*model_name).to_string();
-        let table = root_list_field(schema).to_string();
-        let by_pk = by_pk_field(schema);
-        let obj_name = object_type_name(schema).to_string();
+    // Emit roots only for fields present on the role surface (IR inventory).
+    for root in &role_surface.query_fields {
+        let Some((_, schema, perm)) = granted
+            .iter()
+            .find(|(m, _, _)| m == &root.model_name)
+        else {
+            continue;
+        };
+        let model_name = root.model_name.clone();
+        let obj_name = root.object.clone();
         let bool_exp = bool_exp_name(schema);
         let order_by = order_by_name(schema);
 
@@ -95,59 +126,69 @@ pub fn build_role_schema(
         );
         ensure_order_by_input(&mut registered_inputs, schema, perm);
 
-        // List root
-        let model_for_resolver = model_name.clone();
-        let list_field = Field::new(
-            table.clone(),
-            TypeRef::named_nn_list_nn(obj_name.clone()),
-            move |ctx| {
-                let model = model_for_resolver.clone();
-                FieldFuture::new(async move { resolve_root(&ctx, &model, RootKind::List).await })
-            },
-        )
-        .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
-        .argument(InputValue::new(
-            "order_by",
-            TypeRef::named_nn_list(order_by.clone()),
-        ))
-        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-        .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
-        query = query.field(list_field);
-
-        // by_pk root
-        let model_for_pk = model_name.clone();
-        let mut pk_field = Field::new(by_pk, TypeRef::named(obj_name.clone()), move |ctx| {
-            let model = model_for_pk.clone();
-            FieldFuture::new(async move { resolve_root(&ctx, &model, RootKind::ByPk).await })
-        });
-        for pk in &schema.primary_key.columns {
-            if let Some(col) = schema.columns.iter().find(|c| c.column_name == *pk) {
-                if let Some(scalar) = scalar_type_name(&col.column_type) {
-                    pk_field =
-                        pk_field.argument(InputValue::new(pk.as_str(), TypeRef::named_nn(scalar)));
-                }
-            }
-        }
-        query = query.field(pk_field);
-
-        // Aggregate root when allowed
-        if perm.aggregations {
-            let agg_name = format!("{}_aggregate", schema.table_name);
-            let agg_type = format!("{}_aggregate", schema.table_name);
-            ensure_aggregate_type(&mut registered_objects, schema);
-            let model_for_agg = model_name.clone();
-            let agg_field = Field::new(agg_name, TypeRef::named(agg_type), move |ctx| {
-                let model = model_for_agg.clone();
-                FieldFuture::new(
-                    async move { resolve_root(&ctx, &model, RootKind::Aggregate).await },
+        match root.kind {
+            SurfaceRootKind::List => {
+                let model_for_resolver = model_name.clone();
+                let list_field = Field::new(
+                    root.name.clone(),
+                    TypeRef::named_nn_list_nn(obj_name.clone()),
+                    move |ctx| {
+                        let model = model_for_resolver.clone();
+                        FieldFuture::new(async move {
+                            resolve_root(&ctx, &model, RootKind::List).await
+                        })
+                    },
                 )
-            })
-            .argument(InputValue::new("where", TypeRef::named(bool_exp)));
-            query = query.field(agg_field);
+                .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
+                .argument(InputValue::new(
+                    "order_by",
+                    TypeRef::named_nn_list(order_by.clone()),
+                ))
+                .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+                .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+                query = query.field(list_field);
+            }
+            SurfaceRootKind::ByPk => {
+                let model_for_pk = model_name.clone();
+                let mut pk_field =
+                    Field::new(root.name.clone(), TypeRef::named(obj_name.clone()), move |ctx| {
+                        let model = model_for_pk.clone();
+                        FieldFuture::new(async move {
+                            resolve_root(&ctx, &model, RootKind::ByPk).await
+                        })
+                    });
+                for pk in &schema.primary_key.columns {
+                    if let Some(col) = schema.columns.iter().find(|c| c.column_name == *pk) {
+                        if col.skipped {
+                            continue;
+                        }
+                        if let Some(scalar) = scalar_type_name(&col.column_type) {
+                            pk_field = pk_field
+                                .argument(InputValue::new(pk.as_str(), TypeRef::named_nn(scalar)));
+                        }
+                    }
+                }
+                query = query.field(pk_field);
+            }
+            SurfaceRootKind::Aggregate => {
+                let agg_type = format!("{}_aggregate", schema.table_name);
+                ensure_aggregate_type(&mut registered_objects, schema);
+                let model_for_agg = model_name.clone();
+                let agg_field =
+                    Field::new(root.name.clone(), TypeRef::named(agg_type), move |ctx| {
+                        let model = model_for_agg.clone();
+                        FieldFuture::new(async move {
+                            resolve_root(&ctx, &model, RootKind::Aggregate).await
+                        })
+                    })
+                    .argument(InputValue::new("where", TypeRef::named(bool_exp)));
+                query = query.field(agg_field);
+            }
         }
     }
 
-    // Comparison input types for used scalars
+    // Comparison input types from full-catalog IR (dialect-honest ops).
+    // Only register when IR lists ops — never emit empty input objects.
     for scalar in &scalars_needed {
         if matches!(
             *scalar,
@@ -155,31 +196,24 @@ pub fn build_role_schema(
         ) {
             let scalar_name = *scalar;
             let name = comparison_exp_name(scalar_name);
+            let ops: Vec<String> = full_surface
+                .comparison_ops_for_scalar(scalar_name)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            if ops.is_empty() {
+                continue;
+            }
             registered_inputs.entry(name.clone()).or_insert_with(|| {
                 let mut input = InputObject::new(name);
-                for op in ["_eq", "_neq", "_gt", "_gte", "_lt", "_lte"] {
-                    input = input.field(InputValue::new(op, TypeRef::named(scalar_name)));
-                }
-                // Optional lists: [T!] (not [T!]!)
-                input = input.field(InputValue::new("_in", TypeRef::named_nn_list(scalar_name)));
-                input = input.field(InputValue::new("_nin", TypeRef::named_nn_list(scalar_name)));
-                input = input.field(InputValue::new(
-                    "_is_null",
-                    TypeRef::named(TypeRef::BOOLEAN),
-                ));
-                if scalar_name == "String" {
-                    input = input.field(InputValue::new("_like", TypeRef::named("String")));
-                    input = input.field(InputValue::new("_ilike", TypeRef::named("String")));
-                }
-                // Dialect-honest: PG jsonb ops only when engine dialect is Postgres.
-                let pg_json = include_postgres_json_comparison_ops(matches!(
-                    dialect,
-                    SqlDialect::Postgres
-                ));
-                if scalar_name == "JSON" && pg_json {
-                    input = input.field(InputValue::new("_contains", TypeRef::named("JSON")));
-                    input = input.field(InputValue::new("_contained_in", TypeRef::named("JSON")));
-                    input = input.field(InputValue::new("_has_key", TypeRef::named("String")));
+                for op in &ops {
+                    let ty = match op.as_str() {
+                        "_is_null" => TypeRef::named(TypeRef::BOOLEAN),
+                        "_in" | "_nin" => TypeRef::named_nn_list(scalar_name),
+                        "_has_key" => TypeRef::named("String"),
+                        _ => TypeRef::named(scalar_name),
+                    };
+                    input = input.field(InputValue::new(op.as_str(), ty));
                 }
                 input
             });
@@ -249,14 +283,24 @@ pub fn build_role_schema(
     use async_graphql::dynamic::{Subscription, SubscriptionField, SubscriptionFieldFuture};
     let mut subscription = Subscription::new("Subscription");
     let mut has_subscription = false;
-    for (model_name, schema, _perm) in &granted {
-        let table = root_list_field(schema).to_string();
-        let obj_name = object_type_name(schema).to_string();
+    for sub_root in &role_surface.subscription_fields {
+        if !matches!(sub_root.kind, SurfaceRootKind::List) {
+            continue;
+        }
+        let Some((_, schema, _)) = granted
+            .iter()
+            .find(|(m, _, _)| m == &sub_root.model_name)
+        else {
+            continue;
+        };
         let bool_exp = bool_exp_name(schema);
         let order_by = order_by_name(schema);
-        let model_for_sub = (*model_name).to_string();
-        let field =
-            SubscriptionField::new(table, TypeRef::named_nn_list_nn(obj_name), move |ctx| {
+        let model_for_sub = sub_root.model_name.clone();
+        let obj_name = sub_root.object.clone();
+        let field = SubscriptionField::new(
+            sub_root.name.clone(),
+            TypeRef::named_nn_list_nn(obj_name),
+            move |ctx| {
                 let model = model_for_sub.clone();
                 // Extract owned data before the async block (stream is 'static).
                 let inner = ctx.data_opt::<Arc<EngineInner>>().cloned();
@@ -279,14 +323,15 @@ pub fn build_role_schema(
                             .map_err(async_graphql::Error::new)?;
                     Ok(stream)
                 })
-            })
-            .argument(InputValue::new("where", TypeRef::named(bool_exp)))
-            .argument(InputValue::new(
-                "order_by",
-                TypeRef::named_nn_list(order_by),
-            ))
-            .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-            .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+            },
+        )
+        .argument(InputValue::new("where", TypeRef::named(bool_exp)))
+        .argument(InputValue::new(
+            "order_by",
+            TypeRef::named_nn_list(order_by),
+        ))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
         subscription = subscription.field(field);
         has_subscription = true;
     }

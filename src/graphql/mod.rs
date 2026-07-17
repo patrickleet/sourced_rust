@@ -23,8 +23,8 @@ pub use projection_return::{
     projection_return_value, stage_projection_and_payload, ProjectionPayload,
 };
 pub use surface::{
-    build_surface, surface_for_role, RoleGrant, RootField, RootKind, Surface, SurfaceDialect,
-    SurfaceModel, SurfaceOptions,
+    build_surface, role_grants_for_role, surface_for_role, RoleGrant, RootField, RootKind, Surface,
+    SurfaceDialect, SurfaceModel, SurfaceOptions,
 };
 
 #[cfg(feature = "graphql")]
@@ -75,7 +75,10 @@ pub use identity::{
     UNSET_OIDC_AUDIENCE, UNSET_OIDC_ISSUER,
 };
 #[cfg(feature = "graphql")]
-pub use permissions::{read, ModelPermissions, ReadPermission};
+pub use permissions::{
+    read, role_grant_from_read_permission, role_grants_from_model_role_perms, ModelPermissions,
+    ReadPermission,
+};
 #[cfg(feature = "graphql")]
 pub use subscribe::ChangeHub;
 #[cfg(feature = "graphql")]

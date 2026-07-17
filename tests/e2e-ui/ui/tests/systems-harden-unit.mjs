@@ -394,6 +394,47 @@ await checkAsync('B9 policy defaults applied; call-site overrides', async () => 
   assert.ok(e2eCommandPolicies.todosCreate?.reconcile?.kind === 'none');
 });
 
+// --- B16 residual red-team ---
+check('C-U2 invalidate exact key does not delete sibling prefix key', () => {
+  const cache = new QueryCache();
+  const short = 'query Q { a }';
+  const longer = 'query Q { a b }';
+  // Document text of short is prefix of longer string — old startsWith invalidate was unsafe
+  const k1 = cacheKey(short, {});
+  const k2 = cacheKey(longer, {});
+  cache.set(k1, { data: 1, updatedAt: 1 });
+  cache.set(k2, { data: 2, updatedAt: 1 });
+  cache.invalidate(k1);
+  assert.equal(cache.get(k1), undefined);
+  assert.equal(cache.get(k2)?.data, 2);
+});
+
+check('C-U2 invalidatePrefix is explicit for intentional prefix wipe', () => {
+  const cache = new QueryCache();
+  cache.set('docA::', { data: 1, updatedAt: 1 });
+  cache.set('docAB::', { data: 2, updatedAt: 1 });
+  cache.invalidatePrefix('docA');
+  assert.equal(cache.get('docA::'), undefined);
+  assert.equal(cache.get('docAB::'), undefined);
+});
+
+check('C-U18 cache.clear drops all entries (identity switch)', () => {
+  const cache = new QueryCache();
+  cache.set(cacheKey(TODOS_DOC, {}), { data: { todos: [{ todo_id: 'x' }] }, updatedAt: 1 });
+  cache.clear();
+  assert.equal(cache.get(cacheKey(TODOS_DOC, {})), undefined);
+});
+
+check('C-U18 useGraphql getAuth clears cache when identity changes', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(root, '../src/lib/gql/use-graphql.ts'), 'utf8');
+  assert.match(src, /authIdentityKey|cache\.clear/);
+  assert.match(src, /lastAuthId/);
+});
+
 // structural: no cache-helpers export
 check('B14 index does not export seedQueryCache', async () => {
   const fs = await import('node:fs');

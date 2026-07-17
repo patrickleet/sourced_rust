@@ -13,30 +13,6 @@ export type Scalars = {
   Timestamptz: { input: unknown; output: unknown; }
 };
 
-export type BigInt_Comparison_Exp = {
-  _eq?: InputMaybe<Scalars['BigInt']['input']>;
-  _gt?: InputMaybe<Scalars['BigInt']['input']>;
-  _gte?: InputMaybe<Scalars['BigInt']['input']>;
-  _in?: InputMaybe<Array<Scalars['BigInt']['input']>>;
-  _is_null?: InputMaybe<Scalars['Boolean']['input']>;
-  _lt?: InputMaybe<Scalars['BigInt']['input']>;
-  _lte?: InputMaybe<Scalars['BigInt']['input']>;
-  _neq?: InputMaybe<Scalars['BigInt']['input']>;
-  _nin?: InputMaybe<Array<Scalars['BigInt']['input']>>;
-};
-
-export type Bytea_Comparison_Exp = {
-  _eq?: InputMaybe<Scalars['Bytea']['input']>;
-  _gt?: InputMaybe<Scalars['Bytea']['input']>;
-  _gte?: InputMaybe<Scalars['Bytea']['input']>;
-  _in?: InputMaybe<Array<Scalars['Bytea']['input']>>;
-  _is_null?: InputMaybe<Scalars['Boolean']['input']>;
-  _lt?: InputMaybe<Scalars['Bytea']['input']>;
-  _lte?: InputMaybe<Scalars['Bytea']['input']>;
-  _neq?: InputMaybe<Scalars['Bytea']['input']>;
-  _nin?: InputMaybe<Array<Scalars['Bytea']['input']>>;
-};
-
 export type ChatMessageView = {
   __typename?: 'ChatMessageView';
   author_id: Scalars['String']['output'];
@@ -59,18 +35,6 @@ export type ChatPostPayload = {
   created_at: Scalars['String']['output'];
   message_id: Scalars['String']['output'];
   room_id: Scalars['String']['output'];
-};
-
-export type Json_Comparison_Exp = {
-  _eq?: InputMaybe<Scalars['JSON']['input']>;
-  _gt?: InputMaybe<Scalars['JSON']['input']>;
-  _gte?: InputMaybe<Scalars['JSON']['input']>;
-  _in?: InputMaybe<Array<Scalars['JSON']['input']>>;
-  _is_null?: InputMaybe<Scalars['Boolean']['input']>;
-  _lt?: InputMaybe<Scalars['JSON']['input']>;
-  _lte?: InputMaybe<Scalars['JSON']['input']>;
-  _neq?: InputMaybe<Scalars['JSON']['input']>;
-  _nin?: InputMaybe<Array<Scalars['JSON']['input']>>;
 };
 
 export type Mutation = {
@@ -187,18 +151,6 @@ export type SubscriptionTodosArgs = {
   offset?: InputMaybe<Scalars['Int']['input']>;
   order_by?: InputMaybe<Array<Todos_Order_By>>;
   where?: InputMaybe<Todos_Bool_Exp>;
-};
-
-export type Timestamptz_Comparison_Exp = {
-  _eq?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _gt?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _gte?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _in?: InputMaybe<Array<Scalars['Timestamptz']['input']>>;
-  _is_null?: InputMaybe<Scalars['Boolean']['input']>;
-  _lt?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _lte?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _neq?: InputMaybe<Scalars['Timestamptz']['input']>;
-  _nin?: InputMaybe<Array<Scalars['Timestamptz']['input']>>;
 };
 
 export type TodoArchiveInput = {

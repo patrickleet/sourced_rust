@@ -21,10 +21,11 @@
 //! Prefer this vocabulary over “filter” / bare “allow”: grants are roles,
 //! columns are field allowlists, rows are row scope.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use super::filter::FilterExpr;
+use super::surface::RoleGrant;
 
 /// Per-role read access for one model.
 #[derive(Clone, Debug)]
@@ -106,6 +107,39 @@ impl ReadPermission {
             self.columns.clone().unwrap_or_default()
         }
     }
+
+    /// Map to feature-free surface IR grant (A12). Row filters / limits stay on
+    /// [`ReadPermission`] for execute; IR only needs column + aggregation surface.
+    pub fn to_role_grant(&self) -> RoleGrant {
+        role_grant_from_read_permission(self)
+    }
+}
+
+/// Pure A12 mapper: engine [`ReadPermission`] → surface [`RoleGrant`].
+pub fn role_grant_from_read_permission(perm: &ReadPermission) -> RoleGrant {
+    let mut g = if perm.all_columns {
+        RoleGrant::all_columns()
+    } else {
+        RoleGrant::columns(perm.columns.clone().unwrap_or_default())
+    };
+    if perm.aggregations {
+        g = g.with_aggregations();
+    }
+    g
+}
+
+/// Collect IR grants for one role from `(model_name, role) → ReadPermission` pairs.
+pub fn role_grants_from_model_role_perms<'a>(
+    role: &str,
+    entries: impl IntoIterator<Item = (&'a (String, String), &'a ReadPermission)>,
+) -> BTreeMap<String, RoleGrant> {
+    let mut out = BTreeMap::new();
+    for ((model, r), perm) in entries {
+        if r == role {
+            out.insert(model.clone(), role_grant_from_read_permission(perm));
+        }
+    }
+    out
 }
 
 /// Typed bag of `(role, ReadPermission)` pairs for one model.
@@ -132,5 +166,47 @@ impl<M> ModelPermissions<M> {
     pub fn grant(mut self, role: &str, perm: ReadPermission) -> Self {
         self.entries.push((role.to_string(), perm));
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a12_all_columns_maps() {
+        let g = role_grant_from_read_permission(&read().all_columns());
+        assert!(g.all_columns);
+        assert!(g.columns.is_empty());
+        assert!(!g.aggregations);
+    }
+
+    #[test]
+    fn a12_column_list_and_aggregations() {
+        let g = role_grant_from_read_permission(
+            &read().columns(["order_id", "status"]).aggregations(),
+        );
+        assert!(!g.all_columns);
+        assert!(g.columns.contains("order_id"));
+        assert!(g.columns.contains("status"));
+        assert!(!g.columns.contains("meta"));
+        assert!(g.aggregations);
+        assert!(g.allows_column("order_id"));
+        assert!(!g.allows_column("meta"));
+    }
+
+    #[test]
+    fn a12_role_grants_from_model_role_perms_filters_role() {
+        let user = read().columns(["a"]);
+        let admin = read().all_columns().aggregations();
+        let key_u = ("M".to_string(), "user".to_string());
+        let key_a = ("M".to_string(), "admin".to_string());
+        let map = role_grants_from_model_role_perms(
+            "user",
+            [(&key_u, &user), (&key_a, &admin)],
+        );
+        assert_eq!(map.len(), 1);
+        assert!(map["M"].columns.contains("a"));
+        assert!(!map["M"].all_columns);
     }
 }
