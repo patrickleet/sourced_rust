@@ -168,6 +168,36 @@ impl GraphqlEngine {
         self.inner.schemas.get(role).map(|s| s.sdl())
     }
 
+    /// Dep-free **surface IR** role SDL (A11 production path).
+    ///
+    /// Preferred for codegen / `export_sdl`. Uses the same catalog grants as the
+    /// engine build (A12 mapper). Runtime dump is still available via [`Self::sdl_for_role`].
+    pub fn ir_sdl_for_role(&self, role: &str) -> Result<String, String> {
+        use super::permissions::role_grants_from_model_role_perms;
+        use super::sdl::{graphql_sdl_for_role, SdlOptions};
+        use super::compile::SqlDialect;
+
+        let tables: Vec<_> = self
+            .inner
+            .catalog
+            .values()
+            .filter(|e| e.exposed)
+            .map(|e| e.schema.clone())
+            .collect();
+        let opts = match self.inner.dialect {
+            SqlDialect::Sqlite => SdlOptions::sqlite(),
+            SqlDialect::Postgres => SdlOptions::postgres(),
+        };
+        let grants = role_grants_from_model_role_perms(
+            role,
+            self.inner
+                .permissions
+                .iter()
+                .map(|(k, v)| (k, &v.permission)),
+        );
+        graphql_sdl_for_role(&tables, &opts, role, &grants)
+    }
+
     pub fn graphiql_enabled(&self) -> bool {
         self.inner.graphiql
     }

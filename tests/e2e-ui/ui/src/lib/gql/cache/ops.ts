@@ -127,6 +127,7 @@ function cloneEntry(entry: ReturnType<QueryCache['get']>): ReturnType<QueryCache
 
 export function applyCacheOp(cache: QueryCache, op: CacheOp, now = Date.now()): Snapshot | null {
   if (op.op === 'invalidate') {
+    // Exact key only (full cacheKey). Use QueryCache.invalidatePrefix for intentional prefix wipe.
     cache.invalidate(op.prefix);
     return null;
   }

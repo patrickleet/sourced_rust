@@ -1,37 +1,16 @@
 # GENERATED — do not treat as hand-authored source of truth.
-# Source: e2e_service::build_graphql_engine + GraphqlEngine::sdl_for_role("admin")
-# Regenerate: `make export-sdl` or `npm run gen:schema` (from tests/e2e-ui)
-# Then: `cd ui && npm run gen:gql`  (or `make gen-gql` / `npm run gen`)
+# IR query surface (validated): GraphqlEngine::ir_sdl_for_role("admin")
+#   build_surface → surface_for_role → graphql_sdl_from_surface
+# File body: runtime sdl_for_role (includes command Mutation for codegen)
+# Dual-check: every IR Query root field name ⊆ runtime Query
+# Regenerate: `make export-sdl` or `npm run gen:schema`
+# Then: `cd ui && npm run gen:gql`
 #
-# Spec: hops GitKB specs/e2e-ui/rust-role-sdl-codegen
+# Spec: specs/query-layer/v1/surface-ir (A11)
 
 scalar BigInt
 
-input BigInt_comparison_exp {
-	_eq: BigInt
-	_neq: BigInt
-	_gt: BigInt
-	_gte: BigInt
-	_lt: BigInt
-	_lte: BigInt
-	_in: [BigInt!]
-	_nin: [BigInt!]
-	_is_null: Boolean
-}
-
 scalar Bytea
-
-input Bytea_comparison_exp {
-	_eq: Bytea
-	_neq: Bytea
-	_gt: Bytea
-	_gte: Bytea
-	_lt: Bytea
-	_lte: Bytea
-	_in: [Bytea!]
-	_nin: [Bytea!]
-	_is_null: Boolean
-}
 
 type ChatMessageView {
 	message_id: String!
@@ -56,18 +35,6 @@ type ChatPostPayload {
 }
 
 scalar JSON
-
-input JSON_comparison_exp {
-	_eq: JSON
-	_neq: JSON
-	_gt: JSON
-	_gte: JSON
-	_lt: JSON
-	_lte: JSON
-	_in: [JSON!]
-	_nin: [JSON!]
-	_is_null: Boolean
-}
 
 type Mutation {
 	todos_create(input: TodoCreateInput!): TodoCreatePayload!
@@ -106,18 +73,6 @@ type Subscription {
 }
 
 scalar Timestamptz
-
-input Timestamptz_comparison_exp {
-	_eq: Timestamptz
-	_neq: Timestamptz
-	_gt: Timestamptz
-	_gte: Timestamptz
-	_lt: Timestamptz
-	_lte: Timestamptz
-	_in: [Timestamptz!]
-	_nin: [Timestamptz!]
-	_is_null: Boolean
-}
 
 input TodoArchiveInput {
 	todo_id: String!

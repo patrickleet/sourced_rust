@@ -54,6 +54,24 @@ make test        # domain + behavioral + structural UI (no Docker)
 make test-live   # OIDC isolation (E2E_STACK=1, needs make up + API up)
 ```
 
+### Suite identity modes (E6)
+
+| Profile | When | How suite/API auth works |
+|---------|------|---------------------------|
+| **DevHeaders** | `OIDC_ISSUER` / `OIDC_AUDIENCE` **unset** | Suite sends `x-user-id` / `x-role`; `make test` behavioral expects this |
+| **OidcBearer** | After `make up` + `source e2e-ui.env` | API rejects ambient headers; need real Bearer tokens (`make test-live` / machine keys) |
+
+Always-on units (no stack): `cargo test -p e2e-service --lib` (strip spoof), `cargo test -p todo-domain --lib` (owner gates), `cd ui && npm test` (includes systems-harden unit pack).
+
+Do **not** run DevHeaders behavioral against an OIDC-only process and treat 401 as product failure — wrong profile.
+
+### UI unit tests
+
+```bash
+cd ui && npm test
+# includes systems-harden-unit.mjs (C-U* red-team + pending merge)
+```
+
 ## WebSocket authentication (best practice)
 
 Browsers **cannot** set `Authorization` on the WebSocket upgrade handshake.

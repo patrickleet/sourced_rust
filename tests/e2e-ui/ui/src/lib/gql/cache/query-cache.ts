@@ -43,19 +43,37 @@ export class QueryCache {
     if (this.#entries.delete(key)) this.#notify(key);
   }
 
-  invalidate(prefix?: string): void {
-    if (prefix === undefined) {
+  /**
+   * Invalidate cache entries.
+   * - no arg: clear entire cache
+   * - exact `key`: delete that key only (safe; no prefix over-delete)
+   */
+  invalidate(key?: string): void {
+    if (key === undefined) {
       const keys = [...this.#entries.keys()];
       this.#entries.clear();
       for (const k of keys) this.#notify(k);
       return;
     }
+    if (this.#entries.delete(key)) this.#notify(key);
+  }
+
+  /**
+   * Delete all keys that start with `prefix`. Prefer {@link invalidate} with an
+   * exact key from `cacheKey()` to avoid accidental over-delete (C-U2).
+   */
+  invalidatePrefix(prefix: string): void {
     for (const key of [...this.#entries.keys()]) {
       if (key.startsWith(prefix)) {
         this.#entries.delete(key);
         this.#notify(key);
       }
     }
+  }
+
+  /** Drop all entries (e.g. identity switch / logout — C-U18). */
+  clear(): void {
+    this.invalidate();
   }
 
   subscribe(key: CacheKey, cb: CacheListener): () => void {
