@@ -28,10 +28,10 @@ const ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60;
 const TOKEN_AUTH_BASIC = 'client_secret_basic';
 const TOKEN_AUTH_POST = 'client_secret_post';
 const TOKEN_AUTH_NONE = 'none';
-const DEFAULT_SESSION_COOKIE_SAME_SITE = 'strict';
 
 type TokenRecord = Record<string, unknown>;
 type SessionCookieSameSite = 'lax' | 'strict';
+const DEFAULT_SESSION_COOKIE_SAME_SITE: SessionCookieSameSite = 'lax';
 
 function envFirst(names: string[], fallback = '') {
 	for (const name of names) {
@@ -86,10 +86,28 @@ function authSessionCookieSameSite(): SessionCookieSameSite {
 	if (value === 'lax' || value === 'strict') return value;
 
 	if (value) {
-		console.warn('AUTH_SESSION_COOKIE_SAME_SITE must be lax or strict; defaulting to strict');
+		console.warn('AUTH_SESSION_COOKIE_SAME_SITE must be lax or strict; defaulting to lax');
 	}
 
-	return DEFAULT_SESSION_COOKIE_SAME_SITE;
+	// Lax (not strict): OIDC return from Zitadel is a top-level nav; lax is enough
+	// and avoids edge cases with local multi-origin setups.
+	return 'lax';
+}
+
+/**
+ * Local e2e is plain http://127.0.0.1 — Secure cookies are dropped by the browser
+ * and login/session silently fails (every protected page looks "broken").
+ * Only enable Secure when AUTH_URL / AUTH_TRUST_SECURE explicitly says https.
+ */
+function useSecureCookies(): boolean {
+	const forced = env.AUTH_USE_SECURE_COOKIES?.trim().toLowerCase();
+	if (forced === '1' || forced === 'true' || forced === 'yes') return true;
+	if (forced === '0' || forced === 'false' || forced === 'no') return false;
+
+	const authUrl = envFirst(['AUTH_URL', 'ORIGIN', 'PUBLIC_ORIGIN']);
+	if (authUrl.startsWith('https://')) return true;
+	// Default: local fixture is HTTP
+	return false;
 }
 
 function providerName() {
@@ -265,10 +283,57 @@ export const { handle, signIn, signOut } = SvelteKitAuth({
 		signIn: '/',
 		error: '/'
 	},
+	// HARD false for this local fixture. Auth.js defaults secure from request
+	// protocol / AUTH_URL; on plain http://127.0.0.1 Secure cookies are dropped
+	// by the browser and every protected page looks broken (session never sticks).
+	// Production HTTPS deploys must set AUTH_USE_SECURE_COOKIES=true (or AUTH_URL=https…).
+	useSecureCookies: useSecureCookies(),
 	cookies: {
 		sessionToken: {
+			name: 'authjs.session-token',
 			options: {
-				sameSite: authSessionCookieSameSite()
+				httpOnly: true,
+				sameSite: authSessionCookieSameSite(),
+				path: '/',
+				secure: false
+			}
+		},
+		callbackUrl: {
+			name: 'authjs.callback-url',
+			options: {
+				httpOnly: true,
+				sameSite: authSessionCookieSameSite(),
+				path: '/',
+				secure: false
+			}
+		},
+		csrfToken: {
+			name: 'authjs.csrf-token',
+			options: {
+				httpOnly: true,
+				sameSite: authSessionCookieSameSite(),
+				path: '/',
+				secure: false
+			}
+		},
+		pkceCodeVerifier: {
+			name: 'authjs.pkce.code_verifier',
+			options: {
+				httpOnly: true,
+				sameSite: authSessionCookieSameSite(),
+				path: '/',
+				secure: false,
+				maxAge: 60 * 15
+			}
+		},
+		state: {
+			name: 'authjs.state',
+			options: {
+				httpOnly: true,
+				sameSite: authSessionCookieSameSite(),
+				path: '/',
+				secure: false,
+				maxAge: 60 * 15
 			}
 		}
 	},

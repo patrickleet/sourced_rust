@@ -1,4 +1,8 @@
 pub mod archive;
+pub mod blob_cmd;
+pub mod blob_move;
+pub mod blob_start;
+pub mod blob_start_level;
 pub mod chat_post;
 pub mod complete;
 pub mod create;

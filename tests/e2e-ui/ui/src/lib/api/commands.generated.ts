@@ -84,6 +84,30 @@ export type ChatPostPayload = {
   created_at: string;
 };
 
+export type BlobStartInput = {
+  game_id: string;
+};
+
+export type BlobGamePayload = {
+  game_id: string;
+  owner_id: string;
+  score: number;
+  player_dead: boolean;
+  current_level: number;
+  current_level_completed: boolean;
+  map_json: string;
+  status: string;
+};
+
+export type BlobMoveInput = {
+  game_id: string;
+  direction: string;
+};
+
+export type BlobStartLevelInput = {
+  game_id: string;
+};
+
 /** Field name → roles that may execute (engine ACL; client is not a boundary). */
 export const COMMAND_ROLES = {
   "todos_create": ["user", "admin"] as const,
@@ -93,6 +117,9 @@ export const COMMAND_ROLES = {
   "todos_rename": ["user", "admin"] as const,
   "todos_reopen": ["user", "admin"] as const,
   "chat_messages_post": ["user", "admin"] as const,
+  "blob_games_start": ["user", "admin"] as const,
+  "blob_games_move": ["user", "admin"] as const,
+  "blob_games_start_level": ["user", "admin"] as const,
 } as const;
 
 /** GraphQL mutation documents — keep in sync with commands.operations.gql. */
@@ -158,6 +185,48 @@ mutation Command_chat_messages_post($input: ChatPostInput!) {
     author_id
     body
     created_at
+  }
+}
+`,
+  "blob_games_start": `
+mutation Command_blob_games_start($input: BlobStartInput!) {
+  blob_games_start(input: $input) {
+    game_id
+    owner_id
+    score
+    player_dead
+    current_level
+    current_level_completed
+    map_json
+    status
+  }
+}
+`,
+  "blob_games_move": `
+mutation Command_blob_games_move($input: BlobMoveInput!) {
+  blob_games_move(input: $input) {
+    game_id
+    owner_id
+    score
+    player_dead
+    current_level
+    current_level_completed
+    map_json
+    status
+  }
+}
+`,
+  "blob_games_start_level": `
+mutation Command_blob_games_start_level($input: BlobStartLevelInput!) {
+  blob_games_start_level(input: $input) {
+    game_id
+    owner_id
+    score
+    player_dead
+    current_level
+    current_level_completed
+    map_json
+    status
   }
 }
 `,
@@ -261,6 +330,48 @@ export async function chatMessagesPost(input: ChatPostInput, client: CommandClie
   };
 }
 
+/**
+ * blob.start → GraphQL `blob_games_start`
+ * roles: user, admin
+ * Prefer `client.commands.blobGamesStart(…)` via `bindCommands` / `useGraphql`.
+ */
+export async function blobGamesStart(input: BlobStartInput, client: CommandClient): Promise<GqlResult<BlobGamePayload>> {
+  const result = await client.request<{ blob_games_start?: BlobGamePayload }>(COMMAND_DOCS["blob_games_start"], { input });
+  return {
+    data: result.data?.blob_games_start,
+    errors: result.errors,
+    status: result.status
+  };
+}
+
+/**
+ * blob.move → GraphQL `blob_games_move`
+ * roles: user, admin
+ * Prefer `client.commands.blobGamesMove(…)` via `bindCommands` / `useGraphql`.
+ */
+export async function blobGamesMove(input: BlobMoveInput, client: CommandClient): Promise<GqlResult<BlobGamePayload>> {
+  const result = await client.request<{ blob_games_move?: BlobGamePayload }>(COMMAND_DOCS["blob_games_move"], { input });
+  return {
+    data: result.data?.blob_games_move,
+    errors: result.errors,
+    status: result.status
+  };
+}
+
+/**
+ * blob.start_level → GraphQL `blob_games_start_level`
+ * roles: user, admin
+ * Prefer `client.commands.blobGamesStartLevel(…)` via `bindCommands` / `useGraphql`.
+ */
+export async function blobGamesStartLevel(input: BlobStartLevelInput, client: CommandClient): Promise<GqlResult<BlobGamePayload>> {
+  const result = await client.request<{ blob_games_start_level?: BlobGamePayload }>(COMMAND_DOCS["blob_games_start_level"], { input });
+  return {
+    data: result.data?.blob_games_start_level,
+    errors: result.errors,
+    status: result.status
+  };
+}
+
 /** Commands pre-bound to a GraphQL client (URL + auth already configured). */
 export type BoundCommands = {
   todosCreate: (input: TodoCreateInput) => Promise<GqlResult<TodoCreatePayload>>;
@@ -270,6 +381,9 @@ export type BoundCommands = {
   todosRename: (input: TodoRenameInput) => Promise<GqlResult<TodoRenamePayload>>;
   todosReopen: (input: TodoReopenInput) => Promise<GqlResult<TodoStatusPayload>>;
   chatMessagesPost: (input: ChatPostInput) => Promise<GqlResult<ChatPostPayload>>;
+  blobGamesStart: (input: BlobStartInput) => Promise<GqlResult<BlobGamePayload>>;
+  blobGamesMove: (input: BlobMoveInput) => Promise<GqlResult<BlobGamePayload>>;
+  blobGamesStartLevel: (input: BlobStartLevelInput) => Promise<GqlResult<BlobGamePayload>>;
 };
 
 /**
@@ -285,5 +399,8 @@ export function bindCommands(client: CommandClient): BoundCommands {
     todosRename: (input) => todosRename(input, client),
     todosReopen: (input) => todosReopen(input, client),
     chatMessagesPost: (input) => chatMessagesPost(input, client),
+    blobGamesStart: (input) => blobGamesStart(input, client),
+    blobGamesMove: (input) => blobGamesMove(input, client),
+    blobGamesStartLevel: (input) => blobGamesStartLevel(input, client),
   };
 }

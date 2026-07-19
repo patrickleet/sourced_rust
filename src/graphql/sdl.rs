@@ -441,17 +441,9 @@ fn emit_object_type(
         let target_obj = object_type_name(target);
         match rel.kind {
             RelationshipKind::BelongsTo => {
-                let fk_nullable = schema
-                    .columns
-                    .iter()
-                    .find(|c| {
-                        c.column_name == rel.foreign_key.as_deref().unwrap_or("")
-                            || c.field_name == rel.foreign_key.as_deref().unwrap_or("")
-                    })
-                    .map(|c| c.nullable)
-                    .unwrap_or(true);
-                let null = if fk_nullable { "" } else { "!" };
-                out.push_str(&format!("  {}: {}{}\n", rel.field_name, target_obj, null));
+                // Always nullable: a non-null FK means the source holds an id, not
+                // that a matching target read-model row exists (LEFT JOIN / Option).
+                out.push_str(&format!("  {}: {}\n", rel.field_name, target_obj));
             }
             RelationshipKind::HasMany | RelationshipKind::ManyToMany => {
                 let bool_exp = bool_exp_name(target);

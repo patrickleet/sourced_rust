@@ -1,9 +1,12 @@
 /**
- * Shared OIDC start for /signin and /signup.
+ * Shared OIDC start for /login, /signin, /signup.
  * Probes the IdP before Auth.js so we never bounce to `/?error=Configuration`
  * with no explanation (common when Zitadel / Docker is down).
+ *
+ * Uses `redirect()` (throws) so it works from page `load`, form actions, and
+ * +server handlers. Returning a raw Response from `load` is invalid in SvelteKit.
  */
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { cleanEnvValue } from '$lib/clean-env';
 
@@ -65,7 +68,7 @@ export async function assertOidcReady(): Promise<void> {
 export async function startOidcSignIn(
 	event: { fetch: typeof fetch; url: URL },
 	label: 'sign-in' | 'sign-up' = 'sign-in'
-): Promise<Response> {
+): Promise<never> {
 	await assertOidcReady();
 
 	const callbackUrl = safeCallbackUrl(event.url);
@@ -86,8 +89,6 @@ export async function startOidcSignIn(
 		);
 	}
 
-	return new Response(null, {
-		status: 302,
-		headers: { location: payload.url }
-	});
+	// Throws — valid from load / actions / +server
+	redirect(302, payload.url);
 }

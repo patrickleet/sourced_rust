@@ -8,7 +8,9 @@ COMPOSE="$ROOT/docker/docker-compose.yml"
 MACHINEKEY_DIR="$ROOT/docker/machinekey"
 ZITADEL_HOST="${ZITADEL_HOST:-http://localhost:18080}"
 OUT="${E2E_UI_ENV:-$ROOT/e2e-ui.env}"
-UI_ORIGIN="${E2E_UI_ORIGIN:-http://127.0.0.1:5180}"
+# Prefer localhost (not 127.0.0.1): SvelteKit only skips Secure cookies for
+# hostname === "localhost" over http. 127.0.0.1 forces Secure and breaks OIDC.
+UI_ORIGIN="${E2E_UI_ORIGIN:-http://localhost:5180}"
 API_ORIGIN="${E2E_API_ORIGIN:-http://127.0.0.1:8791}"
 PROJECT_NAME="${E2E_OIDC_PROJECT:-e2e-ui}"
 APP_NAME="${E2E_OIDC_APP:-e2e-ui-web}"
@@ -196,22 +198,46 @@ echo "==> Management API ready"
 api POST /management/v1/projects/_search '{}' >/dev/null
 echo "    ok"
 
-# ---- login-client PAT (same as sites/the-website/scripts/setup-local-zitadel.sh) ----
-# Zitadel v4 login UI is a separate container; it needs IAM_LOGIN_CLIENT + PAT.
-# Always mint a fresh PAT: after compose recreate the DB, an old pat file is
-# invalid and zitadel-login returns HTTP 500 (Errors.Token.Invalid AUTH-7fs1e).
+# Login V2 base URI: Fieldnote UI origin (custom /login pages), NOT Zitadel's
+# stock Next.js login image. Authorize redirects to:
+#   ${LOGIN_V2_BASE_URI}/login?authRequest=V2_…
+# Auth.js still owns OIDC (PKCE + code exchange); Session API finalizes on the app.
+LOGIN_V2_BASE_URI="${LOGIN_V2_BASE_URI:-$UI_ORIGIN}"
+LOGIN_V2_BASE_URI="${LOGIN_V2_BASE_URI%/}"
+
+# Instance-wide Login V2. required=true → all apps use Login V2 + baseUri.
+echo "==> Instance features: Login V2 custom UI (baseUri=$LOGIN_V2_BASE_URI)"
+FEAT_BODY=$(jq -n --arg base "$LOGIN_V2_BASE_URI" '{
+  loginV2: { required: true, baseUri: $base },
+  consoleUseV2UserApi: true
+}')
+FEAT_RESP=$(curl -sS --max-time 15 -w '\n%{http_code}' -X PUT "$ZITADEL_HOST/v2/features/instance" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d "$FEAT_BODY" || true)
+FEAT_CODE=$(echo "$FEAT_RESP" | tail -n1)
+FEAT_OUT=$(echo "$FEAT_RESP" | sed '$d')
+if [[ "$FEAT_CODE" == "200" || "$FEAT_CODE" == "201" ]]; then
+  echo "    loginV2 feature set (HTTP $FEAT_CODE)"
+else
+  echo "    WARN: set instance features HTTP $FEAT_CODE — $FEAT_OUT"
+fi
+
+# ---- login-client PAT ----
+# IAM_LOGIN_CLIENT PAT for the e2e-ui custom login pages (Session + User v2 +
+# OIDC CreateCallback). Also kept for optional stock zitadel-login container.
+# Always mint a fresh PAT: after compose recreate the DB, an old pat is invalid.
 LOGIN_CLIENT_DIR="$ROOT/docker/login-client"
 LOGIN_CLIENT_PAT_FILE="$LOGIN_CLIENT_DIR/pat"
 LOGIN_CLIENT_USERNAME="login-client"
 mkdir -p "$LOGIN_CLIENT_DIR"
-echo "==> login-client machine user + fresh PAT (for /ui/v2/login)"
+echo "==> login-client machine user + fresh PAT (custom Login V2 pages)"
 USER_SEARCH=$(api POST /management/v1/users/_search "$(jq -n --arg n "$LOGIN_CLIENT_USERNAME" \
   '{queries: [{userNameQuery: {userName: $n, method: "TEXT_QUERY_METHOD_EQUALS"}}]}')")
 LOGIN_USER_ID=$(echo "$USER_SEARCH" | jq -r '.result[0].id // empty')
 if [[ -z "$LOGIN_USER_ID" ]]; then
   LOGIN_USER_RESP=$(api POST /management/v1/users/machine "$(jq -n \
     --arg u "$LOGIN_CLIENT_USERNAME" \
-    '{userName: $u, name: "Login Client", description: "Service user for zitadel-login", accessTokenType: "ACCESS_TOKEN_TYPE_BEARER"}')")
+    '{userName: $u, name: "Login Client", description: "Service user for custom Login V2 UI (Session API)", accessTokenType: "ACCESS_TOKEN_TYPE_BEARER"}')")
   LOGIN_USER_ID=$(echo "$LOGIN_USER_RESP" | jq -r .userId)
   [[ -n "$LOGIN_USER_ID" && "$LOGIN_USER_ID" != "null" ]] || {
     echo "ERROR: login-client create failed"; echo "$LOGIN_USER_RESP"; exit 1
@@ -231,24 +257,10 @@ LOGIN_PAT=$(echo "$PAT_RESP" | jq -r .token)
 umask 077
 printf '%s' "$LOGIN_PAT" > "$LOGIN_CLIENT_PAT_FILE"
 chmod 600 "$LOGIN_CLIENT_PAT_FILE" 2>/dev/null || true
-echo "    wrote $LOGIN_CLIENT_PAT_FILE"
-echo "==> Restarting zitadel-login to pick up PAT"
+echo "    wrote $LOGIN_CLIENT_PAT_FILE (also exported as ZITADEL_SERVICE_USER_TOKEN)"
+# Optional stock login container still mounts the PAT (not used when baseUri is the app).
 docker compose -f "$COMPOSE" up -d --force-recreate zitadel-login >/dev/null 2>&1 \
   || docker compose -f "$COMPOSE" restart zitadel-login >/dev/null 2>&1 || true
-echo "==> Wait for login UI (/ui/v2/login)"
-for i in $(seq 1 40); do
-  code=$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' "$ZITADEL_HOST/ui/v2/login" || true)
-  # Healthy login UI: not 500/502 (empty path may 200/307/404 depending on version)
-  if [[ "$code" != "000" && "$code" != "500" && "$code" != "502" && "$code" != "503" ]]; then
-    echo "    login UI ready (HTTP $code)"
-    break
-  fi
-  wait_tick "login UI HTTP ${code:-?}" "$i" 5
-  sleep 1
-  if [[ $i -eq 40 ]]; then
-    echo "    WARN: login UI still HTTP $code — check: docker compose logs zitadel-login"
-  fi
-done
 
 echo "==> Project $PROJECT_NAME"
 PROJECT_SEARCH=$(api POST /management/v1/projects/_search '{}')
@@ -270,7 +282,8 @@ for role in user admin; do
   fi
 done
 
-echo "==> Web OIDC app $APP_NAME (Auth.js browser login)"
+# OIDC app: Login V2 baseUri = Fieldnote UI (custom /login). Auth.js keeps PKCE.
+echo "==> Web OIDC app $APP_NAME (Auth.js → authorize → custom /login)"
 APP_SEARCH=$(api POST "/management/v1/projects/$PROJECT_ID/apps/_search" '{}')
 APP_ID=$(echo "$APP_SEARCH" | jq -r --arg n "$APP_NAME" '.result[]? | select(.name == $n) | .id' | head -n1)
 CLIENT_ID=""
@@ -279,7 +292,7 @@ if [[ -z "$APP_ID" ]]; then
   APP_RESP=$(api POST "/management/v1/projects/$PROJECT_ID/apps/oidc" "$(jq -n \
     --arg name "$APP_NAME" \
     --arg ui "$UI_ORIGIN" \
-    --arg api "$API_ORIGIN" \
+    --arg base "$LOGIN_V2_BASE_URI" \
     '{
       name: $name,
       redirectUris: [
@@ -295,22 +308,71 @@ if [[ -z "$APP_ID" ]]; then
       ],
       appType: "OIDC_APP_TYPE_WEB",
       authMethodType: "OIDC_AUTH_METHOD_TYPE_BASIC",
-      postLogoutRedirectUris: [$ui + "/", "http://127.0.0.1:5180/", "http://localhost:5180/"],
+      postLogoutRedirectUris: [
+        ($ui + "/"),
+        $ui,
+        "http://127.0.0.1:5180/",
+        "http://127.0.0.1:5180",
+        "http://localhost:5180/",
+        "http://localhost:5180"
+      ],
       version: "OIDC_VERSION_1_0",
       devMode: true,
       accessTokenType: "OIDC_TOKEN_TYPE_JWT",
       accessTokenRoleAssertion: true,
       idTokenRoleAssertion: true,
-      idTokenUserinfoAssertion: true
+      idTokenUserinfoAssertion: true,
+      loginVersion: { loginV2: { baseUri: $base } }
     }')")
   CLIENT_ID=$(echo "$APP_RESP" | jq -r '.clientId // empty')
   CLIENT_SECRET=$(echo "$APP_RESP" | jq -r '.clientSecret // empty')
   APP_ID=$(echo "$APP_RESP" | jq -r '.appId // .id // empty')
-  echo "    created web app clientId=$CLIENT_ID"
+  echo "    created web app clientId=$CLIENT_ID (Login V2)"
 else
   CLIENT_ID=$(echo "$APP_SEARCH" | jq -r --arg n "$APP_NAME" \
     '.result[]? | select(.name == $n) | .oidcConfig.clientId // empty' | head -n1)
   echo "    existing web app clientId=$CLIENT_ID (secret only on create — re-create stack if missing)"
+  # Pin Login V2 base URI on re-bootstrap (idempotent).
+  if [[ -n "$APP_ID" && "$APP_ID" != "null" ]]; then
+    UPD=$(curl -sS --max-time 15 -w '\n%{http_code}' -X PUT \
+      "$ZITADEL_HOST/management/v1/projects/$PROJECT_ID/apps/$APP_ID/oidc_config" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg base "$LOGIN_V2_BASE_URI" --arg ui "$UI_ORIGIN" '{
+        redirectUris: [
+          ($ui + "/auth/callback/oidc"),
+          ($ui + "/auth/callback"),
+          "http://127.0.0.1:5180/auth/callback/oidc",
+          "http://localhost:5180/auth/callback/oidc"
+        ],
+        responseTypes: ["OIDC_RESPONSE_TYPE_CODE"],
+        grantTypes: [
+          "OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
+          "OIDC_GRANT_TYPE_REFRESH_TOKEN"
+        ],
+        appType: "OIDC_APP_TYPE_WEB",
+        authMethodType: "OIDC_AUTH_METHOD_TYPE_BASIC",
+        postLogoutRedirectUris: [
+          ($ui + "/"),
+          $ui,
+          "http://127.0.0.1:5180/",
+          "http://127.0.0.1:5180",
+          "http://localhost:5180/",
+          "http://localhost:5180"
+        ],
+        devMode: true,
+        accessTokenType: "OIDC_TOKEN_TYPE_JWT",
+        accessTokenRoleAssertion: true,
+        idTokenRoleAssertion: true,
+        idTokenUserinfoAssertion: true,
+        loginVersion: { loginV2: { baseUri: $base } }
+      }')" || true)
+    UPD_CODE=$(echo "$UPD" | tail -n1)
+    if [[ "$UPD_CODE" == "200" ]]; then
+      echo "    updated OIDC app → Login V2 baseUri=$LOGIN_V2_BASE_URI"
+    else
+      echo "    WARN: UpdateOIDCAppConfig HTTP $UPD_CODE — $(echo "$UPD" | sed '$d' | head -c 200)"
+    fi
+  fi
 fi
 if [[ -z "$CLIENT_ID" || "$CLIENT_ID" == "null" ]]; then
   echo "ERROR: web client id missing"; exit 1
@@ -520,6 +582,9 @@ AUTH_SECRET="$(_dq "$AUTH_SECRET")"
 AUTH_TRUST_HOST=true
 OIDC_SCOPES="openid profile email offline_access urn:zitadel:iam:org:project:id:${PROJECT_ID}:aud urn:zitadel:iam:org:project:roles"
 ZITADEL_PROJECT_ID="$(_dq "$PROJECT_ID")"
+# Server-only: custom /login uses Session API + CreateCallback (never expose to browser).
+ZITADEL_SERVICE_USER_TOKEN="$(_dq "$LOGIN_PAT")"
+LOGIN_V2_BASE_URI="$(_dq "$LOGIN_V2_BASE_URI")"
 E2E_UI_ORIGIN="$(_dq "$UI_ORIGIN")"
 E2E_API_ORIGIN="$(_dq "$API_ORIGIN")"
 E2E_MACHINE_USER_KEY="$(_dq "$USER_M_KEY")"
@@ -529,14 +594,22 @@ E2E_MACHINE_ADMIN_ID="$(_dq "$ADMIN_M_UID")"
 E2E_HUMAN_ALICE=alice
 E2E_HUMAN_BOB=bob
 E2E_HUMAN_PASSWORD="Password1!"
+# Zitadel user ids (OIDC sub) — use as provider_subject for auth_users joins
+E2E_HUMAN_ALICE_UID="$(_dq "$ALICE_UID")"
+E2E_HUMAN_BOB_UID="$(_dq "$BOB_UID")"
+E2E_HUMAN_ADMIN_UID="$(_dq "$ADMIN_HUMAN_UID")"
+# Shared secret for POST /zitadel.ingress.v1 (import IdP users → auth_users RM)
+ZITADEL_INGESTOR_SECRET="$(_dq "e2e-zitadel-ingestor-secret")"
 BIND="127.0.0.1:8791"
 EOF
 
 echo "==> Wrote $OUT"
-cat "$OUT"
+# Avoid dumping service PAT in terminal (still in file).
+grep -v 'ZITADEL_SERVICE_USER_TOKEN\|OIDC_CLIENT_SECRET\|AUTH_SECRET' "$OUT" || true
+echo "  … secrets redacted in console (present in file)"
 echo ""
 echo "Next:"
 echo "  set -a && source $OUT && set +a"
-echo "  cargo run -p e2e-runner"
-echo "  cd ui && npm run dev"
-echo "  Login: alice / Password1!  (or bob, admin)"
+echo "  make run   # restart so UI loads OIDC_* + ZITADEL_SERVICE_USER_TOKEN"
+echo "  Custom login: $LOGIN_V2_BASE_URI/login  (Auth.js authorize → your pages → callback)"
+echo "  Demo users: alice / bob / admin · Password1!"

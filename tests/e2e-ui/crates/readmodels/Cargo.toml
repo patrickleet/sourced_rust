@@ -8,5 +8,7 @@ description = "Todo read models (TodoView) + project manifest"
 [dependencies]
 distributed = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 todo-domain = { path = "../todo-domain" }
 chat-domain = { path = "../chat-domain" }
+blob-domain = { path = "../blob-domain" }

@@ -52,9 +52,9 @@
 	}> = [
 		{
 			n: '01',
-			title: 'Login via Zitadel — session holds the access token',
-			why: 'Auth.js completes OIDC (PKCE) against Zitadel and stores tokens in an encrypted, httpOnly session cookie. The access token is available to SSR and form actions without putting secrets in localStorage or the page HTML.',
-			path: 'ui/src/auth.ts · GET /signin → /auth/signin/oidc',
+			title: 'Login via custom pages + Zitadel — session holds the access token',
+			why: 'Auth.js starts OIDC (PKCE); Zitadel redirects to our /login form; Session API + CreateCallback return the code; Auth.js stores tokens in an encrypted httpOnly cookie for SSR and GraphQL.',
+			path: 'ui/src/routes/login · auth.ts · Session API v2',
 			label: 'Auth session',
 			blocks: [
 				{

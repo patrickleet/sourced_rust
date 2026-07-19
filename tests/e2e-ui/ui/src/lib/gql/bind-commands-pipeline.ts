@@ -27,7 +27,11 @@ import {
 	type TodoRenamePayload,
 	type TodoReopenInput,
 	type ChatPostInput,
-	type ChatPostPayload
+	type ChatPostPayload,
+	type BlobStartInput,
+	type BlobMoveInput,
+	type BlobStartLevelInput,
+	type BlobGamePayload
 } from '../api/commands.generated.ts';
 import type { GqlResult } from './types.ts';
 import type { QueryCache } from './cache/query-cache.ts';
@@ -71,6 +75,18 @@ export type PipelinedBoundCommands = {
 		input: ChatPostInput,
 		opts?: CommandCallOptions
 	) => Promise<GqlResult<ChatPostPayload>>;
+	blobGamesStart: (
+		input: BlobStartInput,
+		opts?: CommandCallOptions
+	) => Promise<GqlResult<BlobGamePayload>>;
+	blobGamesMove: (
+		input: BlobMoveInput,
+		opts?: CommandCallOptions
+	) => Promise<GqlResult<BlobGamePayload>>;
+	blobGamesStartLevel: (
+		input: BlobStartLevelInput,
+		opts?: CommandCallOptions
+	) => Promise<GqlResult<BlobGamePayload>>;
 };
 
 type FieldName = keyof typeof COMMAND_DOCS;
@@ -82,7 +98,10 @@ const FN_TO_FIELD: Record<keyof BoundCommands, FieldName> = {
 	todosForceArchive: 'todos_force_archive',
 	todosRename: 'todos_rename',
 	todosReopen: 'todos_reopen',
-	chatMessagesPost: 'chat_messages_post'
+	chatMessagesPost: 'chat_messages_post',
+	blobGamesStart: 'blob_games_start',
+	blobGamesMove: 'blob_games_move',
+	blobGamesStartLevel: 'blob_games_start_level'
 };
 
 function isBrowser(): boolean {
@@ -123,7 +142,10 @@ export function bindCommandsPipeline(
 			todosForceArchive: (input, _opts?) => plain.todosForceArchive(input),
 			todosRename: (input, _opts?) => plain.todosRename(input),
 			todosReopen: (input, _opts?) => plain.todosReopen(input),
-			chatMessagesPost: (input, _opts?) => plain.chatMessagesPost(input)
+			chatMessagesPost: (input, _opts?) => plain.chatMessagesPost(input),
+			blobGamesStart: (input, _opts?) => plain.blobGamesStart(input),
+			blobGamesMove: (input, _opts?) => plain.blobGamesMove(input),
+			blobGamesStartLevel: (input, _opts?) => plain.blobGamesStartLevel(input)
 		};
 	}
 
@@ -180,6 +202,9 @@ export function bindCommandsPipeline(
 		todosForceArchive: wrap('todosForceArchive'),
 		todosRename: wrap('todosRename'),
 		todosReopen: wrap('todosReopen'),
-		chatMessagesPost: wrap('chatMessagesPost')
+		chatMessagesPost: wrap('chatMessagesPost'),
+		blobGamesStart: wrap('blobGamesStart'),
+		blobGamesMove: wrap('blobGamesMove'),
+		blobGamesStartLevel: wrap('blobGamesStartLevel')
 	};
 }

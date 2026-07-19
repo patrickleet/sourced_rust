@@ -1,11 +1,12 @@
-# e2e-ui full stack: app Postgres + Zitadel (OIDC).
-# Zitadel topology mirrors sites/the-website (API + login UI + Caddy proxy).
+# e2e-ui full stack: app Postgres + Zitadel (OIDC + Login V2 UI).
+# Zitadel API + self-hosted Login V2 (Session / User v2) + Caddy edge.
+# Auth.js still uses OIDC (/oauth/v2/*); authorize lands on /ui/v2/login/login.
 #
 #   cd tests/e2e-ui && make up
 #
 # Ports:
 #   5433  app Postgres (event store, read models, bus)
-#   18080 Zitadel via proxy (OIDC + /ui/v2/login + console)
+#   18080 Zitadel via proxy (OIDC + Login V2 /ui/v2/login + console)
 services:
   app-db:
     image: docker.io/library/postgres:16-alpine
@@ -55,15 +56,17 @@ services:
       - ./machinekey:/machinekey
     networks: [e2e]
 
-  # Zitadel v4 ships login UI as a separate Next.js service (the-website pattern).
-  # PAT at /login-client/pat is written by scripts/up.sh after Zitadel boots —
-  # container restarts until that file exists.
+  # Self-hosted Login V2 (Next.js). Session API + User/Auth v2 against Zitadel.
+  # Official image bakes basePath=/ui/v2/login (pages: …/login, …/register, …).
+  # PAT written by scripts/up.sh after Zitadel boots.
   zitadel-login:
     image: ghcr.io/zitadel/login:v3.0.1
     restart: unless-stopped
     environment:
       ZITADEL_API_URL: http://zitadel-proxy:8080
+      # Must match the baked Next.js basePath in ghcr.io/zitadel/login.
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      CUSTOM_REQUEST_HEADERS: "Host:localhost:18080,X-Forwarded-Proto:http,X-Forwarded-Host:localhost:18080"
     command:
       - /bin/sh
       - -c

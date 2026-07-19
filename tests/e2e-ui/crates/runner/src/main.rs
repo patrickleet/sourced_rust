@@ -4,6 +4,8 @@
 //! - `DATABASE_URL` — `sqlite:…` (default) or `postgres://…`
 //! - `BIND` (default `127.0.0.1:8791`)
 //! - `OIDC_ISSUER` / `OIDC_AUDIENCE` / `OIDC_JWKS_URI` → OidcBearer; else DevHeaders
+//! - `ZITADEL_SERVICE_USER_TOKEN` + `OIDC_ISSUER`/`ZITADEL_API_URL` → periodic user scrape
+//! - `ZITADEL_SCRAPE_INTERVAL_SECS` (default 60; `0` = no background loop)
 
 use std::env;
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use distributed::{
 };
 use e2e_service::{
     build_graphql_engine, build_service, distributed_manifest, identity_from_env, serve_with_oidc,
+    spawn_scrape_loop, ZitadelScrapeConfig,
 };
 
 const BUS_GROUP: &str = "e2e-ui";
@@ -59,6 +62,7 @@ async fn run_sqlite(
 
     spawn_outbox_sqlite(repo.clone());
     spawn_consumer_sqlite(repo.clone(), locks);
+    spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (sqlite) listening on http://{bind}");
     serve_with_oidc(http_service, identity, bind).await?;
@@ -90,10 +94,36 @@ async fn run_postgres(
 
     spawn_outbox_postgres(repo.clone());
     spawn_consumer_postgres(repo.clone(), locks);
+    spawn_zitadel_scrape(repo.clone());
 
     eprintln!("e2e-ui (postgres) listening on http://{bind}");
     serve_with_oidc(http_service, identity, bind).await?;
     Ok(())
+}
+
+fn spawn_zitadel_scrape<R>(repo: R)
+where
+    R: distributed::TransactionalCommit + Clone + Send + Sync + 'static,
+{
+    match ZitadelScrapeConfig::from_env() {
+        Some(cfg) if cfg.background_enabled() || cfg.on_start => {
+            eprintln!(
+                "zitadel scrape: enabled (api={}, interval={}s, on_start={})",
+                cfg.api_base,
+                cfg.interval.as_secs(),
+                cfg.on_start
+            );
+            spawn_scrape_loop(repo, cfg);
+        }
+        Some(_) => {
+            eprintln!("zitadel scrape: credentials present, background off (interval=0); use POST /zitadel.scrape.v1");
+        }
+        None => {
+            eprintln!(
+                "zitadel scrape: disabled (set ZITADEL_SERVICE_USER_TOKEN + OIDC_ISSUER/ZITADEL_API_URL)"
+            );
+        }
+    }
 }
 
 fn spawn_outbox_sqlite(repo: SqliteRepository) {
