@@ -69,6 +69,12 @@
 						onclick={() => (isMenuOpen = false)}>Todos</a
 					>
 					<a
+						href="/blob"
+						class="nav-link"
+						class:active={isActive('/blob')}
+						onclick={() => (isMenuOpen = false)}>Blob</a
+					>
+					<a
 						href="/chat"
 						class="nav-link"
 						class:active={isActive('/chat')}

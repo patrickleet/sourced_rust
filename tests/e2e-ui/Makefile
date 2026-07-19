@@ -15,7 +15,9 @@ BIND         ?= 127.0.0.1:8791
 API_PORT     ?= 8791
 BASE_URL     ?= http://127.0.0.1:8791
 UI_PORT      ?= 5180
-UI_URL       ?= http://127.0.0.1:5180
+# localhost required for Auth.js cookies over HTTP (SvelteKit Secure default)
+UI_URL       ?= http://localhost:5180
+UI_HOST      ?= localhost
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
 CARGO_TEST_FLAGS ?= -- --nocapture
@@ -40,7 +42,10 @@ run: ui-install
 	_api_port="$${_bind##*:}"; \
 	_base="$${E2E_API_ORIGIN:-http://$${_bind}}"; \
 	_ui_port="$(UI_PORT)"; \
-	_ui="$${E2E_UI_ORIGIN:-http://127.0.0.1:$${_ui_port}}"; \
+	_ui_host="$(UI_HOST)"; \
+	_ui="$${E2E_UI_ORIGIN:-http://$${_ui_host}:$${_ui_port}}"; \
+	export AUTH_URL="$${_ui}"; \
+	export AUTH_USE_SECURE_COOKIES="false"; \
 	lsof -ti:$${_api_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	lsof -ti:$${_ui_port} 2>/dev/null | xargs kill -9 2>/dev/null || true; \
 	rm -f .make-runner.pid .make-ui.pid .make-runner.log; \
@@ -59,7 +64,7 @@ run: ui-install
 		echo "API failed:"; tail -80 .make-runner.log; exit 1; \
 	fi; \
 	echo "API ready (HTTP probe $$code). starting UI …"; \
-	cd ui && $(NPM) run dev -- --host 127.0.0.1 --port $$_ui_port & \
+	cd ui && $(NPM) run dev -- --host $$_ui_host --port $$_ui_port & \
 	echo $$! > ../.make-ui.pid; \
 	cd ..; \
 	cleanup() { \

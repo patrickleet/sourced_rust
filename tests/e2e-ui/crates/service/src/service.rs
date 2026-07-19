@@ -1,5 +1,6 @@
 //! Route bundles + GraphQL engine for the e2e-ui fixture.
 
+use blob_domain::BlobGame;
 use chat_domain::ChatMessage;
 use distributed::graphql::{
     exposed_command, read, GraphqlCommands, GraphqlEngine, GraphqlPool, IdentityConfig,
@@ -9,7 +10,7 @@ use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
 };
 use distributed::{AggregateBuilder, AggregateRepository, Queueable, QueuedRepository};
-use e2e_readmodels::{ChatMessageView, TodoView};
+use e2e_readmodels::{AuthUserView, BlobGameView, ChatMessageView, TodoView};
 use todo_domain::Todo;
 
 use crate::bounds::{EventStore, Locks, ReadStore};
@@ -32,6 +33,8 @@ where
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
     AggregateRepository<QueuedRepository<R, L>, ChatMessage>:
         HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
+    AggregateRepository<QueuedRepository<R, L>, BlobGame>:
+        HasRepo + HasOutboxStore + ConfigurableOutboxPublisher + Send + Sync + 'static,
 {
     let todos = distributed::routes!(
         Routes::new()
@@ -47,24 +50,38 @@ where
     );
     let chat = distributed::routes!(
         Routes::new()
-            .with_repo(repo.queued_with(locks).aggregate::<ChatMessage>())
-            .with_read_model_store(read_models),
+            .with_repo(repo.clone().queued_with(locks.clone()).aggregate::<ChatMessage>())
+            .with_read_model_store(read_models.clone()),
         command handlers::commands::chat_post,
+        // Zitadel Action ingress + on-demand scrape (leaf outbox) + auth_users projector.
+        command handlers::ingestors::zitadel,
+        command handlers::ingestors::zitadel_scrape,
         event handlers::events::project_chat,
+        events handlers::events::project_auth_user,
     );
-    // GraphQL-only public surface — no POST /todo.* or POST /chat.* HTTP routes.
+    let blob = distributed::routes!(
+        Routes::new()
+            .with_repo(repo.queued_with(locks).aggregate::<BlobGame>())
+            .with_read_model_store(read_models),
+        command handlers::commands::blob_start,
+        command handlers::commands::blob_move,
+        command handlers::commands::blob_start_level,
+        events handlers::events::project_blob,
+    );
+    // HTTP command routes enabled for Zitadel ingress; UI still uses GraphQL mutations.
     Service::new()
         .named("e2e-ui")
-        .without_http_command_routes()
         .routes(todos)
         .routes(chat)
+        .routes(blob)
 }
 
 /// GraphQL command registry for this fixture — single source of truth for
 /// engine mutations **and** `e2e-export-commands` / TypeScript command clients.
 pub fn graphql_commands() -> GraphqlCommands {
     use handlers::commands::{
-        archive, chat_post, complete, create, force_archive, payloads, rename, reopen,
+        archive, blob_move, blob_start, blob_start_level, chat_post, complete, create,
+        force_archive, payloads, rename, reopen,
     };
 
     let app_roles = ["user", "admin"];
@@ -126,6 +143,30 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .output::<chat_post::ChatPostPayload>()
                 .roles(app_roles),
         )
+        .command(
+            blob_start::COMMAND,
+            exposed_command()
+                .field_name("blob_games_start")
+                .input::<blob_start::BlobStartInput>()
+                .output::<blob_start::BlobGamePayload>()
+                .roles(app_roles),
+        )
+        .command(
+            blob_move::COMMAND,
+            exposed_command()
+                .field_name("blob_games_move")
+                .input::<blob_move::BlobMoveInput>()
+                .output::<blob_start::BlobGamePayload>()
+                .roles(app_roles),
+        )
+        .command(
+            blob_start_level::COMMAND,
+            exposed_command()
+                .field_name("blob_games_start_level")
+                .input::<blob_start_level::BlobStartLevelInput>()
+                .output::<blob_start::BlobGamePayload>()
+                .roles(app_roles),
+        )
 }
 
 /// GraphQL over todos (owner-scoped) + chat_messages (shared room, live subscriptions).
@@ -154,6 +195,24 @@ pub fn build_graphql_engine(
                 .grant("admin", read().all_columns()),
         )
         .model::<ChatMessageView>(
+            ModelPermissions::new()
+                .grant("user", read().all_columns())
+                .grant("admin", read().all_columns()),
+        )
+        .model::<BlobGameView>(
+            ModelPermissions::new()
+                .grant(
+                    "user",
+                    read().all_columns().rows(
+                        distributed::graphql::col("owner_id")
+                            .eq(distributed::graphql::claim("x-user-id")),
+                    ),
+                )
+                .grant("admin", read().all_columns()),
+        )
+        // Imported IdP directory (join target for chat.author / blob.owner).
+        // Readable by all authenticated roles; writes only via Zitadel projector.
+        .model::<AuthUserView>(
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),

@@ -4,12 +4,15 @@ A **copyable starting point** for a Distributed service + SvelteKit UI with:
 
 | Pattern | Where |
 |---------|--------|
-| Multi-crate domain (todos + chat) | `crates/*-domain`, `readmodels`, `service` |
+| Multi-crate domain (todos + chat + blob) | `crates/*-domain`, `readmodels`, `service` |
 | Projectors-only read models | command handlers never dual-write |
-| GraphQL RLS | `owner_id = claim(x-user-id)` on todos |
+| GraphQL RLS | `owner_id = claim(x-user-id)` on todos / blob |
 | Live subscriptions | `subscription { chat_messages }` + ChangeHub |
+| **Zitadel ingestor** | `POST /zitadel.ingress.v1` + scrape reconcile → `auth_users` ([docs](docs/zitadel-ingestor.md)) |
+| **GraphQL joins** | `chat_messages.author` / `blob_games.owner` → `auth_users` |
 | **WebSocket auth** | Bearer access token in `connection_init` (OIDC best practice) |
-| **Real OIDC** | Zitadel in Docker + Auth.js |
+| **Real OIDC** | Zitadel in Docker + Auth.js (PKCE + session cookie) |
+| **Login V2** | **Custom** `/login` + `/signup` in this UI (Session API + CreateCallback); not Zitadel’s stock login image |
 | **Postgres** | event store + bus + locks |
 | **SSR GraphQL** | `+page.server.ts` loads with session token (no Loading flash) |
 | Auth routes | sign-in, protected todos/chat, session inspector |
@@ -27,11 +30,17 @@ make run         # API :8791 + UI :5180
 |-----|------|
 | http://127.0.0.1:5180 | Fieldnote UI |
 | http://127.0.0.1:5180/todos | SSR todos (auth required) |
+| http://127.0.0.1:5180/blob | Blob game — aggregate moves → projected `blob_games` map/score |
 | http://127.0.0.1:5180/admin | Admin all-owners todos (admin role only) |
 | http://127.0.0.1:5180/chat | SSR seed + live WS sub |
 | http://127.0.0.1:5180/session | Session / token inspector |
 | http://127.0.0.1:8791/graphql | GraphiQL |
 | `ws://127.0.0.1:8791/graphql/ws` | Subscriptions |
+| http://127.0.0.1:5180/login | Custom Login V2 (password form on this app) |
+| http://127.0.0.1:5180/signup | Custom registration |
+| http://localhost:18080/ui/console | Zitadel console |
+
+**Auth flow:** Auth.js → Zitadel `/oauth/v2/authorize` → **your** `/login?authRequest=V2_…` (Session API + CreateCallback) → Auth.js `/auth/callback/oidc`. Requires `ZITADEL_SERVICE_USER_TOKEN` from `make up`. After `make up`, always **restart** `make run`.
 
 **Demo logins** (Zitadel): `alice` / `bob` / `admin` — password `Password1!`
 
@@ -87,9 +96,15 @@ The SvelteKit chat page uses the session access token in `connection_init`. Do *
 
 ```text
 Browser (SSR + client)
-  Auth.js → Zitadel OIDC  → access_token
+  Auth.js → Zitadel /oauth/v2/authorize
+         → UI /login?authRequest=V2_…  (Session API + CreateCallback)
+         → Auth.js /auth/callback/oidc → access_token
   GraphQL HTTP  Authorization: Bearer …
   GraphQL WS    connection_init.authorization
+
+Zitadel edge (:18080)
+  /oauth/*, /management/*, /v2/*, /ui/console → zitadel
+  Login V2 baseUri → Fieldnote UI origin (custom pages)
 
 e2e-runner (Distributed)
   OidcBearer identity
@@ -106,6 +121,7 @@ e2e-runner (Distributed)
 | `OIDC_ISSUER` | Zitadel base URL |
 | `OIDC_AUDIENCE` | Project id (JWT aud) |
 | `OIDC_CLIENT_ID` / `SECRET` | Auth.js web app |
+| `ZITADEL_SERVICE_USER_TOKEN` | IAM_LOGIN_CLIENT PAT for Session API + CreateCallback (server only) |
 | `AUTH_SECRET` | Auth.js cookie encryption |
 | `E2E_MACHINE_*` | Suite JWT-bearer keys |
 

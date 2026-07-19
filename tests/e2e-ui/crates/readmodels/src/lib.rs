@@ -1,60 +1,55 @@
-//! Read models for the e2e-ui fixture (todos + chat).
-//! Projected only from domain events (never from commands).
+//! Read models for the e2e-ui fixture (todos + chat + blob games + auth users).
+//! Projected only from domain / provider events (never from commands).
 
-use chat_domain::ChatMessagePosted;
-use distributed::ReadModel;
-use serde::{Deserialize, Serialize};
-use todo_domain::TodoFact;
+pub mod models;
 
-/// Personal todo row. PK: `todo_id`. Isolation key: `owner_id`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
-#[table("todos")]
-pub struct TodoView {
-    #[id("todo_id")]
-    pub todo_id: String,
-    pub owner_id: String,
-    pub title: String,
-    /// `open` | `completed` | `archived`
-    pub status: String,
-}
-
-/// Chat message row. PK: `message_id`. Live via GraphQL subscription on `chat_messages`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ReadModel)]
-#[table("chat_messages")]
-pub struct ChatMessageView {
-    #[id("message_id")]
-    pub message_id: String,
-    pub room_id: String,
-    pub author_id: String,
-    pub body: String,
-    pub created_at: String,
-}
-
-pub fn map_todo_fact(e: &TodoFact) -> TodoView {
-    TodoView {
-        todo_id: e.todo_id.clone(),
-        owner_id: e.owner_id.clone(),
-        title: e.title.clone(),
-        status: e.status.clone(),
-    }
-}
-
-pub fn map_chat_posted(e: &ChatMessagePosted) -> ChatMessageView {
-    ChatMessageView {
-        message_id: e.message_id.clone(),
-        room_id: e.room_id.clone(),
-        author_id: e.author_id.clone(),
-        body: e.body.clone(),
-        created_at: e.created_at.clone(),
-    }
-}
-
-// Back-compat alias used by todo projector.
-pub use map_todo_fact as map_fact;
+pub use models::{
+    map_blob_fact, map_chat_posted, map_fact, map_todo_fact, map_zitadel_user_status,
+    map_zitadel_user_upsert, AuthUserView, BlobGameView, ChatMessageView, TodoView, ZitadelEmail,
+    ZitadelUserPayload,
+};
 
 pub fn distributed_manifest() -> distributed::DistributedProjectManifest {
     use distributed::RelationalReadModel;
     distributed::DistributedProjectManifest::new("e2e-ui")
         .table_schema(TodoView::schema().clone())
         .table_schema(ChatMessageView::schema().clone())
+        .table_schema(BlobGameView::schema().clone())
+        .table_schema(AuthUserView::schema().clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blob_domain::{demo_map, BlobGame, BlobGameFact};
+
+    #[test]
+    fn projector_map_reflects_post_move_fact() {
+        let mut g = BlobGame::default();
+        g.start_with_demo("g1", "alice").unwrap();
+        let before = map_blob_fact(&BlobGameFact::from_game(&g));
+        assert_eq!(before.score, 0);
+        assert!(!before.player_dead);
+
+        g.move_dir("alice", blob_domain::Direction::Right).unwrap();
+        let after = map_blob_fact(&BlobGameFact::from_game(&g));
+        assert_eq!(after.score, 1);
+        assert_eq!(after.game_id, "g1");
+        assert_eq!(after.owner_id, "alice");
+        assert!(after.map_json.contains("2")); // visited tile
+        // Map JSON must differ from pre-move
+        assert_ne!(before.map_json, after.map_json);
+        // Demo map player moved off origin
+        let map: Vec<Vec<u8>> = serde_json::from_str(&after.map_json).unwrap();
+        assert_eq!(map[0][0], 2); // visited
+        assert_eq!(map[0][1], 9); // player
+    }
+
+    #[test]
+    fn demo_map_json_roundtrip() {
+        let m = demo_map();
+        let s = serde_json::to_string(&m).unwrap();
+        let back: Vec<Vec<u8>> = serde_json::from_str(&s).unwrap();
+        assert_eq!(m, back);
+    }
 }

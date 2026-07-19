@@ -51,7 +51,10 @@ export const GET: RequestHandler = async (event) => {
 
 	const endSessionUrl = new URL(logoutEndpoint);
 	if (idToken) endSessionUrl.searchParams.set('id_token_hint', idToken);
-	endSessionUrl.searchParams.set('post_logout_redirect_uri', event.url.origin);
+	// Zitadel exact-matches post_logout_redirect_uri against app allowlist
+	// (bootstrap registers origin + trailing slash, e.g. http://127.0.0.1:5180/).
+	// event.url.origin has no path/slash — bare origin is rejected as invalid.
+	endSessionUrl.searchParams.set('post_logout_redirect_uri', `${event.url.origin}/`);
 
 	redirect(303, endSessionUrl.toString());
 };

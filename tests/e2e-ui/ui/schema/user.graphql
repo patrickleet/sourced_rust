@@ -8,7 +8,79 @@
 #
 # Spec: specs/query-layer/v1/surface-ir (A11)
 
+type AuthUserView {
+	user_id: String!
+	email: String!
+	display_name: String!
+	user_kind: String!
+	approval_status: String!
+	status: String!
+	updated_at: String!
+	chat_messages(where: chat_messages_bool_exp, order_by: [chat_messages_order_by!], limit: Int, offset: Int): [ChatMessageView!]!
+	blob_games(where: blob_games_bool_exp, order_by: [blob_games_order_by!], limit: Int, offset: Int): [BlobGameView!]!
+}
+
 scalar BigInt
+
+input BigInt_comparison_exp {
+	_eq: BigInt
+	_neq: BigInt
+	_gt: BigInt
+	_gte: BigInt
+	_lt: BigInt
+	_lte: BigInt
+	_in: [BigInt!]
+	_nin: [BigInt!]
+	_is_null: Boolean
+}
+
+type BlobGamePayload {
+	game_id: String!
+	owner_id: String!
+	score: BigInt!
+	player_dead: Boolean!
+	current_level: BigInt!
+	current_level_completed: Boolean!
+	map_json: String!
+	status: String!
+}
+
+type BlobGameView {
+	game_id: String!
+	owner_id: String!
+	score: BigInt!
+	player_dead: Boolean!
+	current_level: BigInt!
+	current_level_completed: Boolean!
+	map_json: String!
+	status: String!
+	owner: AuthUserView
+}
+
+input BlobMoveInput {
+	game_id: String!
+	direction: String!
+}
+
+input BlobStartInput {
+	game_id: String!
+}
+
+input BlobStartLevelInput {
+	game_id: String!
+}
+
+input Boolean_comparison_exp {
+	_eq: Boolean
+	_neq: Boolean
+	_gt: Boolean
+	_gte: Boolean
+	_lt: Boolean
+	_lte: Boolean
+	_in: [Boolean!]
+	_nin: [Boolean!]
+	_is_null: Boolean
+}
 
 scalar Bytea
 
@@ -18,6 +90,7 @@ type ChatMessageView {
 	author_id: String!
 	body: String!
 	created_at: String!
+	author: AuthUserView
 }
 
 input ChatPostInput {
@@ -43,9 +116,16 @@ type Mutation {
 	todos_rename(input: TodoRenameInput!): TodoRenamePayload!
 	todos_reopen(input: TodoReopenInput!): TodoStatusPayload!
 	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
+	blob_games_start(input: BlobStartInput!): BlobGamePayload!
+	blob_games_move(input: BlobMoveInput!): BlobGamePayload!
+	blob_games_start_level(input: BlobStartLevelInput!): BlobGamePayload!
 }
 
 type Query {
+	auth_users(where: auth_users_bool_exp, order_by: [auth_users_order_by!], limit: Int, offset: Int): [AuthUserView!]!
+	auth_users_by_pk(user_id: String!): AuthUserView
+	blob_games(where: blob_games_bool_exp, order_by: [blob_games_order_by!], limit: Int, offset: Int): [BlobGameView!]!
+	blob_games_by_pk(game_id: String!): BlobGameView
 	chat_messages(where: chat_messages_bool_exp, order_by: [chat_messages_order_by!], limit: Int, offset: Int): [ChatMessageView!]!
 	chat_messages_by_pk(message_id: String!): ChatMessageView
 	todos(where: todos_bool_exp, order_by: [todos_order_by!], limit: Int, offset: Int): [TodoView!]!
@@ -67,6 +147,8 @@ input String_comparison_exp {
 }
 
 type Subscription {
+	auth_users(where: auth_users_bool_exp, order_by: [auth_users_order_by!], limit: Int, offset: Int): [AuthUserView!]!
+	blob_games(where: blob_games_bool_exp, order_by: [blob_games_order_by!], limit: Int, offset: Int): [BlobGameView!]!
 	chat_messages(where: chat_messages_bool_exp, order_by: [chat_messages_order_by!], limit: Int, offset: Int): [ChatMessageView!]!
 	todos(where: todos_bool_exp, order_by: [todos_order_by!], limit: Int, offset: Int): [TodoView!]!
 }
@@ -120,6 +202,57 @@ type TodoView {
 	status: String!
 }
 
+input auth_users_bool_exp {
+	_and: [auth_users_bool_exp!]
+	_or: [auth_users_bool_exp!]
+	_not: auth_users_bool_exp
+	user_id: String_comparison_exp
+	email: String_comparison_exp
+	display_name: String_comparison_exp
+	user_kind: String_comparison_exp
+	approval_status: String_comparison_exp
+	status: String_comparison_exp
+	updated_at: String_comparison_exp
+	chat_messages: chat_messages_bool_exp
+	blob_games: blob_games_bool_exp
+}
+
+input auth_users_order_by {
+	user_id: order_by
+	email: order_by
+	display_name: order_by
+	user_kind: order_by
+	approval_status: order_by
+	status: order_by
+	updated_at: order_by
+}
+
+input blob_games_bool_exp {
+	_and: [blob_games_bool_exp!]
+	_or: [blob_games_bool_exp!]
+	_not: blob_games_bool_exp
+	game_id: String_comparison_exp
+	owner_id: String_comparison_exp
+	score: BigInt_comparison_exp
+	player_dead: Boolean_comparison_exp
+	current_level: BigInt_comparison_exp
+	current_level_completed: Boolean_comparison_exp
+	map_json: String_comparison_exp
+	status: String_comparison_exp
+	owner: auth_users_bool_exp
+}
+
+input blob_games_order_by {
+	game_id: order_by
+	owner_id: order_by
+	score: order_by
+	player_dead: order_by
+	current_level: order_by
+	current_level_completed: order_by
+	map_json: order_by
+	status: order_by
+}
+
 input chat_messages_bool_exp {
 	_and: [chat_messages_bool_exp!]
 	_or: [chat_messages_bool_exp!]
@@ -129,6 +262,7 @@ input chat_messages_bool_exp {
 	author_id: String_comparison_exp
 	body: String_comparison_exp
 	created_at: String_comparison_exp
+	author: auth_users_bool_exp
 }
 
 input chat_messages_order_by {

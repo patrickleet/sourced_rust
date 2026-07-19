@@ -6,7 +6,7 @@
 	 */
 	import { onDestroy, tick } from 'svelte';
 	import { useGraphql, fx } from '$lib/gql';
-	import { sessionDisplayName } from '$lib/session';
+	import { isOwnAuthor, sessionDisplayName, sessionPrincipalId } from '$lib/session';
 	import { chat, sortChatMessages } from './chat.resource';
 	import type { ChatMsg } from './chat.resource';
 
@@ -16,7 +16,10 @@
 	let draft = $state('');
 	let busy = $state(false);
 
-	const me = $derived(data.session?.user?.id ?? '');
+	/** Same principal the API stamps as author_id (access-token sub). */
+	const me = $derived(
+		sessionPrincipalId(data.session, data.accessToken ?? data.session?.accessToken)
+	);
 	const displayName = $derived(sessionDisplayName(data.session));
 
 	const gql = useGraphql(() => data, {
@@ -61,14 +64,21 @@
 		return id.slice(0, 6) + '…';
 	}
 
-	function formatWhen(iso: string) {
-		try {
-			const d = new Date(iso);
-			if (Number.isNaN(d.getTime())) return iso;
-			return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-		} catch {
-			return iso;
-		}
+	function formatWhen(raw: string) {
+		if (!raw) return '';
+		// Server may emit unix millis as a decimal string (no chrono in fixture).
+		const asNum = /^\d{11,16}$/.test(raw.trim()) ? Number(raw) : NaN;
+		const d = Number.isFinite(asNum) ? new Date(asNum) : new Date(raw);
+		if (Number.isNaN(d.getTime())) return raw;
+		return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+	}
+
+	function messageIsMine(m: ChatMsg): boolean {
+		return isOwnAuthor(m.author_id, me, {
+			authorUserId: m.author?.user_id,
+			username: data.session?.user?.username,
+			displayName: m.author?.display_name
+		});
 	}
 
 	async function onSend(e: Event) {
@@ -83,7 +93,14 @@
 			room_id: data.room,
 			author_id: me || 'me',
 			body,
-			created_at: new Date().toISOString()
+			created_at: new Date().toISOString(),
+			// Join target filled by server when auth_users has this user_id.
+			author: {
+				user_id: me || 'me',
+				display_name: displayName || 'You',
+				email: '',
+				status: 'active'
+			}
 		};
 		const result = await gql.commands.chatMessagesPost(
 			{ message_id, body, room_id: data.room },
@@ -161,10 +178,13 @@
 				</div>
 			{:else}
 				{#each $lobby.data as m, i (m.message_id)}
-					{@const mine = me && m.author_id === me}
+					{@const mine = messageIsMine(m)}
+					{@const authorLabel = mine
+						? 'You'
+						: m.author?.display_name || m.author?.email || shortId(m.author_id)}
 					<article class="ch-msg" class:mine style="--i: {i}">
 						<header class="ch-msg-meta">
-							<span class="ch-author">{mine ? 'You' : shortId(m.author_id)}</span>
+							<span class="ch-author" title={m.author_id}>{authorLabel}</span>
 							<time class="ch-when" datetime={m.created_at}>{formatWhen(m.created_at)}</time>
 						</header>
 						<p class="ch-body">{m.body}</p>

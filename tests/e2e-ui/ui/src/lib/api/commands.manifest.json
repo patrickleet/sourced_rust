@@ -323,6 +323,228 @@
           }
         ]
       }
+    },
+    {
+      "command_name": "blob.start",
+      "field_name": "blob_games_start",
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "input": {
+        "name": "BlobStartInput",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      },
+      "output": {
+        "name": "BlobGamePayload",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "owner_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "score",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "player_dead",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level_completed",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "map_json",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "status",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      }
+    },
+    {
+      "command_name": "blob.move",
+      "field_name": "blob_games_move",
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "input": {
+        "name": "BlobMoveInput",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "direction",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      },
+      "output": {
+        "name": "BlobGamePayload",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "owner_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "score",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "player_dead",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level_completed",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "map_json",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "status",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      }
+    },
+    {
+      "command_name": "blob.start_level",
+      "field_name": "blob_games_start_level",
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "input": {
+        "name": "BlobStartLevelInput",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      },
+      "output": {
+        "name": "BlobGamePayload",
+        "fields": [
+          {
+            "name": "game_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "owner_id",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "score",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "player_dead",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level",
+            "type_name": "BigInt",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "current_level_completed",
+            "type_name": "Boolean",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "map_json",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          },
+          {
+            "name": "status",
+            "type_name": "String",
+            "nullable": false,
+            "list": false
+          }
+        ]
+      }
     }
   ]
 }

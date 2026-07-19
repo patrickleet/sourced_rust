@@ -13,8 +13,9 @@
 
 	const isAuthenticated = $derived(!!page.data.session?.user);
 	const user = $derived(page.data.session?.user);
+	// /login starts Auth.js OIDC then shows our password form (Login V2 custom base URI).
 	const signInHref = $derived(
-		`/signin?callbackUrl=${encodeURIComponent(page.url.pathname + (browser ? page.url.search : ''))}`
+		`/login?callbackUrl=${encodeURIComponent(page.url.pathname + (browser ? page.url.search : ''))}`
 	);
 
 	const toggleMenu = () => {

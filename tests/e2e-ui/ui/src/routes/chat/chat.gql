@@ -2,6 +2,7 @@
 # Room filter is fixed to lobby for the e2e-ui page; variables can expand later.
 # Post mutation: `$lib/api/commands.operations.gql` (generated).
 
+# Lobby chat — joins `author` from imported auth_users (Zitadel ingestor).
 query ChatMessages {
   chat_messages(where: { room_id: { _eq: "lobby" } }) {
     message_id
@@ -9,6 +10,12 @@ query ChatMessages {
     author_id
     body
     created_at
+    author {
+      user_id
+      display_name
+      email
+      status
+    }
   }
 }
 
@@ -19,5 +26,11 @@ subscription ChatMessagesLive {
     author_id
     body
     created_at
+    author {
+      user_id
+      display_name
+      email
+      status
+    }
   }
 }

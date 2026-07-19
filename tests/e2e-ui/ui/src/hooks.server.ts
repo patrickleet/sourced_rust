@@ -9,6 +9,8 @@ async function authorizationHandle({ event, resolve }: { event: RequestEvent; re
     path.startsWith('/admin') ||
     path === '/todos' ||
     path.startsWith('/todos/') ||
+    path === '/blob' ||
+    path.startsWith('/blob/') ||
     path === '/chat' ||
     path.startsWith('/chat/') ||
     path === '/session' ||
@@ -18,7 +20,8 @@ async function authorizationHandle({ event, resolve }: { event: RequestEvent; re
     const session = await event.locals.auth();
     if (!session?.user) {
       const callbackUrl = encodeURIComponent(event.url.pathname + event.url.search);
-      throw redirect(303, `/signin?callbackUrl=${callbackUrl}`);
+      // Custom Login V2 pages at /login (not Zitadel-hosted UI)
+      throw redirect(303, `/login?callbackUrl=${callbackUrl}`);
     }
   }
 

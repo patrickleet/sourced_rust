@@ -47,8 +47,15 @@ pub struct OidcIdentityService<S> {
 
 fn skip_oidc_gate(method: &Method, path: &str) -> bool {
     // Public probes + GraphiQL HTML + WS upgrade (auth on connection_init).
-    matches!(path, "/health" | "/metrics" | "/graphql/ws")
-        || (path == "/graphql" && *method == Method::GET)
+    // Zitadel Action ingress uses shared-secret authenticity (not OIDC bearer).
+    matches!(
+        path,
+        "/health"
+            | "/metrics"
+            | "/graphql/ws"
+            | "/zitadel.ingress.v1"
+            | "/zitadel.scrape.v1"
+    ) || (path == "/graphql" && *method == Method::GET)
 }
 
 fn unauthorized_response() -> Response<Body> {
@@ -154,7 +161,10 @@ mod tests {
         assert!(skip_oidc_gate(&Method::GET, "/graphql/ws"));
         assert!(skip_oidc_gate(&Method::GET, "/graphql"));
         assert!(!skip_oidc_gate(&Method::POST, "/graphql"));
-        // HTTP command routes are disabled; still treat unknown POSTs as gated.
+        // Zitadel Action ingress + scrape use shared secret, not OIDC bearer.
+        assert!(skip_oidc_gate(&Method::POST, "/zitadel.ingress.v1"));
+        assert!(skip_oidc_gate(&Method::POST, "/zitadel.scrape.v1"));
+        // Other HTTP command routes still require OIDC under OidcBearer.
         assert!(!skip_oidc_gate(&Method::POST, "/todo.create"));
         assert!(!skip_oidc_gate(&Method::POST, "/graphql"));
     }
