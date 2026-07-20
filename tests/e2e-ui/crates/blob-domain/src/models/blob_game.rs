@@ -421,6 +421,46 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn complete_then_start_next_level() {
+        use tile::*;
+        let map = vec![vec![PLAYER, UNVISITED], vec![UNVISITED, UNVISITED]];
+        let mut g = BlobGame::default();
+        g.initialize("g1", "alice").unwrap();
+        g.start_level("alice", map).unwrap();
+        g.move_dir("alice", Direction::Right).unwrap();
+        g.move_dir("alice", Direction::Down).unwrap();
+        g.move_dir("alice", Direction::Left).unwrap();
+        assert!(g.current_level_completed);
+        assert_eq!(g.current_level, 1);
+        g.start_next_generated_level("alice").unwrap();
+        assert_eq!(g.current_level, 2);
+        assert!(!g.current_level_completed);
+        assert!(!g.map.is_empty());
+        // hydrate round-trip
+        let g2: BlobGame = distributed::hydrate(g.entity.clone()).unwrap();
+        assert_eq!(g2.current_level, 2);
+        assert!(!g2.current_level_completed);
+    }
+
+    #[test]
+    fn hydrate_preserves_level_complete_before_next() {
+        use tile::*;
+        let map = vec![vec![PLAYER, UNVISITED], vec![UNVISITED, UNVISITED]];
+        let mut g = BlobGame::default();
+        g.initialize("g1", "alice").unwrap();
+        g.start_level("alice", map).unwrap();
+        g.move_dir("alice", Direction::Right).unwrap();
+        g.move_dir("alice", Direction::Down).unwrap();
+        g.move_dir("alice", Direction::Left).unwrap();
+        assert!(g.current_level_completed);
+        let mut g2: BlobGame = distributed::hydrate(g.entity.clone()).unwrap();
+        assert!(g2.current_level_completed, "completed flag must survive hydrate");
+        g2.start_next_generated_level("alice").unwrap();
+        assert_eq!(g2.current_level, 2);
+    }
+
     #[test]
     fn demo_map_valid() {
         validate_map(&demo_map()).unwrap();

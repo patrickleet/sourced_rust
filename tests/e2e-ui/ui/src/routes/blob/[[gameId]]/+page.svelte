@@ -55,10 +55,19 @@
 	/** Serialize network so aggregate versions stay ordered. */
 	let moveQueue: string[] = [];
 	let draining = false;
+	/** In-flight drain; Next level awaits this so start_level sees completed moves. */
+	let drainPromise: Promise<void> | null = null;
 	/** Optimistic moves not yet confirmed by a successful command response. */
-	let pendingConfirms = 0;
-	/** Last server-confirmed row (for rollback on error). */
-	let lastConfirmed: BlobGameRow | null = null;
+	let pendingConfirms = $state(0);
+	/** Last server-confirmed row (for rollback on error / Next level gate). */
+	let lastConfirmed = $state<BlobGameRow | null>(null);
+
+	/** Server agrees the level is complete — not just optimistic client paint. */
+	const serverLevelComplete = $derived(
+		!!lastConfirmed?.current_level_completed &&
+			lastConfirmed?.game_id === playGameId &&
+			pendingConfirms === 0
+	);
 
 	const gql = useGraphql(() => data, {
 		runEffects: (effects) => {
@@ -182,6 +191,7 @@
 		moveQueue = [];
 		pendingConfirms = 0;
 		draining = false;
+		// Leave drainPromise to settle; it no-ops on empty queue.
 	}
 
 	function newGameId() {
@@ -309,36 +319,42 @@
 	}
 
 	async function drainMoveQueue(game_id: string) {
-		if (draining) return;
+		if (draining) return drainPromise ?? Promise.resolve();
 		draining = true;
-		while (moveQueue.length) {
-			const direction = moveQueue.shift()!;
-			try {
-				const result = await gql.commands.blobGamesMove(
-					{ game_id, direction },
-					{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Move rejected')] }
-				);
-				if (result.errors?.length || !result.data) {
-					actionError = result.errors?.[0]?.message ?? 'Move rejected';
+		const run = (async () => {
+			while (moveQueue.length) {
+				const direction = moveQueue.shift()!;
+				try {
+					const result = await gql.commands.blobGamesMove(
+						{ game_id, direction },
+						{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Move rejected')] }
+					);
+					if (result.errors?.length || !result.data) {
+						actionError = result.errors?.[0]?.message ?? 'Move rejected';
+						moveQueue = [];
+						pendingConfirms = 0;
+						if (lastConfirmed?.game_id === game_id) applyRow(lastConfirmed, true);
+						else list.scheduleCatchUp(80);
+						break;
+					}
+					pendingConfirms = Math.max(0, pendingConfirms - 1);
+					const fact = result.data as BlobGameRow;
+					// Only paint when fully caught up — intermediate responses must not rewind.
+					applyRow(fact, pendingConfirms === 0);
+				} catch {
+					actionError = 'Move failed';
 					moveQueue = [];
 					pendingConfirms = 0;
 					if (lastConfirmed?.game_id === game_id) applyRow(lastConfirmed, true);
-					else list.scheduleCatchUp(80);
 					break;
 				}
-				pendingConfirms = Math.max(0, pendingConfirms - 1);
-				const fact = result.data as BlobGameRow;
-				// Only paint when fully caught up — intermediate responses must not rewind.
-				applyRow(fact, pendingConfirms === 0);
-			} catch {
-				actionError = 'Move failed';
-				moveQueue = [];
-				pendingConfirms = 0;
-				if (lastConfirmed?.game_id === game_id) applyRow(lastConfirmed, true);
-				break;
 			}
-		}
-		draining = false;
+		})();
+		drainPromise = run.finally(() => {
+			draining = false;
+			drainPromise = null;
+		});
+		return drainPromise;
 	}
 
 	/**
@@ -379,7 +395,18 @@
 	}
 
 	async function nextLevel() {
-		if (!playGameId || !levelComplete || playerDead || starting) return;
+		if (!playGameId || playerDead || starting) return;
+		// Always wait for in-flight moves: optimistic "level complete" is not enough —
+		// start_level loads the aggregate and requires current_level_completed on the server.
+		if (drainPromise) await drainPromise;
+		if (pendingConfirms > 0 || moveQueue.length > 0) {
+			actionError = 'Still confirming the last move…';
+			return;
+		}
+		if (!lastConfirmed?.current_level_completed || lastConfirmed.game_id !== playGameId) {
+			actionError = 'Level is not complete on the server yet';
+			return;
+		}
 		starting = true;
 		actionError = null;
 		const result = await gql.commands.blobGamesStartLevel(
@@ -511,7 +538,15 @@
 					<span class="hud-banner dead">You died — start a new game</span>
 				{:else if levelComplete}
 					<span class="hud-banner win">Level complete</span>
-					<button class="fn-btn fn-btn-primary" type="button" onclick={nextLevel} disabled={starting}>
+					{#if !serverLevelComplete}
+						<span class="hud-banner win">Confirming move…</span>
+					{/if}
+					<button
+						class="fn-btn fn-btn-primary"
+						type="button"
+						onclick={nextLevel}
+						disabled={starting || !serverLevelComplete}
+					>
 						Next level
 					</button>
 				{/if}
