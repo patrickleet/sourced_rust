@@ -41,6 +41,8 @@
 
 	let actionError = $state<string | null>(null);
 	let starting = $state(false);
+	/** True after client onMount — Playwright waits so clicks hit hydrated handlers. */
+	let hydrated = $state(false);
 
 	/** URL is source of truth for which game is selected (`/blob` or `/blob/{gameId}`). */
 	const routeGameId = $derived(page.params.gameId ?? null);
@@ -174,7 +176,9 @@
 	$effect(() => {
 		const id = routeGameId;
 		if (!id) {
-			// Deselected via /blob
+			// Soft URL after start uses history.replaceState (params stay empty) —
+			// never wipe a board we just painted on this mount.
+			if (playGameId && board.length > 0) return;
 			if (playGameId && pendingConfirms === 0) {
 				abortInFlight();
 				clearBoard();
@@ -186,14 +190,13 @@
 		// Don't clobber mid-move optimistics for the active game.
 		if (playGameId === id && pendingConfirms > 0) return;
 
-		// List cache, then remount-safe stash (start just navigated here).
+		// List cache, then remount-safe stash (start / hard nav).
 		const row = games.find((g) => g.game_id === id) ?? rememberedRows.get(id) ?? null;
 		if (row) {
 			abortInFlight();
 			applyRow(row, true);
 		}
-		// Unknown id: leave empty until list/stash catches up — do not wipe a
-		// board we already painted for this id (playGameId === id handled above).
+		// Unknown id: leave empty until list/stash catches up.
 	});
 
 	const cols = $derived(board[0]?.length ?? 0);
@@ -313,22 +316,42 @@
 		actionError = null;
 		abortInFlight();
 		const game_id = newGameId();
-		// No projection-apply: paint from payload via applyRow (avoids optimistic
-		// cache flags that block seed, and board is independent of URL race).
-		const result = await gql.commands.blobGamesStart(
-			{ game_id },
-			{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Start failed')] }
-		);
-		starting = false;
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'Start failed';
-			return;
+		try {
+			// Paint from command payload (projection return). Do **not** navigate
+			// before the board is committed — `/blob` → `/blob/{id}` remounts the
+			// page component and a new QueryCache; board would flash empty in CI.
+			const result = await gql.commands.blobGamesStart(
+				{ game_id },
+				{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Start failed')] }
+			);
+			if (result.errors?.length || !result.data) {
+				if (!actionError) actionError = result.errors?.[0]?.message ?? 'Start failed';
+				return;
+			}
+			pendingConfirms = 0;
+			const row = result.data as BlobGameRow;
+			applyRow(row, true);
+			// Soft URL update after paint so history/share works without racing remount.
+			// replaceState keeps the same document; goto would remount [[gameId]].
+			if (typeof history !== 'undefined' && routeGameId !== row.game_id) {
+				history.replaceState(history.state, '', gamePath(row.game_id));
+			}
+		} catch (e) {
+			actionError = e instanceof Error ? e.message : 'Start failed';
+		} finally {
+			starting = false;
 		}
-		pendingConfirms = 0;
-		const row = result.data as BlobGameRow;
-		applyRow(row, true);
-		navigateToGame(row.game_id);
 	}
+
+	onMount(() => {
+		hydrated = true;
+		// Remount / hard nav restore from module stash.
+		const id = page.params.gameId;
+		if (id) {
+			const row = rememberedRows.get(id);
+			if (row && board.length === 0) applyRow(row, true);
+		}
+	});
 
 	async function drainMoveQueue(game_id: string) {
 		if (draining) return drainPromise ?? Promise.resolve();
@@ -474,7 +497,7 @@
 	<title>Blob Game · e2e-ui</title>
 </svelte:head>
 
-<section class="fn-page blob-page">
+<section class="fn-page blob-page" data-blob-hydrated={hydrated ? '1' : '0'}>
 	<header class="fn-header">
 		<div class="fn-kicker">
 			<span class="fn-dot" aria-hidden="true"></span>
@@ -488,7 +511,13 @@
 					<code>blob_games</code> cache; the URL selects which game is active.
 				</p>
 			</div>
-			<button class="fn-btn fn-btn-primary" type="button" onclick={startGame} disabled={starting}>
+			<button
+				class="fn-btn fn-btn-primary"
+				type="button"
+				data-testid="blob-new-game"
+				onclick={() => void startGame()}
+				disabled={starting || !hydrated}
+			>
 				New game
 			</button>
 		</div>
@@ -517,7 +546,13 @@
 	{:else if !hasBoard}
 		<div class="blob-empty">
 			<p class="blob-empty-copy">No game selected. Start one to play.</p>
-			<button class="fn-btn fn-btn-primary" type="button" onclick={startGame} disabled={starting}>
+			<button
+				class="fn-btn fn-btn-primary"
+				type="button"
+				data-testid="blob-start-game"
+				onclick={() => void startGame()}
+				disabled={starting || !hydrated}
+			>
 				Start game
 			</button>
 		</div>
