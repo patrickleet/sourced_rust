@@ -26,6 +26,17 @@
 		deadByHole: 4
 	} as const;
 
+	/**
+	 * Survives SvelteKit remount when navigating `/blob` → `/blob/{id}`.
+	 * Command-start paints here first so the board is never blank while SSR
+	 * seed races the projector / shared query cache.
+	 */
+	const rememberedRows = new Map<string, BlobGameRow>();
+
+	function rememberRow(row: BlobGameRow) {
+		rememberedRows.set(row.game_id, row);
+	}
+
 	let { data } = $props();
 
 	let actionError = $state<string | null>(null);
@@ -86,8 +97,8 @@
 
 	/**
 	 * Seed history from SSR, but **merge** any rows already in the client cache
-	 * (e.g. a game we just created that the load may not have yet). Never drop
-	 * client-only rows on navigation.
+	 * and module-remembered starts (e.g. a game we just created that the load
+	 * may not have yet). Never drop client-only rows on navigation.
 	 *
 	 * `untrack` on the local list so seeding doesn't re-enter this effect.
 	 */
@@ -98,6 +109,7 @@
 		);
 		const byId = new Map<string, BlobGameRow>();
 		for (const g of server) byId.set(g.game_id, g);
+		for (const g of rememberedRows.values()) byId.set(g.game_id, g);
 		for (const g of local) {
 			// Prefer local row when present (fresher score/map after commands).
 			byId.set(g.game_id, g);
@@ -114,6 +126,7 @@
 	);
 
 	function seedList(row: BlobGameRow) {
+		rememberRow(row);
 		const rest = games.filter((g) => g.game_id !== row.game_id);
 		list.seed({ blob_games: [row, ...rest] });
 	}
@@ -124,6 +137,7 @@
 	 *   When false, only paints if fully caught up (pendingConfirms === 0).
 	 */
 	function applyRow(row: BlobGameRow, force = true) {
+		rememberRow(row);
 		playGameId = row.game_id;
 		seedList(row);
 		lastConfirmed = row;
@@ -172,16 +186,14 @@
 		// Don't clobber mid-move optimistics for the active game.
 		if (playGameId === id && pendingConfirms > 0) return;
 
-		const row = games.find((g) => g.game_id === id);
+		// List cache, then remount-safe stash (start just navigated here).
+		const row = games.find((g) => g.game_id === id) ?? rememberedRows.get(id) ?? null;
 		if (row) {
 			abortInFlight();
 			applyRow(row, true);
-		} else if (playGameId !== id) {
-			// URL points at unknown game — leave empty "not found" until list catches up.
-			abortInFlight();
-			playGameId = null;
-			board = [];
 		}
+		// Unknown id: leave empty until list/stash catches up — do not wipe a
+		// board we already painted for this id (playGameId === id handled above).
 	});
 
 	const cols = $derived(board[0]?.length ?? 0);

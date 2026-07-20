@@ -38,11 +38,10 @@ pub fn build_role_schema(
     let _ = by_table;
 
     // --- A4: field inventory from surface IR (role-filtered) ---
-    let tables: Vec<TableSchema> = catalog
-        .values()
-        .filter(|e| e.exposed)
-        .map(|e| e.schema.clone())
-        .collect();
+    // Include shadow / through-table schemas (exposed=false). build_surface only
+    // emits read-model roots, but m2m relationship_emitted needs join tables in
+    // by_table — otherwise weapons-style where predicates drop from bool_exp.
+    let tables: Vec<TableSchema> = catalog.values().map(|e| e.schema.clone()).collect();
     let surface_opts = SurfaceOptions {
         dialect: match dialect {
             SqlDialect::Sqlite => SurfaceDialect::Sqlite,
