@@ -9,3 +9,8 @@ ui/build
 ui/.svelte-kit
 ui/.vite
 docker/login-client/pat
+node_modules
+e2e/.auth
+playwright-report
+test-results
+blob-report

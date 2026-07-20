@@ -59,9 +59,29 @@ cd ui && npm install && npm run dev
 ```
 
 ```bash
-make test        # domain + behavioral + structural UI (no Docker)
-make test-live   # OIDC isolation (E2E_STACK=1, needs make up + API up)
+make test          # domain + behavioral + structural UI (no Docker)
+make test-live     # OIDC isolation (E2E_STACK=1, needs make up + API up)
+make test-browser  # Playwright against live UI (needs make up + make run)
 ```
+
+### Browser e2e (Playwright)
+
+Real Chromium flows against the Fieldnote UI — login (OIDC + custom Login V2), todos, chat, blob, admin, unauth redirects.
+
+```bash
+make up && make run          # leave running
+# other terminal:
+cd tests/e2e-ui
+make test-browser            # npm install + chromium + playwright test
+```
+
+| Project | Specs | Session |
+|---------|--------|---------|
+| `chromium-anon` | `e2e/*.anon.spec.ts` | none |
+| `setup-alice` → `chromium-user` | `e2e/*.user.spec.ts` | alice |
+| `setup-admin` → `chromium-admin` | `e2e/*.admin.spec.ts` | admin |
+
+Demo passwords: `alice` / `bob` / `admin` · `Password1!` (from bootstrap).
 
 ### Suite identity modes (E6)
 

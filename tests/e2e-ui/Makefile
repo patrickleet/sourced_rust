@@ -2,11 +2,12 @@
 #
 #   make up          # Docker: Postgres + Zitadel + bootstrap env
 #   make run         # API + UI (uses e2e-ui.env if present)
-#   make test        # offline unit/suite/UI structural
-#   make test-live   # against stack (E2E_STACK=1)
+#   make test         # offline unit/suite/UI structural
+#   make test-live    # against stack (E2E_STACK=1)
+#   make test-browser # Playwright UI e2e (needs make up + make run)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	ui-install ui-build ui-test export-sdl gen-gql check-gql \
+	test-browser test-browser-install ui-install ui-build ui-test export-sdl gen-gql check-gql \
 	export-commands gen-commands check-commands check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
@@ -111,6 +112,17 @@ test-live:
 	@if [ ! -f $(ENV_FILE) ]; then echo "missing $(ENV_FILE) — run make up"; exit 1; fi
 	set -a; . ./$(ENV_FILE); set +a; \
 	E2E_STACK=1 cargo test -p e2e-suite --test oidc_pg -- --nocapture
+
+## Browser e2e (Playwright). Requires make up + make run (UI :5180, API :8791).
+test-browser-install:
+	$(NPM) install
+	npx playwright install chromium
+
+test-browser: test-browser-install
+	@if [ ! -f $(ENV_FILE) ]; then echo "missing $(ENV_FILE) — run make up"; exit 1; fi
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' "$(UI_URL)/" 2>/dev/null || echo 000); \
+	if [ "$$code" = "000" ]; then echo "UI not reachable at $(UI_URL) — start: make run"; exit 1; fi
+	$(NPM) run test:browser
 
 ui-install:
 	cd ui && $(NPM) install
