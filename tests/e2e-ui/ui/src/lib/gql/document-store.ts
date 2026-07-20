@@ -149,6 +149,77 @@ export function createDocumentStore<TData = Record<string, unknown>, TSelected =
 			emit();
 			return;
 		}
+		// List documents: merge by PK so SSR remount (`/blob` → `/blob/{id}`) does
+		// not drop client-only rows written before navigation (e.g. just-started game).
+		if (
+			list &&
+			existing?.data &&
+			data !== null &&
+			typeof data === 'object' &&
+			typeof existing.data === 'object'
+		) {
+			const at = list.at;
+			const by = list.by;
+			const parts = at.split('.').filter(Boolean);
+			const getList = (doc: unknown): unknown[] | null => {
+				let cur: unknown = doc;
+				for (const p of parts) {
+					if (cur === null || typeof cur !== 'object') return null;
+					cur = (cur as Record<string, unknown>)[p];
+				}
+				return Array.isArray(cur) ? cur : null;
+			};
+			const serverList = getList(data);
+			const localList = getList(existing.data);
+			if (serverList && localList) {
+				const byId = new Map<unknown, Record<string, unknown>>();
+				for (const row of serverList) {
+					if (row && typeof row === 'object') {
+						const r = row as Record<string, unknown>;
+						byId.set(r[by], r);
+					}
+				}
+				// Prefer local (fresher command payload / optimistic).
+				for (const row of localList) {
+					if (row && typeof row === 'object') {
+						const r = row as Record<string, unknown>;
+						byId.set(r[by], r);
+					}
+				}
+				const mergedList = [...byId.values()];
+				const root =
+					data !== null && typeof data === 'object'
+						? { ...(data as Record<string, unknown>) }
+						: {};
+				if (parts.length === 0) {
+					qcache.set(key, {
+						data: mergedList,
+						updatedAt: Date.now(),
+						optimistic: false,
+						pending: false
+					});
+					return;
+				}
+				let cur: Record<string, unknown> = root;
+				for (let i = 0; i < parts.length - 1; i++) {
+					const p = parts[i]!;
+					const next = cur[p];
+					cur[p] =
+						next !== null && typeof next === 'object' && !Array.isArray(next)
+							? { ...(next as Record<string, unknown>) }
+							: {};
+					cur = cur[p] as Record<string, unknown>;
+				}
+				cur[parts[parts.length - 1]!] = mergedList;
+				qcache.set(key, {
+					data: root,
+					updatedAt: Date.now(),
+					optimistic: false,
+					pending: false
+				});
+				return;
+			}
+		}
 		qcache.set(key, {
 			data,
 			updatedAt: Date.now(),

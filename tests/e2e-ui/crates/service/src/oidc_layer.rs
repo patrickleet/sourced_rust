@@ -6,16 +6,22 @@
 //! GraphQL already uses IdentityConfig; commands only read Session headers —
 //! this layer bridges OIDC → DevHeaders-shaped keys for handlers.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{header, Method, Request, Response, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, Response, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::Json;
 use distributed::graphql::{
     resolve_session, AuthError, IdentityConfig, IdentityMode, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
+use distributed::microsvc::{HandlerError, Session, Service};
 use futures_util::future::BoxFuture;
-use tower::{Layer, Service};
+use serde_json::{json, Value};
+use tower::{Layer, Service as TowerService};
 
 #[derive(Clone)]
 pub struct OidcIdentityLayer {
@@ -69,7 +75,7 @@ fn unauthorized_response() -> Response<Body> {
 }
 
 /// Strip client-supplied identity headers (same list as TrustedProxy defaults).
-fn strip_client_identity(headers: &mut axum::http::HeaderMap) {
+fn strip_client_identity(headers: &mut HeaderMap) {
     for name in DEFAULT_IDENTITY_STRIP_HEADERS {
         headers.remove(*name);
     }
@@ -79,9 +85,9 @@ fn strip_client_identity(headers: &mut axum::http::HeaderMap) {
     headers.remove("x-roles");
 }
 
-impl<S> Service<Request<Body>> for OidcIdentityService<S>
+impl<S> TowerService<Request<Body>> for OidcIdentityService<S>
 where
-    S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
+    S: TowerService<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -140,13 +146,81 @@ where
     }
 }
 
+fn session_from_headers(headers: &HeaderMap) -> Session {
+    let mut vars = HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            vars.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    Session::from_map(vars)
+}
+
+fn status_for_error(error: &HandlerError) -> StatusCode {
+    match error {
+        HandlerError::UnknownCommand(_) | HandlerError::NotFound(_) => StatusCode::NOT_FOUND,
+        HandlerError::DecodeFailed(_) | HandlerError::GuardRejected(_) => StatusCode::BAD_REQUEST,
+        HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+        HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        // HandlerError is non_exhaustive.
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Dispatch a named HTTP command (Zitadel ingress/scrape only).
+async fn dispatch_named(
+    service: Arc<Service>,
+    headers: HeaderMap,
+    input: Value,
+    command: &'static str,
+) -> impl IntoResponse {
+    let session = session_from_headers(&headers);
+    match service.dispatch(command, input, session).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(err) => {
+            let status = status_for_error(&err);
+            if status.is_server_error() {
+                eprintln!("microsvc command `{command}` failed: {err}");
+            }
+            let body = json!({ "error": err.client_facing_message() });
+            (status, Json(body)).into_response()
+        }
+    }
+}
+
 /// Serve with OIDC identity injection on all routes (commands + GraphQL).
+///
+/// App writes are GraphQL-only (`Service::without_http_command_routes`). Zitadel
+/// Action ingress still needs HTTP, so those two command names are mounted
+/// explicitly — `POST /todo.create` stays 404 (suite T0 / oidc_pg).
+///
+/// Note: `microsvc::router` already applies `.with_state(service)`, so handlers
+/// cannot use `State<Arc<Service>>`. Capture the `Arc` in the route closures.
 pub async fn serve_with_oidc(
-    service: Arc<distributed::microsvc::Service>,
+    service: Arc<Service>,
     identity: IdentityConfig,
     addr: &str,
 ) -> Result<(), std::io::Error> {
-    let app = distributed::microsvc::router(service).layer(OidcIdentityLayer::new(identity));
+    let ingress = service.clone();
+    let scrape = service.clone();
+    let app = distributed::microsvc::router(service)
+        .route(
+            "/zitadel.ingress.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = ingress.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.ingress.v1").await }
+            }),
+        )
+        .route(
+            "/zitadel.scrape.v1",
+            post(move |headers: HeaderMap, Json(input): Json<Value>| {
+                let svc = scrape.clone();
+                async move { dispatch_named(svc, headers, input, "zitadel.scrape.v1").await }
+            }),
+        )
+        .layer(OidcIdentityLayer::new(identity));
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
 }
@@ -171,7 +245,7 @@ mod tests {
 
     #[test]
     fn strip_removes_spoof_headers() {
-        let mut h = axum::http::HeaderMap::new();
+        let mut h = HeaderMap::new();
         h.insert("x-user-id", "attacker".parse().unwrap());
         h.insert("x-role", "admin".parse().unwrap());
         h.insert("authorization", "Bearer tok".parse().unwrap());

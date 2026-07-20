@@ -167,9 +167,11 @@ pub fn build_surface(
         .iter()
         .map(|t| (t.model_name.as_str(), *t))
         .collect();
-    let by_table: BTreeMap<&str, &TableSchema> = read_models
+    // All tables (incl. operational / unexposed join tables) so m2m
+    // relationship_emitted can resolve `through` for bool_exp + object fields.
+    let by_table: BTreeMap<&str, &TableSchema> = tables
         .iter()
-        .map(|t| (t.table_name.as_str(), *t))
+        .map(|t| (t.table_name.as_str(), t))
         .collect();
 
     let postgres_json = include_postgres_json_comparison_ops(options.dialect.is_postgres());

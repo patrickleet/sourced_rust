@@ -68,9 +68,12 @@ where
         command handlers::commands::blob_start_level,
         events handlers::events::project_blob,
     );
-    // HTTP command routes enabled for Zitadel ingress; UI still uses GraphQL mutations.
+    // GraphQL-only public write surface (POST /todo.* must 404 — suite T0 / oidc_pg).
+    // Zitadel Action ingress still needs HTTP: those commands are registered above and
+    // re-mounted explicitly in `serve_with_oidc` when HTTP command wildcards are off.
     Service::new()
         .named("e2e-ui")
+        .without_http_command_routes()
         .routes(todos)
         .routes(chat)
         .routes(blob)
