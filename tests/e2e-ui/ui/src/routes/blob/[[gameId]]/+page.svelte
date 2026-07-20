@@ -504,17 +504,7 @@
 		</div>
 	{:else if !hasBoard}
 		<div class="blob-empty">
-			<div class="blob-empty-board" aria-hidden="true">
-				{#each Array(5) as _, r}
-					{#each Array(5) as _, c}
-						<span class="cell tile-unvisited" class:tile-player={r === 0 && c === 0}></span>
-					{/each}
-				{/each}
-			</div>
-			<p class="blob-empty-copy">
-				Start a game, then move with arrows / WASD — board paints from the command payload;
-				history stays in the shared cache.
-			</p>
+			<p class="blob-empty-copy">No game selected. Start one to play.</p>
 			<button class="fn-btn fn-btn-primary" type="button" onclick={startGame} disabled={starting}>
 				Start game
 			</button>
@@ -719,14 +709,6 @@
 		border: 1px dashed var(--wf-line-strong, #cdcabe);
 		border-radius: 12px;
 		background: var(--wf-bg-elevated, #fff);
-	}
-	.blob-empty-board {
-		display: grid;
-		grid-template-columns: repeat(5, 1.75rem);
-		gap: 3px;
-		padding: 0.5rem;
-		background: #1c1c1a;
-		border-radius: 8px;
 	}
 	.blob-empty-copy {
 		margin: 0;
