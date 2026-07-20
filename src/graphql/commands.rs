@@ -6,10 +6,107 @@
 //! [`GraphqlCommands::catalog`] exports a machine-readable registry used by
 //! TypeScript generators so app code can call `todosCreate(input)` without
 //! hand-authoring GraphQL mutation documents. GraphQL remains the wire.
+//!
+//! Optional [`ExposedCommand::client_reconcile`] hints tell generators how the
+//! browser command pipeline should treat success payloads (`ack` / `fact` /
+//! `projection`) and how to reconcile lists (subscription / none / …).
 
 use serde::Serialize;
 
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
+
+/// How the browser interprets a successful mutation payload.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientResultKind {
+    /// Command accepted; payload is not a list row.
+    Ack,
+    /// Domain fact fields (id, status, …) — not a full projected row.
+    Fact,
+    /// Payload matches the GraphQL/RM row; apply to cache immediately.
+    Projection,
+    /// Ignore payload for cache purposes.
+    None,
+}
+
+/// How the browser refreshes list/query cache after a successful command.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientReconcileMode {
+    None,
+    Subscription,
+    Refetch,
+    Invalidate,
+}
+
+/// Client pipeline policy for one command (exported in the command catalog).
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ClientReconcile {
+    pub result: ClientResultSpec,
+    pub reconcile: ClientReconcileSpec,
+}
+
+/// Nested `result.kind` shape matching the TS `CommandPolicy` type.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ClientResultSpec {
+    pub kind: ClientResultKind,
+}
+
+/// Nested `reconcile.kind` shape matching the TS `CommandPolicy` type.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ClientReconcileSpec {
+    pub kind: ClientReconcileMode,
+}
+
+impl ClientReconcile {
+    /// Async projector topology: fact payload, no immediate refetch.
+    pub fn fact() -> Self {
+        Self {
+            result: ClientResultSpec {
+                kind: ClientResultKind::Fact,
+            },
+            reconcile: ClientReconcileSpec {
+                kind: ClientReconcileMode::None,
+            },
+        }
+    }
+
+    /// Async projector + live subscription owns the list.
+    pub fn fact_subscription() -> Self {
+        Self {
+            result: ClientResultSpec {
+                kind: ClientResultKind::Fact,
+            },
+            reconcile: ClientReconcileSpec {
+                kind: ClientReconcileMode::Subscription,
+            },
+        }
+    }
+
+    /// Same-tx RM write: mutation payload is the projected row.
+    pub fn projection() -> Self {
+        Self {
+            result: ClientResultSpec {
+                kind: ClientResultKind::Projection,
+            },
+            reconcile: ClientReconcileSpec {
+                kind: ClientReconcileMode::None,
+            },
+        }
+    }
+
+    /// Ack-only success (no useful fact fields).
+    pub fn ack() -> Self {
+        Self {
+            result: ClientResultSpec {
+                kind: ClientResultKind::Ack,
+            },
+            reconcile: ClientReconcileSpec {
+                kind: ClientReconcileMode::None,
+            },
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ExposedCommand {
@@ -18,6 +115,7 @@ pub struct ExposedCommand {
     pub(crate) input: CommandInput,
     pub(crate) output: CommandOutput,
     pub(crate) roles: Vec<String>,
+    pub(crate) client_reconcile: Option<ClientReconcile>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +138,7 @@ pub fn exposed_command() -> ExposedCommand {
         input: CommandInput::None,
         output: CommandOutput::Json,
         roles: Vec::new(),
+        client_reconcile: None,
     }
 }
 
@@ -66,6 +165,15 @@ impl ExposedCommand {
 
     pub fn roles<I: IntoIterator<Item = impl Into<String>>>(mut self, i: I) -> Self {
         self.roles = i.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Hint for generated TS command policies (result kind + reconcile mode).
+    ///
+    /// Omitted from the catalog when unset (backward compatible). Call-site
+    /// options on the client still win over generated defaults.
+    pub fn client_reconcile(mut self, policy: ClientReconcile) -> Self {
+        self.client_reconcile = Some(policy);
         self
     }
 
@@ -110,6 +218,9 @@ pub struct CommandCatalogEntry {
     pub input: Option<CommandTypeCatalog>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<CommandTypeCatalog>,
+    /// Browser pipeline policy (result + reconcile). Omitted when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_reconcile: Option<ClientReconcile>,
 }
 
 /// Versioned command registry export (JSON).
@@ -174,6 +285,7 @@ impl GraphqlCommands {
                     roles: cmd.roles.clone(),
                     input,
                     output,
+                    client_reconcile: cmd.client_reconcile.clone(),
                 }
             })
             .collect();
@@ -237,7 +349,8 @@ mod tests {
                     .field_name("todos_create")
                     .input::<DummyIn>()
                     .output::<DummyOut>()
-                    .roles(["user", "admin"]),
+                    .roles(["user", "admin"])
+                    .client_reconcile(ClientReconcile::fact()),
             )
             .command(
                 "todo.force_archive",
@@ -246,11 +359,20 @@ mod tests {
                     .input::<DummyIn>()
                     .output::<DummyOut>()
                     .roles(["admin"]),
+            )
+            .command(
+                "blob.move",
+                exposed_command()
+                    .field_name("blob_games_move")
+                    .input::<DummyIn>()
+                    .output::<DummyOut>()
+                    .roles(["user"])
+                    .client_reconcile(ClientReconcile::projection()),
             );
 
         let cat = cmds.catalog();
         assert_eq!(cat.version, 1);
-        assert_eq!(cat.commands.len(), 2);
+        assert_eq!(cat.commands.len(), 3);
         assert_eq!(cat.commands[0].command_name, "todo.create");
         assert_eq!(cat.commands[0].field_name, "todos_create");
         assert_eq!(cat.commands[0].roles, vec!["user", "admin"]);
@@ -258,11 +380,38 @@ mod tests {
             cat.commands[0].input.as_ref().unwrap().fields[0].name,
             "todo_id"
         );
-        assert_eq!(cat.commands[1].roles, vec!["admin"]);
+        assert_eq!(
+            cat.commands[0].client_reconcile.as_ref().unwrap().result.kind,
+            ClientResultKind::Fact
+        );
+        assert!(cat.commands[1].client_reconcile.is_none());
+        assert_eq!(
+            cat.commands[2]
+                .client_reconcile
+                .as_ref()
+                .unwrap()
+                .result
+                .kind,
+            ClientResultKind::Projection
+        );
 
         let json = cmds.catalog_json_pretty().expect("json");
         assert!(json.contains("todos_create"));
         assert!(json.contains("\"admin\""));
         assert!(json.contains("todo_id"));
+        assert!(json.contains("client_reconcile"));
+        assert!(json.contains("\"projection\""));
+        // Unset policy omitted (backward compatible).
+        assert!(!json.contains("todos_force_archive") || {
+            // force_archive entry must not carry client_reconcile
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let force = v["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["field_name"] == "todos_force_archive")
+                .unwrap();
+            force.get("client_reconcile").is_none()
+        });
     }
 }

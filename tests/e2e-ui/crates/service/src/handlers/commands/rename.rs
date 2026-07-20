@@ -43,7 +43,12 @@ where
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoRenameInput>()?;
     let mut todo = load_todo(ctx, &input.todo_id).await?;
-    todo.rename(&owner, &input.title).map_err(map_domain)?;
+    let title = input.title.trim().to_string();
+    if title.is_empty() {
+        return Err(HandlerError::Rejected("empty title".into()));
+    }
+    todo.ensure_owner(&owner).map_err(map_domain)?;
+    todo.rename(owner, title).map_err(map_domain)?;
     let fact = commit_todo_event(ctx, &mut todo, "todo.renamed").await?;
     Ok(json!({
         "todo_id": fact.todo_id,

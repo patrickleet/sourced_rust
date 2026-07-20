@@ -7,7 +7,7 @@
 	import { onDestroy } from 'svelte';
 	import { useGraphql, fx } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
-	import { todos as todosResource } from './todos.resource';
+	import { sortTodos, todos as todosResource } from './todos.resource';
 	import type { TodoRow } from './todos.resource';
 
 	type Todo = TodoRow;
@@ -29,24 +29,15 @@
 		}
 	});
 
-	function sortTodos(list: Todo[]): Todo[] {
-		const rank = (s: string) => (s === 'open' ? 0 : s === 'completed' ? 1 : 2);
-		return [...list].sort((a, b) => {
-			const r = rank(a.status) - rank(b.status);
-			if (r !== 0) return r;
-			return b.todo_id.localeCompare(a.todo_id);
-		});
-	}
-
 	const list = gql.store({
 		document: todosResource.query,
 		list: { at: 'todos', by: 'todo_id' },
-		initialData: { todos: data.todos ?? [] },
+		initialData: { todos: sortTodos(data.todos ?? []) },
 		select: (d: { todos?: Todo[] }) => sortTodos(d?.todos ?? [])
 	});
 
 	$effect(() => {
-		list.seed({ todos: data.todos ?? [] });
+		list.seed({ todos: sortTodos(data.todos ?? []) });
 	});
 
 	onDestroy(() => list.destroy());
@@ -119,6 +110,33 @@
 		busy = false;
 		if (result.errors?.length || !result.data) {
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'complete failed';
+			return;
+		}
+		list.scheduleCatchUp();
+	}
+
+	async function onReopen(todo_id: string) {
+		if (busy) return;
+		const target = $list.data.find((t) => t.todo_id === todo_id);
+		if (!target || target.status !== 'completed') return;
+
+		actionError = null;
+		busy = true;
+
+		const result = await gql.commands.todosReopen(
+			{ todo_id },
+			{
+				optimistic: {
+					targets: [list.target('todos', 'todo_id')],
+					row: { ...target, status: 'open' }
+				},
+				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'reopen failed')]
+			}
+		);
+
+		busy = false;
+		if (result.errors?.length || !result.data) {
+			if (!actionError) actionError = result.errors?.[0]?.message ?? 'reopen failed';
 			return;
 		}
 		list.scheduleCatchUp();
@@ -231,7 +249,14 @@
 					{#each open as t, i (t.todo_id)}
 						<li class="fn-item" style="--i: {i}">
 							<div class="fn-item-main">
-								<span class="fn-check" aria-hidden="true"></span>
+								<button
+									class="fn-check"
+									type="button"
+									title="Mark done"
+									aria-label="Mark done: {t.title}"
+									disabled={busy}
+									onclick={() => onComplete(t.todo_id)}
+								></button>
 								<span class="fn-item-title">{t.title}</span>
 							</div>
 							<div class="fn-item-actions">
@@ -272,8 +297,15 @@
 					{#each done as t, i (t.todo_id)}
 						<li class="fn-item fn-item-done" style="--i: {i}">
 							<div class="fn-item-main">
-								<span class="fn-check fn-check-on" aria-hidden="true">
-									<svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+								<button
+									class="fn-check fn-check-on"
+									type="button"
+									title="Reopen"
+									aria-label="Reopen: {t.title}"
+									disabled={busy}
+									onclick={() => onReopen(t.todo_id)}
+								>
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 										<path
 											d="M5 12l5 5L20 7"
 											stroke="currentColor"
@@ -282,10 +314,19 @@
 											stroke-linejoin="round"
 										/>
 									</svg>
-								</span>
+								</button>
 								<span class="fn-item-title">{t.title}</span>
 							</div>
 							<div class="fn-item-actions">
+								<button
+									class="fn-btn fn-btn-ghost"
+									type="button"
+									title="Reopen"
+									disabled={busy}
+									onclick={() => onReopen(t.todo_id)}
+								>
+									Reopen
+								</button>
 								<button
 									class="fn-btn fn-btn-quiet"
 									type="button"
@@ -319,20 +360,18 @@
 
 <style>
 	.fn-page {
-		--paper: #fbf8f1;
-		--paper-edge: #e8e0d0;
-		--ink: var(--hops-navy, #1a2744);
-		--ink-soft: rgba(26, 39, 68, 0.62);
-		--amber: var(--hops-orange, #e69a2d);
-		--amber-glow: rgba(230, 154, 45, 0.22);
-		--rule: rgba(26, 39, 68, 0.07);
-		--shadow: 0 18px 50px rgba(15, 24, 41, 0.12), 0 2px 0 rgba(255, 255, 255, 0.6) inset;
+		--surface: var(--wf-bg-elevated, #fff);
+		--surface-edge: var(--wf-line, #e2e0d9);
+		--ink: var(--wf-ink, #1c1c1a);
+		--ink-soft: var(--wf-ink-soft, #5c5c56);
+		--accent: var(--wf-accent, #3d5a80);
+		--shadow: var(--df-shadow-sm, 0 1px 2px rgba(28, 28, 26, 0.04));
 
 		position: relative;
 		max-width: 52rem;
 		margin: 0 auto;
 		padding: 6.5rem 1.25rem 4rem;
-		font-family: var(--font-body, 'Lexend', system-ui, sans-serif);
+		font-family: var(--wf-sans, var(--font-body, system-ui, sans-serif));
 		color: var(--ink);
 	}
 
@@ -345,27 +384,26 @@
 		align-items: center;
 		gap: 0.45rem;
 		font-size: 0.72rem;
-		font-weight: 700;
-		letter-spacing: 0.12em;
+		font-weight: 600;
+		letter-spacing: 0.1em;
 		text-transform: uppercase;
 		color: var(--ink-soft);
 		margin-bottom: 0.65rem;
 	}
 
 	.fn-dot {
-		width: 0.45rem;
-		height: 0.45rem;
+		width: 0.4rem;
+		height: 0.4rem;
 		border-radius: 50%;
-		background: var(--amber);
-		box-shadow: 0 0 0 4px var(--amber-glow);
+		background: var(--accent);
 	}
 
 	.fn-title {
-		font-family: var(--font-display, 'Lexend', system-ui, sans-serif);
-		font-size: clamp(2rem, 5vw, 2.75rem);
-		font-weight: 800;
-		letter-spacing: -0.035em;
-		line-height: 1.05;
+		font-family: var(--wf-serif, Georgia, serif);
+		font-size: clamp(1.65rem, 4vw, 2.15rem);
+		font-weight: 500;
+		letter-spacing: -0.02em;
+		line-height: 1.1;
 		margin: 0 0 0.65rem;
 		color: var(--ink);
 	}
@@ -373,17 +411,17 @@
 	.fn-lede {
 		margin: 0;
 		max-width: 36rem;
-		font-size: 1.02rem;
+		font-size: 1rem;
 		line-height: 1.55;
 		color: var(--ink-soft);
 	}
 
 	.fn-lede code {
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-family: var(--wf-mono, var(--font-mono, ui-monospace, monospace));
 		font-size: 0.88em;
 		padding: 0.1em 0.35em;
 		border-radius: 4px;
-		background: rgba(26, 39, 68, 0.06);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
 	}
 
 	.fn-alert {
@@ -392,10 +430,10 @@
 		align-items: flex-start;
 		padding: 0.85rem 1rem;
 		margin-bottom: 1rem;
-		border-radius: 12px;
-		background: rgba(229, 62, 62, 0.08);
-		border: 1px solid rgba(229, 62, 62, 0.25);
-		color: #9b2c2c;
+		border-radius: var(--wf-radius, 6px);
+		background: rgba(179, 58, 58, 0.08);
+		border: 1px solid rgba(179, 58, 58, 0.22);
+		color: var(--wf-danger, #b33a3a);
 		font-size: 0.92rem;
 	}
 
@@ -412,22 +450,12 @@
 		display: flex;
 		gap: 0.65rem;
 		flex-wrap: wrap;
-		padding: 0.85rem;
+		padding: 0.65rem 0.75rem;
 		margin-bottom: 1.25rem;
-		background: var(--paper);
-		border: 1px solid var(--paper-edge);
-		border-radius: 16px;
+		background: var(--surface);
+		border: 1px solid var(--surface-edge);
+		border-radius: var(--df-radius-lg, 10px);
 		box-shadow: var(--shadow);
-		position: relative;
-		overflow: hidden;
-	}
-
-	.fn-composer::before {
-		content: '';
-		position: absolute;
-		inset: 0 auto 0 0;
-		width: 4px;
-		background: linear-gradient(180deg, var(--amber), var(--hops-orange-dark, #c47f1a));
 	}
 
 	.fn-input {
@@ -435,15 +463,15 @@
 		min-width: 12rem;
 		border: none;
 		background: transparent;
-		padding: 0.7rem 0.85rem 0.7rem 1rem;
+		padding: 0.55rem 0.65rem;
 		font: inherit;
-		font-size: 1.05rem;
+		font-size: 1rem;
 		color: var(--ink);
 		outline: none;
 	}
 
 	.fn-input::placeholder {
-		color: rgba(26, 39, 68, 0.38);
+		color: var(--wf-ink-muted, #8a8a82);
 	}
 
 	.fn-btn {
@@ -453,96 +481,87 @@
 		gap: 0.4rem;
 		border: none;
 		font: inherit;
-		font-weight: 700;
+		font-weight: 600;
 		font-size: 0.9rem;
 		cursor: pointer;
-		border-radius: 10px;
-		padding: 0.65rem 1.05rem;
-		transition:
-			transform 0.15s var(--ease-out-expo, ease),
-			background 0.15s ease,
-			box-shadow 0.15s ease;
-	}
-
-	.fn-btn:active {
-		transform: scale(0.97);
+		border-radius: var(--wf-radius, 6px);
+		padding: 0.55rem 0.95rem;
+		transition: background 0.15s ease, color 0.15s ease;
 	}
 
 	.fn-btn-primary {
 		background: var(--ink);
 		color: #fff;
-		box-shadow: 0 6px 16px rgba(26, 39, 68, 0.22);
 	}
 
 	.fn-btn-primary:hover:not(:disabled) {
-		background: var(--hops-navy-light, #2a3a5c);
-		box-shadow: 0 8px 22px rgba(26, 39, 68, 0.28);
+		background: var(--hops-navy-light, #2a2a28);
 	}
 
 	.fn-btn:disabled {
-		opacity: 0.55;
+		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
 	.fn-btn-ghost {
-		background: rgba(230, 154, 45, 0.14);
-		color: var(--hops-orange-dark, #c47f1a);
-		padding: 0.4rem 0.75rem;
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		color: var(--accent);
+		padding: 0.35rem 0.7rem;
 		font-size: 0.8rem;
 	}
 
 	.fn-btn-ghost:hover:not(:disabled) {
-		background: rgba(230, 154, 45, 0.28);
+		background: rgba(61, 90, 128, 0.14);
 	}
 
 	.fn-btn-quiet {
 		background: transparent;
 		color: var(--ink-soft);
-		padding: 0.4rem 0.65rem;
+		padding: 0.35rem 0.6rem;
 		font-size: 0.8rem;
-		font-weight: 600;
+		font-weight: 500;
 	}
 
 	.fn-btn-quiet:hover:not(:disabled) {
-		background: rgba(26, 39, 68, 0.06);
+		background: rgba(28, 28, 26, 0.05);
 		color: var(--ink);
 	}
 
 	.fn-stats {
 		display: flex;
-		gap: 0.75rem;
-		margin-bottom: 1.35rem;
+		gap: 0.5rem;
+		margin-bottom: 1.25rem;
 		flex-wrap: wrap;
 	}
 
 	.fn-stat {
 		display: flex;
 		align-items: baseline;
-		gap: 0.4rem;
-		padding: 0.45rem 0.85rem;
+		gap: 0.35rem;
+		padding: 0.35rem 0.7rem;
 		border-radius: 999px;
-		background: rgba(26, 39, 68, 0.04);
-		border: 1px solid var(--hops-border, rgba(26, 39, 68, 0.1));
+		background: transparent;
+		border: 1px solid var(--surface-edge);
 	}
 
 	.fn-stat-n {
-		font-weight: 800;
-		font-size: 1.05rem;
+		font-weight: 700;
+		font-size: 0.95rem;
 		font-variant-numeric: tabular-nums;
 		color: var(--ink);
 	}
 
 	.fn-stat-l {
-		font-size: 0.75rem;
-		font-weight: 600;
-		letter-spacing: 0.04em;
+		font-size: 0.72rem;
+		font-weight: 500;
+		letter-spacing: 0.03em;
 		text-transform: uppercase;
 		color: var(--ink-soft);
 	}
 
 	.fn-board {
 		display: grid;
-		gap: 1.15rem;
+		gap: 1rem;
 	}
 
 	@media (min-width: 768px) {
@@ -553,50 +572,42 @@
 	}
 
 	.fn-panel {
-		background: var(--paper);
-		border: 1px solid var(--paper-edge);
-		border-radius: 18px;
-		padding: 1.1rem 1.15rem 0.85rem;
-		box-shadow: var(--shadow);
-		background-image: repeating-linear-gradient(
-			transparent,
-			transparent 1.85rem,
-			var(--rule) 1.85rem,
-			var(--rule) calc(1.85rem + 1px)
-		);
-		background-position: 0 3.2rem;
+		background: var(--surface);
+		border: 1px solid var(--surface-edge);
+		border-radius: var(--df-radius-lg, 10px);
+		padding: 1rem 1.05rem 0.75rem;
+		box-shadow: none;
 	}
 
 	.fn-panel-muted {
-		opacity: 0.96;
-		filter: saturate(0.92);
+		background: var(--surface);
 	}
 
 	.fn-panel-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		margin-bottom: 0.85rem;
-		padding-bottom: 0.55rem;
-		border-bottom: 2px solid rgba(26, 39, 68, 0.08);
+		margin-bottom: 0.65rem;
+		padding-bottom: 0.5rem;
+		border-bottom: 1px solid var(--surface-edge);
 	}
 
 	.fn-panel-head h2 {
 		margin: 0;
-		font-size: 0.78rem;
-		font-weight: 800;
-		letter-spacing: 0.14em;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
 		text-transform: uppercase;
-		color: var(--ink);
+		color: var(--ink-soft);
 	}
 
 	.fn-count {
 		font-variant-numeric: tabular-nums;
-		font-weight: 700;
-		font-size: 0.8rem;
-		min-width: 1.5rem;
+		font-weight: 600;
+		font-size: 0.75rem;
+		min-width: 1.4rem;
 		text-align: center;
-		padding: 0.15rem 0.45rem;
+		padding: 0.1rem 0.4rem;
 		border-radius: 999px;
 		background: var(--ink);
 		color: #fff;
@@ -604,9 +615,8 @@
 
 	.fn-empty {
 		margin: 0.5rem 0 0.75rem;
-		font-size: 0.92rem;
+		font-size: 0.9rem;
 		color: var(--ink-soft);
-		font-style: italic;
 	}
 
 	.fn-list {
@@ -615,7 +625,7 @@
 		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.35rem;
+		gap: 0.15rem;
 	}
 
 	.fn-item {
@@ -624,73 +634,96 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.5rem 0.75rem;
-		padding: 0.55rem 0.35rem;
-		border-radius: 10px;
-		transition: background 0.15s ease;
+		padding: 0.5rem 0.3rem;
+		border-radius: var(--wf-radius, 6px);
+		transition: background 0.12s ease;
 	}
 
 	.fn-item:hover {
-		background: rgba(255, 255, 255, 0.55);
+		background: rgba(28, 28, 26, 0.04);
 	}
 
 	.fn-item-main {
 		display: flex;
 		align-items: flex-start;
-		gap: 0.65rem;
+		gap: 0.6rem;
 		flex: 1;
 		min-width: 0;
 	}
 
 	.fn-check {
 		flex-shrink: 0;
+		display: grid;
+		place-items: center;
 		width: 1.15rem;
 		height: 1.15rem;
-		margin-top: 0.15rem;
-		border-radius: 6px;
-		border: 2px solid rgba(26, 39, 68, 0.28);
-		background: #fff;
+		margin-top: 0.1rem;
+		padding: 0;
+		border-radius: 4px;
+		border: 1.5px solid var(--wf-line-strong, #cdcabe);
+		background: var(--surface);
+		color: inherit;
+		cursor: pointer;
+		appearance: none;
+		transition:
+			border-color 0.12s ease,
+			background 0.12s ease;
+	}
+
+	.fn-check:hover:not(:disabled) {
+		border-color: var(--accent);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+	}
+
+	.fn-check:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.fn-check-on {
-		display: grid;
-		place-items: center;
-		border-color: var(--hops-success, #38a169);
-		background: rgba(56, 161, 105, 0.12);
-		color: var(--hops-success, #38a169);
+		border-color: var(--wf-success, #2f6f4e);
+		background: rgba(47, 111, 78, 0.1);
+		color: var(--wf-success, #2f6f4e);
+	}
+
+	.fn-check-on:hover:not(:disabled) {
+		border-color: var(--wf-ink-soft, #5c5c56);
+		background: rgba(28, 28, 26, 0.06);
+		color: var(--ink-soft);
 	}
 
 	.fn-item-title {
-		font-size: 0.98rem;
-		font-weight: 500;
+		font-size: 0.95rem;
+		font-weight: 450;
 		line-height: 1.4;
 		word-break: break-word;
 	}
 
 	.fn-item-done .fn-item-title {
 		text-decoration: line-through;
-		text-decoration-thickness: 1.5px;
+		text-decoration-thickness: 1px;
 		color: var(--ink-soft);
 	}
 
 	.fn-item-actions {
 		display: flex;
-		gap: 0.25rem;
+		gap: 0.2rem;
 		flex-shrink: 0;
 	}
 
 	.fn-archive {
-		margin-top: 1.5rem;
-		padding: 0.85rem 1rem;
-		border-radius: 14px;
-		border: 1px dashed rgba(26, 39, 68, 0.18);
-		background: rgba(255, 255, 255, 0.4);
+		margin-top: 1.25rem;
+		padding: 0.75rem 0.95rem;
+		border-radius: var(--df-radius-lg, 10px);
+		border: 1px solid var(--surface-edge);
+		background: var(--surface);
 	}
 
 	.fn-archive summary {
 		cursor: pointer;
-		font-weight: 700;
-		font-size: 0.85rem;
-		letter-spacing: 0.04em;
+		font-weight: 600;
+		font-size: 0.8rem;
+		letter-spacing: 0.03em;
 		text-transform: uppercase;
 		color: var(--ink-soft);
 		list-style: none;
@@ -701,7 +734,7 @@
 	}
 
 	.fn-list-compact {
-		margin-top: 0.75rem;
+		margin-top: 0.65rem;
 	}
 
 	.fn-item-archived {
@@ -712,12 +745,12 @@
 
 	.fn-badge {
 		font-size: 0.65rem;
-		font-weight: 700;
-		letter-spacing: 0.06em;
+		font-weight: 600;
+		letter-spacing: 0.05em;
 		text-transform: uppercase;
-		padding: 0.15rem 0.45rem;
+		padding: 0.12rem 0.4rem;
 		border-radius: 999px;
-		background: rgba(26, 39, 68, 0.08);
+		background: rgba(28, 28, 26, 0.06);
 		color: var(--ink-soft);
 	}
 

@@ -435,8 +435,20 @@ fn ensure_object_type(
         let key = rel.field_name.clone();
         match rel.kind {
             RelationshipKind::BelongsTo => {
-                // Always nullable: non-null FK ≠ target RM row present (LEFT JOIN).
-                let ty = TypeRef::named(target_obj);
+                let fk_nullable = schema
+                    .columns
+                    .iter()
+                    .find(|c| {
+                        c.column_name == rel.foreign_key.as_deref().unwrap_or("")
+                            || c.field_name == rel.foreign_key.as_deref().unwrap_or("")
+                    })
+                    .map(|c| c.nullable)
+                    .unwrap_or(true);
+                let ty = if fk_nullable {
+                    TypeRef::named(target_obj)
+                } else {
+                    TypeRef::named_nn(target_obj)
+                };
                 obj = obj.field(Field::new(rel.field_name.as_str(), ty, move |ctx| {
                     let key = key.clone();
                     FieldFuture::new(async move { passthrough(&ctx, &key) })

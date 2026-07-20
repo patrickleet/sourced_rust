@@ -56,7 +56,7 @@ where
 
     // Domain archive is owner-scoped; use the aggregate's real owner (not admin id).
     let owner = todo.owner_id.clone();
-    todo.archive(&owner).map_err(map_domain)?;
+    todo.archive(owner).map_err(map_domain)?;
     let fact = commit_todo_event(ctx, &mut todo, FORCE_ARCHIVED_EVENT).await?;
 
     Ok(json!({

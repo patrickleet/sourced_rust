@@ -58,8 +58,12 @@ where
         )));
     }
 
+    let title = input.title.trim().to_string();
+    if title.is_empty() {
+        return Err(HandlerError::Rejected("empty title".into()));
+    }
     let mut todo = Todo::default();
-    todo.create(&input.todo_id, &owner, &input.title)
+    todo.create(input.todo_id.clone(), owner, title)
         .map_err(map_domain)?;
 
     let fact = commit_todo_event(ctx, &mut todo, "todo.created").await?;

@@ -1,14 +1,18 @@
 <script lang="ts">
 	/**
-	 * Blob Game — optimistic client + command returns RM row.
+	 * Blob Game — URL-routed selection + local board paint.
 	 *
-	 * 1) Paint immediately (client rules).
-	 * 2) Queue command (server writes RM, returns row).
-	 * 3) Reconcile board ONLY when no unconfirmed optimistics remain —
-	 *    never apply an older command response over a newer local board
-	 *    (that was the undo/redo flicker).
+	 * - URL (`/blob` | `/blob/{gameId}`) selects which game is active.
+	 * - Board HUD is **local state** painted by `applyRow` (same as the working
+	 *   flat-page path). Command payloads and optimistic moves write here first.
+	 * - History list still comes from the shared `blob_games` cache document.
+	 *
+	 * Why local board: after New game, navigate + SSR seed can race the cache.
+	 * Painting from the command payload never waits on that race.
 	 */
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { useGraphql, fx } from '$lib/gql';
 	import { blobGames } from './blob.resource';
 	import type { BlobGameRow } from './blob.resource';
@@ -26,9 +30,20 @@
 
 	let actionError = $state<string | null>(null);
 	let starting = $state(false);
-	let activeId = $state<string | null>(null);
 
-	// Local play state — optimistic first, then command payload
+	/** URL is source of truth for which game is selected (`/blob` or `/blob/{gameId}`). */
+	const routeGameId = $derived(page.params.gameId ?? null);
+
+	function gamePath(gameId: string) {
+		return `/blob/${encodeURIComponent(gameId)}`;
+	}
+
+	function navigateToGame(gameId: string, replace = false) {
+		if (routeGameId === gameId) return;
+		void goto(gamePath(gameId), { replaceState: replace, noScroll: true, keepFocus: true });
+	}
+
+	// Local play state — optimistic first, then command payload (working path).
 	let board = $state<number[][]>([]);
 	let score = $state(0);
 	let playerDead = $state(false);
@@ -60,19 +75,34 @@
 		select: (d: { blob_games?: BlobGameRow[] }) => d?.blob_games ?? []
 	});
 
+	/**
+	 * Seed history from SSR, but **merge** any rows already in the client cache
+	 * (e.g. a game we just created that the load may not have yet). Never drop
+	 * client-only rows on navigation.
+	 *
+	 * `untrack` on the local list so seeding doesn't re-enter this effect.
+	 */
 	$effect(() => {
-		list.seed({ blob_games: data.games ?? [] });
+		const server = data.games ?? [];
+		const local = untrack(
+			() => ($list?.data as BlobGameRow[] | undefined) ?? []
+		);
+		const byId = new Map<string, BlobGameRow>();
+		for (const g of server) byId.set(g.game_id, g);
+		for (const g of local) {
+			// Prefer local row when present (fresher score/map after commands).
+			byId.set(g.game_id, g);
+		}
+		const merged = [...byId.values()].sort((a, b) => a.game_id.localeCompare(b.game_id));
+		list.seed({ blob_games: merged });
 	});
 
 	onDestroy(() => list.destroy());
 
-	const games = $derived(($list?.data as BlobGameRow[] | undefined) ?? []);
-
-	const serverActive = $derived.by((): BlobGameRow | null => {
-		if (!games.length) return null;
-		if (activeId) return games.find((g) => g.game_id === activeId) ?? games[0] ?? null;
-		return games[0] ?? null;
-	});
+	const gamesRaw = $derived(($list?.data as BlobGameRow[] | undefined) ?? []);
+	const games = $derived(
+		[...gamesRaw].sort((a, b) => a.game_id.localeCompare(b.game_id))
+	);
 
 	function seedList(row: BlobGameRow) {
 		const rest = games.filter((g) => g.game_id !== row.game_id);
@@ -80,18 +110,16 @@
 	}
 
 	/**
-	 * Apply server/command row to the board.
-	 * @param force — overwrite optimistic board (start, error rollback, select game).
-	 *   When false, only paints if we're fully caught up (pendingConfirms === 0).
+	 * Apply server/command row to the board + history.
+	 * @param force — overwrite optimistic board (start, error rollback, select).
+	 *   When false, only paints if fully caught up (pendingConfirms === 0).
 	 */
 	function applyRow(row: BlobGameRow, force = true) {
 		playGameId = row.game_id;
-		activeId = row.game_id;
 		seedList(row);
 		lastConfirmed = row;
 
 		if (!force && pendingConfirms > 0) {
-			// Still optimistically ahead — keep local board, don't rewind
 			return;
 		}
 
@@ -108,14 +136,53 @@
 		}
 	}
 
+	function clearBoard() {
+		playGameId = null;
+		board = [];
+		score = 0;
+		playerDead = false;
+		levelComplete = false;
+		currentLevel = 0;
+		status = 'active';
+		lastConfirmed = null;
+	}
+
+	/** When the URL changes, load that game into local board (or clear). */
 	$effect(() => {
-		const row = serverActive;
-		// Only auto-hydrate empty play session — never clobber active optimistics
-		if (row && !playGameId && pendingConfirms === 0) applyRow(row, true);
+		const id = routeGameId;
+		if (!id) {
+			// Deselected via /blob
+			if (playGameId && pendingConfirms === 0) {
+				abortInFlight();
+				clearBoard();
+			}
+			return;
+		}
+		// Already painting this game (e.g. just started) — keep local board.
+		if (playGameId === id && board.length > 0) return;
+		// Don't clobber mid-move optimistics for the active game.
+		if (playGameId === id && pendingConfirms > 0) return;
+
+		const row = games.find((g) => g.game_id === id);
+		if (row) {
+			abortInFlight();
+			applyRow(row, true);
+		} else if (playGameId !== id) {
+			// URL points at unknown game — leave empty "not found" until list catches up.
+			abortInFlight();
+			playGameId = null;
+			board = [];
+		}
 	});
 
 	const cols = $derived(board[0]?.length ?? 0);
 	const hasBoard = $derived(board.length > 0 && cols > 0);
+
+	function abortInFlight() {
+		moveQueue = [];
+		pendingConfirms = 0;
+		draining = false;
+	}
 
 	function newGameId() {
 		const rand =
@@ -222,7 +289,10 @@
 		if (starting) return;
 		starting = true;
 		actionError = null;
+		abortInFlight();
 		const game_id = newGameId();
+		// No projection-apply: paint from payload via applyRow (avoids optimistic
+		// cache flags that block seed, and board is independent of URL race).
 		const result = await gql.commands.blobGamesStart(
 			{ game_id },
 			{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Start failed')] }
@@ -232,9 +302,10 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'Start failed';
 			return;
 		}
-		// Command wrote RM; payload is the row
 		pendingConfirms = 0;
-		applyRow(result.data as BlobGameRow, true);
+		const row = result.data as BlobGameRow;
+		applyRow(row, true);
+		navigateToGame(row.game_id);
 	}
 
 	async function drainMoveQueue(game_id: string) {
@@ -243,24 +314,21 @@
 		while (moveQueue.length) {
 			const direction = moveQueue.shift()!;
 			try {
-				const result = await gql.commands.blobGamesMove({ game_id, direction });
+				const result = await gql.commands.blobGamesMove(
+					{ game_id, direction },
+					{ onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'Move rejected')] }
+				);
 				if (result.errors?.length || !result.data) {
 					actionError = result.errors?.[0]?.message ?? 'Move rejected';
 					moveQueue = [];
 					pendingConfirms = 0;
-					// Roll back to last confirmed RM (or list)
 					if (lastConfirmed?.game_id === game_id) applyRow(lastConfirmed, true);
-					else {
-						const row = games.find((g) => g.game_id === game_id);
-						if (row) applyRow(row, true);
-						else list.scheduleCatchUp(80);
-					}
+					else list.scheduleCatchUp(80);
 					break;
 				}
-				// One server confirm for one optimistic move
 				pendingConfirms = Math.max(0, pendingConfirms - 1);
 				const fact = result.data as BlobGameRow;
-				// Only paint when fully caught up — intermediate responses must not rewind
+				// Only paint when fully caught up — intermediate responses must not rewind.
 				applyRow(fact, pendingConfirms === 0);
 			} catch {
 				actionError = 'Move failed';
@@ -292,7 +360,19 @@
 		actionError = null;
 		pendingConfirms += 1;
 
-		// 2) Queue server confirm (mutation writes RM + returns row)
+		// Keep history row roughly in sync while we wait for confirms.
+		if (lastConfirmed?.game_id === playGameId) {
+			seedList({
+				...lastConfirmed,
+				score: next.score,
+				player_dead: next.dead,
+				current_level_completed: next.complete,
+				status,
+				map_json: JSON.stringify(next.map)
+			});
+		}
+
+		// 2) Queue server confirm
 		const game_id = playGameId;
 		moveQueue.push(direction);
 		void drainMoveQueue(game_id);
@@ -311,12 +391,16 @@
 			if (!actionError) actionError = result.errors?.[0]?.message ?? 'Next level failed';
 			return;
 		}
-		applyRow(result.data as BlobGameRow);
+		applyRow(result.data as BlobGameRow, true);
 	}
 
 	function selectGame(id: string) {
+		if (id === routeGameId) return;
+		abortInFlight();
+		actionError = null;
 		const row = games.find((g) => g.game_id === id);
-		if (row) applyRow(row);
+		if (row) applyRow(row, true);
+		navigateToGame(id);
 	}
 
 	function onKey(e: KeyboardEvent) {
@@ -355,14 +439,14 @@
 	<header class="fn-header">
 		<div class="fn-kicker">
 			<span class="fn-dot" aria-hidden="true"></span>
-			Optimistic UI · command returns RM row
+			URL select · local board · command returns RM row
 		</div>
 		<div class="blob-title-row">
 			<div>
 				<h1 class="fn-title">Blob Game</h1>
 				<p class="fn-lede">
-					Board updates instantly (optimistic). The command upserts <code>blob_games</code> and
-					returns that row so we reconcile without waiting on projectors.
+					Board paints from the command payload (and optimistic moves). History shares the
+					<code>blob_games</code> cache; the URL selects which game is active.
 				</p>
 			</div>
 			<button class="fn-btn fn-btn-primary" type="button" onclick={startGame} disabled={starting}>
@@ -384,7 +468,14 @@
 		</div>
 	{/if}
 
-	{#if !hasBoard}
+	{#if routeGameId && !hasBoard && playGameId !== routeGameId && !data.gqlError}
+		<div class="blob-empty">
+			<p class="blob-empty-copy">
+				Game <code>{routeGameId}</code> not found (or not yours).
+			</p>
+			<a class="fn-btn fn-btn-primary" href="/blob">All games</a>
+		</div>
+	{:else if !hasBoard}
 		<div class="blob-empty">
 			<div class="blob-empty-board" aria-hidden="true">
 				{#each Array(5) as _, r}
@@ -394,11 +485,11 @@
 				{/each}
 			</div>
 			<p class="blob-empty-copy">
-				Start a game, then move with arrows / WASD — paint is optimistic, server confirms via
-				command payload.
+				Start a game, then move with arrows / WASD — board paints from the command payload;
+				history stays in the shared cache.
 			</p>
 			<button class="fn-btn fn-btn-primary" type="button" onclick={startGame} disabled={starting}>
-				Start demo level
+				Start game
 			</button>
 		</div>
 	{:else}
@@ -469,26 +560,28 @@
 					>
 				</div>
 			</div>
-
 		</div>
 	{/if}
 
-	{#if games.length > 1}
+	{#if games.length > 0}
 		<section class="blob-history">
 			<h2>Your games</h2>
 			<ul>
 				{#each games as g (g.game_id)}
 					<li>
-						<button
-							type="button"
+						<a
+							href={gamePath(g.game_id)}
 							class="history-item"
-							class:active={g.game_id === playGameId}
-							onclick={() => selectGame(g.game_id)}
+							class:active={g.game_id === routeGameId || g.game_id === playGameId}
+							onclick={(e) => {
+								e.preventDefault();
+								selectGame(g.game_id);
+							}}
 						>
 							<span class="history-id">{g.game_id.slice(0, 14)}…</span>
 							<span>score {g.score}</span>
 							<span class="hud-status-{g.status}">{g.status}</span>
-						</button>
+						</a>
 					</li>
 				{/each}
 			</ul>
@@ -552,6 +645,9 @@
 		font-size: 0.92rem;
 		cursor: pointer;
 		flex-shrink: 0;
+		text-decoration: none;
+		display: inline-flex;
+		align-items: center;
 	}
 	.fn-btn-primary {
 		background: var(--wf-accent, #3d5a80);
@@ -785,6 +881,8 @@
 		font: inherit;
 		font-size: 0.85rem;
 		cursor: pointer;
+		text-decoration: none;
+		color: inherit;
 	}
 	.history-item.active {
 		border-color: var(--wf-accent, #3d5a80);

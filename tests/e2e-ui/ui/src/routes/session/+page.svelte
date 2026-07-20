@@ -227,26 +227,25 @@
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr);
 		align-items: center;
-		gap: 1.25rem;
-		padding: 1.5rem;
-		background: var(--hops-bg-white);
-		border: 1px solid var(--hops-border);
-		border-radius: 8px;
-		box-shadow: var(--shadow-md);
+		gap: 1.15rem;
+		padding: 1.35rem 1.4rem;
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: var(--df-radius-lg, 10px);
 	}
 
 	.session-avatar {
-		width: 84px;
-		height: 84px;
-		border-radius: 18px;
+		width: 68px;
+		height: 68px;
+		border-radius: 12px;
 		display: grid;
 		place-items: center;
-		background: var(--hops-navy);
-		color: var(--hops-orange);
-		font-family: var(--font-display);
-		font-size: 1.45rem;
-		font-weight: 800;
-		letter-spacing: 0;
+		background: var(--wf-ink, #1c1c1a);
+		color: var(--wf-bg, #f6f5f2);
+		font-family: var(--wf-sans, system-ui, sans-serif);
+		font-size: 1.2rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
 	}
 
 	.session-identity {
@@ -254,125 +253,130 @@
 	}
 
 	.session-identity h1 {
-		margin: 0 0 0.25rem;
-		font-size: 3rem;
-		line-height: 0.95;
+		margin: 0 0 0.2rem;
+		font-family: var(--wf-serif, Georgia, serif);
+		font-size: clamp(1.5rem, 3vw, 1.85rem);
+		font-weight: 500;
+		letter-spacing: -0.02em;
+		line-height: 1.1;
+		color: var(--wf-ink, #1c1c1a);
 	}
 
 	.session-identity h2 {
 		margin: 0;
-		color: var(--hops-navy);
-		font-family: var(--font-display);
-		font-size: 1.5rem;
-		font-weight: 750;
-		line-height: 1.2;
+		color: var(--wf-ink, #1c1c1a);
+		font-family: var(--wf-sans, system-ui, sans-serif);
+		font-size: 1.15rem;
+		font-weight: 600;
+		line-height: 1.25;
 		overflow-wrap: anywhere;
 	}
 
 	.muted {
-		margin: 0.35rem 0 0;
-		color: var(--hops-text-muted);
-		font-size: 0.98rem;
+		margin: 0.3rem 0 0;
+		color: var(--wf-ink-muted, #8a8a82);
+		font-size: 0.95rem;
 		overflow-wrap: anywhere;
 	}
 
 	.pill-row {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.45rem;
-		margin-top: 0.9rem;
+		gap: 0.4rem;
+		margin-top: 0.75rem;
 	}
 
 	.group-pill {
 		display: inline-flex;
 		align-items: center;
 		max-width: 100%;
-		min-height: 28px;
-		padding: 0.28rem 0.65rem;
+		min-height: 26px;
+		padding: 0.2rem 0.55rem;
 		border-radius: 999px;
-		background: rgba(230, 154, 45, 0.14);
-		border: 1px solid rgba(230, 154, 45, 0.3);
-		color: var(--hops-navy);
-		font-size: 0.78rem;
-		font-weight: 700;
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		border: 1px solid var(--wf-line, #e2e0d9);
+		color: var(--wf-accent, #3d5a80);
+		font-size: 0.75rem;
+		font-weight: 600;
 		overflow-wrap: anywhere;
 	}
 
 	.session-alert {
 		margin: 1rem 0 0;
-		padding: 0.85rem 1rem;
-		border-radius: 8px;
-		border: 1px solid rgba(230, 154, 45, 0.42);
-		background: rgba(230, 154, 45, 0.12);
-		color: var(--hops-navy);
-		font-size: 0.95rem;
-		font-weight: 650;
+		padding: 0.75rem 0.95rem;
+		border-radius: var(--wf-radius, 6px);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		color: var(--wf-ink, #1c1c1a);
+		font-size: 0.92rem;
+		font-weight: 500;
 	}
 
 	.session-grid {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 0.75rem;
+		gap: 0.65rem;
 		margin-top: 1rem;
 	}
 
 	.session-row {
 		display: grid;
-		grid-template-columns: minmax(8.5rem, 0.44fr) minmax(0, 1fr);
+		grid-template-columns: minmax(7.5rem, 0.4fr) minmax(0, 1fr);
 		align-items: center;
-		gap: 1rem;
-		min-height: 64px;
-		padding: 0.9rem 1rem;
-		background: var(--hops-bg-white);
-		border: 1px solid var(--hops-border);
-		border-radius: 8px;
+		gap: 0.85rem;
+		min-height: 56px;
+		padding: 0.75rem 0.95rem;
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: var(--wf-radius, 6px);
 	}
 
 	.session-row span {
-		color: var(--hops-text-muted);
-		font-size: 0.84rem;
-		font-weight: 750;
+		color: var(--wf-ink-muted, #8a8a82);
+		font-size: 0.72rem;
+		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.05em;
 	}
 
 	.session-row strong {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.35rem;
 		min-width: 0;
-		color: var(--hops-navy);
-		font-size: 0.98rem;
-		font-weight: 800;
+		color: var(--wf-ink, #1c1c1a);
+		font-size: 0.95rem;
+		font-weight: 600;
 		line-height: 1.35;
 		overflow-wrap: anywhere;
 	}
 
 	.session-row .mono {
-		font-family: var(--font-mono);
-		font-size: 0.88rem;
+		font-family: var(--wf-mono, ui-monospace, monospace);
+		font-size: 0.85rem;
+		font-weight: 500;
 	}
 
 	.session-row .verified,
 	.session-countdown {
-		color: #18794e;
+		color: var(--wf-success, #2f6f4e);
 	}
 
 	.session-countdown.expired {
-		color: #b42318;
+		color: var(--wf-danger, #b33a3a);
 	}
 
 	.token-inspector-list {
 		display: flex;
 		flex-direction: column;
-		gap: 0.85rem;
+		gap: 0.75rem;
 		margin-top: 1rem;
 	}
 
 	.button-row {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.75rem;
+		gap: 0.65rem;
 		margin-top: 1.25rem;
 	}
 
@@ -382,36 +386,36 @@
 
 	.empty-state {
 		text-align: center;
-		padding: 4rem 2rem;
+		padding: 3.5rem 1.5rem;
 	}
 
 	.empty-icon {
-		width: 88px;
-		height: 88px;
-		margin: 0 auto 1.5rem;
-		background: var(--hops-bg-white);
-		border: 1px solid var(--hops-border);
-		border-radius: 20px;
+		width: 72px;
+		height: 72px;
+		margin: 0 auto 1.25rem;
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: 14px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		color: var(--hops-navy);
-		box-shadow: var(--shadow-md);
+		color: var(--wf-ink, #1c1c1a);
 	}
 
 	.empty-title {
-		margin: 0 0 0.5rem;
-		color: var(--hops-navy);
-		font-family: var(--font-display);
-		font-size: 3rem;
-		font-weight: 800;
+		margin: 0 0 0.45rem;
+		color: var(--wf-ink, #1c1c1a);
+		font-family: var(--wf-serif, Georgia, serif);
+		font-size: clamp(1.5rem, 4vw, 2rem);
+		font-weight: 500;
+		letter-spacing: -0.02em;
 	}
 
 	.empty-text {
 		max-width: 320px;
-		margin: 0 auto 2rem;
-		color: var(--hops-text-muted);
-		font-size: 1rem;
+		margin: 0 auto 1.75rem;
+		color: var(--wf-ink-soft, #5c5c56);
+		font-size: 0.98rem;
 	}
 
 	@media (--tablet) {
@@ -427,13 +431,8 @@
 			text-align: center;
 		}
 
-		.session-identity h1,
-		.empty-title {
-			font-size: 2.25rem;
-		}
-
 		.session-identity h2 {
-			font-size: 1.2rem;
+			font-size: 1.05rem;
 		}
 
 		.pill-row {
@@ -442,7 +441,7 @@
 
 		.session-row {
 			grid-template-columns: 1fr;
-			gap: 0.35rem;
+			gap: 0.3rem;
 		}
 
 		.button-row {

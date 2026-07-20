@@ -1,5 +1,5 @@
 import { loadQuery } from '$lib/gql/load-query.server';
-import { todos } from './todos.resource';
+import { sortTodos, todos } from './todos.resource';
 import type { TodosQueryData } from './todos.resource';
 
 /**
@@ -9,6 +9,6 @@ import type { TodosQueryData } from './todos.resource';
 export const load = loadQuery<TodosQueryData, { todos: TodosQueryData['todos'] }>(
 	todos.query,
 	(data) => ({
-		todos: data?.todos ?? []
+		todos: sortTodos(data?.todos ?? [])
 	})
 );

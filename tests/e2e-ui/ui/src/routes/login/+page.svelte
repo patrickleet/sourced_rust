@@ -173,7 +173,10 @@
 		cursor: pointer;
 	}
 	.auth-submit:hover {
-		filter: brightness(1.05);
+		filter: brightness(1.06);
+	}
+	.auth-submit:active {
+		transform: translateY(0.5px);
 	}
 	.auth-meta {
 		margin: 1.25rem 0 0;

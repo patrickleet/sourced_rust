@@ -1,38 +1,10 @@
 /**
- * Default command result/reconcile policies for e2e-ui.
- * Async projectors → fact + reconcile none (no immediate refetch).
- * Call sites override with optimistic / onError only.
+ * Command pipeline policies for e2e-ui.
+ *
+ * **Source of truth:** Rust `exposed_command().client_reconcile(...)` in
+ * `e2e_service::graphql_commands()`, exported via `commands.manifest.json`,
+ * generated into `commands.policies.generated.ts` by `make gen-commands`.
+ *
+ * Do not hand-edit the generated file — change the Rust registry instead.
  */
-import type { CommandPolicyMap } from './bind-commands-pipeline.ts';
-
-/** Shared defaults for todos + chat (async projector topology). */
-export const e2eCommandPolicies: CommandPolicyMap = {
-	todosCreate: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	todosComplete: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	todosArchive: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	todosForceArchive: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	todosRename: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	todosReopen: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'none' }
-	},
-	chatMessagesPost: {
-		result: { kind: 'fact' },
-		reconcile: { kind: 'subscription' }
-	}
-};
+export { e2eCommandPolicies } from '../api/commands.policies.generated.ts';

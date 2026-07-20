@@ -53,6 +53,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -89,6 +97,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -125,6 +141,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -172,6 +196,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -220,6 +252,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -256,6 +296,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -322,6 +370,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "fact"
+        },
+        "reconcile": {
+          "kind": "subscription"
+        }
       }
     },
     {
@@ -394,6 +450,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "projection"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -472,6 +536,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "projection"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     },
     {
@@ -544,6 +616,14 @@
             "list": false
           }
         ]
+      },
+      "client_reconcile": {
+        "result": {
+          "kind": "projection"
+        },
+        "reconcile": {
+          "kind": "none"
+        }
       }
     }
   ]

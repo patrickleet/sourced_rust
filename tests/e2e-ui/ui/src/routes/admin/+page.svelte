@@ -5,7 +5,7 @@
 	import { onDestroy } from 'svelte';
 	import { useGraphql, fx } from '$lib/gql';
 	import { sessionDisplayName } from '$lib/session';
-	import { adminTodos } from './admin.resource';
+	import { adminTodos, sortAdminTodos } from './admin.resource';
 	import type { AdminTodoRow } from './admin.resource';
 
 	let { data } = $props();
@@ -27,12 +27,12 @@
 	const list = gql.store({
 		document: adminTodos.query,
 		list: { at: 'todos', by: 'todo_id' },
-		initialData: { todos: data.todos ?? [] },
-		select: (d: { todos?: AdminTodoRow[] }) => d?.todos ?? []
+		initialData: { todos: sortAdminTodos(data.todos ?? []) },
+		select: (d: { todos?: AdminTodoRow[] }) => sortAdminTodos(d?.todos ?? [])
 	});
 
 	$effect(() => {
-		list.seed({ todos: data.todos ?? [] });
+		list.seed({ todos: sortAdminTodos(data.todos ?? []) });
 	});
 
 	onDestroy(() => list.destroy());
@@ -172,12 +172,14 @@
 
 <style>
 	.ad-page {
-		--ink: var(--hops-navy, #1a2744);
-		--ink-soft: rgba(26, 39, 68, 0.62);
+		--ink: var(--wf-ink, #1c1c1a);
+		--ink-soft: var(--wf-ink-soft, #5c5c56);
+		--edge: var(--wf-line, #e2e0d9);
+		--surface: var(--wf-bg-elevated, #fff);
 		max-width: 56rem;
 		margin: 0 auto;
 		padding: 6.5rem 1.25rem 4rem;
-		font-family: var(--font-body, 'Lexend', system-ui, sans-serif);
+		font-family: var(--wf-sans, system-ui, sans-serif);
 		color: var(--ink);
 	}
 
@@ -190,7 +192,7 @@
 		align-items: center;
 		gap: 0.5rem;
 		font-size: 0.72rem;
-		font-weight: 700;
+		font-weight: 600;
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
 		color: var(--ink-soft);
@@ -198,17 +200,19 @@
 	}
 
 	.ad-badge {
-		background: #1a2744;
-		color: #f6e7c5;
+		background: var(--ink);
+		color: var(--wf-bg, #f6f5f2);
 		padding: 0.15rem 0.45rem;
 		border-radius: 4px;
 		letter-spacing: 0.08em;
+		font-weight: 700;
 	}
 
 	.ad-title {
-		font-size: clamp(1.75rem, 4vw, 2.35rem);
-		font-weight: 800;
-		letter-spacing: -0.03em;
+		font-family: var(--wf-serif, Georgia, serif);
+		font-size: clamp(1.65rem, 4vw, 2.15rem);
+		font-weight: 500;
+		letter-spacing: -0.02em;
 		margin: 0 0 0.65rem;
 	}
 
@@ -217,15 +221,15 @@
 		max-width: 42rem;
 		line-height: 1.55;
 		color: var(--ink-soft);
-		font-size: 1.02rem;
+		font-size: 0.98rem;
 	}
 
 	.ad-lede code {
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.88em;
 		padding: 0.1em 0.3em;
 		border-radius: 4px;
-		background: rgba(26, 39, 68, 0.06);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
 	}
 
 	.ad-alert {
@@ -233,16 +237,16 @@
 		gap: 0.75rem;
 		padding: 0.85rem 1rem;
 		margin-bottom: 1rem;
-		border-radius: 12px;
-		background: rgba(229, 62, 62, 0.08);
-		border: 1px solid rgba(229, 62, 62, 0.25);
-		color: #9b2c2c;
+		border-radius: var(--wf-radius, 6px);
+		background: rgba(179, 58, 58, 0.08);
+		border: 1px solid rgba(179, 58, 58, 0.22);
+		color: var(--wf-danger, #b33a3a);
 		font-size: 0.92rem;
 	}
 
 	.ad-stats {
 		display: flex;
-		gap: 0.75rem;
+		gap: 0.5rem;
 		margin-bottom: 1.25rem;
 		flex-wrap: wrap;
 	}
@@ -250,29 +254,28 @@
 	.ad-stat {
 		display: flex;
 		align-items: baseline;
-		gap: 0.4rem;
-		padding: 0.45rem 0.85rem;
+		gap: 0.35rem;
+		padding: 0.35rem 0.7rem;
 		border-radius: 999px;
-		background: rgba(26, 39, 68, 0.04);
-		border: 1px solid rgba(26, 39, 68, 0.1);
+		background: transparent;
+		border: 1px solid var(--edge);
 	}
 
 	.ad-stat-n {
-		font-weight: 800;
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 	}
 
 	.ad-stat-l {
-		font-size: 0.75rem;
-		font-weight: 600;
+		font-size: 0.72rem;
+		font-weight: 500;
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.03em;
 		color: var(--ink-soft);
 	}
 
 	.ad-empty {
 		color: var(--ink-soft);
-		font-style: italic;
 	}
 
 	.ad-cap {
@@ -280,59 +283,63 @@
 		color: var(--ink-soft);
 		margin: 0 0 1rem;
 		padding: 0.65rem 0.85rem;
-		border-radius: 10px;
-		background: rgba(230, 154, 45, 0.12);
-		border: 1px solid rgba(230, 154, 45, 0.28);
+		border-radius: var(--wf-radius, 6px);
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		border: 1px solid var(--edge);
 	}
 
 	.ad-cap code {
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.9em;
 	}
 
 	.ad-table-wrap {
 		overflow-x: auto;
-		border-radius: 14px;
-		border: 1px solid rgba(26, 39, 68, 0.1);
-		background: #fbf8f1;
-		box-shadow: 0 12px 40px rgba(15, 24, 41, 0.08);
+		border-radius: var(--df-radius-lg, 10px);
+		border: 1px solid var(--edge);
+		background: var(--surface);
+		box-shadow: none;
 	}
 
 	.ad-table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.92rem;
+		font-size: 0.9rem;
 	}
 
 	.ad-table th,
 	.ad-table td {
 		text-align: left;
-		padding: 0.7rem 0.9rem;
-		border-bottom: 1px solid rgba(26, 39, 68, 0.07);
+		padding: 0.65rem 0.85rem;
+		border-bottom: 1px solid var(--edge);
 		vertical-align: middle;
 	}
 
 	.ad-table th {
-		font-size: 0.7rem;
-		font-weight: 800;
-		letter-spacing: 0.1em;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--ink-soft);
-		background: rgba(26, 39, 68, 0.03);
+		background: rgba(28, 28, 26, 0.03);
 	}
 
 	.ad-table tr:last-child td {
 		border-bottom: none;
 	}
 
+	.ad-table tbody tr:hover td {
+		background: rgba(28, 28, 26, 0.02);
+	}
+
 	.ad-owner {
-		font-weight: 700;
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-weight: 600;
+		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.85em;
 	}
 
 	.ad-id {
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.78em;
 		color: var(--ink-soft);
 		max-width: 7rem;
@@ -341,28 +348,29 @@
 	}
 
 	.ad-status {
-		font-size: 0.72rem;
-		font-weight: 700;
+		font-size: 0.7rem;
+		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		padding: 0.15rem 0.45rem;
 		border-radius: 999px;
-		background: rgba(26, 39, 68, 0.08);
+		background: rgba(28, 28, 26, 0.06);
+		color: var(--ink-soft);
 	}
 
 	.ad-status[data-status='open'] {
-		background: rgba(230, 154, 45, 0.18);
-		color: #a66b12;
+		background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+		color: var(--wf-accent, #3d5a80);
 	}
 
 	.ad-status[data-status='completed'] {
-		background: rgba(56, 161, 105, 0.15);
-		color: #276749;
+		background: rgba(47, 111, 78, 0.12);
+		color: var(--wf-success, #2f6f4e);
 	}
 
 	.ad-status[data-status='archived'] {
-		background: rgba(26, 39, 68, 0.08);
-		color: var(--ink-soft);
+		background: rgba(28, 28, 26, 0.06);
+		color: var(--wf-ink-muted, #8a8a82);
 	}
 
 	.ad-actions {
@@ -372,17 +380,17 @@
 	.ad-btn {
 		font: inherit;
 		font-size: 0.78rem;
-		font-weight: 700;
+		font-weight: 600;
 		border: none;
-		border-radius: 8px;
-		padding: 0.4rem 0.7rem;
+		border-radius: var(--wf-radius, 6px);
+		padding: 0.35rem 0.65rem;
 		cursor: pointer;
-		background: rgba(229, 62, 62, 0.12);
-		color: #9b2c2c;
+		background: rgba(179, 58, 58, 0.1);
+		color: var(--wf-danger, #b33a3a);
 	}
 
 	.ad-btn:hover:not(:disabled) {
-		background: rgba(229, 62, 62, 0.22);
+		background: rgba(179, 58, 58, 0.18);
 	}
 
 	.ad-btn:disabled {
@@ -403,7 +411,7 @@
 	}
 
 	.ad-foot code {
-		font-family: var(--font-mono, ui-monospace, monospace);
+		font-family: var(--wf-mono, ui-monospace, monospace);
 		font-size: 0.9em;
 	}
 </style>

@@ -164,7 +164,8 @@ check-commands: gen-commands
 	if ! git -C "$$ROOT" diff --exit-code -- \
 		tests/e2e-ui/ui/src/lib/api/commands.manifest.json \
 		tests/e2e-ui/ui/src/lib/api/commands.generated.ts \
-		tests/e2e-ui/ui/src/lib/api/commands.operations.gql; then \
+		tests/e2e-ui/ui/src/lib/api/commands.operations.gql \
+		tests/e2e-ui/ui/src/lib/api/commands.policies.generated.ts; then \
 		echo "ERROR: command client drift — run make gen-commands and commit"; \
 		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/src/lib/api || true; \
 		exit 1; \

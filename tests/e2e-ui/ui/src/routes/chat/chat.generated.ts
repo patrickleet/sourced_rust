@@ -8,12 +8,12 @@ import type { TypedDocumentNode as DocumentNode } from '@graphql-typed-document-
 export type ChatMessagesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ChatMessagesQuery = { chat_messages: Array<{ message_id: string, room_id: string, author_id: string, body: string, created_at: string, author: { user_id: string, display_name: string, email: string, status: string } | null }> };
+export type ChatMessagesQuery = { chat_messages: Array<{ message_id: string, room_id: string, author_id: string, body: string, created_at: string, author: { user_id: string, display_name: string, email: string, status: string } }> };
 
 export type ChatMessagesLiveSubscriptionVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ChatMessagesLiveSubscription = { chat_messages: Array<{ message_id: string, room_id: string, author_id: string, body: string, created_at: string, author: { user_id: string, display_name: string, email: string, status: string } | null }> };
+export type ChatMessagesLiveSubscription = { chat_messages: Array<{ message_id: string, room_id: string, author_id: string, body: string, created_at: string, author: { user_id: string, display_name: string, email: string, status: string } }> };
 
 
 export const ChatMessagesDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"ChatMessages"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"chat_messages"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"where"},"value":{"kind":"ObjectValue","fields":[{"kind":"ObjectField","name":{"kind":"Name","value":"room_id"},"value":{"kind":"ObjectValue","fields":[{"kind":"ObjectField","name":{"kind":"Name","value":"_eq"},"value":{"kind":"StringValue","value":"lobby","block":false}}]}}]}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"message_id"}},{"kind":"Field","name":{"kind":"Name","value":"room_id"}},{"kind":"Field","name":{"kind":"Name","value":"author_id"}},{"kind":"Field","name":{"kind":"Name","value":"body"}},{"kind":"Field","name":{"kind":"Name","value":"created_at"}},{"kind":"Field","name":{"kind":"Name","value":"author"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"user_id"}},{"kind":"Field","name":{"kind":"Name","value":"display_name"}},{"kind":"Field","name":{"kind":"Name","value":"email"}},{"kind":"Field","name":{"kind":"Name","value":"status"}}]}}]}}]}}]} as unknown as DocumentNode<ChatMessagesQuery, ChatMessagesQueryVariables>;

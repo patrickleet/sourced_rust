@@ -54,7 +54,7 @@ type BlobGameView {
 	current_level_completed: Boolean!
 	map_json: String!
 	status: String!
-	owner: AuthUserView
+	owner: AuthUserView!
 }
 
 input BlobMoveInput {
@@ -90,7 +90,7 @@ type ChatMessageView {
 	author_id: String!
 	body: String!
 	created_at: String!
-	author: AuthUserView
+	author: AuthUserView!
 }
 
 input ChatPostInput {

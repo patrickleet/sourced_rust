@@ -54,7 +54,8 @@ mod types;
 
 #[cfg(feature = "graphql")]
 pub use commands::{
-    exposed_command, CommandCatalog, CommandCatalogEntry, CommandFieldCatalog, CommandTypeCatalog,
+    exposed_command, ClientReconcile, ClientReconcileMode, ClientReconcileSpec, ClientResultKind,
+    ClientResultSpec, CommandCatalog, CommandCatalogEntry, CommandFieldCatalog, CommandTypeCatalog,
     ExposedCommand, GraphqlCommands,
 };
 #[cfg(feature = "graphql")]
