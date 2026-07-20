@@ -83,6 +83,15 @@ make test-browser            # npm install + chromium + playwright test
 
 Demo passwords: `alice` / `bob` / `admin` · `Password1!` (from bootstrap).
 
+### CI
+
+`on-pr-quality` and `on-push-main` call [`.github/workflows/integration-e2e-ui.yaml`](../../.github/workflows/integration-e2e-ui.yaml):
+
+1. **offline** — `make test` (domain + behavioral suite + UI unit/build)
+2. **browser** — `make up` → build API → run API+UI → Playwright Chromium
+
+Artifacts on browser failure: `e2e-ui-playwright-report` (HTML report + traces).
+
 ### Suite identity modes (E6)
 
 | Profile | When | How suite/API auth works |

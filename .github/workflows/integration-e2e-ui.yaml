@@ -1,0 +1,175 @@
+name: e2e-ui fixture (offline + browser)
+
+# Nested Fieldnote template under tests/e2e-ui — not the root workspace.
+# Local parity:
+#   cd tests/e2e-ui && make test
+#   cd tests/e2e-ui && make up && make run   # then make test-browser
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Playwright / Auth.js over HTTP on localhost
+  CI: true
+
+jobs:
+  offline:
+    name: e2e-ui offline (domain + suite + UI unit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/e2e-ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/e2e-ui -> target
+          shared-key: e2e-ui-offline
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/e2e-ui/ui/package-lock.json
+
+      - name: Offline test suite
+        run: make test
+
+  browser:
+    name: e2e-ui Playwright (live stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: tests/e2e-ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/e2e-ui -> target
+          shared-key: e2e-ui-browser
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            tests/e2e-ui/package-lock.json
+            tests/e2e-ui/ui/package-lock.json
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install -y jq openssl curl
+
+      - name: Docker stack + OIDC bootstrap (make up)
+        run: |
+          chmod +x scripts/up.sh
+          make up
+
+      - name: Build e2e-ui API binary
+        run: cargo build -p e2e-runner --bin e2e-ui
+
+      - name: Install UI deps
+        run: make ui-install
+
+      - name: Start API + UI
+        run: |
+          set -euo pipefail
+          set -a
+          # shellcheck disable=SC1091
+          . ./e2e-ui.env
+          set +a
+          export AUTH_URL="${E2E_UI_ORIGIN:-http://localhost:5180}"
+          export AUTH_USE_SECURE_COOKIES=false
+          export AUTH_TRUST_HOST=true
+
+          ./target/debug/e2e-ui > .make-runner.log 2>&1 &
+          echo $! > .make-runner.pid
+
+          ok=0
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8791/graphql" \
+              -H 'content-type: application/json' \
+              -d '{"query":"{ __typename }"}' 2>/dev/null || echo 000)
+            if [ "$code" = "200" ] || [ "$code" = "401" ]; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "API failed to become ready"; tail -100 .make-runner.log; exit 1
+          fi
+          echo "API ready (HTTP $code)"
+
+          cd ui
+          npm run dev -- --host localhost --port 5180 > ../.make-ui.log 2>&1 &
+          echo $! > ../.make-ui.pid
+          cd ..
+
+          ok=0
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:5180/" 2>/dev/null || echo 000)
+            # 200 home, or 303 redirect when auth wraps routes — not 000/5xx
+            if [ "$code" = "200" ] || [ "$code" = "303" ] || [ "$code" = "302" ]; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "UI failed to become ready (last HTTP $code)"; tail -80 .make-ui.log; exit 1
+          fi
+          echo "UI ready (HTTP $code)"
+
+      - name: Install Playwright + Chromium
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+
+      - name: Run browser e2e
+        run: npm run test:browser
+        env:
+          E2E_UI_ORIGIN: http://localhost:5180
+          E2E_API_ORIGIN: http://127.0.0.1:8791
+          CI: true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-playwright-report
+          path: |
+            tests/e2e-ui/playwright-report
+            tests/e2e-ui/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo '=== API log ==='
+          tail -150 .make-runner.log || true
+          echo '=== UI log ==='
+          tail -80 .make-ui.log || true
+          docker compose -f docker/docker-compose.yml ps -a || true
+          docker compose -f docker/docker-compose.yml logs --tail=100 || true
+
+      - name: Stop API/UI
+        if: always()
+        run: |
+          [ -f .make-ui.pid ] && kill "$(cat .make-ui.pid)" 2>/dev/null || true
+          [ -f .make-runner.pid ] && kill "$(cat .make-runner.pid)" 2>/dev/null || true
+          lsof -ti:8791 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+          lsof -ti:5180 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+
+      - name: Tear down Docker
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v || true
