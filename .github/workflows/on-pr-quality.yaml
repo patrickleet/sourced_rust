@@ -37,3 +37,6 @@ jobs:
 
   graphql:
     uses: ./.github/workflows/integration-graphql.yaml
+
+  e2e-ui:
+    uses: ./.github/workflows/integration-e2e-ui.yaml

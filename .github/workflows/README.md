@@ -12,6 +12,7 @@ existing unbounded-tech quality provider plus the integration/* jobs below —
 | [`quality.yaml`](./quality.yaml) | yes | **Consumers:** fmt → clippy → build → test + coverage (sticky PR comment) |
 | [`test-all-features.yaml`](./test-all-features.yaml) | yes | **This repo:** workspace `--all-features` |
 | [`integration-*.yaml`](./) | yes | **This repo:** broker / DB / CLI / observability / GraphQL identity+OIDC |
+| [`integration-e2e-ui.yaml`](./integration-e2e-ui.yaml) | yes | **This repo:** Fieldnote `tests/e2e-ui` offline suite + Playwright browser e2e |
 | [`on-pr-quality.yaml`](./on-pr-quality.yaml) | entry | **This repo** PR gate (not the consumer quality contract) |
 | [`on-push-main-version-and-tag.yaml`](./on-push-main-version-and-tag.yaml) | entry | **This repo** main → **vnext** tag |
 | [`on-v-tag-publish.yaml`](./on-v-tag-publish.yaml) | entry | **This repo** crates.io + `dctl` binary release |
