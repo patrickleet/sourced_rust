@@ -158,49 +158,38 @@ test('engineRoleFromGroups is exact membership (not substring)', () => {
   assert.match(r.stdout, /roles-ok/);
 });
 
-test('home is distributed template with 8-step unidirectional todos story', () => {
+test('home is distributed template with client + server story steps', () => {
   const home = fs.readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
   assert.match(home, /framework template|e2e-ui template/i);
   assert.match(home, /make test|test-live|e2e/i);
   assert.match(home, /\/todos/);
   assert.match(home, /\/chat/);
+  assert.match(home, /\/blob/);
   assert.doesNotMatch(home, /Launch My Platform|HopsBrand|founder|listmonk|Systems Lab|lab-acid/i);
 
-  // Full unidirectional story (8 steps) — one file/concept per code block
-  assert.match(home, /unidirectional/i);
-  assert.match(home, /id="story-flow"/);
+  // Living map: demos + clientSteps + serverSteps (one file/concept per code block)
   assert.match(home, /type CodeBlock|blocks: CodeBlock\[\]|blocks:/);
+  assert.match(home, /clientSteps|serverSteps/);
   assert.match(home, /wf-code-stack/);
-  assert.match(home, /\{#each step\.blocks as block\}/);
+  assert.match(home, /wf-story-step/);
   assert.match(home, /data-sample=\{step\.label\}/);
   assert.match(home, /label: 'Auth session'/);
   assert.match(home, /label: 'SSR \+ RBAC'/);
-  assert.match(home, /label: 'Hydration'/);
-  assert.match(home, /label: 'Subscription'/);
-  assert.match(home, /label: 'Commands not RM writes'/);
-  assert.match(home, /label: 'Command handler'/);
+  assert.match(home, /label: 'Client binder'|label: 'useGraphql'/);
+  assert.match(home, /label: 'Commands'|todos_create/);
   assert.match(home, /label: 'Projector'/);
-  assert.match(home, /label: 'Read path'/);
+  assert.match(home, /label: 'Document store'|gql\.store/);
 
-  // Step 02 split into separate files (no merged mega-block)
-  assert.match(home, /file: 'todos\/\+page\.server\.ts'/);
-  assert.match(home, /file: 'ui\/src\/lib\/server\/graphql\.ts'/);
-  assert.match(home, /file: 'crates\/service\/src\/service\.rs'/);
-
-  // Step substance from real fixture code
+  // Substance from real fixture code
   assert.match(home, /accessToken|Auth\.js|OIDC|Zitadel/i);
   assert.match(home, /Bearer|serverGraphql|authorization/i);
   assert.match(home, /ModelPermissions|owner_id|claim\("x-user-id"\)|OidcBearer/);
-  assert.match(home, /data\.todos|hydration|QueryCache|optimistic/i);
   assert.match(home, /subscription|connection_init/);
-  assert.match(home, /anti-pattern|todos_create|todo\.create/i);
-  assert.match(home, /require_user|outbox|TodoFact|todo\.created/);
-  assert.match(home, /project_todo|ReadModelWritePlanBuilder|map_fact/);
-  assert.match(home, /ChangeHub|Unidirectional|one direction/i);
+  assert.match(home, /todos_create|todo\.create|require_user/i);
+  assert.match(home, /project_todo|ReadModelWritePlanBuilder|map_fact|outbox/i);
 
   // Solid alternating bands (not transparent page sections)
   assert.match(home, /wf-band-light|wf-band-dark/);
-  assert.match(home, /wf-story-step|Step 0[1-8]/);
 
   const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
   assert.match(css, /Neutral wireframe|--wf-bg|--wf-ink/);
@@ -287,8 +276,15 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
     'utf8'
   );
   assert.match(policies, /e2eCommandPolicies/);
-  assert.match(policies, /kind:\s*'fact'/);
-  assert.match(policies, /kind:\s*'none'/);
+  assert.match(policies, /commands\.policies\.generated/);
+  // Kinds live in the generated export (Rust client_reconcile → make gen-commands)
+  const generatedPolicies = fs.readFileSync(
+    new URL('../src/lib/api/commands.policies.generated.ts', import.meta.url),
+    'utf8'
+  );
+  assert.match(generatedPolicies, /kind:\s*"fact"/);
+  assert.match(generatedPolicies, /kind:\s*"none"/);
+  assert.match(generatedPolicies, /kind:\s*"projection"/);
 
   const useGqlFull = fs.readFileSync(
     new URL('../src/lib/gql/use-graphql.ts', import.meta.url),
