@@ -59,14 +59,18 @@ where
         )));
     }
 
+    let body = input.body.trim().to_string();
+    if body.is_empty() {
+        return Err(rejected("empty body"));
+    }
     let created_at = chrono_lite_now();
     let mut msg = ChatMessage::default();
     msg.post(
-        &input.message_id,
-        &input.room_id,
-        &author,
-        &input.body,
-        &created_at,
+        input.message_id.clone(),
+        input.room_id.clone(),
+        author,
+        body,
+        created_at,
     )
     .map_err(rejected)?;
 

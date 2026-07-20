@@ -1,8 +1,8 @@
 <script lang="ts">
 	/**
 	 * Distributed framework template home.
-	 * Full unidirectional todos story: OIDC → SSR GQL → hydrate → subscribe →
-	 * command mutation → aggregate → project → read.
+	 * Living map of how e2e-ui actually works: OIDC → GraphQL RLS → document cache →
+	 * typed commands → aggregates → projectors (or same-tx RM for blob) → reads.
 	 */
 	import { page } from '$app/state';
 	import Footer from '$lib/components/shared/Footer.svelte';
@@ -18,31 +18,277 @@
 	const demos = [
 		{
 			href: '/todos',
-			title: 'Todos — owner-scoped field notes',
+			title: 'Todos — your own field notes',
 			blurb:
-				'SSR GraphQL with row-level RBAC, progressive form actions, optimistic UI over projector lag. The full unidirectional path below is this feature.',
-			where: '/todos · GraphQL query + todos_* mutations',
+				'Create, complete, reopen, archive. The UI updates immediately; the server catches up a moment later. You only ever see your own notes unless you are admin.',
+			where: '/todos · personal list · optimistic UI',
 			label: 'Open todos'
 		},
 		{
 			href: '/chat',
-			title: 'Lobby chat — live subscription',
+			title: 'Lobby chat — live with everyone',
 			blurb:
-				'Same GraphQL selection shape as a query, with subscription + connection_init Bearer. Shared room; messages project into chat_messages.',
-			where: '/chat · graphql-ws · project_chat',
+				'A shared room that updates as people post. Names come from the identity directory, not hard-coded strings. Feel the subscription path without inventing a second chat stack.',
+			where: '/chat · live room · author names',
 			label: 'Open chat'
 		},
 		{
-			href: '/session',
-			title: 'Session inspector',
+			href: '/blob',
+			title: 'Blob game — when the answer must be right now',
 			blurb:
-				'What Auth.js put in the encrypted cookie: access token present, sub, groups/roles mapped for the engine.',
-			where: '/session · locals.auth()',
+				'Moves return the full board state in the same request. Compare this to todos: sometimes you want “strong” command results, sometimes eventual is enough.',
+			where: '/blob · board + history · strong return',
+			label: 'Play blob'
+		},
+		{
+			href: '/admin',
+			title: 'Admin — same app, wider lens',
+			blurb:
+				'See every owner’s notes and force-archive when needed. Teaches that “what the API allows” follows the signed-in role, not whatever the UI bundle happens to contain.',
+			where: '/admin · all owners · admin only',
+			label: 'Open admin'
+		},
+		{
+			href: '/session',
+			title: 'Session — who am I to the API?',
+			blurb:
+				'Peek at the signed-in user, groups, and tokens the browser actually holds. Useful when GraphQL “suddenly” returns empty or 401 — start here.',
+			where: '/session · identity · tokens',
 			label: 'Inspect session'
 		}
 	];
 
-	const steps: Array<{
+	/** Framework-wide principles (Distributed as a whole). */
+	const frameworkPrinciples = [
+		{
+			title: 'Simplest DX is the goal',
+			body: 'Event sourcing and CQRS are easy to overbuild into a maze of frameworks-on-frameworks. Distributed’s job is the opposite: let you write clear domain intent and ordinary UI, while the library carries the heavy patterns. If a path is all ceremony and no clarity, it is the wrong path.'
+		},
+		{
+			title: 'Start with the domain, not the database',
+			body: 'Model a todo or a game as a plain Rust type with methods and unit tests. No HTTP, no SQL, no “handler context” required to prove the rules. When the behavior is solid, plug infrastructure around it — not the other way around.'
+		},
+		{
+			title: 'Know which side of the fence you are on',
+			body: 'Writes produce a durable history of what happened. Reads use tables shaped for queries. Messages you publish to other systems go through an outbox on purpose. Handlers stay thin; something else materializes query data; the UI observes. Confusion usually means those lines got blurred.'
+		},
+		{
+			title: 'You keep the interesting code',
+			body: 'Macros own the boring event plumbing — recording facts, replaying history, wiring table metadata — so your methods and tests stay readable. You still own the rules (“only the owner can complete this”). The scaffolding disappears; the decisions do not.'
+		},
+		{
+			title: 'Register once, ship everywhere',
+			body: 'A command or read model should not be re-described in three hand-maintained places. You register it on the service; generation fans out schemas, client helpers, and checks. When something drifts, CI fails on purpose — better than a quiet production mismatch.'
+		},
+		{
+			title: 'Familiar patterns, short handles',
+			body: 'Load an aggregate, apply a command, save events and “please publish this,” project into a query table, send a message on the bus — design patterns you already know, as small swappable APIs. Swap memory for Postgres without rewriting the domain.'
+		},
+		{
+			title: 'Grow without rewriting what you already proved',
+			body: 'Start as one process on a laptop. Later split services or change brokers. Transports and features change; the domain types and facts you already tested should not have to be rewritten to match.'
+		}
+	];
+
+	/** Three teaching cards — prose first, not API dumps. */
+	const dxStack = [
+		{
+			title: 'You write plain domain code',
+			body: 'When you model a todo or a game, you write ordinary methods and tests. Macros attach history and replay so you do not hand-roll “record this fact, rebuild state later.” You still see and own the behavior — the scaffolding gets out of the way.'
+		},
+		{
+			title: 'One registration, many surfaces',
+			body: 'You describe a command or a readable table once on the service. Code generation turns that into GraphQL for each role, typed helpers for the UI, and checks that fail if someone forgets to regenerate. You stop maintaining three catalogs that slowly disagree.'
+		},
+		{
+			title: 'Patterns as short, swappable verbs',
+			body: '“Load it, apply the command, save events and a message to publish” is one small path. Projecting events into query tables and talking on a bus use the same idea: real design patterns, thin handles, backends you can swap when you grow.'
+		}
+	];
+
+	/** e2e-ui template success rules (apply the framework here). */
+	const principles = [
+		{
+			title: 'Commands change the world; tables are for reading',
+			body: 'Do not invent a second write path that updates query tables from the UI “because it’s easier.” Send a command, let the server record history, and let projection (or a deliberate same-request write for games like blob) fill the tables the UI queries.'
+		},
+		{
+			title: 'Trust the signed-in person, not the request body',
+			body: 'Who owns a note or who authored a chat message comes from the session. Clients never get to pass “I am alice” as a free-form field. That is how multi-tenant mistakes and spoofing happen.'
+		},
+		{
+			title: 'One client story for data',
+			body: 'This app binds the page once, then uses a shared document cache for lists and live rooms. Avoid a second parallel array in local state for the same list — that is how the board and the history get out of sync.'
+		},
+		{
+			title: 'Let the server say how the UI should catch up',
+			body: 'Some commands return a full projected row (blob). Some return a small fact and expect a soft refresh or a live subscription (todos, chat). That contract is declared with the command so the client does not guess wrong per screen.'
+		},
+		{
+			title: 'Roles are real, not decorative',
+			body: 'An admin can see more and call a few extra mutations. A normal user cannot, even if a type name appears in the generated bundle. Always test with the role you care about.'
+		},
+		{
+			title: 'Regenerate after you change the contract',
+			body: 'If you add a command or edit a query document, regenerate and commit the artifacts. Hand-editing generated files is how the next person (or CI) discovers drift the hard way.'
+		}
+	];
+
+	const crates = [
+		{
+			name: 'todo-domain / chat-domain / blob-domain',
+			role: 'The pure rules — what a todo or game can do, with unit tests and no network'
+		},
+		{
+			name: 'e2e-readmodels',
+			role: 'How those facts look when you query them (tables, joins, display fields)'
+		},
+		{
+			name: 'e2e-service',
+			role: 'Thin handlers, projectors, identity import, GraphQL surface'
+		},
+		{
+			name: 'e2e-runner → e2e-ui',
+			role: 'The process you run — API on :8791'
+		},
+		{
+			name: 'e2e-suite',
+			role: 'Automated proof that the paths still work offline and with real OIDC'
+		},
+		{
+			name: 'ui/',
+			role: 'SvelteKit app: sign-in, SSR lists, live chat, demos you can click'
+		}
+	];
+
+	const clientSteps: Array<{
+		n: string;
+		title: string;
+		why: string;
+		path: string;
+		label: string;
+		blocks: CodeBlock[];
+	}> = [
+		{
+			n: 'C1',
+			title: 'Bind the page once',
+			why: 'The server already put your session (and access token) on the page. One binder turns that into “how we talk to GraphQL” — queries, live updates, and commands — so each route does not invent its own client.',
+			path: 'ui/src/lib/gql/use-graphql.ts',
+			label: 'Client binder',
+			blocks: [
+				{
+					file: 'routes/todos/+page.svelte',
+					label: 'useGraphql',
+					code: `const gql = useGraphql(() => data, {
+  runEffects: (effects) => {
+    for (const e of effects) {
+      if (e.kind === 'alert') actionError = e.message;
+    }
+  }
+});
+// Then: gql.store / gql.live / gql.commands`
+				}
+			]
+		},
+		{
+			n: 'C2',
+			title: 'First paint matches the server',
+			why: 'The list should not flash empty and refill. The server loads todos; the client seeds the same document so HTML and client state agree. When the server load runs again, re-seed — never throw away the list and start from [].',
+			path: 'todos/+page.server.ts · todos.resource.ts · +page.svelte',
+			label: 'SSR + store',
+			blocks: [
+				{
+					file: 'todos/+page.server.ts',
+					label: 'SSR load',
+					code: `const session = await locals.auth();
+const result = await loadQuery(todos.query, {
+  accessToken: session?.accessToken
+});
+// props: todos, session, accessToken, …`
+				},
+				{
+					file: 'todos/+page.svelte',
+					label: 'Document store',
+					code: `const list = gql.store({
+  document: todosResource.query,
+  list: { at: 'todos', by: 'todo_id' },
+  initialData: { todos: sortTodos(data.todos ?? []) },
+  select: (d) => sortTodos(d?.todos ?? [])
+});
+
+$effect(() => {
+  list.seed({ todos: sortTodos(data.todos ?? []) });
+});
+onDestroy(() => list.destroy());
+// Template: {$list.data}`
+				}
+			]
+		},
+		{
+			n: 'C3',
+			title: 'Live rooms stay live',
+			why: 'Chat needs push, not only poll. Use the same shape of data as the query, then open a live subscription into the same cache. Browsers cannot put your token on the WebSocket upgrade the way they do on HTTP — it rides in the first message after connect.',
+			path: 'chat/+page.svelte · graphql-ws',
+			label: 'Live store',
+			blocks: [
+				{
+					file: 'chat/+page.svelte',
+					label: 'gql.live',
+					code: `const lobby = gql.live({
+  document: chat.subscription ?? chat.query,
+  list: { at: 'chat_messages', by: 'message_id' },
+  initialData: { chat_messages: data.messages ?? [] },
+  select: (d) => sortChatMessages(d?.chat_messages ?? [])
+});
+// {$lobby.data}  {$lobby.status}`
+				},
+				{
+					file: 'WS auth',
+					label: 'connection_init',
+					code: `// Token is not on the upgrade headers — first WS message:
+{ type: 'connection_init',
+  payload: { authorization: \`Bearer \${accessToken}\` } }`
+				}
+			]
+		},
+		{
+			n: 'C4',
+			title: 'Writes feel instant, then converge',
+			why: 'Call a typed command (generated from the server registry), optimistically update the row you already show, and let policy decide how truth catches up — soft refresh, live subscription, or “the response already is the row” for blob.',
+			path: 'commands.generated.ts · commands.policies.generated.ts',
+			label: 'Command pipeline',
+			blocks: [
+				{
+					file: 'todos/+page.svelte',
+					label: 'Optimistic complete',
+					code: `await gql.commands.todosComplete(
+  { todo_id },
+  {
+    optimistic: {
+      targets: [list.target('todos', 'todo_id')],
+      row: { ...target, status: 'completed' }
+    },
+    onError: ({ errors }) => [
+      fx.alert(errors[0]?.message ?? 'complete failed')
+    ]
+  }
+);
+// Soft delayed refetch so cache matches the projector:
+list.scheduleCatchUp();`
+				},
+				{
+					file: 'commands.policies.generated.ts',
+					label: 'Server default catch-up',
+					code: `// Declared next to each command on the server, then generated:
+todosComplete:   fact + soft catch-up at the call site
+chatMessagesPost: fact + open subscription is the catch-up
+blobGamesMove:   full projected row in the response`
+				}
+			]
+		}
+	];
+
+	const serverSteps: Array<{
 		n: string;
 		title: string;
 		why: string;
@@ -52,14 +298,14 @@
 	}> = [
 		{
 			n: '01',
-			title: 'Login via custom pages + Zitadel — session holds the access token',
-			why: 'Auth.js starts OIDC (PKCE); Zitadel redirects to our /login form; Session API + CreateCallback return the code; Auth.js stores tokens in an encrypted httpOnly cookie for SSR and GraphQL.',
-			path: 'ui/src/routes/login · auth.ts · Session API v2',
+			title: 'Sign in — your app hosts the form, the IdP issues tokens',
+			why: 'People type a password on Fieldnote’s own login page. Zitadel still issues the OIDC tokens; Auth.js keeps them in an encrypted cookie. SSR and GraphQL both use that access token as Bearer.',
+			path: 'ui/src/auth.ts · routes/login · Session API v2',
 			label: 'Auth session',
 			blocks: [
 				{
 					file: 'ui/src/auth.ts',
-					label: 'Auth session',
+					label: 'Session callbacks',
 					code: `// Auth.js OIDC (Zitadel) — PKCE + state
 // Tokens live in an encrypted JWT session cookie (httpOnly)
 callbacks: {
@@ -84,44 +330,15 @@ callbacks: {
 		},
 		{
 			n: '02',
-			title: 'SSR runs a GraphQL query with RBAC',
-			why: 'The todos page load() calls the API with Authorization: Bearer <accessToken>. The engine validates the JWT (OidcBearer), maps claims to identity, and applies ModelPermissions so a user only sees rows where owner_id = their sub.',
-			path: 'todos/+page.server.ts · graphql.ts · service.rs',
+			title: 'The first HTML already has your data',
+			why: 'The page loader calls GraphQL with your token. The engine checks who you are and only returns rows you may see (for example, notes you own). No empty shell that fetches after paint for the happy path.',
+			path: 'service.rs · +page.server.ts',
 			label: 'SSR + RBAC',
 			blocks: [
 				{
-					file: 'todos/+page.server.ts',
-					label: 'SSR load',
-					code: `const session = await locals.auth();
-const result = await serverGraphql(
-  \`{
-    todos {
-      todo_id
-      owner_id
-      title
-      status
-    }
-  }\`,
-  { accessToken: session?.accessToken }
-);`
-				},
-				{
-					file: 'ui/src/lib/server/graphql.ts',
-					label: 'Bearer auth',
-					code: `// How GQL is authenticated on every SSR call
-if (opts.accessToken) {
-  headers.authorization = \`Bearer \${opts.accessToken}\`;
-}
-await fetch(\`\${apiBase()}/graphql\`, {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({ query })
-});`
-				},
-				{
 					file: 'crates/service/src/service.rs',
-					label: 'Row-level RBAC',
-					code: `// OidcBearer validates JWT → x-user-id (sub) + engine roles
+					label: 'Row-level RLS',
+					code: `// OidcBearer → x-user-id (sub) + engine roles
 .model::<TodoView>(
   ModelPermissions::new()
     .role("user", select().all_columns().filter(
@@ -129,227 +346,116 @@ await fetch(\`\${apiBase()}/graphql\`, {
     ))
     .role("admin", select().all_columns()),
 )`
-				}
-			]
-		},
-		{
-			n: '03',
-			title: 'Hydration matches SSR — no empty flash',
-			why: 'Server HTML already contains the list. The client seeds state from data.todos instead of starting at []. Re-loads merge server data instead of wiping the DOM to empty first.',
-			path: 'ui/src/routes/todos/+page.svelte',
-			label: 'Hydration',
-			blocks: [
-				{
-					file: 'todos/+page.svelte',
-					label: 'Hydration',
-					code: `// Seed client state from SSR props so first paint matches
-let todos = $state<Todo[]>([...(data.todos ?? [])]);
-
-// When load() re-runs after a mutation, merge — don't start from []
-$effect(() => {
-  const server = data.todos;
-  untrack(() => mergeFromServer(server));
-});`
-				}
-			]
-		},
-		{
-			n: '04',
-			title: 'Same fields as a live subscription',
-			why: 'Change query to subscription for push updates. Identity rides in connection_init (not the WebSocket upgrade headers), which is the browser-safe OIDC pattern.',
-			path: 'subscription · graphql-ws.ts',
-			label: 'Subscription',
-			blocks: [
-				{
-					file: 'GraphQL subscription',
-					label: 'Same fields',
-					code: `// Same selection as the SSR query — change query → subscription
-// (chat page uses this pattern live; todos can too)
-subscription {
-  todos {
-    todo_id
-    owner_id
-    title
-    status
-  }
-}`
 				},
 				{
-					file: 'ui/src/lib/graphql-ws.ts',
-					label: 'WS auth',
-					code: `// Browser WS cannot set Authorization on the upgrade handshake.
-// Auth goes in connection_init:
-ws.send(JSON.stringify({
-  type: 'connection_init',
-  payload: { authorization: \`Bearer \${accessToken}\` }
-}));`
-				}
-			]
-		},
-		{
-			n: '05',
-			title: 'Mutations that write the read model are an anti-pattern',
-			why: 'Direct GraphQL updates to the todos table invent a second source of truth. Writes are typed command mutations (todos_create → todo.create, …), role-gated to user/admin. Owner always comes from the session. There is no public POST /todo.* — GraphQL only.',
-			path: 'todos_* mutations · without_http_command_routes',
-			label: 'Commands not RM writes',
-			blocks: [
-				{
-					file: 'GraphQL mutation',
-					label: 'todos_create',
-					code: `// Anti-pattern: mutation that UPDATEs todos rows.
-// Command mutation (dispatches todo.create handler):
-mutation {
-  todos_create(input: { todo_id: "t-1", title: "Ship it" }) {
+					file: 'todos.gql',
+					label: 'Co-located query',
+					code: `query Todos {
+  todos(order_by: [{ status: asc }, { todo_id: asc }]) {
     todo_id
     owner_id
     title
     status
   }
 }
-// Also: todos_complete, todos_archive, todos_rename, …
-// Roles: user, admin. owner_id is NOT in input.`
-				},
+// Commands live in $lib/api/commands.operations.gql (generated).`
+				}
+			]
+		},
+		{
+			n: '03',
+			title: 'Mutations are commands, not table edits',
+			why: 'When the UI says “create todo,” the server runs the domain command and records history. It does not treat GraphQL as a free-form UPDATE of the todos table. Owner always comes from the session.',
+			path: 'graphql_commands · handlers/commands/*',
+			label: 'Commands',
+			blocks: [
 				{
-					file: 'crates/service/src/service.rs',
-					label: 'GraphQL-only surface',
-					code: `Service::new()
-  .named("e2e-ui")
-  .without_http_command_routes() // no POST /todo.*
-  .routes(todos)
-  .routes(chat);
-
-// Mutations register the same handlers:
-// todos_create → todo.create (owner = session)
-// todos_complete / archive / rename / reopen
-// chat_messages_post → chat.post`
+					file: 'GraphQL (generated)',
+					label: 'todos_create',
+					code: `mutation {
+  todos_create(input: { todo_id: "t-1", title: "Ship it" }) {
+    todo_id
+    status
+  }
+}
+// Also: complete, reopen, archive, rename
+// Admin-only: todos_force_archive (not in user SDL)
+// Blob: blob_games_start | move | start_level
+// Chat: chat_messages_post
+// owner_id / author_id are NOT client inputs.`
 				},
 				{
 					file: 'handlers/commands/create.rs',
 					label: 'Owner from session',
-					code: `// Owner is always the authenticated principal
-let owner = require_user(ctx.session())?;
+					code: `let owner = require_user(ctx.session())?;
 let input = ctx.input::<TodoCreateInput>()?;
-todo.create(&input.todo_id, &owner, &input.title)?;`
-				},
+todo.create(&input.todo_id, &owner, &input.title)?;
+// commit event store + outbox → todo.created
+// return fact JSON (status fields) — not a dual-written RM row`
+				}
+			]
+		},
+		{
+			n: '04',
+			title: 'Usually: history first, query tables a moment later',
+			why: 'For todos and chat, the command saves the event. A projector turns that event into a row you can query. The UI can show the change optimistically and catch up when the projector lands (or via a live subscription).',
+			path: 'handlers/events/project_todo.rs',
+			label: 'Projector',
+			blocks: [
 				{
-					file: 'ui · browser + SSR',
-					label: 'Same documents',
-					code: `// todos.gql → codegen → todos.resource (defineResource)
-// SSR:  loadQuery(todos.query, …)
-// Browser: useGraphql(() => data).request(todos.mutations.create, vars)
-// → POST /graphql (not SvelteKit form actions)`
+					file: 'handlers/events/project_todo.rs',
+					label: 'Only RM write for todos',
+					code: `pub const EVENTS: &[&str] = &[
+  "todo.created", "todo.renamed", "todo.completed",
+  "todo.reopened", "todo.archived", // + force_archived
+];
+// decode fact → TodoView → ReadModelWritePlanBuilder upsert
+// ChangeHub notifies open subscriptions`
+				}
+			]
+		},
+		{
+			n: '05',
+			title: 'Sometimes: return the full picture in the same request',
+			why: 'Games feel broken if the board lags. After blob commits its event, the handler also writes the query row immediately and returns that full row. The UI can trust the response. That is a deliberate “strong” choice — not the default for every feature.',
+			path: 'handlers/commands/blob_cmd.rs',
+			label: 'CAP · strong',
+			blocks: [
+				{
+					file: 'blob_cmd.rs',
+					label: 'Commit + RM',
+					code: `ctx.repo().outbox(outbox).commit(game).await?;
+// Same request: write the query row so the mutation can return it
+let row = map_blob_fact(&fact);
+plan.upsert(&row)?;
+plan.commit(ctx.read_model_store()).await?;
+// GraphQL payload = full board (map, score, status, …)`
 				}
 			]
 		},
 		{
 			n: '06',
-			title: 'Handler updates the aggregate and publishes a domain event',
-			why: 'After authentication, the command handler calls Todo::create, commits the event store, and enqueues an outbox fact (todo.created). The read model is not touched here.',
-			path: 'crates/service/src/handlers/commands/create.rs',
-			label: 'Command handler',
+			title: 'People have names — join the identity directory',
+			why: 'Chat should show “Alice,” not a raw id. Users are imported from Zitadel into an auth directory table; messages and games join to that. If a user is missing from the directory, fix ingest/scrape — do not invent a second copy of display names on every aggregate.',
+			path: 'handlers/ingestors/zitadel · AuthUserView',
+			label: 'Joins',
 			blocks: [
 				{
-					file: 'handlers/commands/create.rs',
-					label: 'Command handler',
-					code: `// After OidcBearer / session auth — never touches the todos table.
-pub async fn handle(ctx: &Context<'_, TodoDeps<…>>)
-  -> Result<Value, HandlerError>
-{
-  let owner = require_user(ctx.session())?;
-  let input = ctx.input::<Input>()?;
-
-  let mut todo = Todo::default();
-  todo.create(&input.todo_id, &owner, &input.title)?;
-
-  let fact = TodoFact::from_todo(&todo);
-  let outbox = OutboxMessage::encode(
-    format!("{}:todo.created:{}", todo.todo_id, …),
-    "todo.created",
-    &fact,
-  )?;
-  ctx.repo().outbox(outbox).commit(&mut todo).await?;
-  Ok(json!({ "todo_id": fact.todo_id, "status": fact.status }))
-}`
-				}
-			]
-		},
-		{
-			n: '07',
-			title: 'Projection handler applies the fact to the read model',
-			why: 'An event consumer runs project_todo for todo.* facts, maps TodoFact → TodoView, and upserts the todos table. That is the only write path for queryable rows.',
-			path: 'crates/service/src/handlers/events/project_todo.rs',
-			label: 'Projector',
-			blocks: [
-				{
-					file: 'handlers/events/project_todo.rs',
-					label: 'Projector',
-					code: `// Only projector writes the read model (commands never do).
-pub const EVENTS: &[&str] = &[
-  "todo.created", "todo.renamed", "todo.completed",
-  "todo.reopened", "todo.archived",
-];
-
-pub async fn handle(ctx: &Context<'_, TodoDeps<…>>)
-  -> Result<Value, HandlerError>
-{
-  let fact: TodoFact = decode_payload(ctx.message())?;
-  let row = map_fact(&fact); // → TodoView
-  let mut plan = ReadModelWritePlanBuilder::new();
-  plan.upsert(&row)?;
-  plan.commit(ctx.read_model_store()).await?;
-  Ok(json!({ "todo_id": fact.todo_id, "status": fact.status }))
-}`
-				}
-			]
-		},
-		{
-			n: '08',
-			title: 'Queries and subscriptions observe the new state',
-			why: 'The loop closes: the next query and any open subscription deliver the projected row. One direction only — UI never patches the read model as truth.',
-			path: 'query · subscription · ChangeHub',
-			label: 'Read path',
-			blocks: [
-				{
-					file: 'GraphQL query',
-					label: 'Next read',
-					code: `// After the projector commits TodoView:
-query {
-  todos {
-    todo_id
-    owner_id
-    title
-    status
-  }
-}`
+					file: 'chat_message_view.rs',
+					label: 'belongs_to',
+					code: `#[readmodel(belongs_to = "AuthUserView", foreign_key = "author_id")]
+pub author: Option<AuthUserView>,
+// Query selects author { display_name email status }`
 				},
 				{
-					file: 'GraphQL subscription',
-					label: 'Live push',
-					code: `// Open WS clients get the same row via ChangeHub
-subscription {
-  todos {
-    todo_id
-    owner_id
-    title
-    status
-  }
+					file: 'chat.gql',
+					label: 'Selection',
+					code: `chat_messages(where: { room_id: { _eq: "lobby" } }) {
+  message_id
+  body
+  author_id
+  author { user_id display_name email status }
 }`
-				},
-				{
-					file: 'Unidirectional flow',
-					label: 'One direction',
-					code: `// Never: GraphQL mutation rewriting todos as truth.
-//
-// UI ──Bearer──► command | GraphQL query/sub
-//        │
-//        ▼
-// handler → aggregate + outbox event
-//        │
-//        ▼
-// projector → read model (todos table)
-//        │
-//        ▼
-// query / subscription results`
 				}
 			]
 		}
@@ -357,7 +463,6 @@ subscription {
 </script>
 
 <div class="wf-home">
-	<!-- Hero: allowed soft/transparent grid treatment -->
 	<section class="wf-hero">
 		<div class="wf-hero-inner">
 			{#if authConfigError}
@@ -385,20 +490,23 @@ subscription {
 			{/if}
 			<span class="wf-kicker">Distributed · e2e-ui template</span>
 			<h1>
-				A <em>framework template</em> you run as full e2e tests — kept honest by the library.
+				A <em>framework template</em> you run as full e2e tests — a map you can learn from.
 			</h1>
 			<p class="wf-lede">
-				Multi-crate CQRS, GraphQL with row-level filters, WebSocket subscriptions, real OIDC. The
-				same folder is the living suite — <code>make test</code> offline,
-				<code>make test-live</code> against Postgres + Zitadel.
+				<strong>Simplest DX is the goal.</strong> You should not re-implement event history,
+				repositories, and GraphQL wiring for every feature. Distributed carries that weight so you
+				can focus on domain rules and a clear UI. This folder is a living suite you can click
+				through and copy — sign-in, personal lists, live chat, a game with strong command returns —
+				proved by <code>make test</code> offline and <code>make test-live</code> with real OIDC.
 			</p>
 			<div class="wf-actions">
 				{#if signedIn}
 					<a class="wf-btn wf-btn-primary" href="/todos">Open todos</a>
-					<a class="wf-btn wf-btn-ghost" href="/chat">Lobby chat</a>
+					<a class="wf-btn wf-btn-ghost" href="/blob">Blob game</a>
+					<a class="wf-btn wf-btn-ghost" href="#framework">Framework principles</a>
 				{:else}
 					<a class="wf-btn wf-btn-primary" href="/signin?callbackUrl=/todos">Sign in with OIDC</a>
-					<a class="wf-btn wf-btn-ghost" href="#story-flow">Unidirectional story</a>
+					<a class="wf-btn wf-btn-ghost" href="#framework">Framework principles</a>
 				{/if}
 			</div>
 			<div class="wf-meta">
@@ -407,43 +515,225 @@ subscription {
 				<span>UI :5180</span>
 				<span>Zitadel :18080</span>
 			</div>
+			<nav class="wf-toc" aria-label="On this page">
+				<a href="#framework">Principles</a>
+				<a href="#run">Run</a>
+				<a href="#demos">Demos</a>
+				<a href="#architecture">Architecture</a>
+				<a href="#client-dx">Client DX</a>
+				<a href="#cap">CAP</a>
+				<a href="#server-flow">Server</a>
+				<a href="#codegen">Codegen</a>
+			</nav>
 		</div>
 	</section>
 
-	<!-- dark first after light hero -->
 	<section class="wf-band wf-band-dark" id="story">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Why this exists</span>
 				<h2>Template first. Product later.</h2>
 				<p>
-					Not a product marketing site — the UI face of a fixture that ships with Distributed. When
-					patterns change, the suite and this app move with them.
+					This is not a product marketing site. It is the face of a fixture that ships with
+					Distributed — so when the library’s recommended patterns change, you can see and test them
+					here. Copy the folder when you start a service; keep the boundaries that keep you sane.
 				</p>
 			</div>
 			<div class="wf-cards">
 				<div class="wf-card">
-					<h3>Full e2e path</h3>
+					<h3>Something you can actually run</h3>
 					<p>
-						<code>make up</code> boots Postgres + Zitadel. <code>make run</code> serves API + UI.
-						Humans alice/bob for login; machine keys for suite JWT-bearer.
+						<code>make up</code> starts the database and identity provider.
+						<code>make run</code> starts API and UI. Log in as alice, bob, or admin and click
+						around.
 					</p>
 				</div>
 				<div class="wf-card">
-					<h3>Updated with the library</h3>
+					<h3>Kept honest by tests</h3>
 					<p>
-						Behavioral + gated OIDC tests live beside the service. Offline SQLite or live stack.
-						OidcBearer, projectors, ChangeHub track framework defaults.
+						The same folder has behavioral tests and gated OIDC checks. Offline for day-to-day;
+						live stack when you need the real token path. The demos are not slides — they break if
+						the library lies.
 					</p>
 				</div>
 				<div class="wf-card">
-					<h3>Copy and extend</h3>
+					<h3>A map you can extend</h3>
 					<p>
-						todo-domain, chat-domain, readmodels, service, runner, suite. Swap DATABASE_URL / OIDC
-						env; keep handlers and routes as the map.
+						Domain crates, read models, thin handlers, suite, Svelte UI. Point env at your database
+						and IdP when you are ready; the shape of “command → history → query” stays the same.
 					</p>
 				</div>
 			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="framework">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">Distributed · framework principles</span>
+				<h2>What we are optimizing for</h2>
+				<p>
+					Distributed is a CQRS and event-sourcing framework for Rust people who still want to ship.
+					The north star is not “more infrastructure.” It is the
+					<strong>simplest developer experience</strong> that keeps write history, queries, and
+					published messages honest — so you can grow later without rewriting the domain you already
+					proved.
+				</p>
+			</div>
+			<ol class="wf-principles">
+				{#each frameworkPrinciples as p, i}
+					<li class="wf-principle">
+						<span class="wf-principle-n" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+						<div>
+							<h3>{p.title}</h3>
+							<p>{p.body}</p>
+						</div>
+					</li>
+				{/each}
+			</ol>
+
+			<div class="wf-subhead" id="dx-stack">
+				<span class="wf-label">How DX stays simple</span>
+				<h3>Three ways the stack carries weight for you</h3>
+				<p>
+					You should not re-implement “save history,” “sync three schemas,” or “build a mini
+					framework” for every feature. Three layers share that work. You write intent; the stack
+					expands it.
+				</p>
+			</div>
+			<div class="wf-layers">
+				{#each dxStack as col, i}
+					<div class="wf-layer">
+						<span class="wf-layer-n" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+						<h4>{col.title}</h4>
+						<p class="wf-layer-body">{col.body}</p>
+					</div>
+				{/each}
+			</div>
+
+			<div class="wf-subhead" id="macros">
+				<span class="wf-label">When you are ready for the code</span>
+				<h3>Domain first — macros fill the seams</h3>
+				<p>
+					Below is what “plain domain + less noise” looks like in this fixture. Read the method
+					bodies as the product rules; the attributes are how history gets recorded and replayed
+					without you writing that plumbing twice.
+				</p>
+			</div>
+			<div class="wf-code-stack">
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>todo-domain · models/todo.rs</span>
+						<em>one command, one function</em>
+					</div>
+					<pre><code>{`// One function. #[event] records history and applies state.
+// when = skips the command when it must not fire (wrong owner / not open).
+#[event("todo.completed", when = self.owner_id == owner_id && self.is_open())]
+pub fn complete(&mut self, owner_id: String) {
+  self.status = TodoStatus::Completed;
+}
+// Unit tests call complete() directly — red/green before any handler exists.`}</code></pre>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>e2e-readmodels · TodoView</span>
+						<em>#[derive(ReadModel)]</em>
+					</div>
+					<pre><code>{`#[derive(Clone, Debug, Default, Serialize, Deserialize, ReadModel)]
+#[table("todos")]
+pub struct TodoView {
+  #[id("todo_id")]
+  pub todo_id: String,
+  pub owner_id: String,
+  pub title: String,
+  pub status: String,
+}
+// GraphQL can list and filter this table — you did not hand-write resolvers.`}</code></pre>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>handlers · command input</span>
+						<em>GraphqlInput</em>
+					</div>
+					<pre><code>{`#[derive(Debug, Deserialize, distributed::GraphqlInput)]
+pub struct TodoCompleteInput {
+  pub todo_id: String,
+}
+// Same type for GraphQL input and the handler. Register once; codegen follows.`}</code></pre>
+				</div>
+			</div>
+
+			<div class="wf-subhead" id="pattern-apis">
+				<span class="wf-label">Patterns you already know</span>
+				<h3>Short verbs you can swap under the hood</h3>
+				<p>
+					You do not need a new vocabulary for every service. Load something from history, apply a
+					command, save events and “please publish this,” turn events into query rows, expose
+					handlers. Same ideas as textbooks — thin APIs, backends you can change later.
+				</p>
+			</div>
+			<div class="wf-code-stack">
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>Load → decide → save history</span>
+						<em>repository</em>
+					</div>
+					<pre><code>{`// Load from event history (not from a mutable "current row" only)
+let mut todo = ctx.repo().get(todo_id).await?
+  .ok_or_else(|| HandlerError::NotFound(todo_id.into()))?;
+
+todo.complete(&owner)?; // domain rules only
+
+// One commit: new events + "please publish this fact"
+let fact = TodoFact::from_todo(&todo);
+let outbox = OutboxMessage::encode(
+  format!("{}:todo.completed:{}", todo.todo_id, todo.entity.version()),
+  "todo.completed",
+  &fact,
+)?;
+ctx.repo().outbox(outbox).commit(&mut todo).await?;
+// Memory, SQLite, or Postgres — same handler shape.`}</code></pre>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>Turn a fact into something you can query</span>
+						<em>projection</em>
+					</div>
+					<pre><code>{`// After (or with) the event: upsert a row shaped for reads
+let row = map_todo_fact(&fact);
+let mut plan = ReadModelWritePlanBuilder::new();
+plan.upsert(&row)?;
+plan.commit(ctx.read_model_store()).await?;
+// Same idea for "eventually" (projector) and "right now" (blob).`}</code></pre>
+				</div>
+				<div class="wf-code">
+					<div class="wf-code-bar">
+						<span>One handler, many doors</span>
+						<em>service</em>
+					</div>
+					<pre><code>{`// This fixture exposes commands over GraphQL only (no raw POST /todo.*)
+Service::new()
+  .named("e2e-ui")
+  .without_http_command_routes()
+  // … register handlers + readable models …
+// Later you can also hang the same work off a bus or gRPC
+// without rewriting Todo::complete.`}</code></pre>
+				</div>
+			</div>
+
+			<div class="wf-subhead">
+				<span class="wf-label">A calm order of work</span>
+				<h3>Prove the domain before the plumbing</h3>
+			</div>
+			<ol class="wf-flow-map">
+				<li>Write tests for what the model should allow and refuse</li>
+				<li>Implement the plain type until those tests pass</li>
+				<li>Add a thin handler: who is calling → load → domain → save history</li>
+				<li>Project into query tables (or same-request for strong UX)</li>
+				<li>Expose reads and commands with the right permissions</li>
+				<li>Regenerate the client helpers and wire a small UI path</li>
+				<li>Swap storage or messaging when you outgrow the laptop setup</li>
+			</ol>
 		</div>
 	</section>
 
@@ -454,7 +744,8 @@ subscription {
 				<h2>Three commands. Full stack.</h2>
 				<p>
 					From <code>tests/e2e-ui</code>. Demo password: <code>Password1!</code> (alice / bob /
-					admin).
+					admin). After <code>make up</code>, always restart <code>make run</code> so the process
+					picks up <code>e2e-ui.env</code>.
 				</p>
 			</div>
 			<div class="wf-steps">
@@ -464,11 +755,44 @@ subscription {
 				</div>
 				<div class="wf-step">
 					<h3>API + UI</h3>
-					<p><code>make run</code> — GraphQL :8791, SvelteKit :5180.</p>
+					<p>
+						<code>set -a && source e2e-ui.env && set +a && make run</code> — GraphQL :8791,
+						SvelteKit :5180.
+					</p>
 				</div>
 				<div class="wf-step">
 					<h3>Prove it</h3>
-					<p><code>make test</code> · <code>make test-live</code>.</p>
+					<p>
+						<code>make test</code> · <code>make test-live</code> ·
+						<code>make check-gql && make check-commands</code>
+					</p>
+				</div>
+			</div>
+			<div class="wf-subhead">
+				<span class="wf-label">Two ways the API knows who you are</span>
+				<h3>Pick the profile that matches how you started the process</h3>
+			</div>
+			<div class="wf-cards wf-cards-tight">
+				<div class="wf-card">
+					<h3>Local tests (headers)</h3>
+					<p>
+						When OIDC env is unset, the suite can send simple identity headers. Fast offline
+						behavioral tests — that is what <code>make test</code> expects.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Real login (Bearer tokens)</h3>
+					<p>
+						After <code>make up</code> and sourcing env, the API wants real tokens. Browser sessions
+						and <code>make test-live</code> use this path. Ambient “I am alice” headers are ignored.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Do not mix them</h3>
+					<p>
+						Hitting an OIDC-only process with header-style tests looks like a wall of 401s. That is
+						usually the wrong profile — not a broken product.
+					</p>
 				</div>
 			</div>
 		</div>
@@ -478,8 +802,12 @@ subscription {
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Live demos</span>
-				<h2>What is demonstrated — and where</h2>
-				<p>Open after <code>make up && make run</code>.</p>
+				<h2>Practice arenas, not slides</h2>
+				<p>
+					After <code>make up && make run</code>, sign in and click. Each route is a small story about
+					one way the stack behaves — personal data, live rooms, strong returns, admin power,
+					identity.
+				</p>
 			</div>
 			<div class="wf-demos">
 				{#each demos as d, i}
@@ -497,73 +825,385 @@ subscription {
 		</div>
 	</section>
 
-	<section class="wf-band wf-band-light" id="story-flow">
+	<section class="wf-band wf-band-light" id="architecture">
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
-				<span class="wf-label">Todos · unidirectional system</span>
-				<h2>What this is demonstrating</h2>
+				<span class="wf-label">Architecture</span>
+				<h2>One direction — with two ways to “see the result”</h2>
 				<p>
-					A single feature path from login to live reads — one direction only. Each step below is
-					grounded in this fixture’s real files.
+					The UI never “updates the todos table” as if GraphQL were a database. It asks for work
+					(commands) and reads query-shaped data (lists, joins). Most features let query data catch
+					up a moment later; the game can return the full board in the same request on purpose.
 				</p>
 			</div>
-			<ol class="wf-flow-map">
-				<li>Login (Zitadel + Auth.js session)</li>
-				<li>SSR GraphQL query + RBAC + Bearer</li>
-				<li>Hydrate client = SSR HTML</li>
-				<li>Optional: subscription on the same fields</li>
-				<li>Command (not RM mutation) + RBAC</li>
-				<li>Handler → aggregate → domain event</li>
-				<li>Projector → read model</li>
-				<li>Queries &amp; subscriptions observe</li>
+			<div class="wf-code wf-code-lead">
+				<div class="wf-code-bar">
+					<span>Mental model</span>
+					<em>system</em>
+				</div>
+				<pre><code>{`You (browser)
+  Sign in → cookie with access token
+  Load pages with GraphQL (Bearer)
+  Live rooms over WebSocket (token in first message)
+
+Service
+  Knows who you are and which role you have
+  Commands: change domain history (+ optional “publish this”)
+       ├─ todos / chat: project into query tables shortly after  (eventual)
+       └─ blob:         also write query row before responding   (strong)
+  Queries / live updates: filtered by who you are
+  People directory imported from Zitadel for display names`}</code></pre>
+			</div>
+			<div class="wf-subhead">
+				<span class="wf-label">Crate map</span>
+				<h3>Where to look when you open the folder</h3>
+			</div>
+			<dl class="wf-crate-map">
+				{#each crates as c}
+					<div class="wf-crate">
+						<dt>{c.name}</dt>
+						<dd>{c.role}</dd>
+					</div>
+				{/each}
+			</dl>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="principles">
+		<div class="wf-band-inner">
+			<div class="wf-section-head wf-section-head-wide">
+				<span class="wf-label">Template success rules</span>
+				<h2>Habits that keep this demo (and your copy of it) healthy</h2>
+				<p>
+					The principles above are Distributed as a whole. These are the extra habits
+					<strong>this fixture</strong> teaches for GraphQL, sign-in, and the Svelte client. Follow
+					them and the demos feel calm; fight them and you spend the day on thrash and spoofing.
+				</p>
+			</div>
+			<ol class="wf-principles">
+				{#each principles as p, i}
+					<li class="wf-principle">
+						<span class="wf-principle-n" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+						<div>
+							<h3>{p.title}</h3>
+							<p>{p.body}</p>
+						</div>
+					</li>
+				{/each}
 			</ol>
 		</div>
 	</section>
 
-	<!-- Step bands continue dark / light after light story-flow intro -->
-	{#each steps as step, i}
-		<section
-			class="wf-band {i % 2 === 0 ? 'wf-band-dark' : 'wf-band-light'}"
-			id="step-{step.n}"
-			data-sample={step.label}
-		>
-			<div class="wf-band-inner wf-story-step">
-				<div class="wf-story-copy">
-					<span class="wf-label">Step {step.n}</span>
-					<h2>{step.title}</h2>
-					<p class="wf-why">{step.why}</p>
-					<span class="wf-sample-path">{step.path}</span>
-				</div>
-				<div class="wf-code-stack">
-					{#each step.blocks as block}
-						<div class="wf-code">
-							<div class="wf-code-bar">
-								<span>{block.file}</span>
-								<em>{block.label}</em>
-							</div>
-							<pre><code>{block.code}</code></pre>
+	<section class="wf-band wf-band-light" id="client-dx">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Client GraphQL DX</span>
+				<h2>How the browser is supposed to feel</h2>
+				<p>
+					You should not wire a new HTTP client per page. Bind once from the page’s session, seed
+					lists so the first paint matches the server, open a live room when you need push, and call
+					typed commands that update the same cache the list already uses. Query documents live next
+					to the route; commands are generated from the server so you do not hand-copy mutation
+					strings forever.
+				</p>
+			</div>
+			<ol class="wf-flow-map">
+				<li>Bind the page from session data once</li>
+				<li>Seed lists so SSR HTML and client state match</li>
+				<li>Use a live subscription for rooms that must push</li>
+				<li>Write through typed commands + optimistic rows</li>
+				<li>Share the same query document between server and browser</li>
+				<li>One cache for a list — not a second parallel array</li>
+			</ol>
+
+			<div class="wf-chapter">
+				{#each clientSteps as step}
+					<article class="wf-story-step" id="client-{step.n}" data-sample={step.label}>
+						<div class="wf-story-copy">
+							<span class="wf-label">Client {step.n}</span>
+							<h3 class="wf-step-title">{step.title}</h3>
+							<p class="wf-why">{step.why}</p>
+							<span class="wf-sample-path">{step.path}</span>
 						</div>
-					{/each}
+						<div class="wf-code-stack">
+							{#each step.blocks as block}
+								<div class="wf-code">
+									<div class="wf-code-bar">
+										<span>{block.file}</span>
+										<em>{block.label}</em>
+									</div>
+									<pre><code>{block.code}</code></pre>
+								</div>
+							{/each}
+						</div>
+					</article>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="cap">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">When should the answer be “now”?</span>
+				<h2>Two honest styles — pick per feature</h2>
+				<p>
+					Not every screen needs the same consistency story. This fixture shows both on purpose so
+					you can feel the tradeoff instead of arguing in the abstract.
+				</p>
+			</div>
+			<div class="wf-cards">
+				<div class="wf-card wf-card-accent">
+					<span class="wf-card-kicker">Strong</span>
+					<h3>Blob — the board is the truth of the response</h3>
+					<p>
+						After a move, the mutation comes back with the full board. Waiting on a background
+						projector would feel like lag. The UI keeps one cache for board and history so they
+						cannot disagree.
+					</p>
+				</div>
+				<div class="wf-card">
+					<span class="wf-card-kicker">Eventual</span>
+					<h3>Todos — feel instant, settle a moment later</h3>
+					<p>
+						Completing a note can paint as done immediately. The server still records history first;
+						the query table catches up shortly. A soft refresh lines the cache up with the
+						projector without fighting the optimistic row.
+					</p>
+				</div>
+				<div class="wf-card">
+					<span class="wf-card-kicker">Eventual + live</span>
+					<h3>Chat — other people are the clock</h3>
+					<p>
+						Your post can show immediately; everyone else’s posts arrive over a live subscription.
+						That open connection is how the room converges — not a frantic poll loop.
+					</p>
 				</div>
 			</div>
-		</section>
-	{/each}
+		</div>
+	</section>
 
-	<!-- CTA solid dark -->
+	<section class="wf-band wf-band-light" id="server-flow">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Server path</span>
+				<h2>From “I signed in” to “I can see my data”</h2>
+				<p>
+					Walk this when you are implementing a new feature. The client steps above are how the UI
+					consumes the same loop.
+				</p>
+			</div>
+			<ol class="wf-flow-map">
+				<li>Person signs in; session holds a token</li>
+				<li>Page load queries with that token (only their rows)</li>
+				<li>UI sends a command, not a free-form table update</li>
+				<li>Handler loads history, applies domain rules, saves events</li>
+				<li>Query tables update eventually — or immediately for strong UX</li>
+				<li>Display names join from the identity directory</li>
+				<li>Queries and live rooms show the new world</li>
+			</ol>
+
+			<div class="wf-chapter">
+				{#each serverSteps as step}
+					<article class="wf-story-step" id="step-{step.n}" data-sample={step.label}>
+						<div class="wf-story-copy">
+							<span class="wf-label">Server {step.n}</span>
+							<h3 class="wf-step-title">{step.title}</h3>
+							<p class="wf-why">{step.why}</p>
+							<span class="wf-sample-path">{step.path}</span>
+						</div>
+						<div class="wf-code-stack">
+							{#each step.blocks as block}
+								<div class="wf-code">
+									<div class="wf-code-bar">
+										<span>{block.file}</span>
+										<em>{block.label}</em>
+									</div>
+									<pre><code>{block.code}</code></pre>
+								</div>
+							{/each}
+						</div>
+					</article>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="codegen">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Keeping the UI honest</span>
+				<h2>Regenerate so humans do not dual-maintain contracts</h2>
+				<p>
+					The GraphQL the browser sees should come from the same engine the API runs — including
+					which mutations exist for which role. When you change a command or a query document,
+					regenerate. Drift should fail a check, not surprise you in production.
+				</p>
+			</div>
+			<div class="wf-cards wf-cards-tight">
+				<div class="wf-card">
+					<h3>Readable schema for each role</h3>
+					<p>
+						Export what a normal user may call vs what an admin may call. After you edit
+						co-located query files, regenerate typed documents so the UI and the engine agree.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Commands as functions, not copy-paste</h3>
+					<p>
+						Register the command on the server once. Generation gives the UI typed helpers and
+						default “how do we catch up?” policies so screens do not invent their own.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>After you change the contract</h3>
+					<p>
+						Run the check targets, commit the generated files, move on. Do not hand-edit generated
+						artifacts as if they were source — the next regeneration will fight you.
+					</p>
+				</div>
+			</div>
+			<div class="wf-code wf-code-follow">
+				<div class="wf-code-bar">
+					<span>What a day-to-day write looks like</span>
+					<em>UI</em>
+				</div>
+				<pre><code>{`const gql = useGraphql(() => data);
+await gql.commands.todosCreate({ todo_id, title });
+await gql.commands.todosReopen({ todo_id });
+await gql.commands.chatMessagesPost({ message_id, body, room_id });
+await gql.commands.blobGamesMove({ game_id, direction: 'up' });
+// Only when signed in as admin:
+await gql.commands.todosForceArchive({ todo_id });`}</code></pre>
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="auth-joins">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">People have names</span>
+				<h2>Import identity once, join everywhere</h2>
+				<p>
+					Do not stamp a free-form display name onto every chat message forever. Import people from
+					the IdP into a directory table, then join. Fix missing people at the source (ingest /
+					scrape), not by inventing a second source of truth on each aggregate.
+				</p>
+			</div>
+			<div class="wf-cards">
+				<div class="wf-card">
+					<h3>Bring users in</h3>
+					<p>
+						Zitadel can push or you can scrape; either way facts land as directory rows. See
+						<code>docs/zitadel-ingestor.md</code> when you need the exact endpoints.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Join for labels</h3>
+					<p>
+						Chat shows an author; blob can show an owner. Those are relationships to the directory
+						— so a rename or status change does not require rewriting history.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Roles in practice</h3>
+					<p>
+						alice and bob are normal users (their own todos). admin sees everyone and can
+						force-archive. Groups on the session map into those engine roles.
+					</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-dark" id="anti-patterns">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Traps</span>
+				<h2>Things that feel clever and then hurt</h2>
+			</div>
+			<div class="wf-cards">
+				<div class="wf-card">
+					<h3>GraphQL as a free-form table editor</h3>
+					<p>
+						If the UI can UPDATE the todos table directly, you have two write paths and no single
+						history. Prefer commands that go through the domain.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Two lists for the same data</h3>
+					<p>
+						A local array “for convenience” plus the shared cache for the same list is how board
+						and history disagree. One document store per list.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Hard refetch that yanks the optimistic UI</h3>
+					<p>
+						Blasting a full reload the instant a command returns can flash, reorder, or erase the
+						row you just painted. Optimistic patch, then soft catch-up or a live room.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Believing the client about who they are</h3>
+					<p>
+						Owner and author come from the session. Client-supplied “I am alice” fields are how
+						multi-tenant bugs are born.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Hand-editing generated files</h3>
+					<p>
+						Change the real source (Rust registry or co-located query), regenerate, commit. CI
+						checks exist so drift does not wait for a human on-call.
+					</p>
+				</div>
+				<div class="wf-card">
+					<h3>Tokens in the wrong place on WebSockets</h3>
+					<p>
+						Browsers cannot set Authorization on the upgrade the way they do on HTTP. Put the
+						token in the first connection message — never in a long-lived URL query string.
+					</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="wf-band wf-band-light" id="extend">
+		<div class="wf-band-inner">
+			<div class="wf-section-head">
+				<span class="wf-label">Extend the template</span>
+				<h2>Adding a feature without losing the plot</h2>
+			</div>
+			<ol class="wf-flow-map">
+				<li>Model the rules in a pure domain crate with tests</li>
+				<li>Describe how those facts look when queried (and any joins)</li>
+				<li>Thin command handler + register it with a catch-up policy</li>
+				<li>Projector — unless you deliberately write the query row in-request</li>
+				<li>Permissions: who may read which rows</li>
+				<li>Regenerate client helpers and schemas</li>
+				<li>Small UI path: seed, command, optimistic update</li>
+				<li>A test that would fail if you regressed the story</li>
+			</ol>
+		</div>
+	</section>
+
 	<section class="wf-band wf-band-dark wf-cta-band">
 		<div class="wf-band-inner wf-cta">
-			<h2>Exercise the live demos</h2>
+			<h2>Go click around</h2>
 			<p>
-				Sign in (alice / bob / admin · Password1!), open todos or chat, then inspect the session.
+				Sign in (alice / bob / admin · Password1!). Feel todos settle after a moment, blob answer
+				immediately, chat fill from others, admin see everyone, session explain who you are.
 			</p>
 			<div class="wf-actions">
 				{#if signedIn}
 					<a class="wf-btn wf-btn-primary" href="/todos">Todos</a>
+					<a class="wf-btn wf-btn-ghost" href="/blob">Blob</a>
 					<a class="wf-btn wf-btn-ghost" href="/chat">Chat</a>
 					<a class="wf-btn wf-btn-ghost" href="/session">Session</a>
 				{:else}
 					<a class="wf-btn wf-btn-primary" href="/signin?callbackUrl=/todos">Sign in</a>
-					<a class="wf-btn wf-btn-ghost" href="/session">Session</a>
+					<a class="wf-btn wf-btn-ghost" href="#principles">Success rules</a>
 				{/if}
 			</div>
 		</div>

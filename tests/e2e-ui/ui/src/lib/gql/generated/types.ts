@@ -72,7 +72,7 @@ export type BlobGameView = {
   current_level_completed: Scalars['Boolean']['output'];
   game_id: Scalars['String']['output'];
   map_json: Scalars['String']['output'];
-  owner?: Maybe<AuthUserView>;
+  owner: AuthUserView;
   owner_id: Scalars['String']['output'];
   player_dead: Scalars['Boolean']['output'];
   score: Scalars['BigInt']['output'];
@@ -106,7 +106,7 @@ export type Boolean_Comparison_Exp = {
 
 export type ChatMessageView = {
   __typename?: 'ChatMessageView';
-  author?: Maybe<AuthUserView>;
+  author: AuthUserView;
   author_id: Scalars['String']['output'];
   body: Scalars['String']['output'];
   created_at: Scalars['String']['output'];

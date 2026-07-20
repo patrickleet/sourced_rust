@@ -4,7 +4,8 @@
 # Force-archive mutation: `$lib/api/commands.operations.gql` (generated).
 
 query AdminAllTodos {
-  todos(limit: 100, order_by: [{ todo_id: asc }]) {
+  # Deterministic: status buckets then owner then id
+  todos(limit: 100, order_by: [{ status: asc }, { owner_id: asc }, { todo_id: asc }]) {
     todo_id
     owner_id
     title

@@ -3,8 +3,8 @@
 use blob_domain::BlobGame;
 use chat_domain::ChatMessage;
 use distributed::graphql::{
-    exposed_command, read, GraphqlCommands, GraphqlEngine, GraphqlPool, IdentityConfig,
-    ModelPermissions, OidcConfig,
+    exposed_command, read, ClientReconcile, GraphqlCommands, GraphqlEngine, GraphqlPool,
+    IdentityConfig, ModelPermissions, OidcConfig,
 };
 use distributed::microsvc::{
     ConfigurableOutboxPublisher, HasOutboxStore, HasRepo, Routes, Service,
@@ -85,6 +85,11 @@ pub fn graphql_commands() -> GraphqlCommands {
     };
 
     let app_roles = ["user", "admin"];
+    // Eventual (async projectors) vs same-tx (blob returns projected row).
+    let fact = ClientReconcile::fact();
+    let fact_sub = ClientReconcile::fact_subscription();
+    let projection = ClientReconcile::projection();
+
     GraphqlCommands::new()
         .command(
             create::COMMAND,
@@ -92,7 +97,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_create")
                 .input::<create::TodoCreateInput>()
                 .output::<create::TodoCreatePayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact.clone()),
         )
         .command(
             complete::COMMAND,
@@ -100,7 +106,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_complete")
                 .input::<complete::TodoCompleteInput>()
                 .output::<payloads::TodoStatusPayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact.clone()),
         )
         .command(
             archive::COMMAND,
@@ -108,7 +115,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_archive")
                 .input::<archive::TodoArchiveInput>()
                 .output::<payloads::TodoStatusPayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact.clone()),
         )
         .command(
             // Admin-only mutation: appears in admin SDL, not user SDL.
@@ -117,7 +125,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_force_archive")
                 .input::<force_archive::TodoForceArchiveInput>()
                 .output::<force_archive::TodoForceArchivePayload>()
-                .roles(["admin"]),
+                .roles(["admin"])
+                .client_reconcile(fact.clone()),
         )
         .command(
             rename::COMMAND,
@@ -125,7 +134,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_rename")
                 .input::<rename::TodoRenameInput>()
                 .output::<rename::TodoRenamePayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact.clone()),
         )
         .command(
             reopen::COMMAND,
@@ -133,7 +143,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("todos_reopen")
                 .input::<reopen::TodoReopenInput>()
                 .output::<payloads::TodoStatusPayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact),
         )
         .command(
             chat_post::COMMAND,
@@ -141,7 +152,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("chat_messages_post")
                 .input::<chat_post::ChatPostInput>()
                 .output::<chat_post::ChatPostPayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(fact_sub),
         )
         .command(
             blob_start::COMMAND,
@@ -149,7 +161,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("blob_games_start")
                 .input::<blob_start::BlobStartInput>()
                 .output::<blob_start::BlobGamePayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(projection.clone()),
         )
         .command(
             blob_move::COMMAND,
@@ -157,7 +170,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("blob_games_move")
                 .input::<blob_move::BlobMoveInput>()
                 .output::<blob_start::BlobGamePayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(projection.clone()),
         )
         .command(
             blob_start_level::COMMAND,
@@ -165,7 +179,8 @@ pub fn graphql_commands() -> GraphqlCommands {
                 .field_name("blob_games_start_level")
                 .input::<blob_start_level::BlobStartLevelInput>()
                 .output::<blob_start::BlobGamePayload>()
-                .roles(app_roles),
+                .roles(app_roles)
+                .client_reconcile(projection),
         )
 }
 

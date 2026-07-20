@@ -28,119 +28,75 @@ impl Todo {
         Ok(())
     }
 
-    fn require_mutable(&self) -> Result<(), TodoError> {
-        if !self.is_created() {
-            return Err(TodoError::NotCreated);
-        }
-        if matches!(self.status, TodoStatus::Archived) {
-            return Err(TodoError::Archived);
-        }
-        Ok(())
+    fn is_open(&self) -> bool {
+        matches!(self.status, TodoStatus::Open)
+    }
+
+    fn is_completed(&self) -> bool {
+        matches!(self.status, TodoStatus::Completed)
+    }
+
+    fn is_archived(&self) -> bool {
+        matches!(self.status, TodoStatus::Archived)
     }
 }
 
+/// One public function per command. `#[event]` records history and applies state.
+/// `when =` skips recording when the command must not fire (invalid / no-op).
 #[sourced(entity, events = "TodoEvent", aggregate_type = "todo")]
 impl Todo {
-    /// Create a new open todo. `owner_id` is the authenticated user (never trusted from peers).
-    pub fn create(
-        &mut self,
-        todo_id: impl Into<String>,
-        owner_id: impl Into<String>,
-        title: impl Into<String>,
-    ) -> Result<(), TodoError> {
-        if self.is_created() {
-            return Err(TodoError::AlreadyExists);
-        }
-        let todo_id = todo_id.into();
-        let owner_id = owner_id.into();
-        let title = title.into();
-        if todo_id.trim().is_empty() {
-            return Err(TodoError::EmptyId);
-        }
-        if owner_id.trim().is_empty() {
-            return Err(TodoError::EmptyOwner);
-        }
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(TodoError::EmptyTitle);
-        }
-        self.record_created(todo_id, owner_id, title.to_string())?;
-        Ok(())
-    }
-
-    #[event("todo.created")]
-    fn record_created(&mut self, todo_id: String, owner_id: String, title: String) {
+    /// Create a new open todo. Callers should pass trimmed, non-empty fields.
+    #[event(
+        "todo.created",
+        when = !self.is_created()
+            && !todo_id.trim().is_empty()
+            && !owner_id.trim().is_empty()
+            && !title.trim().is_empty()
+    )]
+    pub fn create(&mut self, todo_id: String, owner_id: String, title: String) {
         self.entity.set_id(&todo_id);
         self.todo_id = todo_id;
         self.owner_id = owner_id;
-        self.title = title;
+        self.title = title.trim().to_string();
         self.status = TodoStatus::Open;
     }
 
-    pub fn rename(&mut self, owner_id: &str, title: impl Into<String>) -> Result<(), TodoError> {
-        self.ensure_owner(owner_id)?;
-        self.require_mutable()?;
-        let title = title.into();
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(TodoError::EmptyTitle);
-        }
-        if title == self.title {
-            return Ok(()); // no-op: same title
-        }
-        self.record_renamed(title.to_string())?;
-        Ok(())
+    /// Rename. No-ops when title is empty, unchanged, or todo is archived / not owned.
+    #[event(
+        "todo.renamed",
+        when = self.owner_id == owner_id
+            && !self.is_archived()
+            && !title.trim().is_empty()
+            && title.trim() != self.title
+    )]
+    pub fn rename(&mut self, owner_id: String, title: String) {
+        self.title = title.trim().to_string();
     }
 
-    #[event("todo.renamed")]
-    fn record_renamed(&mut self, title: String) {
-        self.title = title;
-    }
-
-    pub fn complete(&mut self, owner_id: &str) -> Result<(), TodoError> {
-        self.ensure_owner(owner_id)?;
-        self.require_mutable()?;
-        if matches!(self.status, TodoStatus::Completed) {
-            return Err(TodoError::AlreadyCompleted);
-        }
-        self.record_completed()?;
-        Ok(())
-    }
-
-    #[event("todo.completed")]
-    fn record_completed(&mut self) {
+    /// Mark completed. No-ops unless open and owned by `owner_id`.
+    #[event(
+        "todo.completed",
+        when = self.owner_id == owner_id && self.is_open()
+    )]
+    pub fn complete(&mut self, owner_id: String) {
         self.status = TodoStatus::Completed;
     }
 
-    pub fn reopen(&mut self, owner_id: &str) -> Result<(), TodoError> {
-        self.ensure_owner(owner_id)?;
-        self.require_mutable()?;
-        if !matches!(self.status, TodoStatus::Completed) {
-            return Err(TodoError::NotCompleted);
-        }
-        self.record_reopened()?;
-        Ok(())
-    }
-
-    #[event("todo.reopened")]
-    fn record_reopened(&mut self) {
+    /// Reopen a completed todo. No-ops unless completed and owned by `owner_id`.
+    #[event(
+        "todo.reopened",
+        when = self.owner_id == owner_id && self.is_completed()
+    )]
+    pub fn reopen(&mut self, owner_id: String) {
         self.status = TodoStatus::Open;
     }
 
-    pub fn archive(&mut self, owner_id: &str) -> Result<(), TodoError> {
-        self.ensure_owner(owner_id)?;
-        if !self.is_created() {
-            return Err(TodoError::NotCreated);
-        }
-        if matches!(self.status, TodoStatus::Archived) {
-            return Ok(()); // idempotent archive
-        }
-        self.record_archived()?;
-        Ok(())
-    }
-
-    #[event("todo.archived")]
-    fn record_archived(&mut self) {
+    /// Archive. Idempotent: no-ops if already archived. No-ops if not owned.
+    #[event(
+        "todo.archived",
+        when = self.owner_id == owner_id && self.is_created() && !self.is_archived()
+    )]
+    pub fn archive(&mut self, owner_id: String) {
         self.status = TodoStatus::Archived;
     }
 }
@@ -151,7 +107,7 @@ mod tests {
 
     fn open_todo() -> Todo {
         let mut t = Todo::default();
-        t.create("t1", "alice", "Buy milk").unwrap();
+        let _ = t.create("t1".into(), "alice".into(), "Buy milk".into());
         t
     }
 
@@ -167,61 +123,71 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_title_and_double_create() {
+    fn create_noops_on_empty_or_duplicate() {
         let mut t = Todo::default();
-        assert_eq!(t.create("t1", "alice", "  ").unwrap_err(), TodoError::EmptyTitle);
-        t.create("t1", "alice", "ok").unwrap();
-        assert_eq!(
-            t.create("t1", "alice", "again").unwrap_err(),
-            TodoError::AlreadyExists
-        );
+        let _ = t.create("t1".into(), "alice".into(), "  ".into());
+        assert!(!t.is_created());
+        assert_eq!(t.entity.version(), 0);
+
+        let _ = t.create("t1".into(), "alice".into(), "ok".into());
+        assert!(t.is_created());
+        let v = t.entity.version();
+        let _ = t.create("t1".into(), "alice".into(), "again".into());
+        assert_eq!(t.entity.version(), v);
+        assert_eq!(t.title, "ok");
     }
 
     #[test]
     fn only_owner_can_mutate() {
         let mut t = open_todo();
-        assert_eq!(t.complete("bob").unwrap_err(), TodoError::NotOwner);
-        t.complete("alice").unwrap();
+        let _ = t.complete("bob".into());
+        assert_eq!(t.status, TodoStatus::Open);
+        assert_eq!(t.entity.version(), 1);
+
+        let _ = t.complete("alice".into());
         assert_eq!(t.status, TodoStatus::Completed);
+        assert_eq!(t.entity.version(), 2);
     }
 
     #[test]
     fn complete_reopen_cycle() {
         let mut t = open_todo();
-        t.complete("alice").unwrap();
-        assert_eq!(
-            t.complete("alice").unwrap_err(),
-            TodoError::AlreadyCompleted
-        );
-        t.reopen("alice").unwrap();
+        let _ = t.complete("alice".into());
+        assert_eq!(t.status, TodoStatus::Completed);
+        let v = t.entity.version();
+        let _ = t.complete("alice".into());
+        assert_eq!(t.entity.version(), v);
+
+        let _ = t.reopen("alice".into());
         assert_eq!(t.status, TodoStatus::Open);
-        assert_eq!(t.reopen("alice").unwrap_err(), TodoError::NotCompleted);
+        let v = t.entity.version();
+        let _ = t.reopen("alice".into());
+        assert_eq!(t.entity.version(), v);
     }
 
     #[test]
-    fn rename_trims_and_rejects_empty() {
+    fn rename_trims_via_caller_and_noops_empty() {
         let mut t = open_todo();
-        t.rename("alice", "  Eggs  ").unwrap();
+        let _ = t.rename("alice".into(), "Eggs".into());
         assert_eq!(t.title, "Eggs");
-        assert_eq!(
-            t.rename("alice", "   ").unwrap_err(),
-            TodoError::EmptyTitle
-        );
-        // same title is no-op (no extra version if no event — check version stays)
         let v = t.entity.version();
-        t.rename("alice", "Eggs").unwrap();
+        let _ = t.rename("alice".into(), String::new());
+        assert_eq!(t.entity.version(), v);
+        assert_eq!(t.title, "Eggs");
+        let _ = t.rename("alice".into(), "Eggs".into());
         assert_eq!(t.entity.version(), v);
     }
 
     #[test]
     fn archive_is_terminal_for_mutations() {
         let mut t = open_todo();
-        t.archive("alice").unwrap();
+        let _ = t.archive("alice".into());
         assert_eq!(t.status, TodoStatus::Archived);
-        assert_eq!(t.complete("alice").unwrap_err(), TodoError::Archived);
-        assert_eq!(t.rename("alice", "x").unwrap_err(), TodoError::Archived);
-        // second archive is idempotent
-        t.archive("alice").unwrap();
+        let v = t.entity.version();
+        let _ = t.complete("alice".into());
+        let _ = t.rename("alice".into(), "x".into());
+        let _ = t.archive("alice".into());
+        assert_eq!(t.entity.version(), v);
         assert_eq!(t.status, TodoStatus::Archived);
     }
 }

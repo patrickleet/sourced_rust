@@ -29,8 +29,13 @@ test('commands.manifest.json lists create/complete and admin-only force_archive'
 });
 
 test('generateOperationsGql + generateCommandsTs share mutation text', async () => {
-  const { generateCommandsTs, generateOperationsGql, fieldToFnName, buildMutationOp } =
-    await import(pathToFileURL(genScript).href);
+  const {
+    generateCommandsTs,
+    generateOperationsGql,
+    generateCommandPoliciesTs,
+    fieldToFnName,
+    buildMutationOp
+  } = await import(pathToFileURL(genScript).href);
   assert.equal(fieldToFnName('todos_create'), 'todosCreate');
   const catalog = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const gql = generateOperationsGql(catalog);
@@ -44,6 +49,11 @@ test('generateOperationsGql + generateCommandsTs share mutation text', async () 
   const { text } = buildMutationOp(catalog.commands[0]);
   assert.ok(gql.includes(text));
   assert.ok(ts.includes(text.split('\n')[0]));
+
+  const policies = generateCommandPoliciesTs(catalog);
+  assert.match(policies, /todosCreate/);
+  assert.match(policies, /blobGamesStart/);
+  assert.match(policies, /"projection"/);
 });
 
 test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
@@ -105,13 +115,23 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.doesNotMatch(todos, /from '\$lib\/api\/commands\.generated'/);
   assert.doesNotMatch(todos, /function mergeFromServer/);
 
-  const policies = fs.readFileSync(
+  // Policies come from Rust client_reconcile → manifest → generated TS.
+  const policiesShim = fs.readFileSync(
     path.join(uiRoot, 'src/lib/gql/command-policies.ts'),
     'utf8'
   );
+  assert.match(policiesShim, /commands\.policies\.generated/);
+  const policies = fs.readFileSync(
+    path.join(uiRoot, 'src/lib/api/commands.policies.generated.ts'),
+    'utf8'
+  );
   assert.match(policies, /todosCreate/);
-  assert.match(policies, /kind:\s*'fact'/);
-  assert.match(policies, /kind:\s*'none'/);
+  assert.match(policies, /kind:\s*"fact"/);
+  assert.match(policies, /kind:\s*"none"/);
+  assert.match(policies, /blobGamesMove/);
+  assert.match(policies, /kind:\s*"projection"/);
+  assert.match(policies, /chatMessagesPost/);
+  assert.match(policies, /kind:\s*"subscription"/);
 
   const chat = fs.readFileSync(path.join(uiRoot, 'src/routes/chat/+page.svelte'), 'utf8');
   assert.match(chat, /gql\.live\s*\(/);

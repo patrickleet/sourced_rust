@@ -203,10 +203,9 @@
 
 <style>
 	.token-card {
-		background: var(--hops-bg-white);
-		border: 1px solid var(--hops-border);
-		border-radius: 8px;
-		box-shadow: var(--shadow-sm);
+		background: var(--wf-bg-elevated, #fff);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: var(--df-radius-lg, 10px);
 		overflow: hidden;
 	}
 
@@ -215,46 +214,46 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem;
-		min-height: 72px;
-		padding: 1rem 1.1rem;
+		min-height: 60px;
+		padding: 0.85rem 1rem;
 	}
 
 	.token-title-block {
 		display: flex;
 		align-items: center;
 		flex-wrap: wrap;
-		gap: 0.65rem;
+		gap: 0.55rem;
 		min-width: 0;
 	}
 
 	.token-label {
-		color: var(--hops-navy);
-		font-size: 0.98rem;
-		font-weight: 850;
+		color: var(--wf-ink, #1c1c1a);
+		font-size: 0.95rem;
+		font-weight: 600;
 	}
 
 	.token-status {
 		display: inline-flex;
 		align-items: center;
-		min-height: 26px;
-		padding: 0.2rem 0.55rem;
+		min-height: 24px;
+		padding: 0.15rem 0.5rem;
 		border-radius: 999px;
-		font-size: 0.75rem;
-		font-weight: 800;
+		font-size: 0.7rem;
+		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
 
 	.token-status.present {
-		background: rgba(24, 121, 78, 0.11);
-		border: 1px solid rgba(24, 121, 78, 0.26);
-		color: #18794e;
+		background: rgba(47, 111, 78, 0.1);
+		border: 1px solid rgba(47, 111, 78, 0.22);
+		color: var(--wf-success, #2f6f4e);
 	}
 
 	.token-status.missing {
-		background: rgba(180, 35, 24, 0.09);
-		border: 1px solid rgba(180, 35, 24, 0.2);
-		color: #b42318;
+		background: rgba(179, 58, 58, 0.08);
+		border: 1px solid rgba(179, 58, 58, 0.2);
+		color: var(--wf-danger, #b33a3a);
 	}
 
 	.token-actions {
@@ -262,7 +261,7 @@
 		align-items: center;
 		justify-content: flex-end;
 		flex-wrap: wrap;
-		gap: 0.45rem;
+		gap: 0.4rem;
 	}
 
 	.token-icon-button,
@@ -270,46 +269,46 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		border: 1px solid var(--hops-border);
-		background: var(--hops-bg-light);
-		color: var(--hops-navy);
+		border: 1px solid var(--wf-line, #e2e0d9);
+		background: transparent;
+		color: var(--wf-ink, #1c1c1a);
 		cursor: pointer;
 		transition:
-			background 0.2s ease,
-			border-color 0.2s ease,
-			color 0.2s ease;
+			background 0.15s ease,
+			border-color 0.15s ease,
+			color 0.15s ease;
 	}
 
 	.token-icon-button {
-		width: 38px;
-		height: 38px;
-		border-radius: 8px;
+		width: 34px;
+		height: 34px;
+		border-radius: var(--wf-radius, 6px);
 	}
 
 	.token-decode-button {
-		min-height: 38px;
-		gap: 0.45rem;
-		padding: 0 0.75rem;
-		border-radius: 8px;
-		font-weight: 800;
+		min-height: 34px;
+		gap: 0.4rem;
+		padding: 0 0.7rem;
+		border-radius: var(--wf-radius, 6px);
+		font-weight: 600;
+		font-size: 0.85rem;
 	}
 
 	.token-icon-button:hover,
 	.token-decode-button:hover {
-		background: var(--hops-navy);
-		border-color: var(--hops-navy);
-		color: var(--hops-text-inverse);
+		background: var(--wf-ink, #1c1c1a);
+		border-color: var(--wf-ink, #1c1c1a);
+		color: var(--wf-bg, #f6f5f2);
 	}
 
 	.token-reveal,
 	.token-decoded {
-		border-top: 1px solid var(--hops-border);
-		background: #f8fafc;
+		border-top: 1px solid var(--wf-line, #e2e0d9);
 	}
 
 	.token-reveal {
-		padding: 0.9rem 1.1rem;
-		background: var(--hops-navy);
+		padding: 0.85rem 1rem;
+		background: var(--wf-code-bg, #1c1c1a);
 	}
 
 	.token-code,
@@ -317,9 +316,9 @@
 		margin: 0;
 		overflow-x: auto;
 		white-space: pre-wrap;
-		font-family: var(--font-mono);
-		font-size: 0.86rem;
-		line-height: 1.7;
+		font-family: var(--wf-mono, ui-monospace, monospace);
+		font-size: 0.82rem;
+		line-height: 1.65;
 		overflow-wrap: anywhere;
 	}
 
@@ -336,7 +335,7 @@
 	.token-code {
 		background: transparent !important;
 		border-radius: 0 !important;
-		color: #f8fafc;
+		color: var(--wf-code-fg, #e8e6e0);
 		overflow: visible;
 		word-break: break-all;
 	}
@@ -347,59 +346,60 @@
 	}
 
 	.token-decoded {
-		padding: 1rem 1.1rem;
+		padding: 0.95rem 1rem;
+		background: rgba(28, 28, 26, 0.02);
 	}
 
 	.token-decoded-grid {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 0.85rem;
+		gap: 0.75rem;
 	}
 
 	.token-json-label {
 		display: block;
-		margin-bottom: 0.45rem;
-		color: var(--hops-text-muted);
-		font-size: 0.76rem;
-		font-weight: 850;
+		margin-bottom: 0.4rem;
+		color: var(--wf-ink-muted, #8a8a82);
+		font-size: 0.7rem;
+		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 	}
 
 	.token-json {
-		padding: 0.85rem;
+		padding: 0.75rem;
 		max-height: none;
 		overflow-x: auto;
 		overflow-y: visible;
-		border: 1px solid rgba(20, 32, 58, 0.12);
-		border-radius: 8px;
-		background: var(--hops-navy);
-		color: #f8fafc;
+		border: 1px solid var(--wf-line, #e2e0d9);
+		border-radius: var(--wf-radius, 6px);
+		background: var(--wf-code-bg, #1c1c1a);
+		color: var(--wf-code-fg, #e8e6e0);
 	}
 
 	.token-meta,
 	.token-unavailable,
 	.token-decode-error {
 		margin: 0;
-		color: var(--hops-text-muted);
-		font-size: 0.9rem;
+		color: var(--wf-ink-soft, #5c5c56);
+		font-size: 0.88rem;
 		line-height: 1.5;
 	}
 
 	.token-meta {
-		margin-top: 0.8rem;
-		font-family: var(--font-mono);
+		margin-top: 0.7rem;
+		font-family: var(--wf-mono, ui-monospace, monospace);
 	}
 
 	.token-unavailable {
-		padding: 0 1.1rem 1rem;
+		padding: 0 1rem 0.95rem;
 	}
 
 	.token-decode-error {
-		padding: 0.9rem 1.1rem 1rem;
-		border-top: 1px solid var(--hops-border);
-		color: #b42318;
-		font-weight: 750;
+		padding: 0.85rem 1rem 0.95rem;
+		border-top: 1px solid var(--wf-line, #e2e0d9);
+		color: var(--wf-danger, #b33a3a);
+		font-weight: 600;
 	}
 
 	@media (--tablet) {

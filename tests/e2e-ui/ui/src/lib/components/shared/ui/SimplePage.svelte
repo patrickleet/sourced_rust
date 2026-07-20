@@ -33,7 +33,7 @@
 .simple-page {
 	padding: 7rem 0 4rem;
 	min-height: 100vh;
-	background: var(--hops-bg-light);
+	background: var(--wf-bg, var(--hops-bg-light));
 }
 
 .simple-page-container {
@@ -65,25 +65,26 @@
 
 /* Typography defaults for simple pages */
 .simple-page-container :global(h1) {
-	font-family: var(--font-display);
-	font-size: clamp(2rem, 5vw, 3rem);
-	font-weight: 800;
-	color: var(--hops-navy);
-	margin-bottom: 1rem;
+	font-family: var(--wf-serif, var(--font-display));
+	font-size: clamp(1.65rem, 4vw, 2.15rem);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+	color: var(--wf-ink, var(--hops-navy));
+	margin-bottom: 0.85rem;
 }
 
 .simple-page-container :global(p) {
-	font-size: 1.125rem;
-	color: var(--hops-text-secondary);
-	margin-bottom: 2rem;
+	font-size: 1.02rem;
+	color: var(--wf-ink-soft, var(--hops-text-secondary));
+	margin-bottom: 1.75rem;
 }
 
 .simple-page-container :global(code) {
-	font-family: var(--font-mono);
-	font-size: 0.9em;
-	background: var(--hops-navy);
-	color: var(--hops-orange-light);
-	padding: 0.2em 0.5em;
+	font-family: var(--wf-mono, var(--font-mono));
+	font-size: 0.88em;
+	background: var(--wf-accent-soft, rgba(61, 90, 128, 0.08));
+	color: var(--wf-ink, #1c1c1a);
+	padding: 0.15em 0.4em;
 	border-radius: 4px;
 }
 </style>

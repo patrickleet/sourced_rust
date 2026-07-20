@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { loadQuery } from '$lib/gql/load-query.server';
 import { engineRoleFromGroups, isAdminEngineRole } from '$lib/roles';
-import { adminTodos } from './admin.resource';
+import { adminTodos, sortAdminTodos } from './admin.resource';
 import type { AdminAllTodosData } from './admin.resource';
 import type { PageServerLoad } from './$types';
 
@@ -20,7 +20,7 @@ export const load: PageServerLoad = async (event) => {
 	const seeded = await loadQuery<AdminAllTodosData, { todos: AdminAllTodosData['todos'] }>(
 		adminTodos.query,
 		(data) => ({
-			todos: data?.todos ?? []
+			todos: sortAdminTodos(data?.todos ?? [])
 		})
 	)(event);
 

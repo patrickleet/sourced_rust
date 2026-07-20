@@ -1,9 +1,10 @@
 /**
  * Generate command client artifacts from commands.manifest.json.
  *
- * Outputs (single source of mutation text):
- *   1. commands.operations.gql  — GraphiQL / human copy-paste
- *   2. commands.generated.ts    — same documents + typed functions
+ * Outputs (single source of mutation text + pipeline policies):
+ *   1. commands.operations.gql           — GraphiQL / human copy-paste
+ *   2. commands.generated.ts             — same documents + typed functions
+ *   3. commands.policies.generated.ts    — client_reconcile → CommandPolicy map
  *
  * Functions take the bound GraphQL client (`useGraphql(() => data)`), which
  * already owns URL + auth headers — no { url, auth } boilerplate.
@@ -218,6 +219,48 @@ export function generateCommandsTs(catalog) {
   return lines.join('\n');
 }
 
+/**
+ * Generate TS command pipeline policies from catalog `client_reconcile` hints.
+ * Keys are bound function names (`todosCreate`), matching `CommandPolicyMap`.
+ *
+ * @param {object} catalog
+ * @returns {string}
+ */
+export function generateCommandPoliciesTs(catalog) {
+  assertCatalog(catalog);
+
+  const lines = [];
+  lines.push('/**');
+  lines.push(' * GENERATED — do not edit by hand.');
+  lines.push(' * Source: e2e_service::graphql_commands() → client_reconcile → commands.manifest.json');
+  lines.push(' * Regenerate: `make gen-commands` (from tests/e2e-ui)');
+  lines.push(' * Spec: distributed GitKB tasks/graphql-qs-command-return-4 (D3)');
+  lines.push(' */');
+  lines.push(`import type { CommandPolicyMap } from '../gql/bind-commands-pipeline.ts';`);
+  lines.push('');
+  lines.push('/**');
+  lines.push(' * Default result/reconcile policies from the Rust command registry.');
+  lines.push(' * Call-site options on `gql.commands.*(input, opts)` still win.');
+  lines.push(' */');
+  lines.push('export const e2eCommandPolicies: CommandPolicyMap = {');
+
+  for (const cmd of catalog.commands) {
+    const cr = cmd.client_reconcile;
+    if (!cr?.result?.kind) continue;
+    const fn = fieldToFnName(cmd.field_name);
+    const resultKind = String(cr.result.kind);
+    const reconcileKind = cr.reconcile?.kind ? String(cr.reconcile.kind) : 'none';
+    lines.push(`\t${fn}: {`);
+    lines.push(`\t\tresult: { kind: ${JSON.stringify(resultKind)} },`);
+    lines.push(`\t\treconcile: { kind: ${JSON.stringify(reconcileKind)} }`);
+    lines.push(`\t},`);
+  }
+
+  lines.push('};');
+  lines.push('');
+  return lines.join('\n');
+}
+
 function assertCatalog(catalog) {
   if (!catalog || catalog.version !== 1 || !Array.isArray(catalog.commands)) {
     throw new Error('invalid command catalog: expected { version: 1, commands: [...] }');
@@ -278,16 +321,21 @@ function main() {
     process.argv[3] || path.join(uiRoot, 'src/lib/api/commands.generated.ts');
   const outGql =
     process.argv[4] || path.join(uiRoot, 'src/lib/api/commands.operations.gql');
+  const outPolicies =
+    process.argv[5] || path.join(uiRoot, 'src/lib/api/commands.policies.generated.ts');
 
   const catalog = JSON.parse(fs.readFileSync(inPath, 'utf8'));
   const ts = generateCommandsTs(catalog);
   const gql = generateOperationsGql(catalog);
+  const policies = generateCommandPoliciesTs(catalog);
 
   fs.mkdirSync(path.dirname(outTs), { recursive: true });
   fs.writeFileSync(outTs, ts.endsWith('\n') ? ts : ts + '\n');
   fs.writeFileSync(outGql, gql.endsWith('\n') ? gql : gql + '\n');
+  fs.writeFileSync(outPolicies, policies.endsWith('\n') ? policies : policies + '\n');
+  const withPolicy = catalog.commands.filter((c) => c.client_reconcile).length;
   console.error(
-    `gen-commands: wrote ${path.relative(uiRoot, outTs)} + ${path.relative(uiRoot, outGql)} (${catalog.commands.length} commands)`
+    `gen-commands: wrote ${path.relative(uiRoot, outTs)} + ${path.relative(uiRoot, outGql)} + ${path.relative(uiRoot, outPolicies)} (${catalog.commands.length} commands, ${withPolicy} policies)`
   );
 }
 

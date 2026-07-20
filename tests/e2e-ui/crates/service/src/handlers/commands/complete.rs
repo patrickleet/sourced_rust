@@ -35,7 +35,8 @@ where
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoCompleteInput>()?;
     let mut todo = load_todo(ctx, &input.todo_id).await?;
-    todo.complete(&owner).map_err(map_domain)?;
+    todo.ensure_owner(&owner).map_err(map_domain)?;
+    todo.complete(owner).map_err(map_domain)?;
     let fact = commit_todo_event(ctx, &mut todo, "todo.completed").await?;
     Ok(status_json(&fact))
 }

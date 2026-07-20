@@ -3,7 +3,8 @@
 # Run `npm run gen:gql` after query edits; `make gen-commands` for mutations.
 
 query Todos {
-  todos {
+  # Deterministic server order (SSR + refetch). Client also re-sorts for status buckets.
+  todos(order_by: [{ status: asc }, { todo_id: asc }]) {
     todo_id
     owner_id
     title
