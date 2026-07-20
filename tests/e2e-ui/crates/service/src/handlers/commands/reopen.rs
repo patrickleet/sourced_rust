@@ -38,8 +38,7 @@ where
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoReopenInput>()?;
     let mut todo = load_todo(ctx, &input.todo_id).await?;
-    todo.ensure_owner(&owner).map_err(map_domain)?;
-    todo.reopen(owner).map_err(map_domain)?;
+    todo.reopen(&owner).map_err(map_domain)?;
     let fact = commit_todo_event(ctx, &mut todo, "todo.reopened").await?;
     Ok(status_json(&fact))
 }

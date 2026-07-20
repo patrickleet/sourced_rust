@@ -39,8 +39,7 @@ where
     let owner = require_user(ctx.session())?;
     let input = ctx.input::<TodoArchiveInput>()?;
     let mut todo = load_todo(ctx, &input.todo_id).await?;
-    todo.ensure_owner(&owner).map_err(map_domain)?;
-    todo.archive(owner).map_err(map_domain)?;
+    todo.archive(&owner).map_err(map_domain)?;
     let fact = commit_todo_event(ctx, &mut todo, "todo.archived").await?;
     Ok(status_json(&fact))
 }
