@@ -1,4 +1,4 @@
-import { defineResource } from '$lib/gql/define-resource';
+import { defineResource } from '@hops-ops/distributed';
 import { BlobGamesDocument, type BlobGamesQuery } from './blob.generated';
 
 export type BlobGameRow = BlobGamesQuery['blob_games'][number];

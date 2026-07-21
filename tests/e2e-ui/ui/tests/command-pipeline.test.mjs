@@ -1,19 +1,15 @@
 /**
  * Unit tests for browser command pipeline + QueryCache.
- * Drives the shipped modules under src/lib/gql/cache/.
+ * Drives the published `@hops-ops/distributed/cache` entry point.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 
 const uiRoot = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
-const cacheDir = path.join(uiRoot, '../src/lib/gql/cache');
 
-// Node cannot import .ts directly — load compiled-equivalent via dynamic import
-// of the TypeScript sources through a small ESM bridge using tsx if present,
-// otherwise re-implement is forbidden: use node --experimental-strip-types when available.
+// Keep the detailed TAP-style pack in one helper while exercising only public
+// package exports. `--experimental-strip-types` also loads app-owned generated TS.
 
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';

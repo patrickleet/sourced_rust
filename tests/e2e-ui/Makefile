@@ -7,7 +7,7 @@
 #   make test-browser # Playwright UI e2e (needs make up + make run)
 
 .PHONY: all up down run run-api stop test test-domain test-suite test-live \
-	test-browser test-browser-install ui-install ui-build ui-test export-sdl gen-gql check-gql \
+	test-browser test-browser-install js-install js-build ui-install ui-build ui-check ui-test export-sdl gen-gql check-gql \
 	export-commands gen-commands check-commands check clean help
 
 # Defaults only — do NOT `include e2e-ui.env` (shell-quoted dotenv breaks Make).
@@ -21,6 +21,7 @@ UI_URL       ?= http://localhost:5180
 UI_HOST      ?= localhost
 ENV_FILE     ?= e2e-ui.env
 NPM          ?= npm
+JS_DIR       ?= ../../js
 CARGO_TEST_FLAGS ?= -- --nocapture
 
 DATABASE_URL ?= sqlite:./e2e-ui.db?mode=rwc
@@ -97,8 +98,8 @@ stop:
 	@rm -f .make-runner.pid .make-ui.pid
 	@echo stopped
 
-test: test-domain test-suite ui-install ui-build ui-test
-	@echo "OK — offline domain + suite + UI build + structural tests"
+test: test-domain test-suite ui-install ui-build ui-check ui-test
+	@echo "OK — offline domain + suite + UI build + typecheck + structural tests"
 
 test-domain:
 	cargo test -p todo-domain -p chat-domain $(CARGO_TEST_FLAGS)
@@ -124,11 +125,20 @@ test-browser: test-browser-install
 	if [ "$$code" = "000" ]; then echo "UI not reachable at $(UI_URL) — start: make run"; exit 1; fi
 	$(NPM) run test:browser
 
-ui-install:
+js-install:
+	cd $(JS_DIR) && $(NPM) install --ignore-scripts
+
+js-build: js-install
+	cd $(JS_DIR) && $(NPM) run build
+
+ui-install: js-build
 	cd ui && $(NPM) install
 
 ui-build: ui-install
 	cd ui && $(NPM) run build
+
+ui-check: ui-install
+	cd ui && $(NPM) run check
 
 ui-test: ui-install
 	cd ui && $(NPM) test
@@ -154,7 +164,8 @@ check-gql: gen-gql
 		tests/e2e-ui/ui/src/lib/gql/generated \
 		tests/e2e-ui/ui/src/routes/todos/todos.generated.ts \
 		tests/e2e-ui/ui/src/routes/chat/chat.generated.ts \
-		tests/e2e-ui/ui/src/routes/admin/admin.generated.ts; then \
+		tests/e2e-ui/ui/src/routes/admin/admin.generated.ts \
+		':(literal)tests/e2e-ui/ui/src/routes/blob/[[gameId]]/blob.generated.ts'; then \
 		echo "ERROR: GraphQL schema/codegen drift — run make gen-gql and commit"; \
 		git -C "$$ROOT" diff --stat -- tests/e2e-ui/ui/schema tests/e2e-ui/ui/src/routes tests/e2e-ui/ui/src/lib/gql/generated || true; \
 		exit 1; \

@@ -37,7 +37,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: tests/e2e-ui/ui/package-lock.json
+          cache-dependency-path: |
+            js/package-lock.json
+            tests/e2e-ui/ui/package-lock.json
+
+      - name: Verify generated GraphQL and command artifacts
+        run: make check-gql check-commands
 
       - name: Offline test suite
         run: make test
@@ -68,6 +73,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: |
+            js/package-lock.json
             tests/e2e-ui/package-lock.json
             tests/e2e-ui/ui/package-lock.json
 

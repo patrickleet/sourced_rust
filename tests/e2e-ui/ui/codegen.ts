@@ -1,11 +1,12 @@
 import type { CodegenConfig } from '@graphql-codegen/cli';
 
-// Houdini-inspired: schema + co-located *.gql → *.generated.ts next to each .gql
+// Houdini-inspired: role schema + route query/subscription documents → typed documents.
+// Registered command mutations are generated separately from the Rust manifest.
 // Use admin SDL: field-superset of user (includes admin-only mutations like todos_force_archive).
 // App still runs ops as the session role; user simply cannot execute admin-only fields at runtime.
 const config: CodegenConfig = {
 	schema: 'schema/admin.graphql',
-	documents: ['src/**/*.gql'],
+	documents: ['src/routes/**/*.gql'],
 	generates: {
 		'src/lib/gql/generated/types.ts': {
 			plugins: ['typescript']

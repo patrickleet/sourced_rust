@@ -1,6 +1,5 @@
 /**
- * Pages use the real command pipeline binder (cache + optimistic + fact/ack).
- * Drives bindCommandsPipeline + QueryCache — not page-local merge helpers.
+ * Pages use the app-generated generic binder with the package cache/pipeline.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,15 +9,10 @@ import { spawnSync } from 'node:child_process';
 
 const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('bindCommandsPipeline: optimistic create + rollback on error', () => {
+test('generated bindCommands: optimistic create + rollback on error', () => {
   const script = `
-    import { QueryCache, cacheKey } from ${JSON.stringify(
-      pathToFileURL(path.join(uiRoot, 'src/lib/gql/cache/query-cache.ts')).href
-    )};
-    import { bindCommandsPipeline } from ${JSON.stringify(
-      pathToFileURL(path.join(uiRoot, 'src/lib/gql/bind-commands-pipeline.ts')).href
-    )};
-    import { COMMAND_DOCS } from ${JSON.stringify(
+    import { QueryCache, cacheKey } from '@hops-ops/distributed/cache';
+    import { bindCommands, COMMAND_DOCS } from ${JSON.stringify(
       pathToFileURL(path.join(uiRoot, 'src/lib/api/commands.generated.ts')).href
     )};
 
@@ -38,7 +32,7 @@ test('bindCommandsPipeline: optimistic create + rollback on error', () => {
       }
     };
 
-    const commands = bindCommandsPipeline(client, { cache });
+    const commands = bindCommands(client, { cache });
     const r = await commands.todosCreate(
       { todo_id: 't1', title: 'x' },
       {
@@ -69,13 +63,11 @@ test('bindCommandsPipeline: optimistic create + rollback on error', () => {
   assert.match(r.stdout, /page-pipeline-ok/);
 });
 
-test('bindCommandsPipeline: fact success keeps optimistic without inventing second row from empty list invent', () => {
+test('generated bindCommands: fact success reconciles without duplicate rows', () => {
   const script = `
-    import { QueryCache, cacheKey } from ${JSON.stringify(
-      pathToFileURL(path.join(uiRoot, 'src/lib/gql/cache/query-cache.ts')).href
-    )};
-    import { bindCommandsPipeline } from ${JSON.stringify(
-      pathToFileURL(path.join(uiRoot, 'src/lib/gql/bind-commands-pipeline.ts')).href
+    import { QueryCache, cacheKey } from '@hops-ops/distributed/cache';
+    import { bindCommands } from ${JSON.stringify(
+      pathToFileURL(path.join(uiRoot, 'src/lib/api/commands.generated.ts')).href
     )};
 
     const TODOS = 'query Todos { todos { todo_id title status owner_id } }';
@@ -103,7 +95,7 @@ test('bindCommandsPipeline: fact success keeps optimistic without inventing seco
       }
     };
 
-    const commands = bindCommandsPipeline(client, { cache });
+    const commands = bindCommands(client, { cache });
     const r = await commands.todosCreate(
       { todo_id: 't1', title: 'x' },
       {
