@@ -27,20 +27,20 @@ test('SSR is enabled (not SPA-only)', () => {
   assert.match(todosServer, /todos\.query|accessToken/);
 });
 
-test('auth + WS modules use OIDC patterns', () => {
+test('auth shell uses OIDC and GraphQL runtime comes from the package', () => {
   const auth = fs.readFileSync(new URL('../src/auth.ts', import.meta.url), 'utf8');
   assert.match(auth, /SvelteKitAuth|@auth\/sveltekit/);
   assert.match(auth, /OIDC_ISSUER|accessToken/);
   const hooks = fs.readFileSync(new URL('../src/hooks.server.ts', import.meta.url), 'utf8');
   assert.match(hooks, /\/todos|\/chat|\/session/);
-  const ws = fs.readFileSync(new URL('../src/lib/graphql-ws.ts', import.meta.url), 'utf8');
-  assert.match(ws, /connection_init/);
-  // Bearer/auth payload built via shared auth-headers helper (same as HTTP).
-  assert.match(ws, /wsConnectionInitPayload|authorization|accessToken|Bearer/);
+
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.dependencies['@hops-ops/distributed'], 'file:../../../js');
+
   const gql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
-  assert.match(gql, /requestGraphql|serverGraphql/);
-  const req = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
-  assert.match(req, /Bearer|authorization/);
+  assert.match(gql, /@hops-ops\/distributed/);
+  assert.match(gql, /requestGraphql|createGraphqlClient|serverGraphql/);
+  assert.ok(!fs.existsSync(new URL('../src/lib/graphql-ws.ts', import.meta.url)));
 });
 
 test('website auth shell + fixture routes present', () => {
@@ -236,25 +236,21 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   // No hand-authored multi-line GraphQL strings in the resource
   assert.doesNotMatch(resource, /mutation TodosCreate|query Todos \{/);
 
-  const defineRes = fs.readFileSync(
-    new URL('../src/lib/gql/define-resource.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(defineRes, /export function defineResource/);
-
   const loadHelper = fs.readFileSync(
     new URL('../src/lib/gql/load-query.server.ts', import.meta.url),
     'utf8'
   );
-  assert.match(loadHelper, /export function loadQuery/);
-  assert.match(loadHelper, /serverGraphql/);
+  assert.match(loadHelper, /export const loadQuery/);
+  assert.match(loadHelper, /createLoadQuery|@hops-ops\/distributed\/sveltekit/);
 
-  const useGql = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
-  assert.match(useGql, /export function useGraphql/);
-  assert.match(useGql, /createGraphqlClient|\/graphql/);
+  const composition = fs.readFileSync(new URL('../src/lib/gql/index.ts', import.meta.url), 'utf8');
+  assert.match(composition, /createUseGraphql/);
+  assert.match(composition, /@hops-ops\/distributed\/sveltekit/);
+  assert.match(composition, /commands\.generated/);
+  assert.match(composition, /commands\.policies\.generated/);
 
   const page = fs.readFileSync(new URL('../src/routes/todos/+page.svelte', import.meta.url), 'utf8');
-  // Document store (Houdini-style) — cache transparent; policies from e2eCommandPolicies
+  // Document store (Houdini-style) — cache transparent; generated policies injected once.
   assert.match(page, /gql\.store\s*\(/);
   assert.match(page, /\$list\.data/);
   assert.match(page, /optimistic:/);
@@ -271,26 +267,15 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
   assert.match(page, /useGraphql|todosCreate/);
 
-  const policies = fs.readFileSync(
-    new URL('../src/lib/gql/command-policies.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(policies, /e2eCommandPolicies/);
-  assert.match(policies, /commands\.policies\.generated/);
   // Kinds live in the generated export (Rust client_reconcile → make gen-commands)
   const generatedPolicies = fs.readFileSync(
     new URL('../src/lib/api/commands.policies.generated.ts', import.meta.url),
     'utf8'
   );
+  assert.match(generatedPolicies, /commandPolicies/);
   assert.match(generatedPolicies, /kind:\s*"fact"/);
   assert.match(generatedPolicies, /kind:\s*"none"/);
   assert.match(generatedPolicies, /kind:\s*"projection"/);
-
-  const useGqlFull = fs.readFileSync(
-    new URL('../src/lib/gql/use-graphql.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(useGqlFull, /e2eCommandPolicies/);
 
   const server = fs.readFileSync(
     new URL('../src/routes/todos/+page.server.ts', import.meta.url),
@@ -302,35 +287,12 @@ test('todos: co-located .gql + resource — same query SSR + browser mutations',
   // SSR is read-only seed — no form actions / command mutations
   assert.doesNotMatch(server, /export const actions|todos_create|serverCommand|\?\/create/);
 
-  // Shared auth headers for HTTP + WS (DRY)
-  const authHeaders = fs.readFileSync(
-    new URL('../src/lib/gql/auth-headers.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(authHeaders, /export function buildAuthHeaders/);
-  assert.match(authHeaders, /wsConnectionInitPayload/);
-  assert.ok(!fs.existsSync(new URL('../src/lib/gql/documents.ts', import.meta.url)));
-
-  // Unified request path (single Jack-style core)
-  const request = fs.readFileSync(new URL('../src/lib/gql/request.ts', import.meta.url), 'utf8');
-  assert.match(request, /export async function requestGraphql/);
-  assert.match(request, /buildAuthHeaders|documentToString/);
-  const barrel = fs.readFileSync(new URL('../src/lib/gql/index.ts', import.meta.url), 'utf8');
-  assert.match(barrel, /useGraphql|defineResource|requestGraphql/);
-  const createClient = fs.readFileSync(
-    new URL('../src/lib/gql/create-client.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(createClient, /export function createGraphqlClient/);
+  // Shared HTTP/client implementation comes from the package on both sides.
   const serverGql = fs.readFileSync(new URL('../src/lib/server/graphql.ts', import.meta.url), 'utf8');
+  assert.match(serverGql, /@hops-ops\/distributed/);
   assert.match(serverGql, /requestGraphql/);
   const cleanEnv = fs.readFileSync(new URL('../src/lib/clean-env.ts', import.meta.url), 'utf8');
   assert.match(cleanEnv, /export function cleanEnvValue/);
-  const loadQuery = fs.readFileSync(
-    new URL('../src/lib/gql/load-query.server.ts', import.meta.url),
-    'utf8'
-  );
-  assert.match(loadQuery, /authFromPageData/);
 
   const schema = fs.readFileSync(new URL('../schema/user.graphql', import.meta.url), 'utf8');
   // Role SDL is exported from Rust engine (not a permanent hand pilot)
@@ -398,8 +360,7 @@ test('chat: co-located .gql + resource — SSR query, WS subscription, browser p
   assert.doesNotMatch(page, /browserGraphql|from '\$lib\/gql\/documents'/);
   assert.doesNotMatch(page, /use:enhance|\?\/create|export const actions/);
 
-  const ws = fs.readFileSync(new URL('../src/lib/graphql-ws.ts', import.meta.url), 'utf8');
-  assert.match(ws, /wsConnectionInitPayload|auth-headers/);
+  assert.ok(!fs.existsSync(new URL('../src/lib/graphql-ws.ts', import.meta.url)));
 });
 
 test('GraphQL-only API: command mutations registered, HTTP routes disabled', () => {
@@ -437,14 +398,49 @@ test('live GraphQL unauthenticated rejected when OIDC stack', { skip: !base }, a
   }
 });
 
-test('useGraphql attaches pipeline commands + store/live helpers', () => {
-  const use = fs.readFileSync(new URL('../src/lib/gql/use-graphql.ts', import.meta.url), 'utf8');
-  assert.match(use, /bindCommandsPipeline/);
-  assert.match(use, /commands:\s*bindCommandsPipeline/);
-  assert.match(use, /QueryCache/);
-  assert.match(use, /createDocumentStore|\.store\s*=|\bstore\b/);
-  assert.match(use, /\blive\b/);
-  assert.match(use, /AppGraphqlClient/);
-  assert.match(use, /e2eCommandPolicies/);
-});
+test('e2e-ui keeps thin composition and no duplicate package implementation', () => {
+  const gqlDir = new URL('../src/lib/gql/', import.meta.url);
+  const composition = fs.readFileSync(new URL('index.ts', gqlDir), 'utf8');
+  assert.match(composition, /createUseGraphql/);
+  assert.match(composition, /@hops-ops\/distributed\/sveltekit/);
+  assert.match(composition, /bindCommands/);
+  assert.match(composition, /commandPolicies/);
+  assert.match(composition, /export const useGraphql/);
 
+  const appOwned = fs
+    .readdirSync(gqlDir, { withFileTypes: true })
+    .filter((entry) => {
+      if (!entry.isDirectory()) return true;
+      return fs.readdirSync(new URL(`${entry.name}/`, gqlDir)).length > 0;
+    })
+    .map((entry) => entry.name)
+    .sort();
+  assert.deepEqual(appOwned, ['generated', 'index.ts', 'load-query.server.ts']);
+
+  const oldImplementations = [
+    '../src/lib/graphql-ws.ts',
+    '../src/lib/gql/auth-from-page.ts',
+    '../src/lib/gql/auth-headers.ts',
+    '../src/lib/gql/bind-commands-pipeline.ts',
+    '../src/lib/gql/cache/index.ts',
+    '../src/lib/gql/cache/ops.ts',
+    '../src/lib/gql/cache/pipeline.ts',
+    '../src/lib/gql/cache/query-cache.ts',
+    '../src/lib/gql/client.ts',
+    '../src/lib/gql/command-policies.ts',
+    '../src/lib/gql/create-client.ts',
+    '../src/lib/gql/define-resource.ts',
+    '../src/lib/gql/document-store.ts',
+    '../src/lib/gql/document.ts',
+    '../src/lib/gql/request.ts',
+    '../src/lib/gql/types.ts',
+    '../src/lib/gql/use-graphql.ts'
+  ];
+  for (const implementation of oldImplementations) {
+    assert.equal(
+      fs.existsSync(new URL(implementation, import.meta.url)),
+      false,
+      `${implementation} should come from @hops-ops/distributed`
+    );
+  }
+});

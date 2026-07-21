@@ -15,7 +15,10 @@ See **`tests/e2e-ui/`** for a nested workspace you can copy: pure domain crates
 handlers, a GraphQL-only public API, behavioral suite, and a SvelteKit UI with
 OIDC (Zitadel), SSR queries, co-located `.gql` + codegen, and live
 **subscriptions** over WebSocket (`/graphql/ws`) after projector commits.
-Details: [`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), the
+Reusable browser/server GraphQL transport, cache, command runtime, and the thin
+SvelteKit adapter live in [`js/`](js/) as `@hops-ops/distributed`; the e2e UI is
+its in-repository integration consumer. Details:
+[`tests/e2e-ui/README.md`](tests/e2e-ui/README.md), the
 `distributed-usage` skill, and [GraphQL query service](#graphql-query-service)
 below.
 
@@ -31,6 +34,7 @@ below.
 | Outbox | Durable publication records committed atomically with aggregates. |
 | Read models | Query-optimized relational projections, committed atomically or updated eventually. |
 | GraphQL query service | Auto-generated, **read-only** GraphQL over read models: filters, order, pagination, relationships, role RBAC, live subscriptions, and command mutations that dispatch through `microsvc`. |
+| npm JS client | Typed GraphQL HTTP/WS transport, projection cache, generated-command runtime, and a thin SvelteKit adapter under [`js/`](js/). |
 | Service bus facade | `send`/`listen` (point-to-point) and `publish`/`subscribe` (fan-out) over a swappable transport. |
 | Transports | In-memory, SQLite, Postgres, NATS JetStream, RabbitMQ, Kafka, and Knative/CloudEvents — one constructor line apart. |
 | Microservice framework | Convention-based async handlers exposed over HTTP, gRPC, the bus, GraphQL mutations, or direct dispatch. |
@@ -1628,14 +1632,14 @@ make check-gql    # fail on schema/generated drift
 | Domain crates | Pure aggregates (todos, chat) |
 | Projectors | Read models only — commands never dual-write |
 | GraphQL edge | Owner RLS, admin all-owners + force-archive, chat sub |
-| SvelteKit | Auth.js + Zitadel, SSR `loadQuery`, co-located `.gql` + `defineResource` |
+| SvelteKit | `@hops-ops/distributed` client/cache/commands + adapter, Auth.js + Zitadel, SSR `loadQuery`, co-located `.gql` + `defineResource` |
 | Suite | GraphQL-only edge, IDOR, SDL split, OIDC isolation |
 
 ```bash
 cd tests/e2e-ui
 make up && set -a && source e2e-ui.env && set +a && make run
 # UI http://127.0.0.1:5180  ·  API GraphQL http://127.0.0.1:8791/graphql
-make test         # domain + behavioral (no Docker)
+make test         # domain + behavioral + JS-backed UI build/typecheck/tests (no Docker)
 make check-gql    # schema/codegen clean
 ```
 
@@ -1911,6 +1915,7 @@ src/
   lib.rs          # Public exports
 distributed_macros/
   src/            # Proc macros: sourced, digest, aggregate, enqueue, ReadModel, Snapshot
+js/               # @hops-ops/distributed JS/TS client, command runtime, and SvelteKit adapter
 tests/e2e-ui/     # Full-stack CQRS + GraphQL + SvelteKit template (nested workspace)
 migrations/       # Explicit SQLite and Postgres migrations
 compose.yaml      # Local postgres / rabbitmq / kafka / nats for integration tests
@@ -1977,6 +1982,7 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 - `tests/microsvc/` — async handlers, dispatch, session, convention, HTTP, gRPC, and bus transports
 - `tests/graphql_*` — GraphQL engine, HTTP/WS, SDL, dialects, hardening, identity, multi-IdP OIDC
 - `tests/e2e-ui/` — multi-crate domain + GraphQL-only edge + SvelteKit OIDC template (nested workspace)
+- `js/` — publishable `@hops-ops/distributed` GraphQL client, cache, command runtime, and SvelteKit adapter
 - `examples/graphiql.rs` — seeded GraphiQL playground (`--features "graphql,sqlite"`)
 - `tests/sagas/` — saga orchestration and choreography with the outbox pattern
 - `tests/sqlite_repository/`, `tests/postgres_repository/` — durable SQL adapters
@@ -1984,4 +1990,7 @@ CI also publishes `lcov.info` as a workflow artifact and attempts an optional Co
 
 ## License
 
-MIT. See `LICENSE`.
+The Rust workspace metadata declares its crates as MIT licensed, but this
+repository does not currently contain a top-level license file. The npm package
+therefore remains `UNLICENSED` until maintainers explicitly choose and add its
+license.

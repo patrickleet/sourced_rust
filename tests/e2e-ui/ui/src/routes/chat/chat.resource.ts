@@ -2,7 +2,7 @@
  * Co-located lobby chat query + subscription — documents from `chat.gql`.
  * Posts: `$lib/api/commands.generated` → `chatMessagesPost`.
  */
-import { defineResource } from '$lib/gql/define-resource';
+import { defineResource } from '@hops-ops/distributed';
 import {
 	ChatMessagesDocument,
 	ChatMessagesLiveDocument,

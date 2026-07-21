@@ -7,10 +7,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { httpUrlToWsUrl } from '@hops-ops/distributed';
+import {
+  buildMutationOperation,
+  fieldToFunctionName,
+  generateCommandPoliciesTs,
+  generateCommandsTs,
+  generateOperationsGql
+} from '@hops-ops/distributed/codegen';
+import {
+  bindCommands as bindDistributedCommands,
+  defineCommand,
+  defineCommands
+} from '@hops-ops/distributed/commands';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const uiRoot = path.resolve(here, '..');
-const genScript = path.join(uiRoot, 'scripts/gen-commands.mjs');
 const manifestPath = path.join(uiRoot, 'src/lib/api/commands.manifest.json');
 const generatedPath = path.join(uiRoot, 'src/lib/api/commands.generated.ts');
 const operationsGql = path.join(uiRoot, 'src/lib/api/commands.operations.gql');
@@ -28,25 +40,44 @@ test('commands.manifest.json lists create/complete and admin-only force_archive'
   assert.deepEqual(byField.todos_force_archive.roles, ['admin']);
 });
 
-test('generateOperationsGql + generateCommandsTs share mutation text', async () => {
-  const {
-    generateCommandsTs,
-    generateOperationsGql,
-    generateCommandPoliciesTs,
-    fieldToFnName,
-    buildMutationOp
-  } = await import(pathToFileURL(genScript).href);
-  assert.equal(fieldToFnName('todos_create'), 'todosCreate');
+test('generic command entry point binds app-owned definitions, including zero-input commands', async () => {
+  const definitions = defineCommands({
+    ping: defineCommand({
+      field: 'ping',
+      document: 'mutation Ping { ping }',
+      hasInput: false
+    })
+  });
+  let seenVariables = 'not-called';
+  const commands = bindDistributedCommands(
+    {
+      async request(_document, variables) {
+        seenVariables = variables;
+        return { data: { ping: { ok: true } }, status: 200 };
+      }
+    },
+    definitions
+  );
+
+  const result = await commands.ping();
+  assert.deepEqual(result.data, { ok: true });
+  assert.equal(result.status, 200);
+  assert.equal(seenVariables, undefined);
+});
+
+test('published codegen creates aligned operations, commands, and policies', () => {
+  assert.equal(fieldToFunctionName('todos_create'), 'todosCreate');
   const catalog = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const gql = generateOperationsGql(catalog);
   const ts = generateCommandsTs(catalog);
   assert.match(gql, /mutation Command_todos_create/);
   assert.match(gql, /todos_force_archive/);
-  assert.match(ts, /export async function todosCreate/);
+  assert.match(ts, /export function todosCreate/);
   assert.match(ts, /COMMAND_DOCS/);
+  assert.match(ts, /COMMANDS = defineCommands/);
   assert.match(ts, /CommandClient/);
   // Same op body in both artifacts
-  const { text } = buildMutationOp(catalog.commands[0]);
+  const text = buildMutationOperation(catalog.commands[0]);
   assert.ok(gql.includes(text));
   assert.ok(ts.includes(text.split('\n')[0]));
 
@@ -54,6 +85,7 @@ test('generateOperationsGql + generateCommandsTs share mutation text', async () 
   assert.match(policies, /todosCreate/);
   assert.match(policies, /blobGamesStart/);
   assert.match(policies, /"projection"/);
+  assert.match(policies, /satisfies CommandPolicyMap<typeof COMMANDS>/);
 });
 
 test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
@@ -84,6 +116,7 @@ test('generated todosCreate uses client.request + COMMAND_DOCS', async () => {
     if (!String(seen.document).includes('todos_create')) throw new Error('doc missing');
     if (seen.variables.input.title !== 'hi') throw new Error('vars');
     if (mod.COMMAND_DOCS.todos_create !== seen.document) throw new Error('COMMAND_DOCS mismatch');
+    if (mod.COMMANDS.todosCreate.document !== seen.document) throw new Error('COMMANDS mismatch');
     if (typeof mod.todosComplete !== 'function') throw new Error('todosComplete missing');
     const bound = mod.bindCommands(client);
     const r3 = await bound.todosCreate({ todo_id: 't3', title: 'y' });
@@ -116,15 +149,11 @@ test('app pages use gql.store/live + commands pipeline (cache transparent)', () 
   assert.doesNotMatch(todos, /function mergeFromServer/);
 
   // Policies come from Rust client_reconcile → manifest → generated TS.
-  const policiesShim = fs.readFileSync(
-    path.join(uiRoot, 'src/lib/gql/command-policies.ts'),
-    'utf8'
-  );
-  assert.match(policiesShim, /commands\.policies\.generated/);
   const policies = fs.readFileSync(
     path.join(uiRoot, 'src/lib/api/commands.policies.generated.ts'),
     'utf8'
   );
+  assert.match(policies, /commandPolicies/);
   assert.match(policies, /todosCreate/);
   assert.match(policies, /kind:\s*"fact"/);
   assert.match(policies, /kind:\s*"none"/);
@@ -159,9 +188,7 @@ test('generated mutations are multiline; operations.gql is copy-paste ready', ()
   assert.match(gql, /todos_create\(input: \$input\) \{\n/);
 });
 
-test('httpUrlToWsUrl maps HTTP GraphQL paths to /graphql/ws', async () => {
-  const wsFile = path.join(uiRoot, 'src/lib/graphql-ws.ts');
-  const { httpUrlToWsUrl } = await import(pathToFileURL(wsFile).href);
+test('public client maps HTTP GraphQL paths to /graphql/ws', () => {
   const rel = httpUrlToWsUrl('/graphql');
   assert.match(rel, /\/graphql\/ws$/);
   assert.match(rel, /^ws:/);

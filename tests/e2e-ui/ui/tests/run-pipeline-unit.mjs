@@ -1,6 +1,6 @@
 /**
  * Runnable via: node --experimental-strip-types tests/run-pipeline-unit.mjs
- * Imports shipped TypeScript modules under src/lib/gql/cache/.
+ * Imports the package's public cache contract exactly as consumers do.
  */
 import assert from 'node:assert/strict';
 import {
@@ -10,7 +10,7 @@ import {
   rollback,
   runCommandPipeline,
   fx
-} from '../src/lib/gql/cache/index.ts';
+} from '@hops-ops/distributed/cache';
 
 const TODOS_DOC = 'query Todos { todos { todo_id title status } }';
 const CREATE_DOC = 'mutation TodosCreate($input: TodosCreateInput!) { todos_create(input: $input) { todo_id } }';
