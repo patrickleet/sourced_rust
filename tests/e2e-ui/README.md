@@ -15,6 +15,7 @@ A **copyable starting point** for a Distributed service + SvelteKit UI with:
 | **Login V2** | **Custom** `/login` + `/signup` in this UI (Session API + CreateCallback); not Zitadel’s stock login image |
 | **Postgres** | event store + bus + locks |
 | **SSR GraphQL** | `+page.server.ts` loads with session token (no Loading flash) |
+| **Published JS client** | Local [`js/`](../../js/) package supplies typed transport, cache, command runtime, and SvelteKit adapter |
 | Auth routes | sign-in, protected todos/chat, session inspector |
 
 ## Quick start (full stack)
@@ -55,7 +56,8 @@ make run         # API :8791 + UI :5180
 # DevHeaders + SQLite memory/file
 cargo run -p e2e-runner
 # UI without OIDC still builds; sign-in needs make up for real OIDC
-cd ui && npm install && npm run dev
+make ui-install
+cd ui && npm run dev
 ```
 
 ```bash
@@ -166,11 +168,16 @@ e2e-runner (Distributed)
 
 ## Template usage
 
-Copy this folder as a starting service: keep domain pure, swap `DATABASE_URL` / OIDC env for your IdP, and extend UI routes. Remove Fieldnote branding as needed — patterns stay.
+Copy this folder as a starting service: keep domain pure, swap `DATABASE_URL` /
+OIDC env for your IdP, and extend UI routes. Remove Fieldnote branding as needed
+— patterns stay. The in-repository fixture intentionally depends on
+`@hops-ops/distributed` through `file:../../../js` so it tests the local package;
+after copying it outside this repository, replace that dependency with a
+released npm version.
 
 ## Design docs (GitKB)
 
-Normative design lives in the hops GitKB knowledge base, not this tree:
+Normative design lives in the Distributed GitKB attached to this repository:
 
 | Spec | Content |
 |------|---------|
@@ -211,13 +218,15 @@ Edit co-located `routes/**/*.gql`, run `make gen-gql`, commit schema + `*.genera
 
 Day-to-day writes are **commands**, not hand-authored mutation documents.
 The same Rust registry (`e2e_service::graphql_commands()`) exports a catalog;
-`make gen-commands` emits:
+`make gen-commands` invokes the `distributed-gen-commands` CLI supplied by
+`@hops-ops/distributed` and emits:
 
 | Artifact | Purpose |
 |----------|---------|
 | `ui/src/lib/api/commands.manifest.json` | Machine catalog from Rust |
 | `ui/src/lib/api/commands.operations.gql` | Copy-paste mutations for GraphiQL |
 | `ui/src/lib/api/commands.generated.ts` | Same documents + `bindCommands` → `gql.commands.*` |
+| `ui/src/lib/api/commands.policies.generated.ts` | Typed result/reconciliation defaults from the service manifest |
 
 Co-located route `*.gql` files hold **queries/subscriptions** only. Command
 mutations live under `$lib/api/commands.operations.gql`.

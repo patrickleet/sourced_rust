@@ -228,7 +228,7 @@ onDestroy(() => list.destroy());
 			n: 'C3',
 			title: 'Live rooms stay live',
 			why: 'Chat needs push, not only poll. Use the same shape of data as the query, then open a live subscription into the same cache. Browsers cannot put your token on the WebSocket upgrade the way they do on HTTP — it rides in the first message after connect.',
-			path: 'chat/+page.svelte · graphql-ws',
+			path: '@hops-ops/distributed · /graphql/ws',
 			label: 'Live store',
 			blocks: [
 				{

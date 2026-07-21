@@ -5,11 +5,15 @@
 import { env } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
 import { cleanEnvValue } from '$lib/clean-env';
-import { createGraphqlClient } from '$lib/gql/create-client';
-import { requestGraphql, type GqlDocument } from '$lib/gql/request';
-import type { GqlAuth, GqlResult } from '$lib/gql/types';
+import {
+	createGraphqlClient,
+	requestGraphql,
+	type GqlAuth,
+	type GqlDocument,
+	type GqlResult
+} from '@hops-ops/distributed';
 
-export type { GqlResult } from '$lib/gql/types';
+export type { GqlResult } from '@hops-ops/distributed';
 
 export function apiBase(): string {
 	return (

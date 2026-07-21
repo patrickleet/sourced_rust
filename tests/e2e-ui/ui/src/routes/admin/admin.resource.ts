@@ -2,7 +2,7 @@
  * Admin resource — all-owners query only.
  * Force-archive: `$lib/api/commands.generated` → `todosForceArchive`.
  */
-import { defineResource } from '$lib/gql/define-resource';
+import { defineResource } from '@hops-ops/distributed';
 import { AdminAllTodosDocument, type AdminAllTodosQuery } from './admin.generated';
 
 export type AdminTodoRow = AdminAllTodosQuery['todos'][number];
@@ -34,4 +34,3 @@ export const adminTodos = defineResource<AdminAllTodosData>({
 	query: AdminAllTodosDocument,
 	select: (data) => sortAdminTodos(data.todos ?? [])
 });
-

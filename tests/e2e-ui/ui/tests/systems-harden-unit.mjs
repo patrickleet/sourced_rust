@@ -4,8 +4,9 @@
  * (from tests/e2e-ui/ui)
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import {
   QueryCache,
   cacheKey,
@@ -14,14 +15,20 @@ import {
   runCommandPipeline,
   fx,
   applyProjectionPayload
-} from '../src/lib/gql/cache/index.ts';
-import { buildAuthHeaders, wsConnectionInitPayload } from '../src/lib/gql/auth-headers.ts';
-import { authFromPageData } from '../src/lib/gql/auth-from-page.ts';
-import { looksLikeMutation, createGraphqlClient } from '../src/lib/gql/create-client.ts';
-import { createDocumentStore } from '../src/lib/gql/document-store.ts';
-import { e2eCommandPolicies } from '../src/lib/gql/command-policies.ts';
-import { bindCommandsPipeline } from '../src/lib/gql/bind-commands-pipeline.ts';
-import { authIdentityKey, useGraphql } from '../src/lib/gql/use-graphql.ts';
+} from '@hops-ops/distributed/cache';
+import {
+  authIdentityKey,
+  buildAuthHeaders,
+  createDocumentStore,
+  createGraphqlClient,
+  looksLikeMutation,
+  wsConnectionInitPayload
+} from '@hops-ops/distributed';
+import { authFromPageData, createUseGraphql } from '@hops-ops/distributed/sveltekit';
+import {
+  bindCommands as bindE2eCommands
+} from '../src/lib/api/commands.generated.ts';
+import { commandPolicies } from '../src/lib/api/commands.policies.generated.ts';
 
 const uiRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,33 +81,29 @@ check('C-U3 looksLikeMutation detects mutations', () => {
   assert.equal(looksLikeMutation('mutation M { x }'), true);
   assert.equal(looksLikeMutation('query Q { x }'), false);
   assert.equal(looksLikeMutation('  mutation { x }'), true);
+  assert.equal(looksLikeMutation('# generated comment\nmutation M { x }'), true);
 });
 
 await checkAsync('C-U3 createClient request does not write-through mutations', async () => {
   const cache = new QueryCache();
   const key = cacheKey(CREATE_DOC, { input: { todo_id: '1' } });
   let fetchCalls = 0;
-  const orig = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
-    return {
-      status: 200,
-      json: async () => ({ data: { todos_create: { todo_id: '1' } } })
-    };
-  };
-  try {
-    const client = createGraphqlClient({
-      getUrl: () => 'http://example.test/graphql',
-      getAuth: () => ({ accessToken: 'tok' }),
-      cache,
-      writeThrough: true
-    });
-    await client.request(CREATE_DOC, { input: { todo_id: '1' } });
-    assert.equal(fetchCalls, 1);
-    assert.equal(cache.get(key), undefined, 'mutation must not write cache key');
-  } finally {
-    globalThis.fetch = orig;
-  }
+  const client = createGraphqlClient({
+    getUrl: () => 'http://example.test/graphql',
+    getAuth: () => ({ accessToken: 'tok' }),
+    cache,
+    writeThrough: true,
+    fetch: async () => {
+      fetchCalls += 1;
+      return {
+        status: 200,
+        json: async () => ({ data: { todos_create: { todo_id: '1' } } })
+      };
+    }
+  });
+  await client.request(CREATE_DOC, { input: { todo_id: '1' } });
+  assert.equal(fetchCalls, 1);
+  assert.equal(cache.get(key), undefined, 'mutation must not write cache key');
 });
 
 // --- C-U5 projection payload only ---
@@ -126,11 +129,11 @@ check('C-U5 projection apply only payload keys merged into row', () => {
 });
 
 // --- C-U6 network throw rollback ---
-await checkAsync('C-U6 network throw rolls back optimistic', async () => {
+await checkAsync('C-U6 network throw rolls back optimistic with status 0', async () => {
   const cache = new QueryCache();
   const key = cacheKey(TODOS_DOC, {});
   cache.set(key, { data: { todos: [] }, updatedAt: 1 });
-  await runCommandPipeline(
+  const result = await runCommandPipeline(
     {
       cache,
       request: async () => {
@@ -149,6 +152,24 @@ await checkAsync('C-U6 network throw rolls back optimistic', async () => {
     }
   );
   assert.equal(cache.get(key).data.todos.length, 0);
+  assert.equal(result.status, 0);
+  assert.match(result.errors?.[0]?.message ?? '', /network down/);
+});
+
+await checkAsync('zero-input commands omit variables', async () => {
+  let seenVariables = 'not-called';
+  await runCommandPipeline(
+    {
+      cache: new QueryCache(),
+      request: async (_document, variables) => {
+        seenVariables = variables;
+        return { data: { ping: true }, status: 200 };
+      }
+    },
+    'mutation Ping { ping }',
+    undefined
+  );
+  assert.equal(seenVariables, undefined);
 });
 
 // --- C-U8/E5 pending merge archive ---
@@ -375,9 +396,9 @@ await checkAsync('B9 policy defaults applied; call-site overrides', async () => 
       };
     }
   };
-  const commands = bindCommandsPipeline(client, {
+  const commands = bindE2eCommands(client, {
     cache,
-    policies: e2eCommandPolicies
+    policies: commandPolicies
   });
   const r = await commands.todosCreate(
     { todo_id: '1', title: 't' },
@@ -395,8 +416,8 @@ await checkAsync('B9 policy defaults applied; call-site overrides', async () => 
   // pending marked on success with fact
   const key = cacheKey(TODOS_DOC, {});
   // may not have key if list never seeded — seed first in real pages
-  assert.ok(e2eCommandPolicies.todosCreate?.result?.kind === 'fact');
-  assert.ok(e2eCommandPolicies.todosCreate?.reconcile?.kind === 'none');
+  assert.ok(commandPolicies.todosCreate?.result?.kind === 'fact');
+  assert.ok(commandPolicies.todosCreate?.reconcile?.kind === 'none');
 });
 
 // --- B16 residual red-team ---
@@ -465,7 +486,19 @@ await checkAsync(
 
     const cache = new QueryCache();
     let page = { accessToken: tokAlice, session: null, engineRole: 'user' };
-    const gql = useGraphql(() => page, { cache });
+    const useGraphql = createUseGraphql({
+      bindCommands: bindE2eCommands,
+      policies: commandPolicies
+    });
+    const gql = useGraphql(() => page, {
+      cache,
+      client: {
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({ data: { __typename: 'Query' } })
+        })
+      }
+    });
 
     const key = cacheKey(TODOS_DOC, {});
     cache.set(key, {
@@ -477,17 +510,8 @@ await checkAsync(
     // Switch principal (same JOSE header, different sub)
     page = { accessToken: tokBob, session: null, engineRole: 'user' };
 
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({
-      status: 200,
-      json: async () => ({ data: { __typename: 'Query' } })
-    });
-    try {
-      // request → getAuth → should clear on identity change
-      await gql.request('query Ping { __typename }');
-    } finally {
-      globalThis.fetch = origFetch;
-    }
+    // request → getAuth → should clear on identity change
+    await gql.request('query Ping { __typename }');
 
     assert.equal(
       cache.get(key),
@@ -497,13 +521,21 @@ await checkAsync(
   }
 );
 
-// structural: no cache-helpers export
-check('B14 index does not export seedQueryCache', async () => {
-  const fs = await import('node:fs');
-  const idx = fs.readFileSync(path.join(uiRoot, '../src/lib/gql/index.ts'), 'utf8');
-  assert.doesNotMatch(idx, /seedQueryCache|cache-helpers/);
-  assert.match(idx, /e2eCommandPolicies/);
-  assert.ok(!fs.existsSync(path.join(uiRoot, '../src/lib/gql/cache-helpers.ts')));
+// Structural consumer boundary: app composition stays thin; implementation is packaged.
+check('B14 app keeps only thin GraphQL composition', () => {
+  const gqlDir = path.join(uiRoot, '../src/lib/gql');
+  const index = fs.readFileSync(path.join(gqlDir, 'index.ts'), 'utf8');
+  assert.match(index, /@hops-ops\/distributed/);
+  assert.match(index, /createUseGraphql/);
+  assert.match(index, /commands\.generated/);
+  assert.match(index, /commands\.policies\.generated/);
+  assert.doesNotMatch(index, /seedQueryCache|cache-helpers/);
+  for (const file of ['index.ts', 'ops.ts', 'pipeline.ts', 'query-cache.ts']) {
+    assert.ok(!fs.existsSync(path.join(gqlDir, 'cache', file)));
+  }
+  assert.ok(!fs.existsSync(path.join(gqlDir, 'create-client.ts')));
+  assert.ok(!fs.existsSync(path.join(gqlDir, 'document-store.ts')));
+  assert.ok(!fs.existsSync(path.join(gqlDir, 'bind-commands-pipeline.ts')));
 });
 
 console.log(`# tests ${passed}`);

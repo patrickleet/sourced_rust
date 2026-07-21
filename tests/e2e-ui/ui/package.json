@@ -11,13 +11,14 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "gen:schema": "cd .. && cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/user.graphql && GQL_ROLE=admin cargo run -q -p e2e-runner --bin e2e-export-sdl -- ui/schema/admin.graphql",
     "gen:gql": "graphql-codegen --config codegen.ts",
-    "gen:commands": "node scripts/gen-commands.mjs",
+    "gen:commands": "distributed-gen-commands --manifest src/lib/api/commands.manifest.json --commands src/lib/api/commands.generated.ts --operations src/lib/api/commands.operations.gql --policies src/lib/api/commands.policies.generated.ts",
     "gen": "npm run gen:schema && npm run gen:gql && npm run gen:commands",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@auth/core": "^0.40.0",
-    "@auth/sveltekit": "^1.10.0"
+    "@auth/sveltekit": "^1.10.0",
+    "@hops-ops/distributed": "file:../../../js"
   },
   "devDependencies": {
     "@csstools/postcss-global-data": "^4.0.0",

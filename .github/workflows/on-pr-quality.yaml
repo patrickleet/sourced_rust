@@ -40,3 +40,6 @@ jobs:
 
   e2e-ui:
     uses: ./.github/workflows/integration-e2e-ui.yaml
+
+  js-client:
+    uses: ./.github/workflows/integration-js.yaml

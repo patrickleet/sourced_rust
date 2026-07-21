@@ -1,0 +1,71 @@
+{
+  "name": "@hops-ops/distributed",
+  "version": "0.1.0",
+  "description": "Typed GraphQL client, cache, command runtime, and SvelteKit adapter for Distributed services",
+  "type": "module",
+  "license": "UNLICENSED",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cache": {
+      "types": "./dist/cache/index.d.ts",
+      "import": "./dist/cache/index.js"
+    },
+    "./commands": {
+      "types": "./dist/commands.d.ts",
+      "import": "./dist/commands.js"
+    },
+    "./codegen": {
+      "types": "./dist/codegen.d.ts",
+      "import": "./dist/codegen.js"
+    },
+    "./sveltekit": {
+      "types": "./dist/sveltekit/index.d.ts",
+      "import": "./dist/sveltekit/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "distributed-gen-commands": "dist/bin/distributed-gen-commands.js"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/bin/distributed-gen-commands.js', 0o755)\"",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "pack:smoke": "node scripts/pack-smoke.mjs",
+    "quality": "npm run check && npm test && npm run pack:smoke",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@graphql-typed-document-node/core": "^3.2.0",
+    "graphql": "^16.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "5.8.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hops-ops/distributed.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/hops-ops/distributed/tree/main/js#readme",
+  "bugs": {
+    "url": "https://github.com/hops-ops/distributed/issues"
+  }
+}
