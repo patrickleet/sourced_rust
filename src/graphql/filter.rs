@@ -1,16 +1,19 @@
 //! Filter expression AST + column/claim/literal DSL for permission row filters
 //! and (via the compiler) client `where` arguments.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Right-hand side of a comparison: literal, claim header, or nested operand.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Operand {
     Lit(LitValue),
     Claim(ClaimRef),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum LitValue {
     String(String),
     I64(i64),
@@ -20,17 +23,18 @@ pub enum LitValue {
     Null,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRef {
     pub header: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColRef {
     pub name: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum FilterExpr {
     And(Vec<FilterExpr>),
     Or(Vec<FilterExpr>),
@@ -55,7 +59,52 @@ pub enum FilterExpr {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// A handwritten serializer keeps the recursive AST out of serde's nested
+// generic ContentSerializer expansion (which otherwise overflows rustc's trait
+// solver when the AST is embedded in the versioned client manifest).
+impl Serialize for FilterExpr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde_json::{json, Value};
+        fn value(expression: &FilterExpr) -> Value {
+            match expression {
+                FilterExpr::And(items) => {
+                    json!({ "kind": "and", "value": items.iter().map(value).collect::<Vec<_>>() })
+                }
+                FilterExpr::Or(items) => {
+                    json!({ "kind": "or", "value": items.iter().map(value).collect::<Vec<_>>() })
+                }
+                FilterExpr::Not(item) => json!({ "kind": "not", "value": value(item) }),
+                FilterExpr::Cmp { column, op, rhs } => json!({
+                    "kind": "cmp",
+                    "value": { "column": column, "op": op, "rhs": rhs }
+                }),
+                FilterExpr::In {
+                    column,
+                    values,
+                    negated,
+                } => json!({
+                    "kind": "in",
+                    "value": { "column": column, "values": values, "negated": negated }
+                }),
+                FilterExpr::IsNull { column, is_null } => json!({
+                    "kind": "is_null",
+                    "value": { "column": column, "is_null": is_null }
+                }),
+                FilterExpr::Rel { field, predicate } => json!({
+                    "kind": "rel",
+                    "value": { "field": field, "predicate": value(predicate) }
+                }),
+            }
+        }
+        value(self).serialize(serializer)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CmpOp {
     Eq,
     Neq,
@@ -250,6 +299,105 @@ impl ColRef {
 }
 
 impl FilterExpr {
+    /// Validate row-policy literals before they reach either SQL execution or
+    /// a serialized client Surface. JSON cannot represent NaN or infinities;
+    /// accepting them would let distinct runtime policies collapse to the same
+    /// manifest/fingerprint.
+    pub fn validate_row_policy_literals(&self) -> Result<(), String> {
+        fn validate_operand(operand: &Operand) -> Result<(), String> {
+            if let Operand::Lit(LitValue::F64(value)) = operand {
+                if !value.is_finite() {
+                    return Err(format!(
+                        "row-policy floating-point literal `{value}` must be finite"
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        match self {
+            FilterExpr::And(expressions) | FilterExpr::Or(expressions) => {
+                for expression in expressions {
+                    expression.validate_row_policy_literals()?;
+                }
+            }
+            FilterExpr::Not(expression)
+            | FilterExpr::Rel {
+                predicate: expression,
+                ..
+            } => {
+                expression.validate_row_policy_literals()?;
+            }
+            FilterExpr::Cmp { rhs, .. } => validate_operand(rhs)?,
+            FilterExpr::In { values, .. } => {
+                for value in values {
+                    validate_operand(value)?;
+                }
+            }
+            FilterExpr::IsNull { .. } => {}
+        }
+        Ok(())
+    }
+
+    /// Whether this predicate can be evaluated by a JavaScript client without
+    /// changing integer identity/ordering semantics.
+    ///
+    /// Runtime SQL can safely retain all i64 values. Values outside the JS
+    /// safe-integer interval are therefore kept server-only in client
+    /// manifests until the wire protocol provides canonical decimal strings.
+    pub fn is_client_portable(&self) -> bool {
+        const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+        fn json_is_portable(value: &JsonValue) -> bool {
+            match value {
+                JsonValue::Null | JsonValue::Bool(_) | JsonValue::String(_) => true,
+                JsonValue::Number(number) => {
+                    if let Some(value) = number.as_i64() {
+                        value.unsigned_abs() <= JS_MAX_SAFE_INTEGER as u64
+                    } else if let Some(value) = number.as_u64() {
+                        value <= JS_MAX_SAFE_INTEGER as u64
+                    } else {
+                        // serde_json accepts only finite JSON floats. Requiring a
+                        // representable f64 also fails closed if a future number
+                        // backend retains a value outside the JavaScript wire.
+                        number.as_f64().is_some_and(f64::is_finite)
+                    }
+                }
+                JsonValue::Array(values) => values.iter().all(json_is_portable),
+                JsonValue::Object(values) => values.values().all(json_is_portable),
+            }
+        }
+
+        fn operand_is_portable(operand: &Operand) -> bool {
+            match operand {
+                // Client-visible claim presets are not authoritative until the
+                // server binds them to the cache scope (task 10). Treat claim-
+                // dependent authorization as server-only instead of inviting
+                // callers to evaluate it from a decoded or forged token.
+                Operand::Claim(_) => false,
+                Operand::Lit(LitValue::I64(value)) => {
+                    value.unsigned_abs() <= JS_MAX_SAFE_INTEGER as u64
+                }
+                Operand::Lit(LitValue::Json(value)) => json_is_portable(value),
+                _ => true,
+            }
+        }
+
+        match self {
+            FilterExpr::And(expressions) | FilterExpr::Or(expressions) => {
+                expressions.iter().all(FilterExpr::is_client_portable)
+            }
+            FilterExpr::Not(expression)
+            | FilterExpr::Rel {
+                predicate: expression,
+                ..
+            } => expression.is_client_portable(),
+            FilterExpr::Cmp { rhs, .. } => operand_is_portable(rhs),
+            FilterExpr::In { values, .. } => values.iter().all(operand_is_portable),
+            FilterExpr::IsNull { .. } => true,
+        }
+    }
+
     pub fn and(self, other: FilterExpr) -> FilterExpr {
         match self {
             FilterExpr::And(mut xs) => {
@@ -350,7 +498,7 @@ impl std::ops::Not for FilterExpr {
 
 #[cfg(test)]
 mod tests {
-    use super::{col, FilterExpr, LitValue, Operand};
+    use super::{claim, col, CmpOp, FilterExpr, LitValue, Operand};
 
     #[test]
     fn comparison_operands_accept_float_literals() {
@@ -373,5 +521,59 @@ mod tests {
             panic!("expected f32 literal operand to promote to f64");
         };
         assert!((value - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn row_policy_rejects_non_finite_floats_recursively_in_cmp_and_in() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cmp = FilterExpr::Not(Box::new(FilterExpr::And(vec![col("price").gt(value)])));
+            assert!(cmp
+                .validate_row_policy_literals()
+                .unwrap_err()
+                .contains("must be finite"));
+
+            let in_list = FilterExpr::Or(vec![FilterExpr::In {
+                column: "price".into(),
+                values: vec![Operand::from(1.0), Operand::from(value)],
+                negated: false,
+            }]);
+            assert!(in_list
+                .validate_row_policy_literals()
+                .unwrap_err()
+                .contains("must be finite"));
+        }
+    }
+
+    #[test]
+    fn finite_floats_pass_and_js_unsafe_i64_is_not_client_portable() {
+        let finite = col("price")
+            .gte(-123.5)
+            .and(col("price").is_in([0.0, f64::MAX]));
+        finite.validate_row_policy_literals().unwrap();
+        assert!(finite.is_client_portable());
+
+        assert!(col("id").eq(9_007_199_254_740_991_i64).is_client_portable());
+        assert!(!col("id").eq(9_007_199_254_740_992_i64).is_client_portable());
+        assert!(!col("id").eq(i64::MIN).is_client_portable());
+
+        let safe_json = FilterExpr::Cmp {
+            column: "metadata".into(),
+            op: CmpOp::Contains,
+            rhs: Operand::Lit(LitValue::Json(serde_json::json!({
+                "nested": [9_007_199_254_740_991_u64, -9_007_199_254_740_991_i64]
+            }))),
+        };
+        assert!(safe_json.is_client_portable());
+
+        let unsafe_json = FilterExpr::Cmp {
+            column: "metadata".into(),
+            op: CmpOp::Contains,
+            rhs: Operand::Lit(LitValue::Json(serde_json::json!({
+                "nested": [9_007_199_254_740_992_u64]
+            }))),
+        };
+        assert!(!unsafe_json.is_client_portable());
+
+        assert!(!col("owner_id").eq(claim("x-user-id")).is_client_portable());
     }
 }

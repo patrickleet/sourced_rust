@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use async_graphql::Request;
+use async_graphql::{Request, Variables};
 use distributed::graphql::{
     exposed_command, GraphqlCommands, GraphqlEngine, GraphqlTypeDef, GraphqlTypeField,
 };
@@ -285,9 +285,7 @@ async fn empty_role_forbidden_sets_extensions_code() {
 
     let mut session = Session::new();
     session.set(ROLE_KEY, "nobody");
-    let resp = engine
-        .execute(&session, Request::new("{ _empty }"))
-        .await;
+    let resp = engine.execute(&session, Request::new("{ _empty }")).await;
     assert!(resp.is_err(), "empty role must error");
     let err = &resp.errors[0];
     assert!(
@@ -423,6 +421,7 @@ fn graphql_type_def_mapping_golden() {
                 type_name: "String".into(),
                 nullable: false,
                 list: false,
+                item_nullable: false,
                 nested: None,
             },
             GraphqlTypeField {
@@ -430,6 +429,7 @@ fn graphql_type_def_mapping_golden() {
                 type_name: "String".into(),
                 nullable: true,
                 list: true,
+                item_nullable: false,
                 nested: None,
             },
         ],
@@ -455,6 +455,50 @@ struct DerivedOutput {
     id: String,
 }
 
+#[derive(distributed::GraphqlInput, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ScalarMatrixInput {
+    #[serde(rename = "wireRequired")]
+    required: String,
+    optional: Option<String>,
+    required_items: Vec<String>,
+    optional_items: Option<Vec<String>>,
+    nullable_items: Vec<Option<String>>,
+    optional_nullable_items: Option<Vec<Option<String>>>,
+}
+
+#[derive(distributed::GraphqlOutput, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ScalarMatrixOutput {
+    #[serde(rename = "wireRequired")]
+    required: String,
+    optional: Option<String>,
+    required_items: Vec<String>,
+    optional_items: Option<Vec<String>>,
+    nullable_items: Vec<Option<String>>,
+    optional_nullable_items: Option<Vec<Option<String>>>,
+}
+
+#[derive(distributed::GraphqlInput)]
+#[serde(rename_all(deserialize = "camelCase", serialize = "SCREAMING_SNAKE_CASE"))]
+#[allow(dead_code)]
+struct DirectionalInputNames {
+    regular_field: String,
+    #[serde(rename(deserialize = "inputID", serialize = "OUTPUT_ID"))]
+    custom_id: String,
+}
+
+#[derive(distributed::GraphqlOutput)]
+#[serde(rename_all(deserialize = "camelCase", serialize = "SCREAMING_SNAKE_CASE"))]
+#[allow(dead_code)]
+struct DirectionalOutputNames {
+    regular_field: String,
+    #[serde(rename(deserialize = "inputID", serialize = "OUTPUT_ID"))]
+    custom_id: String,
+}
+
 #[test]
 fn derive_mapping_golden() {
     use distributed::graphql::{GraphqlInputType, GraphqlOutputType};
@@ -471,4 +515,208 @@ fn derive_mapping_golden() {
     assert_eq!(output.name, "DerivedOutput");
     assert_eq!(output.fields[0].type_name, "Boolean");
     assert_eq!(output.fields[1].type_name, "String");
+}
+
+#[test]
+fn derive_preserves_outer_and_item_nullability_and_serde_names() {
+    use distributed::graphql::{GraphqlInputType, GraphqlOutputType};
+
+    let expected = [
+        ("wireRequired", false, false, false),
+        ("optional", true, false, false),
+        ("requiredItems", false, true, false),
+        ("optionalItems", true, true, false),
+        ("nullableItems", false, true, true),
+        ("optionalNullableItems", true, true, true),
+    ];
+    for definition in [
+        ScalarMatrixInput::graphql_type(),
+        ScalarMatrixOutput::graphql_type(),
+    ] {
+        for (name, nullable, list, item_nullable) in expected {
+            let field = definition
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .unwrap_or_else(|| panic!("missing {name} on {}", definition.name));
+            assert_eq!(field.type_name, "String", "{name}");
+            assert_eq!(field.nullable, nullable, "{name}");
+            assert_eq!(field.list, list, "{name}");
+            assert_eq!(field.item_nullable, item_nullable, "{name}");
+        }
+    }
+
+    let input_names: Vec<_> = DirectionalInputNames::graphql_type()
+        .fields
+        .into_iter()
+        .map(|field| field.name)
+        .collect();
+    assert_eq!(input_names, ["regularField", "inputID"]);
+
+    let output_names: Vec<_> = DirectionalOutputNames::graphql_type()
+        .fields
+        .into_iter()
+        .map(|field| field.name)
+        .collect();
+    assert_eq!(output_names, ["REGULAR_FIELD", "OUTPUT_ID"]);
+}
+
+#[tokio::test]
+async fn scalar_matrix_matches_catalog_sdl_manifest_and_generated_operation() {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, _sourced_version INTEGER NOT NULL DEFAULT 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let routes = Routes::new()
+        .command("matrix.echo")
+        .handle(|ctx: &Context<()>| {
+            let input = ctx.input::<ScalarMatrixInput>();
+            async move {
+                let input = input?;
+                Ok(serde_json::to_value(ScalarMatrixOutput {
+                    required: input.required,
+                    optional: input.optional,
+                    required_items: input.required_items,
+                    optional_items: input.optional_items,
+                    nullable_items: input.nullable_items,
+                    optional_nullable_items: input.optional_nullable_items,
+                })?)
+            }
+        });
+    let service = Arc::new(Service::new().routes(routes));
+    let commands = GraphqlCommands::new().command(
+        "matrix.echo",
+        exposed_command()
+            .field_name("echo_scalar_matrix")
+            .input::<ScalarMatrixInput>()
+            .output::<ScalarMatrixOutput>()
+            .roles(["user"]),
+    );
+
+    let expected = [
+        ("wireRequired", false, false, false, "String!"),
+        ("optional", true, false, false, "String"),
+        ("requiredItems", false, true, false, "[String!]!"),
+        ("optionalItems", true, true, false, "[String!]"),
+        ("nullableItems", false, true, true, "[String]!"),
+        ("optionalNullableItems", true, true, true, "[String]"),
+    ];
+
+    let catalog = commands.catalog();
+    let entry = &catalog.commands[0];
+    for definition in [
+        entry.input.as_ref().unwrap(),
+        entry.output.as_ref().unwrap(),
+    ] {
+        for (name, nullable, list, item_nullable, _) in expected {
+            let field = definition
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .unwrap_or_else(|| panic!("missing catalog field {name}"));
+            assert_eq!(
+                (field.nullable, field.list, field.item_nullable),
+                (nullable, list, item_nullable),
+                "catalog field {name}"
+            );
+        }
+    }
+
+    let project =
+        distributed::DistributedProjectManifest::new("matrix-service").table_schema(items_schema());
+    let engine = GraphqlEngine::from_manifest(&project, pool)
+        .unwrap()
+        .roles(&["user"])
+        .grant_all("user")
+        .commands(commands)
+        .build()
+        .unwrap();
+
+    for sdl in [
+        engine.sdl_for_role("user").unwrap(),
+        engine.ir_sdl_for_role("user").unwrap(),
+    ] {
+        for header in ["input ScalarMatrixInput {", "type ScalarMatrixOutput {"] {
+            let block = sdl
+                .split_once(header)
+                .unwrap_or_else(|| panic!("missing `{header}` in SDL:\n{sdl}"))
+                .1
+                .split_once("\n}")
+                .expect("type terminator")
+                .0;
+            for (name, _, _, _, graphql_type) in expected {
+                let line = format!("{name}: {graphql_type}");
+                assert!(
+                    block.lines().any(|candidate| candidate.trim() == line),
+                    "missing `{line}` in `{header}` block:\n{block}"
+                );
+            }
+        }
+    }
+
+    let client_manifest = engine.client_manifest_for_role("user").unwrap();
+    let command = client_manifest
+        .commands
+        .iter()
+        .find(|command| command.name == "matrix.echo")
+        .expect("matrix command");
+    for shape in [&command.input, &command.output] {
+        let distributed::graphql::ClientCommandShape::Object { definition } = shape else {
+            panic!("expected typed command shape")
+        };
+        for (name, nullable, list, item_nullable, _) in expected {
+            let field = definition
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .unwrap_or_else(|| panic!("missing manifest field {name}"));
+            assert_eq!(
+                (field.nullable, field.list, field.item_nullable),
+                (nullable, list, item_nullable),
+                "manifest field {name}"
+            );
+        }
+    }
+
+    let variables = Variables::from_json(json!({
+        "input": {
+            "wireRequired": "required",
+            "optional": null,
+            "requiredItems": ["required-item"],
+            "optionalItems": null,
+            "nullableItems": ["present", null],
+            "optionalNullableItems": [null, "also-present"]
+        }
+    }));
+    let mut session = Session::new();
+    session.set(ROLE_KEY, "user");
+    let response = engine
+        .execute(
+            &session,
+            Request::new(command.operation.clone())
+                .variables(variables)
+                .data(service),
+        )
+        .await;
+    assert!(
+        response.errors.is_empty(),
+        "generated operation must validate and execute: {:?}",
+        response.errors
+    );
+    let data = serde_json::to_value(response.data).unwrap();
+    assert_eq!(
+        data["echo_scalar_matrix"]["nullableItems"],
+        json!(["present", null])
+    );
+    assert_eq!(
+        data["echo_scalar_matrix"]["optionalNullableItems"],
+        json!([null, "also-present"])
+    );
 }

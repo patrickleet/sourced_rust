@@ -23,6 +23,7 @@ use crate::{
 };
 
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
+const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 1;
 
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
@@ -37,6 +38,8 @@ pub enum ServiceCommands {
     Scaffold(ScaffoldArgs),
     /// Print a service's Distributed project manifest as JSON
     Describe(DescribeArgs),
+    /// Compile the service's authorized client Surface manifest as JSON
+    ClientManifest(ClientManifestArgs),
     /// Render schema artifacts (SQL or an Atlas Operator resource) from a manifest
     Schema(SchemaArgs),
     /// Extract the embedded Distributed agent skills into a project
@@ -197,6 +200,32 @@ pub struct DescribeArgs {
     /// Output format.
     #[arg(long, value_enum, default_value = "json")]
     pub format: ManifestFormat,
+    /// Path to the local Distributed crate.
+    #[arg(long)]
+    pub distributed_path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct ClientManifestArgs {
+    /// Service project directory. Defaults to the current directory.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+    /// Cargo.toml for the target service. Overrides --path.
+    #[arg(long)]
+    pub manifest_path: Option<PathBuf>,
+    /// Cargo package to inspect when the manifest belongs to a workspace.
+    #[arg(long)]
+    pub package: Option<String>,
+    /// Comma-delimited feature list for the target service.
+    #[arg(long, value_delimiter = ',')]
+    pub features: Vec<String>,
+    /// Disable default features on the target service dependency.
+    #[arg(long)]
+    pub no_default_features: bool,
+    /// Surface export function. Defaults to
+    /// `<crate>::distributed_client_surface`.
+    #[arg(long)]
+    pub entrypoint: Option<String>,
     /// Path to the local Distributed crate.
     #[arg(long)]
     pub distributed_path: Option<PathBuf>,
@@ -369,6 +398,7 @@ pub fn run(args: &ServiceArgs) -> Result<(), Box<dyn Error>> {
     match &args.command {
         ServiceCommands::Scaffold(scaffold) => run_scaffold(scaffold),
         ServiceCommands::Describe(describe) => run_describe(describe),
+        ServiceCommands::ClientManifest(client) => run_client_manifest(client),
         ServiceCommands::Schema(schema) => run_schema(schema),
         ServiceCommands::Skills(skills) => match &skills.command {
             SkillsCommands::Init(init) => run_skills_init(init),
@@ -713,6 +743,25 @@ fn run_describe(args: &DescribeArgs) -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn run_client_manifest(args: &ClientManifestArgs) -> Result<(), Box<dyn Error>> {
+    let json = run_manifest_harness(
+        &HarnessOptions {
+            path: args.path.clone(),
+            manifest_path: args.manifest_path.clone(),
+            package: args.package.clone(),
+            features: args.features.clone(),
+            no_default_features: args.no_default_features,
+            entrypoint: args.entrypoint.clone(),
+            distributed_path: args.distributed_path.clone(),
+        },
+        HarnessMode::ClientManifest,
+    )?;
+    let manifest: serde_json::Value = serde_json::from_str(&json)?;
+    validate_client_manifest_json(&manifest)?;
+    println!("{}", serde_json::to_string_pretty(&manifest)?);
+    Ok(())
+}
+
 fn run_schema(args: &SchemaArgs) -> Result<(), Box<dyn Error>> {
     let mode = match args.format {
         SchemaFormat::Graphql => HarnessMode::SchemaGraphql,
@@ -952,6 +1001,56 @@ fn validate_manifest_json(envelope: &serde_json::Value) -> Result<(), Box<dyn Er
     }
     if envelope.get("project").is_none() {
         return Err("manifest JSON is missing project".into());
+    }
+    Ok(())
+}
+
+fn validate_client_manifest_json(manifest: &serde_json::Value) -> Result<(), Box<dyn Error>> {
+    let Some(version) = manifest
+        .get("manifest_version")
+        .and_then(serde_json::Value::as_u64)
+    else {
+        return Err("client manifest JSON is missing numeric manifest_version".into());
+    };
+    if version != DISTRIBUTED_CLIENT_MANIFEST_VERSION {
+        return Err(format!(
+            "unsupported Distributed client manifest version {version}; expected {DISTRIBUTED_CLIENT_MANIFEST_VERSION}"
+        )
+        .into());
+    }
+    if manifest
+        .get("protocol_version")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err("client manifest JSON is missing numeric protocol_version".into());
+    }
+    for field in ["service_id", "schema_fingerprint", "protocol_fingerprint"] {
+        if manifest
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(format!("client manifest JSON is missing string {field}").into());
+        }
+    }
+    for field in ["surface", "capabilities"] {
+        if manifest
+            .get(field)
+            .and_then(serde_json::Value::as_object)
+            .is_none()
+        {
+            return Err(format!("client manifest JSON is missing object {field}").into());
+        }
+    }
+    for field in ["scalar_codecs", "models", "roots", "commands", "projectors"] {
+        if manifest
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_none()
+        {
+            return Err(format!("client manifest JSON is missing array {field}").into());
+        }
     }
     Ok(())
 }

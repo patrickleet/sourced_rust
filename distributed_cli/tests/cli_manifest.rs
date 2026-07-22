@@ -46,6 +46,22 @@ fn describe_emits_manifest_json() {
 
 #[test]
 #[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
+fn client_manifest_uses_service_surface_export() {
+    let json = dctl(&["client-manifest"]);
+    let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(manifest["manifest_version"], 1);
+    assert_eq!(manifest["service_id"], "orders");
+    assert_eq!(manifest["surface"]["kind"], "role");
+    assert_eq!(manifest["surface"]["name"], "user");
+    assert!(manifest["schema_fingerprint"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert_eq!(manifest["models"][0]["id"], "OrderView");
+}
+
+#[test]
+#[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
 fn schema_renders_postgres_sql() {
     let sql = dctl(&["schema", "--dialect", "postgres"]);
     assert!(sql.contains("CREATE TABLE"), "sql: {sql}");

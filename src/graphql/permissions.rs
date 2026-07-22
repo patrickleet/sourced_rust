@@ -87,6 +87,7 @@ impl ReadPermission {
         self
     }
 
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     pub(crate) fn allows_column(&self, name: &str) -> bool {
         if self.all_columns {
             return true;
@@ -124,6 +125,12 @@ pub fn role_grant_from_read_permission(perm: &ReadPermission) -> RoleGrant {
     };
     if perm.aggregations {
         g = g.with_aggregations();
+    }
+    if let Some(predicate) = &perm.row_filter {
+        g = g.rows(predicate.clone());
+    }
+    if let Some(limit) = perm.limit {
+        g = g.limit(limit);
     }
     g
 }
@@ -183,9 +190,8 @@ mod tests {
 
     #[test]
     fn a12_column_list_and_aggregations() {
-        let g = role_grant_from_read_permission(
-            &read().columns(["order_id", "status"]).aggregations(),
-        );
+        let g =
+            role_grant_from_read_permission(&read().columns(["order_id", "status"]).aggregations());
         assert!(!g.all_columns);
         assert!(g.columns.contains("order_id"));
         assert!(g.columns.contains("status"));
@@ -201,10 +207,7 @@ mod tests {
         let admin = read().all_columns().aggregations();
         let key_u = ("M".to_string(), "user".to_string());
         let key_a = ("M".to_string(), "admin".to_string());
-        let map = role_grants_from_model_role_perms(
-            "user",
-            [(&key_u, &user), (&key_a, &admin)],
-        );
+        let map = role_grants_from_model_role_perms("user", [(&key_u, &user), (&key_a, &admin)]);
         assert_eq!(map.len(), 1);
         assert!(map["M"].columns.contains("a"));
         assert!(!map["M"].all_columns);
