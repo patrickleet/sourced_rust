@@ -1,0 +1,25 @@
+error[E0277]: the trait bound `distributed::graphql::EffectInputTerminalKind: distributed::graphql::EffectInputDescendableKind` is not satisfied
+  --> tests/command_effects_compile_fail/list_path_descent.rs:23:13
+   |
+23 |       let _ = command_effects! {
+   |  _____________^
+24 | |         input: Input;
+25 | |         patch View {
+26 | |             key { id: input.id },
+27 | |             set { title: input.items<ItemInput>.title }
+28 | |         };
+29 | |     };
+   | |_____^ the trait `distributed::graphql::EffectInputDescendableKind` is not implemented for `distributed::graphql::EffectInputTerminalKind`
+   |
+help: the trait `distributed::graphql::EffectInputFieldMarker` is implemented for `distributed::graphql::EffectInputPath<Outer, Inner>`
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   | / impl<Outer, Inner> EffectInputFieldMarker for EffectInputPath<Outer, Inner>
+   | | where
+   | |     Outer: EffectInputFieldMarker,
+   | |     Inner: EffectInputFieldMarker<Input = Outer::Nested>,
+   | |     Outer::PathKind: EffectInputDescendableKind,
+   | |     Outer::Nullability: CombineEffectNullability<Inner::Nullability>,
+   | |_____________________________________________________________________^
+   = note: required for `distributed::graphql::EffectInputPath<__DistributedInputEffectInputField_items, __DistributedItemInputEffectInputField_title>` to implement `distributed::graphql::EffectInputFieldMarker`
+   = note: this error originates in the macro `command_effects` (in Nightly builds, run with -Z macro-backtrace for more info)

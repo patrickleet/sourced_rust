@@ -1,0 +1,5 @@
+error: uuid_v7() cannot be used as an anonymous effect value; declare `default input.field = uuid_v7()` with command_input_defaults! and reference `input.field`
+  --> tests/command_effects_compile_fail/anonymous_generated_effect.rs:21:33
+   |
+21 |             set { generated_id: uuid_v7() }
+   |                                 ^^^^^^^

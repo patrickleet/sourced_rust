@@ -1,0 +1,5 @@
+error: duplicate command-effect field `title`
+  --> tests/command_effects_compile_fail/duplicate_set_field.rs:22:39
+   |
+22 |             set { title: input.title, title: "duplicate" }
+   |                                       ^^^^^

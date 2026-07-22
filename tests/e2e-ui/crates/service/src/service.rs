@@ -201,11 +201,14 @@ pub fn build_graphql_engine(
     let commands = graphql_commands();
 
     let mut b = GraphqlEngine::builder(pool)
+        .service_id("e2e-ui")
         .roles(&["user", "admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<TodoView>(
             ModelPermissions::new()
-                .grant("user", read().all_columns().rows(
+                .grant(
+                    "user",
+                    read().all_columns().rows(
                         distributed::graphql::col("owner_id")
                             .eq(distributed::graphql::claim("x-user-id")),
                     ),
@@ -266,7 +269,8 @@ fn env_clean(name: &str) -> String {
     let mut s = std::env::var(name).unwrap_or_default().trim().to_string();
     for _ in 0..2 {
         if s.len() >= 2
-            && ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
+            && ((s.starts_with('\'') && s.ends_with('\''))
+                || (s.starts_with('"') && s.ends_with('"')))
         {
             s = s[1..s.len() - 1].trim().to_string();
         } else {
@@ -286,7 +290,12 @@ pub fn identity_from_env() -> IdentityConfig {
     }
     let jwks = env_clean("OIDC_JWKS_URI");
     eprintln!("e2e-ui: OidcBearer issuer={iss} audience={aud}");
-    oidc_bearer_config(iss, aud, if jwks.is_empty() { None } else { Some(jwks) }, None)
+    oidc_bearer_config(
+        iss,
+        aud,
+        if jwks.is_empty() { None } else { Some(jwks) },
+        None,
+    )
 }
 
 pub fn oidc_bearer_config(

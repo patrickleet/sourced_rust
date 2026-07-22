@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/command_effects_compile_fail/effect_input_type_mismatch.rs:31:78
+   |
+31 |     let _ = typed_command::<InputA, Accepted<Output>>("view.delete").effects(effects);
+   |                                                                      ------- ^^^^^^^ expected `CompiledCommandEffects<InputA>`, found `CompiledCommandEffects<InputB>`
+   |                                                                      |
+   |                                                                      arguments to this method are incorrect
+   |
+   = note: expected struct `CompiledCommandEffects<InputA>`
+              found struct `CompiledCommandEffects<InputB>`
+note: method defined here
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   |     pub fn effects(mut self, effects: CompiledCommandEffects<I>) -> Self {
+   |            ^^^^^^^

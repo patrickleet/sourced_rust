@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use async_graphql::http::{GraphiQLSource, ALL_WEBSOCKET_PROTOCOLS};
 use async_graphql::{Data, Executor, Request, Response as GqlResponse};
-use async_graphql_axum::{
-    GraphQLProtocol, GraphQLRequest, GraphQLResponse, GraphQLWebSocket,
-};
+use async_graphql_axum::{GraphQLProtocol, GraphQLRequest, GraphQLResponse, GraphQLWebSocket};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -110,6 +108,10 @@ pub fn graphql_router(engine: Arc<GraphqlEngine>) -> Router {
 
 /// GraphQL router that can dispatch command mutations through a [`Service`].
 pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Service>) -> Router {
+    service
+        .validate_graphql_engine(&engine)
+        .unwrap_or_else(|error| panic!("cannot serve GraphQL with this service: {error}"));
+
     // Validate command names are registered.
     let registered: std::collections::HashSet<String> = service
         .command_names()
@@ -275,19 +277,15 @@ pub async fn microsvc_graphql_ws(
                     let engine = engine_for_init;
                     let upgrade_headers = upgrade_headers;
                     async move {
-                        let session = match resolve_ws_session(
-                            &engine,
-                            &upgrade_headers,
-                            base,
-                            &payload,
-                        )
-                        .await
-                        {
-                            Ok(s) => s,
-                            Err(msg) => {
-                                return Err(async_graphql::Error::new(msg));
-                            }
-                        };
+                        let session =
+                            match resolve_ws_session(&engine, &upgrade_headers, base, &payload)
+                                .await
+                            {
+                                Ok(s) => s,
+                                Err(msg) => {
+                                    return Err(async_graphql::Error::new(msg));
+                                }
+                            };
                         let mut data = Data::default();
                         data.insert(session);
                         Ok(data)

@@ -1,0 +1,5 @@
+error: effect set cannot assign key field `id`; upsert/patch identity materializes from `key` and rekeying is unsupported
+  --> tests/command_effects_compile_fail/primary_key_set_assignment.rs:20:19
+   |
+20 |             set { id: input.id }
+   |                   ^^

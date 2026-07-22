@@ -1,0 +1,5 @@
+error[E0063]: missing field `tenant_id` in initializer of `__DistributedViewEffectKey`
+  --> tests/command_effects_compile_fail/incomplete_composite_key.rs:19:16
+   |
+19 |         delete View { key { record_id: input.record_id } };
+   |                ^^^^ missing `tenant_id`

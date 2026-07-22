@@ -47,6 +47,10 @@ use super::session::Session;
 use crate::bus::{
     Bus, Message, MessageKind, MessagePublisher, RunOptions, SubscriptionPlan, TransportError,
 };
+use crate::graphql::command_contract::{
+    CommandOutcome, TypedCommandContract, TypedServiceCommandBinding,
+};
+use crate::graphql::{PreparedCommand, TypedCommand};
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
 
@@ -74,6 +78,67 @@ pub trait Handler<'a, D: 'a>: Send + Sync {
     fn call(&self, ctx: &'a Context<'a, D>) -> Self::Future;
 }
 
+/// Restricted metadata context for typed causal command handlers.
+///
+/// This context intentionally has no dependency, repository, read-model, or
+/// commit access. Task 5 may extend it with a framework-owned staged unit of
+/// work, but application code can never commit and then wrap the result.
+pub struct CausalCommandContext<'a> {
+    message: &'a Message,
+    session: &'a Session,
+}
+
+impl<'a> CausalCommandContext<'a> {
+    fn from_legacy<D>(context: &'a Context<'a, D>) -> Self {
+        Self {
+            message: context.message(),
+            session: context.session(),
+        }
+    }
+
+    pub fn command_name(&self) -> &str {
+        self.message.name()
+    }
+
+    pub fn message_id(&self) -> Option<&str> {
+        self.message.id()
+    }
+
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.message.correlation_id()
+    }
+
+    pub fn causation_id(&self) -> Option<&str> {
+        self.message.causation_id()
+    }
+
+    pub fn trace_context(&self) -> crate::TraceContext {
+        self.message.trace_context()
+    }
+
+    pub fn user_id(&self) -> Result<&str, HandlerError> {
+        self.session
+            .user_id()
+            .ok_or_else(|| HandlerError::Unauthorized("missing user ID in session".into()))
+    }
+
+    pub fn role(&self) -> Option<&str> {
+        self.session.role()
+    }
+
+    pub fn claim(&self, name: &str) -> Option<&str> {
+        self.session.get(name)
+    }
+}
+
+/// A typed causal command handler. The framework binds the decoded input to
+/// the same `I` used by the GraphQL declaration, and the handler may only
+/// prepare a sealed consistency outcome for the durable committer.
+pub trait PreparedCommandHandler<'a, I, K: CommandOutcome>: Send + Sync {
+    type Future: Future<Output = Result<PreparedCommand<K>, HandlerError>> + Send + 'a;
+    fn call(&self, ctx: &'a CausalCommandContext<'a>, input: I) -> Self::Future;
+}
+
 impl<'a, D, F, Fut> Handler<'a, D> for F
 where
     D: 'a,
@@ -86,11 +151,94 @@ where
     }
 }
 
+impl<'a, I, K, F, Fut> PreparedCommandHandler<'a, I, K> for F
+where
+    I: 'a,
+    K: CommandOutcome,
+    F: Fn(&'a CausalCommandContext<'a>, I) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<PreparedCommand<K>, HandlerError>> + Send + 'a,
+{
+    type Future = Fut;
+
+    fn call(&self, ctx: &'a CausalCommandContext<'a>, input: I) -> Self::Future {
+        self(ctx, input)
+    }
+}
+
 fn boxed_handler<D, F>(handler: F) -> Arc<HandlerFn<D>>
 where
     F: for<'a> Handler<'a, D> + 'static,
 {
     Arc::new(move |ctx| Box::pin(handler.call(ctx)) as HandlerFuture<'_>)
+}
+
+#[derive(Debug)]
+struct DurableCommandCommitterUnavailable;
+
+impl std::fmt::Display for DurableCommandCommitterUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "typed causal command dispatch requires the durable command committer (task 5)",
+        )
+    }
+}
+
+impl std::error::Error for DurableCommandCommitterUnavailable {}
+
+/// Error returned when attaching a GraphQL engine whose typed command
+/// inventory is not exactly the executable service inventory, or when causal
+/// execution cannot yet be fenced by the durable committer.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphqlServiceBindError(pub String);
+
+#[cfg(feature = "graphql")]
+impl std::fmt::Display for GraphqlServiceBindError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[cfg(feature = "graphql")]
+impl std::error::Error for GraphqlServiceBindError {}
+
+fn boxed_prepared_handler<D, I, K, F>(
+    handler: F,
+    retained_guard: Option<Arc<GuardFn<D>>>,
+) -> Arc<HandlerFn<D>>
+where
+    D: Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+    F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+{
+    // Retain the type-checked executable handler without invoking it. Task 5
+    // replaces this adapter with reservation -> decode -> handler -> atomic
+    // CommitBatch/ledger completion. Calling application code before that
+    // boundary could permit an unfenced legacy commit.
+    let handler = Arc::new(handler);
+    Arc::new(move |ctx| {
+        let handler = Arc::clone(&handler);
+        let retained_guard = retained_guard.clone();
+        let causal_context = CausalCommandContext::from_legacy(ctx);
+        Box::pin(async move {
+            let _application_code_is_intentionally_not_invoked =
+                (handler, retained_guard, causal_context);
+            Err(HandlerError::Other(Box::new(
+                DurableCommandCommitterUnavailable,
+            )))
+        }) as HandlerFuture<'_>
+    })
+}
+
+fn boxed_causal_guard<D, G>(guard: G) -> Arc<GuardFn<D>>
+where
+    G: for<'a> Fn(&CausalCommandContext<'a>) -> bool + Send + Sync + 'static,
+{
+    Arc::new(move |context| {
+        let causal_context = CausalCommandContext::from_legacy(context);
+        guard(&causal_context)
+    })
 }
 
 /// How a handler expects the transport to deliver matching messages.
@@ -267,6 +415,18 @@ pub struct RouteBuilder<D> {
     spec: HandlerSpec,
 }
 
+/// Builder returned by [`Routes::typed_command`].
+///
+/// Unlike a legacy JSON route, the declaration and executable handler share
+/// the same input and committed-outcome types. The handler is retained but
+/// cannot execute until task 5 installs the durable command committer.
+pub struct TypedRouteBuilder<D, I, K: CommandOutcome> {
+    routes: Routes<D>,
+    route_name: &'static str,
+    contract: TypedCommandContract,
+    _types: std::marker::PhantomData<fn(I) -> K>,
+}
+
 impl<D: Send + Sync + 'static> RouteBuilder<D> {
     /// Register an async handler without a guard.
     pub fn handle<F>(self, handler: F) -> Routes<D>
@@ -288,6 +448,39 @@ impl<D: Send + Sync + 'static> RouteBuilder<D> {
     }
 }
 
+impl<D, I, K> TypedRouteBuilder<D, I, K>
+where
+    D: Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+{
+    /// Register a typed causal command handler without a guard.
+    pub fn handle<F>(self, handler: F) -> Routes<D>
+    where
+        F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+    {
+        self.routes.register_typed_handler(
+            self.route_name,
+            self.contract,
+            boxed_prepared_handler(handler, None),
+        )
+    }
+
+    /// Register a typed causal command handler with a synchronous guard.
+    pub fn guarded<G, F>(self, guard: G, handler: F) -> Routes<D>
+    where
+        G: for<'a> Fn(&CausalCommandContext<'a>) -> bool + Send + Sync + 'static,
+        F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+    {
+        let guard = boxed_causal_guard(guard);
+        self.routes.register_typed_handler(
+            self.route_name,
+            self.contract,
+            boxed_prepared_handler(handler, Some(guard)),
+        )
+    }
+}
+
 /// A typed bundle of command/event handlers and the dependency value they use.
 ///
 /// Handlers are keyed by kind, then name, so dispatch looks up by `&str`
@@ -296,6 +489,7 @@ pub struct Routes<D> {
     dependencies: D,
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
+    typed_commands: Vec<TypedCommandContract>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
 }
 
@@ -306,6 +500,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
+            typed_commands: Vec::new(),
             outbox_configurator: None,
         }
     }
@@ -320,7 +515,9 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// otherwise silently drop previously registered handlers.
     fn assert_no_registrations(&self, builder: &str) {
         assert!(
-            self.handlers.is_empty() && self.handler_specs.is_empty(),
+            self.handlers.is_empty()
+                && self.handler_specs.is_empty()
+                && self.typed_commands.is_empty(),
             "Routes::{builder} must be called before registering handlers"
         );
     }
@@ -349,6 +546,22 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// Start registering a command handler that consumes JSON payload input.
     pub fn command(self, name: &'static str) -> RouteBuilder<D> {
         self.handler(HandlerSpec::command(name))
+    }
+
+    /// Register a typed command declaration and its executable handler as one
+    /// inventory entry.
+    pub fn typed_command<I, K>(self, command: TypedCommand<I, K>) -> TypedRouteBuilder<D, I, K>
+    where
+        I: serde::de::DeserializeOwned + Send + 'static,
+        K: CommandOutcome,
+    {
+        let (route_name, contract) = command.into_parts();
+        TypedRouteBuilder {
+            routes: self,
+            route_name,
+            contract,
+            _types: std::marker::PhantomData,
+        }
     }
 
     /// Start registering an event handler that consumes JSON payload input.
@@ -395,6 +608,32 @@ impl<D: Send + Sync + 'static> Routes<D> {
         }
         self.handler_specs.push(spec);
         self
+    }
+
+    fn register_typed_handler(
+        self,
+        route_name: &'static str,
+        contract: TypedCommandContract,
+        handle: Arc<HandlerFn<D>>,
+    ) -> Self {
+        assert_eq!(
+            route_name, contract.name,
+            "typed command route and contract ids must match"
+        );
+        assert!(
+            !self
+                .typed_commands
+                .iter()
+                .any(|registered| registered.name == contract.name),
+            "duplicate typed command declaration for `{}`",
+            contract.name
+        );
+        // The placeholder handler owns (but never invokes) any application
+        // guard. Registering it in the legacy guard slot would run application
+        // code before the durable committer fence.
+        let mut routes = self.register_handler(HandlerSpec::command(route_name), None, handle);
+        routes.typed_commands.push(contract);
+        routes
     }
 
     fn registered_keys(&self) -> Vec<(MessageKind, String)> {
@@ -477,6 +716,7 @@ pub struct Service {
     routes: Vec<Box<dyn ErasedRoutes>>,
     index: HashMap<MessageKind, HashMap<String, usize>>,
     handler_specs: Vec<HandlerSpec>,
+    typed_commands: Vec<TypedCommandContract>,
     runner: Option<ServiceRunner>,
     /// When false, HTTP does not mount `POST /{command}` (GraphQL / health only).
     /// Commands remain dispatchable via GraphQL mutations and in-process `dispatch`.
@@ -493,6 +733,7 @@ impl Service {
             routes: Vec::new(),
             index: HashMap::new(),
             handler_specs: Vec::new(),
+            typed_commands: Vec::new(),
             runner: None,
             http_command_routes: true,
             #[cfg(feature = "graphql")]
@@ -516,15 +757,94 @@ impl Service {
 
     /// Attach a GraphQL query engine served at `POST /graphql`.
     ///
-    /// Panics if a command named `graphql` is already registered (route clash).
+    /// Panics when [`Self::try_with_graphql`] rejects the attachment. New code
+    /// that registers typed commands should prefer the fallible form.
     #[cfg(feature = "graphql")]
-    pub fn with_graphql(mut self, engine: crate::graphql::GraphqlEngine) -> Self {
-        assert!(
-            !self.handles_message(crate::bus::MessageKind::Command, "graphql"),
-            "cannot enable GraphQL: a command named `graphql` is already registered"
-        );
+    pub fn with_graphql(self, engine: crate::graphql::GraphqlEngine) -> Self {
+        self.try_with_graphql(engine)
+            .unwrap_or_else(|error| panic!("cannot enable GraphQL: {error}"))
+    }
+
+    /// Validate and attach a GraphQL engine.
+    ///
+    /// Typed commands are compared by service ID, a canonical structural
+    /// fingerprint, and exact Rust input/output `TypeId`s. A validated engine
+    /// may attach and serve reads, while typed mutation dispatch fails closed
+    /// until task 5 supplies the durable command committer; application
+    /// handlers are never invoked before that boundary.
+    #[cfg(feature = "graphql")]
+    pub fn try_with_graphql(
+        mut self,
+        engine: crate::graphql::GraphqlEngine,
+    ) -> Result<Self, GraphqlServiceBindError> {
+        self.validate_graphql_engine(&engine)?;
         self.graphql = Some(std::sync::Arc::new(engine));
-        self
+        Ok(self)
+    }
+
+    #[cfg(feature = "graphql")]
+    pub(crate) fn validate_graphql_engine(
+        &self,
+        engine: &crate::graphql::GraphqlEngine,
+    ) -> Result<(), GraphqlServiceBindError> {
+        let service_id = self.name().ok_or_else(|| {
+            GraphqlServiceBindError(
+                "GraphQL attachment requires a stable Service::named identity".into(),
+            )
+        })?;
+        let engine_service_id = engine.service_id().ok_or_else(|| {
+            GraphqlServiceBindError(
+                "GraphQL attachment requires an engine with a validated service ID".into(),
+            )
+        })?;
+        if service_id != engine_service_id {
+            return Err(GraphqlServiceBindError(format!(
+                "service ID mismatch: executable service `{service_id}` vs GraphQL engine `{engine_service_id}`"
+            )));
+        }
+        if self.handles_message(crate::bus::MessageKind::Command, "graphql") {
+            return Err(GraphqlServiceBindError(
+                "a command named `graphql` is already registered".into(),
+            ));
+        }
+
+        match (
+            self.typed_commands.is_empty(),
+            engine.typed_command_binding(),
+        ) {
+            (true, None) => {}
+            (_, Some(engine_binding)) => {
+                let service_binding = self
+                    .typed_command_binding()
+                    .map_err(GraphqlServiceBindError)?;
+                if service_binding.service_id != engine_binding.service_id {
+                    return Err(GraphqlServiceBindError(format!(
+                        "service ID mismatch: executable service `{}` vs GraphQL engine `{}`",
+                        service_binding.service_id, engine_binding.service_id
+                    )));
+                }
+                if service_binding.structural_fingerprint != engine_binding.structural_fingerprint {
+                    return Err(GraphqlServiceBindError(format!(
+                        "typed command structural fingerprint mismatch: executable `{}` vs GraphQL `{}`",
+                        service_binding.structural_fingerprint,
+                        engine_binding.structural_fingerprint
+                    )));
+                }
+                if service_binding.types != engine_binding.types {
+                    return Err(GraphqlServiceBindError(
+                        "typed command Rust input/output TypeId mismatch".into(),
+                    ));
+                }
+            }
+            (false, None) => {
+                return Err(GraphqlServiceBindError(
+                    "GraphQL engine was not derived from this service's typed command inventory"
+                        .into(),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// The attached GraphQL engine, if any.
@@ -548,7 +868,23 @@ impl Service {
     /// every replica of one service deployment; use different names for independent
     /// event consumers that each need their own event copy.
     pub fn named(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
+        let name = name.into();
+        assert!(!name.trim().is_empty(), "service name must not be empty");
+        if let Some(existing) = self.name.as_deref() {
+            assert_eq!(
+                existing, name,
+                "service identity was already configured and cannot be changed"
+            );
+        }
+        #[cfg(feature = "graphql")]
+        if let Some(engine) = &self.graphql {
+            assert_eq!(
+                engine.service_id(),
+                Some(name.as_str()),
+                "attached GraphQL engine identity does not match renamed service"
+            );
+        }
+        self.name = Some(name);
         self
     }
 
@@ -581,6 +917,12 @@ impl Service {
         D: Send + Sync + 'static,
     {
         let keys = routes.registered_keys();
+        let typed_commands = routes.typed_commands.clone();
+        #[cfg(feature = "graphql")]
+        assert!(
+            self.graphql.is_none() || typed_commands.is_empty(),
+            "cannot add typed command routes after attaching a GraphQL engine"
+        );
         for (kind, name) in &keys {
             assert!(
                 !self.handles_message(*kind, name),
@@ -596,6 +938,16 @@ impl Service {
                 "cannot register command `graphql` while GraphQL is enabled on this service"
             );
         }
+        for contract in &typed_commands {
+            assert!(
+                !self
+                    .typed_commands
+                    .iter()
+                    .any(|registered| registered.name == contract.name),
+                "duplicate typed command declaration for `{}`",
+                contract.name
+            );
+        }
 
         let route_index = self.routes.len();
         for (kind, name) in keys {
@@ -605,7 +957,19 @@ impl Service {
                 .insert(name, route_index);
         }
         self.handler_specs.extend_from_slice(routes.handler_specs());
+        self.typed_commands.extend(typed_commands);
         self.routes.push(Box::new(routes));
+    }
+
+    pub(crate) fn typed_command_contracts(&self) -> &[TypedCommandContract] {
+        &self.typed_commands
+    }
+
+    pub(crate) fn typed_command_binding(&self) -> Result<TypedServiceCommandBinding, String> {
+        let service_id = self
+            .name()
+            .ok_or_else(|| "typed command inventory requires Service::named".to_string())?;
+        TypedServiceCommandBinding::from_contracts(service_id, &self.typed_commands)
     }
 
     /// Dispatch a command by name.
@@ -988,11 +1352,64 @@ fn message_to_session(message: &Message) -> Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphql::{
+        typed_command, Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
+        GraphqlTypeField,
+    };
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, Queueable,
         QueuedRepository,
     };
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Deserialize)]
+    struct TypedInput {
+        id: String,
+    }
+
+    #[derive(Serialize)]
+    struct TypedOutput {
+        id: String,
+    }
+
+    fn one_string_field(name: &str, field: &str) -> GraphqlTypeDef {
+        GraphqlTypeDef::new(
+            name,
+            vec![GraphqlTypeField {
+                name: field.into(),
+                type_name: "String".into(),
+                nullable: false,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            }],
+        )
+    }
+
+    impl GraphqlInputType for TypedInput {
+        fn graphql_type() -> GraphqlTypeDef {
+            one_string_field("TypedInput", "id").with_type_id(std::any::TypeId::of::<Self>())
+        }
+    }
+
+    impl GraphqlOutputType for TypedOutput {
+        fn graphql_type() -> GraphqlTypeDef {
+            one_string_field("TypedOutput", "id").with_type_id(std::any::TypeId::of::<Self>())
+        }
+    }
+
+    static TYPED_HANDLER_INVOKED: AtomicBool = AtomicBool::new(false);
+    static TYPED_GUARD_INVOKED: AtomicBool = AtomicBool::new(false);
+
+    async fn typed_handler(
+        _context: &CausalCommandContext<'_>,
+        input: TypedInput,
+    ) -> Result<PreparedCommand<Accepted<TypedOutput>>, HandlerError> {
+        TYPED_HANDLER_INVOKED.store(true, Ordering::SeqCst);
+        Ok(PreparedCommand::prepare(TypedOutput { id: input.id }).unwrap())
+    }
 
     #[derive(Default)]
     struct RouteComboAggregate {
@@ -1029,6 +1446,58 @@ mod tests {
             crate::bus::MessageRouter::consumer_group(&service),
             Some("todo-api")
         );
+    }
+
+    #[tokio::test]
+    async fn typed_dispatch_fails_before_invoking_handler_without_durable_committer() {
+        TYPED_HANDLER_INVOKED.store(false, Ordering::SeqCst);
+        let service = Service::new().named("todos").routes(
+            Routes::new()
+                .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
+                    "todo.create",
+                ))
+                .handle(typed_handler),
+        );
+
+        let error = service
+            .dispatch("todo.create", json!({ "id": "todo-1" }), Session::new())
+            .await
+            .expect_err("typed dispatch must be fenced until task 5");
+
+        assert!(error.to_string().contains("durable command committer"));
+        assert!(!TYPED_HANDLER_INVOKED.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn typed_dispatch_fails_before_invoking_guard_or_handler_without_committer() {
+        TYPED_GUARD_INVOKED.store(false, Ordering::SeqCst);
+        TYPED_HANDLER_INVOKED.store(false, Ordering::SeqCst);
+        let service = Service::new().named("todos").routes(
+            Routes::new()
+                .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
+                    "todo.guarded_create",
+                ))
+                .guarded(
+                    |_| {
+                        TYPED_GUARD_INVOKED.store(true, Ordering::SeqCst);
+                        true
+                    },
+                    typed_handler,
+                ),
+        );
+
+        let error = service
+            .dispatch(
+                "todo.guarded_create",
+                json!({ "id": "todo-1" }),
+                Session::new(),
+            )
+            .await
+            .expect_err("typed dispatch must be fenced before application guards");
+
+        assert!(error.to_string().contains("durable command committer"));
+        assert!(!TYPED_GUARD_INVOKED.load(Ordering::SeqCst));
+        assert!(!TYPED_HANDLER_INVOKED.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1649,7 +2118,10 @@ mod tests {
             }
         }));
         let mut vars = HashMap::new();
-        vars.insert(crate::microsvc::USER_ID_KEY.to_string(), "user-99".to_string());
+        vars.insert(
+            crate::microsvc::USER_ID_KEY.to_string(),
+            "user-99".to_string(),
+        );
         let request = CommandRequest {
             command: "whoami".to_string(),
             input: json!({}),

@@ -1,0 +1,5 @@
+error: trusted presets are not available until a cache-scope-bound server preset capability is installed
+  --> tests/command_effects_compile_fail/trusted_preset_without_scope.rs:20:27
+   |
+20 |             set { status: trusted("caller-value") }
+   |                           ^^^^^^^

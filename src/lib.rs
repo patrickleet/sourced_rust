@@ -12,6 +12,7 @@ pub mod repository;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;
+pub mod graphql;
 mod in_memory_repo;
 pub mod lock;
 pub mod manifest;
@@ -30,7 +31,6 @@ pub mod sqlite_repo;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 mod sqlx_repo;
 pub mod table;
-pub mod graphql;
 mod telemetry;
 pub mod trace_context;
 
@@ -167,7 +167,8 @@ pub use microsvc::{ROLE_KEY, USER_ID_KEY};
 
 // Re-export proc macros
 pub use distributed_macros::{
-    aggregate, digest, sourced, GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
+    aggregate, command_confirmations, command_effects, command_input_defaults, digest, sourced,
+    GraphqlInput, GraphqlOutput, ReadModel, Snapshot,
 };
 
 // Re-export enqueue macro (requires "emitter" feature)

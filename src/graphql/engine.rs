@@ -10,7 +10,7 @@ use futures_util::stream::{self, BoxStream};
 use futures_util::StreamExt;
 
 use crate::manifest::DistributedProjectManifest;
-use crate::microsvc::Session;
+use crate::microsvc::{Service, Session};
 use crate::read_model::{ReadModelChange, RelationalReadModelIncludes};
 use crate::table::{
     resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableKind, TableSchema,
@@ -19,6 +19,7 @@ use crate::table::{
 use super::client_manifest::{
     ClientManifestError, DistributedClientManifest, DistributedClientSurfaceExport,
 };
+use super::command_contract::TypedServiceCommandBinding;
 use super::commands::GraphqlCommands;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
@@ -98,6 +99,7 @@ pub(crate) struct EngineInner {
     /// Manifest-built engines populate this automatically; manual builders may
     /// opt in with [`GraphqlEngineBuilder::service_id`].
     pub service_id: Option<String>,
+    pub command_binding: Option<TypedServiceCommandBinding>,
     pub pool: GraphqlPool,
     pub catalog: BTreeMap<String, CatalogEntry>,
     pub by_table: BTreeMap<String, String>,
@@ -137,6 +139,7 @@ pub struct GraphqlEngine {
 
 pub struct GraphqlEngineBuilder {
     service_id: Option<String>,
+    command_binding: Option<TypedServiceCommandBinding>,
     pool: GraphqlPool,
     catalog: BTreeMap<String, CatalogEntry>,
     by_table: BTreeMap<String, String>,
@@ -214,6 +217,10 @@ impl GraphqlEngine {
     /// [`GraphqlEngineBuilder::service_id`].
     pub fn service_id(&self) -> Option<&str> {
         self.inner.service_id.as_deref()
+    }
+
+    pub(crate) fn typed_command_binding(&self) -> Option<&TypedServiceCommandBinding> {
+        self.inner.command_binding.as_ref()
     }
 
     pub fn client_surface_for_role(
@@ -405,6 +412,7 @@ impl GraphqlEngineBuilder {
     fn new(pool: GraphqlPool) -> Self {
         Self {
             service_id: None,
+            command_binding: None,
             pool,
             catalog: BTreeMap::new(),
             by_table: BTreeMap::new(),
@@ -597,9 +605,72 @@ impl GraphqlEngineBuilder {
         if service_id.trim().is_empty() {
             self.pending_errors
                 .push("GraphQL client service ID must not be empty".into());
-        } else {
-            self.service_id = Some(service_id);
+            return self;
         }
+        if let Some(binding) = &self.command_binding {
+            if binding.service_id != service_id {
+                self.pending_errors.push(format!(
+                    "GraphQL service ID `{service_id}` does not match bound executable service ID `{}`",
+                    binding.service_id
+                ));
+                return self;
+            }
+        }
+        if let Some(existing) = self.service_id.as_deref() {
+            if existing != service_id {
+                self.pending_errors.push(format!(
+                    "GraphQL service ID was already configured as `{existing}` and cannot be changed to `{service_id}`"
+                ));
+                return self;
+            }
+        }
+        self.service_id = Some(service_id);
+        self
+    }
+
+    /// Derive GraphQL command mutations from the service's typed executable
+    /// inventory. This is the authoritative path: no second command list is
+    /// accepted, and attachment later verifies the complete structural digest
+    /// plus exact Rust input/output `TypeId`s.
+    pub fn service(mut self, service: &Service) -> Self {
+        if self.command_binding.is_some() {
+            self.pending_errors
+                .push("GraphQL service command inventory was configured more than once".into());
+            return self;
+        }
+        if self.commands.command_names().next().is_some() {
+            self.pending_errors.push(
+                "cannot combine GraphqlEngineBuilder::service with a separate GraphqlCommands registry"
+                    .into(),
+            );
+            return self;
+        }
+
+        let binding = match service.typed_command_binding() {
+            Ok(binding) => binding,
+            Err(error) => {
+                self.pending_errors.push(error);
+                return self;
+            }
+        };
+        if let Some(configured) = self.service_id.as_deref() {
+            if configured != binding.service_id {
+                self.pending_errors.push(format!(
+                    "GraphQL service ID `{configured}` does not match executable service ID `{}`",
+                    binding.service_id
+                ));
+                return self;
+            }
+        }
+        match GraphqlCommands::from_typed_contracts(service.typed_command_contracts()) {
+            Ok(commands) => self.commands = commands,
+            Err(error) => {
+                self.pending_errors.push(error);
+                return self;
+            }
+        }
+        self.service_id = Some(binding.service_id.clone());
+        self.command_binding = Some(binding);
         self
     }
     pub fn default_limit(mut self, n: u64) -> Self {
@@ -645,6 +716,11 @@ impl GraphqlEngineBuilder {
         self
     }
     pub fn commands(mut self, c: GraphqlCommands) -> Self {
+        if self.command_binding.is_some() {
+            self.pending_errors
+                .push("cannot replace commands derived from GraphqlEngineBuilder::service".into());
+            return self;
+        }
         self.commands = c;
         self
     }
@@ -695,6 +771,26 @@ impl GraphqlEngineBuilder {
     pub fn build(self) -> Result<GraphqlEngine, GraphqlBuildError> {
         if !self.pending_errors.is_empty() {
             return Err(GraphqlBuildError(self.pending_errors.join("; ")));
+        }
+
+        if let Some(expected) = &self.command_binding {
+            let service_id = self.service_id.as_deref().ok_or_else(|| {
+                GraphqlBuildError(
+                    "bound typed command inventory is missing its GraphQL service ID".into(),
+                )
+            })?;
+            let contracts = self
+                .commands
+                .typed_contracts_for_binding()
+                .map_err(GraphqlBuildError)?;
+            let actual = TypedServiceCommandBinding::from_contracts(service_id, &contracts)
+                .map_err(GraphqlBuildError)?;
+            if &actual != expected {
+                return Err(GraphqlBuildError(
+                    "final GraphQL command inventory differs from the bound executable service inventory"
+                        .into(),
+                ));
+            }
         }
 
         // Validate permissions.
@@ -809,6 +905,7 @@ impl GraphqlEngineBuilder {
                 .map_err(GraphqlBuildError)?
                 .with_commands(&self.commands)
                 .map_err(GraphqlBuildError)?
+                .with_service_binding(self.command_binding.clone())
                 .with_projectors(self.projectors.clone())
                 .map_err(GraphqlBuildError)?,
         );
@@ -850,6 +947,7 @@ impl GraphqlEngineBuilder {
 
         let inner = Arc::new(EngineInner {
             service_id: self.service_id,
+            command_binding: self.command_binding,
             pool: self.pool,
             catalog: self.catalog,
             by_table: self.by_table,
@@ -1329,13 +1427,13 @@ mod client_surface_parity_tests {
             subscription_roots,
             type_field_names(&runtime_sdl, "Subscription")
         );
+        assert!(
+            manifest.commands.is_empty(),
+            "legacy raw commands are server-only and excluded from manifest v2"
+        );
         assert_eq!(
-            manifest
-                .commands
-                .iter()
-                .map(|command| command.mutation_field.clone())
-                .collect::<BTreeSet<_>>(),
-            type_field_names(&runtime_sdl, "Mutation")
+            type_field_names(&runtime_sdl, "Mutation"),
+            BTreeSet::from(["orders_refresh".into()])
         );
         assert_eq!(
             manifest.models[0]
@@ -1356,12 +1454,6 @@ mod client_surface_parity_tests {
         assert_eq!(list.pagination.as_ref().unwrap().default_limit, 7);
         assert_eq!(list.pagination.as_ref().unwrap().max_limit, 19);
         assert_eq!(manifest.projectors[0].name, "project_orders");
-        assert_eq!(
-            manifest.commands[0].operation,
-            "mutation Client_orders_refresh { orders_refresh }"
-        );
-        assert!(manifest.commands[0].operation_hash.starts_with("sha256:"));
-
         let runtime_json = input_field_names(&runtime_sdl, "JSON_comparison_exp");
         assert_eq!(
             runtime_json,
@@ -1385,7 +1477,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:84838d60ab08cd9a2c3e8e4b5f77888154064146995bbe5454074ea961ec5cfe"
+            "sha256:b1c037bbb006fa8149ae0f91f076c2e96e84cfc691a58b3330d6344a473aca4b"
         );
     }
 
@@ -1816,13 +1908,9 @@ mod client_surface_parity_tests {
             subscription_roots,
             type_field_names(&runtime_sdl, "Subscription")
         );
-        assert_eq!(
-            manifest
-                .commands
-                .iter()
-                .map(|command| command.mutation_field.clone())
-                .collect::<BTreeSet<_>>(),
-            type_field_names(&runtime_sdl, "Mutation")
+        assert!(
+            manifest.commands.is_empty(),
+            "legacy raw commands are server-only and excluded from manifest v2"
         );
         for model in &manifest.models {
             let expected_fields: BTreeSet<String> = model
@@ -1870,7 +1958,11 @@ mod client_surface_parity_tests {
         match role {
             "restricted" => {
                 assert_eq!(model_ids, BTreeSet::from(["OrderView"]));
-                assert_eq!(command_names, BTreeSet::from(["order.change"]));
+                assert!(command_names.is_empty());
+                assert_eq!(
+                    type_field_names(&runtime_sdl, "Mutation"),
+                    BTreeSet::from(["orders_change".into()])
+                );
                 assert_eq!(projector_names, BTreeSet::from(["project_orders"]));
                 assert!(!query_roots.contains("orders_aggregate"));
                 assert_eq!(manifest.models[0].fields.len(), 2);
@@ -1889,9 +1981,10 @@ mod client_surface_parity_tests {
             }
             "admin" => {
                 assert_eq!(model_ids, BTreeSet::from(["CustomerView", "OrderView"]));
+                assert!(command_names.is_empty());
                 assert_eq!(
-                    command_names,
-                    BTreeSet::from(["order.change", "order.force_archive"])
+                    type_field_names(&runtime_sdl, "Mutation"),
+                    BTreeSet::from(["orders_change".into(), "orders_force_archive".into()])
                 );
                 assert_eq!(
                     projector_names,
@@ -1916,21 +2009,12 @@ mod client_surface_parity_tests {
     }
 
     async fn assert_nested_command_validates(engine: &GraphqlEngine) {
-        let manifest = engine.client_manifest_for_role("admin").unwrap();
-        let command = manifest
-            .commands
-            .iter()
-            .find(|command| command.name == "order.change")
-            .unwrap();
-        assert_eq!(
-            command.operation,
-            "mutation Client_orders_change($input: ChangeOrderInput!) { orders_change(input: $input) { accepted order { order_id status } warnings } }"
-        );
-        async_graphql::parser::parse_query(&command.operation)
+        let operation = "mutation Client_orders_change($input: ChangeOrderInput!) { orders_change(input: $input) { accepted order { order_id status } warnings } }";
+        async_graphql::parser::parse_query(operation)
             .expect("generated command operation must parse");
 
-        let request = Request::new(command.operation.clone()).variables(
-            async_graphql::Variables::from_json(serde_json::json!({
+        let request = Request::new(operation).variables(async_graphql::Variables::from_json(
+            serde_json::json!({
                 "input": {
                     "order_id": "order-1",
                     "patch": {
@@ -1938,8 +2022,8 @@ mod client_surface_parity_tests {
                         "status": "READY"
                     }
                 }
-            })),
-        );
+            }),
+        ));
         let mut session = Session::new();
         session.set(crate::microsvc::ROLE_KEY, "admin");
         let response = engine.execute(&session, request).await;
@@ -1952,28 +2036,28 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:f6a0d798dffe08ab242d0a5aeb6d213b138b06219fad4011367dce31b1844d83",
+        manifest: "sha256:e89e7b425423f2b9cc7a0e3485606d7db41921223043bd54a9a6ac74bbd59edc",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:64a0cc86d69e6627a65685169638251fe3b231dcb9f564bed22775d498bd37e5",
+        manifest: "sha256:c193df0ca186e151cb2f6471455295cf50ad0e0411a3a51c3a5b4f96db8f4c81",
         static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
         runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:f6a0d798dffe08ab242d0a5aeb6d213b138b06219fad4011367dce31b1844d83",
+        manifest: "sha256:e89e7b425423f2b9cc7a0e3485606d7db41921223043bd54a9a6ac74bbd59edc",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:178b5c518841c350c24ebc4eb42f66ca3beeabcedffc91226290d85ab865a83e",
+        manifest: "sha256:3ec1a9cc3d70bb2dfb9af164384dab2512195e025e1a71dade89883255c6a13b",
         static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
         runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
     };

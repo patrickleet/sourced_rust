@@ -1,7 +1,7 @@
 //! GraphqlInput / GraphqlOutput derive macros.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     punctuated::Punctuated, Attribute, Data, DeriveInput, Expr, Fields, GenericArgument, Lit,
     LitStr, Meta, PathArguments, Token, Type,
@@ -117,6 +117,7 @@ fn expand(
     serde_direction: SerdeDirection,
 ) -> syn::Result<TokenStream> {
     let name = &input.ident;
+    let visibility = &input.vis;
     validate_serde_container_shape(&input.attrs, serde_direction)?;
     let rename_all = serde_rename_all(&input.attrs, serde_direction)?;
     let Data::Struct(data) = &input.data else {
@@ -133,6 +134,7 @@ fn expand(
     };
 
     let mut field_tokens = Vec::new();
+    let mut effect_input_markers = Vec::new();
     for field in &fields.named {
         validate_serde_field_shape(&field.attrs, serde_direction)?;
         let field_name = field
@@ -152,6 +154,12 @@ fn expand(
         validate_graphql_field_name(&field_name_str, field)?;
         let (type_name, nullable, list, item_nullable, nested) =
             map_type(&field.ty, field, &nested_trait)?;
+        let effect_path_kind = if !list && nested.is_some() {
+            quote! { distributed::graphql::EffectInputObjectKind }
+        } else {
+            quote! { distributed::graphql::EffectInputTerminalKind }
+        };
+        let effect_wire = effect_input_wire_tokens(&type_name, list, nested.is_some());
         let nested_tokens = match nested {
             Some(tokens) => quote! { Some(::std::boxed::Box::new(#tokens)) },
             None => quote! { None },
@@ -166,6 +174,35 @@ fn expand(
                 nested: #nested_tokens,
             }
         });
+        if matches!(serde_direction, SerdeDirection::Deserialize) {
+            let marker = format_ident!("__Distributed{}EffectInputField_{}", name, field_name);
+            let field_ty = &field.ty;
+            let nested_ty = effect_nested_type(field_ty);
+            let non_null_ty = effect_non_null_type(field_ty);
+            let nullability = if extract_path_arg(field_ty, "Option").is_some() {
+                quote! { distributed::graphql::EffectNullable }
+            } else {
+                quote! { distributed::graphql::EffectRequired }
+            };
+            effect_input_markers.push(quote! {
+                #[doc(hidden)]
+                #[allow(non_camel_case_types)]
+                #visibility struct #marker;
+
+                impl distributed::graphql::EffectInputFieldMarker for #marker {
+                    type Input = #name;
+                    type Value = #field_ty;
+                    type NonNullValue = #non_null_ty;
+                    type Nullability = #nullability;
+                    type PathKind = #effect_path_kind;
+                    type Wire = #effect_wire;
+                    type Nested = #nested_ty;
+                    fn path() -> ::std::vec::Vec<&'static str> {
+                        vec![#field_name_str]
+                    }
+                }
+            });
+        }
     }
 
     let type_name_str = name.to_string();
@@ -178,7 +215,48 @@ fn expand(
                 ).with_type_id(::std::any::TypeId::of::<#name>())
             }
         }
+
+        #(#effect_input_markers)*
     })
+}
+
+fn effect_input_wire_tokens(type_name: &str, list: bool, nested: bool) -> proc_macro2::TokenStream {
+    if list {
+        return quote! { distributed::graphql::EffectWireList };
+    }
+    if nested {
+        return quote! { distributed::graphql::EffectWireObject };
+    }
+    match type_name {
+        "String" | "ID" => quote! { distributed::graphql::EffectWireString },
+        "Boolean" => quote! { distributed::graphql::EffectWireBoolean },
+        "BigInt" | "Int" => quote! { distributed::graphql::EffectWireBigInt },
+        "Float" => quote! { distributed::graphql::EffectWireFloat },
+        "JSON" => quote! { distributed::graphql::EffectWireJson },
+        "Bytea" => quote! { distributed::graphql::EffectWireBytea },
+        "Timestamptz" => quote! { distributed::graphql::EffectWireTimestamp },
+        _ => quote! { distributed::graphql::EffectWireUnsupported },
+    }
+}
+
+fn effect_non_null_type(mut ty: &Type) -> &Type {
+    while let Some(inner) = extract_path_arg(ty, "Option") {
+        ty = inner;
+    }
+    ty
+}
+
+fn effect_nested_type(mut ty: &Type) -> &Type {
+    while let Some(inner) = extract_path_arg(ty, "Option") {
+        ty = inner;
+    }
+    if let Some(inner) = extract_path_arg(ty, "Vec") {
+        ty = inner;
+        while let Some(inner) = extract_path_arg(ty, "Option") {
+            ty = inner;
+        }
+    }
+    ty
 }
 
 fn map_type(
