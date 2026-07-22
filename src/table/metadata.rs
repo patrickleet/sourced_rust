@@ -227,6 +227,12 @@ impl TableSchema {
                     self.model_name, column.field_name, type_name
                 )));
             }
+            if column.primary_key && column.nullable {
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` must be non-null",
+                    self.model_name, column.column_name
+                )));
+            }
             if let Some(foreign_key) = &column.foreign_key {
                 validate_foreign_key(&self.model_name, foreign_key)?;
             }
@@ -258,6 +264,17 @@ impl TableSchema {
             if !columns.contains(column.as_str()) {
                 return Err(TableStoreError::Metadata(format!(
                     "model `{}` primary key references missing column `{}`",
+                    self.model_name, column
+                )));
+            }
+            if self
+                .columns
+                .iter()
+                .find(|candidate| candidate.column_name == *column)
+                .is_some_and(|candidate| candidate.nullable)
+            {
+                return Err(TableStoreError::Metadata(format!(
+                    "model `{}` primary-key column `{}` must be non-null",
                     self.model_name, column
                 )));
             }
@@ -343,6 +360,36 @@ impl RowValue {
         let value =
             serde_json::to_value(value).map_err(|err| TableStoreError::Serde(err.to_string()))?;
         Ok(Self::from_json_value(value))
+    }
+
+    /// Serialize a `#[readmodel(text)]` value without allowing structured JSON
+    /// to enter a SQL text column. This is public only for derive output.
+    #[doc(hidden)]
+    pub fn from_text_serde<T: Serialize + ?Sized>(
+        value: &T,
+        nullable: bool,
+        column: &str,
+    ) -> Result<Self, TableStoreError> {
+        match serde_json::to_value(value)
+            .map_err(|error| TableStoreError::Serde(error.to_string()))?
+        {
+            serde_json::Value::String(value) => Ok(Self::String(value)),
+            serde_json::Value::Null if nullable => Ok(Self::Null),
+            serde_json::Value::Null => Err(TableStoreError::Metadata(format!(
+                "#[readmodel(text)] column `{column}` is non-null but its value serialized as null"
+            ))),
+            value => Err(TableStoreError::Metadata(format!(
+                "#[readmodel(text)] column `{column}` must serialize as a JSON string{}; got {}",
+                if nullable { " or null" } else { "" },
+                match value {
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::String(_) | serde_json::Value::Null => unreachable!(),
+                }
+            ))),
+        }
     }
 
     pub fn into_json(self) -> serde_json::Value {
@@ -609,5 +656,37 @@ mod tests {
             row.get_serde::<serde_json::Value>("payload").unwrap(),
             serde_json::json!({"wins": [1, 2]})
         );
+    }
+
+    #[test]
+    fn text_serde_accepts_only_string_shaped_values_and_nullable_null() {
+        #[derive(Serialize)]
+        enum UnitStatus {
+            Open,
+        }
+        #[derive(Serialize)]
+        enum StructuredStatus {
+            Reason { message: String },
+        }
+
+        assert_eq!(
+            RowValue::from_text_serde(&UnitStatus::Open, false, "status").unwrap(),
+            RowValue::String("Open".into())
+        );
+        assert_eq!(
+            RowValue::from_text_serde(&Option::<UnitStatus>::None, true, "status").unwrap(),
+            RowValue::Null
+        );
+        let error = RowValue::from_text_serde(
+            &StructuredStatus::Reason {
+                message: "why".into(),
+            },
+            false,
+            "status",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must serialize as a JSON string; got object"));
     }
 }

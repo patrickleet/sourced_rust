@@ -1,0 +1,14 @@
+error[E0425]: cannot find type `__DistributedViewEffectModelField_missing` in this scope
+  --> tests/command_effects_compile_fail/unknown_model_field.rs:19:19
+   |
+ 8 | #[derive(Clone, ReadModel)]
+   |                 --------- similarly named struct `__DistributedViewEffectModelField_view_id` defined here
+...
+19 |             set { missing: input.view_id }
+   |                   ^^^^^^^
+   |
+help: a struct with a similar name exists
+   |
+19 -             set { missing: input.view_id }
+19 +             set { __DistributedViewEffectModelField_view_id: input.view_id }
+   |

@@ -71,9 +71,11 @@ pub use dependencies::{
 };
 pub use error::HandlerError;
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
+#[cfg(feature = "graphql")]
+pub use service::GraphqlServiceBindError;
 pub use service::{
-    CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec, RouteBuilder, Routes,
-    Service,
+    CausalCommandContext, CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec,
+    PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 
@@ -92,11 +94,11 @@ pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 #[cfg(feature = "http")]
 mod http;
 #[cfg(feature = "http")]
-pub use http::{router, serve};
-#[cfg(feature = "http")]
 // session_from_headers remains available for microsvc HTTP command path.
 #[allow(unused_imports)]
 pub(crate) use http::session_from_headers;
+#[cfg(feature = "http")]
+pub use http::{router, serve};
 
 // Knative / CloudEvents HTTP ingress (Service-coupled; the bus keeps only the
 // produce/manifest helpers). Requires the "http" feature.

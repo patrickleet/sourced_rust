@@ -1,0 +1,11 @@
+error[E0435]: attempt to use a non-constant value in a constant
+  --> tests/command_effects_compile_fail/runtime_path_constant.rs:22:35
+   |
+22 |             set { title: constant(generated_at_runtime) }
+   |                                   ^^^^^^^^^^^^^^^^^^^^ non-constant value
+   |
+help: consider using `const` instead of `let`
+   |
+17 -     let generated_at_runtime = String::from("not deterministic declaration IR");
+17 +     const generated_at_runtime: /* Type */ = String::from("not deterministic declaration IR");
+   |

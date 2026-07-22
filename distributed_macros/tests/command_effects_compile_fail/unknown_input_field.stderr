@@ -1,0 +1,14 @@
+error[E0425]: cannot find type `__DistributedInputEffectInputField_missing` in this scope
+  --> tests/command_effects_compile_fail/unknown_input_field.rs:17:44
+   |
+ 3 | #[derive(GraphqlInput)]
+   |          ------------ similarly named struct `__DistributedInputEffectInputField_view_id` defined here
+...
+17 |         delete View { key { view_id: input.missing } };
+   |                                            ^^^^^^^
+   |
+help: a struct with a similar name exists
+   |
+17 -         delete View { key { view_id: input.missing } };
+17 +         delete View { key { view_id: input.__DistributedInputEffectInputField_view_id } };
+   |

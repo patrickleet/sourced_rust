@@ -23,7 +23,7 @@ use crate::{
 };
 
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 1;
+const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 2;
 
 #[derive(Args, Debug)]
 pub struct ServiceArgs {

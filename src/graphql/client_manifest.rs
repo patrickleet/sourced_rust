@@ -12,17 +12,20 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::command_contract::{CommandConsistency, CommandEffectFallback};
 use super::filter::FilterExpr;
 use super::surface::{
-    RootKind, Surface, SurfaceArgument, SurfaceArgumentKind, SurfaceCommandShape,
-    SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceSelection, SurfaceTypeDef,
+    model_has_client_normalized_identity, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,
+    SurfaceCommandShape, SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceSelection,
+    SurfaceTypeDef,
 };
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 1;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 2;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 1;
-const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 1;
+const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
+const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
 const KEY_ENCODING: &str = "canonical_json_tuple_v1";
 
@@ -136,6 +139,7 @@ impl DistributedClientSurfaceExport {
         surface: impl Into<Arc<Surface>>,
     ) -> Result<Self, ClientManifestError> {
         let surface = surface.into();
+        let service_id = service_id.into();
         let identity = match &surface.selection {
             SurfaceSelection::Catalog => {
                 return Err(ClientManifestError(
@@ -148,6 +152,7 @@ impl DistributedClientSurfaceExport {
                 ClientSurfaceIdentity::application(name, roles.clone())
             }
         };
+        validate_service_provenance(&service_id, &surface)?;
         Ok(Self::new(service_id, identity, surface))
     }
 
@@ -206,6 +211,29 @@ impl DistributedClientSurfaceExport {
 
     pub fn manifest_json_pretty(&self) -> Result<String, ClientManifestError> {
         Ok(serde_json::to_string_pretty(&self.manifest()?)?)
+    }
+}
+
+fn validate_service_provenance(
+    service_id: &str,
+    surface: &Surface,
+) -> Result<(), ClientManifestError> {
+    let has_typed_commands = surface
+        .commands
+        .iter()
+        .any(|command| command.consistency.is_some());
+    match (&surface.service_binding, has_typed_commands) {
+        (Some(binding), _) if binding.service_id != service_id => Err(ClientManifestError(
+            format!(
+                "client export service ID `{service_id}` does not match typed Surface provenance `{}`",
+                binding.service_id
+            ),
+        )),
+        (None, true) => Err(ClientManifestError(
+            "typed client export requires Surface provenance from Surface::with_service"
+                .into(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -493,7 +521,11 @@ pub struct ClientCommandExtensionSlots {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consistency: Option<CommandConsistencyExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_defaults: Option<CommandInputDefaultsExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<CommandEffectsExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmations: Option<CommandConfirmationsExtension>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,10 +534,30 @@ pub struct CommandConsistencyExtension {
     pub kind: String,
 }
 
+/// Generators applied once to the canonical command input before dispatch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandInputDefaultsExtension {
+    pub version: u32,
+    pub defaults: Vec<serde_json::Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandEffectsExtension {
     pub version: u32,
     pub operations: Vec<serde_json::Value>,
+    pub fallback: String,
+}
+
+/// Declaration-owned projector progress expected after a fact commit.
+/// Entries use the same closed input-expression/key IR as optimistic effects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandConfirmationsExtension {
+    pub version: u32,
+    /// `finite` contains the complete authorized edge set; `unavailable`
+    /// intentionally carries no topology and requires revalidation.
+    pub kind: String,
+    pub expected: Vec<serde_json::Value>,
+    pub fallback: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -518,7 +570,7 @@ pub struct ClientProjector {
     pub causal_confirmation: bool,
 }
 
-pub fn client_manifest_from_surface(
+pub(crate) fn client_manifest_from_surface(
     service_id: &str,
     identity: ClientSurfaceIdentity,
     surface: &Surface,
@@ -583,12 +635,7 @@ pub fn client_manifest_from_surface(
             .iter()
             .map(|field| (field.name.as_str(), field))
             .collect();
-        let normalization = if !model.primary_key.is_empty()
-            && model.primary_key.iter().all(|key| {
-                field_by_name
-                    .get(key.as_str())
-                    .is_some_and(|field| field.scalar != "BigInt")
-            }) {
+        let normalization = if model_has_client_normalized_identity(model) {
             ModelNormalization::Normalized {
                 fields: model
                     .primary_key
@@ -799,12 +846,85 @@ pub fn client_manifest_from_surface(
     roots.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut commands = Vec::new();
-    for command in &surface.commands {
+    for command in surface
+        .commands
+        .iter()
+        .filter(|command| command.consistency.is_some())
+    {
+        // Legacy GraphqlCommands may still be useful for server-only schema
+        // migration, but they are not bound to the executable typed causal
+        // inventory and therefore never enter a generated client contract.
         let input = command_shape(&command.input)?;
         let output = command_shape(&command.output)?;
         let grants = sorted_unique(command.roles.clone());
         let operation = command_operation(&command.field_name, &input, &output);
         let operation_hash = hash_bytes(operation.as_bytes());
+        let consistency = command.consistency.map(|kind| CommandConsistencyExtension {
+            version: 1,
+            kind: match kind {
+                CommandConsistency::Accepted => "accepted",
+                CommandConsistency::Fact => "fact",
+                CommandConsistency::Projected => "projected",
+            }
+            .into(),
+        });
+        let input_defaults = (!command.input_defaults.is_empty())
+            .then(|| {
+                command
+                    .input_defaults
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|defaults| CommandInputDefaultsExtension {
+                        version: 1,
+                        defaults,
+                    })
+            })
+            .transpose()?;
+        let effects = command
+            .effects
+            .as_ref()
+            .map(|effects| {
+                let operations = effects
+                    .operations
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let fallback = match effects.fallback {
+                    CommandEffectFallback::Revalidate => "revalidate",
+                };
+                Ok::<_, serde_json::Error>(CommandEffectsExtension {
+                    version: 1,
+                    operations,
+                    fallback: fallback.into(),
+                })
+            })
+            .transpose()?;
+        let confirmations = if command.confirmation_unavailable {
+            Some(CommandConfirmationsExtension {
+                version: COMMAND_CONFIRMATIONS_VERSION,
+                kind: "unavailable".into(),
+                expected: Vec::new(),
+                fallback: "revalidate".into(),
+            })
+        } else {
+            (!command.confirmations.is_empty()
+                || matches!(command.consistency, Some(CommandConsistency::Fact)))
+            .then(|| {
+                command
+                    .confirmations
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|expected| CommandConfirmationsExtension {
+                        version: COMMAND_CONFIRMATIONS_VERSION,
+                        kind: "finite".into(),
+                        expected,
+                        fallback: "revalidate".into(),
+                    })
+            })
+            .transpose()?
+        };
         commands.push(ClientCommand {
             version: 1,
             name: command.command_name.clone(),
@@ -816,13 +936,25 @@ pub fn client_manifest_from_surface(
             operation_hash,
             extensions: ClientCommandExtensionSlots {
                 version: COMMAND_EXTENSION_SLOTS_VERSION,
-                consistency: None,
-                effects: None,
+                consistency,
+                input_defaults,
+                effects,
+                confirmations,
             },
         });
     }
     commands.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let confirming_projectors: BTreeSet<&str> = surface
+        .commands
+        .iter()
+        .flat_map(|command| {
+            command
+                .confirmations
+                .iter()
+                .map(|confirmation| confirmation.projector.as_str())
+        })
+        .collect();
     let mut projectors: Vec<ClientProjector> = surface
         .projectors
         .iter()
@@ -832,7 +964,7 @@ pub fn client_manifest_from_surface(
             facts: sorted_unique(projector.facts.clone()),
             models: sorted_unique(projector.models.clone()),
             dependencies: sorted_unique(projector.dependencies.clone()),
-            causal_confirmation: false,
+            causal_confirmation: confirming_projectors.contains(projector.name.as_str()),
         })
         .collect();
     projectors.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1308,13 +1440,16 @@ mod tests {
     use super::*;
     use crate::graphql::{
         build_surface, claim, col, exposed_command, rel, surface_for_application, surface_for_role,
-        GraphqlCommands, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
-        RoleGrant, SurfaceOptions, SurfaceProjector,
+        typed_command, Accepted, GraphqlCommands, GraphqlInputType, GraphqlOutputType,
+        GraphqlTypeDef, GraphqlTypeField, PreparedCommand, RoleGrant, SurfaceOptions,
+        SurfaceProjector,
     };
+    use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
     use crate::table::{
         ColumnType, PrimaryKey, RelationshipDef, RelationshipKind, TableColumn, TableKind,
         TableSchema,
     };
+    use std::any::TypeId;
 
     fn column(name: &str, ty: ColumnType) -> TableColumn {
         TableColumn::new(name, name, ty)
@@ -1444,6 +1579,7 @@ mod tests {
         }
     }
 
+    #[derive(Deserialize)]
     struct CompleteInput;
     impl GraphqlInputType for CompleteInput {
         fn graphql_type() -> GraphqlTypeDef {
@@ -1458,9 +1594,11 @@ mod tests {
                     nested: None,
                 }],
             )
+            .with_type_id(TypeId::of::<Self>())
         }
     }
 
+    #[derive(Serialize)]
     struct CompletePayload;
     impl GraphqlOutputType for CompletePayload {
         fn graphql_type() -> GraphqlTypeDef {
@@ -1475,34 +1613,43 @@ mod tests {
                     nested: None,
                 }],
             )
+            .with_type_id(TypeId::of::<Self>())
         }
     }
 
+    async fn complete_handler(
+        _context: &CausalCommandContext<'_>,
+        _input: CompleteInput,
+    ) -> Result<PreparedCommand<Accepted<CompletePayload>>, HandlerError> {
+        Ok(
+            PreparedCommand::<Accepted<CompletePayload>>::prepare(CompletePayload)
+                .expect("serializable command payload"),
+        )
+    }
+
     fn full_surface() -> Surface {
-        let commands = GraphqlCommands::new()
-            .command(
-                "todo.complete",
-                exposed_command()
-                    .field_name("todos_complete")
-                    .input::<CompleteInput>()
-                    .output::<CompletePayload>()
-                    .roles(["admin", "user"]),
-            )
-            .command(
-                "todo.force_archive",
-                exposed_command()
-                    .field_name("todos_force_archive")
-                    .input::<CompleteInput>()
-                    .output::<CompletePayload>()
-                    .roles(["admin"]),
-            );
+        let service = Service::new().named("todos-service").routes(
+            Routes::new()
+                .typed_command(
+                    typed_command::<CompleteInput, Accepted<CompletePayload>>("todo.complete")
+                        .field_name("todos_complete")
+                        .roles(["admin", "user"]),
+                )
+                .handle(complete_handler)
+                .typed_command(
+                    typed_command::<CompleteInput, Accepted<CompletePayload>>("todo.force_archive")
+                        .field_name("todos_force_archive")
+                        .roles(["admin"]),
+                )
+                .handle(complete_handler),
+        );
         build_surface(
             &[todos(), users(), memberships()],
             &SurfaceOptions::sqlite(),
         )
         .expect("surface")
-        .with_commands(&commands)
-        .expect("commands")
+        .with_service(&service)
+        .expect("typed service")
         .with_projectors([
             SurfaceProjector::new("project_todos")
                 .facts(["todo.completed"])
@@ -1512,6 +1659,42 @@ mod tests {
                 .models(["UserView"]),
         ])
         .expect("projectors")
+    }
+
+    #[test]
+    fn client_manifest_exports_only_bound_typed_causal_commands() {
+        let mut commands = GraphqlCommands::from_typed_contracts(&[typed_command::<
+            CompleteInput,
+            Accepted<CompletePayload>,
+        >("todo.complete")
+        .into_contract()])
+        .expect("typed command");
+        commands = commands.command(
+            "legacy.internal",
+            exposed_command()
+                .input::<CompleteInput>()
+                .output::<CompletePayload>(),
+        );
+        let catalog = build_surface(&[], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_commands(&commands)
+            .unwrap();
+        let selected = surface_for_role(&catalog, "anonymous", &BTreeMap::new()).unwrap();
+        let manifest = client_manifest_from_surface(
+            "todos",
+            ClientSurfaceIdentity::role("anonymous"),
+            &selected,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest
+                .commands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["todo.complete"]
+        );
     }
 
     fn grants() -> BTreeMap<String, BTreeMap<String, RoleGrant>> {
@@ -1561,11 +1744,11 @@ mod tests {
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:0995d39a7f863150b1e4168bbe861137a6280f988156f0c421f76b7a44e769a5"
+            "sha256:2661c28cc2a19c17b1a66e64f529a812e202aaa2fde1b7dfca7f446b86a76207"
         );
         assert_eq!(
             first.protocol_fingerprint,
-            "sha256:6af0191f982c4d4ba888a05a5f8028dac7bbca3a0c2a4e6e520ace425a2343c8"
+            "sha256:88f44c370674bde0d63fb54eff10745f81bd12de1359f37a3be6ae4656b9faaf"
         );
 
         let user = first
@@ -1610,7 +1793,15 @@ mod tests {
             .any(|command| command.name == "todo.force_archive"));
         assert_eq!(first.commands[0].grants, vec!["user"]);
         assert!(first.commands.iter().all(|command| {
-            command.extensions.consistency.is_none() && command.extensions.effects.is_none()
+            command
+                .extensions
+                .consistency
+                .as_ref()
+                .is_some_and(|consistency| consistency.kind == "accepted")
+                && command.extensions.effects.as_ref().is_some_and(|effects| {
+                    effects.operations.is_empty() && effects.fallback == "revalidate"
+                })
+                && command.extensions.confirmations.is_none()
         }));
 
         let json = serde_json::to_string(&first).unwrap();
