@@ -104,6 +104,11 @@ import {
 } from '@hops-ops/distributed';
 import { cacheKey } from '@hops-ops/distributed/cache';
 import type { CommandClient } from '@hops-ops/distributed/commands';
+import {
+  createDistributedReplica,
+  type ReplicaSnapshot,
+  type ReplicaSparse
+} from '@hops-ops/distributed/replica';
 import { fieldToFunctionName } from '@hops-ops/distributed/codegen';
 import {
   createLoadQuery,
@@ -116,6 +121,15 @@ import {
 type HealthData = { health: string };
 type Session = { accessToken?: string | null; user?: { id?: string | null } | null };
 type LoadEvent = ServerLoadEventLike<{ session: Session | null }>;
+type TodosResult = { todos: Array<{ id: string; title: string }> };
+declare const replicaSnapshot: ReplicaSnapshot<TodosResult>;
+const sparseTodos: ReplicaSparse<TodosResult> = {};
+if (replicaSnapshot.complete) {
+  replicaSnapshot.data.todos.map((todo) => todo.title);
+} else {
+  // @ts-expect-error Sparse/loading data requires a presence guard.
+  replicaSnapshot.data.todos.map((todo) => todo.title);
+}
 
 const query: GqlDocument<HealthData> = 'query Smoke { health }';
 const resource = defineResource<HealthData>({
@@ -167,7 +181,7 @@ const loadHealth = loadQuery<HealthData, { health: string }>(
   (data) => ({ health: data?.health ?? 'unknown' })
 );
 
-void [resource, client, pageClient, proxy, loadHealth];
+void [resource, client, pageClient, proxy, loadHealth, createDistributedReplica, sparseTodos];
 `;
 
 const runtimeSource = `
@@ -182,6 +196,7 @@ import {
   createUseGraphql,
   distributedGraphqlProxy
 } from '@hops-ops/distributed/sveltekit';
+import { createDistributedReplica } from '@hops-ops/distributed/replica';
 
 const document = 'query Smoke { health }';
 const resource = defineResource({
@@ -221,6 +236,7 @@ const useGraphql = createUseGraphql({ url: '/graphql' });
 const pageClient = useGraphql(() => ({ session: null, engineRole: null }));
 assert.equal(typeof pageClient.request, 'function');
 assert.equal(typeof pageClient.store, 'function');
+assert.equal(typeof createDistributedReplica().read, 'function');
 `;
 
 async function smokePack() {
