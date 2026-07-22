@@ -2,13 +2,102 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, GenericArgument, PathArguments, Type};
+use syn::{
+    punctuated::Punctuated, Attribute, Data, DeriveInput, Expr, Fields, GenericArgument, Lit,
+    LitStr, Meta, PathArguments, Token, Type,
+};
+
+#[derive(Clone, Copy)]
+enum SerdeDirection {
+    Deserialize,
+    Serialize,
+}
+
+impl SerdeDirection {
+    fn attribute_name(self) -> &'static str {
+        match self {
+            Self::Deserialize => "deserialize",
+            Self::Serialize => "serialize",
+        }
+    }
+
+    fn derive_name(self) -> &'static str {
+        match self {
+            Self::Deserialize => "GraphqlInput",
+            Self::Serialize => "GraphqlOutput",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RenameRule {
+    LowerCase,
+    UpperCase,
+    PascalCase,
+    CamelCase,
+    SnakeCase,
+    ScreamingSnakeCase,
+}
+
+impl RenameRule {
+    fn parse(value: &LitStr) -> syn::Result<Self> {
+        match value.value().as_str() {
+            "lowercase" => Ok(Self::LowerCase),
+            "UPPERCASE" => Ok(Self::UpperCase),
+            "PascalCase" => Ok(Self::PascalCase),
+            "camelCase" => Ok(Self::CamelCase),
+            "snake_case" => Ok(Self::SnakeCase),
+            "SCREAMING_SNAKE_CASE" => Ok(Self::ScreamingSnakeCase),
+            "kebab-case" | "SCREAMING-KEBAB-CASE" => Err(syn::Error::new_spanned(
+                value,
+                "serde kebab-case field names cannot be represented in GraphQL; use camelCase or snake_case",
+            )),
+            other => Err(syn::Error::new_spanned(
+                value,
+                format!(
+                    "unsupported serde rename_all rule `{other}` for GraphqlInput/GraphqlOutput"
+                ),
+            )),
+        }
+    }
+
+    fn apply(self, field: &str) -> String {
+        match self {
+            Self::LowerCase | Self::SnakeCase => field.to_string(),
+            Self::UpperCase | Self::ScreamingSnakeCase => field.to_ascii_uppercase(),
+            Self::PascalCase => {
+                let mut renamed = String::new();
+                let mut capitalize = true;
+                for ch in field.chars() {
+                    if ch == '_' {
+                        capitalize = true;
+                    } else if capitalize {
+                        renamed.push(ch.to_ascii_uppercase());
+                        capitalize = false;
+                    } else {
+                        renamed.push(ch);
+                    }
+                }
+                renamed
+            }
+            Self::CamelCase => {
+                let pascal = Self::PascalCase.apply(field);
+                let mut chars = pascal.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_lowercase().to_string() + chars.as_str())
+                    .unwrap_or_default()
+            }
+        }
+    }
+}
 
 pub fn expand_graphql_input(input: DeriveInput) -> syn::Result<TokenStream> {
     expand(
         input,
         quote! { distributed::graphql::GraphqlInputType },
         quote! { distributed::graphql::GraphqlInputType },
+        SerdeDirection::Deserialize,
     )
 }
 
@@ -17,6 +106,7 @@ pub fn expand_graphql_output(input: DeriveInput) -> syn::Result<TokenStream> {
         input,
         quote! { distributed::graphql::GraphqlOutputType },
         quote! { distributed::graphql::GraphqlOutputType },
+        SerdeDirection::Serialize,
     )
 }
 
@@ -24,8 +114,11 @@ fn expand(
     input: DeriveInput,
     trait_path: TokenStream,
     nested_trait: TokenStream,
+    serde_direction: SerdeDirection,
 ) -> syn::Result<TokenStream> {
     let name = &input.ident;
+    validate_serde_container_shape(&input.attrs, serde_direction)?;
+    let rename_all = serde_rename_all(&input.attrs, serde_direction)?;
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             &input,
@@ -41,12 +134,23 @@ fn expand(
 
     let mut field_tokens = Vec::new();
     for field in &fields.named {
+        validate_serde_field_shape(&field.attrs, serde_direction)?;
         let field_name = field
             .ident
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(field, "field must be named"))?;
-        let field_name_str = field_name.to_string();
-        let (type_name, nullable, list, nested) =
+        let rust_field_name = field_name.to_string();
+        let rust_field_name = rust_field_name
+            .strip_prefix("r#")
+            .unwrap_or(&rust_field_name);
+        let field_name_str =
+            serde_field_rename(&field.attrs, serde_direction)?.unwrap_or_else(|| {
+                rename_all
+                    .map(|rule| rule.apply(rust_field_name))
+                    .unwrap_or_else(|| rust_field_name.to_string())
+            });
+        validate_graphql_field_name(&field_name_str, field)?;
+        let (type_name, nullable, list, item_nullable, nested) =
             map_type(&field.ty, field, &nested_trait)?;
         let nested_tokens = match nested {
             Some(tokens) => quote! { Some(::std::boxed::Box::new(#tokens)) },
@@ -58,6 +162,7 @@ fn expand(
                 type_name: #type_name.to_string(),
                 nullable: #nullable,
                 list: #list,
+                item_nullable: #item_nullable,
                 nested: #nested_tokens,
             }
         });
@@ -80,17 +185,32 @@ fn map_type(
     ty: &Type,
     span: &syn::Field,
     nested_trait: &TokenStream,
-) -> syn::Result<(String, bool, bool, Option<TokenStream>)> {
-    if let Some(inner) = extract_path_arg(ty, "Option") {
-        let (name, _, list, nested) = map_type(inner, span, nested_trait)?;
-        return Ok((name, true, list, nested));
-    }
-    if let Some(inner) = extract_path_arg(ty, "Vec") {
-        let (name, nullable, _, nested) = map_type(inner, span, nested_trait)?;
-        return Ok((name, nullable, true, nested));
+) -> syn::Result<(String, bool, bool, bool, Option<TokenStream>)> {
+    let mut current = ty;
+    let mut nullable = false;
+    while let Some(inner) = extract_path_arg(current, "Option") {
+        nullable = true;
+        current = inner;
     }
 
-    let path = match ty {
+    let mut list = false;
+    let mut item_nullable = false;
+    if let Some(inner) = extract_path_arg(current, "Vec") {
+        list = true;
+        current = inner;
+        while let Some(inner) = extract_path_arg(current, "Option") {
+            item_nullable = true;
+            current = inner;
+        }
+        if extract_path_arg(current, "Vec").is_some() {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "nested lists are not supported for GraphqlInput/GraphqlOutput fields",
+            ));
+        }
+    }
+
+    let path = match current {
         Type::Path(p) => p,
         _ => {
             return Err(syn::Error::new_spanned(
@@ -118,11 +238,11 @@ fn map_type(
     };
 
     if let Some(s) = scalar {
-        return Ok((s.to_string(), false, false, None));
+        return Ok((s.to_string(), nullable, list, item_nullable, None));
     }
 
-    let nested = quote! { <#ty as #nested_trait>::graphql_type() };
-    Ok((ident, false, false, Some(nested)))
+    let nested = quote! { <#current as #nested_trait>::graphql_type() };
+    Ok((ident, nullable, list, item_nullable, Some(nested)))
 }
 
 fn extract_path_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
@@ -140,4 +260,339 @@ fn extract_path_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
         GenericArgument::Type(t) => Some(t),
         _ => None,
     })
+}
+
+fn serde_rename_all(
+    attrs: &[Attribute],
+    direction: SerdeDirection,
+) -> syn::Result<Option<RenameRule>> {
+    let value = serde_name_value(attrs, "rename_all", direction)?;
+    value.as_ref().map(RenameRule::parse).transpose()
+}
+
+fn validate_serde_field_shape(attrs: &[Attribute], direction: SerdeDirection) -> syn::Result<()> {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            let unsupported = match &meta {
+                Meta::Path(path) if path.is_ident("skip") => Some("skip"),
+                Meta::Path(path)
+                    if path.is_ident("skip_deserializing")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("skip_deserializing")
+                }
+                Meta::Path(path)
+                    if path.is_ident("skip_serializing")
+                        && matches!(direction, SerdeDirection::Serialize) =>
+                {
+                    Some("skip_serializing")
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("skip_serializing_if")
+                        && matches!(direction, SerdeDirection::Serialize) =>
+                {
+                    Some("skip_serializing_if")
+                }
+                Meta::Path(path) if path.is_ident("flatten") => Some("flatten"),
+                Meta::Path(path)
+                    if path.is_ident("default")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("default")
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("default")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("default")
+                }
+                Meta::NameValue(name_value) if name_value.path.is_ident("with") => Some("with"),
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("deserialize_with")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("deserialize_with")
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("serialize_with")
+                        && matches!(direction, SerdeDirection::Serialize) =>
+                {
+                    Some("serialize_with")
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("alias")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("alias")
+                }
+                _ => None,
+            };
+            if let Some(attribute) = unsupported {
+                return Err(syn::Error::new_spanned(
+                    meta,
+                    format!(
+                        "#[serde({attribute})] is not supported by {} because it changes the declared GraphQL field shape; define a separate wire type",
+                        direction.derive_name(),
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_serde_container_shape(
+    attrs: &[Attribute],
+    direction: SerdeDirection,
+) -> syn::Result<()> {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            let unsupported = match &meta {
+                Meta::Path(path) if path.is_ident("transparent") => Some("transparent"),
+                Meta::Path(path) if path.is_ident("untagged") => Some("untagged"),
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("tag") || name_value.path.is_ident("content") =>
+                {
+                    Some(if name_value.path.is_ident("tag") {
+                        "tag"
+                    } else {
+                        "content"
+                    })
+                }
+                Meta::Path(path)
+                    if path.is_ident("default")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("default")
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("default")
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some("default")
+                }
+                Meta::NameValue(name_value)
+                    if (name_value.path.is_ident("from")
+                        || name_value.path.is_ident("try_from"))
+                        && matches!(direction, SerdeDirection::Deserialize) =>
+                {
+                    Some(if name_value.path.is_ident("from") {
+                        "from"
+                    } else {
+                        "try_from"
+                    })
+                }
+                Meta::NameValue(name_value)
+                    if name_value.path.is_ident("into")
+                        && matches!(direction, SerdeDirection::Serialize) =>
+                {
+                    Some("into")
+                }
+                _ => None,
+            };
+            if let Some(attribute) = unsupported {
+                return Err(syn::Error::new_spanned(
+                    meta,
+                    format!(
+                        "#[serde({attribute})] is not supported by {} because it changes the declared GraphQL object shape; define a separate wire type",
+                        direction.derive_name(),
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn serde_field_rename(
+    attrs: &[Attribute],
+    direction: SerdeDirection,
+) -> syn::Result<Option<String>> {
+    Ok(serde_name_value(attrs, "rename", direction)?.map(|value| value.value()))
+}
+
+fn serde_name_value(
+    attrs: &[Attribute],
+    key: &str,
+    direction: SerdeDirection,
+) -> syn::Result<Option<LitStr>> {
+    let mut found = None;
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident(key) => {
+                    set_serde_name(&mut found, string_literal(&name_value.value, key)?, key)?;
+                }
+                Meta::List(list) if list.path.is_ident(key) => {
+                    let directional =
+                        list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+                    for meta in directional {
+                        if let Meta::NameValue(name_value) = meta {
+                            if name_value.path.is_ident(direction.attribute_name()) {
+                                set_serde_name(
+                                    &mut found,
+                                    string_literal(&name_value.value, key)?,
+                                    key,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn set_serde_name(found: &mut Option<LitStr>, value: LitStr, key: &str) -> syn::Result<()> {
+    if found.is_some() {
+        return Err(syn::Error::new_spanned(
+            value,
+            format!("duplicate serde `{key}` rule for GraphqlInput/GraphqlOutput"),
+        ));
+    }
+    *found = Some(value);
+    Ok(())
+}
+
+fn string_literal(value: &Expr, key: &str) -> syn::Result<LitStr> {
+    match value {
+        Expr::Lit(expr) => match &expr.lit {
+            Lit::Str(value) => Ok(value.clone()),
+            _ => Err(syn::Error::new_spanned(
+                value,
+                format!("serde `{key}` must be a string literal"),
+            )),
+        },
+        _ => Err(syn::Error::new_spanned(
+            value,
+            format!("serde `{key}` must be a string literal"),
+        )),
+    }
+}
+
+fn validate_graphql_field_name(name: &str, span: &syn::Field) -> syn::Result<()> {
+    let mut chars = name.chars();
+    let first_valid = match chars.next() {
+        Some('_') => !name.starts_with("__"),
+        Some(first) => first.is_ascii_alphabetic(),
+        None => false,
+    };
+    if first_valid && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Ok(());
+    }
+    Err(syn::Error::new_spanned(
+        span,
+        format!(
+            "serde field name `{name}` is not a valid GraphQL name; use #[serde(rename = \"valid_name\")]"
+        ),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graphql_safe_rename_all_rules_match_serde_field_rules() {
+        let field = "long_field_name";
+        let cases = [
+            ("lowercase", "long_field_name"),
+            ("UPPERCASE", "LONG_FIELD_NAME"),
+            ("PascalCase", "LongFieldName"),
+            ("camelCase", "longFieldName"),
+            ("snake_case", "long_field_name"),
+            ("SCREAMING_SNAKE_CASE", "LONG_FIELD_NAME"),
+        ];
+        for (rule, expected) in cases {
+            let literal = LitStr::new(rule, proc_macro2::Span::call_site());
+            assert_eq!(RenameRule::parse(&literal).unwrap().apply(field), expected);
+        }
+    }
+
+    #[test]
+    fn directional_serde_names_follow_wire_direction() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(rename_all(deserialize = "camelCase", serialize = "SCREAMING_SNAKE_CASE"))]
+            struct CommandInput {
+                regular_field: String,
+                #[serde(rename(deserialize = "inputID", serialize = "OUTPUT_ID"))]
+                custom_id: String,
+            }
+        };
+        let input_tokens = expand_graphql_input(input).unwrap().to_string();
+        assert!(input_tokens.contains("\"regularField\""));
+        assert!(input_tokens.contains("\"inputID\""));
+
+        let output: DeriveInput = syn::parse_quote! {
+            #[serde(rename_all(deserialize = "camelCase", serialize = "SCREAMING_SNAKE_CASE"))]
+            struct CommandOutput {
+                regular_field: String,
+                #[serde(rename(deserialize = "inputID", serialize = "OUTPUT_ID"))]
+                custom_id: String,
+            }
+        };
+        let output_tokens = expand_graphql_output(output).unwrap().to_string();
+        assert!(output_tokens.contains("\"REGULAR_FIELD\""));
+        assert!(output_tokens.contains("\"OUTPUT_ID\""));
+    }
+
+    #[test]
+    fn nested_lists_and_shape_changing_serde_attrs_fail_closed() {
+        let nested: DeriveInput = syn::parse_quote! {
+            struct Nested { values: Option<Vec<Option<Vec<String>>>> }
+        };
+        let error = expand_graphql_input(nested).unwrap_err().to_string();
+        assert!(error.contains("nested lists are not supported"), "{error}");
+
+        let skipped: DeriveInput = syn::parse_quote! {
+            struct Skipped {
+                #[serde(skip_deserializing)]
+                value: String,
+            }
+        };
+        let error = expand_graphql_input(skipped).unwrap_err().to_string();
+        assert!(
+            error.contains("changes the declared GraphQL field shape"),
+            "{error}"
+        );
+
+        let defaulted: DeriveInput = syn::parse_quote! {
+            struct Defaulted {
+                #[serde(default)]
+                value: String,
+            }
+        };
+        let error = expand_graphql_input(defaulted).unwrap_err().to_string();
+        assert!(error.contains("#[serde(default)]"), "{error}");
+
+        let custom: DeriveInput = syn::parse_quote! {
+            struct Custom {
+                #[serde(deserialize_with = "decode_value")]
+                value: String,
+            }
+        };
+        let error = expand_graphql_input(custom).unwrap_err().to_string();
+        assert!(error.contains("#[serde(deserialize_with)]"), "{error}");
+
+        let transparent: DeriveInput = syn::parse_quote! {
+            #[serde(transparent)]
+            struct Transparent { value: String }
+        };
+        let error = expand_graphql_output(transparent).unwrap_err().to_string();
+        assert!(error.contains("#[serde(transparent)]"), "{error}");
+
+        let container_default: DeriveInput = syn::parse_quote! {
+            #[serde(default = "default_input")]
+            struct ContainerDefault { value: String }
+        };
+        let error = expand_graphql_input(container_default)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("#[serde(default)]"), "{error}");
+    }
 }

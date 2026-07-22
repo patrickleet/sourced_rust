@@ -9,76 +9,28 @@ use async_graphql::dynamic::{
 };
 use async_graphql::Value;
 
-use crate::microsvc::Session;
-use crate::table::{RelationshipKind, TableSchema};
-
-use super::commands::{CommandInput, CommandOutput, GraphqlCommands};
-use super::compile::{self, RootKind, SqlDialect};
-use super::engine::{CatalogEntry, EngineInner, RoleModelPerm};
-use super::naming::{
-    bool_exp_name, comparison_exp_name, object_type_name, order_by_name, scalar_type_name,
-    CUSTOM_SCALARS,
-};
-use super::permissions::{role_grants_from_model_role_perms, ReadPermission};
+use super::compile::{self, RootKind};
+use super::engine::EngineInner;
+use super::naming::{bool_exp_name, comparison_exp_name, order_by_name, CUSTOM_SCALARS};
 use super::surface::{
-    build_surface, surface_for_role, RootKind as SurfaceRootKind, SurfaceDialect, SurfaceOptions,
+    RootKind as SurfaceRootKind, Surface, SurfaceArgument, SurfaceCommandShape, SurfaceModel,
+    SurfaceTypeDef, SurfaceTypeField,
 };
+use crate::microsvc::Session;
 
 pub fn build_role_schema(
-    role: &str,
-    catalog: &BTreeMap<String, CatalogEntry>,
-    by_table: &BTreeMap<String, String>,
-    permissions: &BTreeMap<(String, String), RoleModelPerm>,
-    commands: &GraphqlCommands,
+    role_surface: &Surface,
     max_depth: usize,
     max_complexity: usize,
-    dialect: SqlDialect,
     disable_introspection: bool,
 ) -> Result<Schema, String> {
-    let _ = by_table;
-
-    // --- A4: field inventory from surface IR (role-filtered) ---
-    // Include shadow / through-table schemas (exposed=false). build_surface only
-    // emits read-model roots, but m2m relationship_emitted needs join tables in
-    // by_table — otherwise weapons-style where predicates drop from bool_exp.
-    let tables: Vec<TableSchema> = catalog.values().map(|e| e.schema.clone()).collect();
-    let surface_opts = SurfaceOptions {
-        dialect: match dialect {
-            SqlDialect::Sqlite => SurfaceDialect::Sqlite,
-            SqlDialect::Postgres => SurfaceDialect::Postgres,
-        },
-        aggregates: true,
-        subscriptions: true,
-    };
-    let full_surface = build_surface(&tables, &surface_opts)?;
-    let grants = role_grants_from_model_role_perms(
-        role,
-        permissions
-            .iter()
-            .map(|(k, v)| (k, &v.permission)),
-    );
-    let role_surface = surface_for_role(&full_surface, role, &grants);
-
-    // Granted models: IR inventory + original ReadPermission (row filters / execute).
-    let granted: Vec<(String, TableSchema, ReadPermission)> = role_surface
-        .models
-        .iter()
-        .filter_map(|(model_name, model)| {
-            let perm = permissions
-                .get(&(model_name.clone(), role.to_string()))
-                .map(|p| p.permission.clone())
-                .unwrap_or_else(super::permissions::read);
-            Some((model_name.clone(), model.schema.clone(), perm))
-        })
-        .collect();
-
     let mut query = Object::new("Query");
     let mut registered_objects: BTreeMap<String, Object> = BTreeMap::new();
     let mut registered_inputs: BTreeMap<String, InputObject> = BTreeMap::new();
-    let mut scalars_needed = std::collections::BTreeSet::new();
+    let mut scalars_needed = std::collections::BTreeSet::<String>::new();
 
     for scalar in CUSTOM_SCALARS {
-        scalars_needed.insert(*scalar);
+        scalars_needed.insert((*scalar).into());
     }
 
     // order_by enum as string scalar alternative — use InputObject with enum-like strings
@@ -94,108 +46,87 @@ pub fn build_role_schema(
 
     // Emit roots only for fields present on the role surface (IR inventory).
     for root in &role_surface.query_fields {
-        let Some((_, schema, perm)) = granted
-            .iter()
-            .find(|(m, _, _)| m == &root.model_name)
-        else {
+        let Some(model) = role_surface.models.get(&root.model_name) else {
             continue;
         };
         let model_name = root.model_name.clone();
         let obj_name = root.object.clone();
-        let bool_exp = bool_exp_name(schema);
-        let order_by = order_by_name(schema);
 
         ensure_object_type(
             &mut registered_objects,
-            schema,
-            catalog,
-            permissions,
-            role,
-            perm,
+            &root.model_name,
+            role_surface,
             &mut scalars_needed,
         );
         ensure_bool_exp(
             &mut registered_inputs,
-            schema,
-            catalog,
-            permissions,
-            role,
-            perm,
+            &root.model_name,
+            role_surface,
             &mut scalars_needed,
         );
-        ensure_order_by_input(&mut registered_inputs, schema, perm);
+        ensure_order_by_input(&mut registered_inputs, model);
 
         match root.kind {
             SurfaceRootKind::List => {
                 let model_for_resolver = model_name.clone();
-                let list_field = Field::new(
-                    root.name.clone(),
-                    TypeRef::named_nn_list_nn(obj_name.clone()),
-                    move |ctx| {
-                        let model = model_for_resolver.clone();
-                        FieldFuture::new(async move {
-                            resolve_root(&ctx, &model, RootKind::List).await
-                        })
-                    },
-                )
-                .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
-                .argument(InputValue::new(
-                    "order_by",
-                    TypeRef::named_nn_list(order_by.clone()),
-                ))
-                .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-                .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+                let list_field = with_field_arguments(
+                    Field::new(
+                        root.name.clone(),
+                        TypeRef::named_nn_list_nn(obj_name.clone()),
+                        move |ctx| {
+                            let model = model_for_resolver.clone();
+                            FieldFuture::new(async move {
+                                resolve_root(&ctx, &model, RootKind::List).await
+                            })
+                        },
+                    ),
+                    &root.arguments,
+                );
                 query = query.field(list_field);
             }
             SurfaceRootKind::ByPk => {
                 let model_for_pk = model_name.clone();
-                let mut pk_field =
-                    Field::new(root.name.clone(), TypeRef::named(obj_name.clone()), move |ctx| {
+                let mut pk_field = Field::new(
+                    root.name.clone(),
+                    TypeRef::named(obj_name.clone()),
+                    move |ctx| {
                         let model = model_for_pk.clone();
-                        FieldFuture::new(async move {
-                            resolve_root(&ctx, &model, RootKind::ByPk).await
-                        })
-                    });
-                for pk in &schema.primary_key.columns {
-                    if let Some(col) = schema.columns.iter().find(|c| c.column_name == *pk) {
-                        if col.skipped {
-                            continue;
-                        }
-                        if let Some(scalar) = scalar_type_name(&col.column_type) {
-                            pk_field = pk_field
-                                .argument(InputValue::new(pk.as_str(), TypeRef::named_nn(scalar)));
-                        }
-                    }
-                }
+                        FieldFuture::new(
+                            async move { resolve_root(&ctx, &model, RootKind::ByPk).await },
+                        )
+                    },
+                );
+                pk_field = with_field_arguments(pk_field, &root.arguments);
                 query = query.field(pk_field);
             }
             SurfaceRootKind::Aggregate => {
-                let agg_type = format!("{}_aggregate", schema.table_name);
-                ensure_aggregate_type(&mut registered_objects, schema);
+                let agg_type = root.name.clone();
+                ensure_aggregate_type(&mut registered_objects, model);
                 let model_for_agg = model_name.clone();
-                let agg_field =
+                let agg_field = with_field_arguments(
                     Field::new(root.name.clone(), TypeRef::named(agg_type), move |ctx| {
                         let model = model_for_agg.clone();
                         FieldFuture::new(async move {
                             resolve_root(&ctx, &model, RootKind::Aggregate).await
                         })
-                    })
-                    .argument(InputValue::new("where", TypeRef::named(bool_exp)));
+                    }),
+                    &root.arguments,
+                );
                 query = query.field(agg_field);
             }
         }
     }
 
-    // Comparison input types from full-catalog IR (dialect-honest ops).
+    // Comparison input types come from this exact role Surface instance.
     // Only register when IR lists ops — never emit empty input objects.
     for scalar in &scalars_needed {
         if matches!(
-            *scalar,
+            scalar.as_str(),
             "String" | "Boolean" | "BigInt" | "Float" | "JSON" | "Timestamptz" | "Bytea"
         ) {
-            let scalar_name = *scalar;
+            let scalar_name = scalar.as_str();
             let name = comparison_exp_name(scalar_name);
-            let ops: Vec<String> = full_surface
+            let ops: Vec<String> = role_surface
                 .comparison_ops_for_scalar(scalar_name)
                 .into_iter()
                 .map(str::to_string)
@@ -221,16 +152,13 @@ pub fn build_role_schema(
 
     // Empty-role Query must still define ≥1 field (async-graphql requirement).
     // Spec: empty role → FORBIDDEN with extensions.code (no query surface).
-    if granted.is_empty() {
+    if role_surface.models.is_empty() {
         query = query.field(Field::new(
             "_empty",
             TypeRef::named_nn(TypeRef::BOOLEAN),
             |_| {
                 FieldFuture::new(async {
-                    Err::<Option<Value>, _>(client_error(
-                        "FORBIDDEN",
-                        "role has no GraphQL grants",
-                    ))
+                    Err::<Option<Value>, _>(client_error("FORBIDDEN", "role has no GraphQL grants"))
                 })
             },
         ));
@@ -238,33 +166,37 @@ pub fn build_role_schema(
 
     // Mutation root from commands
     let mut mutation: Option<Object> = None;
-    let role_commands: Vec<_> = commands
-        .commands
-        .iter()
-        .filter(|(_, c)| c.roles.is_empty() || c.roles.iter().any(|r| r == role))
-        .collect();
-    if !role_commands.is_empty() {
+    if !role_surface.commands.is_empty() {
         let mut mut_obj = Object::new("Mutation");
-        for (cmd_name, cmd) in role_commands {
-            let field_name = cmd.resolved_field_name(cmd_name);
+        for cmd in &role_surface.commands {
             let output_type = match &cmd.output {
-                CommandOutput::Json => "JSON",
-                CommandOutput::Typed(t) => {
-                    ensure_command_output(&mut registered_objects, t, &mut scalars_needed);
+                SurfaceCommandShape::None => {
+                    return Err(format!(
+                        "command `{}` cannot declare an empty output",
+                        cmd.command_name
+                    ));
+                }
+                SurfaceCommandShape::Json => "JSON",
+                SurfaceCommandShape::Typed(t) => {
+                    ensure_command_output(&mut registered_objects, t);
                     t.name.as_str()
                 }
             };
-            let cmd_name = cmd_name.clone();
-            let mut field = Field::new(field_name, TypeRef::named_nn(output_type), move |ctx| {
-                let cmd_name = cmd_name.clone();
-                FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
-            });
+            let cmd_name = cmd.command_name.clone();
+            let mut field = Field::new(
+                cmd.field_name.clone(),
+                TypeRef::named_nn(output_type),
+                move |ctx| {
+                    let cmd_name = cmd_name.clone();
+                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
+                },
+            );
             match &cmd.input {
-                CommandInput::None => {}
-                CommandInput::Json => {
+                SurfaceCommandShape::None => {}
+                SurfaceCommandShape::Json => {
                     field = field.argument(InputValue::new("input", TypeRef::named_nn("JSON")));
                 }
-                CommandInput::Typed(tdef) => {
+                SurfaceCommandShape::Typed(tdef) => {
                     // Register nested input type if needed
                     ensure_command_input(&mut registered_inputs, tdef);
                     field = field.argument(InputValue::new(
@@ -286,51 +218,43 @@ pub fn build_role_schema(
         if !matches!(sub_root.kind, SurfaceRootKind::List) {
             continue;
         }
-        let Some((_, schema, _)) = granted
-            .iter()
-            .find(|(m, _, _)| m == &sub_root.model_name)
-        else {
+        let Some(_model) = role_surface.models.get(&sub_root.model_name) else {
             continue;
         };
-        let bool_exp = bool_exp_name(schema);
-        let order_by = order_by_name(schema);
         let model_for_sub = sub_root.model_name.clone();
         let obj_name = sub_root.object.clone();
-        let field = SubscriptionField::new(
-            sub_root.name.clone(),
-            TypeRef::named_nn_list_nn(obj_name),
-            move |ctx| {
-                let model = model_for_sub.clone();
-                // Extract owned data before the async block (stream is 'static).
-                let inner = ctx.data_opt::<Arc<EngineInner>>().cloned();
-                let session = ctx
-                    .data_opt::<Session>()
-                    .cloned()
-                    .unwrap_or_else(Session::new);
-                let selection = compile::selection_from_field(ctx.field());
-                SubscriptionFieldFuture::new(async move {
-                    let inner = inner.ok_or_else(|| {
-                        async_graphql::Error::new("GraphqlEngine not in request data")
-                    })?;
-                    let role = session
-                        .role()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| inner.anonymous_role.clone());
-                    let stream =
-                        super::subscribe::live_query_stream(inner, session, role, model, selection)
-                            .await
-                            .map_err(async_graphql::Error::new)?;
-                    Ok(stream)
-                })
-            },
-        )
-        .argument(InputValue::new("where", TypeRef::named(bool_exp)))
-        .argument(InputValue::new(
-            "order_by",
-            TypeRef::named_nn_list(order_by),
-        ))
-        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-        .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
+        let field = with_subscription_arguments(
+            SubscriptionField::new(
+                sub_root.name.clone(),
+                TypeRef::named_nn_list_nn(obj_name),
+                move |ctx| {
+                    let model = model_for_sub.clone();
+                    // Extract owned data before the async block (stream is 'static).
+                    let inner = ctx.data_opt::<Arc<EngineInner>>().cloned();
+                    let session = ctx
+                        .data_opt::<Session>()
+                        .cloned()
+                        .unwrap_or_else(Session::new);
+                    let selection = compile::selection_from_field(ctx.field());
+                    SubscriptionFieldFuture::new(async move {
+                        let inner = inner.ok_or_else(|| {
+                            async_graphql::Error::new("GraphqlEngine not in request data")
+                        })?;
+                        let role = session
+                            .role()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| inner.anonymous_role.clone());
+                        let stream = super::subscribe::live_query_stream(
+                            inner, session, role, model, selection,
+                        )
+                        .await
+                        .map_err(async_graphql::Error::new)?;
+                        Ok(stream)
+                    })
+                },
+            ),
+            &sub_root.arguments,
+        );
         subscription = subscription.field(field);
         has_subscription = true;
     }
@@ -380,111 +304,75 @@ pub fn build_role_schema(
 
 fn ensure_object_type(
     objects: &mut BTreeMap<String, Object>,
-    schema: &TableSchema,
-    catalog: &BTreeMap<String, CatalogEntry>,
-    permissions: &BTreeMap<(String, String), RoleModelPerm>,
-    role: &str,
-    perm: &ReadPermission,
-    scalars: &mut std::collections::BTreeSet<&'static str>,
+    model_name: &str,
+    surface: &Surface,
+    scalars: &mut std::collections::BTreeSet<String>,
 ) {
-    let name = object_type_name(schema).to_string();
+    let model = &surface.models[model_name];
+    let name = model.object_name.clone();
     if objects.contains_key(&name) {
         return;
     }
     // Break relationship cycles while nested object fields are registered.
     objects.insert(name.clone(), Object::new(name.clone()));
     let mut obj = Object::new(name.clone());
-    for col in schema.columns.iter().filter(|c| !c.skipped) {
-        if !perm.allows_column(&col.column_name) {
-            continue;
-        }
-        let Some(scalar) = scalar_type_name(&col.column_type) else {
-            continue;
-        };
-        scalars.insert(scalar);
-        let ty = if col.nullable {
-            TypeRef::named(scalar)
+    for column in &model.columns {
+        scalars.insert(column.scalar.clone());
+        let ty = if column.nullable {
+            TypeRef::named(column.scalar.as_str())
         } else {
-            TypeRef::named_nn(scalar)
+            TypeRef::named_nn(column.scalar.as_str())
         };
-        let key = col.column_name.clone();
-        obj = obj.field(Field::new(col.column_name.as_str(), ty, move |ctx| {
+        let key = column.name.clone();
+        obj = obj.field(Field::new(column.name.as_str(), ty, move |ctx| {
             let key = key.clone();
             FieldFuture::new(async move { passthrough(&ctx, &key) })
         }));
     }
-    for rel in &schema.relationships {
-        let Some(target) = catalog.get(&rel.target_model) else {
+    for relationship in &model.relationships {
+        let Some(target) = surface.models.get(&relationship.target_model) else {
             continue;
         };
-        let Some(target_perm) = permissions.get(&(rel.target_model.clone(), role.to_string()))
-        else {
-            continue;
-        };
-        let target_obj = object_type_name(&target.schema).to_string();
-        ensure_object_type(
-            objects,
-            &target.schema,
-            catalog,
-            permissions,
-            role,
-            &target_perm.permission,
-            scalars,
-        );
-        let key = rel.field_name.clone();
-        match rel.kind {
-            RelationshipKind::BelongsTo => {
-                let fk_nullable = schema
-                    .columns
-                    .iter()
-                    .find(|c| {
-                        c.column_name == rel.foreign_key.as_deref().unwrap_or("")
-                            || c.field_name == rel.foreign_key.as_deref().unwrap_or("")
-                    })
-                    .map(|c| c.nullable)
-                    .unwrap_or(true);
-                let ty = if fk_nullable {
-                    TypeRef::named(target_obj)
-                } else {
-                    TypeRef::named_nn(target_obj)
-                };
-                obj = obj.field(Field::new(rel.field_name.as_str(), ty, move |ctx| {
-                    let key = key.clone();
-                    FieldFuture::new(async move { passthrough(&ctx, &key) })
-                }));
-            }
-            RelationshipKind::HasMany | RelationshipKind::ManyToMany => {
-                let bool_exp = bool_exp_name(&target.schema);
-                let order_by = order_by_name(&target.schema);
-                let field = Field::new(
-                    rel.field_name.as_str(),
+        let target_obj = target.object_name.clone();
+        ensure_object_type(objects, &relationship.target_model, surface, scalars);
+        let key = relationship.name.clone();
+        if relationship.list {
+            let field = with_field_arguments(
+                Field::new(
+                    relationship.name.as_str(),
                     TypeRef::named_nn_list_nn(target_obj),
                     move |ctx| {
                         let key = key.clone();
                         FieldFuture::new(async move { passthrough(&ctx, &key) })
                     },
-                )
-                .argument(InputValue::new("where", TypeRef::named(bool_exp.clone())))
-                .argument(InputValue::new(
-                    "order_by",
-                    TypeRef::named_nn_list(order_by),
-                ))
-                .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-                .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)));
-                obj = obj.field(field);
-                if target_perm.permission.aggregations {
-                    ensure_aggregate_type(objects, &target.schema);
-                    let agg_key = format!("{}_aggregate", rel.field_name);
-                    let agg_type = format!("{}_aggregate", target.schema.table_name);
-                    let field_key = agg_key.clone();
-                    let agg_field = Field::new(agg_key, TypeRef::named(agg_type), move |ctx| {
+                ),
+                &relationship.arguments,
+            );
+            obj = obj.field(field);
+            if let Some(aggregate_plan) = &relationship.aggregate {
+                ensure_aggregate_type(objects, target);
+                let aggregate_name = aggregate_plan.name.clone();
+                let aggregate_type = aggregate_plan.type_name.clone();
+                let field_key = aggregate_name.clone();
+                let aggregate = with_field_arguments(
+                    Field::new(aggregate_name, TypeRef::named(aggregate_type), move |ctx| {
                         let key = field_key.clone();
                         FieldFuture::new(async move { passthrough(&ctx, &key) })
-                    })
-                    .argument(InputValue::new("where", TypeRef::named(bool_exp)));
-                    obj = obj.field(agg_field);
-                }
+                    }),
+                    &aggregate_plan.arguments,
+                );
+                obj = obj.field(aggregate);
             }
+        } else {
+            let ty = if relationship.nullable {
+                TypeRef::named(target_obj)
+            } else {
+                TypeRef::named_nn(target_obj)
+            };
+            obj = obj.field(Field::new(relationship.name.as_str(), ty, move |ctx| {
+                let key = key.clone();
+                FieldFuture::new(async move { passthrough(&ctx, &key) })
+            }));
         }
     }
     objects.insert(name, obj);
@@ -492,14 +380,12 @@ fn ensure_object_type(
 
 fn ensure_bool_exp(
     inputs: &mut BTreeMap<String, InputObject>,
-    schema: &TableSchema,
-    catalog: &BTreeMap<String, CatalogEntry>,
-    permissions: &BTreeMap<(String, String), RoleModelPerm>,
-    role: &str,
-    perm: &ReadPermission,
-    scalars: &mut std::collections::BTreeSet<&'static str>,
+    model_name: &str,
+    surface: &Surface,
+    scalars: &mut std::collections::BTreeSet<String>,
 ) {
-    let name = bool_exp_name(schema);
+    let model = &surface.models[model_name];
+    let name = bool_exp_name(&model.schema);
     if inputs.contains_key(&name) {
         return;
     }
@@ -516,77 +402,49 @@ fn ensure_bool_exp(
         TypeRef::named_nn_list(name.as_str()),
     ));
     input = input.field(InputValue::new("_not", TypeRef::named(name.as_str())));
-    for col in schema.columns.iter().filter(|c| !c.skipped) {
-        if !perm.allows_column(&col.column_name) {
-            continue;
-        }
-        if let Some(scalar) = scalar_type_name(&col.column_type) {
-            scalars.insert(scalar);
-            let cmp = comparison_exp_name(scalar);
-            input = input.field(InputValue::new(
-                col.column_name.as_str(),
-                TypeRef::named(cmp),
-            ));
-        }
-    }
-    for rel in &schema.relationships {
-        if catalog.get(&rel.target_model).is_none() {
-            continue;
-        }
-        if permissions
-            .get(&(rel.target_model.clone(), role.to_string()))
-            .is_none()
-        {
-            continue;
-        }
-        let target = &catalog[&rel.target_model].schema;
-        let target_perm = &permissions[&(rel.target_model.clone(), role.to_string())].permission;
-        ensure_bool_exp(
-            inputs,
-            target,
-            catalog,
-            permissions,
-            role,
-            target_perm,
-            scalars,
-        );
-        let target_bool = bool_exp_name(target);
+    for column in &model.columns {
+        scalars.insert(column.scalar.clone());
+        let comparison = comparison_exp_name(&column.scalar);
         input = input.field(InputValue::new(
-            rel.field_name.as_str(),
+            column.name.as_str(),
+            TypeRef::named(comparison),
+        ));
+    }
+    for relationship in &model.relationships {
+        let Some(target) = surface.models.get(&relationship.target_model) else {
+            continue;
+        };
+        ensure_bool_exp(inputs, &relationship.target_model, surface, scalars);
+        let target_bool = bool_exp_name(&target.schema);
+        input = input.field(InputValue::new(
+            relationship.name.as_str(),
             TypeRef::named(target_bool),
         ));
     }
     inputs.insert(name, input);
 }
 
-fn ensure_order_by_input(
-    inputs: &mut BTreeMap<String, InputObject>,
-    schema: &TableSchema,
-    perm: &ReadPermission,
-) {
-    let name = order_by_name(schema);
+fn ensure_order_by_input(inputs: &mut BTreeMap<String, InputObject>, model: &SurfaceModel) {
+    let name = order_by_name(&model.schema);
     if inputs.contains_key(&name) {
         return;
     }
     let mut input = InputObject::new(name.clone());
-    for col in schema.columns.iter().filter(|c| !c.skipped) {
-        if !perm.allows_column(&col.column_name) {
-            continue;
-        }
+    for column in &model.columns {
         input = input.field(InputValue::new(
-            col.column_name.as_str(),
+            column.name.as_str(),
             TypeRef::named("order_by"),
         ));
     }
     inputs.insert(name, input);
 }
 
-fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, schema: &TableSchema) {
-    let agg = format!("{}_aggregate", schema.table_name);
+fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, model: &SurfaceModel) {
+    let agg = format!("{}_aggregate", model.table_name);
     if objects.contains_key(&agg) {
         return;
     }
-    let fields_name = format!("{}_aggregate_fields", schema.table_name);
+    let fields_name = format!("{}_aggregate_fields", model.table_name);
     let mut fields_obj = Object::new(fields_name.clone());
     fields_obj = fields_obj.field(Field::new(
         "count",
@@ -601,28 +459,52 @@ fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, schema: &TableS
         TypeRef::named(fields_name),
         |ctx| FieldFuture::new(async move { passthrough(&ctx, "aggregate") }),
     ));
-    let obj = object_type_name(schema).to_string();
+    let obj = model.object_name.clone();
     agg_obj = agg_obj.field(Field::new("nodes", TypeRef::named_nn_list_nn(obj), |ctx| {
         FieldFuture::new(async move { passthrough(&ctx, "nodes") })
     }));
     objects.insert(agg, agg_obj);
 }
 
-fn ensure_command_input(
-    inputs: &mut BTreeMap<String, InputObject>,
-    tdef: &super::types::GraphqlTypeDef,
-) {
+fn surface_argument_type(argument: &SurfaceArgument) -> TypeRef {
+    match (argument.list, argument.nullable) {
+        (true, false) => TypeRef::named_nn_list_nn(argument.type_name.as_str()),
+        (true, true) => TypeRef::named_nn_list(argument.type_name.as_str()),
+        (false, false) => TypeRef::named_nn(argument.type_name.as_str()),
+        (false, true) => TypeRef::named(argument.type_name.as_str()),
+    }
+}
+
+fn with_field_arguments(mut field: Field, arguments: &[SurfaceArgument]) -> Field {
+    for argument in arguments {
+        field = field.argument(InputValue::new(
+            argument.name.as_str(),
+            surface_argument_type(argument),
+        ));
+    }
+    field
+}
+
+fn with_subscription_arguments(
+    mut field: async_graphql::dynamic::SubscriptionField,
+    arguments: &[SurfaceArgument],
+) -> async_graphql::dynamic::SubscriptionField {
+    for argument in arguments {
+        field = field.argument(InputValue::new(
+            argument.name.as_str(),
+            surface_argument_type(argument),
+        ));
+    }
+    field
+}
+
+fn ensure_command_input(inputs: &mut BTreeMap<String, InputObject>, tdef: &SurfaceTypeDef) {
     if inputs.contains_key(&tdef.name) {
         return;
     }
     let mut input = InputObject::new(tdef.name.clone());
     for field in &tdef.fields {
-        let ty = match (field.list, field.nullable) {
-            (true, false) => TypeRef::named_nn_list_nn(field.type_name.as_str()),
-            (true, true) => TypeRef::named_nn_list(field.type_name.as_str()),
-            (false, false) => TypeRef::named_nn(field.type_name.as_str()),
-            (false, true) => TypeRef::named(field.type_name.as_str()),
-        };
+        let ty = command_field_type(field);
         input = input.field(InputValue::new(field.name.as_str(), ty));
         if let Some(nested) = &field.nested {
             ensure_command_input(inputs, nested);
@@ -632,11 +514,7 @@ fn ensure_command_input(
 }
 
 /// Register a typed command-mutation payload so field selection works on results.
-fn ensure_command_output(
-    objects: &mut BTreeMap<String, Object>,
-    tdef: &super::types::GraphqlTypeDef,
-    scalars: &mut std::collections::BTreeSet<&'static str>,
-) {
+fn ensure_command_output(objects: &mut BTreeMap<String, Object>, tdef: &SurfaceTypeDef) {
     if objects.contains_key(&tdef.name) {
         return;
     }
@@ -645,20 +523,9 @@ fn ensure_command_output(
     let mut obj = Object::new(tdef.name.clone());
     for field in &tdef.fields {
         if let Some(nested) = &field.nested {
-            ensure_command_output(objects, nested, scalars);
+            ensure_command_output(objects, nested);
         }
-        // Track custom scalars that need Scalar::new registration.
-        for s in CUSTOM_SCALARS {
-            if field.type_name == *s {
-                scalars.insert(*s);
-            }
-        }
-        let ty = match (field.list, field.nullable) {
-            (true, false) => TypeRef::named_nn_list_nn(field.type_name.as_str()),
-            (true, true) => TypeRef::named_nn_list(field.type_name.as_str()),
-            (false, false) => TypeRef::named_nn(field.type_name.as_str()),
-            (false, true) => TypeRef::named(field.type_name.as_str()),
-        };
+        let ty = command_field_type(field);
         let key = field.name.clone();
         obj = obj.field(Field::new(field.name.as_str(), ty, move |ctx| {
             let key = key.clone();
@@ -666,6 +533,17 @@ fn ensure_command_output(
         }));
     }
     objects.insert(tdef.name.clone(), obj);
+}
+
+fn command_field_type(field: &SurfaceTypeField) -> TypeRef {
+    match (field.list, field.nullable, field.item_nullable) {
+        (true, false, false) => TypeRef::named_nn_list_nn(field.type_name.as_str()),
+        (true, true, false) => TypeRef::named_nn_list(field.type_name.as_str()),
+        (true, false, true) => TypeRef::named_list_nn(field.type_name.as_str()),
+        (true, true, true) => TypeRef::named_list(field.type_name.as_str()),
+        (false, false, _) => TypeRef::named_nn(field.type_name.as_str()),
+        (false, true, _) => TypeRef::named(field.type_name.as_str()),
+    }
 }
 
 fn passthrough(
@@ -691,7 +569,7 @@ fn lookup_key(value: &Value, key: &str) -> Option<Value> {
         Value::Object(map) => {
             for (k, v) in map {
                 if k.as_str() == key {
-                    return Some(v.clone());
+                    return (!matches!(v, Value::Null)).then(|| v.clone());
                 }
             }
             None
@@ -889,7 +767,10 @@ mod execute_err_mapping_tests {
 
     #[test]
     fn sanitize_compile_error_table() {
-        assert_eq!(sanitize_compile_error("max depth exceeded"), "max depth exceeded");
+        assert_eq!(
+            sanitize_compile_error("max depth exceeded"),
+            "max depth exceeded"
+        );
         assert_eq!(
             sanitize_compile_error("_and list length 999 exceeds max_bool_width 256"),
             "list too long"
@@ -914,7 +795,10 @@ mod execute_err_mapping_tests {
             sanitize_compile_error("ungranted order_by column `secret`"),
             "invalid filter"
         );
-        assert_eq!(sanitize_compile_error("SELECT * FROM secret"), "bad request");
+        assert_eq!(
+            sanitize_compile_error("SELECT * FROM secret"),
+            "bad request"
+        );
     }
 }
 

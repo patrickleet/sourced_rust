@@ -13,6 +13,7 @@
 
 use serde::Serialize;
 
+use super::surface::{SurfaceCommand, SurfaceCommandShape, SurfaceTypeDef, SurfaceTypeField};
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
 /// How the browser interprets a successful mutation payload.
@@ -199,6 +200,7 @@ pub struct CommandFieldCatalog {
     pub type_name: String,
     pub nullable: bool,
     pub list: bool,
+    pub item_nullable: bool,
 }
 
 /// Input or output object shape for a registered command.
@@ -243,6 +245,25 @@ fn field_catalog(f: &GraphqlTypeField) -> CommandFieldCatalog {
         type_name: f.type_name.clone(),
         nullable: f.nullable,
         list: f.list,
+        item_nullable: f.item_nullable,
+    }
+}
+
+fn surface_type(def: &GraphqlTypeDef) -> SurfaceTypeDef {
+    SurfaceTypeDef {
+        name: def.name.clone(),
+        fields: def
+            .fields
+            .iter()
+            .map(|field| SurfaceTypeField {
+                name: field.name.clone(),
+                type_name: field.type_name.clone(),
+                nullable: field.nullable,
+                list: field.list,
+                item_nullable: field.item_nullable,
+                nested: field.nested.as_deref().map(surface_type).map(Box::new),
+            })
+            .collect(),
     }
 }
 
@@ -260,8 +281,37 @@ impl GraphqlCommands {
         self
     }
 
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     pub(crate) fn command_names(&self) -> impl Iterator<Item = &str> {
         self.commands.iter().map(|(n, _)| n.as_str())
+    }
+
+    pub(crate) fn surface_commands(&self) -> Vec<SurfaceCommand> {
+        let mut commands: Vec<_> = self
+            .commands
+            .iter()
+            .map(|(name, command)| {
+                let mut roles = command.roles.clone();
+                roles.sort();
+                roles.dedup();
+                SurfaceCommand {
+                    command_name: name.clone(),
+                    field_name: command.resolved_field_name(name),
+                    roles,
+                    input: match &command.input {
+                        CommandInput::None => SurfaceCommandShape::None,
+                        CommandInput::Json => SurfaceCommandShape::Json,
+                        CommandInput::Typed(def) => SurfaceCommandShape::Typed(surface_type(def)),
+                    },
+                    output: match &command.output {
+                        CommandOutput::Json => SurfaceCommandShape::Json,
+                        CommandOutput::Typed(def) => SurfaceCommandShape::Typed(surface_type(def)),
+                    },
+                }
+            })
+            .collect();
+        commands.sort_by(|a, b| a.command_name.cmp(&b.command_name));
+        commands
     }
 
     /// Machine-readable command registry for TypeScript (or other) client generators.
@@ -317,6 +367,7 @@ mod tests {
                     type_name: "String".into(),
                     nullable: false,
                     list: false,
+                    item_nullable: false,
                     nested: None,
                 }],
             )
@@ -334,6 +385,7 @@ mod tests {
                     type_name: "String".into(),
                     nullable: false,
                     list: false,
+                    item_nullable: false,
                     nested: None,
                 }],
             )
@@ -381,7 +433,12 @@ mod tests {
             "todo_id"
         );
         assert_eq!(
-            cat.commands[0].client_reconcile.as_ref().unwrap().result.kind,
+            cat.commands[0]
+                .client_reconcile
+                .as_ref()
+                .unwrap()
+                .result
+                .kind,
             ClientResultKind::Fact
         );
         assert!(cat.commands[1].client_reconcile.is_none());
@@ -402,16 +459,18 @@ mod tests {
         assert!(json.contains("client_reconcile"));
         assert!(json.contains("\"projection\""));
         // Unset policy omitted (backward compatible).
-        assert!(!json.contains("todos_force_archive") || {
-            // force_archive entry must not carry client_reconcile
-            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-            let force = v["commands"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|c| c["field_name"] == "todos_force_archive")
-                .unwrap();
-            force.get("client_reconcile").is_none()
-        });
+        assert!(
+            !json.contains("todos_force_archive") || {
+                // force_archive entry must not carry client_reconcile
+                let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let force = v["commands"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["field_name"] == "todos_force_archive")
+                    .unwrap();
+                force.get("client_reconcile").is_none()
+            }
+        );
     }
 }

@@ -9,6 +9,8 @@ pub struct GraphqlTypeField {
     pub type_name: String,
     pub nullable: bool,
     pub list: bool,
+    /// Whether list elements are nullable. Always `false` for non-list fields.
+    pub item_nullable: bool,
     /// Nested object type definition when `type_name` is not a scalar.
     pub nested: Option<Box<GraphqlTypeDef>>,
 }

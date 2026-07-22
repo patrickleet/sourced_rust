@@ -91,7 +91,7 @@ async fn pool() -> sqlx::SqlitePool {
 }
 
 #[tokio::test]
-async fn multi_column_primary_key_rejected_at_build() {
+async fn isolated_multi_column_primary_key_builds_with_full_by_pk_tuple() {
     let schema = TableSchema {
         model_name: "Composite".into(),
         table_name: "composites".into(),
@@ -113,19 +113,16 @@ async fn multi_column_primary_key_rejected_at_build() {
         kind: TableKind::ReadModel,
     };
     let manifest = distributed::DistributedProjectManifest::new("t").table_schema(schema);
-    let built = GraphqlEngine::from_manifest(&manifest, pool().await)
+    let engine = GraphqlEngine::from_manifest(&manifest, pool().await)
         .unwrap()
         .roles(&["user"])
         .grant_all("user")
-        .build();
-    let err = match built {
-        Ok(_) => panic!("multi-col PK must fail build"),
-        Err(e) => e,
-    };
-    let msg = err.to_string();
+        .build()
+        .expect("isolated composite-key roots are supported");
+    let sdl = engine.sdl_for_role("user").unwrap();
     assert!(
-        msg.contains("multi-column") || msg.contains("single-column"),
-        "expected multi-col PK policy message, got {msg}"
+        sdl.contains("composites_by_pk(a: String!, b: String!): Composite"),
+        "composite by-PK root must require the complete key tuple:\n{sdl}"
     );
 }
 
