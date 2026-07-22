@@ -15,12 +15,7 @@ pub const COMMAND: &str = "chat.post";
 pub struct ChatPostInput {
     pub message_id: String,
     pub body: String,
-    #[serde(default = "default_room")]
-    pub room_id: String,
-}
-
-fn default_room() -> String {
-    "lobby".into()
+    pub room_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, distributed::GraphqlOutput)]
@@ -41,9 +36,7 @@ where
     ctx.has_fields(&["message_id", "body"]) && session_has_user(ctx.session())
 }
 
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, ChatDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
+pub async fn handle<R, L, S>(ctx: &Context<'_, ChatDeps<R, L, S>>) -> Result<Value, HandlerError>
 where
     R: crate::bounds::EventStore,
     L: crate::bounds::Locks,
@@ -51,6 +44,7 @@ where
 {
     let author = require_user(ctx.session())?;
     let input = ctx.input::<ChatPostInput>()?;
+    let room_id = input.room_id.as_deref().unwrap_or("lobby");
 
     if ctx.repo().get(&input.message_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
@@ -63,7 +57,7 @@ where
     let mut msg = ChatMessage::default();
     msg.post(
         &input.message_id,
-        &input.room_id,
+        room_id,
         &author,
         &input.body,
         &created_at,

@@ -1,8 +1,8 @@
-//! The manifest harness: `describe`/`schema` compile a tiny generated crate
-//! that depends on the target service, calls its `distributed_manifest()`
-//! entrypoint, and prints the manifest JSON or rendered SQL. This module owns
-//! that codegen and the nested `cargo` invocations; the `cli` module maps
-//! command flags onto [`HarnessOptions`]/[`HarnessMode`].
+//! The manifest harness: `describe`/`schema`/`client-manifest` compile a tiny
+//! generated crate that depends on the target service and calls its portable
+//! export entrypoint. This module owns that codegen and the nested `cargo`
+//! invocations; the `cli` module maps flags onto
+//! [`HarnessOptions`]/[`HarnessMode`].
 
 use serde::Deserialize;
 use std::error::Error;
@@ -29,6 +29,7 @@ pub(crate) enum HarnessMode {
     DescribeJson,
     SchemaSql(SchemaDialect),
     SchemaGraphql,
+    ClientManifest,
 }
 
 impl HarnessMode {
@@ -38,6 +39,16 @@ impl HarnessMode {
             HarnessMode::SchemaSql(SchemaDialect::Postgres) => "schema-postgres",
             HarnessMode::SchemaSql(SchemaDialect::Sqlite) => "schema-sqlite",
             HarnessMode::SchemaGraphql => "schema-graphql",
+            HarnessMode::ClientManifest => "client-manifest",
+        }
+    }
+
+    fn default_entrypoint(self) -> &'static str {
+        match self {
+            HarnessMode::ClientManifest => "distributed_client_surface",
+            HarnessMode::DescribeJson | HarnessMode::SchemaSql(_) | HarnessMode::SchemaGraphql => {
+                "distributed_manifest"
+            }
         }
     }
 }
@@ -56,7 +67,7 @@ pub(crate) fn run_manifest_harness(
         .entrypoint
         .clone()
         .map(|entrypoint| qualify_entrypoint(&crate_ident, &entrypoint))
-        .unwrap_or_else(|| Ok(format!("{crate_ident}::distributed_manifest")))?;
+        .unwrap_or_else(|| Ok(format!("{crate_ident}::{}", mode.default_entrypoint())))?;
     validate_rust_path(&entrypoint)?;
 
     let harness_root = package.directory.join("target/dctl-manifest-harness");
@@ -177,6 +188,16 @@ fn harness_main_rs(entrypoint: &str, mode: HarnessMode) -> String {
         .graphql_sdl()
         .expect("manifest GraphQL SDL should render");
     print!("{{}}", sdl);
+}}
+"#
+        ),
+        HarnessMode::ClientManifest => format!(
+            r#"fn main() {{
+    let export: distributed::graphql::DistributedClientSurfaceExport = {entrypoint}();
+    let manifest = export
+        .manifest()
+        .expect("client Surface should compile into a manifest");
+    println!("{{}}", serde_json::to_string_pretty(&manifest).expect("client manifest should serialize"));
 }}
 "#
         ),
@@ -343,5 +364,22 @@ mod tests {
             !main_rs.contains("distributed::TableSqlDialect"),
             "main.rs: {main_rs}"
         );
+    }
+
+    #[test]
+    fn client_harness_uses_the_shared_surface_export_compiler() {
+        assert_eq!(
+            HarnessMode::ClientManifest.default_entrypoint(),
+            "distributed_client_surface"
+        );
+        let main_rs = harness_main_rs(
+            "orders_service::distributed_client_surface",
+            HarnessMode::ClientManifest,
+        );
+        assert!(main_rs.contains(
+            "let export: distributed::graphql::DistributedClientSurfaceExport = orders_service::distributed_client_surface();"
+        ));
+        assert!(main_rs.contains(".manifest()"));
+        assert!(!main_rs.contains("build_surface"));
     }
 }

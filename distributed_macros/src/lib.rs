@@ -1467,7 +1467,7 @@ pub fn derive_snapshot(input: TokenStream) -> TokenStream {
 // ============================================================================
 
 /// Derive `GraphqlInputType` for command mutation input structs.
-#[proc_macro_derive(GraphqlInput)]
+#[proc_macro_derive(GraphqlInput, attributes(serde))]
 pub fn derive_graphql_input(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     match graphql_types::expand_graphql_input(input) {
@@ -1477,7 +1477,7 @@ pub fn derive_graphql_input(input: TokenStream) -> TokenStream {
 }
 
 /// Derive `GraphqlOutputType` for command mutation output structs.
-#[proc_macro_derive(GraphqlOutput)]
+#[proc_macro_derive(GraphqlOutput, attributes(serde))]
 pub fn derive_graphql_output(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     match graphql_types::expand_graphql_output(input) {

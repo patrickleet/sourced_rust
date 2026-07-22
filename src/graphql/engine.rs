@@ -16,6 +16,9 @@ use crate::table::{
     resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableKind, TableSchema,
 };
 
+use super::client_manifest::{
+    ClientManifestError, DistributedClientManifest, DistributedClientSurfaceExport,
+};
 use super::commands::GraphqlCommands;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
@@ -24,9 +27,15 @@ use super::identity::IdentityConfig;
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
 };
-use super::permissions::{read, ModelPermissions, ReadPermission};
+use super::permissions::{
+    read, role_grants_from_model_role_perms, ModelPermissions, ReadPermission,
+};
 use super::schema as dyn_schema;
-use super::sdl::{graphql_sdl_for_tables_with_options, SdlOptions};
+use super::sdl::{graphql_sdl_for_tables_with_options, graphql_sdl_from_surface, SdlOptions};
+use super::surface::{
+    build_surface, surface_for_application, surface_for_role, Surface, SurfaceDialect,
+    SurfaceOptions, SurfaceProjector,
+};
 
 #[derive(Clone)]
 pub enum GraphqlPool {
@@ -85,6 +94,10 @@ pub(crate) struct RoleModelPerm {
 }
 
 pub(crate) struct EngineInner {
+    /// Stable service identity used by client manifest hashes and cache scopes.
+    /// Manifest-built engines populate this automatically; manual builders may
+    /// opt in with [`GraphqlEngineBuilder::service_id`].
+    pub service_id: Option<String>,
     pub pool: GraphqlPool,
     pub catalog: BTreeMap<String, CatalogEntry>,
     pub by_table: BTreeMap<String, String>,
@@ -107,6 +120,10 @@ pub(crate) struct EngineInner {
     pub statement_timeout: Duration,
     pub graphiql: bool,
     pub commands: GraphqlCommands,
+    /// Pool-free complete inventory and the exact role-filtered instances used
+    /// by runtime schema, SDL, and client-manifest export.
+    pub surface: Arc<Surface>,
+    pub role_surfaces: BTreeMap<String, Arc<Surface>>,
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
     pub change_hub: super::subscribe::ChangeHub,
     pub dialect: SqlDialect,
@@ -119,6 +136,7 @@ pub struct GraphqlEngine {
 }
 
 pub struct GraphqlEngineBuilder {
+    service_id: Option<String>,
     pool: GraphqlPool,
     catalog: BTreeMap<String, CatalogEntry>,
     by_table: BTreeMap<String, String>,
@@ -136,6 +154,7 @@ pub struct GraphqlEngineBuilder {
     statement_timeout: Duration,
     graphiql: bool,
     commands: GraphqlCommands,
+    projectors: Vec<SurfaceProjector>,
     change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
     pending_errors: Vec<String>,
     identity: IdentityConfig,
@@ -150,12 +169,14 @@ impl GraphqlEngine {
         m: &DistributedProjectManifest,
         pool: impl Into<GraphqlPool>,
     ) -> Result<GraphqlEngineBuilder, GraphqlBuildError> {
-        let mut builder = Self::builder(pool);
+        let mut builder = Self::builder(pool).service_id(m.name.clone());
         for schema in &m.tables {
             if schema.kind == TableKind::ReadModel {
                 builder = builder.register_schema_exposed(schema.clone())?;
             } else {
-                // Operational tables stay out of the catalog for GraphQL.
+                // Operational tables never become roots, but the shared
+                // Surface needs them to derive opaque m2m dependencies.
+                builder = builder.table_schema(schema.clone());
             }
         }
         Ok(builder)
@@ -173,29 +194,93 @@ impl GraphqlEngine {
     /// Preferred for codegen / `export_sdl`. Uses the same catalog grants as the
     /// engine build (A12 mapper). Runtime dump is still available via [`Self::sdl_for_role`].
     pub fn ir_sdl_for_role(&self, role: &str) -> Result<String, String> {
-        use super::permissions::role_grants_from_model_role_perms;
-        use super::sdl::{graphql_sdl_for_role, SdlOptions};
-        use super::compile::SqlDialect;
-
-        let tables: Vec<_> = self
+        let surface = self
             .inner
-            .catalog
-            .values()
-            .filter(|e| e.exposed)
-            .map(|e| e.schema.clone())
-            .collect();
-        let opts = match self.inner.dialect {
-            SqlDialect::Sqlite => SdlOptions::sqlite(),
-            SqlDialect::Postgres => SdlOptions::postgres(),
-        };
-        let grants = role_grants_from_model_role_perms(
-            role,
-            self.inner
-                .permissions
-                .iter()
-                .map(|(k, v)| (k, &v.permission)),
-        );
-        graphql_sdl_for_role(&tables, &opts, role, &grants)
+            .role_surfaces
+            .get(role)
+            .ok_or_else(|| format!("role `{role}` is not configured for GraphQL"))?;
+        graphql_sdl_from_surface(surface)
+    }
+
+    /// Return the exact role Surface instance used to construct the runtime
+    /// schema. This is intentionally shared rather than reconstructed.
+    pub fn surface_for_role(&self, role: &str) -> Option<Arc<Surface>> {
+        self.inner.role_surfaces.get(role).cloned()
+    }
+
+    /// Stable service identity retained from [`DistributedProjectManifest::name`].
+    ///
+    /// Engines built manually return `None` unless the builder opted in with
+    /// [`GraphqlEngineBuilder::service_id`].
+    pub fn service_id(&self) -> Option<&str> {
+        self.inner.service_id.as_deref()
+    }
+
+    pub fn client_surface_for_role(
+        &self,
+        role: &str,
+    ) -> Result<DistributedClientSurfaceExport, ClientManifestError> {
+        let service_id = self.client_export_service_id()?;
+        let surface = self.surface_for_role(role).ok_or_else(|| {
+            ClientManifestError(format!("role `{role}` is not configured for GraphQL"))
+        })?;
+        DistributedClientSurfaceExport::from_selected(service_id, surface)
+    }
+
+    pub fn client_manifest_for_role(
+        &self,
+        role: &str,
+    ) -> Result<DistributedClientManifest, ClientManifestError> {
+        self.client_surface_for_role(role)?.manifest()
+    }
+
+    pub fn client_surface_for_application(
+        &self,
+        application: &str,
+        roles: &[&str],
+    ) -> Result<DistributedClientSurfaceExport, ClientManifestError> {
+        let service_id = self.client_export_service_id()?;
+        let roles: Vec<String> = roles.iter().map(|role| (*role).to_string()).collect();
+        let mut grants_by_role = BTreeMap::new();
+        for role in &roles {
+            if !self.inner.role_surfaces.contains_key(role) {
+                return Err(ClientManifestError(format!(
+                    "role `{role}` is not configured for GraphQL"
+                )));
+            }
+            grants_by_role.insert(
+                role.clone(),
+                role_grants_from_model_role_perms(
+                    role,
+                    self.inner
+                        .permissions
+                        .iter()
+                        .map(|(key, value)| (key, &value.permission)),
+                ),
+            );
+        }
+        let surface =
+            surface_for_application(&self.inner.surface, application, &roles, &grants_by_role)
+                .map_err(ClientManifestError)?;
+        DistributedClientSurfaceExport::from_selected(service_id, surface)
+    }
+
+    pub fn client_manifest_for_application(
+        &self,
+        application: &str,
+        roles: &[&str],
+    ) -> Result<DistributedClientManifest, ClientManifestError> {
+        self.client_surface_for_application(application, roles)?
+            .manifest()
+    }
+
+    fn client_export_service_id(&self) -> Result<String, ClientManifestError> {
+        self.inner.service_id.clone().ok_or_else(|| {
+            ClientManifestError(
+                "client export requires a service ID; construct the engine with GraphqlEngine::from_manifest or GraphqlEngineBuilder::service_id"
+                    .into(),
+            )
+        })
     }
 
     pub fn graphiql_enabled(&self) -> bool {
@@ -319,6 +404,7 @@ fn record_metrics(session: &Session, root_field: &str, status: &str, duration: D
 impl GraphqlEngineBuilder {
     fn new(pool: GraphqlPool) -> Self {
         Self {
+            service_id: None,
             pool,
             catalog: BTreeMap::new(),
             by_table: BTreeMap::new(),
@@ -338,6 +424,7 @@ impl GraphqlEngineBuilder {
             statement_timeout: Duration::from_secs(5),
             graphiql: false,
             commands: GraphqlCommands::new(),
+            projectors: Vec::new(),
             change_rx: None,
             pending_errors: Vec::new(),
             // DevHeaders keeps ambient header tests/green; public scaffolds set OidcBearer (D6).
@@ -500,6 +587,21 @@ impl GraphqlEngineBuilder {
         self.anonymous_role = name.to_string();
         self
     }
+    /// Set the stable service identity used by generated client manifests.
+    ///
+    /// [`GraphqlEngine::from_manifest`] supplies this automatically from the
+    /// project manifest. This setter is intended for manually assembled
+    /// engines, which otherwise cannot export a client manifest safely.
+    pub fn service_id(mut self, service_id: impl Into<String>) -> Self {
+        let service_id = service_id.into();
+        if service_id.trim().is_empty() {
+            self.pending_errors
+                .push("GraphQL client service ID must not be empty".into());
+        } else {
+            self.service_id = Some(service_id);
+        }
+        self
+    }
     pub fn default_limit(mut self, n: u64) -> Self {
         self.default_limit = n;
         self
@@ -544,6 +646,15 @@ impl GraphqlEngineBuilder {
     }
     pub fn commands(mut self, c: GraphqlCommands) -> Self {
         self.commands = c;
+        self
+    }
+    /// Declare projector topology for client invalidation planning. The model
+    /// and dependency IDs are validated when the one shared Surface is built.
+    pub fn client_projectors(
+        mut self,
+        projectors: impl IntoIterator<Item = SurfaceProjector>,
+    ) -> Self {
+        self.projectors = projectors.into_iter().collect();
         self
     }
     pub fn statement_timeout(mut self, d: Duration) -> Self {
@@ -636,20 +747,6 @@ impl GraphqlEngineBuilder {
         // Name grammar / collisions across exposed models.
         validate_generated_names(&self.catalog)?;
 
-        // v1 join / by_pk paths assume a single-column primary key.
-        for entry in self.catalog.values() {
-            if !entry.exposed {
-                continue;
-            }
-            let pk_n = entry.schema.primary_key.columns.len();
-            if pk_n > 1 {
-                return Err(GraphqlBuildError(format!(
-                    "model `{}` has {pk_n}-column primary key; multi-column primary keys are not supported in GraphQL v1 (single-column PK required)",
-                    entry.schema.model_name
-                )));
-            }
-        }
-
         // m2m resolution for catalog relationships used in permissions/schema.
         for entry in self.catalog.values() {
             for rel in &entry.schema.relationships {
@@ -692,6 +789,30 @@ impl GraphqlEngineBuilder {
             }
         };
 
+        let tables: Vec<TableSchema> = self
+            .catalog
+            .values()
+            .map(|entry| entry.schema.clone())
+            .collect();
+        let surface_options = SurfaceOptions {
+            dialect: match dialect {
+                SqlDialect::Sqlite => SurfaceDialect::Sqlite,
+                SqlDialect::Postgres => SurfaceDialect::Postgres,
+            },
+            aggregates: true,
+            subscriptions: true,
+            default_limit: self.default_limit,
+            max_limit: self.max_limit,
+        };
+        let full_surface = Arc::new(
+            build_surface(&tables, &surface_options)
+                .map_err(GraphqlBuildError)?
+                .with_commands(&self.commands)
+                .map_err(GraphqlBuildError)?
+                .with_projectors(self.projectors.clone())
+                .map_err(GraphqlBuildError)?,
+        );
+
         let mut roles: BTreeSet<String> = self.permissions.keys().map(|(_, r)| r.clone()).collect();
         if let Some(declared) = &declared_roles {
             roles.extend(declared.iter().cloned());
@@ -700,20 +821,26 @@ impl GraphqlEngineBuilder {
 
         // Build per-role dynamic schemas.
         let mut schemas = HashMap::new();
+        let mut role_surfaces = BTreeMap::new();
         for role in &roles {
-            let schema = dyn_schema::build_role_schema(
+            let grants = role_grants_from_model_role_perms(
                 role,
-                &self.catalog,
-                &self.by_table,
-                &self.permissions,
-                &self.commands,
+                self.permissions
+                    .iter()
+                    .map(|(key, value)| (key, &value.permission)),
+            );
+            let role_surface = Arc::new(
+                surface_for_role(&full_surface, role, &grants).map_err(GraphqlBuildError)?,
+            );
+            let schema = dyn_schema::build_role_schema(
+                &role_surface,
                 self.max_depth,
                 self.max_complexity,
-                dialect,
                 role == &anonymous && !self.introspection_for_anonymous,
             )
             .map_err(GraphqlBuildError)?;
             schemas.insert(role.clone(), schema);
+            role_surfaces.insert(role.clone(), role_surface);
         }
 
         let change_hub = super::subscribe::ChangeHub::new();
@@ -722,6 +849,7 @@ impl GraphqlEngineBuilder {
         }
 
         let inner = Arc::new(EngineInner {
+            service_id: self.service_id,
             pool: self.pool,
             catalog: self.catalog,
             by_table: self.by_table,
@@ -739,6 +867,8 @@ impl GraphqlEngineBuilder {
             statement_timeout: self.statement_timeout,
             graphiql: self.graphiql,
             commands: self.commands,
+            surface: full_surface,
+            role_surfaces,
             schemas,
             change_hub,
             dialect,
@@ -946,6 +1076,11 @@ fn validate_filter(
     model: &str,
     role: &str,
 ) -> Result<(), GraphqlBuildError> {
+    filter.validate_row_policy_literals().map_err(|error| {
+        GraphqlBuildError(format!(
+            "invalid row policy for model `{model}` role `{role}`: {error}"
+        ))
+    })?;
     if is_anonymous {
         let mut claims = Vec::new();
         filter.visit_claims(|c| claims.push(c.to_string()));
@@ -1050,4 +1185,1165 @@ pub(crate) async fn execute_plan(inner: &EngineInner, plan: &SqlPlan) -> Result<
 pub fn core_sdl_for_catalog(tables: &[TableSchema]) -> Result<String, String> {
     // Dialect-independent / SQLite-default SDL (no PG JSON ops).
     graphql_sdl_for_tables_with_options(tables, &SdlOptions::sqlite())
+}
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+mod client_surface_parity_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    #[cfg(feature = "sqlite")]
+    use crate::graphql::ModelNormalization;
+    use crate::graphql::{
+        col, exposed_command, ClientRootOperation, DistributedClientSurfaceExport,
+        GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
+    };
+    #[cfg(feature = "sqlite")]
+    use crate::table::RelationshipDef;
+    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind, TableSchema};
+
+    fn orders() -> TableSchema {
+        TableSchema {
+            model_name: "OrderView".into(),
+            table_name: "orders".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("order_id", "order_id", ColumnType::Text)
+                },
+                TableColumn::new("status", "status", ColumnType::Text),
+                TableColumn {
+                    jsonb: true,
+                    ..TableColumn::new("metadata", "metadata", ColumnType::Json)
+                },
+            ],
+            primary_key: PrimaryKey::new(["order_id"]),
+            version_column: Some("_sourced_version".into()),
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    fn type_field_names(sdl: &str, type_name: &str) -> BTreeSet<String> {
+        definition_field_names(sdl, "type", type_name)
+    }
+
+    fn input_field_names(sdl: &str, type_name: &str) -> BTreeSet<String> {
+        definition_field_names(sdl, "input", type_name)
+    }
+
+    fn definition_field_names(sdl: &str, declaration: &str, type_name: &str) -> BTreeSet<String> {
+        let marker = format!("{declaration} {type_name} {{");
+        let body = sdl
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("missing `{marker}` in SDL:\n{sdl}"))
+            .1
+            .split_once('}')
+            .expect("type block should close")
+            .0;
+        body.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    return None;
+                }
+                line.split(['(', ':'])
+                    .next()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn one_role_surface_drives_runtime_sdl_manifest_and_limits() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let commands = GraphqlCommands::new().command(
+            "order.refresh",
+            exposed_command()
+                .field_name("orders_refresh")
+                .roles(["user"]),
+        );
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .default_limit(7)
+            .max_limit(19)
+            .commands(commands)
+            .client_projectors([SurfaceProjector::new("project_orders")
+                .facts(["order.changed"])
+                .models(["OrderView"])])
+            .build()
+            .unwrap();
+
+        let stored = engine.surface_for_role("user").unwrap();
+        assert_eq!(engine.service_id(), Some("orders-service"));
+        let export = engine.client_surface_for_role("user").unwrap();
+        assert!(Arc::ptr_eq(&stored, export.surface()));
+        let manifest = export.manifest().unwrap();
+        assert_eq!(manifest, export.manifest().unwrap());
+        assert_eq!(manifest.service_id, "orders-service");
+        let static_sdl = engine.ir_sdl_for_role("user").unwrap();
+        let runtime_sdl = engine.sdl_for_role("user").unwrap();
+
+        for type_name in [
+            "Query",
+            "Subscription",
+            "Mutation",
+            "OrderView",
+            "orders_aggregate",
+            "orders_aggregate_fields",
+        ] {
+            assert_eq!(
+                type_field_names(&static_sdl, type_name),
+                type_field_names(&runtime_sdl, type_name),
+                "runtime/static field drift for {type_name}"
+            );
+        }
+
+        let query_roots: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .filter(|root| root.operation == ClientRootOperation::Query)
+            .map(|root| root.name.clone())
+            .collect();
+        let subscription_roots: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .filter(|root| root.operation == ClientRootOperation::Subscription)
+            .map(|root| root.name.clone())
+            .collect();
+        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        assert_eq!(
+            subscription_roots,
+            type_field_names(&runtime_sdl, "Subscription")
+        );
+        assert_eq!(
+            manifest
+                .commands
+                .iter()
+                .map(|command| command.mutation_field.clone())
+                .collect::<BTreeSet<_>>(),
+            type_field_names(&runtime_sdl, "Mutation")
+        );
+        assert_eq!(
+            manifest.models[0]
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<BTreeSet<_>>(),
+            type_field_names(&runtime_sdl, "OrderView")
+        );
+        assert_eq!(subscription_roots, BTreeSet::from(["orders".into()]));
+        assert!(!runtime_sdl.contains("type Subscription {\n\torders_by_pk"));
+
+        let list = manifest
+            .roots
+            .iter()
+            .find(|root| root.id == "query:orders")
+            .unwrap();
+        assert_eq!(list.pagination.as_ref().unwrap().default_limit, 7);
+        assert_eq!(list.pagination.as_ref().unwrap().max_limit, 19);
+        assert_eq!(manifest.projectors[0].name, "project_orders");
+        assert_eq!(
+            manifest.commands[0].operation,
+            "mutation Client_orders_refresh { orders_refresh }"
+        );
+        assert!(manifest.commands[0].operation_hash.starts_with("sha256:"));
+
+        let runtime_json = input_field_names(&runtime_sdl, "JSON_comparison_exp");
+        assert_eq!(
+            runtime_json,
+            input_field_names(&static_sdl, "JSON_comparison_exp")
+        );
+        let metadata_ops: BTreeSet<String> = list
+            .filter
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.name == "metadata")
+            .unwrap()
+            .operators
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(metadata_ops, runtime_json);
+        for forbidden in ["_contains", "_contained_in", "_has_key"] {
+            assert!(!metadata_ops.contains(forbidden));
+        }
+        assert_eq!(
+            manifest.schema_fingerprint,
+            "sha256:84838d60ab08cd9a2c3e8e4b5f77888154064146995bbe5454074ea961ec5cfe"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn manual_engine_client_export_requires_explicit_service_id() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let engine = GraphqlEngine::builder(pool)
+            .register_schema_exposed(orders())
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .build()
+            .unwrap();
+
+        let error = engine.client_surface_for_role("user").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("GraphqlEngineBuilder::service_id"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn empty_role_static_runtime_and_manifest_are_truthful() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["empty"])
+            .build()
+            .unwrap();
+
+        let static_sdl = engine.ir_sdl_for_role("empty").unwrap();
+        let runtime_sdl = engine.sdl_for_role("empty").unwrap();
+        assert_eq!(
+            type_field_names(&static_sdl, "Query"),
+            BTreeSet::from(["_empty".into()])
+        );
+        assert_eq!(
+            type_field_names(&static_sdl, "Query"),
+            type_field_names(&runtime_sdl, "Query")
+        );
+        let manifest = engine.client_manifest_for_role("empty").unwrap();
+        assert!(manifest.roots.is_empty());
+        assert!(!manifest.capabilities.live_queries);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_role_surface_drives_runtime_sdl_and_manifest() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/distributed_test")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .default_limit(7)
+            .max_limit(19)
+            .build()
+            .unwrap();
+
+        let export = engine.client_surface_for_role("user").unwrap();
+        let manifest = export.manifest().unwrap();
+        assert_eq!(manifest, export.manifest().unwrap());
+        let static_sdl = engine.ir_sdl_for_role("user").unwrap();
+        let runtime_sdl = engine.sdl_for_role("user").unwrap();
+        for type_name in [
+            "Query",
+            "Subscription",
+            "OrderView",
+            "orders_aggregate",
+            "orders_aggregate_fields",
+        ] {
+            assert_eq!(
+                type_field_names(&static_sdl, type_name),
+                type_field_names(&runtime_sdl, type_name),
+                "Postgres runtime/static field drift for {type_name}"
+            );
+        }
+
+        let query_roots: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .filter(|root| root.operation == ClientRootOperation::Query)
+            .map(|root| root.name.clone())
+            .collect();
+        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        assert_eq!(
+            manifest.models[0]
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<BTreeSet<_>>(),
+            type_field_names(&runtime_sdl, "OrderView")
+        );
+
+        let runtime_json = input_field_names(&runtime_sdl, "JSON_comparison_exp");
+        assert_eq!(
+            runtime_json,
+            input_field_names(&static_sdl, "JSON_comparison_exp")
+        );
+        let metadata_ops: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .find(|root| root.id == "query:orders")
+            .unwrap()
+            .filter
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.name == "metadata")
+            .unwrap()
+            .operators
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(metadata_ops, runtime_json);
+        for required in ["_contains", "_contained_in", "_has_key"] {
+            assert!(metadata_ops.contains(required));
+        }
+        assert_eq!(manifest.service_id, "orders-service");
+        assert_eq!(
+            manifest.schema_fingerprint,
+            "sha256:b3bc11b62da3502fecd01e8649f41ffa884fd501e1a2e20a785a66f109cbb87c"
+        );
+    }
+
+    fn customers() -> TableSchema {
+        TableSchema {
+            model_name: "CustomerView".into(),
+            table_name: "customers".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("customer_id", "customer_id", ColumnType::Text)
+                },
+                TableColumn::new("display_name", "display_name", ColumnType::Text),
+                TableColumn::new("internal_note", "internal_note", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["customer_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    fn type_field(
+        name: &str,
+        type_name: &str,
+        nullable: bool,
+        list: bool,
+        nested: Option<GraphqlTypeDef>,
+    ) -> GraphqlTypeField {
+        GraphqlTypeField {
+            name: name.into(),
+            type_name: type_name.into(),
+            nullable,
+            list,
+            item_nullable: false,
+            nested: nested.map(Box::new),
+        }
+    }
+
+    struct ChangeOrderInput;
+
+    impl GraphqlInputType for ChangeOrderInput {
+        fn graphql_type() -> GraphqlTypeDef {
+            let patch = GraphqlTypeDef::new(
+                "OrderPatchInput",
+                vec![
+                    type_field("status", "String", false, false, None),
+                    type_field("metadata", "JSON", true, false, None),
+                ],
+            );
+            GraphqlTypeDef::new(
+                "ChangeOrderInput",
+                vec![
+                    type_field("patch", "OrderPatchInput", false, false, Some(patch)),
+                    type_field("order_id", "String", false, false, None),
+                ],
+            )
+        }
+    }
+
+    struct ChangeOrderPayload;
+
+    impl GraphqlOutputType for ChangeOrderPayload {
+        fn graphql_type() -> GraphqlTypeDef {
+            let changed_order = GraphqlTypeDef::new(
+                "ChangedOrder",
+                vec![
+                    type_field("status", "String", false, false, None),
+                    type_field("order_id", "String", false, false, None),
+                ],
+            );
+            GraphqlTypeDef::new(
+                "ChangeOrderPayload",
+                vec![
+                    type_field("warnings", "String", true, true, None),
+                    type_field("order", "ChangedOrder", false, false, Some(changed_order)),
+                    type_field("accepted", "Boolean", false, false, None),
+                ],
+            )
+        }
+    }
+
+    fn matrix_project() -> DistributedProjectManifest {
+        DistributedProjectManifest::new("acceptance-service")
+            .table_schema(orders())
+            .table_schema(customers())
+    }
+
+    fn matrix_commands() -> GraphqlCommands {
+        GraphqlCommands::new()
+            .command(
+                "order.change",
+                exposed_command()
+                    .field_name("orders_change")
+                    .input::<ChangeOrderInput>()
+                    .output::<ChangeOrderPayload>()
+                    .roles(["restricted", "admin"]),
+            )
+            .command(
+                "order.force_archive",
+                exposed_command()
+                    .field_name("orders_force_archive")
+                    .input::<ChangeOrderInput>()
+                    .output::<ChangeOrderPayload>()
+                    .roles(["admin"]),
+            )
+    }
+
+    fn matrix_projectors() -> Vec<SurfaceProjector> {
+        vec![
+            SurfaceProjector::new("project_customers")
+                .facts(["customer.changed"])
+                .models(["CustomerView"]),
+            SurfaceProjector::new("project_orders")
+                .facts(["order.changed"])
+                .models(["OrderView"]),
+        ]
+    }
+
+    fn restricted_read() -> ReadPermission {
+        read()
+            .columns(["order_id", "status"])
+            .rows(col("status").eq("OPEN"))
+            .limit(5)
+    }
+
+    fn insert_permission(
+        builder: &mut GraphqlEngineBuilder,
+        model: &str,
+        role: &str,
+        permission: ReadPermission,
+    ) {
+        assert!(builder
+            .permissions
+            .insert((model.into(), role.into()), RoleModelPerm { permission },)
+            .is_none());
+    }
+
+    fn matrix_engine(pool: GraphqlPool) -> GraphqlEngine {
+        let project = matrix_project();
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["restricted", "admin"])
+            .default_limit(11)
+            .max_limit(23)
+            .commands(matrix_commands())
+            .client_projectors(matrix_projectors());
+        insert_permission(&mut builder, "OrderView", "restricted", restricted_read());
+        insert_permission(
+            &mut builder,
+            "OrderView",
+            "admin",
+            read().all_columns().aggregations(),
+        );
+        insert_permission(
+            &mut builder,
+            "CustomerView",
+            "admin",
+            read().all_columns().aggregations(),
+        );
+        builder.build().unwrap()
+    }
+
+    fn independent_manifest(dialect: SurfaceDialect, role: &str) -> DistributedClientManifest {
+        let project = matrix_project();
+        let options = SurfaceOptions {
+            dialect,
+            aggregates: true,
+            subscriptions: true,
+            default_limit: 11,
+            max_limit: 23,
+        };
+        let full = build_surface(&project.tables, &options)
+            .unwrap()
+            .with_commands(&matrix_commands())
+            .unwrap()
+            .with_projectors(matrix_projectors())
+            .unwrap();
+        let grants = match role {
+            "restricted" => BTreeMap::from([(
+                "OrderView".into(),
+                RoleGrant::columns(["order_id", "status"])
+                    .rows(col("status").eq("OPEN"))
+                    .limit(5),
+            )]),
+            "admin" => BTreeMap::from([
+                (
+                    "OrderView".into(),
+                    RoleGrant::all_columns().with_aggregations(),
+                ),
+                (
+                    "CustomerView".into(),
+                    RoleGrant::all_columns().with_aggregations(),
+                ),
+            ]),
+            other => panic!("unexpected matrix role `{other}`"),
+        };
+        let selected = surface_for_role(&full, role, &grants).unwrap();
+        DistributedClientSurfaceExport::from_project(&project, selected)
+            .unwrap()
+            .manifest()
+            .unwrap()
+    }
+
+    fn definition_inventory(sdl: &str) -> BTreeMap<String, BTreeSet<String>> {
+        let mut inventory: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut current: Option<String> = None;
+        for line in sdl.lines() {
+            let line = line.trim();
+            if current.is_none() {
+                let declaration = line
+                    .strip_prefix("type ")
+                    .or_else(|| line.strip_prefix("input "));
+                if let Some(declaration) = declaration {
+                    if line.contains('{') {
+                        let name = declaration
+                            .split([' ', '{'])
+                            .next()
+                            .expect("definition name")
+                            .to_string();
+                        inventory.entry(name.clone()).or_default();
+                        current = Some(name);
+                    }
+                }
+                continue;
+            }
+            if line == "}" {
+                current = None;
+                continue;
+            }
+            if line.is_empty() || line.starts_with('#') || line.starts_with('"') {
+                continue;
+            }
+            let field = line
+                .split(['(', ':'])
+                .next()
+                .map(str::trim)
+                .filter(|field| !field.is_empty());
+            if let (Some(definition), Some(field)) = (&current, field) {
+                inventory
+                    .get_mut(definition)
+                    .expect("current definition")
+                    .insert(field.into());
+            }
+        }
+        inventory
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
+    #[derive(Clone, Copy)]
+    struct ArtifactGoldens {
+        manifest: &'static str,
+        static_sdl: &'static str,
+        runtime_sdl: &'static str,
+    }
+
+    async fn assert_role_matrix(
+        engine: &GraphqlEngine,
+        dialect: SurfaceDialect,
+        role: &str,
+        expected: ArtifactGoldens,
+    ) {
+        let stored = engine.surface_for_role(role).unwrap();
+        let export = engine.client_surface_for_role(role).unwrap();
+        assert!(Arc::ptr_eq(&stored, export.surface()));
+        let manifest = export.manifest().unwrap();
+        assert_eq!(manifest, export.manifest().unwrap());
+        assert_eq!(manifest, independent_manifest(dialect, role));
+
+        let static_sdl = engine.ir_sdl_for_role(role).unwrap();
+        let runtime_sdl = engine.sdl_for_role(role).unwrap();
+        assert_eq!(
+            definition_inventory(&static_sdl),
+            definition_inventory(&runtime_sdl),
+            "runtime/static definition drift for role `{role}`"
+        );
+
+        let query_roots: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .filter(|root| root.operation == ClientRootOperation::Query)
+            .map(|root| root.name.clone())
+            .collect();
+        let subscription_roots: BTreeSet<String> = manifest
+            .roots
+            .iter()
+            .filter(|root| root.operation == ClientRootOperation::Subscription)
+            .map(|root| root.name.clone())
+            .collect();
+        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        assert_eq!(
+            subscription_roots,
+            type_field_names(&runtime_sdl, "Subscription")
+        );
+        assert_eq!(
+            manifest
+                .commands
+                .iter()
+                .map(|command| command.mutation_field.clone())
+                .collect::<BTreeSet<_>>(),
+            type_field_names(&runtime_sdl, "Mutation")
+        );
+        for model in &manifest.models {
+            let expected_fields: BTreeSet<String> = model
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .chain(model.relationships.iter().flat_map(|relationship| {
+                    std::iter::once(relationship.name.clone()).chain(
+                        relationship
+                            .aggregate
+                            .iter()
+                            .map(|aggregate| aggregate.name.clone()),
+                    )
+                }))
+                .collect();
+            assert_eq!(
+                expected_fields,
+                type_field_names(&static_sdl, &model.typename),
+                "manifest/static model drift for {}",
+                model.typename
+            );
+            assert_eq!(
+                expected_fields,
+                type_field_names(&runtime_sdl, &model.typename),
+                "manifest/runtime model drift for {}",
+                model.typename
+            );
+        }
+
+        let model_ids: BTreeSet<_> = manifest
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        let command_names: BTreeSet<_> = manifest
+            .commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect();
+        let projector_names: BTreeSet<_> = manifest
+            .projectors
+            .iter()
+            .map(|projector| projector.name.as_str())
+            .collect();
+        match role {
+            "restricted" => {
+                assert_eq!(model_ids, BTreeSet::from(["OrderView"]));
+                assert_eq!(command_names, BTreeSet::from(["order.change"]));
+                assert_eq!(projector_names, BTreeSet::from(["project_orders"]));
+                assert!(!query_roots.contains("orders_aggregate"));
+                assert_eq!(manifest.models[0].fields.len(), 2);
+                assert_eq!(
+                    manifest
+                        .roots
+                        .iter()
+                        .find(|root| root.id == "query:orders")
+                        .unwrap()
+                        .pagination
+                        .as_ref()
+                        .unwrap()
+                        .default_limit,
+                    5
+                );
+            }
+            "admin" => {
+                assert_eq!(model_ids, BTreeSet::from(["CustomerView", "OrderView"]));
+                assert_eq!(
+                    command_names,
+                    BTreeSet::from(["order.change", "order.force_archive"])
+                );
+                assert_eq!(
+                    projector_names,
+                    BTreeSet::from(["project_customers", "project_orders"])
+                );
+                assert!(query_roots.contains("customers_aggregate"));
+                assert!(query_roots.contains("orders_aggregate"));
+            }
+            other => panic!("unexpected matrix role `{other}`"),
+        }
+
+        let manifest_json = serde_json::to_vec(&manifest).unwrap();
+        let actual_manifest = sha256(&manifest_json);
+        let actual_static_sdl = sha256(static_sdl.as_bytes());
+        let actual_runtime_sdl = sha256(runtime_sdl.as_bytes());
+        assert_eq!(actual_manifest, expected.manifest, "{dialect:?}/{role}");
+        assert_eq!(actual_static_sdl, expected.static_sdl, "{dialect:?}/{role}");
+        assert_eq!(
+            actual_runtime_sdl, expected.runtime_sdl,
+            "{dialect:?}/{role}"
+        );
+    }
+
+    async fn assert_nested_command_validates(engine: &GraphqlEngine) {
+        let manifest = engine.client_manifest_for_role("admin").unwrap();
+        let command = manifest
+            .commands
+            .iter()
+            .find(|command| command.name == "order.change")
+            .unwrap();
+        assert_eq!(
+            command.operation,
+            "mutation Client_orders_change($input: ChangeOrderInput!) { orders_change(input: $input) { accepted order { order_id status } warnings } }"
+        );
+        async_graphql::parser::parse_query(&command.operation)
+            .expect("generated command operation must parse");
+
+        let request = Request::new(command.operation.clone()).variables(
+            async_graphql::Variables::from_json(serde_json::json!({
+                "input": {
+                    "order_id": "order-1",
+                    "patch": {
+                        "metadata": {"source": "acceptance"},
+                        "status": "READY"
+                    }
+                }
+            })),
+        );
+        let mut session = Session::new();
+        session.set(crate::microsvc::ROLE_KEY, "admin");
+        let response = engine.execute(&session, request).await;
+        assert_eq!(response.errors.len(), 1, "{response:?}");
+        assert_eq!(
+            response.errors[0].message,
+            "command dispatcher not configured (use graphql_router_with_service)"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
+        manifest: "sha256:f6a0d798dffe08ab242d0a5aeb6d213b138b06219fad4011367dce31b1844d83",
+        static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
+        runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
+    };
+
+    #[cfg(feature = "sqlite")]
+    const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
+        manifest: "sha256:64a0cc86d69e6627a65685169638251fe3b231dcb9f564bed22775d498bd37e5",
+        static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
+        runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
+    };
+
+    #[cfg(feature = "postgres")]
+    const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
+        manifest: "sha256:f6a0d798dffe08ab242d0a5aeb6d213b138b06219fad4011367dce31b1844d83",
+        static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
+        runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
+    };
+
+    #[cfg(feature = "postgres")]
+    const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
+        manifest: "sha256:178b5c518841c350c24ebc4eb42f66ca3beeabcedffc91226290d85ab865a83e",
+        static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
+        runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
+    };
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn sqlite_restricted_admin_full_artifact_matrix() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let engine = matrix_engine(pool.into());
+        assert_role_matrix(
+            &engine,
+            SurfaceDialect::Sqlite,
+            "restricted",
+            SQLITE_RESTRICTED_GOLDENS,
+        )
+        .await;
+        assert_role_matrix(
+            &engine,
+            SurfaceDialect::Sqlite,
+            "admin",
+            SQLITE_ADMIN_GOLDENS,
+        )
+        .await;
+        assert_nested_command_validates(&engine).await;
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_restricted_admin_full_artifact_matrix() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/distributed_test")
+            .unwrap();
+        let engine = matrix_engine(pool.into());
+        assert_role_matrix(
+            &engine,
+            SurfaceDialect::Postgres,
+            "restricted",
+            POSTGRES_RESTRICTED_GOLDENS,
+        )
+        .await;
+        assert_role_matrix(
+            &engine,
+            SurfaceDialect::Postgres,
+            "admin",
+            POSTGRES_ADMIN_GOLDENS,
+        )
+        .await;
+        assert_nested_command_validates(&engine).await;
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn composite_records() -> TableSchema {
+        TableSchema {
+            model_name: "CompositeRecord".into(),
+            table_name: "composite_records".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("tenant_id", "tenant_id", ColumnType::Text)
+                },
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("record_id", "record_id", ColumnType::Text)
+                },
+                TableColumn::new("value", "value", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["tenant_id", "record_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn root_arguments(sdl: &str, field: &str) -> BTreeMap<String, String> {
+        let marker = format!("{field}(");
+        let arguments = sdl
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("missing root field `{field}` in SDL:\n{sdl}"))
+            .1
+            .split_once(')')
+            .expect("root arguments should close")
+            .0;
+        arguments
+            .split(',')
+            .filter_map(|argument| argument.trim().split_once(':'))
+            .map(|(name, ty)| (name.trim().to_string(), ty.trim().to_string()))
+            .collect()
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn isolated_composite_key_root_has_runtime_static_manifest_parity() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE composite_records (\
+                tenant_id TEXT NOT NULL, \
+                record_id TEXT NOT NULL, \
+                value TEXT NOT NULL, \
+                PRIMARY KEY (tenant_id, record_id)\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO composite_records (tenant_id, record_id, value) VALUES \
+                ('tenant-a', 'record-1', 'first'), \
+                ('tenant-a', 'record-2', 'second')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let project =
+            DistributedProjectManifest::new("composite-service").table_schema(composite_records());
+        let engine = GraphqlEngine::from_manifest(&project, pool.clone())
+            .unwrap()
+            .roles(&["admin"])
+            .grant_all("admin")
+            .build()
+            .unwrap();
+        let static_sdl = engine.ir_sdl_for_role("admin").unwrap();
+        let runtime_sdl = engine.sdl_for_role("admin").unwrap();
+        let manifest = engine.client_manifest_for_role("admin").unwrap();
+        let by_pk = manifest
+            .roots
+            .iter()
+            .find(|root| root.id == "query:composite_records_by_pk")
+            .unwrap();
+        assert_eq!(
+            by_pk
+                .arguments
+                .iter()
+                .map(|argument| argument.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tenant_id", "record_id"]
+        );
+        let manifest_arguments: BTreeMap<String, String> = by_pk
+            .arguments
+            .iter()
+            .map(|argument| {
+                let mut ty = if argument.list {
+                    format!("[{}!]", argument.type_name)
+                } else {
+                    argument.type_name.clone()
+                };
+                if !argument.nullable {
+                    ty.push('!');
+                }
+                (argument.name.clone(), ty)
+            })
+            .collect();
+        assert_eq!(
+            manifest_arguments,
+            BTreeMap::from([
+                ("record_id".into(), "String!".into()),
+                ("tenant_id".into(), "String!".into()),
+            ])
+        );
+        assert_eq!(
+            manifest_arguments,
+            root_arguments(&static_sdl, "composite_records_by_pk")
+        );
+        assert_eq!(
+            manifest_arguments,
+            root_arguments(&runtime_sdl, "composite_records_by_pk")
+        );
+        let ModelNormalization::Normalized { fields, encoding } = &manifest.models[0].normalization
+        else {
+            panic!("isolated composite key must be normalized")
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tenant_id", "record_id"]
+        );
+        assert_eq!(encoding, "canonical_json_tuple_v1");
+
+        let mut session = Session::new();
+        session.set(crate::microsvc::ROLE_KEY, "admin");
+        let response = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        selected: composite_records_by_pk(
+                            tenant_id: "tenant-a"
+                            record_id: "record-2"
+                        ) {
+                            tenant_id
+                            record_id
+                            value
+                        }
+                        missing: composite_records_by_pk(
+                            tenant_id: "tenant-a"
+                            record_id: "record-missing"
+                        ) {
+                            tenant_id
+                            record_id
+                            value
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+        assert!(response.errors.is_empty(), "{response:?}");
+        assert_eq!(
+            response.data.into_json().unwrap(),
+            serde_json::json!({
+                "selected": {
+                    "tenant_id": "tenant-a",
+                    "record_id": "record-2",
+                    "value": "second"
+                },
+                "missing": null
+            })
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn simple_records() -> TableSchema {
+        TableSchema {
+            model_name: "SimpleRecord".into(),
+            table_name: "simple_records".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("simple_id", "simple_id", ColumnType::Text)
+                },
+                TableColumn::new("tenant_id", "tenant_id", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["simple_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn composite_key_relationship_topology_is_rejected_in_both_directions() {
+        let cases = [
+            {
+                let mut composite = composite_records();
+                composite.columns.push(TableColumn::new(
+                    "simple_id",
+                    "simple_id",
+                    ColumnType::Text,
+                ));
+                composite.relationships.push(RelationshipDef {
+                    field_name: "simple".into(),
+                    kind: RelationshipKind::BelongsTo,
+                    target_model: "SimpleRecord".into(),
+                    foreign_key: Some("simple_id".into()),
+                    through: None,
+                    target_foreign_key: None,
+                });
+                ("outgoing", composite, simple_records())
+            },
+            {
+                let composite = composite_records();
+                let mut simple = simple_records();
+                simple.relationships.push(RelationshipDef {
+                    field_name: "composite".into(),
+                    kind: RelationshipKind::BelongsTo,
+                    target_model: "CompositeRecord".into(),
+                    foreign_key: Some("tenant_id".into()),
+                    through: None,
+                    target_foreign_key: None,
+                });
+                ("incoming", composite, simple)
+            },
+        ];
+        for (direction, composite, simple) in cases {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap();
+            let project = DistributedProjectManifest::new("composite-service")
+                .table_schema(composite)
+                .table_schema(simple);
+            let error = GraphqlEngine::from_manifest(&project, pool)
+                .unwrap()
+                .roles(&["admin"])
+                .grant_all("admin")
+                .build()
+                .err()
+                .expect("composite relationship topology must fail");
+            assert!(
+                error.to_string().contains("relationship topology"),
+                "{direction}: {error}"
+            );
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn metrics() -> TableSchema {
+        TableSchema {
+            model_name: "MetricView".into(),
+            table_name: "metrics".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("metric_id", "metric_id", ColumnType::Text)
+                },
+                TableColumn::new("value", "value", ColumnType::Float),
+            ],
+            primary_key: PrimaryKey::new(["metric_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn engine_rejects_non_finite_row_policy_literals_and_accepts_finite_values() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for predicate in [col("value").eq(value), col("value").is_in([value])] {
+                let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap();
+                let project =
+                    DistributedProjectManifest::new("metrics-service").table_schema(metrics());
+                let mut builder = GraphqlEngine::from_manifest(&project, pool)
+                    .unwrap()
+                    .roles(&["restricted"]);
+                insert_permission(
+                    &mut builder,
+                    "MetricView",
+                    "restricted",
+                    read().all_columns().rows(predicate),
+                );
+                let error = builder
+                    .build()
+                    .err()
+                    .expect("non-finite row policy literal must fail");
+                assert!(error.to_string().contains("must be finite"), "{error}");
+            }
+        }
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("metrics-service").table_schema(metrics());
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["restricted"]);
+        insert_permission(
+            &mut builder,
+            "MetricView",
+            "restricted",
+            read().all_columns().rows(FilterExpr::And(vec![
+                col("value").eq(1.25_f64),
+                col("value").is_in([-1.25_f64, 0.0, 99.5]),
+            ])),
+        );
+        builder.build().unwrap();
+    }
 }

@@ -6,16 +6,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::table::{
-    resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableKind, TableSchema,
-};
+use crate::table::{TableKind, TableSchema};
 
 use super::naming::{
-    aggregate_field, aggregate_fields_type_name, aggregate_type_name, avg_fields_type_name,
-    bool_exp_name, by_pk_field, comparison_exp_name, include_postgres_json_comparison_ops,
-    is_valid_graphql_name, max_fields_type_name, min_fields_type_name, object_type_name,
-    order_by_enum_values, order_by_name, reserved_type_names, root_list_field, scalar_type_name,
-    sum_fields_type_name, CUSTOM_SCALARS, POSTGRES_JSON_COMPARISON_OPS,
+    comparison_exp_name, include_postgres_json_comparison_ops, is_valid_graphql_name,
+    order_by_enum_values, reserved_type_names, CUSTOM_SCALARS,
 };
 
 /// Options controlling which surface slices the renderer emits.
@@ -29,7 +24,7 @@ pub struct SdlOptions {
     /// Postgres. Defaults to false (SQLite / dialect-independent artifact).
     /// See [`SdlOptions::sqlite`] / [`SdlOptions::postgres`].
     pub jsonb_operators: bool,
-    /// Emit a Subscription root mirroring Query list/by_pk fields (phase 4).
+    /// Emit a Subscription root mirroring Query list fields (phase 4).
     pub subscriptions: bool,
 }
 
@@ -79,6 +74,8 @@ pub fn graphql_sdl_for_tables_with_options(
         },
         aggregates: options.aggregates,
         subscriptions: options.subscriptions,
+        default_limit: 100,
+        max_limit: 1000,
     };
     let surface = super::surface::build_surface(tables, &surface_opts)?;
     graphql_sdl_from_surface(&surface)
@@ -86,9 +83,7 @@ pub fn graphql_sdl_for_tables_with_options(
 
 /// Emit GraphQL SDL from a pre-built surface IR (role-filtered or full catalog).
 pub fn graphql_sdl_from_surface(surface: &super::surface::Surface) -> Result<String, String> {
-    let tables = surface.schemas();
-    let options = surface_options_to_sdl(surface);
-    graphql_sdl_from_read_models(&tables, &options)
+    graphql_sdl_from_read_models(surface)
 }
 
 /// Production path for **role-filtered** SDL (gap A10).
@@ -113,50 +108,21 @@ pub fn graphql_sdl_for_role(
         },
         aggregates: options.aggregates,
         subscriptions: options.subscriptions,
+        default_limit: 100,
+        max_limit: 1000,
     };
     let full = super::surface::build_surface(tables, &surface_opts)?;
-    let role_surface = super::surface::surface_for_role(&full, role, grants);
+    let role_surface = super::surface::surface_for_role(&full, role, grants)?;
     graphql_sdl_from_surface(&role_surface)
 }
 
-fn surface_options_to_sdl(surface: &super::surface::Surface) -> SdlOptions {
-    SdlOptions {
-        aggregates: surface.aggregates,
-        jsonb_operators: include_postgres_json_comparison_ops(surface.dialect.is_postgres()),
-        subscriptions: surface.subscriptions,
-    }
-}
-
 /// Internal renderer over an already IR-filtered set of read models.
-fn graphql_sdl_from_read_models(
-    tables: &[TableSchema],
-    options: &SdlOptions,
-) -> Result<String, String> {
-    let read_models: Vec<&TableSchema> = tables
-        .iter()
-        .filter(|t| t.kind.is_read_model())
-        .collect();
-
-    let by_model: BTreeMap<&str, &TableSchema> = read_models
-        .iter()
-        .map(|t| (t.model_name.as_str(), *t))
-        .collect();
-    let by_table: BTreeMap<&str, &TableSchema> = read_models
-        .iter()
-        .map(|t| (t.table_name.as_str(), *t))
-        .collect();
-
-    // Validate every table first.
-    for schema in &read_models {
-        schema
-            .validate()
-            .map_err(|e| format!("schema `{}` invalid: {e}", schema.model_name))?;
-    }
-
+fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<String, String> {
     // Type names and root field names are separate GraphQL namespaces (Hasura
     // reuses e.g. `players_aggregate` as both a root field and an object type).
     let mut type_names: BTreeSet<String> = BTreeSet::new();
-    let mut root_fields: BTreeSet<String> = BTreeSet::new();
+    let mut query_fields: BTreeSet<String> = BTreeSet::new();
+    let mut subscription_fields: BTreeSet<String> = BTreeSet::new();
     for reserved in reserved_type_names() {
         type_names.insert(reserved.to_string());
     }
@@ -166,64 +132,42 @@ fn graphql_sdl_from_read_models(
         }
     }
 
-    for schema in &read_models {
-        claim_name(&mut type_names, object_type_name(schema))?;
-        claim_name(&mut root_fields, root_list_field(schema))?;
-        claim_name(&mut root_fields, &by_pk_field(schema))?;
-        claim_name(&mut type_names, &bool_exp_name(schema))?;
-        claim_name(&mut type_names, &order_by_name(schema))?;
-        if options.aggregates {
-            claim_name(&mut root_fields, &aggregate_field(schema))?;
-            claim_name(&mut type_names, &aggregate_type_name(schema))?;
-            claim_name(&mut type_names, &aggregate_fields_type_name(schema))?;
-            claim_name(&mut type_names, &sum_fields_type_name(schema))?;
-            claim_name(&mut type_names, &avg_fields_type_name(schema))?;
-            claim_name(&mut type_names, &min_fields_type_name(schema))?;
-            claim_name(&mut type_names, &max_fields_type_name(schema))?;
+    for comparison_name in surface.comparison_ops.keys() {
+        claim_name(&mut type_names, comparison_name)?;
+    }
+    for model in surface.models.values() {
+        claim_name(&mut type_names, &model.object_name)?;
+        claim_name(&mut type_names, &format!("{}_bool_exp", model.table_name))?;
+        claim_name(&mut type_names, &format!("{}_order_by", model.table_name))?;
+        if model.aggregations {
+            claim_name(&mut type_names, &format!("{}_aggregate", model.table_name))?;
+            claim_name(
+                &mut type_names,
+                &format!("{}_aggregate_fields", model.table_name),
+            )?;
         }
-        for column in visible_columns(schema) {
-            let Some(scalar) = scalar_type_name(&column.column_type) else {
-                return Err(format!(
-                    "model `{}` column `{}` has unsupported type",
-                    schema.model_name, column.column_name
-                ));
-            };
-            let cmp = comparison_exp_name(scalar);
-            if !type_names.contains(&cmp) {
-                claim_name(&mut type_names, &cmp)?;
-            }
-            if !is_valid_graphql_name(&column.column_name) {
+        for column in &model.columns {
+            if !is_valid_graphql_name(&column.name) {
                 return Err(format!(
                     "model `{}` column `{}` is not a valid GraphQL name",
-                    schema.model_name, column.column_name
+                    model.model_name, column.name
                 ));
             }
         }
-        for rel in &schema.relationships {
-            if !is_valid_graphql_name(&rel.field_name) {
+        for relationship in &model.relationships {
+            if !is_valid_graphql_name(&relationship.name) {
                 return Err(format!(
                     "model `{}` relationship `{}` is not a valid GraphQL name",
-                    schema.model_name, rel.field_name
+                    model.model_name, relationship.name
                 ));
             }
-            if matches!(rel.kind, RelationshipKind::ManyToMany) {
-                if rel.through.is_none() {
-                    return Err(format!(
-                        "model `{}` relationship `{}` many-to-many must declare `through`",
-                        schema.model_name, rel.field_name
-                    ));
-                }
-                if let (Some(target), Some(through_name)) = (
-                    by_model.get(rel.target_model.as_str()),
-                    rel.through.as_deref(),
-                ) {
-                    if let Some(through) = by_table.get(through_name) {
-                        resolve_m2m_target_foreign_key(schema, rel, through, target)
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
         }
+    }
+    for root in &surface.query_fields {
+        claim_name(&mut query_fields, &root.name)?;
+    }
+    for root in &surface.subscription_fields {
+        claim_name(&mut subscription_fields, &root.name)?;
     }
 
     let mut out = String::new();
@@ -242,98 +186,78 @@ fn graphql_sdl_from_read_models(
     out.push_str("}\n\n");
 
     // Comparison input types (shared per scalar that appears).
-    let mut used_scalars: BTreeSet<&str> = BTreeSet::new();
-    for schema in &read_models {
-        for column in visible_columns(schema) {
-            if let Some(s) = scalar_type_name(&column.column_type) {
-                used_scalars.insert(s);
-            }
-        }
-    }
+    let used_scalars: BTreeSet<&str> = surface
+        .models
+        .values()
+        .flat_map(|model| model.columns.iter().map(|column| column.scalar.as_str()))
+        .collect();
     for scalar in &used_scalars {
-        emit_comparison_exp(&mut out, scalar, options.jsonb_operators);
+        let name = comparison_exp_name(scalar);
+        let operators = surface
+            .comparison_ops
+            .get(&name)
+            .ok_or_else(|| format!("Surface is missing comparison operator inventory `{name}`"))?;
+        emit_comparison_exp(&mut out, scalar, operators);
     }
 
-    // Per-table types: alphabetical by model_name for type block ordering of
-    // object types; inputs follow similarly.
-    let mut sorted_models: Vec<&&TableSchema> = read_models.iter().collect();
-    sorted_models.sort_by(|a, b| a.model_name.cmp(&b.model_name));
-
-    for schema in &sorted_models {
-        emit_object_type(&mut out, schema, &by_model, &by_table, options);
-        emit_bool_exp(&mut out, schema, &by_model, &by_table);
-        emit_order_by_input(&mut out, schema);
-        if options.aggregates {
-            emit_aggregate_types(&mut out, schema);
+    for model in surface.models.values() {
+        emit_object_type(&mut out, model, surface);
+        emit_bool_exp(&mut out, model, surface);
+        emit_order_by_input(&mut out, model);
+        if model.aggregations {
+            emit_aggregate_types(&mut out, model);
         }
     }
 
-    // Query root — fields alphabetical.
+    emit_command_types(&mut out, &surface.commands)?;
+
+    // Roots are emitted from the Surface inventory, not reconstructed from
+    // schemas. This is what keeps hidden/partial by-PK identity and per-model
+    // aggregate grants aligned with runtime and client manifest output.
     out.push_str("type Query {\n");
-    let mut root_fields: Vec<String> = Vec::new();
-    for schema in &sorted_models {
-        let table = root_list_field(schema);
-        let bool_exp = bool_exp_name(schema);
-        let order_by = order_by_name(schema);
-        let obj = object_type_name(schema);
-        root_fields.push(format!(
-            "  {table}(where: {bool_exp}, order_by: [{order_by}!], limit: Int, offset: Int): [{obj}!]!"
-        ));
-        let by_pk = by_pk_field(schema);
-        let pk_args = schema
-            .primary_key
-            .columns
-            .iter()
-            .filter_map(|pk| {
-                let col = schema.columns.iter().find(|c| c.column_name == *pk)?;
-                let scalar = scalar_type_name(&col.column_type)?;
-                Some(format!("{pk}: {scalar}!"))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        root_fields.push(format!("  {by_pk}({pk_args}): {obj}"));
-        if options.aggregates {
-            let agg = aggregate_field(schema);
-            let agg_ty = aggregate_type_name(schema);
-            root_fields.push(format!("  {agg}(where: {bool_exp}): {agg_ty}"));
+    if surface.query_fields.is_empty() {
+        // async-graphql requires a non-empty Query object and the runtime uses
+        // this same fail-closed sentinel for roles with no readable models.
+        // It is intentionally not a client-manifest root.
+        out.push_str("  _empty: Boolean!\n");
+    } else {
+        for field in &surface.query_fields {
+            out.push_str(&surface_root_sdl(field));
+            out.push('\n');
         }
-    }
-    root_fields.sort();
-    for f in &root_fields {
-        out.push_str(f);
-        out.push('\n');
     }
     out.push_str("}\n");
 
-    if options.subscriptions {
+    if !surface.subscription_fields.is_empty() {
         out.push_str("\ntype Subscription {\n");
-        let mut sub_fields: Vec<String> = Vec::new();
-        for schema in &sorted_models {
-            let table = root_list_field(schema);
-            let bool_exp = bool_exp_name(schema);
-            let order_by = order_by_name(schema);
-            let obj = object_type_name(schema);
-            sub_fields.push(format!(
-                "  {table}(where: {bool_exp}, order_by: [{order_by}!], limit: Int, offset: Int): [{obj}!]!"
-            ));
-            let by_pk = by_pk_field(schema);
-            let pk_args = schema
-                .primary_key
-                .columns
-                .iter()
-                .filter_map(|pk| {
-                    let col = schema.columns.iter().find(|c| c.column_name == *pk)?;
-                    let scalar = scalar_type_name(&col.column_type)?;
-                    Some(format!("{pk}: {scalar}!"))
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            sub_fields.push(format!("  {by_pk}({pk_args}): {obj}"));
-        }
-        sub_fields.sort();
-        for f in &sub_fields {
-            out.push_str(f);
+        for field in &surface.subscription_fields {
+            out.push_str(&surface_root_sdl(field));
             out.push('\n');
+        }
+        out.push_str("}\n");
+    }
+
+    if !surface.commands.is_empty() {
+        out.push_str("\ntype Mutation {\n");
+        for command in &surface.commands {
+            let input = match &command.input {
+                super::surface::SurfaceCommandShape::None => String::new(),
+                super::surface::SurfaceCommandShape::Json => "(input: JSON!)".into(),
+                super::surface::SurfaceCommandShape::Typed(definition) => {
+                    format!("(input: {}!)", definition.name)
+                }
+            };
+            let output = match &command.output {
+                super::surface::SurfaceCommandShape::None => {
+                    return Err(format!(
+                        "command `{}` cannot declare an empty output",
+                        command.command_name
+                    ));
+                }
+                super::surface::SurfaceCommandShape::Json => "JSON",
+                super::surface::SurfaceCommandShape::Typed(definition) => &definition.name,
+            };
+            out.push_str(&format!("  {}{}: {}!\n", command.field_name, input, output));
         }
         out.push_str("}\n");
     }
@@ -341,133 +265,165 @@ fn graphql_sdl_from_read_models(
     Ok(out)
 }
 
-fn claim_name(names: &mut BTreeSet<String>, name: &str) -> Result<(), String> {
-    if !is_valid_graphql_name(name) {
-        return Err(format!("generated name `{name}` is not a valid GraphQL name"));
+fn surface_root_sdl(root: &super::surface::RootField) -> String {
+    let arguments = root
+        .arguments
+        .iter()
+        .map(|argument| {
+            let mut ty = if argument.list {
+                format!("[{}!]", argument.type_name)
+            } else {
+                argument.type_name.clone()
+            };
+            if !argument.nullable {
+                ty.push('!');
+            }
+            format!("{}: {ty}", argument.name)
+        })
+        .collect::<Vec<_>>();
+    let arguments = if arguments.is_empty() {
+        String::new()
+    } else {
+        format!("({})", arguments.join(", "))
+    };
+    let output = match root.kind {
+        super::surface::RootKind::List => format!("[{}!]!", root.object),
+        super::surface::RootKind::ByPk => root.object.clone(),
+        super::surface::RootKind::Aggregate => root.name.clone(),
+    };
+    format!("  {}{}: {}", root.name, arguments, output)
+}
+
+fn emit_command_types(
+    out: &mut String,
+    commands: &[super::surface::SurfaceCommand],
+) -> Result<(), String> {
+    let mut inputs = BTreeMap::new();
+    let mut outputs = BTreeMap::new();
+    for command in commands {
+        if let super::surface::SurfaceCommandShape::Typed(definition) = &command.input {
+            collect_command_type(definition, &mut inputs)?;
+        }
+        if let super::surface::SurfaceCommandShape::Typed(definition) = &command.output {
+            collect_command_type(definition, &mut outputs)?;
+        }
     }
-    if !names.insert(name.to_string()) {
-        return Err(format!("generated name `{name}` collides with another type or field"));
+    for definition in inputs.values() {
+        emit_command_type(out, "input", definition);
+    }
+    for definition in outputs.values() {
+        emit_command_type(out, "type", definition);
     }
     Ok(())
 }
 
-fn visible_columns(schema: &TableSchema) -> impl Iterator<Item = &crate::table::TableColumn> {
-    schema.columns.iter().filter(|c| !c.skipped)
+fn collect_command_type(
+    definition: &super::surface::SurfaceTypeDef,
+    types: &mut BTreeMap<String, super::surface::SurfaceTypeDef>,
+) -> Result<(), String> {
+    if let Some(existing) = types.get(&definition.name) {
+        if existing != definition {
+            return Err(format!(
+                "command type `{}` has conflicting structural definitions",
+                definition.name
+            ));
+        }
+        return Ok(());
+    }
+    types.insert(definition.name.clone(), definition.clone());
+    for field in &definition.fields {
+        if let Some(nested) = &field.nested {
+            collect_command_type(nested, types)?;
+        }
+    }
+    Ok(())
 }
 
-fn emit_comparison_exp(out: &mut String, scalar: &str, jsonb_ops: bool) {
-    let name = comparison_exp_name(scalar);
-    out.push_str(&format!("input {name} {{\n"));
-    out.push_str(&format!("  _eq: {scalar}\n"));
-    out.push_str(&format!("  _neq: {scalar}\n"));
-    out.push_str(&format!("  _gt: {scalar}\n"));
-    out.push_str(&format!("  _gte: {scalar}\n"));
-    out.push_str(&format!("  _lt: {scalar}\n"));
-    out.push_str(&format!("  _lte: {scalar}\n"));
-    out.push_str(&format!("  _in: [{scalar}!]\n"));
-    out.push_str(&format!("  _nin: [{scalar}!]\n"));
-    out.push_str("  _is_null: Boolean\n");
-    if *scalar == *"String" {
-        out.push_str("  _like: String\n");
-        out.push_str("  _ilike: String\n");
-    }
-    // Keep field list in lockstep with runtime schema via shared constants.
-    if *scalar == *"JSON" && jsonb_ops {
-        debug_assert!(include_postgres_json_comparison_ops(true));
-        for op in POSTGRES_JSON_COMPARISON_OPS {
-            match *op {
-                "_contains" | "_contained_in" => {
-                    out.push_str(&format!("  {op}: JSON\n"));
-                }
-                "_has_key" => out.push_str("  _has_key: String\n"),
-                other => out.push_str(&format!("  {other}: JSON\n")),
+fn emit_command_type(out: &mut String, keyword: &str, definition: &super::surface::SurfaceTypeDef) {
+    out.push_str(&format!("{keyword} {} {{\n", definition.name));
+    for field in &definition.fields {
+        let mut ty = if field.list {
+            if field.item_nullable {
+                format!("[{}]", field.type_name)
+            } else {
+                format!("[{}!]", field.type_name)
             }
+        } else {
+            field.type_name.clone()
+        };
+        if !field.nullable {
+            ty.push('!');
         }
+        out.push_str(&format!("  {}: {}\n", field.name, ty));
     }
     out.push_str("}\n\n");
 }
 
-fn relationship_emitted(
-    schema: &TableSchema,
-    rel: &crate::table::RelationshipDef,
-    by_model: &BTreeMap<&str, &TableSchema>,
-    by_table: &BTreeMap<&str, &TableSchema>,
-) -> bool {
-    let Some(target) = by_model.get(rel.target_model.as_str()) else {
-        return false;
-    };
-    match rel.kind {
-        RelationshipKind::HasMany | RelationshipKind::BelongsTo => true,
-        RelationshipKind::ManyToMany => {
-            let Some(through_name) = rel.through.as_deref() else {
-                return false;
-            };
-            if by_table.get(through_name).is_none() {
-                return false;
-            }
-            // Inference must succeed for emission.
-            if let Some(through) = by_table.get(through_name) {
-                resolve_m2m_target_foreign_key(schema, rel, through, target).is_ok()
-            } else {
-                false
-            }
-        }
+fn claim_name(names: &mut BTreeSet<String>, name: &str) -> Result<(), String> {
+    if !is_valid_graphql_name(name) {
+        return Err(format!(
+            "generated name `{name}` is not a valid GraphQL name"
+        ));
     }
+    if !names.insert(name.to_string()) {
+        return Err(format!(
+            "generated name `{name}` collides with another type or field"
+        ));
+    }
+    Ok(())
+}
+
+fn emit_comparison_exp(out: &mut String, scalar: &str, operators: &[String]) {
+    let name = comparison_exp_name(scalar);
+    out.push_str(&format!("input {name} {{\n"));
+    for operator in operators {
+        let operand = match operator.as_str() {
+            "_in" | "_nin" => format!("[{scalar}!]"),
+            "_is_null" => "Boolean".into(),
+            "_like" | "_ilike" | "_has_key" => "String".into(),
+            _ => scalar.to_string(),
+        };
+        out.push_str(&format!("  {operator}: {operand}\n"));
+    }
+    out.push_str("}\n\n");
 }
 
 fn emit_object_type(
     out: &mut String,
-    schema: &TableSchema,
-    by_model: &BTreeMap<&str, &TableSchema>,
-    by_table: &BTreeMap<&str, &TableSchema>,
-    options: &SdlOptions,
+    model: &super::surface::SurfaceModel,
+    surface: &super::surface::Surface,
 ) {
-    let name = object_type_name(schema);
+    let name = &model.object_name;
     out.push_str(&format!("type {name} {{\n"));
-    for column in visible_columns(schema) {
-        let Some(scalar) = scalar_type_name(&column.column_type) else {
+    for column in &model.columns {
+        let null = if column.nullable { "" } else { "!" };
+        out.push_str(&format!("  {}: {}{}\n", column.name, column.scalar, null));
+    }
+    for relationship in &model.relationships {
+        let Some(target) = surface.models.get(&relationship.target_model) else {
             continue;
         };
-        let null = if column.nullable { "" } else { "!" };
-        out.push_str(&format!("  {}: {}{}\n", column.column_name, scalar, null));
-    }
-    for rel in &schema.relationships {
-        if !relationship_emitted(schema, rel, by_model, by_table) {
-            continue;
+        if relationship.list {
+            out.push_str(&format!(
+                "  {}{}: [{}!]!\n",
+                relationship.name,
+                surface_arguments_sdl(&relationship.arguments),
+                target.object_name
+            ));
+        } else {
+            let null = if relationship.nullable { "" } else { "!" };
+            out.push_str(&format!(
+                "  {}: {}{}\n",
+                relationship.name, target.object_name, null
+            ));
         }
-        let target = by_model
-            .get(rel.target_model.as_str())
-            .expect("checked in relationship_emitted");
-        let target_obj = object_type_name(target);
-        match rel.kind {
-            RelationshipKind::BelongsTo => {
-                let fk_nullable = schema
-                    .columns
-                    .iter()
-                    .find(|c| {
-                        c.column_name == rel.foreign_key.as_deref().unwrap_or("")
-                            || c.field_name == rel.foreign_key.as_deref().unwrap_or("")
-                    })
-                    .map(|c| c.nullable)
-                    .unwrap_or(true);
-                let null = if fk_nullable { "" } else { "!" };
-                out.push_str(&format!("  {}: {}{}\n", rel.field_name, target_obj, null));
-            }
-            RelationshipKind::HasMany | RelationshipKind::ManyToMany => {
-                let bool_exp = bool_exp_name(target);
-                let order_by = order_by_name(target);
-                out.push_str(&format!(
-                    "  {}(where: {}, order_by: [{}!], limit: Int, offset: Int): [{}!]!\n",
-                    rel.field_name, bool_exp, order_by, target_obj
-                ));
-                if options.aggregates {
-                    let agg_ty = aggregate_type_name(target);
-                    out.push_str(&format!(
-                        "  {}_aggregate(where: {}): {}\n",
-                        rel.field_name, bool_exp, agg_ty
-                    ));
-                }
-            }
+        if let Some(aggregate) = &relationship.aggregate {
+            out.push_str(&format!(
+                "  {}{}: {}\n",
+                aggregate.name,
+                surface_arguments_sdl(&aggregate.arguments),
+                aggregate.type_name
+            ));
         }
     }
     out.push_str("}\n\n");
@@ -475,48 +431,41 @@ fn emit_object_type(
 
 fn emit_bool_exp(
     out: &mut String,
-    schema: &TableSchema,
-    by_model: &BTreeMap<&str, &TableSchema>,
-    by_table: &BTreeMap<&str, &TableSchema>,
+    model: &super::surface::SurfaceModel,
+    surface: &super::surface::Surface,
 ) {
-    let name = bool_exp_name(schema);
+    let name = format!("{}_bool_exp", model.table_name);
     out.push_str(&format!("input {name} {{\n"));
     out.push_str(&format!("  _and: [{name}!]\n"));
     out.push_str(&format!("  _or: [{name}!]\n"));
     out.push_str(&format!("  _not: {name}\n"));
-    for column in visible_columns(schema) {
-        let Some(scalar) = scalar_type_name(&column.column_type) else {
+    for column in &model.columns {
+        let cmp = comparison_exp_name(&column.scalar);
+        out.push_str(&format!("  {}: {}\n", column.name, cmp));
+    }
+    for relationship in &model.relationships {
+        let Some(target) = surface.models.get(&relationship.target_model) else {
             continue;
         };
-        let cmp = comparison_exp_name(scalar);
-        out.push_str(&format!("  {}: {}\n", column.column_name, cmp));
-    }
-    for rel in &schema.relationships {
-        if !relationship_emitted(schema, rel, by_model, by_table) {
-            continue;
-        }
-        let target = by_model
-            .get(rel.target_model.as_str())
-            .expect("checked");
-        let target_bool = bool_exp_name(target);
-        out.push_str(&format!("  {}: {}\n", rel.field_name, target_bool));
+        let target_bool = format!("{}_bool_exp", target.table_name);
+        out.push_str(&format!("  {}: {}\n", relationship.name, target_bool));
     }
     out.push_str("}\n\n");
 }
 
-fn emit_order_by_input(out: &mut String, schema: &TableSchema) {
-    let name = order_by_name(schema);
+fn emit_order_by_input(out: &mut String, model: &super::surface::SurfaceModel) {
+    let name = format!("{}_order_by", model.table_name);
     out.push_str(&format!("input {name} {{\n"));
-    for column in visible_columns(schema) {
-        out.push_str(&format!("  {}: order_by\n", column.column_name));
+    for column in &model.columns {
+        out.push_str(&format!("  {}: order_by\n", column.name));
     }
     out.push_str("}\n\n");
 }
 
-fn emit_aggregate_types(out: &mut String, schema: &TableSchema) {
-    let agg = aggregate_type_name(schema);
-    let fields = aggregate_fields_type_name(schema);
-    let obj = object_type_name(schema);
+fn emit_aggregate_types(out: &mut String, model: &super::surface::SurfaceModel) {
+    let agg = format!("{}_aggregate", model.table_name);
+    let fields = format!("{}_aggregate_fields", model.table_name);
+    let obj = &model.object_name;
     out.push_str(&format!("type {agg} {{\n"));
     out.push_str(&format!("  aggregate: {fields}\n"));
     out.push_str(&format!("  nodes: [{obj}!]!\n"));
@@ -524,57 +473,35 @@ fn emit_aggregate_types(out: &mut String, schema: &TableSchema) {
 
     out.push_str(&format!("type {fields} {{\n"));
     out.push_str("  count: Int!\n");
-    let numeric: Vec<_> = visible_columns(schema)
-        .filter(|c| {
-            matches!(
-                c.column_type,
-                ColumnType::Integer | ColumnType::UnsignedInteger | ColumnType::Float
-            )
-        })
-        .collect();
-    if !numeric.is_empty() {
-        out.push_str(&format!("  sum: {}\n", sum_fields_type_name(schema)));
-        out.push_str(&format!("  avg: {}\n", avg_fields_type_name(schema)));
-    }
-    out.push_str(&format!("  min: {}\n", min_fields_type_name(schema)));
-    out.push_str(&format!("  max: {}\n", max_fields_type_name(schema)));
     out.push_str("}\n\n");
+}
 
-    if !numeric.is_empty() {
-        for (ty_name, as_float) in [
-            (sum_fields_type_name(schema), false),
-            (avg_fields_type_name(schema), true),
-        ] {
-            out.push_str(&format!("type {ty_name} {{\n"));
-            for col in &numeric {
-                let scalar = if as_float {
-                    "Float"
-                } else {
-                    scalar_type_name(&col.column_type).unwrap_or("BigInt")
-                };
-                out.push_str(&format!("  {}: {}\n", col.column_name, scalar));
-            }
-            out.push_str("}\n\n");
-        }
+fn surface_arguments_sdl(arguments: &[super::surface::SurfaceArgument]) -> String {
+    if arguments.is_empty() {
+        return String::new();
     }
-
-    for ty_name in [min_fields_type_name(schema), max_fields_type_name(schema)] {
-        out.push_str(&format!("type {ty_name} {{\n"));
-        for col in visible_columns(schema) {
-            if matches!(col.column_type, ColumnType::Json | ColumnType::Bytes) {
-                continue;
-            }
-            let Some(scalar) = scalar_type_name(&col.column_type) else {
-                continue;
+    let arguments = arguments
+        .iter()
+        .map(|argument| {
+            let mut type_name = if argument.list {
+                format!("[{}!]", argument.type_name)
+            } else {
+                argument.type_name.clone()
             };
-            out.push_str(&format!("  {}: {}\n", col.column_name, scalar));
-        }
-        out.push_str("}\n\n");
-    }
+            if !argument.nullable {
+                type_name.push('!');
+            }
+            format!("{}: {type_name}", argument.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({arguments})")
 }
 
 /// Filter operational tables and render SDL for a project manifest's tables.
-pub fn graphql_sdl_from_schemas(schemas: impl IntoIterator<Item = TableSchema>) -> Result<String, String> {
+pub fn graphql_sdl_from_schemas(
+    schemas: impl IntoIterator<Item = TableSchema>,
+) -> Result<String, String> {
     let tables: Vec<TableSchema> = schemas
         .into_iter()
         .filter(|t| matches!(t.kind, TableKind::ReadModel))
