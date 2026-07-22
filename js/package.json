@@ -41,6 +41,7 @@
     "postbuild": "node -e \"require('node:fs').chmodSync('dist/bin/distributed-gen-commands.js', 0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
+    "measure:cache-engines": "node scripts/measure-cache-engines.mjs",
     "pack:smoke": "node scripts/pack-smoke.mjs",
     "quality": "npm run check && npm test && npm run pack:smoke",
     "prepack": "npm run build"
@@ -50,7 +51,9 @@
     "graphql": "^16.14.0"
   },
   "devDependencies": {
+    "@apollo/client": "^4.2.7",
     "@types/node": "^20.0.0",
+    "esbuild": "^0.25.12",
     "typescript": "5.8.3"
   },
   "engines": {
