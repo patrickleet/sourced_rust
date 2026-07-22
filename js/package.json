@@ -22,6 +22,10 @@
       "types": "./dist/commands.d.ts",
       "import": "./dist/commands.js"
     },
+    "./replica": {
+      "types": "./dist/replica/index.d.ts",
+      "import": "./dist/replica/index.js"
+    },
     "./codegen": {
       "types": "./dist/codegen.d.ts",
       "import": "./dist/codegen.js"

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { InMemoryCache } from '@apollo/client/cache';
 import { gql } from '@apollo/client';
 import {
+	CacheRevisionConflictError,
 	cacheIndexKey,
 	createCacheEngine
 } from '../dist/internal/cache-engine.js';
@@ -147,6 +148,49 @@ test('purpose-built engine keeps argument-sensitive roots distinct and batches w
 	assert.equal(engine.read((reader) => reader.index(closed)), undefined);
 });
 
+test('tracked field dependencies skip selectors for unrelated record fields', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 1,
+			fields: { title: 'one', status: 'open', description: 'initial' }
+		})
+	);
+	let titleSelections = 0;
+	let statusSelections = 0;
+	engine.watch(
+		(reader) => {
+			titleSelections += 1;
+			const field = reader.field(TODO, 'title');
+			return field.present ? field.value : undefined;
+		},
+		() => undefined
+	);
+	engine.watch(
+		(reader) => {
+			statusSelections += 1;
+			const field = reader.field(TODO, 'status');
+			return field.present ? field.value : undefined;
+		},
+		() => undefined
+	);
+	titleSelections = 0;
+	statusSelections = 0;
+
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 2, fields: { description: 'unrelated' } })
+	);
+	assert.equal(titleSelections, 0);
+	assert.equal(statusSelections, 0);
+
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 3, fields: { title: 'two' } })
+	);
+	assert.equal(titleSelections, 1);
+	assert.equal(statusSelections, 0);
+});
+
 test('named optimistic layers survive acceptance and stale base responses', () => {
 	const engine = createCacheEngine();
 	engine.batch((writer) => {
@@ -251,6 +295,185 @@ test('same-entity optimistic layers confirm and reject out of order without cros
 	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'E projected');
 });
 
+test('confirming one field does not retire an independent optimistic field', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 1,
+			fields: { title: 'base title', status: 'base status' }
+		})
+	);
+	engine.createOptimisticLayer('title-layer', (writer) => {
+		writer.writeRecord({ key: TODO, fields: { title: 'pending title' } });
+	});
+	engine.createOptimisticLayer('status-layer', (writer) => {
+		writer.writeRecord({ key: TODO, fields: { status: 'pending status' } });
+	});
+
+	engine.confirmOptimisticLayer('status-layer', (writer) => {
+		// Projectors commonly return a full row, including fields owned by other
+		// in-flight commands.
+		writer.writeRecord({
+			key: TODO,
+			revision: 2,
+			fields: { title: 'server title', status: 'projected status' }
+		});
+	});
+	assert.deepEqual(engine.read((reader) => reader.record(TODO)?.fields), {
+		title: 'pending title',
+		status: 'projected status'
+	});
+	assert.equal(engine.optimisticLayerState('title-layer'), 'optimistic');
+	engine.rejectOptimisticLayer('title-layer');
+	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'server title');
+});
+
+test('field and link selectors observe base and optimistic tombstones', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 1,
+			fields: { title: 'visible' },
+			links: { owner: USER }
+		})
+	);
+	const fieldPresence = [];
+	const linkPresence = [];
+	engine.watch((reader) => reader.field(TODO, 'title'), (value) => fieldPresence.push(value));
+	engine.watch((reader) => reader.link(TODO, 'owner'), (value) => linkPresence.push(value));
+
+	engine.batch((writer) => writer.tombstoneRecord(TODO, 2));
+	assert.deepEqual(fieldPresence, [{ present: false }]);
+	assert.deepEqual(linkPresence, [{ present: false }]);
+
+	engine.batch((writer) =>
+		writer.writeRecord({
+			key: TODO,
+			revision: 3,
+			fields: { title: 'recreated' },
+			links: { owner: USER }
+		})
+	);
+	fieldPresence.length = 0;
+	linkPresence.length = 0;
+	engine.createOptimisticLayer('delete-visible-record', (writer) => {
+		writer.tombstoneRecord(TODO);
+	});
+	assert.deepEqual(fieldPresence, [{ present: false }]);
+	assert.deepEqual(linkPresence, [{ present: false }]);
+	engine.rejectOptimisticLayer('delete-visible-record');
+	assert.equal(engine.read((reader) => reader.field(TODO, 'title')).present, true);
+});
+
+test('newer stale markers fence older index writes and deletes', () => {
+	const engine = createCacheEngine();
+	const metadata = {
+		field: 'todos',
+		arguments: { first: 20 },
+		coverage: { kind: 'complete' },
+		dependencies: ['todos']
+	};
+	engine.batch((writer) =>
+		writer.writeIndex({ key: ALL, revision: 10, records: [TODO], complete: true, metadata })
+	);
+	engine.batch((writer) => {
+		assert.equal(writer.markIndexStale(ALL, 'late-error', 9), false);
+		assert.equal(writer.markIndexStale(ALL, 'new-error', 11), true);
+		assert.equal(
+			writer.writeIndex({
+				key: ALL,
+				revision: 10,
+				records: [OTHER_TODO],
+				complete: true,
+				metadata
+			}),
+			false
+		);
+		assert.equal(writer.deleteIndex(ALL, 10), false);
+	});
+	assert.equal(engine.read((reader) => reader.index(ALL)?.revision), '10');
+	assert.equal(engine.read((reader) => reader.index(ALL)?.staleRevision), '11');
+	assert.equal(engine.read((reader) => reader.index(ALL)?.metadata.staleReason), 'new-error');
+
+	engine.batch((writer) =>
+		writer.writeIndex({ key: ALL, revision: 11, records: [TODO], complete: true, metadata })
+	);
+	assert.equal(engine.read((reader) => reader.index(ALL)?.staleRevision), undefined);
+	assert.equal(engine.read((reader) => reader.index(ALL)?.metadata.staleReason), undefined);
+});
+
+test('missing index checkpoints survive extract/restore without inventing membership', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) => {
+		assert.equal(writer.markIndexStale(ALL, 'uncached-error', 10), true);
+	});
+	assert.equal(engine.read((reader) => reader.index(ALL)), undefined);
+	const restored = createCacheEngine();
+	restored.restore(JSON.parse(JSON.stringify(engine.extract())));
+	assert.equal(restored.read((reader) => reader.index(ALL)), undefined);
+	restored.batch((writer) => {
+		assert.equal(
+			writer.writeIndex({ key: ALL, revision: 9, records: [TODO], complete: true }),
+			false
+		);
+	});
+	assert.equal(restored.read((reader) => reader.index(ALL)), undefined);
+
+	const zero = cacheIndexKey({ field: 'zero_revision', arguments: {} });
+	const zeroFenced = createCacheEngine();
+	zeroFenced.batch((writer) => writer.markIndexStale(zero, 'revision-zero-error', 0));
+	const zeroRestored = createCacheEngine();
+	zeroRestored.restore(JSON.parse(JSON.stringify(zeroFenced.extract())));
+	zeroRestored.batch((writer) => {
+		assert.equal(
+			writer.writeIndex({ key: zero, revision: 0, records: [TODO], complete: true }),
+			true
+		);
+	});
+	assert.deepEqual(zeroRestored.read((reader) => reader.index(zero)?.records), [TODO]);
+});
+
+test('one authoritative batch may rewrite lifecycle-invalidated membership at its checkpoint', () => {
+	const engine = createCacheEngine();
+	const metadata = {
+		field: 'todos',
+		arguments: { first: 20 },
+		coverage: { kind: 'complete' },
+		dependencies: ['todos']
+	};
+	engine.batch((writer) => {
+		writer.writeRecord({ key: TODO, revision: 1, fields: { id: 'todo-1' } });
+		writer.writeRecord({ key: OTHER_TODO, revision: 1, fields: { id: 'todo-2' } });
+		writer.writeRecord({ key: USER, revision: 1, fields: { id: 'user-1' } });
+		writer.writeIndex({
+			key: ALL,
+			revision: 2,
+			records: [TODO, OTHER_TODO, USER],
+			complete: true,
+			metadata
+		});
+	});
+	engine.batch((writer) => {
+		writer.tombstoneRecord(TODO, 3);
+		assert.equal(
+			writer.writeIndex({
+				key: ALL,
+				revision: 2,
+				records: [USER, OTHER_TODO],
+				complete: true,
+				metadata
+			}),
+			true
+		);
+	});
+	const index = engine.read((reader) => reader.index(ALL));
+	assert.deepEqual(index.records, [USER, OTHER_TODO]);
+	assert.equal(index.complete, true);
+	assert.equal(index.staleRevision, undefined);
+});
+
 test('record revisions and tombstones reject stale overwrite and resurrection', () => {
 	const engine = createCacheEngine();
 	engine.batch((writer) => {
@@ -261,9 +484,15 @@ test('record revisions and tombstones reject stale overwrite and resurrection', 
 
 	engine.batch((writer) => {
 		assert.equal(writer.writeRecord({ key: TODO, revision: 8, fields: { title: 'stale' } }), false);
-		assert.equal(writer.writeRecord({ key: TODO, revision: 9, fields: { title: 'same' } }), false);
 		assert.equal(writer.tombstoneRecord(TODO, 7), false);
 	});
+	assert.throws(
+		() =>
+			engine.batch((writer) =>
+				writer.writeRecord({ key: TODO, revision: 9, fields: { title: 'same' } })
+			),
+		CacheRevisionConflictError
+	);
 	assert.equal(engine.read((reader) => reader.record(TODO)), undefined);
 
 	engine.batch((writer) => {
@@ -321,6 +550,33 @@ test('GC traverses confirmed indexes and relationship links while retaining tomb
 	engine.release(USER);
 	assert.deepEqual(engine.gc(), [TODO, USER]);
 	assert.match(JSON.stringify(engine.extract()), /Todo:deleted/);
+});
+
+test('GC treats parent-scoped indexes as edges, not immortal roots', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) => {
+		writer.writeRecord({ key: USER, revision: 1, fields: { id: 'user-1' } });
+		writer.writeRecord({ key: TODO, revision: 1, fields: { id: 'todo-1' } });
+		writer.writeIndex({ key: ALL, revision: 1, records: [USER], complete: true });
+		writer.writeIndex({
+			key: USER_TODOS,
+			revision: 1,
+			records: [TODO],
+			complete: true,
+			metadata: {
+				parent: USER,
+				parentRevision: '1',
+				field: 'todos',
+				arguments: { first: 20 },
+				coverage: { kind: 'complete' },
+				dependencies: ['todos']
+			}
+		});
+	});
+	assert.deepEqual(engine.gc(), []);
+	engine.batch((writer) => writer.deleteIndex(ALL, 2));
+	assert.deepEqual(engine.gc(), [TODO, USER]);
+	assert.equal(engine.read((reader) => reader.index(USER_TODOS)), undefined);
 });
 
 test('GC cannot corrupt rollback beneath destructive optimistic overlays', () => {
@@ -394,6 +650,225 @@ test('failed batches restore base state without notifying observers', () => {
 	);
 	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'base');
 	assert.equal(calls, 0);
+});
+
+test('nested batches are rejected before inner writes and rollback clears dependency dirt', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) => {
+		writer.writeRecord({ key: TODO, revision: 1, fields: { title: 'outer' } });
+		assert.throws(
+			() =>
+				engine.batch((inner) => {
+					inner.writeRecord({ key: TODO, revision: 2, fields: { status: 'leaked' } });
+				}),
+			/nested cache batches/
+		);
+		writer.writeRecord({ key: TODO, revision: 2, fields: { title: 'outer committed' } });
+	});
+	assert.equal(Object.hasOwn(engine.read((reader) => reader.record(TODO).fields), 'status'), false);
+
+	let statusSelections = 0;
+	engine.watch(
+		(reader) => {
+			statusSelections += 1;
+			return reader.field(TODO, 'status');
+		},
+		() => undefined
+	);
+	statusSelections = 0;
+	assert.throws(
+		() =>
+			engine.batch((writer) => {
+				writer.writeRecord({ key: TODO, revision: 3, fields: { status: 'rolled back' } });
+				throw new Error('rollback dependency set');
+			}),
+		/rollback dependency set/
+	);
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 3, fields: { title: 'unrelated' } })
+	);
+	assert.equal(statusSelections, 0);
+});
+
+test('async base and optimistic updaters are rejected, rolled back, and revoked', async () => {
+	const engine = createCacheEngine();
+	let releaseBase;
+	const baseGate = new Promise((resolve) => {
+		releaseBase = resolve;
+	});
+	let baseLateError;
+	let finishBase;
+	const baseFinished = new Promise((resolve) => {
+		finishBase = resolve;
+	});
+	assert.throws(
+		() =>
+			engine.batch(async (writer) => {
+				writer.writeRecord({ key: TODO, revision: 1, fields: { title: 'escaped' } });
+				await baseGate;
+				try {
+					writer.writeRecord({ key: TODO, revision: 2, fields: { title: 'late' } });
+				} catch (error) {
+					baseLateError = error;
+				} finally {
+					finishBase();
+				}
+			}),
+		/cache update must be synchronous/
+	);
+	assert.equal(engine.read((reader) => reader.record(TODO)), undefined);
+	releaseBase();
+	await baseFinished;
+	assert.match(String(baseLateError), /writer is no longer active/);
+	assert.equal(engine.read((reader) => reader.record(TODO)), undefined);
+
+	let releaseLayer;
+	const layerGate = new Promise((resolve) => {
+		releaseLayer = resolve;
+	});
+	let layerLateError;
+	let finishLayer;
+	const layerFinished = new Promise((resolve) => {
+		finishLayer = resolve;
+	});
+	assert.throws(
+		() =>
+			engine.createOptimisticLayer('async-layer', async (writer) => {
+				writer.writeRecord({ key: TODO, fields: { title: 'escaped optimistic' } });
+				await layerGate;
+				try {
+					writer.writeRecord({ key: TODO, fields: { title: 'late optimistic' } });
+				} catch (error) {
+					layerLateError = error;
+				} finally {
+					finishLayer();
+				}
+			}),
+		/optimistic layer update must be synchronous/
+	);
+	assert.equal(engine.optimisticLayerState('async-layer'), undefined);
+	releaseLayer();
+	await layerFinished;
+	assert.match(String(layerLateError), /writer is no longer active/);
+
+	engine.createOptimisticLayer('confirm-async', (writer) => {
+		writer.writeRecord({ key: TODO, fields: { title: 'pending confirmation' } });
+	});
+	assert.throws(
+		() =>
+			engine.confirmOptimisticLayer('confirm-async', async (writer) => {
+				writer.writeRecord({ key: TODO, revision: 3, fields: { title: 'escaped confirm' } });
+			}),
+		/cache update must be synchronous/
+	);
+	assert.equal(engine.optimisticLayerState('confirm-async'), 'optimistic');
+	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'pending confirmation');
+});
+
+test('watcher failures are isolated after commit and reported as one aggregate', () => {
+	const reported = [];
+	const engine = createCacheEngine({ onWatcherError: (error) => reported.push(error) });
+	const delivered = [];
+	engine.watch(
+		(reader) => reader.record(TODO)?.fields.title,
+		() => {
+			delivered.push('first');
+			throw new Error('first watcher failed');
+		}
+	);
+	engine.watch(
+		(reader) => reader.record(TODO)?.fields.title,
+		() => delivered.push('second')
+	);
+
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 1, fields: { title: 'committed' } })
+	);
+	assert.deepEqual(delivered, ['first', 'second']);
+	assert.equal(reported.length, 1);
+	assert.ok(reported[0] instanceof AggregateError);
+	assert.match(reported[0].message, /transaction committed/);
+	assert.equal(reported[0].errors.length, 1);
+	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'committed');
+});
+
+test('a failing immediate watcher is reported and unregistered', () => {
+	const reported = [];
+	const engine = createCacheEngine({ onWatcherError: (error) => reported.push(error) });
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 1, fields: { title: 'initial' } })
+	);
+	let calls = 0;
+	engine.watch(
+		(reader) => reader.field(TODO, 'title'),
+		() => {
+			calls += 1;
+			throw new Error('immediate failed');
+		},
+		{ immediate: true }
+	);
+	assert.equal(calls, 1);
+	assert.equal(reported.length, 1);
+	engine.batch((writer) =>
+		writer.writeRecord({ key: TODO, revision: 2, fields: { title: 'later' } })
+	);
+	assert.equal(calls, 1);
+});
+
+test('same-revision disagreement raises a deterministic conflict and rolls back', () => {
+	const engine = createCacheEngine();
+	engine.batch((writer) => {
+		writer.writeRecord({ key: TODO, revision: 4, fields: { title: 'canonical' } });
+		writer.writeIndex({ key: ALL, revision: 4, records: [TODO], complete: true });
+	});
+
+	assert.throws(
+		() =>
+			engine.batch((writer) => {
+				writer.writeRecord({ key: OTHER_TODO, revision: 1, fields: { title: 'rolled back' } });
+				writer.writeRecord({ key: TODO, revision: 4, fields: { title: 'conflict' } });
+			}),
+		(error) =>
+			error instanceof CacheRevisionConflictError &&
+			error.revision === '4' &&
+			error.dependency.includes('field:title')
+	);
+	assert.equal(engine.read((reader) => reader.record(OTHER_TODO)), undefined);
+	assert.equal(engine.read((reader) => reader.record(TODO)?.fields.title), 'canonical');
+
+	assert.throws(
+		() =>
+			engine.batch((writer) =>
+				writer.writeIndex({ key: ALL, revision: 4, records: [], complete: true })
+			),
+		CacheRevisionConflictError
+	);
+	assert.deepEqual(engine.read((reader) => reader.index(ALL)?.records), [TODO]);
+	assert.throws(
+		() => engine.batch((writer) => writer.tombstoneRecord(TODO, 4)),
+		CacheRevisionConflictError
+	);
+});
+
+test('structured index metadata must agree with its canonical key', () => {
+	const engine = createCacheEngine();
+	assert.throws(
+		() =>
+			engine.batch((writer) =>
+				writer.writeIndex({
+					key: ALL,
+					revision: 1,
+					records: [],
+					metadata: {
+						field: 'different_root',
+						arguments: {},
+						coverage: { kind: 'complete' },
+						dependencies: []
+					}
+				})
+			),
+		/index key does not match its metadata/
+	);
 });
 
 const APOLLO_TODO = gql`
