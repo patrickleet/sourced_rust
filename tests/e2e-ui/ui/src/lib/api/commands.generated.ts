@@ -68,7 +68,7 @@ export type TodoReopenInput = {
 export type ChatPostInput = {
   message_id: string;
   body: string;
-  room_id: string;
+  room_id?: string | null;
 };
 
 export type ChatPostPayload = {
