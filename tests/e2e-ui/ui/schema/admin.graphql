@@ -35,13 +35,13 @@ input BigInt_comparison_exp {
 }
 
 type BlobGamePayload {
-	game_id: String!
-	owner_id: String!
-	score: BigInt!
-	player_dead: Boolean!
 	current_level: BigInt!
 	current_level_completed: Boolean!
+	game_id: String!
 	map_json: String!
+	owner_id: String!
+	player_dead: Boolean!
+	score: BigInt!
 	status: String!
 }
 
@@ -58,8 +58,8 @@ type BlobGameView {
 }
 
 input BlobMoveInput {
-	game_id: String!
 	direction: String!
+	game_id: String!
 }
 
 input BlobStartInput {
@@ -94,32 +94,32 @@ type ChatMessageView {
 }
 
 input ChatPostInput {
-	message_id: String!
 	body: String!
-	room_id: String!
+	message_id: String!
+	room_id: String
 }
 
 type ChatPostPayload {
-	message_id: String!
-	room_id: String!
 	author_id: String!
 	body: String!
 	created_at: String!
+	message_id: String!
+	room_id: String!
 }
 
 scalar JSON
 
 type Mutation {
-	todos_create(input: TodoCreateInput!): TodoCreatePayload!
-	todos_complete(input: TodoCompleteInput!): TodoStatusPayload!
+	blob_games_move(input: BlobMoveInput!): BlobGamePayload!
+	blob_games_start(input: BlobStartInput!): BlobGamePayload!
+	blob_games_start_level(input: BlobStartLevelInput!): BlobGamePayload!
+	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
 	todos_archive(input: TodoArchiveInput!): TodoStatusPayload!
+	todos_complete(input: TodoCompleteInput!): TodoStatusPayload!
+	todos_create(input: TodoCreateInput!): TodoCreatePayload!
 	todos_force_archive(input: TodoForceArchiveInput!): TodoForceArchivePayload!
 	todos_rename(input: TodoRenameInput!): TodoRenamePayload!
 	todos_reopen(input: TodoReopenInput!): TodoStatusPayload!
-	chat_messages_post(input: ChatPostInput!): ChatPostPayload!
-	blob_games_start(input: BlobStartInput!): BlobGamePayload!
-	blob_games_move(input: BlobMoveInput!): BlobGamePayload!
-	blob_games_start_level(input: BlobStartLevelInput!): BlobGamePayload!
 }
 
 type Query {
@@ -165,15 +165,15 @@ input TodoCompleteInput {
 }
 
 input TodoCreateInput {
-	todo_id: String!
 	title: String!
+	todo_id: String!
 }
 
 type TodoCreatePayload {
-	todo_id: String!
 	owner_id: String!
-	title: String!
 	status: String!
+	title: String!
+	todo_id: String!
 }
 
 input TodoForceArchiveInput {
@@ -181,21 +181,21 @@ input TodoForceArchiveInput {
 }
 
 type TodoForceArchivePayload {
-	todo_id: String!
+	archived_by: String!
 	owner_id: String!
 	status: String!
-	archived_by: String!
+	todo_id: String!
 }
 
 input TodoRenameInput {
-	todo_id: String!
 	title: String!
+	todo_id: String!
 }
 
 type TodoRenamePayload {
-	todo_id: String!
-	title: String!
 	status: String!
+	title: String!
+	todo_id: String!
 }
 
 input TodoReopenInput {
@@ -203,8 +203,8 @@ input TodoReopenInput {
 }
 
 type TodoStatusPayload {
-	todo_id: String!
 	status: String!
+	todo_id: String!
 }
 
 type TodoView {
