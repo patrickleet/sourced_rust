@@ -13,6 +13,10 @@
 
 use serde::Serialize;
 
+use super::command_contract::{
+    CommandConsistency, CommandEffects, CommandInputDefault, CommandProjectionConfirmation,
+    TypedCommandContract,
+};
 use super::surface::{SurfaceCommand, SurfaceCommandShape, SurfaceTypeDef, SurfaceTypeField};
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
@@ -117,6 +121,11 @@ pub struct ExposedCommand {
     pub(crate) output: CommandOutput,
     pub(crate) roles: Vec<String>,
     pub(crate) client_reconcile: Option<ClientReconcile>,
+    pub(crate) consistency: Option<CommandConsistency>,
+    pub(crate) input_defaults: Vec<CommandInputDefault>,
+    pub(crate) effects: Option<CommandEffects>,
+    pub(crate) confirmations: Vec<CommandProjectionConfirmation>,
+    pub(crate) confirmation_unavailable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +149,11 @@ pub fn exposed_command() -> ExposedCommand {
         output: CommandOutput::Json,
         roles: Vec::new(),
         client_reconcile: None,
+        consistency: None,
+        input_defaults: Vec::new(),
+        effects: None,
+        confirmations: Vec::new(),
+        confirmation_unavailable: false,
     }
 }
 
@@ -307,11 +321,85 @@ impl GraphqlCommands {
                         CommandOutput::Json => SurfaceCommandShape::Json,
                         CommandOutput::Typed(def) => SurfaceCommandShape::Typed(surface_type(def)),
                     },
+                    consistency: command.consistency,
+                    input_defaults: command.input_defaults.clone(),
+                    effects: command.effects.clone(),
+                    confirmations: command.confirmations.clone(),
+                    confirmation_unavailable: command.confirmation_unavailable,
                 }
             })
             .collect();
         commands.sort_by(|a, b| a.command_name.cmp(&b.command_name));
         commands
+    }
+
+    pub(crate) fn from_typed_contracts(contracts: &[TypedCommandContract]) -> Result<Self, String> {
+        let mut commands = Self::new();
+        for contract in contracts {
+            if contract.name.trim().is_empty() {
+                return Err("typed command id must not be empty".into());
+            }
+            let command = ExposedCommand {
+                command_name: contract.name.clone(),
+                field_name: Some(contract.field_name.clone()),
+                input: CommandInput::Typed(contract.input.clone()),
+                output: CommandOutput::Typed(contract.output.clone()),
+                roles: contract.roles.clone(),
+                client_reconcile: None,
+                consistency: Some(contract.consistency),
+                input_defaults: contract.input_defaults.clone(),
+                effects: Some(contract.effects.clone()),
+                confirmations: contract.confirmations.clone(),
+                confirmation_unavailable: false,
+            };
+            commands = commands.command(&contract.name, command);
+        }
+        Ok(commands)
+    }
+
+    #[cfg(feature = "graphql")]
+    pub(crate) fn typed_contracts_for_binding(&self) -> Result<Vec<TypedCommandContract>, String> {
+        self.commands
+            .iter()
+            .map(|(name, command)| {
+                let CommandInput::Typed(input) = &command.input else {
+                    return Err(format!(
+                        "bound typed command `{name}` no longer has a typed GraphQL input"
+                    ));
+                };
+                let CommandOutput::Typed(output) = &command.output else {
+                    return Err(format!(
+                        "bound typed command `{name}` no longer has a typed GraphQL output"
+                    ));
+                };
+                let input_type_id = input.type_id.ok_or_else(|| {
+                    format!("bound typed command `{name}` input is missing its Rust TypeId")
+                })?;
+                let output_type_id = output.type_id.ok_or_else(|| {
+                    format!("bound typed command `{name}` output is missing its Rust TypeId")
+                })?;
+                let consistency = command.consistency.ok_or_else(|| {
+                    format!("bound typed command `{name}` is missing consistency metadata")
+                })?;
+                let mut effects = command.effects.clone().ok_or_else(|| {
+                    format!("bound typed command `{name}` is missing effect metadata")
+                })?;
+                effects.canonicalize();
+                Ok(TypedCommandContract {
+                    name: name.clone(),
+                    field_name: command.resolved_field_name(name),
+                    roles: command.roles.clone(),
+                    input: input.clone(),
+                    output: output.clone(),
+                    input_type_id,
+                    output_type_id,
+                    consistency,
+                    input_defaults: command.input_defaults.clone(),
+                    effects,
+                    confirmations: command.confirmations.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Machine-readable command registry for TypeScript (or other) client generators.

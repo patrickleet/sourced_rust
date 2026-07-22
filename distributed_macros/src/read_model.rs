@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::{
     punctuated::Punctuated, Attribute, Data, DeriveInput, Expr, ExprArray, ExprLit, Field, Fields,
     GenericArgument, Lit, LitStr, Meta, PathArguments, Token, Type,
@@ -15,6 +15,7 @@ pub fn derive_read_model(input: TokenStream) -> TokenStream {
 
 fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
+    let visibility = &input.vis;
     let struct_attrs = StructAttrs::from_input(&input)?;
     let fields = named_fields(&input)?;
     let field_attrs = fields
@@ -54,6 +55,7 @@ fn expand_read_model(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     let relational_impl = if relational {
         Some(expand_relational_read_model(
             name,
+            visibility,
             &struct_attrs,
             &fields.named,
             &field_attrs,
@@ -91,6 +93,7 @@ type FieldsNamed = syn::FieldsNamed;
 
 fn expand_relational_read_model(
     name: &syn::Ident,
+    visibility: &syn::Visibility,
     struct_attrs: &StructAttrs,
     fields: &Punctuated<Field, Token![,]>,
     field_attrs: &[FieldAttrs],
@@ -110,6 +113,45 @@ fn expand_relational_read_model(
         .map(|column| quote! { #column.to_string() })
         .collect::<Vec<_>>();
 
+    let effect_key_name = format_ident!("__Distributed{}EffectKey", name);
+    let mut effect_key_fields = Vec::new();
+    let mut effect_key_values = Vec::new();
+    for primary_key_column in &primary_key_fields {
+        let (field, _attrs) = fields
+            .iter()
+            .zip(field_attrs)
+            .find(|(field, attrs)| {
+                if attrs.relationship.is_some() || attrs.skip_query {
+                    return false;
+                }
+                let Some(ident) = &field.ident else {
+                    return false;
+                };
+                let field_name = ident.to_string();
+                attrs.column.as_deref().unwrap_or(&field_name) == primary_key_column
+            })
+            .ok_or_else(|| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "primary-key column `{primary_key_column}` has no effect-key field on `{model_name}`"
+                    ),
+                )
+            })?;
+        let ident = field
+            .ident
+            .as_ref()
+            .expect("named read-model fields were validated");
+        let ty = &field.ty;
+        let marker = format_ident!("__Distributed{}EffectModelField_{}", name, ident);
+        effect_key_fields.push(quote! {
+            pub #ident: distributed::graphql::TypedEffectExpression<#ty>
+        });
+        effect_key_values.push(quote! {
+            distributed::graphql::__effect_key_field::<#marker>(value.#ident)
+        });
+    }
+
     let mut column_defs = Vec::new();
     let mut row_inserts = Vec::new();
     let mut row_fields = Vec::new();
@@ -120,6 +162,7 @@ fn expand_relational_read_model(
     let mut hydrate_include_arms = Vec::new();
     let mut include_rows_arms = Vec::new();
     let mut include_schema_arms = Vec::new();
+    let mut effect_markers = Vec::new();
 
     for (field, attrs) in fields.iter().zip(field_attrs) {
         let ident = field
@@ -135,6 +178,30 @@ fn expand_relational_read_model(
             hydrate_include_arms.push(hydrate_arm);
             include_rows_arms.push(include_rows_arm);
             include_schema_arms.push(include_schema_arm);
+            let relationship_attr = attrs
+                .relationship
+                .as_ref()
+                .expect("relationship tokens require relationship metadata");
+            let target_ty = match relationship_attr.kind {
+                RelationshipKindAttr::HasMany | RelationshipKindAttr::ManyToMany => {
+                    vec_inner_type(&field.ty).expect("relationship shape was validated")
+                }
+                RelationshipKindAttr::BelongsTo => {
+                    option_inner_type(&field.ty).expect("relationship shape was validated")
+                }
+            };
+            let marker = format_ident!("__Distributed{}EffectRelationship_{}", name, ident);
+            effect_markers.push(quote! {
+                #[doc(hidden)]
+                #[allow(non_camel_case_types)]
+                #visibility struct #marker;
+
+                impl distributed::graphql::EffectRelationshipMarker for #marker {
+                    type Source = #name;
+                    type Target = #target_ty;
+                    const FIELD: &'static str = #field_name;
+                }
+            });
             row_fields.push(quote! { #ident: ::core::default::Default::default() });
             continue;
         }
@@ -145,11 +212,26 @@ fn expand_relational_read_model(
         }
 
         let column_name = attrs.column.clone().unwrap_or_else(|| field_name.clone());
+        let field_ty = &field.ty;
+        let effect_wire = effect_model_wire_tokens(field_ty, attrs.jsonb, attrs.text);
+        let effect_marker = format_ident!("__Distributed{}EffectModelField_{}", name, ident);
+        effect_markers.push(quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case_types)]
+            #visibility struct #effect_marker;
+
+            impl distributed::graphql::EffectModelFieldMarker for #effect_marker {
+                type Model = #name;
+                type Value = #field_ty;
+                type Wire = #effect_wire;
+                const FIELD: &'static str = #column_name;
+            }
+        });
         let primary_key = primary_key_fields
             .iter()
             .any(|pk| pk == &field_name || pk == &column_name);
         let nullable = attrs.nullable || option_inner_type(&field.ty).is_some();
-        let column_type = column_type_tokens(&field.ty, attrs.jsonb);
+        let column_type = column_type_tokens(&field.ty, attrs.jsonb, attrs.text);
         let default_tokens = option_string_tokens(attrs.default.as_deref());
         let foreign_key_value = attrs.foreign_key.as_ref().map(foreign_key_tokens);
         let foreign_key = foreign_key_value
@@ -179,7 +261,18 @@ fn expand_relational_read_model(
             }
         });
 
-        if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
+        if attrs.text {
+            row_inserts.push(quote! {
+                row.insert(
+                    #column_name,
+                    distributed::RowValue::from_text_serde(
+                        &self.#ident,
+                        #nullable,
+                        #column_name,
+                    )?,
+                );
+            });
+        } else if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
             row_inserts.push(quote! {
                 row.insert(#column_name, #value);
             });
@@ -193,7 +286,18 @@ fn expand_relational_read_model(
         });
 
         if primary_key {
-            if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
+            if attrs.text {
+                key_inserts.push(quote! {
+                    key.values.insert(
+                        #column_name.to_string(),
+                        distributed::RowValue::from_text_serde(
+                            &self.#ident,
+                            #nullable,
+                            #column_name,
+                        )?,
+                    );
+                });
+            } else if let Some(value) = bytes_row_value_tokens(&field.ty, quote! { self.#ident }) {
                 key_inserts.push(quote! {
                     key.values.insert(#column_name.to_string(), #value);
                 });
@@ -232,6 +336,22 @@ fn expand_relational_read_model(
     }
 
     Ok(quote! {
+        #[doc(hidden)]
+        #[allow(non_camel_case_types)]
+        #visibility struct #effect_key_name {
+            #(#effect_key_fields),*
+        }
+
+        impl ::core::convert::From<#effect_key_name>
+            for distributed::graphql::TypedEffectKey<#name>
+        {
+            fn from(value: #effect_key_name) -> Self {
+                distributed::graphql::__effect_key::<#name>(vec![#(#effect_key_values),*])
+            }
+        }
+
+        #(#effect_markers)*
+
         impl distributed::RelationalReadModel for #name {
             fn schema() -> &'static distributed::TableSchema {
                 static SCHEMA: ::std::sync::LazyLock<distributed::TableSchema> =
@@ -458,6 +578,7 @@ struct FieldAttrs {
     index_name: Option<String>,
     unique: bool,
     jsonb: bool,
+    text: bool,
     skip_query: bool,
     nullable: bool,
     has_default: bool,
@@ -523,6 +644,8 @@ impl FieldAttrs {
                     attrs.indexed = true;
                 } else if meta.path.is_ident("jsonb") {
                     attrs.jsonb = true;
+                } else if meta.path.is_ident("text") {
+                    attrs.text = true;
                 } else if meta.path.is_ident("skip_query")
                     || meta.path.is_ident("skip")
                     || meta.path.is_ident("private")
@@ -597,9 +720,8 @@ impl FieldAttrs {
                     if attrs.relationship.is_some() {
                         let relationship = relationship_mut(&mut attrs, "target_foreign_key")?;
                         if relationship.target_foreign_key.is_some() {
-                            return Err(
-                                meta.error("relationship target_foreign_key declared more than once")
-                            );
+                            return Err(meta
+                                .error("relationship target_foreign_key declared more than once"));
                         }
                         relationship.target_foreign_key = Some(value);
                     } else if pending_target_foreign_key.is_some() {
@@ -664,6 +786,13 @@ impl FieldAttrs {
             }
         }
 
+        if attrs.jsonb && attrs.text {
+            return Err(syn::Error::new_spanned(
+                field,
+                "readmodel field cannot be both `jsonb` and text-backed",
+            ));
+        }
+
         Ok(attrs)
     }
 
@@ -672,6 +801,7 @@ impl FieldAttrs {
             || self.indexed
             || self.unique
             || self.jsonb
+            || self.text
             || self.skip_query
             || self.nullable
             || self.has_default
@@ -695,8 +825,7 @@ impl FieldAttrs {
         };
         let target_model = &relationship.target_model;
         let through = option_string_tokens(relationship.through.as_deref());
-        let target_foreign_key =
-            option_string_tokens(relationship.target_foreign_key.as_deref());
+        let target_foreign_key = option_string_tokens(relationship.target_foreign_key.as_deref());
         let kind = match relationship.kind {
             RelationshipKindAttr::HasMany => quote! { distributed::RelationshipKind::HasMany },
             RelationshipKindAttr::BelongsTo => quote! { distributed::RelationshipKind::BelongsTo },
@@ -994,9 +1123,12 @@ fn option_string_tokens(value: Option<&str>) -> proc_macro2::TokenStream {
     }
 }
 
-fn column_type_tokens(ty: &Type, jsonb: bool) -> proc_macro2::TokenStream {
+fn column_type_tokens(ty: &Type, jsonb: bool, text: bool) -> proc_macro2::TokenStream {
     if jsonb {
         return quote! { distributed::ColumnType::Json };
+    }
+    if text {
+        return quote! { distributed::ColumnType::Text };
     }
 
     let ty = option_inner_type(ty).unwrap_or(ty);
@@ -1029,6 +1161,32 @@ fn column_type_tokens(ty: &Type, jsonb: bool) -> proc_macro2::TokenStream {
 
     let type_name = ty.to_token_stream().to_string();
     quote! { distributed::ColumnType::Unsupported(#type_name.to_string()) }
+}
+
+fn effect_model_wire_tokens(ty: &Type, jsonb: bool, text: bool) -> proc_macro2::TokenStream {
+    if jsonb {
+        return quote! { distributed::graphql::EffectWireJson };
+    }
+    if text {
+        return quote! { distributed::graphql::EffectWireString };
+    }
+    let ty = option_inner_type(ty).unwrap_or(ty);
+    let Some(last) = last_type_segment(ty) else {
+        return quote! { distributed::graphql::EffectWireUnsupported };
+    };
+    match last.ident.to_string().as_str() {
+        "String" | "str" => quote! { distributed::graphql::EffectWireString },
+        "bool" => quote! { distributed::graphql::EffectWireBoolean },
+        "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" => {
+            quote! { distributed::graphql::EffectWireBigInt }
+        }
+        "f32" | "f64" => quote! { distributed::graphql::EffectWireFloat },
+        "Vec" if vec_inner_is_u8(last) => quote! { distributed::graphql::EffectWireBytea },
+        "Vec" | "HashMap" | "BTreeMap" | "Value" => {
+            quote! { distributed::graphql::EffectWireJson }
+        }
+        _ => quote! { distributed::graphql::EffectWireUnsupported },
+    }
 }
 
 fn bytes_row_value_tokens(

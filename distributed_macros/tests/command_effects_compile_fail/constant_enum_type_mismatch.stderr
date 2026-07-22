@@ -1,0 +1,28 @@
+error[E0277]: the trait bound `distributed::graphql::TypedEffectExpression<Status, distributed::graphql::EffectWireLiteral>: distributed::graphql::EffectAssignmentExpression<i64>` is not satisfied
+  --> tests/command_effects_compile_fail/constant_enum_type_mismatch.rs:22:13
+   |
+22 |       let _ = command_effects! {
+   |  _____________^
+23 | |         input: Input;
+24 | |         patch View { key { id: input.id }, set { count: constant(Status::Open) } };
+25 | |     };
+   | |_____^ unsatisfied trait bound
+   |
+   = help: the trait `distributed::graphql::EffectAssignmentExpression<i64>` is not implemented for `distributed::graphql::TypedEffectExpression<Status, distributed::graphql::EffectWireLiteral>`
+help: `distributed::graphql::TypedEffectExpression<T, Wire>` implements trait `distributed::graphql::EffectAssignmentExpression<Target>`
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   | impl<T, Wire> EffectAssignmentExpression<T> for TypedEffectExpression<T, Wire> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `distributed::graphql::EffectAssignmentExpression<T>`
+...
+   | impl<T, Wire> EffectAssignmentExpression<Option<T>> for TypedEffectExpression<T, Wire> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `distributed::graphql::EffectAssignmentExpression<std::option::Option<T>>`
+note: required by a bound in `distributed::graphql::__effect_assignment`
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   | pub fn __effect_assignment<F, E>(value: E) -> CompiledEffectFieldValue<F::Model>
+   |        ------------------- required by a bound in this function
+...
+   |     E: EffectAssignmentExpression<F::Value>,
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `__effect_assignment`
+   = note: this error originates in the macro `command_effects` (in Nightly builds, run with -Z macro-backtrace for more info)

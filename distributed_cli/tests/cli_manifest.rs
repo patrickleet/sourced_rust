@@ -49,7 +49,7 @@ fn describe_emits_manifest_json() {
 fn client_manifest_uses_service_surface_export() {
     let json = dctl(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(manifest["manifest_version"], 1);
+    assert_eq!(manifest["manifest_version"], 2);
     assert_eq!(manifest["service_id"], "orders");
     assert_eq!(manifest["surface"]["kind"], "role");
     assert_eq!(manifest["surface"]["name"], "user");

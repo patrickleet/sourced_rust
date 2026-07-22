@@ -20,3 +20,4 @@ trybuild = "1.0"
 # need the runtime crate to type-check generated `distributed::...` code.
 # Cargo permits dev-dependency cycles.
 distributed = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }

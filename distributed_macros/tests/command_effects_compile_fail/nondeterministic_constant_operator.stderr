@@ -1,0 +1,5 @@
+error: constant(...) accepts only a primitive literal (including a negative numeric literal) or a const/enum path; calls, macros, blocks, and other operators are not deterministic command-effect IR
+  --> tests/command_effects_compile_fail/nondeterministic_constant_operator.rs:19:66
+   |
+19 |         patch View { key { id: input.id }, set { count: constant(1 + 1) } };
+   |                                                                  ^^^^^

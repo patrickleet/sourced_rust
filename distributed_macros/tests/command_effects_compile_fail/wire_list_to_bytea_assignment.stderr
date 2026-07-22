@@ -1,0 +1,40 @@
+error[E0277]: the trait bound `distributed::graphql::EffectWireList: distributed::graphql::EffectWireCompatible<distributed::graphql::EffectWireBytea>` is not satisfied
+  --> tests/command_effects_compile_fail/wire_list_to_bytea_assignment.rs:18:13
+   |
+18 |       let _ = command_effects! {
+   |  _____________^
+19 | |         input: Input;
+20 | |         patch View {
+21 | |             key { id: input.id },
+22 | |             set { bytes: input.bytes }
+23 | |         };
+24 | |     };
+   | |_____^ unsatisfied trait bound
+   |
+   = help: the trait `distributed::graphql::EffectWireCompatible<distributed::graphql::EffectWireBytea>` is not implemented for `distributed::graphql::EffectWireList`
+help: `distributed::graphql::EffectWireList` implements trait `distributed::graphql::EffectWireCompatible<Target>`
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   |           $(impl EffectWireCompatible<$wire> for $wire {})+
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `distributed::graphql::EffectWireCompatible<distributed::graphql::EffectWireList>`
+...
+   | / exact_effect_wire_compatibility!(
+   | |     EffectWireString,
+   | |     EffectWireBoolean,
+   | |     EffectWireBigInt,
+...  |
+   | |     EffectWireUnsupported,
+   | | );
+   | |_- in this macro invocation
+...
+   |   impl EffectWireCompatible<EffectWireJson> for EffectWireList {}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `distributed::graphql::EffectWireCompatible<distributed::graphql::EffectWireJson>`
+note: required by a bound in `distributed::graphql::__effect_assignment`
+  --> $WORKSPACE/src/graphql/command_contract.rs
+   |
+   | pub fn __effect_assignment<F, E>(value: E) -> CompiledEffectFieldValue<F::Model>
+   |        ------------------- required by a bound in this function
+...
+   |     E::Wire: EffectWireCompatible<F::Wire>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `__effect_assignment`
+   = note: this error originates in the macro `command_effects` which comes from the expansion of the macro `exact_effect_wire_compatibility` (in Nightly builds, run with -Z macro-backtrace for more info)

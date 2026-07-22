@@ -1,0 +1,7 @@
+error[E0451]: field `payload` of struct `distributed::graphql::Accepted` is private
+ --> tests/command_effects_compile_fail/committed_outcome_constructor.rs:5:9
+  |
+4 |     let _ = Accepted {
+  |             -------- in this type
+5 |         payload: String::from("not committed"),
+  |         ^^^^^^^ private field

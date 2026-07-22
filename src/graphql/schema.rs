@@ -183,12 +183,13 @@ pub fn build_role_schema(
                 }
             };
             let cmd_name = cmd.command_name.clone();
+            let causal = cmd.consistency.is_some();
             let mut field = Field::new(
                 cmd.field_name.clone(),
                 TypeRef::named_nn(output_type),
                 move |ctx| {
                     let cmd_name = cmd_name.clone();
-                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
+                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name, causal).await })
                 },
             );
             match &cmd.input {
@@ -805,8 +806,16 @@ mod execute_err_mapping_tests {
 async fn resolve_command(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     command_name: &str,
+    causal: bool,
 ) -> Result<Option<Value>, async_graphql::Error> {
     use crate::microsvc::{CommandRequest, Service};
+
+    if causal {
+        return Err(client_error(
+            "INTERNAL",
+            "typed causal command execution requires a validated durable command committer",
+        ));
+    }
 
     let session = ctx
         .data_opt::<Session>()
