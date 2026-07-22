@@ -117,7 +117,7 @@ export type ChatMessageView = {
 export type ChatPostInput = {
   body: Scalars['String']['input'];
   message_id: Scalars['String']['input'];
-  room_id: Scalars['String']['input'];
+  room_id?: InputMaybe<Scalars['String']['input']>;
 };
 
 export type ChatPostPayload = {
