@@ -109,6 +109,7 @@ import { cacheKey } from '@hops-ops/distributed/cache';
 import type { CommandClient } from '@hops-ops/distributed/commands';
 import {
   createDistributedReplica,
+  type ReplicaOperationArtifact,
   type ReplicaSnapshot,
   type ReplicaSparse
 } from '@hops-ops/distributed/replica';
@@ -125,6 +126,26 @@ type HealthData = { health: string };
 type Session = { accessToken?: string | null; user?: { id?: string | null } | null };
 type LoadEvent = ServerLoadEventLike<{ session: Session | null }>;
 type TodosResult = { todos: Array<{ id: string; title: string }> };
+type TodosVariables = { limit: number };
+const generatedOperation: ReplicaOperationArtifact<TodosResult, TodosVariables> = {
+  id: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+  document: 'query Todos($limit: Int!) { todos(limit: $limit) { id title } }',
+  roots: [{
+    responseKey: 'todos',
+    field: 'todos',
+    cardinality: 'many',
+    arguments: { limit: { kind: 'variable', name: 'limit' } },
+    dependencies: ['todos'],
+    selection: {
+      model: { id: 'Todo', identityFields: ['id'] },
+      fields: [
+        { kind: 'scalar', responseKey: 'id', field: 'id' },
+        { kind: 'scalar', responseKey: 'title', field: 'title' }
+      ]
+    }
+  }]
+};
+generatedOperation.roots[0]?.selection.fields.map((field) => field.field);
 declare const replicaSnapshot: ReplicaSnapshot<TodosResult>;
 const sparseTodos: ReplicaSparse<TodosResult> = {};
 if (replicaSnapshot.complete) {

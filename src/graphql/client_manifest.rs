@@ -22,7 +22,7 @@ use super::surface::{
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 3;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 4;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
 const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
@@ -347,6 +347,9 @@ pub struct ClientRelationship {
     pub target_typename: String,
     pub kind: ClientRelationshipKind,
     pub list: bool,
+    /// Copied from the role-filtered Surface. Lists are non-null collections;
+    /// singular relationships retain the authoritative object nullability.
+    pub nullable: bool,
     pub arguments: Vec<ClientArgument>,
     pub key_mapping: RelationshipKeyMapping,
     pub maintenance: ClientRelationshipMaintenance,
@@ -854,6 +857,7 @@ pub(crate) fn client_manifest_from_surface(
                     RelationshipKind::ManyToMany => ClientRelationshipKind::ManyToMany,
                 },
                 list: relationship.list,
+                nullable: relationship.nullable,
                 arguments: relationship
                     .arguments
                     .iter()
@@ -1963,14 +1967,15 @@ mod tests {
         let first = export.manifest().unwrap();
         let second = export.manifest().unwrap();
         assert_eq!(first, second);
+        assert_eq!(first.manifest_version, 4);
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:4cbe76e14bf6cbecc729b5ae495739ade8887557090d3f9bf203eb064718d555"
+            "sha256:7e34e590b7063566d0595d1df9238ec71637f40f4143a65b0b7c2b95000835d2"
         );
         assert_eq!(
             first.protocol_fingerprint,
-            "sha256:2ad00d4436516864f0f331f8421099b876e9a49eb4f19754ce80110836d6710b"
+            "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc"
         );
 
         let user = first
@@ -1999,6 +2004,7 @@ mod tests {
             .iter()
             .find(|rel| rel.name == "owner")
             .unwrap();
+        assert!(!owner.nullable);
         assert_eq!(owner.key_mapping, RelationshipKeyMapping::Embedded);
         assert_eq!(owner.maintenance, ClientRelationshipMaintenance::Revalidate);
         assert_eq!(owner.dependencies, vec!["todos", "users"]);
@@ -2056,6 +2062,60 @@ mod tests {
         assert!(!json.contains("user_id"));
         assert!(!json.contains("force_archive"));
         assert!(!json.contains("x-user-id"));
+    }
+
+    #[test]
+    fn relationship_nullability_is_copied_from_the_authoritative_surface() {
+        let mut fingerprints = Vec::new();
+        for nullable in [false, true] {
+            let mut todo_schema = todos();
+            todo_schema
+                .columns
+                .iter_mut()
+                .find(|column| column.column_name == "owner_id")
+                .expect("owner foreign key")
+                .nullable = nullable;
+            let full = build_surface(&[todo_schema, users()], &SurfaceOptions::sqlite()).unwrap();
+            let selected = surface_for_role(
+                &full,
+                "user",
+                &BTreeMap::from([
+                    ("TodoView".into(), RoleGrant::all_columns()),
+                    ("UserView".into(), RoleGrant::all_columns()),
+                ]),
+            )
+            .unwrap();
+            let surface_nullable = selected.models["TodoView"]
+                .relationships
+                .iter()
+                .find(|relationship| relationship.name == "owner")
+                .expect("surface relationship")
+                .nullable;
+            assert_eq!(surface_nullable, nullable);
+
+            let manifest = client_manifest_from_surface(
+                "todos-service",
+                ClientSurfaceIdentity::role("user"),
+                &selected,
+            )
+            .unwrap();
+            fingerprints.push(manifest.schema_fingerprint.clone());
+            let owner = manifest
+                .models
+                .iter()
+                .find(|model| model.id == "TodoView")
+                .unwrap()
+                .relationships
+                .iter()
+                .find(|relationship| relationship.name == "owner")
+                .unwrap();
+            assert_eq!(owner.nullable, surface_nullable);
+            assert_eq!(serde_json::to_value(owner).unwrap()["nullable"], nullable);
+        }
+        assert_ne!(
+            fingerprints[0], fingerprints[1],
+            "relationship nullability is part of the schema fingerprint"
+        );
     }
 
     #[test]
@@ -2524,6 +2584,7 @@ mod tests {
             .iter()
             .find(|relationship| relationship.name == "members")
             .unwrap();
+        assert!(!members.nullable, "list relationships are non-null lists");
         let RelationshipKeyMapping::ThroughOpaque {
             local,
             remote,

@@ -58,7 +58,7 @@ distributed-gen-commands \
   --policies src/lib/api/commands.policies.generated.ts
 ```
 
-Client manifest v3 carries nested command types, scalar codecs, the exact
+Client manifest v4 carries nested command types, scalar codecs, the exact
 compiler-owned mutation documents, and one exact command-status operation. The
 generator validates operation hashes and emits those bytes verbatim; the
 runtime never guesses a status query or mutation field. Legacy command manifest
