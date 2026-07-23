@@ -11,6 +11,7 @@ use async_graphql::Value;
 
 use super::compile::{self, RootKind};
 use super::engine::EngineInner;
+use super::identity::VerifiedPrincipal;
 use super::naming::{bool_exp_name, comparison_exp_name, order_by_name, CUSTOM_SCALARS};
 use super::surface::{
     RootKind as SurfaceRootKind, Surface, SurfaceArgument, SurfaceCommandShape, SurfaceModel,
@@ -192,6 +193,10 @@ pub fn build_role_schema(
                     FieldFuture::new(async move { resolve_command(&ctx, &cmd_name, causal).await })
                 },
             );
+            if causal {
+                field =
+                    field.argument(InputValue::new("commandId", TypeRef::named_nn(TypeRef::ID)));
+            }
             match &cmd.input {
                 SurfaceCommandShape::None => {}
                 SurfaceCommandShape::Json => {
@@ -623,6 +628,9 @@ pub const ENGINE_ERROR_CODES: &[&str] = &[
     "UNAUTHORIZED", // command mutations
     "NOT_FOUND",    // command mutations
     "REJECTED",     // command mutations
+    "COMMAND_ID_REUSE",
+    "COMMAND_IN_PROGRESS",
+    "COMMAND_EXPIRED",
 ];
 
 /// Map executor error strings to stable client errors (`extensions.code`).
@@ -700,6 +708,9 @@ mod execute_err_mapping_tests {
                 "UNAUTHORIZED",
                 "NOT_FOUND",
                 "REJECTED",
+                "COMMAND_ID_REUSE",
+                "COMMAND_IN_PROGRESS",
+                "COMMAND_EXPIRED",
             ]
         );
     }
@@ -810,13 +821,6 @@ async fn resolve_command(
 ) -> Result<Option<Value>, async_graphql::Error> {
     use crate::microsvc::{CommandRequest, Service};
 
-    if causal {
-        return Err(client_error(
-            "INTERNAL",
-            "typed causal command execution requires a validated durable command committer",
-        ));
-    }
-
     let session = ctx
         .data_opt::<Session>()
         .cloned()
@@ -836,6 +840,34 @@ async fn resolve_command(
         .transpose()
         .map_err(|e| client_error("BAD_REQUEST", format!("invalid command input: {e:?}")))?
         .unwrap_or(serde_json::json!({}));
+
+    if causal {
+        let command_id = ctx
+            .args
+            .get("commandId")
+            .ok_or_else(|| client_error("BAD_REQUEST", "missing commandId"))?
+            .deserialize::<String>()
+            .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
+        let principal = ctx
+            .data_opt::<VerifiedPrincipal>()
+            .cloned()
+            .ok_or_else(|| {
+                client_error_with_status(
+                    "UNAUTHORIZED",
+                    401,
+                    "durable commands require a verified OIDC bearer",
+                )
+            })?;
+        let payload = service
+            .dispatch_causal(command_name, &command_id, input, session, principal)
+            .await
+            .map_err(|error| {
+                client_error_with_status(error.code(), error.status_code(), error.client_message())
+            })?;
+        return Value::from_json(payload)
+            .map(Some)
+            .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")));
+    }
 
     let request = CommandRequest {
         command: command_name.to_string(),

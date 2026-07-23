@@ -241,6 +241,19 @@ impl EventRecord {
         self.meta(CAUSATION_ID)
     }
 
+    /// Replace causation metadata at the final causal-commit boundary.
+    ///
+    /// This is deliberately crate-private: application metadata may be set
+    /// while handling a command, but the ledger attempt is authoritative for
+    /// every newly persisted event in that command transaction.
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    pub(crate) fn overwrite_causation_id(&mut self, id: &str) {
+        self.metadata
+            .retain(|key, _| !key.eq_ignore_ascii_case(CAUSATION_ID));
+        self.metadata
+            .insert(CAUSATION_ID.to_string(), id.to_string());
+    }
+
     /// Get the W3C `traceparent`, if set.
     pub fn traceparent(&self) -> Option<&str> {
         self.meta(TRACEPARENT)
@@ -354,6 +367,26 @@ mod tests {
             Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
         );
         assert_eq!(record.tracestate(), Some("vendor=value"));
+    }
+
+    #[test]
+    fn final_causal_stamp_removes_case_insensitive_aliases() {
+        let mut metadata = HashMap::new();
+        metadata.insert(CAUSATION_ID.to_string(), "handler-supplied".to_string());
+        metadata.insert("Causation_Id".to_string(), "forged-case-alias".to_string());
+        let mut record = EventRecord::with_metadata("test_event", vec![], 1, metadata);
+
+        record.overwrite_causation_id("ledger-causation");
+
+        assert_eq!(record.causation_id(), Some("ledger-causation"));
+        assert_eq!(
+            record
+                .metadata
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case(CAUSATION_ID))
+                .count(),
+            1
+        );
     }
 
     #[test]

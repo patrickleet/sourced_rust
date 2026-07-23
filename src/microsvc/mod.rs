@@ -55,6 +55,7 @@
 //! }
 //! ```
 
+mod causal;
 mod context;
 mod dependencies;
 mod error;
@@ -64,10 +65,12 @@ mod service;
 mod session;
 
 pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan};
+pub use causal::AggregateCheckout;
 pub use context::Context;
 pub use dependencies::{
-    ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore, HasRepo,
-    ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
+    CausalRepositoryBackend, CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore,
+    HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
+    RepoReadModelDependencies,
 };
 pub use error::HandlerError;
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};

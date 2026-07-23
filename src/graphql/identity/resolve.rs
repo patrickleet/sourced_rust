@@ -2,7 +2,7 @@
 
 use axum::http::HeaderMap;
 
-use super::oidc::{OidcConfig, OidcValidator, ValidationError};
+use super::oidc::{OidcConfig, OidcValidator, ValidationError, VerifiedPrincipal};
 use super::session_from_all_headers;
 use crate::microsvc::{Session, ROLE_KEY, USER_ID_KEY};
 
@@ -185,12 +185,8 @@ mod public_default_tests {
 
     #[test]
     fn d6_client_id_falls_back_as_audience() {
-        let cfg = public_oidc_identity_from_env_vars(
-            Some("http://iss"),
-            None,
-            Some("client-123"),
-            None,
-        );
+        let cfg =
+            public_oidc_identity_from_env_vars(Some("http://iss"), None, Some("client-123"), None);
         assert_eq!(cfg.mode, IdentityMode::OidcBearer);
         assert_eq!(cfg.oidc.as_ref().unwrap().audience, "client-123");
     }
@@ -213,6 +209,33 @@ mod public_default_tests {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
     Unauthorized,
+}
+
+/// A normal authorization session plus the optional bearer-only proof required
+/// for durable causal command dispatch.
+pub(crate) struct ResolvedIdentity {
+    session: Session,
+    principal: Option<VerifiedPrincipal>,
+}
+
+impl ResolvedIdentity {
+    pub(crate) fn unverified(session: Session) -> Self {
+        Self {
+            session,
+            principal: None,
+        }
+    }
+
+    fn verified(session: Session, principal: VerifiedPrincipal) -> Self {
+        Self {
+            session,
+            principal: Some(principal),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Session, Option<VerifiedPrincipal>) {
+        (self.session, self.principal)
+    }
 }
 
 impl From<ValidationError> for AuthError {
@@ -260,10 +283,7 @@ pub fn strip_identity_headers(headers: &HeaderMap, strip: &[String]) -> Session 
     Session::from_map(vars)
 }
 
-fn check_gateway_secret(
-    headers: &HeaderMap,
-    cfg: &TrustedProxyConfig,
-) -> Result<(), AuthError> {
+fn check_gateway_secret(headers: &HeaderMap, cfg: &TrustedProxyConfig) -> Result<(), AuthError> {
     if let Some((name, expected)) = &cfg.gateway_secret_header {
         let got = headers
             .get(name.as_str())
@@ -276,7 +296,10 @@ fn check_gateway_secret(
     Ok(())
 }
 
-fn trusted_proxy_session(headers: &HeaderMap, cfg: &TrustedProxyConfig) -> Result<Session, AuthError> {
+fn trusted_proxy_session(
+    headers: &HeaderMap,
+    cfg: &TrustedProxyConfig,
+) -> Result<Session, AuthError> {
     check_gateway_secret(headers, cfg)?;
     // Process-side strip of client identity denylist (F10).
     Ok(strip_identity_headers(headers, &cfg.strip_headers))
@@ -284,24 +307,34 @@ fn trusted_proxy_session(headers: &HeaderMap, cfg: &TrustedProxyConfig) -> Resul
 
 /// Hybrid missing-Bearer path: trust headers for gateway inject (F6).
 /// When gateway_secret configured, still enforce it.
-fn hybrid_proxy_session(headers: &HeaderMap, cfg: &TrustedProxyConfig) -> Result<Session, AuthError> {
+fn hybrid_proxy_session(
+    headers: &HeaderMap,
+    cfg: &TrustedProxyConfig,
+) -> Result<Session, AuthError> {
     check_gateway_secret(headers, cfg)?;
     Ok(session_from_all_headers(headers))
 }
 
-fn oidc_session(token: &str, oidc: &OidcConfig) -> Result<Session, AuthError> {
+fn oidc_identity(token: &str, oidc: &OidcConfig) -> Result<ResolvedIdentity, AuthError> {
     let validator = OidcValidator::new(oidc.clone());
     // On OIDC success, never merge client identity headers (caller passes token only).
-    // Static JWKS path (tests). Live JWKS uses resolve_session async.
-    validator.validate_and_map(token).map_err(Into::into)
+    // Static JWKS path (tests). Live JWKS uses resolve_identity async.
+    let (session, principal) = validator
+        .validate_and_map_principal(token)
+        .map_err(AuthError::from)?;
+    Ok(ResolvedIdentity::verified(session, principal))
 }
 
-async fn oidc_session_async(token: &str, oidc: &OidcConfig) -> Result<Session, AuthError> {
+async fn oidc_identity_async(
+    token: &str,
+    oidc: &OidcConfig,
+) -> Result<ResolvedIdentity, AuthError> {
     let validator = OidcValidator::new(oidc.clone());
-    validator
-        .validate_and_map_async(token)
+    let (session, principal) = validator
+        .validate_and_map_principal_async(token)
         .await
-        .map_err(Into::into)
+        .map_err(AuthError::from)?;
+    Ok(ResolvedIdentity::verified(session, principal))
 }
 
 /// Resolve Session from headers + config (sync; uses static JWKS for OIDC).
@@ -312,9 +345,20 @@ pub fn resolve_session_sync(
     headers: &HeaderMap,
     config: &IdentityConfig,
 ) -> Result<Session, AuthError> {
+    resolve_identity_sync(headers, config).map(|identity| identity.session)
+}
+
+pub(crate) fn resolve_identity_sync(
+    headers: &HeaderMap,
+    config: &IdentityConfig,
+) -> Result<ResolvedIdentity, AuthError> {
     match config.mode {
-        IdentityMode::DevHeaders => Ok(session_from_all_headers(headers)),
-        IdentityMode::TrustedProxy => trusted_proxy_session(headers, &config.trusted_proxy),
+        IdentityMode::DevHeaders => Ok(ResolvedIdentity::unverified(session_from_all_headers(
+            headers,
+        ))),
+        IdentityMode::TrustedProxy => {
+            trusted_proxy_session(headers, &config.trusted_proxy).map(ResolvedIdentity::unverified)
+        }
         IdentityMode::OidcBearer => {
             let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
             match extract_bearer(headers)? {
@@ -322,20 +366,21 @@ pub fn resolve_session_sync(
                     if oidc.require_auth {
                         Err(AuthError::Unauthorized)
                     } else {
-                        Ok(Session::new()) // anonymous F9
+                        Ok(ResolvedIdentity::unverified(Session::new())) // anonymous F9
                     }
                 }
-                Some(token) => oidc_session(&token, oidc),
+                Some(token) => oidc_identity(&token, oidc),
             }
         }
         IdentityMode::Hybrid => {
             let oidc = config.oidc.as_ref();
             match extract_bearer(headers)? {
-                None => hybrid_proxy_session(headers, &config.trusted_proxy), // D1 / F6
+                None => hybrid_proxy_session(headers, &config.trusted_proxy)
+                    .map(ResolvedIdentity::unverified), // D1 / F6
                 Some(token) => {
                     let oidc = oidc.ok_or(AuthError::Unauthorized)?;
                     // D2: invalid → 401, no proxy fallthrough
-                    oidc_session(&token, oidc)
+                    oidc_identity(&token, oidc)
                 }
             }
         }
@@ -347,6 +392,15 @@ pub async fn resolve_session(
     headers: &HeaderMap,
     config: &IdentityConfig,
 ) -> Result<Session, AuthError> {
+    resolve_identity(headers, config)
+        .await
+        .map(|identity| identity.session)
+}
+
+pub(crate) async fn resolve_identity(
+    headers: &HeaderMap,
+    config: &IdentityConfig,
+) -> Result<ResolvedIdentity, AuthError> {
     match config.mode {
         IdentityMode::OidcBearer => {
             let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
@@ -355,20 +409,21 @@ pub async fn resolve_session(
                     if oidc.require_auth {
                         Err(AuthError::Unauthorized)
                     } else {
-                        Ok(Session::new())
+                        Ok(ResolvedIdentity::unverified(Session::new()))
                     }
                 }
-                Some(token) => oidc_session_async(&token, oidc).await,
+                Some(token) => oidc_identity_async(&token, oidc).await,
             }
         }
         IdentityMode::Hybrid => match extract_bearer(headers)? {
-            None => hybrid_proxy_session(headers, &config.trusted_proxy),
+            None => hybrid_proxy_session(headers, &config.trusted_proxy)
+                .map(ResolvedIdentity::unverified),
             Some(token) => {
                 let oidc = config.oidc.as_ref().ok_or(AuthError::Unauthorized)?;
-                oidc_session_async(&token, oidc).await
+                oidc_identity_async(&token, oidc).await
             }
         },
-        _ => resolve_session_sync(headers, config),
+        _ => resolve_identity_sync(headers, config),
     }
 }
 
@@ -376,4 +431,38 @@ pub async fn resolve_session(
 #[allow(dead_code)]
 pub fn is_anonymous_identity(session: &Session) -> bool {
     session.get(USER_ID_KEY).is_none() && session.get(ROLE_KEY).is_none()
+}
+
+#[cfg(test)]
+mod causal_identity_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn ambient_and_proxy_identity_never_mint_a_causal_principal() {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_ID_KEY, HeaderValue::from_static("spoofed-user"));
+        headers.insert(ROLE_KEY, HeaderValue::from_static("admin"));
+
+        for config in [
+            IdentityConfig::dev_headers(),
+            IdentityConfig::trusted_proxy(),
+            IdentityConfig::hybrid(OidcConfig::new("https://issuer", "api")),
+        ] {
+            let identity = resolve_identity_sync(&headers, &config).unwrap();
+            let (_, principal) = identity.into_parts();
+            assert!(principal.is_none(), "mode {:?} minted a proof", config.mode);
+        }
+    }
+
+    #[test]
+    fn anonymous_oidc_mode_has_no_causal_principal_without_a_bearer() {
+        let config = IdentityConfig::oidc_bearer(
+            OidcConfig::new("https://issuer", "api").require_auth(false),
+        );
+        let identity = resolve_identity_sync(&HeaderMap::new(), &config).unwrap();
+        let (session, principal) = identity.into_parts();
+        assert!(is_anonymous_identity(&session));
+        assert!(principal.is_none());
+    }
 }

@@ -6,6 +6,11 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use crate::command_ledger::{
+    AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
+    CausalStorageIdentity, CausalTransactionalCommit, CommandLedgerError, CommandLedgerKey,
+    CommandLedgerStore, CommandLookup, CommandLookupScope, CommandReservation, ReservationOutcome,
+};
 use crate::entity::Entity;
 use crate::lock::{InMemoryLockManager, Lock, LockManager};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
@@ -165,6 +170,67 @@ where
     }
 }
 
+impl<R, L> CausalGetStream for QueuedRepository<R, L>
+where
+    R: CausalGetStream,
+    L: LockManager,
+{
+    fn get_causal_stream<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        // Deliberately bypass queue locking: a causal workspace may await user
+        // handler code between load and commit. Optimistic stream versions and
+        // the durable command attempt fence provide the authoritative safety.
+        self.inner.get_causal_stream(identity)
+    }
+}
+
+impl<R, L> CausalRepositoryIdentity for QueuedRepository<R, L>
+where
+    R: CausalRepositoryIdentity,
+    L: LockManager,
+{
+    fn causal_storage_identity(&self) -> CausalStorageIdentity {
+        self.inner.causal_storage_identity()
+    }
+}
+
+impl<R, L> CommandLedgerStore for QueuedRepository<R, L>
+where
+    R: CommandLedgerStore,
+    L: LockManager,
+{
+    fn reserve_command(
+        &self,
+        reservation: CommandReservation,
+    ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_ {
+        self.inner.reserve_command(reservation)
+    }
+
+    fn lookup_command<'a>(
+        &'a self,
+        key: &'a CommandLedgerKey,
+        scope: CommandLookupScope<'a>,
+    ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
+        self.inner.lookup_command(key, scope)
+    }
+
+    fn mark_retryable_unknown(
+        &self,
+        attempt: AttemptFence,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + '_ {
+        self.inner.mark_retryable_unknown(attempt)
+    }
+
+    fn compact_expired_commands(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<u64, CommandLedgerError>> + Send + '_ {
+        self.inner.compact_expired_commands(limit)
+    }
+}
+
 impl<R, L> TransactionalCommit for QueuedRepository<R, L>
 where
     R: TransactionalCommit,
@@ -198,6 +264,23 @@ where
 
             result
         }
+    }
+}
+
+impl<R, L> CausalTransactionalCommit for QueuedRepository<R, L>
+where
+    R: CausalTransactionalCommit,
+    L: LockManager,
+{
+    fn commit_causal_batch<'a>(
+        &'a self,
+        batch: CausalCommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
+        // Causal loads deliberately bypass this wrapper's queue locks, so a
+        // causal commit never owns one to release. Delegating without touching
+        // the lock manager is essential: a matching lock may belong to an
+        // unrelated legacy load/commit flow that is still in progress.
+        self.inner.commit_causal_batch(batch)
     }
 }
 
@@ -414,3 +497,75 @@ pub trait Queueable: Sized {
 }
 
 impl<T> Queueable for T {}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::command_ledger::{
+        CanonicalInputHash, CommandContractFingerprint, CommandId, PrincipalPartitionId,
+        TerminalCommandState,
+    };
+    use crate::in_memory_repo::InMemoryRepository;
+    use crate::repository::StreamWrite;
+
+    #[tokio::test]
+    async fn causal_commit_does_not_release_lock_owned_by_legacy_load() {
+        let repository = QueuedRepository::new(InMemoryRepository::new());
+        let aggregate_id = format!("queued-causal-lock-{}", Uuid::now_v7());
+        let identity = StreamIdentity::new("queued-causal-test", &aggregate_id).unwrap();
+
+        // The ordinary read API acquires and intentionally retains this lock
+        // until its legacy transaction commits or aborts.
+        assert!(repository.get_stream(&identity).await.unwrap().is_none());
+        let held_lock = repository
+            .lock_manager()
+            .get_lock(&identity.storage_key())
+            .unwrap();
+        assert!(!held_lock.try_lock().await.unwrap());
+
+        let command_id = Uuid::now_v7().to_string();
+        let reservation = CommandReservation::new(
+            CommandLedgerKey::new(
+                "queued-causal-test",
+                PrincipalPartitionId::new("v1:sha256:test-principal").unwrap(),
+                CommandId::parse(&command_id).unwrap(),
+            )
+            .unwrap(),
+            "test.create",
+            CommandContractFingerprint::new([1; 32]),
+            CanonicalInputHash::new([2; 32]),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        let attempt = match repository.reserve_command(reservation).await.unwrap() {
+            ReservationOutcome::Acquired(attempt) => attempt,
+            other => panic!("expected an acquired command attempt, got {other:?}"),
+        };
+        let completion = attempt
+            .complete(
+                TerminalCommandState::Accepted,
+                serde_json::json!({"accepted": true}),
+                Duration::from_secs(300),
+            )
+            .unwrap();
+        let mut entity = Entity::with_id(&aggregate_id);
+        entity.digest_empty("Created").unwrap();
+        let domain = CommitBatch::new(vec![StreamWrite::new(identity.clone(), &mut entity)]);
+
+        repository
+            .commit_causal_batch(CausalCommitBatch::new(domain, completion))
+            .await
+            .unwrap();
+
+        assert!(
+            !held_lock.try_lock().await.unwrap(),
+            "causal commit must not release a lock owned by a legacy load"
+        );
+        repository.abort(&identity).await.unwrap();
+    }
+}
