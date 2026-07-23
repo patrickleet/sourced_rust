@@ -115,6 +115,10 @@ normalization and selection plans, portable filter/order facts, pagination
 fallbacks, a schema/protocol binding, and the variable codec used for cache
 identity and transport.
 
+The accepted private storage-engine decision and reproducible Apollo comparison
+live in the Distributed GitKB at `specs/query-layer/v1/cache-engine`. The engine
+is intentionally not a public package entry point.
+
 ```ts
 import { createDistributedReplica } from '@hops-ops/distributed/replica';
 import { Todos } from './generated/distributed/index.js';
