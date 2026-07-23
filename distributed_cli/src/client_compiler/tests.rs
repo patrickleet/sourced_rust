@@ -131,6 +131,35 @@ fn order_semantics() -> JsonValue {
     })
 }
 
+fn normalized_list_relationship() -> JsonValue {
+    json!({
+        "name": "owner",
+        "target_model": "Todo",
+        "target_typename": "todo",
+        "kind": "has_many",
+        "list": true,
+        "nullable": false,
+        "arguments": list_arguments(),
+        "key_mapping": {
+            "kind": "direct",
+            "local": ["tenantId", "id"],
+            "remote": ["tenantId", "id"]
+        },
+        "maintenance": "local",
+        "dependencies": ["todo_rows"],
+        "filter": filter_semantics(),
+        "order": order_semantics(),
+        "pagination": {
+            "kind": "offset",
+            "default_limit": 25,
+            "max_limit": 100,
+            "coverage": "window"
+        },
+        "aggregate": null,
+        "live": true
+    })
+}
+
 fn list_root(operation: &str) -> JsonValue {
     json!({
         "id": format!("{operation}:todos"),
@@ -187,14 +216,67 @@ fn by_pk_root() -> JsonValue {
     })
 }
 
+fn aggregate_root() -> JsonValue {
+    json!({
+        "id": "query:todos_aggregate",
+        "operation": "query",
+        "name": "todos_aggregate",
+        "kind": "aggregate",
+        "model": "Todo",
+        "arguments": [{
+            "name": "where",
+            "kind": "filter",
+            "type_name": "todo_bool_exp",
+            "nullable": true,
+            "list": false
+        }],
+        "filter": filter_semantics(),
+        "order": null,
+        "pagination": null,
+        "aggregate": {
+            "wrapper_typename": "todo_aggregate",
+            "fields_typename": "todo_aggregate_fields",
+            "nodes_pagination": {
+                "kind": "offset",
+                "default_limit": 25,
+                "max_limit": 100,
+                "coverage": "window"
+            },
+            "count": true,
+            "nodes": true,
+            "sum": [],
+            "avg": [],
+            "min": [],
+            "max": []
+        },
+        "dependencies": ["todo_rows"],
+        "live": false
+    })
+}
+
 fn manifest() -> JsonValue {
     let mut value = json!({
-        "manifest_version": 4,
+        "manifest_version": 5,
         "protocol_version": 2,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
         "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
+        "execution": {
+            "max_depth": 8,
+            "max_complexity": 500,
+            "complexity": {
+                "version": 1,
+                "scalar": 1,
+                "belongs_to": 2,
+                "has_many": 10,
+                "m2m": 12,
+                "aggregate": 8,
+                "list_root": 3,
+                "by_pk": 1,
+                "list_fanout": 5
+            }
+        },
         "capabilities": {
             "live_queries": true,
             "record_revisions": true,
@@ -207,7 +289,12 @@ fn manifest() -> JsonValue {
         },
         "scalar_codecs": scalar_codecs(),
         "models": [model("Todo", "todo")],
-        "roots": [list_root("query"), list_root("subscription"), by_pk_root()],
+        "roots": [
+            list_root("query"),
+            list_root("subscription"),
+            by_pk_root(),
+            aggregate_root()
+        ],
         "commands": [],
         "protocol_operations": {"version": 1},
         "projectors": []
@@ -348,6 +435,17 @@ fn input(source: &str) -> ClientCompileInput {
     )
 }
 
+fn input_with_manifest(manifest: JsonValue, source: &str) -> ClientCompileInput {
+    ClientCompileInput::new(
+        manifest,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            source,
+        )],
+    )
+}
+
 fn file<'a>(project: &'a super::GeneratedClientProject, path: &str) -> &'a str {
     project
         .files
@@ -394,6 +492,291 @@ fn compiles_aliases_composite_wire_identity_live_and_load() {
         project.routes[0].discovery,
         ClientRouteDiscovery::Convention
     );
+}
+
+#[test]
+fn enforces_the_selected_services_exact_depth_and_complexity_limits() {
+    let shallow_source = "query ExactDepth { todos { id } }";
+    let mut exact_depth_manifest = manifest();
+    exact_depth_manifest["execution"]["max_depth"] = json!(2);
+    refresh_schema_fingerprint(&mut exact_depth_manifest);
+    compile_client(input_with_manifest(exact_depth_manifest, shallow_source))
+        .expect("root and leaf fields exactly at max_depth must compile");
+
+    let mut shallow_rejected_manifest = manifest();
+    shallow_rejected_manifest["execution"]["max_depth"] = json!(1);
+    refresh_schema_fingerprint(&mut shallow_rejected_manifest);
+    let error = compile_client(input_with_manifest(
+        shallow_rejected_manifest,
+        shallow_source,
+    ))
+    .expect_err("root plus leaf must count as operation depth two");
+    assert_eq!(error.code, "client.operation.depth_limit");
+    assert!(error.message.contains("operation depth 2"), "{error:?}");
+
+    let mut depth_manifest = manifest();
+    depth_manifest["execution"]["max_depth"] = json!(3);
+    refresh_schema_fingerprint(&mut depth_manifest);
+    let error = compile_client(input_with_manifest(
+        depth_manifest,
+        "query TooDeep { todos { owner { owner { id } } } }",
+    ))
+    .expect_err("depth must fail at build time");
+    assert_eq!(error.code, "client.operation.depth_limit");
+    assert!(error.message.contains("operation depth 4"), "{error:?}");
+
+    let mut exact_deep_manifest = manifest();
+    exact_deep_manifest["execution"]["max_depth"] = json!(4);
+    refresh_schema_fingerprint(&mut exact_deep_manifest);
+    compile_client(input_with_manifest(
+        exact_deep_manifest,
+        "query ExactDeep { todos { owner { owner { id } } } }",
+    ))
+    .expect("the exact recursive service depth boundary must compile");
+
+    let source = "query ExactCost { todos { id } }";
+    let mut accepted_manifest = manifest();
+    accepted_manifest["execution"]["max_complexity"] = json!(18);
+    refresh_schema_fingerprint(&mut accepted_manifest);
+    compile_client(input_with_manifest(accepted_manifest, source))
+        .expect("the exact service complexity boundary must compile");
+
+    let mut rejected_manifest = manifest();
+    rejected_manifest["execution"]["max_complexity"] = json!(17);
+    refresh_schema_fingerprint(&mut rejected_manifest);
+    let error = compile_client(input_with_manifest(rejected_manifest, source))
+        .expect_err("complexity must fail at build time");
+    assert_eq!(error.code, "client.operation.complexity_limit");
+    assert!(
+        error.message.contains("operation complexity 18"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn compiles_recursive_normalized_relationships_and_nested_fragments() {
+    let project = compile_client(input(
+        r#"
+          query NestedOwner {
+            todos {
+              title
+              owner { ...OwnerFields }
+            }
+          }
+
+          fragment OwnerFields on todo { id }
+        "#,
+    ))
+    .expect("compile normalized relationship");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query NestedOwner {\n  todos {\n    title\n    owner {\n      id\n      _distributed_tenantId: tenantId\n      _distributed_typename: __typename\n    }\n    _distributed_tenantId: tenantId\n    _distributed_id: id\n    _distributed_typename: __typename\n  }\n}\n";
+
+    assert!(
+        generated.contains(&serde_json::to_string(canonical).unwrap()),
+        "generated:\n{generated}"
+    );
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains("readonly \"owner\": {"));
+    assert!(generated.contains("} | null;"));
+    assert!(generated.contains("\"semantic\": \"relationship\""));
+    assert!(generated.contains("\"maintenance\": \"revalidate\""));
+    assert!(generated.contains("\"codec\": \"string\""));
+    assert!(!generated.contains("fragment OwnerFields"));
+}
+
+#[test]
+fn compiles_nested_list_arguments_coverage_and_variable_usage() {
+    let mut value = manifest();
+    value["models"][0]["relationships"][0] = normalized_list_relationship();
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(ClientCompileInput::new(
+        value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query NestedList($take: Int!) { todos { copies: owner(limit: $take, offset: 0) { headline: title } } }",
+        )],
+    ))
+    .expect("compile normalized list relationship");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query NestedList($take: Int!) {\n  todos {\n    copies: owner(limit: $take, offset: 0) {\n      headline: title\n      _distributed_tenantId: tenantId\n      _distributed_id: id\n      _distributed_typename: __typename\n    }\n    _distributed_tenantId: tenantId\n    _distributed_id: id\n    _distributed_typename: __typename\n  }\n}\n";
+
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains(&serde_json::to_string(canonical).unwrap()));
+    assert!(generated.contains("\"cardinality\": \"many\""));
+    assert!(generated.contains("\"maintenance\": \"local\""));
+    assert!(generated.contains("\"offsetArgument\": \"offset\""));
+    assert!(generated.contains("\"limitArgument\": \"limit\""));
+    assert!(generated.contains("readonly \"copies\": readonly {"));
+}
+
+#[test]
+fn compiles_embedded_objects_without_inventing_wire_identity() {
+    let mut value = manifest();
+    value["models"].as_array_mut().expect("models").push(json!({
+        "id": "TodoDetails",
+        "typename": "todo_details",
+        "source_table": "todo_details_rows",
+        "dependencies": ["todo_details_rows"],
+        "normalization": {"kind": "embedded"},
+        "fields": [{
+            "name": "note",
+            "scalar": "String",
+            "codec": "string",
+            "nullable": true
+        }],
+        "relationships": [],
+        "row_policy": {"kind": "unrestricted"},
+        "record_revisions": false,
+        "tombstones": false
+    }));
+    value["models"][0]["relationships"]
+        .as_array_mut()
+        .expect("relationships")
+        .push(json!({
+            "name": "details",
+            "target_model": "TodoDetails",
+            "target_typename": "todo_details",
+            "kind": "belongs_to",
+            "list": false,
+            "nullable": true,
+            "arguments": [],
+            "key_mapping": {"kind": "embedded"},
+            "maintenance": "revalidate",
+            "dependencies": ["todo_details_rows", "todo_rows"],
+            "live": false
+        }));
+    value["roots"][0]["filter"]["relationships"] = json!(["details", "owner"]);
+    value["roots"][1]["filter"]["relationships"] = json!(["details", "owner"]);
+    value["roots"][3]["filter"]["relationships"] = json!(["details", "owner"]);
+    refresh_schema_fingerprint(&mut value);
+
+    let project = compile_client(ClientCompileInput::new(
+        value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Embedded { todos { details { note } } }",
+        )],
+    ))
+    .expect("compile embedded relationship");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query Embedded {\n  todos {\n    details {\n      note\n    }\n    _distributed_tenantId: tenantId\n    _distributed_id: id\n    _distributed_typename: __typename\n  }\n}\n";
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains(&serde_json::to_string(canonical).unwrap()));
+    assert!(generated.contains("\"typename\": \"todo_details\""));
+    assert!(generated.contains("\"kind\": \"embedded\""));
+    assert!(generated.contains("readonly \"note\": string | null;"));
+}
+
+#[test]
+fn compiles_aggregate_count_and_nodes_with_exact_typenames_and_window() {
+    let project = compile_client(input(
+        r#"
+          query AggregateTodos($where: todo_bool_exp) {
+            stats: todos_aggregate(where: $where) { ...AggregateParts }
+          }
+
+          fragment AggregateParts on todo_aggregate {
+            summary: aggregate { ...CountFields }
+            items: nodes { ...TodoFields }
+          }
+          fragment CountFields on todo_aggregate_fields { total: count }
+          fragment TodoFields on todo { headline: title }
+        "#,
+    ))
+    .expect("compile aggregate");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query AggregateTodos($where: todo_bool_exp) {\n  stats: todos_aggregate(where: $where) {\n    summary: aggregate {\n      total: count\n    }\n    items: nodes {\n      headline: title\n      _distributed_tenantId: tenantId\n      _distributed_id: id\n      _distributed_typename: __typename\n    }\n  }\n}\n";
+
+    assert!(
+        generated.contains(&serde_json::to_string(canonical).unwrap()),
+        "generated:\n{generated}"
+    );
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains("\"typename\": \"todo_aggregate\""));
+    assert!(generated.contains("\"typename\": \"todo_aggregate_fields\""));
+    assert!(generated.contains("\"semantic\": \"aggregate_fields\""));
+    assert!(generated.contains("\"semantic\": \"aggregate_nodes\""));
+    assert!(generated.contains("\"defaultLimit\": 25"));
+    assert!(generated.contains("\"maxLimit\": 100"));
+    assert!(generated.contains("readonly \"stats\": {"));
+    assert!(generated.contains("readonly \"summary\": {"));
+    assert!(generated.contains("readonly \"total\": number;"));
+    assert!(generated.contains("readonly \"items\": readonly {"));
+    assert!(!generated.contains("fragment AggregateParts"));
+}
+
+#[test]
+fn compiles_count_only_without_inventing_nodes_or_record_identity() {
+    let project = compile_client(input(
+        "query CountOnly { summary: todos_aggregate { stats: aggregate { total: count } } }",
+    ))
+    .expect("compile count-only aggregate");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query CountOnly {\n  summary: todos_aggregate {\n    stats: aggregate {\n      total: count\n    }\n  }\n}\n";
+
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains(&serde_json::to_string(canonical).unwrap()));
+    assert!(!generated.contains("\"semantic\": \"aggregate_nodes\""));
+    assert!(!generated.contains("\"model\": \"Todo\""));
+    assert!(generated.contains("readonly \"summary\": {"));
+    assert!(generated.contains("readonly \"stats\": {"));
+    assert!(generated.contains("readonly \"total\": number;"));
+}
+
+#[test]
+fn compiles_nullable_relationship_aggregate_from_declared_typenames() {
+    let mut value = manifest();
+    let mut relationship = normalized_list_relationship();
+    relationship["aggregate"] = json!({
+        "name": "owner_aggregate",
+        "arguments": [],
+        "semantics": {
+            "wrapper_typename": "todo_aggregate",
+            "fields_typename": "todo_aggregate_fields",
+            "nodes_pagination": {
+                "kind": "offset",
+                "default_limit": 25,
+                "max_limit": 100,
+                "coverage": "window"
+            },
+            "count": true,
+            "nodes": true,
+            "sum": [],
+            "avg": [],
+            "min": [],
+            "max": []
+        },
+        "dependencies": ["todo_rows"]
+    });
+    value["models"][0]["relationships"][0] = relationship;
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(ClientCompileInput::new(
+        value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query RelationshipStats { todos { metrics: owner_aggregate { stats: aggregate { total: count } items: nodes { headline: title } } } }",
+        )],
+    ))
+    .expect("compile relationship aggregate");
+    let operation = &project.operations[0];
+    let generated = file(&project, &operation.module_path);
+    let canonical = "query RelationshipStats {\n  todos {\n    metrics: owner_aggregate {\n      stats: aggregate {\n        total: count\n      }\n      items: nodes {\n        headline: title\n        _distributed_tenantId: tenantId\n        _distributed_id: id\n        _distributed_typename: __typename\n      }\n    }\n    _distributed_tenantId: tenantId\n    _distributed_id: id\n    _distributed_typename: __typename\n  }\n}\n";
+
+    assert_eq!(operation.operation_hash, fingerprint(canonical));
+    assert!(generated.contains(&serde_json::to_string(canonical).unwrap()));
+    assert!(generated.contains("\"semantic\": \"aggregate\""));
+    assert!(generated.contains("\"field\": \"owner_aggregate\""));
+    assert!(generated.contains("\"nullable\": true"));
+    assert!(generated.contains("readonly \"metrics\": {"));
+    assert!(generated.contains("} | null;"));
 }
 
 #[test]
@@ -665,12 +1048,8 @@ fn fragment_expansion_is_bounded_by_depth_and_total_work() {
 }
 
 #[test]
-fn rejects_surface_relationship_conditional_and_multi_root() {
+fn rejects_conditional_and_multi_root() {
     let cases = [
-        (
-            "query Wrong { todos { owner { id } } }",
-            "client.selection.relationship_unsupported",
-        ),
         (
             "query Conditional($yes: Boolean!) { todos { id @include(if: $yes) } }",
             "client.directive.conditional_unsupported",
@@ -678,6 +1057,37 @@ fn rejects_surface_relationship_conditional_and_multi_root() {
         (
             "query Multi { todos { id } todo(tenantId: \"t\", id: \"1\") { id } }",
             "client.operation.single_root",
+        ),
+    ];
+    for (source, code) in cases {
+        let error = compile_client(input(source)).expect_err(source);
+        assert_eq!(error.code, code, "{source}: {error}");
+        assert!(error.source.is_some());
+    }
+}
+
+#[test]
+fn recursive_selection_shapes_fail_closed() {
+    let cases = [
+        (
+            "query MissingObject { todos { owner } }",
+            "client.selection.object_required",
+        ),
+        (
+            "query NestedScalar { todos { title { id } } }",
+            "client.selection.scalar_nested",
+        ),
+        (
+            "query NestedUndefined { todos { owner(limit: $missing) { id } } }",
+            "client.argument.denied_or_unknown",
+        ),
+        (
+            "query Metric { todos_aggregate { aggregate { sum } } }",
+            "client.selection.aggregate_metric_unsupported",
+        ),
+        (
+            "query WrongType { todos_aggregate { ...Wrong } } fragment Wrong on todo { id }",
+            "client.graphql.fragment_type",
         ),
     ];
     for (source, code) in cases {

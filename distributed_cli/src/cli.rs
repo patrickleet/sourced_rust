@@ -28,7 +28,7 @@ use crate::{
 };
 
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 4;
+const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 5;
 
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
@@ -246,7 +246,7 @@ pub struct ClientManifestArgs {
         .args(["role", "surface"])
 ))]
 pub struct ClientArgs {
-    /// Role/application-selected Distributed client manifest v4.
+    /// Role/application-selected Distributed client manifest v5.
     #[arg(long)]
     pub manifest: PathBuf,
     /// Verify that the manifest is selected for this concrete role.
@@ -1848,7 +1848,7 @@ mod tests {
         stale["manifest_version"] = serde_json::json!(3);
         let error = validate_client_manifest_json(&stale)
             .expect_err("pre-release v3 manifests must be rejected");
-        assert!(error.to_string().contains("version 3; expected 4"));
+        assert!(error.to_string().contains("version 3; expected 5"));
     }
 
     #[test]

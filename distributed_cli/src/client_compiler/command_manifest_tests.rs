@@ -227,6 +227,7 @@ fn validate_commands(
     validate_command_manifest(
         commands,
         &[("Todo".into(), model())].into_iter().collect(),
+        &BTreeMap::new(),
         &codecs(),
         &[projector()],
         true,
@@ -351,6 +352,33 @@ fn rejects_empty_outputs_and_ambiguous_command_type_namespaces() {
     let error = validate_commands(&[first, conflicting])
         .expect_err("cross-command type definitions must be globally unambiguous");
     assert_eq!(error.code, "client.manifest.command_type_reference");
+
+    let mut model_collision = command();
+    let ManifestCommandShape::Object { definition } = &mut model_collision.input else {
+        unreachable!()
+    };
+    definition.name = "Todo".into();
+    let error = validate(&model_collision)
+        .expect_err("command input types cannot shadow an authorized model object");
+    assert_eq!(error.code, "client.manifest.command_type_namespace");
+
+    let mut scalar_collision = command();
+    let ManifestCommandShape::Object { definition } = &mut scalar_collision.input else {
+        unreachable!()
+    };
+    definition.name = "String".into();
+    let error = validate(&scalar_collision)
+        .expect_err("command input types cannot shadow built-in scalar types");
+    assert_eq!(error.code, "client.manifest.command_type_namespace");
+
+    let mut non_projected_model_output = command();
+    let ManifestCommandShape::Object { definition } = &mut non_projected_model_output.output else {
+        unreachable!()
+    };
+    definition.name = "Todo".into();
+    let error = validate(&non_projected_model_output)
+        .expect_err("only an exact Projected<T> output may reuse its model object type");
+    assert_eq!(error.code, "client.manifest.command_type_namespace");
 }
 
 #[test]
@@ -442,6 +470,7 @@ fn accepts_shapes_beyond_removed_compiler_only_size_limits() {
 fn query_only_protocol_has_no_command_status_or_causal_capability() {
     let report = validate_command_manifest(
         &[],
+        &BTreeMap::new(),
         &BTreeMap::new(),
         &codecs(),
         &[],

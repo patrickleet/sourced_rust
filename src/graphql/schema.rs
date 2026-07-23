@@ -68,7 +68,7 @@ pub fn build_role_schema(
         let status = Object::new(DISTRIBUTED_COMMAND_STATUS_TYPE).field(Field::new(
             "state",
             TypeRef::named_nn(DISTRIBUTED_COMMAND_STATE_TYPE),
-            |ctx| FieldFuture::new(async move { passthrough(&ctx, "state") }),
+            |ctx| FieldFuture::new(async move { schema_key_passthrough(&ctx, "state") }),
         ));
         registered_objects.insert(DISTRIBUTED_COMMAND_STATUS_TYPE.into(), status);
     }
@@ -428,7 +428,7 @@ fn ensure_object_type(
         let key = column.name.clone();
         obj = obj.field(Field::new(column.name.as_str(), ty, move |ctx| {
             let key = key.clone();
-            FieldFuture::new(async move { passthrough(&ctx, &key) })
+            FieldFuture::new(async move { response_key_passthrough(&ctx, &key) })
         }));
     }
     for relationship in &model.relationships {
@@ -445,7 +445,7 @@ fn ensure_object_type(
                     TypeRef::named_nn_list_nn(target_obj),
                     move |ctx| {
                         let key = key.clone();
-                        FieldFuture::new(async move { passthrough(&ctx, &key) })
+                        FieldFuture::new(async move { response_key_passthrough(&ctx, &key) })
                     },
                 ),
                 &relationship.arguments,
@@ -459,7 +459,7 @@ fn ensure_object_type(
                 let aggregate = with_field_arguments(
                     Field::new(aggregate_name, TypeRef::named(aggregate_type), move |ctx| {
                         let key = field_key.clone();
-                        FieldFuture::new(async move { passthrough(&ctx, &key) })
+                        FieldFuture::new(async move { response_key_passthrough(&ctx, &key) })
                     }),
                     &aggregate_plan.arguments,
                 );
@@ -473,7 +473,7 @@ fn ensure_object_type(
             };
             obj = obj.field(Field::new(relationship.name.as_str(), ty, move |ctx| {
                 let key = key.clone();
-                FieldFuture::new(async move { passthrough(&ctx, &key) })
+                FieldFuture::new(async move { response_key_passthrough(&ctx, &key) })
             }));
         }
     }
@@ -551,7 +551,7 @@ fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, model: &Surface
     fields_obj = fields_obj.field(Field::new(
         "count",
         TypeRef::named_nn(TypeRef::INT),
-        |ctx| FieldFuture::new(async move { passthrough(&ctx, "count") }),
+        |ctx| FieldFuture::new(async move { response_key_passthrough(&ctx, "count") }),
     ));
     objects.insert(fields_name.clone(), fields_obj);
 
@@ -559,11 +559,11 @@ fn ensure_aggregate_type(objects: &mut BTreeMap<String, Object>, model: &Surface
     agg_obj = agg_obj.field(Field::new(
         "aggregate",
         TypeRef::named(fields_name),
-        |ctx| FieldFuture::new(async move { passthrough(&ctx, "aggregate") }),
+        |ctx| FieldFuture::new(async move { response_key_passthrough(&ctx, "aggregate") }),
     ));
     let obj = model.object_name.clone();
     agg_obj = agg_obj.field(Field::new("nodes", TypeRef::named_nn_list_nn(obj), |ctx| {
-        FieldFuture::new(async move { passthrough(&ctx, "nodes") })
+        FieldFuture::new(async move { response_key_passthrough(&ctx, "nodes") })
     }));
     objects.insert(agg, agg_obj);
 }
@@ -631,7 +631,7 @@ fn ensure_command_output(objects: &mut BTreeMap<String, Object>, tdef: &SurfaceT
         let key = field.name.clone();
         obj = obj.field(Field::new(field.name.as_str(), ty, move |ctx| {
             let key = key.clone();
-            FieldFuture::new(async move { passthrough(&ctx, &key) })
+            FieldFuture::new(async move { schema_key_passthrough(&ctx, &key) })
         }));
     }
     objects.insert(tdef.name.clone(), obj);
@@ -648,7 +648,27 @@ fn command_field_type(field: &SurfaceTypeField) -> TypeRef {
     }
 }
 
-fn passthrough(
+fn response_key_passthrough(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    key: &str,
+) -> Result<Option<Value>, async_graphql::Error> {
+    // SQL projection objects are keyed by response name so two selections of
+    // the same schema field can retain distinct arguments and sub-selections.
+    // An unaliased field's response name is its schema name.
+    let response_key = ctx.field().alias().unwrap_or(key);
+    passthrough_key(ctx, response_key)
+}
+
+fn schema_key_passthrough(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    key: &str,
+) -> Result<Option<Value>, async_graphql::Error> {
+    // Command and status payloads are produced by framework/application code,
+    // not the SQL compiler, and therefore remain keyed by schema field name.
+    passthrough_key(ctx, key)
+}
+
+fn passthrough_key(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     key: &str,
 ) -> Result<Option<Value>, async_graphql::Error> {
@@ -777,6 +797,7 @@ fn sanitize_compile_error(e: &str) -> String {
         || e.contains("ungranted where")
         || e.contains("unknown order_by")
         || e.contains("ungranted order_by")
+        || e.contains("ambiguous order_by")
     {
         "invalid filter".into()
     } else {
@@ -920,6 +941,12 @@ mod execute_err_mapping_tests {
         );
         assert_eq!(
             sanitize_compile_error("ungranted order_by column `secret`"),
+            "invalid filter"
+        );
+        assert_eq!(
+            sanitize_compile_error(
+                "ambiguous order_by entry: use one field per list entry to declare priority"
+            ),
             "invalid filter"
         );
         assert_eq!(
@@ -1309,7 +1336,7 @@ mod causal_command_schema_tests {
         )
         .unwrap();
         let request = async_graphql::Request::new(format!(
-            "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ state }} }}",
+            "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ s: state }} }}",
             uuid::Uuid::now_v7()
         ))
         .data(Arc::new(Service::new().named("status-test")))
@@ -1326,7 +1353,7 @@ mod causal_command_schema_tests {
             response.data.into_json().unwrap(),
             serde_json::json!({
                 COMMAND_STATUS_ROOT_FIELD: {
-                    "state": "unknown"
+                    "s": "unknown"
                 }
             })
         );

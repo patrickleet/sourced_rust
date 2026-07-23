@@ -5,8 +5,8 @@ import type {
 	RecordKey,
 	Revision
 } from '../internal/cache-engine.js';
-import type { GqlError, GraphqlVariables } from '../types.js';
 import type { DistributedRecordRevision } from '../protocol.js';
+import type { GqlError, GraphqlVariables } from '../types.js';
 import {
 	cloneJsonValue,
 	coverageFromArtifact,
@@ -14,13 +14,17 @@ import {
 	replicaRecordKey,
 	resolveArguments
 } from './identity.js';
+import {
+	embeddedRecordKey,
+	runtimeRoot,
+	type RuntimeObjectBranch,
+	type RuntimeObjectSelection,
+	type RuntimeRootSelection
+} from './selection.js';
 import type {
-	ReplicaEntitySelection,
 	ReplicaOperationArtifact,
-	ReplicaRelationshipSelection,
 	ReplicaRevision,
-	ReplicaResultEnvelope,
-	ReplicaRootSelection
+	ReplicaResultEnvelope
 } from './types.js';
 
 export type ReplicaNormalizationSummary = {
@@ -57,6 +61,8 @@ type ErrorPaths = {
 	paths: readonly (readonly (string | number)[])[];
 };
 
+type RuntimeBranchSelection = RuntimeRootSelection | RuntimeObjectBranch;
+
 export function normalizeReplicaResult<
 	TData,
 	TVariables extends GraphqlVariables
@@ -87,7 +93,8 @@ export function normalizeReplicaResult<
 	let wrote = false;
 	let partial = false;
 	const indexKeys: string[] = [];
-	for (const root of artifact.roots) {
+	for (const artifactRoot of artifact.roots) {
+		const root = runtimeRoot(artifactRoot);
 		const path: readonly (string | number)[] = [root.responseKey];
 		const hasValue = Object.prototype.hasOwnProperty.call(envelope.data, root.responseKey);
 		const blocked = pathBlocked(errors, path);
@@ -108,12 +115,13 @@ export function normalizeReplicaResult<
 			partial = true;
 			continue;
 		}
-		const value = rawValue;
 		const branch = normalizeBranch(
 			writer,
+			artifact.id,
 			root,
-			value,
+			rawValue,
 			path,
+			key,
 			snapshotRevision,
 			variables,
 			errors,
@@ -121,8 +129,6 @@ export function normalizeReplicaResult<
 			indexKeys
 		);
 		const rootPartial =
-			blocked ||
-			!hasValue ||
 			branch.partial ||
 			hasErrors ||
 			(protocol !== undefined && !protocol.indexesComplete);
@@ -157,23 +163,35 @@ export function normalizeReplicaResult<
 
 function normalizeBranch(
 	writer: BaseCacheWriter,
-	selection: ReplicaRootSelection | ReplicaRelationshipSelection,
+	artifactId: string,
+	selection: RuntimeBranchSelection,
 	value: unknown,
 	path: readonly (string | number)[],
+	indexKey: string,
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
 	errors: ErrorPaths,
 	protocol: ReplicaNormalizationProtocol | undefined,
 	indexKeys: string[]
 ): NormalizedBranch {
-	if (value === null) return { keys: [], nullValue: true, partial: false };
+	if (value === null) {
+		if (!selection.nullable && !pathHasErrors(errors, path)) {
+			throw new TypeError(
+				`operation ${artifactId} returned null for non-null field ${pathLabel(path)}`
+			);
+		}
+		return { keys: [], nullValue: true, partial: false };
+	}
 	if (value === undefined) return { keys: [], nullValue: false, partial: true };
 	if (selection.cardinality === 'one') {
-		const entity = normalizeEntity(
+		const object = normalizeObject(
 			writer,
+			artifactId,
 			selection.selection,
 			value,
 			path,
+			indexKey,
+			undefined,
 			snapshotRevision,
 			variables,
 			errors,
@@ -181,128 +199,183 @@ function normalizeBranch(
 			indexKeys
 		);
 		return {
-			keys: entity.key === undefined ? [] : [entity.key],
+			keys: object.key === undefined ? [] : [object.key],
 			nullValue: false,
-			partial: entity.partial
+			partial: object.partial
 		};
 	}
 	if (!Array.isArray(value)) {
-		return { keys: [], nullValue: false, partial: true };
+		throw new TypeError(
+			`operation ${artifactId} returned a non-list value for ${pathLabel(path)}`
+		);
 	}
 	const keys: RecordKey[] = [];
 	let partial = false;
-	for (const [index, entry] of value.entries()) {
+	for (const [ordinal, entry] of value.entries()) {
+		const entryPath = [...path, ordinal];
 		if (entry === null || entry === undefined) {
-			partial = true;
-			continue;
+			if (pathHasErrors(errors, entryPath)) {
+				partial = true;
+				continue;
+			}
+			throw new TypeError(
+				`operation ${artifactId} returned null for non-null list item ${pathLabel(
+					entryPath
+				)}`
+			);
 		}
-		const entity = normalizeEntity(
+		const object = normalizeObject(
 			writer,
+			artifactId,
 			selection.selection,
 			entry,
-			[...path, index],
+			entryPath,
+			indexKey,
+			ordinal,
 			snapshotRevision,
 			variables,
 			errors,
 			protocol,
 			indexKeys
 		);
-		if (entity.key === undefined) partial = true;
-		else keys.push(entity.key);
-		partial ||= entity.partial;
+		if (object.key === undefined) partial = true;
+		else keys.push(object.key);
+		partial ||= object.partial;
 	}
 	return { keys, nullValue: false, partial };
 }
 
-function normalizeEntity(
+function normalizeObject(
 	writer: BaseCacheWriter,
-	selection: ReplicaEntitySelection,
+	artifactId: string,
+	selection: RuntimeObjectSelection,
 	value: unknown,
 	path: readonly (string | number)[],
+	enclosingIndexKey: string,
+	ordinal: number | undefined,
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
 	errors: ErrorPaths,
 	protocol: ReplicaNormalizationProtocol | undefined,
 	indexKeys: string[]
 ): { key?: RecordKey; partial: boolean } {
-	if (!isObject(value) || pathBlocked(errors, path)) return { partial: true };
+	if (pathBlocked(errors, path)) return { partial: true };
+	if (!isObject(value)) {
+		throw new TypeError(
+			`operation ${artifactId} returned a non-object value for ${pathLabel(path)}`
+		);
+	}
 
 	const fields: Record<string, CacheValue> = Object.create(null) as Record<
 		string,
 		CacheValue
 	>;
 	let partial = false;
-	for (const field of selection.fields) {
-		const fieldPath = [...path, field.responseKey];
+	for (const member of selection.members) {
+		if (member.kind !== 'scalar') continue;
+		const fieldPath = [...path, member.responseKey];
+		const hasValue = Object.prototype.hasOwnProperty.call(value, member.responseKey);
+		const rawValue = hasValue ? value[member.responseKey] : undefined;
 		if (
 			pathBlocked(errors, fieldPath) ||
-			!Object.prototype.hasOwnProperty.call(value, field.responseKey)
+			!hasValue
 		) {
 			partial = true;
 			continue;
 		}
-		const next = cloneJsonValue(value[field.responseKey]);
-		if (Object.prototype.hasOwnProperty.call(fields, field.field)) {
-			if (!deepEqual(fields[field.field], next)) {
+		if (rawValue === null && !member.nullable) {
+			if (pathHasErrors(errors, fieldPath)) {
+				partial = true;
+				continue;
+			}
+			throw new TypeError(
+				`operation ${artifactId} returned null for non-null field ${pathLabel(
+					fieldPath
+				)}`
+			);
+		}
+		const next = cloneJsonValue(rawValue);
+		if (Object.prototype.hasOwnProperty.call(fields, member.field)) {
+			if (!deepEqual(fields[member.field], next)) {
 				throw new TypeError(
-					`operation aliases disagree for ${selection.model.id}.${field.field}`
+					`operation aliases disagree for ${selection.typename}.${member.field}`
 				);
 			}
 			continue;
 		}
-		fields[field.field] = next;
+		fields[member.field] = next;
 	}
 
-	const identity: CacheValue[] = [];
-	for (const field of selection.model.identityFields) {
-		if (!Object.prototype.hasOwnProperty.call(fields, field) || fields[field] === null) {
-			return { partial: true };
+	let key: RecordKey;
+	let revision: Revision;
+	let incarnation: Revision | undefined;
+	let resolution: ReplicaProtocolRecordResolution | undefined;
+	if (selection.storage.kind === 'normalized') {
+		const identity: CacheValue[] = [];
+		for (const field of selection.storage.identityFields) {
+			if (
+				!Object.prototype.hasOwnProperty.call(fields, field) ||
+				fields[field] === null
+			) {
+				return { partial: true };
+			}
+			identity.push(fields[field]!);
 		}
-		identity.push(fields[field]!);
-	}
-	const key = replicaRecordKey(selection.model, identity);
-	if (
-		(selection.revisionResponseKey !== undefined &&
-			pathHasErrors(errors, [...path, selection.revisionResponseKey])) ||
-		(selection.incarnationResponseKey !== undefined &&
-			pathHasErrors(errors, [...path, selection.incarnationResponseKey]))
-	) {
-		// Injected clock fields are wire metadata. If GraphQL reports one as
-		// unavailable, keep the prior entity and memberships instead of guessing a
-		// clock or rejecting an otherwise valid partial-error envelope.
-		return { key, partial: true };
-	}
-	const resolution = protocol?.record(
-		path.map(String),
-		selection.model.id,
-		key
-	);
-	if (protocol !== undefined && resolution === undefined) {
-		return { key, partial: true };
-	}
-	if (resolution?.evidence.tombstone) {
-		throw new TypeError('live GraphQL row carries tombstone record evidence');
-	}
-	const revision =
-		resolution?.evidence.revision ??
-		responseRevision(
-			value,
-			selection.revisionResponseKey,
-			snapshotRevision,
-			'row revision'
+		key = replicaRecordKey(
+			{
+				id: selection.storage.model,
+				identityFields: selection.storage.identityFields
+			},
+			identity
 		);
-	if (revision === undefined) throw new TypeError('row revision is missing');
-	const incarnation =
-		resolution?.evidence.incarnation ??
-		responseRevision(
-			value,
-			selection.incarnationResponseKey,
-			undefined,
-			'row incarnation'
+		if (
+			(selection.revisionResponseKey !== undefined &&
+				pathHasErrors(errors, [...path, selection.revisionResponseKey])) ||
+			(selection.incarnationResponseKey !== undefined &&
+				pathHasErrors(errors, [...path, selection.incarnationResponseKey]))
+		) {
+			return { key, partial: true };
+		}
+		resolution = protocol?.record(
+			path.map(String),
+			selection.storage.model,
+			key
 		);
-	// Establish (or validate) the parent lifecycle before attaching exact
-	// relationship indexes. The enclosing engine batch still makes the entire
-	// response visible atomically.
+		if (protocol !== undefined && resolution === undefined) {
+			return { key, partial: true };
+		}
+		if (resolution?.evidence.tombstone) {
+			throw new TypeError('live GraphQL row carries tombstone record evidence');
+		}
+		const resolvedRevision =
+			resolution?.evidence.revision ??
+			responseRevision(
+				value,
+				selection.revisionResponseKey,
+				snapshotRevision,
+				'row revision'
+			);
+		if (resolvedRevision === undefined) {
+			throw new TypeError('row revision is missing');
+		}
+		revision = resolvedRevision;
+		incarnation =
+			resolution?.evidence.incarnation ??
+			responseRevision(
+				value,
+				selection.incarnationResponseKey,
+				undefined,
+				'row incarnation'
+			);
+	} else {
+		// Embedded output is an operation-local replacement snapshot, not a
+		// normalized server record. Its synthetic incarnation deliberately
+		// advances with the enclosing response so removed sparse fields disappear.
+		key = embeddedRecordKey(artifactId, enclosingIndexKey, ordinal);
+		revision = snapshotRevision;
+		incarnation = snapshotRevision;
+	}
+
 	if (resolution?.apply !== false) {
 		writer.writeRecord({
 			key,
@@ -320,28 +393,27 @@ function normalizeEntity(
 				(incarnation !== undefined &&
 					storedClock.incarnation !== String(incarnation))))
 	) {
-		// The row was rejected by a newer revision/lifecycle fence. Its identity
-		// cannot certify membership for the current incarnation, even if this
-		// response carries a newer outer checkpoint.
 		return { partial: true };
 	}
-	for (const relationship of selection.relationships ?? []) {
-		const relationshipPath = [...path, relationship.responseKey];
-		const hasValue = Object.prototype.hasOwnProperty.call(value, relationship.responseKey);
-		const blocked = pathBlocked(errors, relationshipPath);
-		const hasErrors = pathHasErrors(errors, relationshipPath);
-		const rawValue = hasValue ? value[relationship.responseKey] : undefined;
-		const argumentsValue = resolveArguments(relationship.arguments, variables);
-		const indexKey = replicaIndexKey({
+
+	for (const member of selection.members) {
+		if (member.kind !== 'branch') continue;
+		const branchPath = [...path, member.responseKey];
+		const hasValue = Object.prototype.hasOwnProperty.call(value, member.responseKey);
+		const blocked = pathBlocked(errors, branchPath);
+		const hasErrors = pathHasErrors(errors, branchPath);
+		const rawValue = hasValue ? value[member.responseKey] : undefined;
+		const argumentsValue = resolveArguments(member.arguments, variables);
+		const branchIndexKey = replicaIndexKey({
 			parent: key,
-			field: relationship.field,
+			field: member.field,
 			arguments: argumentsValue
 		});
-		indexKeys.push(indexKey);
+		indexKeys.push(branchIndexKey);
 		if (!hasValue || blocked || (rawValue === null && hasErrors)) {
 			if (protocol?.writeIndexes ?? true) {
 				writer.markIndexStale(
-					indexKey,
+					branchIndexKey,
 					hasErrors ? 'graphql-partial-error' : 'incomplete-result',
 					snapshotRevision
 				);
@@ -351,48 +423,45 @@ function normalizeEntity(
 		}
 		const branch = normalizeBranch(
 			writer,
-			relationship,
+			artifactId,
+			member,
 			rawValue,
-			relationshipPath,
+			branchPath,
+			branchIndexKey,
 			snapshotRevision,
 			variables,
 			errors,
 			protocol,
 			indexKeys
 		);
-		const relationshipPartial =
+		const branchPartial =
 			branch.partial ||
 			hasErrors ||
 			(protocol !== undefined && !protocol.indexesComplete);
-		// The exact parent+field+arguments index is authoritative. A single link
-		// slot on the parent cannot represent two aliases/operations with different
-		// arguments and cannot safely share the entity row's revision clock.
 		if (protocol?.writeIndexes ?? true) {
 			writer.writeIndex({
-				key: indexKey,
+				key: branchIndexKey,
 				revision: snapshotRevision,
 				records: branch.keys,
-				complete: !relationshipPartial,
+				complete: !branchPartial,
 				metadata: indexMetadata(
-					relationship,
+					member,
 					argumentsValue,
 					branch,
-					relationshipPartial,
+					branchPartial,
 					hasErrors,
 					key,
 					storedClock.revision
 				)
 			});
 		}
-		partial ||= relationshipPartial;
+		partial ||= branchPartial;
 	}
 
 	return { key, partial };
 }
 
-function requireLegacyRevision(
-	value: ReplicaRevision | undefined
-): ReplicaRevision {
+function requireLegacyRevision(value: ReplicaRevision | undefined): ReplicaRevision {
 	if (value === undefined) {
 		throw new TypeError(
 			'replica result requires either Distributed v2 snapshot evidence or a legacy revision'
@@ -402,7 +471,7 @@ function requireLegacyRevision(
 }
 
 function indexMetadata(
-	selection: ReplicaRootSelection | ReplicaRelationshipSelection,
+	selection: RuntimeBranchSelection,
 	argumentsValue: Readonly<Record<string, CacheValue>>,
 	branch: NormalizedBranch,
 	partial: boolean,
@@ -415,7 +484,11 @@ function indexMetadata(
 		...(parentRevision === undefined ? {} : { parentRevision: String(parentRevision) }),
 		field: selection.field,
 		arguments: argumentsValue,
-		coverage: coverageFromArtifact(selection.coverage, argumentsValue, branch.keys.length),
+		coverage: coverageFromArtifact(
+			selection.coverage,
+			argumentsValue,
+			branch.keys.length
+		),
 		dependencies: Object.freeze([...new Set(selection.dependencies)].sort()),
 		...(partial
 			? { staleReason: hasErrors ? 'graphql-partial-error' : 'incomplete-result' }
@@ -475,17 +548,29 @@ function isPrefix(
 	prefix: readonly (string | number)[],
 	value: readonly (string | number)[]
 ): boolean {
-	return prefix.length <= value.length && prefix.every((entry, index) => entry === value[index]);
+	return (
+		prefix.length <= value.length &&
+		prefix.every((entry, index) => entry === value[index])
+	);
 }
 
-function validateArtifact(artifact: { readonly id: string; readonly roots: readonly unknown[] }): void {
-	if (!artifact || typeof artifact !== 'object') throw new TypeError('replica artifact is required');
+function validateArtifact(artifact: {
+	readonly id: string;
+	readonly roots: readonly unknown[];
+}): void {
+	if (!artifact || typeof artifact !== 'object') {
+		throw new TypeError('replica artifact is required');
+	}
 	if (typeof artifact.id !== 'string' || artifact.id.length === 0) {
 		throw new TypeError('replica artifact id must be a non-empty string');
 	}
 	if (!Array.isArray(artifact.roots) || artifact.roots.length === 0) {
 		throw new TypeError(`operation ${artifact.id} must contain at least one root selection`);
 	}
+}
+
+function pathLabel(path: readonly (string | number)[]): string {
+	return path.map(String).join('.');
 }
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -497,7 +582,13 @@ function deepEqual(left: unknown, right: unknown): boolean {
 	if (typeof left !== typeof right || left === null || right === null) return false;
 	if (typeof left !== 'object' || typeof right !== 'object') return false;
 	if (Array.isArray(left) || Array.isArray(right)) {
-		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+		if (
+			!Array.isArray(left) ||
+			!Array.isArray(right) ||
+			left.length !== right.length
+		) {
+			return false;
+		}
 		return left.every((entry, index) => deepEqual(entry, right[index]));
 	}
 	const leftRecord = left as Readonly<Record<string, unknown>>;

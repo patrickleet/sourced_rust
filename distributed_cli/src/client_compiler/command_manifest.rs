@@ -5,10 +5,10 @@ use serde_json::Value as JsonValue;
 
 use super::manifest::{
     validate_exact_operation_hash, ManifestCommand, ManifestCommandShape, ManifestConfirmationKind,
-    ManifestEffect, ManifestEffectExpression, ManifestEffectField, ManifestEffectKey,
-    ManifestEffectRelationship, ManifestField, ManifestInputDefault, ManifestModel,
-    ManifestNormalization, ManifestProjector, ManifestProtocolOperations, ManifestTypeDef,
-    ManifestTypeField,
+    ManifestConsistencyKind, ManifestEffect, ManifestEffectExpression, ManifestEffectField,
+    ManifestEffectKey, ManifestEffectRelationship, ManifestField, ManifestInputDefault,
+    ManifestModel, ManifestNormalization, ManifestProjector, ManifestProtocolOperations,
+    ManifestRoot, ManifestTypeDef, ManifestTypeField, RootOperation,
 };
 use super::ClientCompileError;
 
@@ -37,6 +37,7 @@ pub(crate) struct CommandManifestValidation {
 pub(crate) fn validate_command_manifest(
     commands: &[ManifestCommand],
     models: &BTreeMap<String, ManifestModel>,
+    roots: &BTreeMap<(RootOperation, String), ManifestRoot>,
     scalar_codecs: &BTreeMap<String, String>,
     projectors: &[ManifestProjector],
     causal_receipts: bool,
@@ -50,6 +51,7 @@ pub(crate) fn validate_command_manifest(
     }
     validate_protocol_operations(protocol_operations, !commands.is_empty())?;
     let projectors = validate_projector_inventory(projectors, models)?;
+    let occupied_types = occupied_surface_types(models, roots, scalar_codecs);
 
     let mut command_names = BTreeSet::new();
     let mut mutation_fields = BTreeSet::new();
@@ -61,6 +63,7 @@ pub(crate) fn validate_command_manifest(
             models,
             scalar_codecs,
             &projectors,
+            &occupied_types,
             &mut type_definitions,
             &mut report,
         )?;
@@ -88,6 +91,7 @@ fn validate_command(
     models: &BTreeMap<String, ManifestModel>,
     scalar_codecs: &BTreeMap<String, String>,
     projectors: &BTreeMap<&str, &ManifestProjector>,
+    occupied_types: &BTreeSet<String>,
     type_definitions: &mut BTreeMap<String, (CommandTypeKind, ManifestTypeDef)>,
     report: &mut CommandManifestValidation,
 ) -> Result<(), ClientCompileError> {
@@ -110,6 +114,8 @@ fn validate_command(
         CommandTypeKind::Input,
         scalar_codecs,
         &format!("command `{}` input", command.name),
+        occupied_types,
+        None,
         type_definitions,
     )?;
     if matches!(command.output, ManifestCommandShape::None) {
@@ -124,6 +130,8 @@ fn validate_command(
         CommandTypeKind::Output,
         scalar_codecs,
         &format!("command `{}` output", command.name),
+        occupied_types,
+        projected_output_typename(command, models),
         type_definitions,
     )?;
 
@@ -186,19 +194,95 @@ fn validate_command(
     validate_confirmations(command, models, projectors, report)
 }
 
+fn projected_output_typename<'a>(
+    command: &ManifestCommand,
+    models: &'a BTreeMap<String, ManifestModel>,
+) -> Option<&'a str> {
+    if let Some(target) = command.extensions.direct_projection.as_ref() {
+        if let Some(model) = models.get(&target.model) {
+            return Some(model.typename.as_str());
+        }
+    }
+    let consistency = command.extensions.consistency.as_ref()?;
+    if consistency.kind != ManifestConsistencyKind::Projected {
+        return None;
+    }
+    let ManifestCommandShape::Object { definition } = &command.output else {
+        return None;
+    };
+    models
+        .values()
+        .find(|model| model.typename == definition.name)
+        .map(|model| model.typename.as_str())
+}
+
+fn occupied_surface_types(
+    models: &BTreeMap<String, ManifestModel>,
+    roots: &BTreeMap<(RootOperation, String), ManifestRoot>,
+    scalar_codecs: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let mut occupied = ["Query", "Mutation", "Subscription", "order_by"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    occupied.extend(scalar_codecs.keys().cloned());
+    for model in models.values() {
+        occupied.insert(model.typename.clone());
+        for relationship in &model.relationships {
+            occupied.insert(relationship.target_typename.clone());
+            occupied.extend(
+                relationship
+                    .arguments
+                    .iter()
+                    .map(|argument| argument.type_name.clone()),
+            );
+            if let Some(aggregate) = &relationship.aggregate {
+                occupied.insert(aggregate.semantics.wrapper_typename.clone());
+                occupied.insert(aggregate.semantics.fields_typename.clone());
+                occupied.extend(
+                    aggregate
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.type_name.clone()),
+                );
+            }
+        }
+    }
+    for root in roots.values() {
+        occupied.extend(
+            root.arguments
+                .iter()
+                .map(|argument| argument.type_name.clone()),
+        );
+        if let Some(aggregate) = &root.aggregate {
+            occupied.insert(aggregate.wrapper_typename.clone());
+            occupied.insert(aggregate.fields_typename.clone());
+        }
+    }
+    occupied
+}
+
 fn validate_shape(
     shape: &ManifestCommandShape,
     kind: CommandTypeKind,
     scalar_codecs: &BTreeMap<String, String>,
     label: &str,
+    occupied_types: &BTreeSet<String>,
+    allowed_occupied_type: Option<&str>,
     definitions: &mut BTreeMap<String, (CommandTypeKind, ManifestTypeDef)>,
 ) -> Result<(), ClientCompileError> {
     match shape {
         ManifestCommandShape::None => Ok(()),
         ManifestCommandShape::Json { codec } => validate_codec("JSON", codec, scalar_codecs, label),
-        ManifestCommandShape::Object { definition } => {
-            validate_type_def(definition, kind, scalar_codecs, label, definitions)
-        }
+        ManifestCommandShape::Object { definition } => validate_type_def(
+            definition,
+            kind,
+            scalar_codecs,
+            label,
+            occupied_types,
+            allowed_occupied_type,
+            definitions,
+        ),
     }
 }
 
@@ -207,9 +291,22 @@ fn validate_type_def(
     kind: CommandTypeKind,
     scalar_codecs: &BTreeMap<String, String>,
     label: &str,
+    occupied_types: &BTreeSet<String>,
+    allowed_occupied_type: Option<&str>,
     definitions: &mut BTreeMap<String, (CommandTypeKind, ManifestTypeDef)>,
 ) -> Result<(), ClientCompileError> {
     graphql_name(&definition.name, &format!("{label} type"))?;
+    if occupied_types.contains(&definition.name)
+        && allowed_occupied_type != Some(definition.name.as_str())
+    {
+        return Err(invalid(
+            "client.manifest.command_type_namespace",
+            format!(
+                "{label} type `{}` collides with an occupied GraphQL surface type",
+                definition.name
+            ),
+        ));
+    }
     if let Some((previous_kind, previous)) = definitions.get(&definition.name) {
         return if *previous_kind == kind && previous == definition {
             Ok(())
@@ -267,6 +364,8 @@ fn validate_type_def(
                     kind,
                     scalar_codecs,
                     &format!("{label}.{}", field.name),
+                    occupied_types,
+                    None,
                     definitions,
                 )?;
             }

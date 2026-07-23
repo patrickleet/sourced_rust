@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::command_contract::{CommandConsistency, CommandEffectFallback};
+use super::complexity_contract::{default_weights, DEFAULT_MAX_COMPLEXITY, DEFAULT_MAX_DEPTH};
 use super::filter::FilterExpr;
 use super::naming::{aggregate_fields_type_name, aggregate_type_name};
 use super::surface::{
@@ -23,13 +24,18 @@ use super::surface::{
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 4;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 5;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
+// Manifest v5 extends only compiler-owned query metadata. Keep the causal
+// protocol fingerprint on the manifest epoch that introduced protocol v2 so
+// receipt/status/live envelopes do not become falsely incompatible.
+const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 4;
 const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
 const PROTOCOL_OPERATIONS_VERSION: u32 = 1;
 const QUERY_CAPABILITIES_VERSION: u32 = 1;
+const QUERY_COMPLEXITY_VERSION: u32 = 1;
 const KEY_ENCODING: &str = "canonical_json_tuple_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +114,7 @@ pub struct DistributedClientSurfaceExport {
     service_id: String,
     identity: ClientSurfaceIdentity,
     surface: Arc<Surface>,
+    execution: ClientExecutionLimits,
 }
 
 /// Do not transitively format the selected Surface: it retains a private full
@@ -127,11 +134,13 @@ impl DistributedClientSurfaceExport {
         service_id: impl Into<String>,
         identity: ClientSurfaceIdentity,
         surface: impl Into<Arc<Surface>>,
+        execution: ClientExecutionLimits,
     ) -> Self {
         Self {
             service_id: service_id.into(),
             identity,
             surface: surface.into(),
+            execution,
         }
     }
 
@@ -140,6 +149,14 @@ impl DistributedClientSurfaceExport {
     pub(crate) fn from_selected(
         service_id: impl Into<String>,
         surface: impl Into<Arc<Surface>>,
+    ) -> Result<Self, ClientManifestError> {
+        Self::from_selected_with_execution(service_id, surface, ClientExecutionLimits::default())
+    }
+
+    pub(crate) fn from_selected_with_execution(
+        service_id: impl Into<String>,
+        surface: impl Into<Arc<Surface>>,
+        execution: ClientExecutionLimits,
     ) -> Result<Self, ClientManifestError> {
         let surface = surface.into();
         let service_id = service_id.into();
@@ -156,7 +173,7 @@ impl DistributedClientSurfaceExport {
             }
         };
         validate_service_provenance(&service_id, &surface)?;
-        Ok(Self::new(service_id, identity, surface))
+        Ok(Self::new(service_id, identity, surface, execution))
     }
 
     /// Build a portable export whose service identity comes from the same
@@ -197,7 +214,12 @@ impl DistributedClientSurfaceExport {
     }
 
     pub fn manifest(&self) -> Result<DistributedClientManifest, ClientManifestError> {
-        client_manifest_from_surface(&self.service_id, self.identity.clone(), &self.surface)
+        client_manifest_from_surface_with_execution(
+            &self.service_id,
+            self.identity.clone(),
+            &self.surface,
+            self.execution.clone(),
+        )
     }
 
     pub fn service_id(&self) -> &str {
@@ -248,6 +270,7 @@ pub struct DistributedClientManifest {
     pub surface: ClientSurfaceIdentity,
     pub schema_fingerprint: String,
     pub protocol_fingerprint: String,
+    pub execution: ClientExecutionLimits,
     pub capabilities: ClientCapabilities,
     pub scalar_codecs: Vec<ScalarCodec>,
     pub models: Vec<ClientModel>,
@@ -255,6 +278,72 @@ pub struct DistributedClientManifest {
     pub commands: Vec<ClientCommand>,
     pub protocol_operations: ClientProtocolOperations,
     pub projectors: Vec<ClientProjector>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientExecutionLimits {
+    pub max_depth: u64,
+    pub max_complexity: u64,
+    pub complexity: ClientComplexityWeights,
+}
+
+impl Default for ClientExecutionLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: DEFAULT_MAX_DEPTH as u64,
+            max_complexity: DEFAULT_MAX_COMPLEXITY as u64,
+            complexity: ClientComplexityWeights::current(),
+        }
+    }
+}
+
+impl ClientExecutionLimits {
+    pub(crate) fn from_runtime(
+        max_depth: usize,
+        max_complexity: usize,
+    ) -> Result<Self, ClientManifestError> {
+        Ok(Self {
+            max_depth: u64::try_from(max_depth).map_err(|_| {
+                ClientManifestError("GraphQL max_depth exceeds the client manifest range".into())
+            })?,
+            max_complexity: u64::try_from(max_complexity).map_err(|_| {
+                ClientManifestError(
+                    "GraphQL max_complexity exceeds the client manifest range".into(),
+                )
+            })?,
+            complexity: ClientComplexityWeights::current(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientComplexityWeights {
+    pub version: u32,
+    pub scalar: u64,
+    pub belongs_to: u64,
+    pub has_many: u64,
+    pub m2m: u64,
+    pub aggregate: u64,
+    pub list_root: u64,
+    pub by_pk: u64,
+    pub list_fanout: u64,
+}
+
+impl ClientComplexityWeights {
+    fn current() -> Self {
+        let weights = default_weights();
+        Self {
+            version: QUERY_COMPLEXITY_VERSION,
+            scalar: weights.scalar as u64,
+            belongs_to: weights.belongs_to as u64,
+            has_many: weights.has_many as u64,
+            m2m: weights.m2m as u64,
+            aggregate: weights.aggregate as u64,
+            list_root: weights.list_root as u64,
+            by_pk: weights.by_pk as u64,
+            list_fanout: weights.list_fanout as u64,
+        }
+    }
 }
 
 /// Framework-owned operations generated alongside application operations.
@@ -494,6 +583,14 @@ pub struct ClientAggregateSemantics {
     pub wrapper_typename: String,
     /// Exact GraphQL object returned by the wrapper's `aggregate` field.
     pub fields_typename: String,
+    /// Authoritative bounded-window semantics for the wrapper's `nodes` field.
+    ///
+    /// Aggregate roots do not expose the ordinary list root's pagination
+    /// metadata, and relationship aggregates are distinct fields from their
+    /// sibling list relationships. Carrying this plan on the aggregate itself
+    /// prevents clients from treating an omitted/default-limited `nodes`
+    /// selection as a complete model collection.
+    pub nodes_pagination: ClientPaginationSemantics,
     pub count: bool,
     pub nodes: bool,
     pub sum: Vec<String>,
@@ -903,6 +1000,20 @@ pub(crate) fn client_manifest_from_surface(
     identity: ClientSurfaceIdentity,
     surface: &Surface,
 ) -> Result<DistributedClientManifest, ClientManifestError> {
+    client_manifest_from_surface_with_execution(
+        service_id,
+        identity,
+        surface,
+        ClientExecutionLimits::default(),
+    )
+}
+
+fn client_manifest_from_surface_with_execution(
+    service_id: &str,
+    identity: ClientSurfaceIdentity,
+    surface: &Surface,
+    execution: ClientExecutionLimits,
+) -> Result<DistributedClientManifest, ClientManifestError> {
     if service_id.trim().is_empty() {
         return Err(ClientManifestError("service_id must not be empty".into()));
     }
@@ -1081,7 +1192,11 @@ pub(crate) fn client_manifest_from_surface(
                     ClientRelationshipAggregate {
                         name: aggregate.name.clone(),
                         arguments: aggregate.arguments.iter().map(argument_manifest).collect(),
-                        semantics: aggregate_semantics(target, aggregate.type_name.clone()),
+                        semantics: aggregate_semantics(
+                            target,
+                            aggregate.type_name.clone(),
+                            pagination_semantics(surface, target),
+                        ),
                         dependencies: sorted_unique(aggregate.dependencies.clone()),
                     }
                 }),
@@ -1141,8 +1256,13 @@ pub(crate) fn client_manifest_from_surface(
                         max_limit,
                         coverage: "window".into(),
                     });
-            let aggregate = matches!(root.kind, RootKind::Aggregate)
-                .then(|| aggregate_semantics(model, aggregate_type_name(&model.schema)));
+            let aggregate = matches!(root.kind, RootKind::Aggregate).then(|| {
+                aggregate_semantics(
+                    model,
+                    aggregate_type_name(&model.schema),
+                    pagination_semantics(surface, model),
+                )
+            });
             roots.push(ClientRoot {
                 id: format!(
                     "{}:{}",
@@ -1337,6 +1457,7 @@ pub(crate) fn client_manifest_from_surface(
         protocol_version: u32,
         service_id: &'a str,
         surface: &'a ClientSurfaceIdentity,
+        execution: &'a ClientExecutionLimits,
         capabilities: &'a ClientCapabilities,
         scalar_codecs: &'a [ScalarCodec],
         models: &'a [ClientModel],
@@ -1350,6 +1471,7 @@ pub(crate) fn client_manifest_from_surface(
         protocol_version: DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
         service_id,
         surface: &identity,
+        execution: &execution,
         capabilities: &capabilities,
         scalar_codecs: &scalar_codecs,
         models: &models,
@@ -1366,6 +1488,7 @@ pub(crate) fn client_manifest_from_surface(
         surface: identity,
         schema_fingerprint,
         protocol_fingerprint,
+        execution,
         capabilities,
         scalar_codecs,
         models,
@@ -1599,10 +1722,12 @@ fn pagination_semantics(
 fn aggregate_semantics(
     model: &super::surface::SurfaceModel,
     wrapper_typename: String,
+    nodes_pagination: ClientPaginationSemantics,
 ) -> ClientAggregateSemantics {
     ClientAggregateSemantics {
         wrapper_typename,
         fields_typename: aggregate_fields_type_name(&model.schema),
+        nodes_pagination,
         count: true,
         nodes: true,
         sum: Vec::new(),
@@ -1777,7 +1902,7 @@ fn protocol_fingerprint() -> Result<String, ClientManifestError> {
         scalar_codecs: Vec<ScalarCodec>,
     }
     hash_json(&ProtocolMaterial {
-        manifest_version: DISTRIBUTED_CLIENT_MANIFEST_VERSION,
+        manifest_version: DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH,
         protocol_version: DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
         key_encoding: KEY_ENCODING,
         command_extension_slots_version: COMMAND_EXTENSION_SLOTS_VERSION,
@@ -2349,11 +2474,11 @@ mod tests {
         let first = export.manifest().unwrap();
         let second = export.manifest().unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.manifest_version, 4);
+        assert_eq!(first.manifest_version, 5);
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:7e34e590b7063566d0595d1df9238ec71637f40f4143a65b0b7c2b95000835d2"
+            "sha256:10d8b7ab693f1d78d01d25c78e1dd0c042ff8e026654c0a617aa7ea74b6cd158"
         );
         assert_eq!(
             first.protocol_fingerprint,
@@ -2927,6 +3052,93 @@ mod tests {
         let application_json = serde_json::to_string(&application_manifest).unwrap();
         assert!(!application_json.contains("project_user_team"));
         assert!(!application_json.contains("private-user.changed"));
+    }
+
+    #[test]
+    fn aggregate_nodes_export_exact_role_bounded_window_semantics() {
+        let mut options = SurfaceOptions::sqlite();
+        options.default_limit = 7;
+        options.max_limit = 19;
+        let full = build_surface(&[teams(), users(), team_members()], &options).unwrap();
+        let selected = surface_for_role(
+            &full,
+            "admin",
+            &BTreeMap::from([
+                ("TeamView".into(), RoleGrant::all_columns()),
+                (
+                    "UserView".into(),
+                    RoleGrant::all_columns().with_aggregations().limit(13),
+                ),
+            ]),
+        )
+        .unwrap();
+        let manifest = client_manifest_from_surface(
+            "teams-service",
+            ClientSurfaceIdentity::role("admin"),
+            &selected,
+        )
+        .unwrap();
+
+        let users_aggregate = manifest
+            .roots
+            .iter()
+            .find(|root| {
+                root.operation == ClientRootOperation::Query && root.name == "users_aggregate"
+            })
+            .expect("aggregate root grant");
+        assert!(
+            users_aggregate.pagination.is_none(),
+            "ordinary root pagination must not stand in for aggregate nodes"
+        );
+        let root_semantics = users_aggregate
+            .aggregate
+            .as_ref()
+            .expect("aggregate root semantics");
+        assert_eq!(root_semantics.wrapper_typename, "users_aggregate");
+        assert_eq!(root_semantics.fields_typename, "users_aggregate_fields");
+        assert_eq!(
+            root_semantics.nodes_pagination,
+            ClientPaginationSemantics {
+                kind: "offset".into(),
+                default_limit: 7,
+                max_limit: 13,
+                coverage: "window".into(),
+            }
+        );
+
+        let members_aggregate = manifest
+            .models
+            .iter()
+            .find(|model| model.id == "TeamView")
+            .unwrap()
+            .relationships
+            .iter()
+            .find(|relationship| relationship.name == "members")
+            .unwrap()
+            .aggregate
+            .as_ref()
+            .expect("relationship aggregate grant");
+        assert_eq!(
+            members_aggregate.semantics.wrapper_typename,
+            "users_aggregate"
+        );
+        assert_eq!(
+            members_aggregate.semantics.fields_typename,
+            "users_aggregate_fields"
+        );
+        assert_eq!(
+            members_aggregate.semantics.nodes_pagination,
+            root_semantics.nodes_pagination
+        );
+        assert_eq!(
+            serde_json::to_value(&members_aggregate.semantics).unwrap()["nodes_pagination"],
+            serde_json::json!({
+                "kind": "offset",
+                "default_limit": 7,
+                "max_limit": 13,
+                "coverage": "window"
+            })
+        );
     }
 
     #[test]

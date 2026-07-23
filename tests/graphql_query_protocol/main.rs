@@ -6,7 +6,9 @@ use std::time::Duration;
 use async_graphql::Request;
 use base64::Engine as _;
 use distributed::bus::{Bus, InMemoryBus, Message, MessageKind, RunOptions};
-use distributed::graphql::{col, read, GraphqlEngine, ModelPermissions, SurfaceProjector};
+use distributed::graphql::{
+    col, read, GraphqlEngine, ModelNormalization, ModelPermissions, SurfaceProjector,
+};
 use distributed::microsvc::{
     CausalProjectorContext, HandlerError, Routes, Service, Session, ROLE_KEY,
 };
@@ -33,6 +35,10 @@ subscription WatchFilteredRows {
   causal_query_views(where: { title: { _eq: "causal row" } }) { title }
 }
 "#;
+const EMBEDDED_SERVICE_ID: &str = "embedded-query-protocol-fixture";
+const EMBEDDED_FACT_NAME: &str = "query_protocol.embedded_item_changed";
+const EMBEDDED_PROJECTOR_NAME: &str = "project_embedded_query_protocol_items";
+const EMBEDDED_CHANGE_EPOCH: &str = "embedded-query-protocol-items-v1";
 
 #[derive(Clone, Debug, Deserialize)]
 struct ItemChanged {
@@ -58,11 +64,32 @@ struct LegacyQueryView {
     title: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct EmbeddedItemChanged {
+    key: i64,
+    title: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
+#[readmodel(table = "embedded_query_views", primary_key = ["key"])]
+struct EmbeddedQueryView {
+    id: String,
+    key: i64,
+    title: String,
+}
+
 fn projector() -> SurfaceProjector {
     SurfaceProjector::new(PROJECTOR_NAME)
         .facts([FACT_NAME])
         .models(["CausalQueryView"])
         .change_epoch(CHANGE_EPOCH)
+}
+
+fn embedded_projector() -> SurfaceProjector {
+    SurfaceProjector::new(EMBEDDED_PROJECTOR_NAME)
+        .facts([EMBEDDED_FACT_NAME])
+        .models(["EmbeddedQueryView"])
+        .change_epoch(EMBEDDED_CHANGE_EPOCH)
 }
 
 fn user_session() -> Session {
@@ -110,6 +137,30 @@ fn projection_service(repository: &SqliteRepository, bus: &InMemoryBus) -> Servi
         );
     Service::new()
         .named(SERVICE_ID)
+        .routes(routes)
+        .with_bus(bus.clone())
+}
+
+fn embedded_projection_service(repository: &SqliteRepository, bus: &InMemoryBus) -> Service {
+    let declaration = embedded_projector();
+    let routes = Routes::new()
+        .with_read_model_store(repository.clone())
+        .causal_projector::<EmbeddedItemChanged>(declaration)
+        .model::<EmbeddedQueryView>()
+        .handle(
+            |context: CausalProjectorContext, fact: EmbeddedItemChanged| async move {
+                context
+                    .project(&EmbeddedQueryView {
+                        id: format!("embedded-{}", fact.key),
+                        key: fact.key,
+                        title: fact.title,
+                    })
+                    .await?;
+                Ok::<(), HandlerError>(())
+            },
+        );
+    Service::new()
+        .named(EMBEDDED_SERVICE_ID)
         .routes(routes)
         .with_bus(bus.clone())
 }
@@ -250,7 +301,9 @@ async fn protocol_fixture_with_retention(retention: u64) -> ProtocolFixture {
         .service_id(SERVICE_ID)
         .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .roles(&["user"])
-        .model::<CausalQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+        .model::<CausalQueryView>(
+            ModelPermissions::new().grant("user", read().all_columns().aggregations()),
+        )
         .model::<LegacyQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
         .client_projectors([declaration])
         .change_stream(repository.read_model_changes())
@@ -448,6 +501,177 @@ async fn projected_query_emits_exact_record_and_index_revisions_without_key_leak
             "purpose-separated protocol tokens must not alias: {tokens:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn count_only_aggregate_emits_no_unselected_node_record_evidence() {
+    let engine = protocol_engine_with_rows().await;
+    let response = wire_response(
+        engine
+            .execute(
+                &user_session(),
+                Request::new(
+                    "query CountOnly {
+                        stats: causal_query_views_aggregate {
+                            __typename
+                            totals: aggregate {
+                                __typename
+                                total: count
+                            }
+                        }
+                    }",
+                ),
+            )
+            .await,
+    );
+
+    assert_eq!(
+        response["data"],
+        json!({
+            "stats": {
+                "__typename": "causal_query_views_aggregate",
+                "totals": {
+                    "__typename": "causal_query_views_aggregate_fields",
+                    "total": 1
+                }
+            }
+        }),
+        "{response}"
+    );
+    let snapshot = &distributed_envelope(&response)["snapshot"];
+    assert_eq!(snapshot["complete"], true, "{snapshot}");
+    assert_eq!(snapshot["records"], json!([]), "{snapshot}");
+    assert_eq!(snapshot["indexes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["indexes"][0]["projection"], PROJECTOR_NAME);
+}
+
+#[tokio::test]
+async fn aggregate_node_aliases_drive_data_and_exact_record_paths() {
+    let engine = protocol_engine_with_rows().await;
+    let response = wire_response(
+        engine
+            .execute(
+                &user_session(),
+                Request::new(
+                    "query AliasedAggregateNodes {
+                        stats: causal_query_views_aggregate {
+                            firstTotals: aggregate { firstCount: count }
+                            secondTotals: aggregate { secondCount: count }
+                            rowsAlias: nodes { heading: title }
+                            otherRowsAlias: nodes { alternateHeading: title }
+                        }
+                    }",
+                ),
+            )
+            .await,
+    );
+
+    assert_eq!(
+        response["data"],
+        json!({
+            "stats": {
+                "firstTotals": { "firstCount": 1 },
+                "secondTotals": { "secondCount": 1 },
+                "rowsAlias": [{ "heading": "causal row" }],
+                "otherRowsAlias": [{ "alternateHeading": "causal row" }]
+            }
+        }),
+        "{response}"
+    );
+    let snapshot = &distributed_envelope(&response)["snapshot"];
+    let records = snapshot["records"].as_array().expect("record revisions");
+    assert_eq!(records.len(), 2, "{snapshot}");
+    assert_eq!(records[0]["path"], json!(["stats", "rowsAlias", "0"]));
+    assert_eq!(records[0]["model"], "CausalQueryView");
+    assert_eq!(records[1]["path"], json!(["stats", "otherRowsAlias", "0"]));
+    assert_eq!(records[1]["model"], "CausalQueryView");
+}
+
+#[tokio::test]
+async fn embedded_models_emit_index_evidence_without_record_evidence() {
+    let repository = SqliteRepository::connect_and_migrate("sqlite::memory:")
+        .await
+        .expect("migrated embedded SQLite repository");
+    let manifest =
+        DistributedProjectManifest::new(EMBEDDED_SERVICE_ID).read_model::<EmbeddedQueryView>();
+    repository
+        .bootstrap_table_schema_for_dev(
+            &manifest
+                .table_registry()
+                .expect("embedded query protocol table registry"),
+        )
+        .await
+        .expect("embedded query protocol read-model table");
+
+    let bus = InMemoryBus::new();
+    bus.publish_message(
+        Message::new(
+            EMBEDDED_FACT_NAME,
+            MessageKind::Event,
+            serde_json::to_vec(&json!({
+                "key": 42,
+                "title": "embedded row"
+            }))
+            .expect("embedded fixture fact"),
+        )
+        .with_id("embedded-query-protocol-fact-1")
+        .with_metadata(
+            distributed::trace_context::CAUSATION_ID,
+            "embedded-query-protocol-command-1",
+        ),
+    )
+    .await
+    .expect("publish embedded query protocol fact");
+    embedded_projection_service(&repository, &bus)
+        .run(RunOptions::idempotent())
+        .await
+        .expect("project embedded query protocol fact");
+
+    let engine = GraphqlEngine::builder(&repository)
+        .service_id(EMBEDDED_SERVICE_ID)
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
+        .roles(&["user"])
+        .model::<EmbeddedQueryView>(ModelPermissions::new().grant("user", read().all_columns()))
+        .client_projectors([embedded_projector()])
+        .change_stream(repository.read_model_changes())
+        .build()
+        .expect("embedded query protocol GraphQL engine");
+    let client_manifest = engine
+        .client_manifest_for_role("user")
+        .expect("embedded client manifest");
+    assert!(matches!(
+        &client_manifest.models[0].normalization,
+        ModelNormalization::Embedded
+    ));
+
+    let response = wire_response(
+        engine
+            .execute(
+                &user_session(),
+                Request::new(
+                    "query EmbeddedSnapshot {
+                        embeddedRows: embedded_query_views { heading: title }
+                    }",
+                ),
+            )
+            .await,
+    );
+    assert_eq!(
+        response["data"],
+        json!({ "embeddedRows": [{ "heading": "embedded row" }] }),
+        "{response}"
+    );
+    let serialized = response.to_string();
+    assert!(!serialized.contains(HIDDEN_ALIAS_PREFIX), "{response}");
+    let snapshot = &distributed_envelope(&response)["snapshot"];
+    assert_eq!(snapshot["complete"], true, "{snapshot}");
+    assert_eq!(snapshot["records"], json!([]), "{snapshot}");
+    assert_eq!(snapshot["indexes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        snapshot["indexes"][0]["projection"],
+        EMBEDDED_PROJECTOR_NAME
+    );
+    assert_eq!(snapshot["indexes"][0]["position"], "1");
 }
 
 #[tokio::test]

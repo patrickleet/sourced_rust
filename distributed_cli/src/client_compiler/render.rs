@@ -4,8 +4,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use super::graphql::{
-    typescript_scalar, typescript_type, Cardinality, CompiledArgument, CompiledMember,
-    CompiledOperation,
+    typescript_scalar, typescript_type, Cardinality, CompiledArgument, CompiledBranch,
+    CompiledBranchSemantic, CompiledMember, CompiledObject, CompiledOperation, CompiledStorage,
 };
 use super::manifest::ClientManifest;
 use super::{
@@ -43,6 +43,7 @@ struct ArtifactRoot<'a> {
     response_key: &'a str,
     field: &'a str,
     cardinality: &'static str,
+    nullable: bool,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     arguments: BTreeMap<&'a str, ArtifactArgument<'a>>,
     dependencies: &'a [String],
@@ -65,29 +66,58 @@ struct ArtifactCoverage<'a> {
     offset_argument: Option<&'a str>,
     #[serde(rename = "limitArgument", skip_serializing_if = "Option::is_none")]
     limit_argument: Option<&'a str>,
+    #[serde(rename = "defaultLimit", skip_serializing_if = "Option::is_none")]
+    default_limit: Option<u64>,
+    #[serde(rename = "maxLimit", skip_serializing_if = "Option::is_none")]
+    max_limit: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct ArtifactSelection<'a> {
-    model: ArtifactModel<'a>,
-    fields: Vec<ArtifactScalar<'a>>,
+    typename: &'a str,
+    storage: ArtifactStorage<'a>,
+    members: Vec<ArtifactMember<'a>>,
 }
 
 #[derive(Serialize)]
-struct ArtifactModel<'a> {
-    id: &'a str,
-    #[serde(rename = "identityFields")]
-    identity_fields: &'a [String],
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ArtifactStorage<'a> {
+    Normalized {
+        model: &'a str,
+        #[serde(rename = "identityFields")]
+        identity_fields: &'a [String],
+    },
+    Embedded,
 }
 
 #[derive(Serialize)]
-struct ArtifactScalar<'a> {
-    kind: &'static str,
-    #[serde(rename = "responseKey")]
-    response_key: &'a str,
-    field: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expose: Option<bool>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ArtifactMember<'a> {
+    Scalar {
+        #[serde(rename = "responseKey")]
+        response_key: &'a str,
+        field: &'a str,
+        codec: &'a str,
+        nullable: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expose: Option<bool>,
+    },
+    Branch {
+        semantic: CompiledBranchSemantic,
+        #[serde(rename = "responseKey")]
+        response_key: &'a str,
+        field: &'a str,
+        cardinality: &'static str,
+        nullable: bool,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        arguments: BTreeMap<&'a str, ArtifactArgument<'a>>,
+        dependencies: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        coverage: Option<ArtifactCoverage<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        maintenance: Option<&'a str>,
+        selection: Box<ArtifactSelection<'a>>,
+    },
 }
 
 pub(crate) fn render_project(
@@ -210,6 +240,7 @@ fn artifact_root(operation: &CompiledOperation) -> ArtifactRoot<'_> {
             Cardinality::One => "one",
             Cardinality::Many => "many",
         },
+        nullable: root.nullable,
         arguments: root
             .arguments
             .iter()
@@ -230,26 +261,78 @@ fn artifact_root(operation: &CompiledOperation) -> ArtifactRoot<'_> {
             kind: &coverage.kind,
             offset_argument: coverage.offset_argument.as_deref(),
             limit_argument: coverage.limit_argument.as_deref(),
+            default_limit: coverage.default_limit,
+            max_limit: coverage.max_limit,
         }),
-        selection: ArtifactSelection {
-            model: ArtifactModel {
-                id: &root.selection.model_id,
-                identity_fields: &root.selection.identity_fields,
+        selection: artifact_selection(&root.selection),
+    }
+}
+
+fn artifact_selection(selection: &CompiledObject) -> ArtifactSelection<'_> {
+    ArtifactSelection {
+        typename: &selection.typename,
+        storage: match &selection.storage {
+            CompiledStorage::Normalized {
+                model_id,
+                identity_fields,
+            } => ArtifactStorage::Normalized {
+                model: model_id,
+                identity_fields,
             },
-            fields: root
-                .selection
-                .members
-                .iter()
-                .map(|member| match member {
-                    CompiledMember::Scalar(scalar) => ArtifactScalar {
-                        kind: "scalar",
-                        response_key: &scalar.response_key,
-                        field: &scalar.field,
-                        expose: (!scalar.expose).then_some(false),
-                    },
-                })
-                .collect(),
+            CompiledStorage::Embedded => ArtifactStorage::Embedded,
         },
+        members: selection
+            .members
+            .iter()
+            .map(|member| match member {
+                CompiledMember::Scalar(scalar) => ArtifactMember::Scalar {
+                    response_key: &scalar.response_key,
+                    field: &scalar.field,
+                    codec: &scalar.codec,
+                    nullable: scalar.nullable,
+                    expose: (!scalar.expose).then_some(false),
+                },
+                CompiledMember::Branch(branch) => artifact_branch(branch),
+            })
+            .collect(),
+    }
+}
+
+fn artifact_branch(branch: &CompiledBranch) -> ArtifactMember<'_> {
+    ArtifactMember::Branch {
+        semantic: branch.semantic,
+        response_key: &branch.response_key,
+        field: &branch.field,
+        cardinality: match branch.cardinality {
+            Cardinality::One => "one",
+            Cardinality::Many => "many",
+        },
+        nullable: branch.nullable,
+        arguments: branch
+            .arguments
+            .iter()
+            .map(|(name, argument)| {
+                (
+                    name.as_str(),
+                    match argument {
+                        CompiledArgument::Literal { value, .. } => {
+                            ArtifactArgument::Literal { value }
+                        }
+                        CompiledArgument::Variable(name) => ArtifactArgument::Variable { name },
+                    },
+                )
+            })
+            .collect(),
+        dependencies: &branch.dependencies,
+        coverage: branch.coverage.as_ref().map(|coverage| ArtifactCoverage {
+            kind: &coverage.kind,
+            offset_argument: coverage.offset_argument.as_deref(),
+            limit_argument: coverage.limit_argument.as_deref(),
+            default_limit: coverage.default_limit,
+            max_limit: coverage.max_limit,
+        }),
+        maintenance: branch.maintenance.as_deref(),
+        selection: Box::new(artifact_selection(&branch.selection)),
     }
 }
 
@@ -276,26 +359,7 @@ fn render_data_type(
     name: &str,
 ) -> Result<String, ClientCompileError> {
     let root = &operation.root;
-    let mut entity = vec!["{".to_string()];
-    for field in root
-        .selection
-        .members
-        .iter()
-        .map(|member| match member {
-            CompiledMember::Scalar(scalar) => scalar,
-        })
-        .filter(|field| field.expose)
-    {
-        let scalar = typescript_scalar(field)?;
-        entity.push(format!(
-            "    readonly {}: {}{};",
-            quoted_property(&field.response_key),
-            scalar,
-            if field.nullable { " | null" } else { "" }
-        ));
-    }
-    entity.push("  }".into());
-    let entity = entity.join("\n");
+    let entity = render_object_type(&root.selection, 2)?;
     let value = match root.cardinality {
         Cardinality::Many => format!("readonly {entity}[]"),
         Cardinality::One => {
@@ -311,6 +375,43 @@ fn render_data_type(
         quoted_property(&root.response_key),
         value
     ))
+}
+
+fn render_object_type(
+    object: &CompiledObject,
+    indent: usize,
+) -> Result<String, ClientCompileError> {
+    let member_padding = " ".repeat(indent + 2);
+    let closing_padding = " ".repeat(indent);
+    let mut lines = vec!["{".to_string()];
+    for member in &object.members {
+        match member {
+            CompiledMember::Scalar(field) if field.expose => {
+                let scalar = typescript_scalar(field)?;
+                lines.push(format!(
+                    "{member_padding}readonly {}: {}{};",
+                    quoted_property(&field.response_key),
+                    scalar,
+                    if field.nullable { " | null" } else { "" }
+                ));
+            }
+            CompiledMember::Scalar(_) => {}
+            CompiledMember::Branch(branch) => {
+                let object = render_object_type(&branch.selection, indent + 2)?;
+                let value = match branch.cardinality {
+                    Cardinality::Many => format!("readonly {object}[]"),
+                    Cardinality::One if branch.nullable => format!("{object} | null"),
+                    Cardinality::One => object,
+                };
+                lines.push(format!(
+                    "{member_padding}readonly {}: {value};",
+                    quoted_property(&branch.response_key)
+                ));
+            }
+        }
+    }
+    lines.push(format!("{closing_padding}}}"));
+    Ok(lines.join("\n"))
 }
 
 fn render_commands(manifest: &ClientManifest) -> Result<String, ClientCompileError> {
@@ -382,7 +483,7 @@ fn render_compiler_manifest(
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
         compiler_manifest_version: 1,
-        distributed_manifest_version: 4,
+        distributed_manifest_version: 5,
         protocol_version: 2,
         service_id: &manifest.service_id,
         surface: &manifest.surface,
