@@ -109,6 +109,7 @@ import { cacheKey } from '@hops-ops/distributed/cache';
 import type { CommandClient } from '@hops-ops/distributed/commands';
 import {
   createDistributedReplica,
+  type ReplicaObjectSelection,
   type ReplicaOperationArtifact,
   type ReplicaSnapshot,
   type ReplicaSparse
@@ -127,6 +128,14 @@ type Session = { accessToken?: string | null; user?: { id?: string | null } | nu
 type LoadEvent = ServerLoadEventLike<{ session: Session | null }>;
 type TodosResult = { todos: Array<{ id: string; title: string }> };
 type TodosVariables = { limit: number };
+const todoSelection = {
+  typename: 'Todo',
+  storage: { kind: 'normalized', model: 'Todo', identityFields: ['id'] },
+  members: [
+    { kind: 'scalar', responseKey: 'id', field: 'id', codec: 'string', nullable: false },
+    { kind: 'scalar', responseKey: 'title', field: 'title', codec: 'string', nullable: false }
+  ]
+} as const satisfies ReplicaObjectSelection;
 const generatedOperation: ReplicaOperationArtifact<TodosResult, TodosVariables> = {
   id: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
   document: 'query Todos($limit: Int!) { todos(limit: $limit) { id title } }',
@@ -134,18 +143,13 @@ const generatedOperation: ReplicaOperationArtifact<TodosResult, TodosVariables> 
     responseKey: 'todos',
     field: 'todos',
     cardinality: 'many',
+    nullable: false,
     arguments: { limit: { kind: 'variable', name: 'limit' } },
     dependencies: ['todos'],
-    selection: {
-      model: { id: 'Todo', identityFields: ['id'] },
-      fields: [
-        { kind: 'scalar', responseKey: 'id', field: 'id' },
-        { kind: 'scalar', responseKey: 'title', field: 'title' }
-      ]
-    }
+    selection: todoSelection
   }]
 };
-generatedOperation.roots[0]?.selection.fields.map((field) => field.field);
+todoSelection.members.map((member) => member.field);
 declare const replicaSnapshot: ReplicaSnapshot<TodosResult>;
 const sparseTodos: ReplicaSparse<TodosResult> = {};
 if (replicaSnapshot.complete) {

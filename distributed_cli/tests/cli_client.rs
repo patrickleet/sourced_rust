@@ -1,5 +1,5 @@
 //! Integration tests for `dctl client`: drive the real binary against a small
-//! manifest-v4 project and verify generation, read-only drift checking,
+//! manifest-v5 project and verify generation, read-only drift checking,
 //! authorization-surface selection, document discovery, and explicit `@load`
 //! route registration.
 
@@ -9,15 +9,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const ROLE_MANIFEST: &str = r#"{
-  "manifest_version": 4,
+  "manifest_version": 5,
   "protocol_version": 2,
   "service_id": "todos",
   "surface": {
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:759a74221b0e995a648ac10c6bb73fb75d66a345adee8ec06101535f32052e79",
+  "schema_fingerprint": "sha256:13d6089128ffb0749a4b3c6956f343d35d72ba638a73c25b3c553aa15223e57e",
   "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
+  "execution": {
+    "max_depth": 8,
+    "max_complexity": 500,
+    "complexity": {
+      "version": 1,
+      "scalar": 1,
+      "belongs_to": 2,
+      "has_many": 10,
+      "m2m": 12,
+      "aggregate": 8,
+      "list_root": 3,
+      "by_pk": 1,
+      "list_fanout": 5
+    }
+  },
   "capabilities": {
     "live_queries": false,
     "record_revisions": false,

@@ -61,6 +61,8 @@ export type ReplicaCoverageArtifact =
 			readonly kind: 'offset';
 			readonly offsetArgument?: string;
 			readonly limitArgument?: string;
+			readonly defaultLimit?: number;
+			readonly maxLimit?: number;
 	  }
 	| {
 			readonly kind: 'cursor';
@@ -76,9 +78,49 @@ export type ReplicaScalarSelection = {
 	readonly responseKey: string;
 	/** Canonical schema/read-model field name. */
 	readonly field: string;
+	/** Exact scalar codec and nullability emitted by compiler manifest v5. */
+	readonly codec?: string;
+	readonly nullable?: boolean;
 	/** Wire-only identity/revision fields set this false. Defaults to true. */
 	readonly expose?: boolean;
 };
+
+export type ReplicaSelectionStorage =
+	| {
+			readonly kind: 'normalized';
+			readonly model: string;
+			readonly identityFields: readonly string[];
+	  }
+	| { readonly kind: 'embedded' };
+
+export type ReplicaBranchSemantic =
+	| 'relationship'
+	| 'aggregate'
+	| 'aggregate_fields'
+	| 'aggregate_nodes';
+
+/** Recursive compiler-owned object algebra used by manifest v5 artifacts. */
+export type ReplicaObjectSelection = {
+	readonly typename: string;
+	readonly storage: ReplicaSelectionStorage;
+	readonly members: readonly ReplicaObjectMember[];
+};
+
+export type ReplicaObjectBranch = {
+	readonly kind: 'branch';
+	readonly semantic: ReplicaBranchSemantic;
+	readonly responseKey: string;
+	readonly field: string;
+	readonly cardinality: 'one' | 'many';
+	readonly nullable: boolean;
+	readonly arguments?: ReplicaArgumentsArtifact;
+	readonly dependencies: readonly string[];
+	readonly coverage?: ReplicaCoverageArtifact;
+	readonly maintenance?: 'local' | 'revalidate';
+	readonly selection: ReplicaObjectSelection;
+};
+
+export type ReplicaObjectMember = ReplicaScalarSelection | ReplicaObjectBranch;
 
 export type ReplicaEntitySelection = {
 	readonly model: ReplicaModelArtifact;
@@ -106,10 +148,11 @@ export type ReplicaRootSelection = {
 	readonly responseKey: string;
 	readonly field: string;
 	readonly cardinality: 'one' | 'many';
+	readonly nullable?: boolean;
 	readonly arguments?: ReplicaArgumentsArtifact;
 	readonly dependencies: readonly string[];
 	readonly coverage?: ReplicaCoverageArtifact;
-	readonly selection: ReplicaEntitySelection;
+	readonly selection: ReplicaEntitySelection | ReplicaObjectSelection;
 	readonly expose?: boolean;
 };
 

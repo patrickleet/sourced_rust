@@ -184,6 +184,212 @@ const BoardRowOnly = Object.freeze({
 	])
 });
 
+const v5UserSelection = Object.freeze({
+	typename: 'user',
+	storage: Object.freeze({
+		kind: 'normalized',
+		model: 'user-view',
+		identityFields: Object.freeze(['id'])
+	}),
+	members: Object.freeze([
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'id',
+			field: 'id',
+			codec: 'ID',
+			nullable: false
+		}),
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'name',
+			field: 'name',
+			codec: 'String',
+			nullable: false
+		})
+	])
+});
+
+const v5TodoSelection = Object.freeze({
+	typename: 'todo',
+	storage: Object.freeze({
+		kind: 'normalized',
+		model: 'todo-view',
+		identityFields: Object.freeze(['id'])
+	}),
+	members: Object.freeze([
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'id',
+			field: 'id',
+			codec: 'ID',
+			nullable: false
+		}),
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'title',
+			field: 'title',
+			codec: 'String',
+			nullable: false
+		}),
+		Object.freeze({
+			kind: 'branch',
+			semantic: 'relationship',
+			responseKey: 'owner',
+			field: 'owner',
+			cardinality: 'one',
+			nullable: false,
+			dependencies: Object.freeze(['users']),
+			selection: v5UserSelection
+		})
+	])
+});
+
+const V5RecursiveTodos = Object.freeze({
+	id: 'V5RecursiveTodos.v5',
+	document: 'query V5RecursiveTodos { todos { id title owner { id name } } }',
+	roots: Object.freeze([
+		Object.freeze({
+			responseKey: 'todos',
+			field: 'todos',
+			cardinality: 'many',
+			nullable: false,
+			dependencies: Object.freeze(['todos']),
+			selection: v5TodoSelection
+		})
+	])
+});
+
+const v5DetailsSelection = Object.freeze({
+	typename: 'article_details',
+	storage: Object.freeze({ kind: 'embedded' }),
+	members: Object.freeze([
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'note',
+			field: 'note',
+			codec: 'String',
+			nullable: false
+		}),
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'tag',
+			field: 'tag',
+			codec: 'String',
+			nullable: true
+		})
+	])
+});
+
+const V5EmbeddedArticles = Object.freeze({
+	id: 'V5EmbeddedArticles.v5',
+	document: 'query V5EmbeddedArticles { articles { id details { note tag } } }',
+	roots: Object.freeze([
+		Object.freeze({
+			responseKey: 'articles',
+			field: 'articles',
+			cardinality: 'many',
+			nullable: false,
+			dependencies: Object.freeze(['articles']),
+			selection: Object.freeze({
+				typename: 'article',
+				storage: Object.freeze({
+					kind: 'normalized',
+					model: 'article-view',
+					identityFields: Object.freeze(['id'])
+				}),
+				members: Object.freeze([
+					Object.freeze({
+						kind: 'scalar',
+						responseKey: 'id',
+						field: 'id',
+						codec: 'ID',
+						nullable: false
+					}),
+					Object.freeze({
+						kind: 'branch',
+						semantic: 'relationship',
+						responseKey: 'details',
+						field: 'details',
+						cardinality: 'one',
+						nullable: false,
+						dependencies: Object.freeze(['article_details']),
+						selection: v5DetailsSelection
+					})
+				])
+			})
+		})
+	])
+});
+
+const v5AggregateFieldsSelection = Object.freeze({
+	typename: 'todo_aggregate_fields',
+	storage: Object.freeze({ kind: 'embedded' }),
+	members: Object.freeze([
+		Object.freeze({
+			kind: 'scalar',
+			responseKey: 'total',
+			field: 'count',
+			codec: 'Int',
+			nullable: false
+		})
+	])
+});
+
+function v5AggregateArtifact(id, includeNodes) {
+	const members = [
+		Object.freeze({
+			kind: 'branch',
+			semantic: 'aggregate_fields',
+			responseKey: 'summary',
+			field: 'aggregate',
+			cardinality: 'one',
+			nullable: false,
+			dependencies: Object.freeze(['todos']),
+			selection: v5AggregateFieldsSelection
+		})
+	];
+	if (includeNodes) {
+		members.push(
+			Object.freeze({
+				kind: 'branch',
+				semantic: 'aggregate_nodes',
+				responseKey: 'items',
+				field: 'nodes',
+				cardinality: 'many',
+				nullable: false,
+				dependencies: Object.freeze(['todos']),
+				coverage: Object.freeze({
+					kind: 'offset',
+					defaultLimit: 25,
+					maxLimit: 100
+				}),
+				selection: v5TodoSelection
+			})
+		);
+	}
+	return Object.freeze({
+		id,
+		document: 'query V5Aggregate { stats: todos_aggregate { summary: aggregate { total: count } } }',
+		roots: Object.freeze([
+			Object.freeze({
+				responseKey: 'stats',
+				field: 'todos_aggregate',
+				cardinality: 'one',
+				nullable: false,
+				dependencies: Object.freeze(['todos']),
+				selection: Object.freeze({
+					typename: 'todo_aggregate',
+					storage: Object.freeze({ kind: 'embedded' }),
+					members: Object.freeze(members)
+				})
+			})
+		])
+	});
+}
+
+const V5CountOnly = v5AggregateArtifact('V5CountOnly.v5', false);
+const V5AggregateNodes = v5AggregateArtifact('V5AggregateNodes.v5', true);
+
 const vars = Object.freeze({ first: 20, commentFirst: 10 });
 
 function todo(id, title, options = {}) {
@@ -274,6 +480,299 @@ async function flushMicrotasks() {
 	await Promise.resolve();
 	await new Promise((resolve) => setImmediate(resolve));
 }
+
+test('v5 recursively normalizes and materializes normalized relationships', () => {
+	const replica = createDistributedReplica();
+	replica.writeResult(
+		V5RecursiveTodos,
+		{},
+		{
+			revision: 1,
+			data: {
+				todos: [
+					{
+						id: 'todo-1',
+						title: 'Recursive',
+						owner: { id: 'user-1', name: 'Ada' }
+					}
+				]
+			}
+		},
+		'network'
+	);
+
+	const snapshot = replica.read(V5RecursiveTodos, {});
+	assert.equal(snapshot.status, 'ready');
+	assert.deepEqual(snapshot.data, {
+		todos: [
+			{
+				id: 'todo-1',
+				title: 'Recursive',
+				owner: { id: 'user-1', name: 'Ada' }
+			}
+		]
+	});
+	const parent = replicaRecordKey(Todo, 'todo-1');
+	const owner = replica.inspectIndex({ parent, field: 'owner', arguments: {} });
+	assert.deepEqual(owner.records, [replicaRecordKey(User, 'user-1')]);
+	assert.equal(owner.complete, true);
+});
+
+test('v5 embedded objects are isolated by parent and replaced by snapshot incarnation', () => {
+	const replica = createDistributedReplica();
+	replica.writeResult(
+		V5EmbeddedArticles,
+		{},
+		{
+			revision: 1,
+			data: {
+				articles: [
+					{ id: 'article-1', details: { note: 'first', tag: 'one' } },
+					{ id: 'article-2', details: { note: 'second', tag: 'two' } }
+				]
+			}
+		},
+		'network'
+	);
+	assert.deepEqual(replica.read(V5EmbeddedArticles, {}).data, {
+		articles: [
+			{ id: 'article-1', details: { note: 'first', tag: 'one' } },
+			{ id: 'article-2', details: { note: 'second', tag: 'two' } }
+		]
+	});
+
+	replica.writeResult(
+		V5EmbeddedArticles,
+		{},
+		{
+			revision: 2,
+			data: {
+				articles: [{ id: 'article-1', details: { note: 'replacement' } }]
+			},
+			errors: [
+				{
+					message: 'tag unavailable',
+					path: ['articles', 0, 'details', 'tag']
+				}
+			]
+		},
+		'live'
+	);
+	const replacement = replica.read(V5EmbeddedArticles, {});
+	assert.equal(replacement.status, 'error');
+	assert.deepEqual(replacement.data.articles, [
+		{ id: 'article-1', details: { note: 'replacement' } }
+	]);
+	assert.equal(Object.hasOwn(replacement.data.articles[0].details, 'tag'), false);
+});
+
+test('v5 materializes a count-only aggregate without normalized record evidence', () => {
+	const replica = createDistributedReplica();
+	replica.writeResult(
+		V5CountOnly,
+		{},
+		{
+			revision: 1,
+			data: { stats: { summary: { total: 3 } } }
+		},
+		'network'
+	);
+
+	const snapshot = replica.read(V5CountOnly, {});
+	assert.equal(snapshot.status, 'ready');
+	assert.deepEqual(snapshot.data, { stats: { summary: { total: 3 } } });
+	assert.equal(replica.inspectIndex({ field: 'todos_aggregate', arguments: {} }).complete, true);
+});
+
+test('v5 aggregate nodes use manifest default and max window coverage', () => {
+	const replica = createDistributedReplica();
+	replica.writeResult(
+		V5AggregateNodes,
+		{},
+		{
+			revision: 1,
+			data: {
+				stats: {
+					summary: { total: 2 },
+					items: [
+						{
+							id: 'todo-1',
+							title: 'One',
+							owner: { id: 'user-1', name: 'Ada' }
+						},
+						{
+							id: 'todo-2',
+							title: 'Two',
+							owner: { id: 'user-2', name: 'Grace' }
+						}
+					]
+				}
+			}
+		},
+		'network'
+	);
+
+	const snapshot = replica.read(V5AggregateNodes, {});
+	assert.equal(snapshot.status, 'ready');
+	assert.deepEqual(
+		snapshot.data.stats.items.map((item) => item.title),
+		['One', 'Two']
+	);
+	const wrapper = replica.inspectIndex({
+		field: 'todos_aggregate',
+		arguments: {}
+	}).records[0];
+	const nodes = replica.inspectIndex({
+		parent: wrapper,
+		field: 'nodes',
+		arguments: {}
+	});
+	assert.deepEqual(nodes.coverage, {
+		kind: 'offset',
+		offset: 0,
+		limit: 25,
+		returned: 2
+	});
+});
+
+test('v5 rejects null at non-null roots, fields, and list items atomically', () => {
+	const cases = [
+		{
+			data: { todos: null },
+			message: /null for non-null field todos/
+		},
+		{
+			data: {
+				todos: [
+					{
+						id: 'todo-1',
+						title: null,
+						owner: { id: 'user-1', name: 'Ada' }
+					}
+				]
+			},
+			message: /null for non-null field todos.0.title/
+		},
+		{
+			data: { todos: [null] },
+			message: /null for non-null list item todos.0/
+		}
+	];
+	for (const [index, entry] of cases.entries()) {
+		const replica = createDistributedReplica();
+		assert.throws(
+			() =>
+				replica.writeResult(
+					V5RecursiveTodos,
+					{},
+					{ revision: index + 1, data: entry.data },
+					'network'
+				),
+			entry.message
+		);
+		assert.equal(replica.inspectIndex({ field: 'todos', arguments: {} }), undefined);
+	}
+});
+
+test('v5 treats GraphQL-attributed null propagation as partial evidence', () => {
+	const cases = [
+		{
+			data: { todos: null },
+			path: ['todos']
+		},
+		{
+			data: {
+				todos: [
+					{
+						id: 'todo-1',
+						title: null,
+						owner: { id: 'user-1', name: 'Ada' }
+					}
+				]
+			},
+			path: ['todos', 0, 'title']
+		},
+		{
+			data: { todos: [null] },
+			path: ['todos', 0]
+		}
+	];
+	for (const [index, entry] of cases.entries()) {
+		const replica = createDistributedReplica();
+		assert.doesNotThrow(() =>
+			replica.writeResult(
+				V5RecursiveTodos,
+				{},
+				{
+					revision: index + 1,
+					data: entry.data,
+					errors: [{ message: 'resolver failure', path: entry.path }]
+				},
+				'network'
+			)
+		);
+		const root = replica.inspectIndex({ field: 'todos', arguments: {} });
+		if (root !== undefined) assert.equal(root.complete, false);
+	}
+});
+
+test('v5 rejects conflicting scalar aliases before exposing either value', () => {
+	const artifact = Object.freeze({
+		...V5RecursiveTodos,
+		id: 'V5ConflictingAliases.v5',
+		roots: Object.freeze([
+			Object.freeze({
+				...V5RecursiveTodos.roots[0],
+				selection: Object.freeze({
+					typename: 'todo',
+					storage: Object.freeze({
+						kind: 'normalized',
+						model: 'todo-view',
+						identityFields: Object.freeze(['id'])
+					}),
+					members: Object.freeze([
+						Object.freeze({
+							kind: 'scalar',
+							responseKey: 'id',
+							field: 'id',
+							codec: 'ID',
+							nullable: false
+						}),
+						Object.freeze({
+							kind: 'scalar',
+							responseKey: 'left',
+							field: 'title',
+							codec: 'String',
+							nullable: false
+						}),
+						Object.freeze({
+							kind: 'scalar',
+							responseKey: 'right',
+							field: 'title',
+							codec: 'String',
+							nullable: false
+						})
+					])
+				})
+			})
+		])
+	});
+	const replica = createDistributedReplica();
+	assert.throws(
+		() =>
+			replica.writeResult(
+				artifact,
+				{},
+				{
+					revision: 1,
+					data: { todos: [{ id: 'todo-1', left: 'one', right: 'two' }] }
+				},
+				'network'
+			),
+		/aliases disagree/
+	);
+	assert.equal(replica.inspectRecord(Todo, 'todo-1'), undefined);
+});
 
 test('normalizes aliases and flattened fragments into sparse records and nested indexes', () => {
 	const replica = createDistributedReplica();

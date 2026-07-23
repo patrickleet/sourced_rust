@@ -76,11 +76,25 @@ export function coverageFromArtifact(
 	}
 	if (artifact.kind === 'offset') {
 		const offset = numericArgument(argumentsValue, artifact.offsetArgument) ?? 0;
-		const limit = numericArgument(argumentsValue, artifact.limitArgument);
+		const configuredDefault = coverageBound(artifact.defaultLimit, 'defaultLimit');
+		const configuredMax = coverageBound(artifact.maxLimit, 'maxLimit');
+		if (
+			configuredDefault !== undefined &&
+			configuredMax !== undefined &&
+			configuredDefault > configuredMax
+		) {
+			throw new TypeError('offset coverage defaultLimit must not exceed maxLimit');
+		}
+		const requested = numericArgument(argumentsValue, artifact.limitArgument);
+		const limit = requested ?? configuredDefault;
+		const effectiveLimit =
+			limit === undefined || configuredMax === undefined
+				? limit
+				: Math.min(limit, configuredMax);
 		return Object.freeze({
 			kind: 'offset' as const,
 			offset,
-			...(limit === undefined ? {} : { limit }),
+			...(effectiveLimit === undefined ? {} : { limit: effectiveLimit }),
 			returned
 		});
 	}
@@ -91,6 +105,14 @@ export function coverageFromArtifact(
 		...numericCoverageArgument(argumentsValue, artifact.firstArgument, 'first'),
 		...numericCoverageArgument(argumentsValue, artifact.lastArgument, 'last')
 	});
+}
+
+function coverageBound(value: number | undefined, field: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw new TypeError(`offset coverage ${field} must be a non-negative safe integer`);
+	}
+	return value;
 }
 
 export function cloneJsonObject(

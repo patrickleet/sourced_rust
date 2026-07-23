@@ -684,7 +684,7 @@ async fn scalar_matrix_matches_catalog_and_sdl_while_legacy_stays_server_only() 
             Request::new(
                 "mutation EchoScalarMatrix($input: ScalarMatrixInput!) {
                     echo_scalar_matrix(input: $input) {
-                        wireRequired
+                        renamedRequired: wireRequired
                         optional
                         requiredItems
                         optionalItems
@@ -703,6 +703,7 @@ async fn scalar_matrix_matches_catalog_and_sdl_while_legacy_stays_server_only() 
         response.errors
     );
     let data = serde_json::to_value(response.data).unwrap();
+    assert_eq!(data["echo_scalar_matrix"]["renamedRequired"], "required");
     assert_eq!(
         data["echo_scalar_matrix"]["nullableItems"],
         json!(["present", null])

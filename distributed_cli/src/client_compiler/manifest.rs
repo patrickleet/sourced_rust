@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use super::{ClientCompileError, ClientSurfaceSelector};
 
-const MANIFEST_VERSION: u64 = 4;
+const MANIFEST_VERSION: u64 = 5;
 const PROTOCOL_VERSION: u64 = 2;
 const PROTOCOL_FINGERPRINT: &str =
     "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc";
@@ -17,6 +17,7 @@ pub(crate) struct ClientManifest {
     pub(crate) surface: ManifestSurface,
     pub(crate) schema_fingerprint: String,
     pub(crate) protocol_fingerprint: String,
+    pub(crate) execution: ManifestExecutionLimits,
     pub(crate) capabilities: ManifestCapabilities,
     pub(crate) scalar_codecs: BTreeMap<String, String>,
     pub(crate) models: BTreeMap<String, ManifestModel>,
@@ -25,6 +26,28 @@ pub(crate) struct ClientManifest {
     pub(crate) commands_requiring_revalidation: BTreeSet<String>,
     pub(crate) protocol_operations: ManifestProtocolOperations,
     pub(crate) projectors: Vec<ManifestProjector>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestExecutionLimits {
+    pub(crate) max_depth: u64,
+    pub(crate) max_complexity: u64,
+    pub(crate) complexity: ManifestComplexityWeights,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestComplexityWeights {
+    pub(crate) version: u32,
+    pub(crate) scalar: u64,
+    pub(crate) belongs_to: u64,
+    pub(crate) has_many: u64,
+    pub(crate) m2m: u64,
+    pub(crate) aggregate: u64,
+    pub(crate) list_root: u64,
+    pub(crate) by_pk: u64,
+    pub(crate) list_fanout: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,6 +433,7 @@ pub(crate) struct ManifestPagination {
 pub(crate) struct ManifestAggregateSemantics {
     pub(crate) wrapper_typename: String,
     pub(crate) fields_typename: String,
+    pub(crate) nodes_pagination: ManifestPagination,
     pub(crate) count: bool,
     pub(crate) nodes: bool,
     pub(crate) sum: Vec<String>,
@@ -757,6 +781,7 @@ struct ManifestWire {
     surface: ManifestSurface,
     schema_fingerprint: String,
     protocol_fingerprint: String,
+    execution: ManifestExecutionLimits,
     capabilities: ManifestCapabilities,
     scalar_codecs: Vec<ManifestScalarCodec>,
     models: Vec<ManifestModel>,
@@ -772,6 +797,7 @@ struct ManifestSchemaMaterial<'a> {
     protocol_version: u64,
     service_id: &'a str,
     surface: &'a ManifestSurface,
+    execution: &'a ManifestExecutionLimits,
     capabilities: &'a ManifestCapabilities,
     scalar_codecs: &'a [ManifestScalarCodec],
     models: &'a [ManifestModel],
@@ -815,6 +841,7 @@ impl ClientManifest {
         validate_nonempty(&wire.service_id, "manifest.service_id")?;
         validate_hash(&wire.schema_fingerprint, "manifest.schema_fingerprint")?;
         validate_hash(&wire.protocol_fingerprint, "manifest.protocol_fingerprint")?;
+        validate_execution_limits(&wire.execution)?;
         if wire.protocol_fingerprint != PROTOCOL_FINGERPRINT {
             return Err(ClientCompileError::manifest(
                 "client.manifest.protocol_fingerprint",
@@ -901,6 +928,7 @@ impl ClientManifest {
         let mut command_validation = super::command_manifest::validate_command_manifest(
             &commands,
             &models,
+            &roots,
             &scalar_codecs,
             &projectors,
             wire.capabilities.causal_receipts,
@@ -929,6 +957,7 @@ impl ClientManifest {
             surface: wire.surface,
             schema_fingerprint: wire.schema_fingerprint,
             protocol_fingerprint: wire.protocol_fingerprint,
+            execution: wire.execution,
             capabilities: wire.capabilities,
             scalar_codecs,
             models,
@@ -951,6 +980,7 @@ fn schema_fingerprint(wire: &ManifestWire) -> Result<String, ClientCompileError>
         protocol_version: wire.protocol_version,
         service_id: &wire.service_id,
         surface: &wire.surface,
+        execution: &wire.execution,
         capabilities: &wire.capabilities,
         scalar_codecs: &wire.scalar_codecs,
         models: &wire.models,
@@ -972,7 +1002,7 @@ fn schema_fingerprint(wire: &ManifestWire) -> Result<String, ClientCompileError>
 #[cfg(test)]
 pub(crate) fn refresh_schema_fingerprint(value: &mut JsonValue) {
     let wire: ManifestWire =
-        serde_json::from_value(value.clone()).expect("test manifest must match the v4 wire shape");
+        serde_json::from_value(value.clone()).expect("test manifest must match the v5 wire shape");
     value["schema_fingerprint"] =
         JsonValue::String(schema_fingerprint(&wire).expect("test manifest must be serializable"));
 }
@@ -1118,7 +1148,7 @@ fn validate_capabilities(capabilities: &ManifestCapabilities) -> Result<(), Clie
         return Err(ClientCompileError::manifest(
             "client.manifest.query_fallback",
             format!(
-                "unsupported query fallback `{}`; manifest v4 requires `revalidate`",
+                "unsupported query fallback `{}`; manifest v5 requires `revalidate`",
                 capabilities.query_fallback
             ),
         ));
@@ -1133,6 +1163,37 @@ fn validate_capabilities(capabilities: &ManifestCapabilities) -> Result<(), Clie
         return Err(ClientCompileError::manifest(
             "client.manifest.tombstone_capability",
             "capabilities.tombstones requires capabilities.record_revisions",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_execution_limits(
+    execution: &ManifestExecutionLimits,
+) -> Result<(), ClientCompileError> {
+    if execution.complexity.version != 1 {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.complexity_version",
+            format!(
+                "unsupported query complexity contract version {}; dctl requires version 1",
+                execution.complexity.version
+            ),
+        ));
+    }
+    let weights = [
+        ("scalar", execution.complexity.scalar),
+        ("belongs_to", execution.complexity.belongs_to),
+        ("has_many", execution.complexity.has_many),
+        ("m2m", execution.complexity.m2m),
+        ("aggregate", execution.complexity.aggregate),
+        ("list_root", execution.complexity.list_root),
+        ("by_pk", execution.complexity.by_pk),
+        ("list_fanout", execution.complexity.list_fanout),
+    ];
+    if let Some((name, _)) = weights.into_iter().find(|(_, value)| *value == 0) {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.complexity_weight",
+            format!("query complexity weight `{name}` must be greater than zero"),
         ));
     }
     Ok(())
@@ -1162,7 +1223,7 @@ fn validate_derived_capabilities(
     if capabilities.confirmed_persistence {
         return Err(ClientCompileError::manifest(
             "client.manifest.persistence_capability",
-            "manifest v4 does not yet support confirmed client persistence",
+            "manifest v5 does not yet support confirmed client persistence",
         ));
     }
     Ok(())
@@ -1991,7 +2052,7 @@ fn validate_order_semantics(
         return Err(ClientCompileError::manifest(
             "client.manifest.order_values",
             format!(
-                "order semantics for model `{}` must use the manifest v4 direction set",
+                "order semantics for model `{}` must use the manifest v5 direction set",
                 model.id
             ),
         ));
@@ -2024,6 +2085,10 @@ fn validate_aggregate_semantics(
 ) -> Result<(), ClientCompileError> {
     validate_graphql_name(&aggregate.wrapper_typename, "aggregate wrapper typename")?;
     validate_graphql_name(&aggregate.fields_typename, "aggregate fields typename")?;
+    validate_pagination(
+        &aggregate.nodes_pagination,
+        &format!("aggregate nodes for model `{}`", model.id),
+    )?;
     if !aggregate.count || !aggregate.nodes {
         return Err(ClientCompileError::manifest(
             "client.manifest.aggregate_capability",
@@ -2240,7 +2305,7 @@ fn validate_root_contract(
         return Err(ClientCompileError::manifest(
             "client.manifest.subscription_kind",
             format!(
-                "subscription root `{}` must use list cardinality in manifest v4",
+                "subscription root `{}` must use list cardinality in manifest v5",
                 root.name
             ),
         ));

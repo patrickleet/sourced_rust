@@ -363,6 +363,92 @@ async fn sqlite_binds_follow_projection_then_where_order_for_relationships() {
     let nodes = aggregate["nodes"].as_array().expect("aggregate nodes");
     assert_eq!(nodes.len(), 1, "{data}");
     assert_eq!(nodes[0]["child_id"], "c2");
+
+    let aliased = engine
+        .execute(
+            &session,
+            Request::new(
+                r#"{
+                    parentRows: parents(where: { name: { _eq: "P" } }) {
+                        parentLabel: name
+                        matchingChildren: children(where: { name: { _eq: "C2" } }) {
+                            childKey: child_id
+                            childLabel: name
+                        }
+                        childStats: children_aggregate(where: { name: { _eq: "C2" } }) {
+                            totals: aggregate { matches: count }
+                            matchingNodes: nodes { childKey: child_id }
+                        }
+                    }
+                }"#,
+            ),
+        )
+        .await;
+    assert!(!aliased.is_err(), "{:?}", aliased.errors);
+    assert_eq!(
+        serde_json::to_value(&aliased.data).unwrap(),
+        serde_json::json!({
+            "parentRows": [{
+                "parentLabel": "P",
+                "matchingChildren": [{
+                    "childKey": "c2",
+                    "childLabel": "C2"
+                }],
+                "childStats": {
+                    "totals": { "matches": 1 },
+                    "matchingNodes": [{ "childKey": "c2" }]
+                }
+            }]
+        })
+    );
+
+    let repeated_aliases = engine
+        .execute(
+            &session,
+            Request::new(
+                r#"{
+                    parentRows: parents(where: { name: { _eq: "P" } }) {
+                        c1Children: children(where: { name: { _eq: "C1" } }) {
+                            c1Key: child_id
+                        }
+                        c2Children: children(where: { name: { _eq: "C2" } }) {
+                            c2Label: name
+                        }
+                        c1Stats: children_aggregate(where: { name: { _eq: "C1" } }) {
+                            c1Totals: aggregate { c1Count: count }
+                            c1Keys: nodes { c1Key: child_id }
+                            c1Labels: nodes { c1Label: name }
+                        }
+                        c2Stats: children_aggregate(where: { name: { _eq: "C2" } }) {
+                            firstTotals: aggregate { firstCount: count }
+                            secondTotals: aggregate { secondCount: count }
+                            c2Nodes: nodes { c2Label: name }
+                        }
+                    }
+                }"#,
+            ),
+        )
+        .await;
+    assert!(!repeated_aliases.is_err(), "{:?}", repeated_aliases.errors);
+    assert_eq!(
+        serde_json::to_value(&repeated_aliases.data).unwrap(),
+        serde_json::json!({
+            "parentRows": [{
+                "c1Children": [{ "c1Key": "c1" }],
+                "c2Children": [{ "c2Label": "C2" }],
+                "c1Stats": {
+                    "c1Totals": { "c1Count": 1 },
+                    "c1Keys": [{ "c1Key": "c1" }],
+                    "c1Labels": [{ "c1Label": "C1" }]
+                },
+                "c2Stats": {
+                    "firstTotals": { "firstCount": 1 },
+                    "secondTotals": { "secondCount": 1 },
+                    "c2Nodes": [{ "c2Label": "C2" }]
+                }
+            }]
+        })
+    );
 }
 
 fn author_schema() -> TableSchema {
