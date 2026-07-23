@@ -49,18 +49,18 @@ fn describe_emits_manifest_json() {
 fn client_manifest_uses_service_surface_export() {
     let json = dctl(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(manifest["manifest_version"], 3);
+    assert_eq!(manifest["manifest_version"], 4);
     assert_eq!(manifest["protocol_version"], 2);
     assert_eq!(manifest["service_id"], "orders");
     assert_eq!(manifest["surface"]["kind"], "role");
     assert_eq!(manifest["surface"]["name"], "user");
     assert_eq!(
         manifest["schema_fingerprint"],
-        "sha256:9b97520bcc24a0c4f4dd6a33694dc53c2ddaa3302151fb62cf5ada84721e9b65"
+        "sha256:34befe47e759e88eb5ad780426a636881207ebf308fcb3a03be74281ac93fee4"
     );
     assert_eq!(
         manifest["protocol_fingerprint"],
-        "sha256:2ad00d4436516864f0f331f8421099b876e9a49eb4f19754ce80110836d6710b"
+        "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc"
     );
     assert_eq!(manifest["models"][0]["id"], "OrderView");
     assert_eq!(manifest["models"][0]["record_revisions"], false);

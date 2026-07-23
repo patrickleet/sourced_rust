@@ -35,7 +35,7 @@ export type CommandManifestEntry = {
     result?: { kind: CommandResultKind };
     reconcile?: { kind: CommandReconcileKind };
   };
-  /** Exact generated operation and causal metadata from client manifest v3. */
+  /** Exact generated operation and causal metadata from client manifest v4. */
   operation?: string;
   operation_hash?: string;
   causal?: {
@@ -55,18 +55,18 @@ export type ClientProtocolOperation = {
   operation_hash: string;
 };
 
-export type ClientCommandShapeV3 =
+export type ClientCommandShapeV4 =
   | { kind: 'none' }
   | { kind: 'json'; codec: string }
   | { kind: 'object'; definition: CommandManifestType };
 
-export type ClientCommandV3 = {
+export type ClientCommandV4 = {
   version: 1;
   name: string;
   mutation_field: string;
   grants: string[];
-  input: ClientCommandShapeV3;
-  output: ClientCommandShapeV3;
+  input: ClientCommandShapeV4;
+  output: ClientCommandShapeV4;
   operation: string;
   operation_hash: string;
   extensions: {
@@ -84,15 +84,15 @@ export type ClientCommandV3 = {
   };
 };
 
-/** Minimal role-selected client-manifest v3 surface consumed by command codegen. */
-export type DistributedClientManifestV3 = {
-  manifest_version: 3;
+/** Minimal role-selected client-manifest v4 surface consumed by command codegen. */
+export type DistributedClientManifestV4 = {
+  manifest_version: 4;
   protocol_version: 2;
   schema_fingerprint: string;
   capabilities: {
     causal_receipts: boolean;
   };
-  commands: ClientCommandV3[];
+  commands: ClientCommandV4[];
   protocol_operations: {
     version: 1;
     command_status?: ClientProtocolOperation;
@@ -101,7 +101,7 @@ export type DistributedClientManifestV3 = {
 
 export type CommandCodegenManifest =
   | CommandManifestV1
-  | DistributedClientManifestV3;
+  | DistributedClientManifestV4;
 
 export type GeneratedCommandArtifacts = {
   commands: string;
@@ -117,9 +117,9 @@ export type GeneratePoliciesOptions = {
 const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const MAX_GENERATED_OPERATION_BYTES = 1024 * 1024;
-const MAX_V3_COMMANDS = 4_096;
-const MAX_V3_FIELDS = 4_096;
-const MAX_V3_TYPE_DEPTH = 64;
+const MAX_V4_COMMANDS = 4_096;
+const MAX_V4_FIELDS = 4_096;
+const MAX_V4_TYPE_DEPTH = 64;
 const TYPESCRIPT_RESERVED = new Set([
   'any',
   'as',
@@ -256,15 +256,15 @@ export function parseCommandManifest(value: unknown): CommandManifestV1 {
 }
 
 /**
- * Validate either the legacy command-only manifest or the role-selected v3
- * client manifest. V3 preserves compiler-owned operation bytes verbatim.
+ * Validate either the legacy command-only manifest or the role-selected v4
+ * client manifest. V4 preserves compiler-owned operation bytes verbatim.
  */
 export function parseCodegenManifest(value: unknown): CommandCodegenManifest {
   const root = expectRecord(value, 'manifest');
   if (root.version === 1) return parseCommandManifest(value);
-  if (root.manifest_version !== 3) {
+  if (root.manifest_version !== 4) {
     throw new Error(
-      'invalid command manifest: expected legacy version 1 or client manifest_version 3'
+      'invalid command manifest: expected legacy version 1 or client manifest_version 4'
     );
   }
   if (root.protocol_version !== 2) {
@@ -285,12 +285,12 @@ export function parseCodegenManifest(value: unknown): CommandCodegenManifest {
   if (!Array.isArray(root.commands)) {
     throw new Error('invalid command manifest: commands must be an array');
   }
-  if (root.commands.length > MAX_V3_COMMANDS) {
+  if (root.commands.length > MAX_V4_COMMANDS) {
     throw new Error('invalid command manifest: commands exceeds the supported bound');
   }
 
   const commands = root.commands.map((entry, index) =>
-    parseClientCommandV3(entry, index)
+    parseClientCommandV4(entry, index)
   );
   validateCommandIdentities(normalizeManifestCommands({ commands }));
 
@@ -324,7 +324,7 @@ export function parseCodegenManifest(value: unknown): CommandCodegenManifest {
   }
 
   return {
-    manifest_version: 3,
+    manifest_version: 4,
     protocol_version: 2,
     schema_fingerprint: schemaFingerprint,
     capabilities: { causal_receipts: causalReceipts },
@@ -380,7 +380,7 @@ export function generateOperationsGql(value: CommandCodegenManifest | unknown): 
     lines.push(buildMutationOperation(command));
     lines.push('');
   }
-  if (isClientManifestV3(manifest) && manifest.protocol_operations.command_status) {
+  if (isClientManifestV4(manifest) && manifest.protocol_operations.command_status) {
     lines.push('# Framework-owned causal receipt status operation.');
     lines.push(manifest.protocol_operations.command_status.operation);
     lines.push('');
@@ -393,7 +393,7 @@ export function generateOperationsGql(value: CommandCodegenManifest | unknown): 
 export function generateCommandsTs(value: CommandCodegenManifest | unknown): string {
   const manifest = parseCodegenManifest(value);
   const commands = normalizeManifestCommands(manifest);
-  const causal = isClientManifestV3(manifest);
+  const causal = isClientManifestV4(manifest);
   const lines: string[] = [
     '/**',
     ' * GENERATED by @hops-ops/distributed — do not edit by hand.',
@@ -601,14 +601,14 @@ export function fieldToFunctionName(field: string): string {
   );
 }
 
-function isClientManifestV3(
+function isClientManifestV4(
   manifest: CommandCodegenManifest
-): manifest is DistributedClientManifestV3 {
+): manifest is DistributedClientManifestV4 {
   return 'manifest_version' in manifest;
 }
 
 function normalizeManifestCommands(
-  manifest: Pick<DistributedClientManifestV3, 'commands'> | CommandManifestV1
+  manifest: Pick<DistributedClientManifestV4, 'commands'> | CommandManifestV1
 ): CommandManifestEntry[] {
   if ('version' in manifest) return manifest.commands;
   return manifest.commands.map((command) => {
@@ -641,7 +641,7 @@ function normalizeManifestCommands(
   });
 }
 
-function parseClientCommandV3(value: unknown, index: number): ClientCommandV3 {
+function parseClientCommandV4(value: unknown, index: number): ClientCommandV4 {
   const path = `manifest.commands[${index}]`;
   const command = expectRecord(value, path);
   if (command.version !== 1) {
@@ -653,8 +653,8 @@ function parseClientCommandV3(value: unknown, index: number): ClientCommandV3 {
     `${path}.mutation_field`
   );
   const grants = parseRoles(command.grants, `${path}.grants`);
-  const input = parseClientCommandShapeV3(command.input, `${path}.input`);
-  const output = parseClientCommandShapeV3(command.output, `${path}.output`);
+  const input = parseClientCommandShapeV4(command.input, `${path}.input`);
+  const output = parseClientCommandShapeV4(command.output, `${path}.output`);
   const operation = expectGeneratedOperation(
     command.operation,
     `${path}.operation`
@@ -694,7 +694,7 @@ function parseClientCommandV3(value: unknown, index: number): ClientCommandV3 {
     extensions.confirmations === undefined ||
     extensions.confirmations === null
       ? undefined
-      : parseConfirmationsV3(
+      : parseConfirmationsV4(
           extensions.confirmations,
           `${path}.extensions.confirmations`
         );
@@ -716,10 +716,10 @@ function parseClientCommandV3(value: unknown, index: number): ClientCommandV3 {
   };
 }
 
-function parseClientCommandShapeV3(
+function parseClientCommandShapeV4(
   value: unknown,
   path: string
-): ClientCommandShapeV3 {
+): ClientCommandShapeV4 {
   const shape = expectRecord(value, path);
   const kind = expectEnum(
     shape.kind,
@@ -737,7 +737,7 @@ function parseClientCommandShapeV3(
     case 'object':
       return {
         kind,
-        definition: parseManifestTypeV3(
+        definition: parseManifestTypeV4(
           shape.definition,
           `${path}.definition`,
           0
@@ -746,12 +746,12 @@ function parseClientCommandShapeV3(
   }
 }
 
-function parseManifestTypeV3(
+function parseManifestTypeV4(
   value: unknown,
   path: string,
   depth: number
 ): CommandManifestType {
-  if (depth > MAX_V3_TYPE_DEPTH) {
+  if (depth > MAX_V4_TYPE_DEPTH) {
     throw new Error(`invalid command manifest: ${path} exceeds the type-depth bound`);
   }
   const type = expectRecord(value, path);
@@ -759,7 +759,7 @@ function parseManifestTypeV3(
   if (TYPESCRIPT_RESERVED.has(name)) {
     throw new Error(`invalid command manifest: ${path}.name is reserved in TypeScript`);
   }
-  if (!Array.isArray(type.fields) || type.fields.length > MAX_V3_FIELDS) {
+  if (!Array.isArray(type.fields) || type.fields.length > MAX_V4_FIELDS) {
     throw new Error(
       `invalid command manifest: ${path}.fields must be a bounded array`
     );
@@ -792,7 +792,7 @@ function parseManifestTypeV3(
     const nested =
       record.nested === undefined || record.nested === null
         ? undefined
-        : parseManifestTypeV3(record.nested, `${fieldPath}.nested`, depth + 1);
+        : parseManifestTypeV4(record.nested, `${fieldPath}.nested`, depth + 1);
     if ((codec === undefined) === (nested === undefined)) {
       throw new Error(
         `invalid command manifest: ${fieldPath} must declare exactly one codec or nested type`
@@ -816,10 +816,10 @@ function parseManifestTypeV3(
   return { name, fields };
 }
 
-function parseConfirmationsV3(
+function parseConfirmationsV4(
   value: unknown,
   path: string
-): NonNullable<ClientCommandV3['extensions']['confirmations']> {
+): NonNullable<ClientCommandV4['extensions']['confirmations']> {
   const confirmations = expectRecord(value, path);
   if (confirmations.version !== 1) {
     throw new Error(`invalid command manifest: ${path}.version must be 1`);
@@ -831,7 +831,7 @@ function parseConfirmationsV3(
   );
   if (
     !Array.isArray(confirmations.expected) ||
-    confirmations.expected.length > MAX_V3_FIELDS
+    confirmations.expected.length > MAX_V4_FIELDS
   ) {
     throw new Error(`invalid command manifest: ${path}.expected must be a bounded array`);
   }

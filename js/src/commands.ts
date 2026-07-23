@@ -47,7 +47,7 @@ export type CommandDefinition<
   document: GqlDocument;
   hasInput: [TInput] extends [void] ? false : true;
   roles?: readonly string[];
-  /** Present only for generated v3 causal commands. */
+  /** Present only for generated v4 causal commands. */
   causal?: CausalCommandDefinition;
   /** Type-only marker; `defineCommand` does not add it at runtime. */
   [commandTypes]?: {

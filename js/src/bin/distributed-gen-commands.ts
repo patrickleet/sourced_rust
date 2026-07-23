@@ -24,7 +24,7 @@ const DEFAULT_PATHS = {
 const HELP = `Usage: distributed-gen-commands [options]
 
 Generate app-owned TypeScript commands, GraphQL operations, and client policies
-from a Distributed command manifest (legacy version 1 or client manifest v3).
+from a Distributed command manifest (legacy version 1 or client manifest v4).
 
 Options:
   --cwd <directory>       Base directory for relative paths (default: cwd)

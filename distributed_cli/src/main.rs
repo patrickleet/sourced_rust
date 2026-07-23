@@ -1,8 +1,8 @@
 use clap::Parser;
 use distributed_cli::ServiceArgs;
 
-/// The `dctl` CLI: scaffold Distributed services, describe their manifest, and
-/// render schema artifacts (SQL or Atlas Operator resources).
+/// The `dctl` CLI: scaffold Distributed services, compile typed client
+/// artifacts, describe manifests, and render schema artifacts.
 #[derive(Parser, Debug)]
 #[command(name = "dctl", version, about, long_about = None)]
 struct Cli {

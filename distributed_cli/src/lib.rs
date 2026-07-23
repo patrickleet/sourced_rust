@@ -19,15 +19,21 @@
 
 mod atlas;
 mod cli;
+mod client_compiler;
 mod generate;
 mod manifest_harness;
 mod skills;
 
 pub use atlas::{render_atlas_schema, AtlasDatabaseUrl, AtlasSchemaSpec};
 pub use cli::{
-    run, AgentHarness, Bus, ClientManifestArgs, DescribeArgs, Framework, GitopsPromote,
+    run, AgentHarness, Bus, ClientArgs, ClientManifestArgs, DescribeArgs, Framework, GitopsPromote,
     ManifestFormat, Metrics, ScaffoldArgs, SchemaArgs, SchemaDialect, SchemaFormat, ServiceArgs,
     ServiceCommands, SkillsArgs, SkillsCommands, SkillsInitArgs, Store, Transport,
+};
+pub use client_compiler::{
+    compile_client, ClientCompileError, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
+    ClientRouteRegistration, ClientSourceLocation, ClientSurfaceSelector, GeneratedClientFile,
+    GeneratedClientProject, GeneratedOperationSummary, GeneratedRoutePlan,
 };
 pub use generate::{generate_service_scaffold, package_name};
 pub use skills::{embedded_skills, generate_skills, EmbeddedFile, EmbeddedSkill, SkillsInitSpec};
