@@ -446,9 +446,8 @@ impl Surface {
             );
         }
         let binding = service.typed_command_binding()?;
-        let commands = super::commands::GraphqlCommands::from_typed_contracts(
-            service.typed_command_contracts(),
-        )?;
+        let contracts = service.typed_command_contracts();
+        let commands = super::commands::GraphqlCommands::from_typed_contracts(&contracts)?;
         self = self.with_commands(&commands)?;
         self.service_binding = Some(binding);
         Ok(self)
@@ -1439,21 +1438,21 @@ fn sanitize_relationship_identity(models: &mut BTreeMap<String, SurfaceModel>) {
                         && local.len() == remote.len()
                         && local.iter().all(|key| source_fields.contains(key))
                         && remote.iter().all(|key| target_fields.contains(key));
-                    if identity_visible {
-                        if !visible_tables.get(table).is_some_and(|fields| {
+                    if identity_visible
+                        && !visible_tables.get(table).is_some_and(|fields| {
                             fields.contains(source_foreign_key)
                                 && fields.contains(target_foreign_key)
-                        }) {
-                            relationship.keys = SurfaceRelationshipKeys::ThroughOpaque {
-                                local: local.clone(),
-                                remote: remote.clone(),
-                                dependency: opaque_relationship_dependency_id(
-                                    &model.model_name,
-                                    &relationship.name,
-                                    &relationship.target_model,
-                                ),
-                            };
-                        }
+                        })
+                    {
+                        relationship.keys = SurfaceRelationshipKeys::ThroughOpaque {
+                            local: local.clone(),
+                            remote: remote.clone(),
+                            dependency: opaque_relationship_dependency_id(
+                                &model.model_name,
+                                &relationship.name,
+                                &relationship.target_model,
+                            ),
+                        };
                     }
                     identity_visible
                 }
@@ -1612,7 +1611,7 @@ fn validate_generated_surface_names(
 fn validate_and_canonicalize_commands(
     models: &BTreeMap<String, SurfaceModel>,
     comparison_ops: &BTreeMap<String, Vec<String>>,
-    commands: &mut Vec<SurfaceCommand>,
+    commands: &mut [SurfaceCommand],
 ) -> Result<(), String> {
     let mut names = BTreeSet::new();
     let mut fields = BTreeSet::new();

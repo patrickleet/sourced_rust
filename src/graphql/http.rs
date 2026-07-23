@@ -16,7 +16,9 @@ use futures_util::stream::BoxStream;
 use crate::microsvc::{Service, Session, MAX_HTTP_BODY_BYTES, ROLE_KEY, USER_ID_KEY};
 
 use super::engine::GraphqlEngine;
-use super::identity::{resolve_session, AuthError, IdentityMode};
+use super::identity::{
+    resolve_identity, AuthError, IdentityMode, ResolvedIdentity, VerifiedPrincipal,
+};
 
 /// DevHeaders baked into GraphiQL for local exploration (not production security).
 const GRAPHIQL_DEV_USER: &str = "demo";
@@ -58,11 +60,28 @@ pub fn graphiql_page() -> Html<String> {
 pub struct GraphqlSessionExecutor {
     engine: Arc<GraphqlEngine>,
     session: Session,
+    principal: Option<VerifiedPrincipal>,
 }
 
 impl GraphqlSessionExecutor {
     pub fn new(engine: Arc<GraphqlEngine>, session: Session) -> Self {
-        Self { engine, session }
+        Self {
+            engine,
+            session,
+            principal: None,
+        }
+    }
+
+    fn with_identity(
+        engine: Arc<GraphqlEngine>,
+        session: Session,
+        principal: Option<VerifiedPrincipal>,
+    ) -> Self {
+        Self {
+            engine,
+            session,
+            principal,
+        }
     }
 }
 
@@ -70,7 +89,12 @@ impl Executor for GraphqlSessionExecutor {
     async fn execute(&self, request: Request) -> GqlResponse {
         // Subscriptions must not go through execute() — that yields
         // "Subscription root not found". GraphiQL should use the WS path only.
-        self.engine.execute(&self.session, request).await
+        self.engine
+            .execute(
+                &self.session,
+                request_with_principal(request, self.principal.clone()),
+            )
+            .await
     }
 
     fn execute_stream(
@@ -85,7 +109,21 @@ impl Executor for GraphqlSessionExecutor {
             .and_then(|b| b.downcast_ref::<Session>())
             .cloned()
             .unwrap_or_else(|| self.session.clone());
-        self.engine.execute_stream(&session, request)
+        let principal = session_data
+            .as_ref()
+            .and_then(|data| data.get(&TypeId::of::<VerifiedPrincipal>()))
+            .and_then(|principal| principal.downcast_ref::<VerifiedPrincipal>())
+            .cloned()
+            .or_else(|| self.principal.clone());
+        self.engine
+            .execute_stream(&session, request_with_principal(request, principal))
+    }
+}
+
+fn request_with_principal(request: Request, principal: Option<VerifiedPrincipal>) -> Request {
+    match principal {
+        Some(principal) => request.data(principal),
+        None => request,
     }
 }
 
@@ -170,13 +208,15 @@ async fn graphql_handler(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let session = match resolve_session(&headers, engine.identity_config()).await {
-        Ok(s) => s,
+    let identity = match resolve_identity(&headers, engine.identity_config()).await {
+        Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
+    let (session, principal) = identity.into_parts();
     // GraphiQL demo headers only apply under DevHeaders; other modes ignore them for AuthZ.
     let _ = engine.identity_config().mode == IdentityMode::DevHeaders;
-    let response = engine.execute(&session, req.into_inner()).await;
+    let request = request_with_principal(req.into_inner(), principal);
+    let response = engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
 }
 
@@ -185,11 +225,12 @@ async fn graphql_handler_with_service(
     headers: axum::http::HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let session = match resolve_session(&headers, state.engine.identity_config()).await {
-        Ok(s) => s,
+    let identity = match resolve_identity(&headers, state.engine.identity_config()).await {
+        Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
-    let mut request = req.into_inner();
+    let (session, principal) = identity.into_parts();
+    let mut request = request_with_principal(req.into_inner(), principal);
     if let Some(service) = &state.service {
         request = request.data(Arc::clone(service));
     }
@@ -206,11 +247,12 @@ pub async fn microsvc_graphql_handler(
     let engine = service
         .graphql_engine()
         .expect("graphql route mounted without engine");
-    let session = match resolve_session(&headers, engine.identity_config()).await {
-        Ok(s) => s,
+    let identity = match resolve_identity(&headers, engine.identity_config()).await {
+        Ok(identity) => identity,
         Err(AuthError::Unauthorized) => return unauthorized_response(),
     };
-    let request = req.into_inner().data(Arc::clone(&service));
+    let (session, principal) = identity.into_parts();
+    let request = request_with_principal(req.into_inner(), principal).data(Arc::clone(&service));
     let response = engine.execute(&session, request).await;
     GraphQLResponse::from(response).into_response()
 }
@@ -255,16 +297,24 @@ pub async fn microsvc_graphql_ws(
 
     // OidcBearer: do not fail the upgrade without a token — auth happens in
     // connection_init (graphql-ws best practice). DevHeaders: resolve now.
-    let upgrade_session = if mode == IdentityMode::OidcBearer || mode == IdentityMode::Hybrid {
-        Session::new()
+    let upgrade_identity = if mode == IdentityMode::OidcBearer || mode == IdentityMode::Hybrid {
+        ResolvedIdentity::unverified(Session::new())
     } else {
-        match resolve_session(&upgrade_headers, engine.identity_config()).await {
-            Ok(s) => ensure_graphiql_dev_session(s, mode),
+        match resolve_identity(&upgrade_headers, engine.identity_config()).await {
+            Ok(identity) => {
+                let (session, _) = identity.into_parts();
+                ResolvedIdentity::unverified(ensure_graphiql_dev_session(session, mode))
+            }
             Err(AuthError::Unauthorized) => return unauthorized_response(),
         }
     };
 
-    let executor = GraphqlSessionExecutor::new(Arc::clone(&engine), upgrade_session.clone());
+    let (upgrade_session, upgrade_principal) = upgrade_identity.into_parts();
+    let executor = GraphqlSessionExecutor::with_identity(
+        Arc::clone(&engine),
+        upgrade_session.clone(),
+        upgrade_principal,
+    );
     let engine_for_init = Arc::clone(&engine);
     upgrade
         .protocols(ALL_WEBSOCKET_PROTOCOLS)
@@ -277,17 +327,21 @@ pub async fn microsvc_graphql_ws(
                     let engine = engine_for_init;
                     let upgrade_headers = upgrade_headers;
                     async move {
-                        let session =
-                            match resolve_ws_session(&engine, &upgrade_headers, base, &payload)
+                        let identity =
+                            match resolve_ws_identity(&engine, &upgrade_headers, base, &payload)
                                 .await
                             {
-                                Ok(s) => s,
+                                Ok(identity) => identity,
                                 Err(msg) => {
                                     return Err(async_graphql::Error::new(msg));
                                 }
                             };
+                        let (session, principal) = identity.into_parts();
                         let mut data = Data::default();
                         data.insert(session);
+                        if let Some(principal) = principal {
+                            data.insert(principal);
+                        }
                         Ok(data)
                     }
                 })
@@ -297,12 +351,12 @@ pub async fn microsvc_graphql_ws(
 }
 
 /// Resolve session for a GraphQL WS connection after `connection_init`.
-async fn resolve_ws_session(
+async fn resolve_ws_identity(
     engine: &GraphqlEngine,
     upgrade_headers: &HeaderMap,
     base: Session,
     payload: &serde_json::Value,
-) -> Result<Session, String> {
+) -> Result<ResolvedIdentity, String> {
     let mode = engine.identity_config().mode;
     match mode {
         IdentityMode::OidcBearer | IdentityMode::Hybrid => {
@@ -312,16 +366,16 @@ async fn resolve_ws_session(
                     headers.insert(axum::http::header::AUTHORIZATION, val);
                 }
             }
-            resolve_session(&headers, engine.identity_config())
+            resolve_identity(&headers, engine.identity_config())
                 .await
                 .map_err(|_| {
                     "unauthorized: provide Authorization Bearer access_token in connection_init"
                         .into()
                 })
         }
-        IdentityMode::DevHeaders | IdentityMode::TrustedProxy => {
-            Ok(session_from_connection_init(base, payload, mode))
-        }
+        IdentityMode::DevHeaders | IdentityMode::TrustedProxy => Ok(ResolvedIdentity::unverified(
+            session_from_connection_init(base, payload, mode),
+        )),
     }
 }
 

@@ -9,6 +9,7 @@ pub mod bus;
 pub mod entity;
 pub mod repository;
 
+pub(crate) mod command_ledger;
 mod commit_builder;
 #[cfg(feature = "emitter")]
 pub mod emitter;

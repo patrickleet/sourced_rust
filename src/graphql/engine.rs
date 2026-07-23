@@ -60,6 +60,118 @@ impl From<sqlx::SqlitePool> for GraphqlPool {
     }
 }
 
+/// Database source for a GraphQL engine.
+///
+/// Passing a Distributed repository handle instead of its raw pool preserves
+/// the opaque storage identity required to prove that `Projected` commands
+/// update the same database read by GraphQL.
+#[derive(Clone)]
+pub struct GraphqlPoolSource {
+    pool: GraphqlPool,
+    causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
+}
+
+impl From<GraphqlPool> for GraphqlPoolSource {
+    fn from(pool: GraphqlPool) -> Self {
+        Self {
+            pool,
+            causal_storage_identity: None,
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl From<sqlx::PgPool> for GraphqlPoolSource {
+    fn from(pool: sqlx::PgPool) -> Self {
+        GraphqlPool::from(pool).into()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<sqlx::SqlitePool> for GraphqlPoolSource {
+    fn from(pool: sqlx::SqlitePool) -> Self {
+        GraphqlPool::from(pool).into()
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl From<&crate::PostgresRepository> for GraphqlPoolSource {
+    fn from(repository: &crate::PostgresRepository) -> Self {
+        Self {
+            pool: GraphqlPool::Postgres(repository.pool().clone()),
+            causal_storage_identity: Some(repository.causal_storage_identity()),
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<&crate::SqliteRepository> for GraphqlPoolSource {
+    fn from(repository: &crate::SqliteRepository) -> Self {
+        Self {
+            pool: GraphqlPool::Sqlite(repository.pool().clone()),
+            causal_storage_identity: Some(repository.causal_storage_identity()),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod graphql_pool_source_identity_tests {
+    use super::GraphqlPoolSource;
+
+    fn pool() -> sqlx::SqlitePool {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .expect("lazy SQLite pool")
+    }
+
+    #[tokio::test]
+    async fn raw_pool_has_no_causal_storage_identity() {
+        let source = GraphqlPoolSource::from(pool());
+
+        assert!(source.causal_storage_identity.is_none());
+    }
+
+    #[tokio::test]
+    async fn repository_reference_carries_its_opaque_storage_identity() {
+        let repository = crate::SqliteRepository::new(pool());
+        let source = GraphqlPoolSource::from(&repository);
+
+        assert_eq!(
+            source.causal_storage_identity,
+            Some(repository.causal_storage_identity())
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_and_pool_source_clones_preserve_storage_identity() {
+        let repository = crate::SqliteRepository::new(pool());
+        let repository_clone = repository.clone();
+        let source = GraphqlPoolSource::from(&repository);
+        let source_clone = source.clone();
+
+        assert_eq!(
+            GraphqlPoolSource::from(&repository_clone).causal_storage_identity,
+            source.causal_storage_identity
+        );
+        assert_eq!(
+            source_clone.causal_storage_identity,
+            source.causal_storage_identity
+        );
+    }
+
+    #[tokio::test]
+    async fn independent_repositories_over_the_same_pool_have_distinct_identities() {
+        let pool = pool();
+        let first = crate::SqliteRepository::new(pool.clone());
+        let second = crate::SqliteRepository::new(pool);
+
+        assert_ne!(
+            GraphqlPoolSource::from(&first).causal_storage_identity,
+            GraphqlPoolSource::from(&second).causal_storage_identity
+        );
+    }
+}
+
 #[derive(Debug)]
 pub struct GraphqlBuildError(pub String);
 
@@ -100,6 +212,7 @@ pub(crate) struct EngineInner {
     /// opt in with [`GraphqlEngineBuilder::service_id`].
     pub service_id: Option<String>,
     pub command_binding: Option<TypedServiceCommandBinding>,
+    pub causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pub pool: GraphqlPool,
     pub catalog: BTreeMap<String, CatalogEntry>,
     pub by_table: BTreeMap<String, String>,
@@ -140,6 +253,7 @@ pub struct GraphqlEngine {
 pub struct GraphqlEngineBuilder {
     service_id: Option<String>,
     command_binding: Option<TypedServiceCommandBinding>,
+    causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pool: GraphqlPool,
     catalog: BTreeMap<String, CatalogEntry>,
     by_table: BTreeMap<String, String>,
@@ -164,13 +278,13 @@ pub struct GraphqlEngineBuilder {
 }
 
 impl GraphqlEngine {
-    pub fn builder(pool: impl Into<GraphqlPool>) -> GraphqlEngineBuilder {
+    pub fn builder(pool: impl Into<GraphqlPoolSource>) -> GraphqlEngineBuilder {
         GraphqlEngineBuilder::new(pool.into())
     }
 
     pub fn from_manifest(
         m: &DistributedProjectManifest,
-        pool: impl Into<GraphqlPool>,
+        pool: impl Into<GraphqlPoolSource>,
     ) -> Result<GraphqlEngineBuilder, GraphqlBuildError> {
         let mut builder = Self::builder(pool).service_id(m.name.clone());
         for schema in &m.tables {
@@ -221,6 +335,12 @@ impl GraphqlEngine {
 
     pub(crate) fn typed_command_binding(&self) -> Option<&TypedServiceCommandBinding> {
         self.inner.command_binding.as_ref()
+    }
+
+    pub(crate) fn causal_storage_identity(
+        &self,
+    ) -> Option<crate::command_ledger::CausalStorageIdentity> {
+        self.inner.causal_storage_identity
     }
 
     pub fn client_surface_for_role(
@@ -409,11 +529,12 @@ fn record_metrics(session: &Session, root_field: &str, status: &str, duration: D
 }
 
 impl GraphqlEngineBuilder {
-    fn new(pool: GraphqlPool) -> Self {
+    fn new(source: GraphqlPoolSource) -> Self {
         Self {
             service_id: None,
             command_binding: None,
-            pool,
+            causal_storage_identity: source.causal_storage_identity,
+            pool: source.pool,
             catalog: BTreeMap::new(),
             by_table: BTreeMap::new(),
             permissions: BTreeMap::new(),
@@ -662,7 +783,8 @@ impl GraphqlEngineBuilder {
                 return self;
             }
         }
-        match GraphqlCommands::from_typed_contracts(service.typed_command_contracts()) {
+        let contracts = service.typed_command_contracts();
+        match GraphqlCommands::from_typed_contracts(&contracts) {
             Ok(commands) => self.commands = commands,
             Err(error) => {
                 self.pending_errors.push(error);
@@ -948,6 +1070,7 @@ impl GraphqlEngineBuilder {
         let inner = Arc::new(EngineInner {
             service_id: self.service_id,
             command_binding: self.command_binding,
+            causal_storage_identity: self.causal_storage_identity,
             pool: self.pool,
             catalog: self.catalog,
             by_table: self.by_table,

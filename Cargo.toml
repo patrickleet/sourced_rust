@@ -72,6 +72,7 @@ prost = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "sync"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", default-features = false, optional = true }
+uuid = { version = "1", features = ["v7"] }
 
 [build-dependencies]
 tonic-build = { version = "0.14", default-features = false, features = ["transport"] }

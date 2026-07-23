@@ -19,14 +19,44 @@ use distributed::graphql::{
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
 use distributed::{
-    command_confirmations, command_effects, command_input_defaults, DistributedProjectManifest,
-    GraphqlInput, GraphqlOutput, ReadModel, RelationalReadModel,
+    command_confirmations, command_effects, command_input_defaults, Aggregate, AggregateRepository,
+    DistributedProjectManifest, Entity, EventRecord, GraphqlInput, GraphqlOutput,
+    InMemoryRepository, ReadModel, RelationalReadModel, SqliteRepository,
 };
 use serde::{Deserialize, Serialize};
 use tower::util::ServiceExt;
 
 static GRAPHQL_TYPED_GUARD_INVOKED: AtomicBool = AtomicBool::new(false);
 static GRAPHQL_TYPED_HANDLER_INVOKED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default)]
+struct FixtureAggregate {
+    entity: Entity,
+}
+
+impl Aggregate for FixtureAggregate {
+    type ReplayError = String;
+
+    fn aggregate_type() -> &'static str {
+        "typed-command-fixture"
+    }
+
+    fn entity(&self) -> &Entity {
+        &self.entity
+    }
+
+    fn entity_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+
+    fn replay_event(&mut self, _event: &EventRecord) -> Result<(), Self::ReplayError> {
+        Ok(())
+    }
+}
+
+fn causal_routes() -> Routes<AggregateRepository<InMemoryRepository, FixtureAggregate>> {
+    Routes::new().with_repo(AggregateRepository::new(InMemoryRepository::new()))
+}
 
 #[derive(Deserialize)]
 struct InputA {
@@ -79,6 +109,49 @@ struct PlanView {
 enum PlanStatus {
     Open,
     Closed,
+}
+
+impl GraphqlOutputType for PlanView {
+    fn graphql_type() -> GraphqlTypeDef {
+        GraphqlTypeDef::new(
+            "PlanView",
+            vec![
+                GraphqlTypeField {
+                    name: "id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+                GraphqlTypeField {
+                    name: "title".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+                GraphqlTypeField {
+                    name: "count".into(),
+                    type_name: "BigInt".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+                GraphqlTypeField {
+                    name: "status".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                },
+            ],
+        )
+        .with_type_id(TypeId::of::<Self>())
+    }
 }
 
 #[derive(Clone, Deserialize, GraphqlInput)]
@@ -341,14 +414,14 @@ impl GraphqlOutputType for OutputB {
 }
 
 async fn handler_a(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputA,
 ) -> Result<PreparedCommand<Accepted<OutputA>>, HandlerError> {
     Ok(PreparedCommand::prepare(OutputA { id: input.id }).unwrap())
 }
 
 async fn guarded_handler_a(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputA,
 ) -> Result<PreparedCommand<Accepted<OutputA>>, HandlerError> {
     GRAPHQL_TYPED_HANDLER_INVOKED.store(true, Ordering::SeqCst);
@@ -356,58 +429,58 @@ async fn guarded_handler_a(
 }
 
 async fn handler_b(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: InputB,
 ) -> Result<PreparedCommand<Accepted<OutputB>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<OutputB>>::prepare(OutputB { id: input.id }).unwrap())
 }
 
 async fn accepted_plan_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: PlanInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn renamed_default_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: RenamedDefaultInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn fact_plan_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: PlanInput,
 ) -> Result<PreparedCommand<Fact<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Fact<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn projected_plan_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     _input: PlanInput,
-) -> Result<PreparedCommand<Projected<PlanOutput>>, HandlerError> {
+) -> Result<PreparedCommand<Projected<PlanView>>, HandlerError> {
     Err(HandlerError::Rejected(
-        "projected preparation requires task 5's transactional projection proof".into(),
+        "projected preparation requires CausalCommandContext::projected".into(),
     ))
 }
 
 async fn forged_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: ForgedInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn json_patch_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: JsonPatchInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn bigint_key_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: BigIntKeyInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(
@@ -419,7 +492,7 @@ async fn bigint_key_handler(
 }
 
 async fn nullable_key_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: NullableKeyInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(
@@ -431,7 +504,7 @@ async fn nullable_key_handler(
 }
 
 async fn bigint_relationship_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: BigIntRelationshipInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(
@@ -443,14 +516,14 @@ async fn bigint_relationship_handler(
 }
 
 async fn composite_key_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: CompositeKeyInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
 }
 
 async fn float_effect_handler(
-    _context: &CausalCommandContext<'_>,
+    _context: &CausalCommandContext<'_, FixtureAggregate>,
     input: FloatEffectInput,
 ) -> Result<PreparedCommand<Accepted<PlanOutput>>, HandlerError> {
     Ok(PreparedCommand::<Accepted<PlanOutput>>::prepare(PlanOutput { id: input.id }).unwrap())
@@ -573,7 +646,7 @@ fn two_confirmation_plan(
 
 fn service_a(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
-        Routes::new()
+        causal_routes()
             .typed_command(typed_command::<InputA, Accepted<OutputA>>("todo.create"))
             .handle(handler_a),
     )
@@ -581,7 +654,7 @@ fn service_a(service_id: &str) -> Service {
 
 fn service_b(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
-        Routes::new()
+        causal_routes()
             .typed_command(typed_command::<InputB, Accepted<OutputB>>("todo.create"))
             .handle(handler_b),
     )
@@ -589,7 +662,7 @@ fn service_b(service_id: &str) -> Service {
 
 fn guarded_service_a(service_id: &str) -> Service {
     Service::new().named(service_id).routes(
-        Routes::new()
+        causal_routes()
             .typed_command(typed_command::<InputA, Accepted<OutputA>>("todo.create"))
             .guarded(
                 |_| {
@@ -598,6 +671,17 @@ fn guarded_service_a(service_id: &str) -> Service {
                 },
                 guarded_handler_a,
             ),
+    )
+}
+
+fn projected_service(service_id: &str, repository: SqliteRepository) -> Service {
+    Service::new().named(service_id).routes(
+        Routes::new()
+            .with_repo(AggregateRepository::<_, FixtureAggregate>::new(repository))
+            .typed_command(typed_command::<PlanInput, Projected<PlanView>>(
+                "plan.projected",
+            ))
+            .handle(projected_plan_handler),
     )
 }
 
@@ -668,7 +752,7 @@ async fn attachment_checks_full_structure_and_service_identity() {
         .build()
         .unwrap();
     let structurally_different = Service::new().named("todos").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<InputA, Accepted<OutputA>>("todo.create")
                     .field_name("createSomethingElse"),
@@ -697,12 +781,72 @@ async fn attachment_checks_full_structure_and_service_identity() {
 }
 
 #[tokio::test]
+async fn projected_command_binding_rejects_a_raw_pool_source() {
+    let shared_pool = pool();
+    let route_repository = SqliteRepository::new(shared_pool.clone());
+    let service = projected_service("plans", route_repository);
+    let engine = GraphqlEngine::builder(shared_pool)
+        .service(&service)
+        .build()
+        .expect("a raw pool may build an engine before repository identity validation");
+
+    let error = service
+        .try_with_graphql(engine)
+        .err()
+        .expect("Projected commands must reject a raw GraphQL pool");
+    assert!(
+        error
+            .to_string()
+            .contains("require a GraphQL pool derived from the same repository handle"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn projected_command_binding_rejects_an_independent_repository_over_the_same_pool() {
+    let shared_pool = pool();
+    let route_repository = SqliteRepository::new(shared_pool.clone());
+    let graphql_repository = SqliteRepository::new(shared_pool);
+    let service = projected_service("plans", route_repository);
+    let engine = GraphqlEngine::builder(&graphql_repository)
+        .service(&service)
+        .build()
+        .expect("the independently constructed repository still provides a valid pool");
+
+    let error = service
+        .try_with_graphql(engine)
+        .err()
+        .expect("Projected commands must reject a different repository identity");
+    assert!(
+        error
+            .to_string()
+            .contains("repository and GraphQL query pool storage identities differ"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle() {
+    let shared_pool = pool();
+    let repository = SqliteRepository::new(shared_pool);
+    let service = projected_service("plans", repository.clone());
+    let engine = GraphqlEngine::builder(&repository)
+        .service(&service)
+        .build()
+        .expect("the repository-derived GraphQL pool should build");
+
+    service
+        .try_with_graphql(engine)
+        .expect("a repository clone must preserve the Projected storage identity");
+}
+
+#[tokio::test]
 async fn projector_topology_identity_drift_changes_service_binding_fingerprint() {
     let declared = SurfaceProjector::new("project_plan")
         .facts(["plan.changed"])
         .models(["PlanView"]);
     let engine_source = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&declared)),
@@ -720,7 +864,7 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
         .facts(["plan.renamed"])
         .models(["PlanView"]);
     let executable = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&drifted)),
@@ -737,15 +881,17 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
 }
 
 #[tokio::test]
-async fn matched_typed_inventory_attaches_while_mutation_dispatch_remains_fail_closed() {
+async fn matched_typed_inventory_attaches_while_unverified_mutations_fail_closed() {
     let service = service_a("todos");
     let engine = GraphqlEngine::builder(pool())
         .service(&service)
         .build()
         .unwrap();
-    let service = service
-        .try_with_graphql(engine)
-        .expect("validated inventory may serve reads before task 5");
+    let service = Arc::new(
+        service
+            .try_with_graphql(engine)
+            .expect("validated causal inventory may attach to GraphQL"),
+    );
     let engine = service.graphql_engine().unwrap();
     let query = engine
         .execute(&Session::new(), Request::new("{ __typename }"))
@@ -754,13 +900,19 @@ async fn matched_typed_inventory_attaches_while_mutation_dispatch_remains_fail_c
     let mutation = engine
         .execute(
             &Session::new(),
-            Request::new("mutation { todo_create(input: { id: \"todo-1\" }) { id } }"),
+            Request::new(
+                "mutation { todo_create(commandId: \"0190a000-0000-7000-8000-000000000001\", input: { id: \"todo-1\" }) { id } }",
+            )
+            .data(Arc::clone(&service)),
         )
         .await;
     assert_eq!(mutation.errors.len(), 1, "{mutation:?}");
-    assert!(mutation.errors[0]
-        .message
-        .contains("durable command committer"));
+    assert!(
+        mutation.errors[0]
+            .message
+            .contains("durable commands require a verified OIDC bearer"),
+        "{mutation:?}"
+    );
 }
 
 #[tokio::test]
@@ -774,7 +926,7 @@ async fn every_graphql_dispatch_path_fences_before_typed_guards_and_handlers() {
             .build()
             .unwrap(),
     );
-    let mutation = "mutation { todo_create(input: { id: \"todo-1\" }) { id } }";
+    let mutation = "mutation { todo_create(commandId: \"0190a000-0000-7000-8000-000000000002\", input: { id: \"todo-1\" }) { id } }";
 
     let response = engine
         .execute(&Session::new(), Request::new(mutation))
@@ -844,13 +996,13 @@ async fn query_only_service_binding_executes_without_a_command_committer() {
     assert!(response.errors.is_empty(), "{response:?}");
     service
         .try_with_graphql(engine)
-        .expect("query-only identity binding must attach without task 5");
+        .expect("query-only identity binding must attach without causal routes");
 }
 
 #[test]
 fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() {
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(typed_command::<PlanInput, Accepted<PlanOutput>>(
                 "plan.create",
             ))
@@ -908,7 +1060,7 @@ fn pool_free_service_command_inventory_is_exclusive_in_both_call_orders() {
 fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     let make_service = || {
         Service::new().named("plans").routes(
-            Routes::new()
+            causal_routes()
                 .typed_command(
                     typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                         .confirmations(plan_confirmations()),
@@ -981,7 +1133,7 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
         .facts(["plan.changed", "plan.created", "plan.changed"])
         .models(["ForgedView", "PlanView", "PlanView"]);
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                     .confirmations(confirmations_for(&captured_reordered)),
@@ -1004,7 +1156,7 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
 #[test]
 fn pool_free_selection_rejects_omitted_confirmation_topology() {
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Fact<PlanOutput>>("plan.fact")
                     .confirmations(plan_confirmations()),
@@ -1048,8 +1200,10 @@ async fn execute_stream_cannot_dispatch_through_an_injected_legacy_service() {
                     }),
             ),
     );
-    let request = Request::new("mutation { todo_create(input: { id: \"todo-1\" }) { id } }")
-        .data(raw_service);
+    let request = Request::new(
+        "mutation { todo_create(commandId: \"0190a000-0000-7000-8000-000000000003\", input: { id: \"todo-1\" }) { id } }",
+    )
+    .data(raw_service);
     let response = engine
         .execute_stream(&Session::new(), request)
         .next()
@@ -1100,7 +1254,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
             })
     };
     let service_with_default = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(command_with_default())
             .handle(accepted_plan_handler),
     );
@@ -1130,7 +1284,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
     assert_eq!(confirmation["partition"]["path"], serde_json::json!(["id"]));
 
     let without_default = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                     .confirmations(plan_confirmations())
@@ -1168,7 +1322,7 @@ async fn generated_input_default_is_reused_as_the_effect_key_and_fingerprinted()
 #[tokio::test]
 async fn forged_input_default_marker_is_revalidated_against_wire_shape() {
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                     .input_defaults(forged_input_defaults()),
@@ -1188,7 +1342,7 @@ async fn forged_input_default_marker_is_revalidated_against_wire_shape() {
 #[tokio::test]
 async fn generated_input_default_uses_the_canonical_renamed_wire_path() {
     let service = Service::new().named("todos").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<RenamedDefaultInput, Accepted<PlanOutput>>("todo.create")
                     .input_defaults(command_input_defaults! {
@@ -1215,7 +1369,7 @@ async fn generated_input_default_uses_the_canonical_renamed_wire_path() {
 #[tokio::test]
 async fn json_container_leaves_reach_the_manifest() {
     let json_service = Service::new().named("json").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<JsonPatchInput, Accepted<PlanOutput>>("json.patch").effects(
                     command_effects! {
@@ -1257,7 +1411,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
         distributed::graphql::ModelNormalization::Embedded
     );
     let bigint_service = Service::new().named("bigint").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<BigIntKeyInput, Accepted<PlanOutput>>("bigint.upsert").effects(
                     command_effects! {
@@ -1280,7 +1434,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
     assert!(error.to_string().contains("embedded model `BigIntKeyView`"));
 
     let relationship_service = Service::new().named("bigint-relationship").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<BigIntRelationshipInput, Accepted<PlanOutput>>("bigint.link")
                     .effects(command_effects! {
@@ -1315,7 +1469,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
         .to_string()
         .contains("primary-key column `key` must be non-null"));
     let nullable_service = Service::new().named("nullable").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<NullableKeyInput, Accepted<PlanOutput>>("nullable.delete").effects(
                     command_effects! {
@@ -1337,7 +1491,7 @@ async fn embedded_primary_keys_reject_keyed_effects_while_composite_keys_remain_
         .contains("primary-key column `key` must be non-null"));
 
     let composite_service = Service::new().named("composite").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<CompositeKeyInput, Accepted<PlanOutput>>("composite.patch")
                     .effects(command_effects! {
@@ -1391,7 +1545,7 @@ async fn embedded_models_retain_global_invalidation_and_server_resolved_confirma
         confirm projector -> BigIntKeyView { key { key: input.key } };
     };
     let service = Service::new().named("bigint").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<BigIntKeyInput, Accepted<PlanOutput>>("bigint.invalidate")
                     .confirmations(confirmations)
@@ -1432,7 +1586,7 @@ async fn embedded_models_retain_global_invalidation_and_server_resolved_confirma
 #[tokio::test]
 async fn upsert_and_patch_effects_cannot_assign_primary_key_fields() {
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<PlanInput, Accepted<PlanOutput>>("plan.bad_patch")
                     .effects(forged_primary_key_assignment_effects()),
@@ -1463,7 +1617,7 @@ async fn accepted_finite_confirmation_is_exported_and_marks_the_projector_causal
             };
         });
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(command)
             .handle(accepted_plan_handler),
     );
@@ -1510,7 +1664,7 @@ async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
             };
         });
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(command)
             .handle(accepted_plan_handler),
     );
@@ -1534,7 +1688,7 @@ async fn text_backed_enum_constant_reaches_a_valid_client_manifest() {
 async fn fallible_constant_serialization_returns_a_build_error_without_panicking() {
     let result = std::panic::catch_unwind(|| {
         let service = Service::new().named("broken").routes(
-            Routes::new()
+            causal_routes()
                 .typed_command(
                     typed_command::<PlanInput, Accepted<PlanOutput>>("broken.patch").effects(
                         command_effects! {
@@ -1566,7 +1720,7 @@ async fn fallible_constant_serialization_returns_a_build_error_without_panicking
 #[tokio::test]
 async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
     let nonfinite = Service::new().named("floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("float.nan").effects(
                     command_effects! {
@@ -1591,7 +1745,7 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
         .contains("non-finite f32/f64 constants cannot be represented"));
 
     let explicit_null = Service::new().named("floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("float.clear").effects(
                     command_effects! {
@@ -1626,7 +1780,7 @@ async fn nonfinite_float_constant_is_rejected_but_explicit_null_is_portable() {
 #[tokio::test]
 async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() {
     let nonfinite_f32 = Service::new().named("json-floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.infinity")
                     .effects(command_effects! {
@@ -1652,7 +1806,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
         .contains("non-finite f32/f64 constants cannot be represented"));
 
     let nonfinite_f64 = Service::new().named("json-floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.nan").effects(
                     command_effects! {
@@ -1679,7 +1833,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
         .contains("non-finite f32/f64 constants cannot be represented"));
 
     let nested_nonfinite = Service::new().named("json-floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json-float.nested")
                     .effects(command_effects! {
@@ -1705,7 +1859,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
         .contains("non-finite f32/f64 constants cannot be represented"));
 
     let json_null = Service::new().named("json-floats").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<FloatEffectInput, Accepted<PlanOutput>>("json.clear").effects(
                     command_effects! {
@@ -1741,7 +1895,7 @@ async fn json_backed_constants_reject_nonfinite_floats_but_preserve_json_null() 
 #[tokio::test]
 async fn consistency_confirmation_matrix_fails_closed() {
     let missing_fact = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(typed_command::<PlanInput, Fact<PlanOutput>>("plan.fact"))
             .handle(fact_plan_handler),
     );
@@ -1755,9 +1909,9 @@ async fn consistency_confirmation_matrix_fails_closed() {
         .contains("must declare at least one expected projector confirmation"));
 
     let projected = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
-                typed_command::<PlanInput, Projected<PlanOutput>>("plan.projected")
+                typed_command::<PlanInput, Projected<PlanView>>("plan.projected")
                     .confirmations(plan_confirmations()),
             )
             .handle(projected_plan_handler),
@@ -1785,7 +1939,7 @@ async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
             };
         });
     let service = Service::new().named("plans").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(command)
             .handle(accepted_plan_handler),
     );
@@ -1814,7 +1968,7 @@ async fn role_redaction_erases_the_whole_confirmation_and_optimistic_plan() {
 #[tokio::test]
 async fn forged_name_valid_marker_types_are_rejected_from_wire_metadata() {
     let service = Service::new().named("forged").routes(
-        Routes::new()
+        causal_routes()
             .typed_command(
                 typed_command::<ForgedInput, Accepted<PlanOutput>>("forged.patch")
                     .effects(forged_effects()),
@@ -1835,7 +1989,7 @@ async fn forged_name_valid_marker_types_are_rejected_from_wire_metadata() {
 async fn confirmation_set_order_does_not_change_manifest_fingerprint() {
     let build = |reverse| {
         let service = Service::new().named("plans").routes(
-            Routes::new()
+            causal_routes()
                 .typed_command(
                     typed_command::<PlanInput, Accepted<PlanOutput>>("plan.create")
                         .confirmations(two_confirmation_plan(reverse)),

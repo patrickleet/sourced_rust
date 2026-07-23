@@ -134,9 +134,10 @@ where
     /// With a bus configured, each outbox row is **claimed in this same
     /// transaction** (born `InFlight` under a short lease) and published right
     /// after commit, so publication needs no separate claim and cannot race the
-    /// polling worker; a crash before publish hands the row back to the worker at
-    /// lease expiry, and a publish failure leaves it retryable. Without a bus,
-    /// rows are committed `pending` for the worker to publish.
+    /// polling worker; a crash before publish hands the row back to an
+    /// independently running worker at lease expiry, and a publish failure
+    /// leaves it retryable. Without a bus, rows are committed `pending` for the
+    /// worker to publish.
     ///
     /// Returns a [`CommitReceipt`] carrying the inserted outbox message ids.
     pub async fn commit(mut self, aggregate: &mut A) -> Result<CommitReceipt, RepositoryError> {
@@ -183,7 +184,8 @@ where
         }
 
         // Best-effort immediate publish. A failure leaves the claimed rows for
-        // the polling worker and never fails the already-committed command.
+        // an independently running polling worker and never fails the
+        // already-committed command.
         if let Some(config) = publisher {
             let _ = config.hook.publish_claimed(claimed).await;
         }

@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::claims::{map_claims_to_session, ClaimMapConfig};
 use crate::microsvc::Session;
@@ -27,6 +28,10 @@ pub struct OidcConfig {
     /// When true, valid JWT with no engine role → Unauthorized (D14 default false).
     pub require_role: bool,
     pub claim_map: ClaimMapConfig,
+    /// Signed claim paths that participate in the durable command principal
+    /// partition. Every configured claim must be present as a portable,
+    /// non-null JSON value before a bearer identity can enter causal dispatch.
+    pub principal_tenant_claims: Vec<String>,
     /// Static JWKS JSON for tests / offline (skips network).
     pub static_jwks: Option<String>,
 }
@@ -43,6 +48,7 @@ impl OidcConfig {
             require_auth: true,
             require_role: false,
             claim_map: ClaimMapConfig::default(),
+            principal_tenant_claims: Vec::new(),
             static_jwks: None,
         }
     }
@@ -70,6 +76,115 @@ impl OidcConfig {
         self.claim_map.engine_roles = roles.iter().map(|s| (*s).to_string()).collect();
         self
     }
+
+    /// Bind durable command identity to these signed tenant claim paths.
+    pub fn principal_tenant_claims(
+        mut self,
+        claims: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.principal_tenant_claims = claims.into_iter().map(Into::into).collect();
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum VerifiedAudienceSource {
+    Aud,
+    AuthorizedParty,
+    ClientId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VerifiedAudience {
+    source: VerifiedAudienceSource,
+    value: String,
+}
+
+/// Authentication proof admitted to durable causal dispatch.
+///
+/// This type is deliberately crate-private, has no public constructor, and is
+/// not deserializable. A [`Session`] or trusted header map therefore cannot be
+/// upgraded into a ledger principal by application or transport code.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedPrincipal {
+    issuer: String,
+    subject: String,
+    audiences: Vec<VerifiedAudience>,
+    tenant_partitions: Vec<(String, Value)>,
+}
+
+impl VerifiedPrincipal {
+    #[cfg(test)]
+    pub(crate) fn test_oidc(issuer: &str, subject: &str, audiences: &[&str]) -> Self {
+        assert!(
+            !issuer.trim().is_empty(),
+            "test OIDC issuer must not be empty"
+        );
+        assert!(
+            !subject.trim().is_empty(),
+            "test OIDC subject must not be empty"
+        );
+        assert!(
+            !audiences.is_empty() && audiences.iter().all(|value| !value.trim().is_empty()),
+            "test OIDC audiences must contain only non-empty values"
+        );
+        Self {
+            issuer: normalize_issuer(issuer),
+            subject: subject.to_string(),
+            audiences: audiences
+                .iter()
+                .map(|value| VerifiedAudience {
+                    source: VerifiedAudienceSource::Aud,
+                    value: (*value).to_string(),
+                })
+                .collect(),
+            tenant_partitions: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    #[cfg(test)]
+    pub(crate) fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    /// Versioned, domain-separated partition for one exact service identity.
+    pub(crate) fn partition_for_service(&self, service_id: &str) -> String {
+        let mut audiences = self
+            .audiences
+            .iter()
+            .map(|audience| audience.value.as_str())
+            .collect::<Vec<_>>();
+        audiences.sort_unstable();
+        audiences.dedup();
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "domain": "distributed.principal-partition",
+            "version": 1,
+            "service_id": service_id,
+            "issuer": self.issuer,
+            "subject": self.subject,
+            "audiences": audiences,
+            "tenant_partitions": self.tenant_partitions,
+        }))
+        .expect("verified principal partition values are JSON serializable");
+        format!("v1:sha256:{:x}", Sha256::digest(canonical))
+    }
+}
+
+impl std::fmt::Debug for VerifiedPrincipal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedPrincipal")
+            .field("issuer", &self.issuer)
+            .field("subject", &"[redacted]")
+            .field("audiences", &"[redacted]")
+            .field("tenant_partitions", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +198,7 @@ pub enum ValidationError {
     Expired,
     NotYetValid,
     MissingSub,
+    TenantPartition,
     UnknownKid,
     Jwks,
     Other(String),
@@ -100,6 +216,7 @@ impl std::fmt::Display for ValidationError {
             Self::Expired => write!(f, "token expired"),
             Self::NotYetValid => write!(f, "token not yet valid"),
             Self::MissingSub => write!(f, "missing sub"),
+            Self::TenantPartition => write!(f, "missing or invalid tenant partition claim"),
             Self::UnknownKid => write!(f, "unknown kid"),
             Self::Jwks => write!(f, "jwks unavailable"),
             Self::Other(s) => write!(f, "{s}"),
@@ -185,6 +302,16 @@ impl OidcValidator {
 
     /// Validate access-token JWT and map claims → Session.
     pub fn validate_and_map(&self, token: &str) -> Result<Session, ValidationError> {
+        self.validate_and_map_principal(token)
+            .map(|(session, _)| session)
+    }
+
+    /// Validate one bearer token and retain the signed identity material used
+    /// by durable causal dispatch alongside the ordinary authorization session.
+    pub(crate) fn validate_and_map_principal(
+        &self,
+        token: &str,
+    ) -> Result<(Session, VerifiedPrincipal), ValidationError> {
         let claims = self.validate_token(token)?;
         let session = map_claims_to_session(&claims, &self.config.claim_map).map_err(|e| {
             if e.contains("subject") {
@@ -198,7 +325,8 @@ impl OidcValidator {
                 "require_role: no engine role".into(),
             ));
         }
-        Ok(session)
+        let principal = verified_principal(&claims, &self.config)?;
+        Ok((session, principal))
     }
 
     /// Ensure JWKS is loaded (static or HTTP discovery / jwks_uri).
@@ -224,6 +352,14 @@ impl OidcValidator {
     pub async fn validate_and_map_async(&self, token: &str) -> Result<Session, ValidationError> {
         self.ensure_jwks().await?;
         self.validate_and_map(token)
+    }
+
+    pub(crate) async fn validate_and_map_principal_async(
+        &self,
+        token: &str,
+    ) -> Result<(Session, VerifiedPrincipal), ValidationError> {
+        self.ensure_jwks().await?;
+        self.validate_and_map_principal(token)
     }
 
     /// Validate and return claims JSON (for tests).
@@ -290,7 +426,9 @@ impl OidcValidator {
         let data = decode::<Value>(token, &key, &validation).map_err(map_jwt_error)?;
 
         let claims = data.claims;
-        if !audience_matches(&claims, &self.config.audience, &self.config.extra_audiences) {
+        if verified_audiences(&claims, &self.config.audience, &self.config.extra_audiences)
+            .is_none()
+        {
             return Err(ValidationError::Audience);
         }
         // token_use if present
@@ -345,48 +483,150 @@ fn jwk_alg_matches(jwk_alg: Option<&str>, expected: &str) -> bool {
     jwk_alg.is_none_or(|alg| alg.eq_ignore_ascii_case(expected))
 }
 
-/// True if any configured audience appears in `aud` (string or array), or — when
-/// `aud` is absent/empty/placeholder — in `azp` or `client_id` (Keycloak client_credentials).
-fn audience_matches(claims: &Value, expected: &str, extra: &[String]) -> bool {
-    let candidates: Vec<&str> = std::iter::once(expected)
+/// Return the signed audience assertions that satisfied policy. Source is
+/// retained for validation/audit, while principal partitioning uses the
+/// canonical verified values so equivalent IdP token representations are stable.
+fn verified_audiences(
+    claims: &Value,
+    expected: &str,
+    extra: &[String],
+) -> Option<Vec<VerifiedAudience>> {
+    let candidates: Vec<&str> = std::iter::once(expected.trim())
         .chain(extra.iter().map(|s| s.as_str()))
-        .filter(|s| !s.is_empty())
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
         .collect();
     if candidates.is_empty() {
-        return false;
+        return None;
     }
     if let Some(aud) = claims.get("aud") {
-        match aud {
-            Value::String(s) if candidates.contains(&s.as_str()) => return true,
-            Value::Array(arr)
-                if arr
-                    .iter()
-                    .any(|v| v.as_str().is_some_and(|s| candidates.contains(&s))) =>
-            {
-                return true;
-            }
-            _ => {}
+        let asserted = match aud {
+            Value::String(value) => vec![value.as_str()],
+            Value::Array(values) => values.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        let mut matched = asserted
+            .iter()
+            .filter(|value| candidates.contains(value))
+            .map(|value| VerifiedAudience {
+                source: VerifiedAudienceSource::Aud,
+                value: (*value).to_string(),
+            })
+            .collect::<Vec<_>>();
+        matched.sort();
+        matched.dedup();
+        if !matched.is_empty() {
+            return Some(matched);
         }
-        // aud present but no match — do not fall through to azp (prevents weak matches)
-        // unless aud is only "account" / empty placeholder used by some IdPs
-        let aud_placeholder = match aud {
-            Value::String(s) => s == "account" || s.is_empty(),
-            Value::Array(a) => {
-                a.is_empty()
-                    || a.iter()
-                        .all(|v| matches!(v.as_str(), Some("account") | Some("")))
+
+        // `aud` present but no match must not fall through to a weaker claim,
+        // unless it is only the explicit empty/`account` placeholder used by
+        // some client-credentials providers.
+        let placeholder = match aud {
+            Value::String(value) => value == "account" || value.is_empty(),
+            Value::Array(values) => {
+                values.is_empty()
+                    || values
+                        .iter()
+                        .all(|value| matches!(value.as_str(), Some("account") | Some("")))
             }
             _ => false,
         };
-        if !aud_placeholder {
-            return false;
+        if !placeholder {
+            return None;
         }
     }
-    let azp = claims.get("azp").and_then(|v| v.as_str());
-    let client_id = claims.get("client_id").and_then(|v| v.as_str());
-    candidates
+
+    let mut matched = Vec::new();
+    for (claim, source) in [
+        ("azp", VerifiedAudienceSource::AuthorizedParty),
+        ("client_id", VerifiedAudienceSource::ClientId),
+    ] {
+        if let Some(value) = claims.get(claim).and_then(Value::as_str) {
+            if candidates.contains(&value) {
+                matched.push(VerifiedAudience {
+                    source,
+                    value: value.to_string(),
+                });
+            }
+        }
+    }
+    matched.sort();
+    matched.dedup();
+    (!matched.is_empty()).then_some(matched)
+}
+
+fn verified_principal(
+    claims: &Value,
+    config: &OidcConfig,
+) -> Result<VerifiedPrincipal, ValidationError> {
+    let issuer = claims
+        .get("iss")
+        .and_then(Value::as_str)
+        .map(normalize_issuer)
+        .filter(|issuer| !issuer.is_empty())
+        .ok_or(ValidationError::Issuer)?;
+    let subject = claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|subject| !subject.is_empty())
+        .ok_or(ValidationError::MissingSub)?
+        .to_string();
+    let audiences = verified_audiences(claims, &config.audience, &config.extra_audiences)
+        .ok_or(ValidationError::Audience)?;
+
+    let mut claim_paths = config
+        .principal_tenant_claims
         .iter()
-        .any(|c| azp == Some(*c) || client_id == Some(*c))
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    claim_paths.sort_unstable();
+    claim_paths.dedup();
+    let mut tenant_partitions = Vec::with_capacity(claim_paths.len());
+    for path in claim_paths {
+        let value = claim_at_path(claims, path).ok_or(ValidationError::TenantPartition)?;
+        if value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty()) {
+            return Err(ValidationError::TenantPartition);
+        }
+        tenant_partitions.push((path.to_string(), canonical_json_value(value)));
+    }
+
+    Ok(VerifiedPrincipal {
+        issuer,
+        subject,
+        audiences,
+        tenant_partitions,
+    })
+}
+
+fn claim_at_path<'a>(claims: &'a Value, path: &str) -> Option<&'a Value> {
+    if path.contains('.') && !path.starts_with("urn:") {
+        let mut current = claims;
+        for segment in path.split('.') {
+            current = current.get(segment)?;
+        }
+        Some(current)
+    } else {
+        claims.get(path)
+    }
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json_value).collect()),
+        Value::Object(values) => {
+            let mut ordered = values.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|(name, _)| *name);
+            Value::Object(
+                ordered
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json_value(value)))
+                    .collect(),
+            )
+        }
+        scalar => scalar.clone(),
+    }
 }
 
 fn raw_header_alg(token: &str) -> Result<String, ()> {
@@ -464,4 +704,105 @@ async fn http_get_text(url: &str) -> Result<String, ValidationError> {
         return Err(ValidationError::Jwks);
     }
     resp.text().await.map_err(|_| ValidationError::Jwks)
+}
+
+#[cfg(test)]
+mod principal_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn config() -> OidcConfig {
+        OidcConfig::new("https://issuer.example/", "api-a")
+            .with_extra_audiences(["api-b"])
+            .principal_tenant_claims(["tenant.id", "urn:example:partition"])
+    }
+
+    fn claims(audiences: Value) -> Value {
+        json!({
+            "iss": "https://issuer.example",
+            "sub": "subject-1",
+            "aud": audiences,
+            "tenant": { "id": { "region": "us", "number": 7 } },
+            "urn:example:partition": ["blue", 2]
+        })
+    }
+
+    #[test]
+    fn principal_partition_is_stable_and_service_scoped() {
+        let left = verified_principal(&claims(json!(["api-b", "api-a"])), &config()).unwrap();
+        let right = verified_principal(&claims(json!(["api-a", "api-b"])), &config()).unwrap();
+        assert_eq!(left, right);
+        assert_eq!(
+            left.partition_for_service("todos"),
+            right.partition_for_service("todos")
+        );
+        assert_ne!(
+            left.partition_for_service("todos"),
+            left.partition_for_service("billing")
+        );
+        assert_eq!(left.issuer(), "https://issuer.example");
+        assert_eq!(left.subject(), "subject-1");
+    }
+
+    #[test]
+    fn equivalent_verified_audience_sources_share_partition_identity() {
+        let aud = verified_principal(&claims(json!("api-a")), &config()).unwrap();
+        let mut fallback_claims = claims(json!("account"));
+        fallback_claims["azp"] = json!("api-a");
+        let azp = verified_principal(&fallback_claims, &config()).unwrap();
+        assert_eq!(
+            aud.partition_for_service("todos"),
+            azp.partition_for_service("todos")
+        );
+    }
+
+    #[test]
+    fn role_changes_do_not_create_a_new_principal_partition() {
+        let mut user = claims(json!("api-a"));
+        user["role"] = json!("user");
+        let mut admin = claims(json!("api-a"));
+        admin["role"] = json!("admin");
+        assert_eq!(
+            verified_principal(&user, &config())
+                .unwrap()
+                .partition_for_service("todos"),
+            verified_principal(&admin, &config())
+                .unwrap()
+                .partition_for_service("todos")
+        );
+    }
+
+    #[test]
+    fn configured_tenant_claim_is_required_and_cannot_be_null() {
+        let mut missing = claims(json!("api-a"));
+        missing.as_object_mut().unwrap().remove("tenant");
+        assert_eq!(
+            verified_principal(&missing, &config()).unwrap_err(),
+            ValidationError::TenantPartition
+        );
+
+        let mut null = claims(json!("api-a"));
+        null["tenant"]["id"] = Value::Null;
+        assert_eq!(
+            verified_principal(&null, &config()).unwrap_err(),
+            ValidationError::TenantPartition
+        );
+
+        let mut blank = claims(json!("api-a"));
+        blank["tenant"]["id"] = json!("   ");
+        assert_eq!(
+            verified_principal(&blank, &config()).unwrap_err(),
+            ValidationError::TenantPartition
+        );
+    }
+
+    #[test]
+    fn principal_debug_redacts_subject_and_tenant_values() {
+        let principal = verified_principal(&claims(json!("api-a")), &config()).unwrap();
+        let debug = format!("{principal:?}");
+        assert!(!debug.contains("subject-1"));
+        assert!(!debug.contains("api-a"));
+        assert!(!debug.contains("region"));
+        assert!(debug.contains("[redacted]"));
+    }
 }

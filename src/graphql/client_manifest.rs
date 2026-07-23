@@ -1331,13 +1331,17 @@ fn command_operation(
 ) -> String {
     let operation_name = format!("Client_{mutation_field}");
     let (variables, arguments) = match input {
-        ClientCommandShape::None => (String::new(), String::new()),
-        ClientCommandShape::Json { .. } => {
-            ("($input: JSON!)".to_string(), "(input: $input)".to_string())
-        }
+        ClientCommandShape::None => (
+            "($commandId: ID!)".to_string(),
+            "(commandId: $commandId)".to_string(),
+        ),
+        ClientCommandShape::Json { .. } => (
+            "($commandId: ID!, $input: JSON!)".to_string(),
+            "(commandId: $commandId, input: $input)".to_string(),
+        ),
         ClientCommandShape::Object { definition } => (
-            format!("($input: {}!)", definition.name),
-            "(input: $input)".to_string(),
+            format!("($commandId: ID!, $input: {}!)", definition.name),
+            "(commandId: $commandId, input: $input)".to_string(),
         ),
     };
     let selection = match output {
@@ -1450,6 +1454,37 @@ mod tests {
         TableSchema,
     };
     use std::any::TypeId;
+
+    #[test]
+    fn generated_causal_command_operation_requires_framework_command_id() {
+        let operation = command_operation(
+            "todo_create",
+            &ClientCommandShape::Object {
+                definition: ClientTypeDef {
+                    name: "CreateTodoInput".into(),
+                    fields: Vec::new(),
+                },
+            },
+            &ClientCommandShape::Object {
+                definition: ClientTypeDef {
+                    name: "CreateTodoOutput".into(),
+                    fields: vec![ClientTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        codec: Some("string".into()),
+                        nested: None,
+                    }],
+                },
+            },
+        );
+        assert_eq!(
+            operation,
+            "mutation Client_todo_create($commandId: ID!, $input: CreateTodoInput!) { todo_create(commandId: $commandId, input: $input) { id } }"
+        );
+    }
 
     fn column(name: &str, ty: ColumnType) -> TableColumn {
         TableColumn::new(name, name, ty)
@@ -1617,8 +1652,29 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ManifestAggregate {
+        entity: crate::Entity,
+    }
+
+    impl crate::Aggregate for ManifestAggregate {
+        type ReplayError = std::convert::Infallible;
+
+        fn entity(&self) -> &crate::Entity {
+            &self.entity
+        }
+
+        fn entity_mut(&mut self) -> &mut crate::Entity {
+            &mut self.entity
+        }
+
+        fn replay_event(&mut self, _event: &crate::EventRecord) -> Result<(), Self::ReplayError> {
+            Ok(())
+        }
+    }
+
     async fn complete_handler(
-        _context: &CausalCommandContext<'_>,
+        _context: &CausalCommandContext<'_, ManifestAggregate>,
         _input: CompleteInput,
     ) -> Result<PreparedCommand<Accepted<CompletePayload>>, HandlerError> {
         Ok(
@@ -1630,6 +1686,9 @@ mod tests {
     fn full_surface() -> Surface {
         let service = Service::new().named("todos-service").routes(
             Routes::new()
+                .with_repo(crate::AggregateRepository::<_, ManifestAggregate>::new(
+                    crate::InMemoryRepository::new(),
+                ))
                 .typed_command(
                     typed_command::<CompleteInput, Accepted<CompletePayload>>("todo.complete")
                         .field_name("todos_complete")
@@ -1744,7 +1803,7 @@ mod tests {
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:2661c28cc2a19c17b1a66e64f529a812e202aaa2fde1b7dfca7f446b86a76207"
+            "sha256:68243da4f0128e3ea52e339f3125f66d7eee580a1614727c6adb5d31fc7293be"
         );
         assert_eq!(
             first.protocol_fingerprint,

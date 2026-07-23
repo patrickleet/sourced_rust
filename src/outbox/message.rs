@@ -485,6 +485,18 @@ impl OutboxMessage {
         self.set_meta(CAUSATION_ID, id);
     }
 
+    /// Replace causation metadata at the final causal-commit boundary.
+    ///
+    /// The ledger attempt, rather than handler-supplied metadata, is
+    /// authoritative for every outbox fact committed by a causal command.
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    pub(crate) fn overwrite_causation_id(&mut self, id: &str) {
+        self.metadata
+            .retain(|key, _| !key.eq_ignore_ascii_case(CAUSATION_ID));
+        self.metadata
+            .insert(CAUSATION_ID.to_string(), id.to_string());
+    }
+
     /// Set W3C trace context metadata.
     pub fn set_trace_context(&mut self, context: &TraceContext) {
         context.inject_map(&mut self.metadata);
@@ -705,6 +717,36 @@ mod tests {
         assert_eq!(message.correlation_id(), Some("req-abc"));
         assert_eq!(message.causation_id(), Some("evt-prior"));
         assert_eq!(message.meta("tenant"), Some("acme"));
+    }
+
+    #[test]
+    fn final_causal_stamp_overwrites_handler_metadata() {
+        let mut message = OutboxMessage::create("msg-1", "Event", b"{}".to_vec()).unwrap();
+        message.set_causation_id("handler-supplied");
+        message.set_meta("Causation_Id", "forged-case-alias");
+
+        message.overwrite_causation_id("ledger-causation");
+
+        assert_eq!(message.causation_id(), Some("ledger-causation"));
+        assert_eq!(
+            message
+                .metadata
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case(CAUSATION_ID))
+                .count(),
+            1
+        );
+
+        let transport: crate::bus::Message = message.into();
+        assert_eq!(transport.causation_id(), Some("ledger-causation"));
+        assert_eq!(
+            transport
+                .metadata
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(CAUSATION_ID))
+                .count(),
+            1
+        );
     }
 
     #[test]

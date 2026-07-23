@@ -40,6 +40,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - name: Run Postgres integration tests
         run: |
+          cargo test --lib --features postgres postgres_command_ledger_adapter_conformance_when_database_available --verbose
           cargo test --test postgres_repository --all-features --verbose
           cargo test --test postgres_repository_conformance --all-features --verbose
           cargo test --test postgres_transport --all-features --verbose
