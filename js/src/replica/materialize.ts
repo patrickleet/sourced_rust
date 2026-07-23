@@ -1,13 +1,13 @@
 import type { CacheIndex, CacheReader } from '../internal/cache-engine.js';
 import type { GraphqlVariables } from '../types.js';
 import { replicaIndexKey, resolveArguments } from './identity.js';
-import type {
-	ReplicaEntitySelection,
-	ReplicaOperationArtifact,
-	ReplicaRelationshipSelection,
-	ReplicaRootSelection,
-	ReplicaSparse
-} from './types.js';
+import {
+	runtimeRoot,
+	type RuntimeObjectBranch,
+	type RuntimeObjectSelection,
+	type RuntimeRootSelection
+} from './selection.js';
+import type { ReplicaOperationArtifact, ReplicaSparse } from './types.js';
 
 export type MaterializedReplicaResult<TData> = {
 	readonly data: ReplicaSparse<TData>;
@@ -16,7 +16,7 @@ export type MaterializedReplicaResult<TData> = {
 	readonly identitySignature: string;
 };
 
-type MaterializedEntity = {
+type MaterializedObject = {
 	value?: Readonly<Record<string, unknown>>;
 	complete: boolean;
 	stale: boolean;
@@ -31,6 +31,8 @@ type MaterializedBranch = {
 	identitySignature: string;
 };
 
+type RuntimeBranchSelection = RuntimeRootSelection | RuntimeObjectBranch;
+
 export function materializeReplicaOperation<
 	TData,
 	TVariables extends GraphqlVariables
@@ -43,7 +45,8 @@ export function materializeReplicaOperation<
 	let complete = true;
 	let stale = false;
 	const signatures: string[] = [];
-	for (const root of artifact.roots) {
+	for (const artifactRoot of artifact.roots) {
+		const root = runtimeRoot(artifactRoot);
 		const argumentsValue = resolveArguments(root.arguments, variables);
 		const indexKey = replicaIndexKey({ field: root.field, arguments: argumentsValue });
 		const index = reader.index(indexKey);
@@ -65,7 +68,7 @@ export function materializeReplicaOperation<
 
 function materializeBranch(
 	reader: CacheReader,
-	selection: ReplicaRootSelection | ReplicaRelationshipSelection,
+	selection: RuntimeBranchSelection,
 	index: CacheIndex | undefined,
 	variables: GraphqlVariables
 ): MaterializedBranch {
@@ -83,7 +86,7 @@ function materializeBranch(
 		return {
 			value: null,
 			present: true,
-			complete: indexComplete,
+			complete: indexComplete && selection.nullable,
 			stale,
 			identitySignature: `null:${index.metadata.staleReason ?? ''}`
 		};
@@ -99,13 +102,13 @@ function materializeBranch(
 				identitySignature: `missing-record:${index.metadata.staleReason ?? ''}`
 			};
 		}
-		const entity = materializeEntity(reader, selection.selection, key, variables);
+		const object = materializeObject(reader, selection.selection, key, variables);
 		return {
-			value: entity.value,
-			present: entity.value !== undefined,
-			complete: indexComplete && index.records.length === 1 && entity.complete,
-			stale: stale || entity.stale,
-			identitySignature: entity.identitySignature
+			value: object.value,
+			present: object.value !== undefined,
+			complete: indexComplete && index.records.length === 1 && object.complete,
+			stale: stale || object.stale,
+			identitySignature: object.identitySignature
 		};
 	}
 
@@ -114,12 +117,12 @@ function materializeBranch(
 	let childrenStale = false;
 	const signatures: string[] = [];
 	for (const key of index.records) {
-		const entity = materializeEntity(reader, selection.selection, key, variables);
-		if (entity.value !== undefined) values.push(entity.value);
+		const object = materializeObject(reader, selection.selection, key, variables);
+		if (object.value !== undefined) values.push(object.value);
 		else childrenComplete = false;
-		childrenComplete &&= entity.complete;
-		childrenStale ||= entity.stale;
-		signatures.push(entity.identitySignature);
+		childrenComplete &&= object.complete;
+		childrenStale ||= object.stale;
+		signatures.push(object.identitySignature);
 	}
 	return {
 		value: Object.freeze(values),
@@ -130,12 +133,12 @@ function materializeBranch(
 	};
 }
 
-function materializeEntity(
+function materializeObject(
 	reader: CacheReader,
-	selection: ReplicaEntitySelection,
+	selection: RuntimeObjectSelection,
 	key: string,
 	variables: GraphqlVariables
-): MaterializedEntity {
+): MaterializedObject {
 	const record = reader.recordMeta(key);
 	if (!record) {
 		return {
@@ -148,31 +151,33 @@ function materializeEntity(
 	let complete = true;
 	let stale = false;
 	const nestedSignatures: string[] = [];
-	for (const field of selection.fields) {
-		const presence = reader.field(key, field.field);
-		if (!presence.present) {
+	for (const member of selection.members) {
+		if (member.kind !== 'scalar') continue;
+		const presence = reader.field(key, member.field);
+		if (!presence.present || (presence.value === null && !member.nullable)) {
 			complete = false;
 			continue;
 		}
-		if (field.expose !== false) {
-			defineOutputValue(output, field.responseKey, presence.value);
+		if (member.expose !== false) {
+			defineOutputValue(output, member.responseKey, presence.value);
 		}
 	}
 
-	for (const relationship of selection.relationships ?? []) {
-		const relationshipResult = materializeRelationship(
+	for (const member of selection.members) {
+		if (member.kind !== 'branch') continue;
+		const branchResult = materializeNestedBranch(
 			reader,
 			key,
 			record.incarnation,
-			relationship,
+			member,
 			variables
 		);
-		if (relationship.expose !== false && relationshipResult.present) {
-			defineOutputValue(output, relationship.responseKey, relationshipResult.value);
+		if (member.expose !== false && branchResult.present) {
+			defineOutputValue(output, member.responseKey, branchResult.value);
 		}
-		complete &&= relationshipResult.complete;
-		stale ||= relationshipResult.stale;
-		nestedSignatures.push(`${relationship.field}:${relationshipResult.identitySignature}`);
+		complete &&= branchResult.complete;
+		stale ||= branchResult.stale;
+		nestedSignatures.push(`${member.field}:${branchResult.identitySignature}`);
 	}
 
 	return {
@@ -183,11 +188,11 @@ function materializeEntity(
 	};
 }
 
-function materializeRelationship(
+function materializeNestedBranch(
 	reader: CacheReader,
 	parentKey: string,
 	parentIncarnation: string,
-	selection: ReplicaRelationshipSelection,
+	selection: RuntimeObjectBranch,
 	variables: GraphqlVariables
 ): MaterializedBranch {
 	const argumentsValue = resolveArguments(selection.arguments, variables);

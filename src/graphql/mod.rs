@@ -16,6 +16,7 @@ pub mod surface;
 // pool/server independent. `dctl` and the runtime engine must compile the same
 // surface without pulling in async-graphql or a database adapter.
 mod commands;
+mod complexity_contract;
 mod filter;
 mod permissions;
 mod types;

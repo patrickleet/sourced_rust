@@ -20,7 +20,8 @@ use crate::table::{
 };
 
 use super::client_manifest::{
-    ClientManifestError, DistributedClientManifest, DistributedClientSurfaceExport,
+    ClientExecutionLimits, ClientManifestError, DistributedClientManifest,
+    DistributedClientSurfaceExport,
 };
 use super::command_contract::TypedServiceCommandBinding;
 use super::commands::GraphqlCommands;
@@ -389,7 +390,11 @@ impl GraphqlEngine {
         let surface = self.surface_for_role(role).ok_or_else(|| {
             ClientManifestError(format!("role `{role}` is not configured for GraphQL"))
         })?;
-        DistributedClientSurfaceExport::from_selected(service_id, surface)
+        DistributedClientSurfaceExport::from_selected_with_execution(
+            service_id,
+            surface,
+            ClientExecutionLimits::from_runtime(self.inner.max_depth, self.inner.max_complexity)?,
+        )
     }
 
     pub fn client_manifest_for_role(
@@ -427,7 +432,11 @@ impl GraphqlEngine {
         let surface =
             surface_for_application(&self.inner.surface, application, &roles, &grants_by_role)
                 .map_err(ClientManifestError)?;
-        DistributedClientSurfaceExport::from_selected(service_id, surface)
+        DistributedClientSurfaceExport::from_selected_with_execution(
+            service_id,
+            surface,
+            ClientExecutionLimits::from_runtime(self.inner.max_depth, self.inner.max_complexity)?,
+        )
     }
 
     pub fn client_manifest_for_application(
@@ -1070,7 +1079,7 @@ impl GraphqlEngineBuilder {
             anonymous_role: "anonymous".into(),
             default_limit: 100,
             max_limit: 1000,
-            max_depth: 8,
+            max_depth: super::complexity::DEFAULT_MAX_DEPTH,
             max_complexity: super::complexity::DEFAULT_MAX_COMPLEXITY,
             max_in_list: 1000,
             max_bool_width: 256,
@@ -1663,9 +1672,11 @@ impl GraphqlEngineBuilder {
                     .expect("protocol configuration validated a service ID");
                 let (authorization_fingerprint, claim_keys) =
                     role_authorization_info(role, &self.permissions)?;
-                let manifest = DistributedClientSurfaceExport::from_selected(
+                let manifest = DistributedClientSurfaceExport::from_selected_with_execution(
                     service_id,
                     Arc::clone(&role_surface),
+                    ClientExecutionLimits::from_runtime(self.max_depth, self.max_complexity)
+                        .map_err(|error| GraphqlBuildError(error.to_string()))?,
                 )
                 .and_then(|export| export.manifest())
                 .map_err(|error| {
@@ -2175,6 +2186,30 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn client_manifest_exports_the_exact_runtime_execution_limits() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .max_depth(6)
+            .max_complexity(37)
+            .build()
+            .unwrap();
+
+        let manifest = engine.client_manifest_for_role("user").unwrap();
+        assert_eq!(manifest.execution.max_depth, 6);
+        assert_eq!(manifest.execution.max_complexity, 37);
+        assert_eq!(manifest.execution.complexity.version, 1);
+        assert_eq!(manifest.execution.complexity.scalar, 1);
+        assert_eq!(manifest.execution.complexity.list_fanout, 5);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn configured_protocol_attaches_stable_role_and_identity_bound_envelopes() {
         use crate::graphql::identity::VerifiedPrincipal;
 
@@ -2531,7 +2566,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:b45b3e96c1573607b726d8b4467a5eaea95d590f892b1c2ec822a7e8695c0cf9"
+            "sha256:266c9e43a7d9e8985fdfdef468996da570057b92d8b8f1e50e86b88b93ffcb1e"
         );
     }
 
@@ -3090,28 +3125,28 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:50c7bb9faeaf4c6d18e31ba6b61a8b919a78f00e86b9cb6bedae824f827fcdec",
+        manifest: "sha256:e863c15521ebbf2196ef03e226515ac8ca70bab69e1e1cf53803aff0490878b5",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:40baafb93b18f9af50292cc3d8498fef1a59b7ac2b1fdfa4e0859c018b2e230b",
+        manifest: "sha256:49056576b1492df41c551a4339a5734ab26fe80b08308e4dcedd0e94f4e1a15b",
         static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
         runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:50c7bb9faeaf4c6d18e31ba6b61a8b919a78f00e86b9cb6bedae824f827fcdec",
+        manifest: "sha256:e863c15521ebbf2196ef03e226515ac8ca70bab69e1e1cf53803aff0490878b5",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:6c1a02dcb6543ebb3d74bc244326025cdb08a6246d1d52221ffbd27bd6e33213",
+        manifest: "sha256:a6fe4ce8142f89ff52445cb73851408b5c0a1e5d6b3c45ccdca80a8992327d44",
         static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
         runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
     };
@@ -3360,6 +3395,142 @@ mod client_surface_parity_tests {
             relationships: Vec::new(),
             kind: TableKind::ReadModel,
         }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn policy_parents() -> TableSchema {
+        TableSchema {
+            model_name: "PolicyParentView".into(),
+            table_name: "policy_parents".into(),
+            columns: vec![TableColumn {
+                primary_key: true,
+                ..TableColumn::new("parent_id", "parent_id", ColumnType::Text)
+            }],
+            primary_key: PrimaryKey::new(["parent_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: vec![RelationshipDef {
+                field_name: "children".into(),
+                kind: RelationshipKind::HasMany,
+                target_model: "PolicyChildView".into(),
+                foreign_key: Some("parent_id".into()),
+                through: None,
+                target_foreign_key: None,
+            }],
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn policy_children() -> TableSchema {
+        TableSchema {
+            model_name: "PolicyChildView".into(),
+            table_name: "policy_children".into(),
+            columns: vec![
+                TableColumn {
+                    primary_key: true,
+                    ..TableColumn::new("child_id", "child_id", ColumnType::Text)
+                },
+                TableColumn::new("parent_id", "parent_id", ColumnType::Text),
+                TableColumn::new("label", "label", ColumnType::Text),
+                TableColumn::new("visibility", "visibility", ColumnType::Text),
+            ],
+            primary_key: PrimaryKey::new(["child_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn relationship_where_applies_the_target_models_row_policy() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE policy_parents (parent_id TEXT PRIMARY KEY NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE policy_children (\
+                child_id TEXT PRIMARY KEY NOT NULL, \
+                parent_id TEXT NOT NULL, \
+                label TEXT NOT NULL, \
+                visibility TEXT NOT NULL\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO policy_parents (parent_id) VALUES \
+                ('parent-allowed'), \
+                ('parent-denied')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO policy_children (child_id, parent_id, label, visibility) VALUES \
+                ('child-allowed', 'parent-allowed', 'match', 'allowed'), \
+                ('child-denied', 'parent-denied', 'match', 'denied')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let project = DistributedProjectManifest::new("relationship-policy-service")
+            .table_schema(policy_parents())
+            .table_schema(policy_children());
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["restricted"]);
+        insert_permission(
+            &mut builder,
+            "PolicyParentView",
+            "restricted",
+            read().all_columns(),
+        );
+        insert_permission(
+            &mut builder,
+            "PolicyChildView",
+            "restricted",
+            read().all_columns().rows(col("visibility").eq("allowed")),
+        );
+        let engine = builder.build().unwrap();
+        let mut session = Session::new();
+        session.set(crate::microsvc::ROLE_KEY, "restricted");
+
+        let response = engine
+            .execute(
+                &session,
+                Request::new(
+                    r#"{
+                        policy_parents(
+                            where: { children: { label: { _eq: "match" } } }
+                        ) {
+                            parent_id
+                        }
+                    }"#,
+                ),
+            )
+            .await;
+
+        assert!(response.errors.is_empty(), "{response:?}");
+        assert_eq!(
+            response.data.into_json().unwrap(),
+            serde_json::json!({
+                "policy_parents": [
+                    {"parent_id": "parent-allowed"}
+                ]
+            })
+        );
     }
 
     #[cfg(feature = "sqlite")]

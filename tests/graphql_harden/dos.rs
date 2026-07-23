@@ -36,6 +36,34 @@ async fn where_max_depth_rejected() {
 }
 
 #[tokio::test]
+async fn graphql_depth_counts_root_and_leaf_fields() {
+    let pool = seed_orders().await;
+    let too_shallow = GraphqlEngine::builder(pool.clone())
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
+        .max_depth(1)
+        .build()
+        .unwrap();
+    let exact = GraphqlEngine::builder(pool)
+        .roles(&["user"])
+        .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
+        .max_depth(2)
+        .build()
+        .unwrap();
+    let s = session("user", "tenant-a");
+    let rejected = too_shallow
+        .execute(&s, Request::new("{ orders { order_id } }"))
+        .await;
+    assert!(!rejected.errors.is_empty(), "root plus leaf has depth two");
+    assert_no_sql_leak(&rejected);
+
+    let accepted = exact
+        .execute(&s, Request::new("{ orders { order_id } }"))
+        .await;
+    assert!(accepted.errors.is_empty(), "{accepted:?}");
+}
+
+#[tokio::test]
 async fn max_in_list_rejected() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)

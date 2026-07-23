@@ -10,8 +10,10 @@ use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::manifest::{
-    hash_bytes, ClientManifest, ManifestArgument, ManifestArgumentKind, ManifestField,
-    ManifestModel, ManifestRoot, RootKind, RootOperation,
+    hash_bytes, ClientManifest, ManifestAggregateSemantics, ManifestArgument, ManifestArgumentKind,
+    ManifestExecutionLimits, ManifestField, ManifestModel, ManifestPagination,
+    ManifestRelationshipKind, ManifestRelationshipMaintenance, ManifestRoot, RootKind,
+    RootOperation,
 };
 use super::{ClientCompileError, ClientDocument, ClientRouteDiscovery, GeneratedRoutePlan};
 
@@ -60,14 +62,48 @@ pub(crate) struct CompiledRoot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledObject {
-    pub(crate) model_id: String,
-    pub(crate) identity_fields: Vec<String>,
+    pub(crate) typename: String,
+    pub(crate) storage: CompiledStorage,
     pub(crate) members: Vec<CompiledMember>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum CompiledMember {
     Scalar(CompiledScalar),
+    Branch(Box<CompiledBranch>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CompiledStorage {
+    Normalized {
+        model_id: String,
+        identity_fields: Vec<String>,
+    },
+    Embedded,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledBranch {
+    pub(crate) semantic: CompiledBranchSemantic,
+    pub(crate) response_key: String,
+    pub(crate) field: String,
+    pub(crate) cardinality: Cardinality,
+    pub(crate) nullable: bool,
+    pub(crate) arguments: BTreeMap<String, CompiledArgument>,
+    pub(crate) dependencies: Vec<String>,
+    pub(crate) coverage: Option<CompiledCoverage>,
+    pub(crate) maintenance: Option<String>,
+    pub(crate) selection: CompiledObject,
+    relationship_kind: Option<ManifestRelationshipKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompiledBranchSemantic {
+    Relationship,
+    Aggregate,
+    AggregateFields,
+    AggregateNodes,
 }
 
 struct MergedField<'a> {
@@ -113,6 +149,8 @@ pub(crate) struct CompiledCoverage {
     pub(crate) kind: String,
     pub(crate) offset_argument: Option<String>,
     pub(crate) limit_argument: Option<String>,
+    pub(crate) default_limit: Option<u64>,
+    pub(crate) max_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -202,16 +240,6 @@ pub(crate) fn compile_document(
                 root_field.first.node.name.pos,
             )
         })?;
-    if root_manifest.kind == RootKind::Aggregate {
-        return Err(source_error(
-            "client.root.aggregate_unsupported",
-            format!(
-                "aggregate root `{root_name}` is not supported by the first client compiler slice"
-            ),
-            document,
-            root_field.first.node.name.pos,
-        ));
-    }
     let model = manifest.models.get(&root_manifest.model).ok_or_else(|| {
         ClientCompileError::manifest(
             "client.manifest.root_model",
@@ -221,44 +249,83 @@ pub(crate) fn compile_document(
             ),
         )
     })?;
-    let identity = model.identity().ok_or_else(|| {
-        source_error(
-            "client.model.embedded_unsupported",
-            format!(
-                "root `{root_name}` returns embedded model `{}`; the first compiler slice requires a normalized identity",
-                model.id
-            ),
-            document,
-            root_field.first.node.name.pos,
-        )
-    })?;
-    let compiled_arguments =
-        compile_arguments(&root_field.first.node, root_manifest, &variables, document)?;
     validate_reachable_fragment_graph(&parsed.fragments, document, &operation.node.selection_set)?;
-    let mut members = compile_scalar_selections(&root_field, model, document, &mut expander, 2)?;
-    validate_used_variables(&variables, &compiled_arguments, document, operation.pos)?;
+    let mut used_variables = BTreeSet::new();
+    let compiled_arguments = compile_arguments(
+        &root_field.first.node,
+        &root_manifest.name,
+        &root_manifest.arguments,
+        &variables,
+        &mut used_variables,
+        document,
+    )?;
+    let selection = match root_manifest.kind {
+        RootKind::List | RootKind::ByPk => compile_model_object(
+            &root_field,
+            model,
+            manifest,
+            &variables,
+            &mut used_variables,
+            document,
+            &mut expander,
+            2,
+        )?,
+        RootKind::Aggregate => {
+            let semantics = root_manifest.aggregate.as_ref().ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.manifest.aggregate_semantics",
+                    format!("aggregate root `{root_name}` has no aggregate semantics"),
+                )
+            })?;
+            compile_aggregate_object(
+                &root_field,
+                model,
+                semantics,
+                &root_manifest.arguments,
+                &root_manifest.dependencies,
+                manifest,
+                &variables,
+                &mut used_variables,
+                document,
+                &mut expander,
+                2,
+            )?
+        }
+    };
+    validate_used_variables(&variables, &used_variables, document, operation.pos)?;
     expander.reject_unused_fragments()?;
-    inject_wire_fields(&mut members, model, document, root_field.first.pos)?;
 
     let cardinality = match root_manifest.kind {
         RootKind::List => Cardinality::Many,
         RootKind::ByPk => Cardinality::One,
-        RootKind::Aggregate => unreachable!("rejected above"),
+        RootKind::Aggregate => Cardinality::One,
     };
     let root = CompiledRoot {
         response_key: root_field.first.node.response_key().node.to_string(),
         field: root_name.to_string(),
         cardinality,
-        nullable: cardinality == Cardinality::One,
+        nullable: matches!(root_manifest.kind, RootKind::ByPk | RootKind::Aggregate),
         arguments: compiled_arguments,
         dependencies: root_manifest.dependencies.clone(),
-        coverage: compile_coverage(root_manifest, document, root_field.first.pos)?,
-        selection: CompiledObject {
-            model_id: model.id.clone(),
-            identity_fields: identity.iter().map(|field| field.name.clone()).collect(),
-            members,
+        coverage: match root_manifest.kind {
+            RootKind::Aggregate => Some(complete_coverage()),
+            RootKind::List | RootKind::ByPk => compile_coverage(
+                root_manifest.pagination.as_ref(),
+                &root_manifest.arguments,
+                &root_manifest.name,
+                document,
+                root_field.first.pos,
+            )?,
         },
+        selection,
     };
+    validate_execution_limits(
+        &root,
+        root_manifest.kind,
+        &manifest.execution,
+        document,
+        operation.pos,
+    )?;
 
     let query_document = render_operation(OperationType::Query, &name, &variables, &root)?;
     let query_hash = hash_bytes(query_document.as_bytes());
@@ -294,6 +361,105 @@ pub(crate) fn compile_document(
         variables,
         root,
         route,
+    })
+}
+
+fn validate_execution_limits(
+    root: &CompiledRoot,
+    kind: RootKind,
+    execution: &ManifestExecutionLimits,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    let depth = compiled_object_depth(&root.selection, 1);
+    if depth > execution.max_depth {
+        return Err(source_error(
+            "client.operation.depth_limit",
+            format!(
+                "compiled operation depth {depth} exceeds the selected service max_depth {}",
+                execution.max_depth
+            ),
+            document,
+            position,
+        ));
+    }
+
+    let weights = &execution.complexity;
+    let child = compiled_object_complexity(&root.selection, weights);
+    let complexity = match kind {
+        RootKind::List => weights
+            .list_root
+            .saturating_add(weights.list_fanout.saturating_mul(child)),
+        RootKind::ByPk => weights.by_pk.saturating_add(child),
+        RootKind::Aggregate => weights.aggregate.saturating_add(child),
+    };
+    if complexity > execution.max_complexity {
+        return Err(source_error(
+            "client.operation.complexity_limit",
+            format!(
+                "compiled operation complexity {complexity} exceeds the selected service max_complexity {}",
+                execution.max_complexity
+            ),
+            document,
+            position,
+        ));
+    }
+    Ok(())
+}
+
+fn compiled_object_depth(selection: &CompiledObject, parent_depth: u64) -> u64 {
+    selection
+        .members
+        .iter()
+        .map(|member| {
+            let field_depth = parent_depth.saturating_add(1);
+            match member {
+                CompiledMember::Scalar(_) => field_depth,
+                CompiledMember::Branch(branch) => {
+                    field_depth.max(compiled_object_depth(&branch.selection, field_depth))
+                }
+            }
+        })
+        .max()
+        .unwrap_or(parent_depth)
+}
+
+fn compiled_object_complexity(
+    selection: &CompiledObject,
+    weights: &super::manifest::ManifestComplexityWeights,
+) -> u64 {
+    selection.members.iter().fold(0, |total, member| {
+        let cost = match member {
+            CompiledMember::Scalar(_) => weights.scalar,
+            CompiledMember::Branch(branch) => match branch.semantic {
+                CompiledBranchSemantic::Relationship => {
+                    let child = compiled_object_complexity(&branch.selection, weights);
+                    match branch
+                        .relationship_kind
+                        .expect("relationship branches retain their manifest kind")
+                    {
+                        ManifestRelationshipKind::BelongsTo => {
+                            weights.belongs_to.saturating_add(child)
+                        }
+                        ManifestRelationshipKind::HasMany => weights
+                            .has_many
+                            .saturating_add(weights.list_fanout.saturating_mul(child)),
+                        ManifestRelationshipKind::ManyToMany => weights
+                            .m2m
+                            .saturating_add(weights.list_fanout.saturating_mul(child)),
+                    }
+                }
+                CompiledBranchSemantic::Aggregate => weights
+                    .aggregate
+                    .saturating_add(compiled_object_complexity(&branch.selection, weights)),
+                CompiledBranchSemantic::AggregateFields => weights.scalar,
+                CompiledBranchSemantic::AggregateNodes => weights
+                    .list_fanout
+                    .saturating_mul(compiled_object_complexity(&branch.selection, weights))
+                    .max(weights.scalar),
+            },
+        };
+        total.saturating_add(cost)
     })
 }
 
@@ -802,12 +968,13 @@ fn single_root_field<'a>(
 
 fn compile_arguments(
     field: &Field,
-    root: &ManifestRoot,
+    owner: &str,
+    allowed_arguments: &[ManifestArgument],
     variables: &[CompiledVariable],
+    used_variables: &mut BTreeSet<String>,
     document: &ClientDocument,
 ) -> Result<BTreeMap<String, CompiledArgument>, ClientCompileError> {
-    let manifest_arguments = root
-        .arguments
+    let manifest_arguments = allowed_arguments
         .iter()
         .map(|argument| (argument.name.as_str(), argument))
         .collect::<BTreeMap<_, _>>();
@@ -821,10 +988,7 @@ fn compile_arguments(
         let Some(manifest_argument) = manifest_arguments.get(name_string) else {
             return Err(source_error(
                 "client.argument.denied_or_unknown",
-                format!(
-                    "argument `{name_string}` is absent from selected root `{}`",
-                    root.name
-                ),
+                format!("argument `{name_string}` is absent from selected field `{owner}`",),
                 document,
                 name.pos,
             ));
@@ -863,6 +1027,7 @@ fn compile_arguments(
                         value.pos,
                     ));
                 }
+                used_variables.insert(variable.to_string());
                 CompiledArgument::Variable(variable.to_string())
             }
             literal => {
@@ -876,13 +1041,12 @@ fn compile_arguments(
         };
         result.insert(name_string.to_string(), compiled);
     }
-    for argument in &root.arguments {
+    for argument in allowed_arguments {
         if !argument.nullable && !result.contains_key(&argument.name) {
             return Err(source_error(
                 "client.argument.required",
                 format!(
-                    "root `{}` requires argument `{}` of type `{}`",
-                    root.name,
+                    "field `{owner}` requires argument `{}` of type `{}`",
                     argument.name,
                     argument.graphql_type()
                 ),
@@ -896,26 +1060,19 @@ fn compile_arguments(
 
 fn validate_used_variables(
     variables: &[CompiledVariable],
-    arguments: &BTreeMap<String, CompiledArgument>,
+    used: &BTreeSet<String>,
     document: &ClientDocument,
     position: Pos,
 ) -> Result<(), ClientCompileError> {
-    let used = arguments
-        .values()
-        .filter_map(|argument| match argument {
-            CompiledArgument::Variable(name) => Some(name.as_str()),
-            CompiledArgument::Literal { .. } => None,
-        })
-        .collect::<BTreeSet<_>>();
     if let Some(variable) = variables
         .iter()
-        .find(|variable| !used.contains(variable.name.as_str()))
+        .find(|variable| !used.contains(&variable.name))
     {
         return Err(source_error(
             "client.variable.unused",
             format!(
-                "variable `${}` is defined but is not a direct root argument",
-                variable.name
+                "variable `${}` is defined but is not used by the compiled operation",
+                variable.name,
             ),
             document,
             position,
@@ -924,13 +1081,17 @@ fn validate_used_variables(
     Ok(())
 }
 
-fn compile_scalar_selections<'ast>(
+#[allow(clippy::too_many_arguments)]
+fn compile_model_object<'ast>(
     field: &MergedField<'ast>,
     model: &ManifestModel,
+    manifest: &ClientManifest,
+    variables: &[CompiledVariable],
+    used_variables: &mut BTreeSet<String>,
     document: &ClientDocument,
     expander: &mut FragmentExpander<'ast, '_>,
     depth: usize,
-) -> Result<Vec<CompiledMember>, ClientCompileError> {
+) -> Result<CompiledObject, ClientCompileError> {
     let selected_fields = expander.merge_object(
         &field.selection_sets,
         &model.typename,
@@ -941,7 +1102,7 @@ fn compile_scalar_selections<'ast>(
         return Err(source_error(
             "client.selection.empty",
             format!(
-                "root `{}` must select at least one scalar field",
+                "object field `{}` must select at least one field",
                 field.first.node.name.node
             ),
             document,
@@ -950,29 +1111,145 @@ fn compile_scalar_selections<'ast>(
     }
     let mut result = Vec::with_capacity(selected_fields.len());
     for selected in selected_fields {
-        if !selected.first.node.arguments.is_empty() {
-            return Err(source_error(
-                "client.selection.field_arguments",
-                format!(
-                    "scalar field `{}` must not have arguments",
-                    selected.first.node.name.node
-                ),
-                document,
-                selected.first.pos,
-            ));
-        }
         let response_key = selected.first.node.response_key().node.as_str();
         let field_name = selected.first.node.name.node.as_str();
         if let Some(relationship) = model.relationship(field_name) {
-            return Err(source_error(
-                "client.selection.relationship_unsupported",
-                format!(
-                    "relationship `{}` on model `{}` is authorized but not supported by the first compiler slice",
-                    relationship.name, model.id
-                ),
+            if selected.selection_sets.is_empty() {
+                return Err(source_error(
+                    "client.selection.object_required",
+                    format!(
+                        "relationship `{}` on model `{}` requires an object selection",
+                        relationship.name, model.id
+                    ),
+                    document,
+                    selected.first.node.selection_set.pos,
+                ));
+            }
+            let target = manifest
+                .models
+                .get(&relationship.target_model)
+                .ok_or_else(|| {
+                    ClientCompileError::manifest(
+                        "client.manifest.relationship_target",
+                        format!(
+                            "relationship `{}.{}` references absent target model `{}`",
+                            model.id, relationship.name, relationship.target_model
+                        ),
+                    )
+                })?;
+            let arguments = compile_arguments(
+                &selected.first.node,
+                &format!("{}.{}", model.id, relationship.name),
+                &relationship.arguments,
+                variables,
+                used_variables,
                 document,
-                selected.first.node.name.pos,
-            ));
+            )?;
+            let selection = compile_model_object(
+                &selected,
+                target,
+                manifest,
+                variables,
+                used_variables,
+                document,
+                expander,
+                depth + 1,
+            )?;
+            let cardinality = if relationship.list {
+                Cardinality::Many
+            } else {
+                Cardinality::One
+            };
+            let maintenance = match relationship.maintenance {
+                ManifestRelationshipMaintenance::Local => "local",
+                ManifestRelationshipMaintenance::Revalidate => "revalidate",
+            };
+            result.push(CompiledMember::Branch(Box::new(CompiledBranch {
+                semantic: CompiledBranchSemantic::Relationship,
+                response_key: response_key.to_string(),
+                field: relationship.name.clone(),
+                cardinality,
+                nullable: relationship.nullable,
+                arguments,
+                dependencies: relationship.dependencies.clone(),
+                coverage: compile_coverage(
+                    relationship.pagination.as_ref(),
+                    &relationship.arguments,
+                    &format!("{}.{}", model.id, relationship.name),
+                    document,
+                    selected.first.pos,
+                )?,
+                maintenance: Some(maintenance.into()),
+                selection,
+                relationship_kind: Some(relationship.kind),
+            })));
+            continue;
+        }
+        if let Some((relationship, aggregate)) = model.relationships.iter().find_map(|candidate| {
+            candidate
+                .aggregate
+                .as_ref()
+                .filter(|aggregate| aggregate.name == field_name)
+                .map(|aggregate| (candidate, aggregate))
+        }) {
+            if selected.selection_sets.is_empty() {
+                return Err(source_error(
+                    "client.selection.object_required",
+                    format!(
+                        "relationship aggregate `{}` on model `{}` requires an object selection",
+                        aggregate.name, model.id
+                    ),
+                    document,
+                    selected.first.node.selection_set.pos,
+                ));
+            }
+            let target = manifest
+                .models
+                .get(&relationship.target_model)
+                .ok_or_else(|| {
+                    ClientCompileError::manifest(
+                        "client.manifest.relationship_target",
+                        format!(
+                            "relationship aggregate `{}.{}` references absent target model `{}`",
+                            model.id, aggregate.name, relationship.target_model
+                        ),
+                    )
+                })?;
+            let arguments = compile_arguments(
+                &selected.first.node,
+                &format!("{}.{}", model.id, aggregate.name),
+                &aggregate.arguments,
+                variables,
+                used_variables,
+                document,
+            )?;
+            let selection = compile_aggregate_object(
+                &selected,
+                target,
+                &aggregate.semantics,
+                &aggregate.arguments,
+                &aggregate.dependencies,
+                manifest,
+                variables,
+                used_variables,
+                document,
+                expander,
+                depth + 1,
+            )?;
+            result.push(CompiledMember::Branch(Box::new(CompiledBranch {
+                semantic: CompiledBranchSemantic::Aggregate,
+                response_key: response_key.to_string(),
+                field: aggregate.name.clone(),
+                cardinality: Cardinality::One,
+                nullable: true,
+                arguments,
+                dependencies: aggregate.dependencies.clone(),
+                coverage: Some(complete_coverage()),
+                maintenance: Some("revalidate".into()),
+                selection,
+                relationship_kind: None,
+            })));
+            continue;
         }
         let manifest_field = if field_name == "__typename" {
             None
@@ -989,12 +1266,18 @@ fn compile_scalar_selections<'ast>(
                 )
             })?)
         };
+        if !selected.first.node.arguments.is_empty() {
+            return Err(source_error(
+                "client.selection.field_arguments",
+                format!("scalar field `{field_name}` must not have arguments"),
+                document,
+                selected.first.pos,
+            ));
+        }
         if !selected.selection_sets.is_empty() {
             return Err(source_error(
-                "client.selection.nested_unsupported",
-                format!(
-                    "field `{field_name}` has a nested selection; only scalar leaves are supported"
-                ),
+                "client.selection.scalar_nested",
+                format!("scalar field `{field_name}` cannot have a nested selection"),
                 document,
                 selected.first.node.selection_set.pos,
             ));
@@ -1010,7 +1293,260 @@ fn compile_scalar_selections<'ast>(
             },
         }));
     }
-    Ok(result)
+    if model.identity().is_some() {
+        inject_wire_fields(&mut result, model, document, field.first.pos)?;
+    }
+    Ok(CompiledObject {
+        typename: model.typename.clone(),
+        storage: compiled_storage(model),
+        members: result,
+    })
+}
+
+fn compiled_storage(model: &ManifestModel) -> CompiledStorage {
+    match model.identity() {
+        Some(identity) => CompiledStorage::Normalized {
+            model_id: model.id.clone(),
+            identity_fields: identity.iter().map(|field| field.name.clone()).collect(),
+        },
+        None => CompiledStorage::Embedded,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_aggregate_object<'ast>(
+    field: &MergedField<'ast>,
+    model: &ManifestModel,
+    semantics: &ManifestAggregateSemantics,
+    arguments: &[ManifestArgument],
+    dependencies: &[String],
+    manifest: &ClientManifest,
+    variables: &[CompiledVariable],
+    used_variables: &mut BTreeSet<String>,
+    document: &ClientDocument,
+    expander: &mut FragmentExpander<'ast, '_>,
+    depth: usize,
+) -> Result<CompiledObject, ClientCompileError> {
+    let selected_fields = expander.merge_object(
+        &field.selection_sets,
+        &semantics.wrapper_typename,
+        depth,
+        "aggregate field",
+    )?;
+    if selected_fields.is_empty() {
+        return Err(source_error(
+            "client.selection.empty",
+            format!(
+                "aggregate field `{}` must select `aggregate`, `nodes`, or `__typename`",
+                field.first.node.name.node
+            ),
+            document,
+            field.first.node.selection_set.pos,
+        ));
+    }
+    let mut members = Vec::with_capacity(selected_fields.len());
+    for selected in selected_fields {
+        let response_key = selected.first.node.response_key().node.to_string();
+        let field_name = selected.first.node.name.node.as_str();
+        if !selected.first.node.arguments.is_empty() {
+            return Err(source_error(
+                "client.selection.field_arguments",
+                format!("aggregate member `{field_name}` must not have arguments"),
+                document,
+                selected.first.pos,
+            ));
+        }
+        match field_name {
+            "aggregate" if semantics.count => {
+                if selected.selection_sets.is_empty() {
+                    return Err(source_error(
+                        "client.selection.object_required",
+                        "aggregate summary requires an object selection",
+                        document,
+                        selected.first.node.selection_set.pos,
+                    ));
+                }
+                members.push(CompiledMember::Branch(Box::new(CompiledBranch {
+                    semantic: CompiledBranchSemantic::AggregateFields,
+                    response_key,
+                    field: "aggregate".into(),
+                    cardinality: Cardinality::One,
+                    nullable: true,
+                    arguments: BTreeMap::new(),
+                    dependencies: dependencies.to_vec(),
+                    coverage: Some(complete_coverage()),
+                    maintenance: None,
+                    selection: compile_aggregate_fields_object(
+                        &selected,
+                        semantics,
+                        document,
+                        expander,
+                        depth + 1,
+                    )?,
+                    relationship_kind: None,
+                })));
+            }
+            "nodes" if semantics.nodes => {
+                if selected.selection_sets.is_empty() {
+                    return Err(source_error(
+                        "client.selection.object_required",
+                        "aggregate nodes require an object selection",
+                        document,
+                        selected.first.node.selection_set.pos,
+                    ));
+                }
+                members.push(CompiledMember::Branch(Box::new(CompiledBranch {
+                    semantic: CompiledBranchSemantic::AggregateNodes,
+                    response_key,
+                    field: "nodes".into(),
+                    cardinality: Cardinality::Many,
+                    nullable: false,
+                    arguments: BTreeMap::new(),
+                    dependencies: dependencies.to_vec(),
+                    coverage: compile_coverage(
+                        Some(&semantics.nodes_pagination),
+                        arguments,
+                        &format!("{}.nodes", field.first.node.name.node),
+                        document,
+                        selected.first.pos,
+                    )?,
+                    maintenance: None,
+                    selection: compile_model_object(
+                        &selected,
+                        model,
+                        manifest,
+                        variables,
+                        used_variables,
+                        document,
+                        expander,
+                        depth + 1,
+                    )?,
+                    relationship_kind: None,
+                })));
+            }
+            "__typename" => {
+                if !selected.selection_sets.is_empty() {
+                    return Err(source_error(
+                        "client.selection.scalar_nested",
+                        "scalar field `__typename` cannot have a nested selection",
+                        document,
+                        selected.first.node.selection_set.pos,
+                    ));
+                }
+                members.push(CompiledMember::Scalar(CompiledScalar {
+                    response_key,
+                    field: "__typename".into(),
+                    codec: "string".into(),
+                    nullable: false,
+                    expose: true,
+                }));
+            }
+            "aggregate" | "nodes" => {
+                return Err(source_error(
+                    "client.selection.aggregate_denied",
+                    format!(
+                        "aggregate member `{field_name}` is absent from the selected manifest semantics"
+                    ),
+                    document,
+                    selected.first.node.name.pos,
+                ));
+            }
+            _ => {
+                return Err(source_error(
+                    "client.selection.denied_or_unknown",
+                    format!(
+                        "field `{field_name}` is absent from aggregate type `{}`",
+                        semantics.wrapper_typename
+                    ),
+                    document,
+                    selected.first.node.name.pos,
+                ));
+            }
+        }
+    }
+    Ok(CompiledObject {
+        typename: semantics.wrapper_typename.clone(),
+        storage: CompiledStorage::Embedded,
+        members,
+    })
+}
+
+fn compile_aggregate_fields_object<'ast>(
+    field: &MergedField<'ast>,
+    semantics: &ManifestAggregateSemantics,
+    document: &ClientDocument,
+    expander: &mut FragmentExpander<'ast, '_>,
+    depth: usize,
+) -> Result<CompiledObject, ClientCompileError> {
+    let selected_fields = expander.merge_object(
+        &field.selection_sets,
+        &semantics.fields_typename,
+        depth,
+        "aggregate summary field",
+    )?;
+    if selected_fields.is_empty() {
+        return Err(source_error(
+            "client.selection.empty",
+            "aggregate summary must select at least one field",
+            document,
+            field.first.node.selection_set.pos,
+        ));
+    }
+    let mut members = Vec::with_capacity(selected_fields.len());
+    for selected in selected_fields {
+        let response_key = selected.first.node.response_key().node.to_string();
+        let field_name = selected.first.node.name.node.as_str();
+        if !selected.first.node.arguments.is_empty() || !selected.selection_sets.is_empty() {
+            return Err(source_error(
+                "client.selection.aggregate_metric_shape",
+                format!("aggregate metric `{field_name}` must be a scalar leaf"),
+                document,
+                selected.first.pos,
+            ));
+        }
+        match field_name {
+            "count" if semantics.count => members.push(CompiledMember::Scalar(CompiledScalar {
+                response_key,
+                field: "count".into(),
+                codec: "int32".into(),
+                nullable: false,
+                expose: true,
+            })),
+            "__typename" => members.push(CompiledMember::Scalar(CompiledScalar {
+                response_key,
+                field: "__typename".into(),
+                codec: "string".into(),
+                nullable: false,
+                expose: true,
+            })),
+            "sum" | "avg" | "min" | "max" => {
+                return Err(source_error(
+                    "client.selection.aggregate_metric_unsupported",
+                    format!(
+                        "aggregate metric `{field_name}` needs a typed metric-object contract before it can be compiled"
+                    ),
+                    document,
+                    selected.first.node.name.pos,
+                ));
+            }
+            _ => {
+                return Err(source_error(
+                    "client.selection.denied_or_unknown",
+                    format!(
+                        "field `{field_name}` is absent from aggregate summary type `{}`",
+                        semantics.fields_typename
+                    ),
+                    document,
+                    selected.first.node.name.pos,
+                ));
+            }
+        }
+    }
+    Ok(CompiledObject {
+        typename: semantics.fields_typename.clone(),
+        storage: CompiledStorage::Embedded,
+        members,
+    })
 }
 
 fn compiled_scalar(response_key: &str, field: &ManifestField, expose: bool) -> CompiledScalar {
@@ -1036,11 +1572,13 @@ fn inject_wire_fields(
         .iter()
         .map(|member| match member {
             CompiledMember::Scalar(scalar) => scalar.response_key.clone(),
+            CompiledMember::Branch(branch) => branch.response_key.clone(),
         })
         .collect::<BTreeSet<_>>();
     for identity_field in identity {
         if members.iter().any(|member| match member {
             CompiledMember::Scalar(scalar) => scalar.field == identity_field.name,
+            CompiledMember::Branch(_) => false,
         }) {
             continue;
         }
@@ -1064,6 +1602,7 @@ fn inject_wire_fields(
     }
     if !members.iter().any(|member| match member {
         CompiledMember::Scalar(scalar) => scalar.field == "__typename",
+        CompiledMember::Branch(_) => false,
     }) {
         let response_key = allocate_wire_alias("typename", &mut response_keys);
         members.push(CompiledMember::Scalar(CompiledScalar {
@@ -1092,19 +1631,21 @@ fn allocate_wire_alias(field: &str, used: &mut BTreeSet<String>) -> String {
 }
 
 fn compile_coverage(
-    root: &ManifestRoot,
+    pagination: Option<&ManifestPagination>,
+    arguments: &[ManifestArgument],
+    owner: &str,
     document: &ClientDocument,
     position: Pos,
 ) -> Result<Option<CompiledCoverage>, ClientCompileError> {
-    let Some(pagination) = &root.pagination else {
-        return Ok(None);
+    let Some(pagination) = pagination else {
+        return Ok(Some(complete_coverage()));
     };
-    if pagination.kind != "offset" {
+    if pagination.kind != "offset" || pagination.coverage != "window" {
         return Err(source_error(
             "client.pagination.unsupported",
             format!(
-                "root `{}` uses unsupported pagination kind `{}`",
-                root.name, pagination.kind
+                "field `{owner}` uses unsupported pagination contract kind=`{}` coverage=`{}`",
+                pagination.kind, pagination.coverage
             ),
             document,
             position,
@@ -1112,17 +1653,27 @@ fn compile_coverage(
     }
     Ok(Some(CompiledCoverage {
         kind: "offset".into(),
-        offset_argument: root
-            .arguments
+        offset_argument: arguments
             .iter()
             .find(|argument| argument.kind == ManifestArgumentKind::Offset)
             .map(|argument| argument.name.clone()),
-        limit_argument: root
-            .arguments
+        limit_argument: arguments
             .iter()
             .find(|argument| argument.kind == ManifestArgumentKind::Limit)
             .map(|argument| argument.name.clone()),
+        default_limit: Some(pagination.default_limit),
+        max_limit: Some(pagination.max_limit),
     }))
+}
+
+fn complete_coverage() -> CompiledCoverage {
+    CompiledCoverage {
+        kind: "complete".into(),
+        offset_argument: None,
+        limit_argument: None,
+        default_limit: None,
+        max_limit: None,
+    }
 }
 
 fn compile_live(
@@ -1283,26 +1834,7 @@ fn render_operation(
                 .join(", ")
         )
     };
-    let arguments = if root.arguments.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "({})",
-            root.arguments
-                .iter()
-                .map(|(name, value)| {
-                    Ok(format!(
-                        "{name}: {}",
-                        match value {
-                            CompiledArgument::Literal { wire, .. } => wire.clone(),
-                            CompiledArgument::Variable(variable) => format!("${variable}"),
-                        }
-                    ))
-                })
-                .collect::<Result<Vec<_>, ClientCompileError>>()?
-                .join(", ")
-        )
-    };
+    let arguments = render_compiled_arguments(&root.arguments);
     let root_prefix = if root.response_key == root.field {
         root.field.clone()
     } else {
@@ -1310,20 +1842,57 @@ fn render_operation(
     };
     let mut lines = vec![format!("{operation_type} {name}{variable_definitions} {{")];
     lines.push(format!("  {root_prefix}{arguments} {{"));
-    for member in &root.selection.members {
-        match member {
-            CompiledMember::Scalar(field) => {
-                if field.response_key == field.field {
-                    lines.push(format!("    {}", field.field));
-                } else {
-                    lines.push(format!("    {}: {}", field.response_key, field.field));
-                }
-            }
-        }
-    }
+    render_object_selection(&mut lines, &root.selection, 4);
     lines.push("  }".into());
     lines.push("}".into());
     Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn render_object_selection(lines: &mut Vec<String>, object: &CompiledObject, indent: usize) {
+    let padding = " ".repeat(indent);
+    for member in &object.members {
+        match member {
+            CompiledMember::Scalar(field) => {
+                let prefix = if field.response_key == field.field {
+                    field.field.clone()
+                } else {
+                    format!("{}: {}", field.response_key, field.field)
+                };
+                lines.push(format!("{padding}{prefix}"));
+            }
+            CompiledMember::Branch(branch) => {
+                let prefix = if branch.response_key == branch.field {
+                    branch.field.clone()
+                } else {
+                    format!("{}: {}", branch.response_key, branch.field)
+                };
+                let arguments = render_compiled_arguments(&branch.arguments);
+                lines.push(format!("{padding}{prefix}{arguments} {{"));
+                render_object_selection(lines, &branch.selection, indent + 2);
+                lines.push(format!("{padding}}}"));
+            }
+        }
+    }
+}
+
+fn render_compiled_arguments(arguments: &BTreeMap<String, CompiledArgument>) -> String {
+    if arguments.is_empty() {
+        return String::new();
+    }
+    format!(
+        "({})",
+        arguments
+            .iter()
+            .map(|(name, value)| format!(
+                "{name}: {}",
+                match value {
+                    CompiledArgument::Literal { wire, .. } => wire.clone(),
+                    CompiledArgument::Variable(variable) => format!("${variable}"),
+                }
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn render_variable(variable: &CompiledVariable) -> Result<String, ClientCompileError> {
