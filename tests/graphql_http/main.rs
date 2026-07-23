@@ -4,9 +4,7 @@
 
 use std::sync::Arc;
 
-use distributed::graphql::{
-    graphiql_enabled_from_env_vars, read, GraphqlEngine, ModelPermissions,
-};
+use distributed::graphql::{graphiql_enabled_from_env_vars, read, GraphqlEngine, ModelPermissions};
 use distributed::microsvc::{router, Service};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
@@ -34,6 +32,7 @@ async fn service_with_graphiql(on: bool) -> Arc<Service> {
     .await
     .unwrap();
     let engine = GraphqlEngine::builder(pool)
+        .service_id("http-gql")
         .roles(&["user"])
         .model::<HttpItem>(ModelPermissions::new().grant("user", read().all_columns()))
         .graphiql(on)

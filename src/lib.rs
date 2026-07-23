@@ -24,6 +24,7 @@ pub mod outbox;
 pub mod outbox_worker;
 #[cfg(feature = "postgres")]
 pub mod postgres_repo;
+pub mod projection_protocol;
 pub mod queued_repo;
 pub mod read_model;
 pub mod snapshot;

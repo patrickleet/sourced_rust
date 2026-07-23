@@ -28,10 +28,7 @@ async fn anonymous_introspection_disabled_when_flag_false() {
 
     let anon = Session::new();
     let resp = engine
-        .execute(
-            &anon,
-            Request::new("{ __schema { queryType { name } } }"),
-        )
+        .execute(&anon, Request::new("{ __schema { queryType { name } } }"))
         .await;
     assert!(
         !resp.errors.is_empty(),
@@ -40,12 +37,13 @@ async fn anonymous_introspection_disabled_when_flag_false() {
 
     let user = session("user", "u1");
     let resp = engine
-        .execute(
-            &user,
-            Request::new("{ __schema { queryType { name } } }"),
-        )
+        .execute(&user, Request::new("{ __schema { queryType { name } } }"))
         .await;
-    assert!(resp.errors.is_empty(), "user introspection: {:?}", resp.errors);
+    assert!(
+        resp.errors.is_empty(),
+        "user introspection: {:?}",
+        resp.errors
+    );
     let data = resp.data.into_json().unwrap();
     assert_eq!(
         data["__schema"]["queryType"]["name"].as_str(),
@@ -76,6 +74,7 @@ async fn anonymous_introspection_allowed_when_flag_true() {
 async fn t3_introspection_over_http_respects_role() {
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
+        .service_id("rt-http")
         .roles(&["user", "anonymous"])
         .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .introspection_for_anonymous(false)
@@ -106,7 +105,9 @@ async fn t3_introspection_over_http_respects_role() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(
-        v.get("errors").map(|e| !e.as_array().unwrap().is_empty()).unwrap_or(false),
+        v.get("errors")
+            .map(|e| !e.as_array().unwrap().is_empty())
+            .unwrap_or(false),
         "anon HTTP introspection should error: {v}"
     );
 
@@ -130,7 +131,9 @@ async fn t3_introspection_over_http_respects_role() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(
-        v.get("errors").map(|e| e.as_array().unwrap().is_empty()).unwrap_or(true),
+        v.get("errors")
+            .map(|e| e.as_array().unwrap().is_empty())
+            .unwrap_or(true),
         "user HTTP introspection should succeed: {v}"
     );
     assert_eq!(v["data"]["__schema"]["queryType"]["name"], "Query");
@@ -169,8 +172,11 @@ async fn t4_mutation_absent_without_command_grant() {
 
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "admin"])
-        .model::<Item>(ModelPermissions::new().grant("user", read().all_columns()).grant("admin", read().all_columns(),
-        ))
+        .model::<Item>(
+            ModelPermissions::new()
+                .grant("user", read().all_columns())
+                .grant("admin", read().all_columns()),
+        )
         .commands(cmds)
         .build()
         .unwrap();
@@ -211,6 +217,7 @@ async fn production_env_policy_disables_graphiql_http_get() {
 
     let pool = seed_orders().await;
     let engine = GraphqlEngine::builder(pool)
+        .service_id("prod-gql")
         .roles(&["user"])
         .model::<OrderView>(ModelPermissions::new().grant("user", read().all_columns()))
         .graphiql(graphiql)
@@ -287,4 +294,3 @@ async fn graphql_metrics_bad_request_status_label() {
             .join("\n")
     );
 }
-

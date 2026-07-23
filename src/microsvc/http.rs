@@ -147,7 +147,13 @@ fn status_for_error(error: &HandlerError) -> StatusCode {
         HandlerError::DecodeFailed(_) | HandlerError::GuardRejected(_) => StatusCode::BAD_REQUEST,
         HandlerError::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
         HandlerError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-        HandlerError::Repository(_) | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        HandlerError::Repository(_)
+        | HandlerError::Projection(_)
+        | HandlerError::UnqualifiedProjectionDelivery(_)
+        | HandlerError::ProjectionRepairPending { .. }
+        | HandlerError::ProjectionTerminalRecorded { .. }
+        | HandlerError::ProjectionDeliveryHalted { .. }
+        | HandlerError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

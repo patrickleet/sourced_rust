@@ -2,7 +2,8 @@
 //!
 //! Postgres and SQLite implement the same bus model — a claim-lease work queue
 //! (`bus_queue`) for point-to-point commands, and an append-only log plus a
-//! per-consumer offset table (`bus_log` + `bus_offset`) for fan-out events.
+//! durable generation identity and per-consumer offset table (`bus_log` +
+//! `bus_log_identity` + `bus_offset`) for fan-out events.
 //! They differ only in SQL dialect (placeholder style, database clock,
 //! name-list binding, claim-token minting) and pool type. Mirroring
 //! [`lock::sqlx_common`](crate::lock), everything else — the builders, the
@@ -38,12 +39,13 @@ use std::time::Duration;
 
 use sqlx::{ColumnIndex, Decode, Row, Type};
 
+use crate::projection_protocol::{ProjectionEpoch, ProjectionSource};
 use crate::sqlx_repo::is_sqlx_transient;
 
 use super::source::{MessageSource, ReceivedMessage};
 use super::{
-    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, RunOptions, TransportError,
-    TransportErrorKind,
+    run_source, Bus, BusConsumer, BusTopologyConfig, MessageRouter, OrderedDelivery, RunOptions,
+    TransportError, TransportErrorKind,
 };
 use super::{Message, MessageKind};
 
@@ -108,7 +110,7 @@ fn parse_metadata(backend: &str, value: &str) -> Result<Vec<(String, String)>, T
 /// already been selected or claimed, so callers surface the error through
 /// [`ReceivedMessage::decode_error`] and let the runner settle it through the
 /// configured failure policy.
-fn message_from_row<R>(backend: &str, row: &R) -> Result<Message, TransportError>
+pub(crate) fn message_from_row<R>(backend: &str, row: &R) -> Result<Message, TransportError>
 where
     R: Row,
     for<'a> &'a str: ColumnIndex<R>,
@@ -148,6 +150,39 @@ where
         content_type,
         metadata,
     })
+}
+
+/// Verify that a retry using an existing stable message ID still names the
+/// exact envelope a causal projector observes.
+///
+/// Trace metadata is deliberately excluded: an outbox retry may acquire a new
+/// span after an ambiguous publish acknowledgement. Causation is included
+/// because it is part of projection receipt identity. The first committed row
+/// remains authoritative for all other metadata.
+pub(crate) fn validate_log_retry(
+    backend: &str,
+    existing: &Message,
+    retry: &Message,
+) -> Result<(), TransportError> {
+    let matches = existing.name == retry.name
+        && existing.kind == retry.kind
+        && existing.payload == retry.payload
+        && existing.content_type == retry.content_type
+        && existing.causation_id() == retry.causation_id();
+    if matches {
+        return Ok(());
+    }
+
+    Err(TransportError::permanent(format!(
+        "{backend} bus ordered-log message ID {:?} was reused with a different \
+         name, kind, payload, content type, or causation ID",
+        retry.id()
+    )))
+}
+
+fn fresh_log_epoch() -> ProjectionEpoch {
+    ProjectionEpoch::new(format!("sql-log-{}", uuid::Uuid::now_v7()))
+        .expect("a UUID-backed SQL log epoch is valid")
 }
 
 /// A decoded `bus_queue`/`bus_log` row: its `seq` plus either the message or the
@@ -199,7 +234,7 @@ pub struct ClaimedRow {
 pub trait SqlBusDialect: Clone + Send + Sync + 'static {
     /// Backend name used in error messages and consumer-group resolution.
     const BACKEND: &'static str;
-    /// Idempotent DDL for `bus_queue`/`bus_log`/`bus_offset`, `;`-separated.
+    /// Idempotent DDL for the queue, log, log identity, and offsets.
     const SCHEMA: &'static str;
 
     /// Execute one DDL statement from [`SCHEMA`](Self::SCHEMA) (hence
@@ -208,6 +243,15 @@ pub trait SqlBusDialect: Clone + Send + Sync + 'static {
         &self,
         statement: &'static str,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Upgrade legacy ordered-log state and install the stable message-ID
+    /// uniqueness fence.
+    ///
+    /// Implementations must perform duplicate validation/deduplication and
+    /// unique-index creation atomically. They also migrate offsets to carry the
+    /// cursor epoch, discarding legacy offsets that cannot be attributed to a
+    /// durable generation.
+    fn ensure_ordered_log_schema(&self) -> impl Future<Output = Result<(), TransportError>> + Send;
 
     /// Insert a command into `bus_queue`.
     fn insert_queue(
@@ -219,6 +263,33 @@ pub trait SqlBusDialect: Clone + Send + Sync + 'static {
     fn insert_log(
         &self,
         message: &Message,
+        epoch_candidate: &ProjectionEpoch,
+        expected_epoch: Option<&ProjectionEpoch>,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Load the epoch durably paired with `bus_log`, creating it from
+    /// `epoch_candidate` when this is a new log.
+    ///
+    /// Implementations also detect one specific continuity violation: an
+    /// observed `MAX(seq)` below the persisted high-water mark. That condition
+    /// fails closed; a caller-provided candidate is never authorization to
+    /// rotate an existing cursor domain.
+    fn prepare_log_epoch(
+        &self,
+        epoch_candidate: &ProjectionEpoch,
+        expected_epoch: Option<&ProjectionEpoch>,
+    ) -> impl Future<Output = Result<ProjectionEpoch, TransportError>> + Send;
+
+    /// Compare-and-swap reset of the ordered log and its cursor domain.
+    ///
+    /// Implementations lock the current identity, verify `expected_epoch`,
+    /// clear the log and every offset, reset the backend sequence, and install
+    /// the distinct `next_epoch` with generation incremented and high-water
+    /// zero in one transaction.
+    fn reset_log(
+        &self,
+        expected_epoch: &ProjectionEpoch,
+        next_epoch: &ProjectionEpoch,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
 
     /// Atomically claim up to `limit` available `bus_queue` rows (lowest `seq`
@@ -242,7 +313,15 @@ pub trait SqlBusDialect: Clone + Send + Sync + 'static {
         names: &[String],
         consumer: &str,
         limit: i64,
+        expected_epoch: &ProjectionEpoch,
     ) -> impl Future<Output = Result<Vec<ReceivedRow>, TransportError>> + Send;
+
+    /// Fail unless `expected_epoch` is still the durable identity paired with
+    /// the current log generation.
+    fn verify_log_epoch(
+        &self,
+        expected_epoch: &ProjectionEpoch,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send;
 
     /// Delete a claimed queue row, fenced by its claim token.
     fn delete_claimed(
@@ -263,6 +342,7 @@ pub trait SqlBusDialect: Clone + Send + Sync + 'static {
         &self,
         consumer: &str,
         seq: i64,
+        expected_epoch: &ProjectionEpoch,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
 }
 
@@ -273,6 +353,7 @@ pub struct SqlBus<B> {
     dialect: B,
     topology: BusTopologyConfig,
     lease: Duration,
+    source_epoch: Option<ProjectionEpoch>,
 }
 
 impl<B: SqlBusDialect> SqlBus<B> {
@@ -281,6 +362,7 @@ impl<B: SqlBusDialect> SqlBus<B> {
             dialect,
             topology: BusTopologyConfig::default(),
             lease: DEFAULT_LEASE,
+            source_epoch: None,
         }
     }
 
@@ -297,7 +379,20 @@ impl<B: SqlBusDialect> SqlBus<B> {
         self
     }
 
-    /// Create the bus tables (`bus_queue`, `bus_log`, `bus_offset`) if absent.
+    /// Require an operator-controlled epoch for this append-only bus log.
+    ///
+    /// On a new empty log this value becomes its durable identity. It is also
+    /// required to explicitly adopt a retained nonempty log whose identity was
+    /// lost; adoption invalidates offsets that cannot be bound to the supplied
+    /// epoch. On an existing generation it must exactly match the persisted
+    /// identity. A builder can never relabel an identified generation or
+    /// authorize a reset.
+    pub fn with_source_epoch(mut self, epoch: ProjectionEpoch) -> Self {
+        self.source_epoch = Some(epoch);
+        self
+    }
+
+    /// Create the bus tables (queue, log, log identity, and offsets) if absent.
     ///
     /// Called by `listen`/`subscribe`; producers must ensure the tables exist
     /// before `send`/`publish`, either by calling this or through migrations.
@@ -309,7 +404,42 @@ impl<B: SqlBusDialect> SqlBus<B> {
             }
             self.dialect.execute_ddl(statement).await?;
         }
+        self.dialect.ensure_ordered_log_schema().await?;
+        // Persist the identity beside the log even for producer-only setups.
+        // Backups and explicit resets must treat `bus_log` and
+        // `bus_log_identity` as one unit.
+        let epoch_candidate = self.source_epoch.clone().unwrap_or_else(fresh_log_epoch);
+        self.dialect
+            .prepare_log_epoch(&epoch_candidate, self.source_epoch.as_ref())
+            .await?;
         Ok(())
+    }
+
+    /// Destructively begin a new ordered-log cursor generation.
+    ///
+    /// This is the only supported way to reuse numeric `bus_log` positions.
+    /// It is fenced like compare-and-swap: `expected_epoch` must still be the
+    /// durable identity, and `next_epoch` must be distinct. On success the log,
+    /// backend sequence, and every consumer offset are cleared atomically while
+    /// the generation is incremented and the high-water mark returns to zero.
+    ///
+    /// A handler already dispatched from the retired generation cannot be
+    /// cancelled or have its application effects rolled back by this call.
+    /// Its later offset settlement is epoch-fenced and fails permanently; the
+    /// operator must stop consumers before reset and restart them against the
+    /// new generation. Projection handlers should still commit effects and
+    /// their own idempotency/checkpoint state transactionally.
+    pub async fn reset_ordered_log(
+        &self,
+        expected_epoch: &ProjectionEpoch,
+        next_epoch: &ProjectionEpoch,
+    ) -> Result<(), TransportError> {
+        if expected_epoch == next_epoch {
+            return Err(TransportError::permanent(
+                "ordered-log reset requires a distinct next epoch",
+            ));
+        }
+        self.dialect.reset_log(expected_epoch, next_epoch).await
     }
 }
 
@@ -319,7 +449,10 @@ impl<B: SqlBusDialect> Bus for SqlBus<B> {
     }
 
     async fn publish_message(&self, message: Message) -> Result<(), TransportError> {
-        self.dialect.insert_log(&message).await
+        let epoch_candidate = self.source_epoch.clone().unwrap_or_else(fresh_log_epoch);
+        self.dialect
+            .insert_log(&message, &epoch_candidate, self.source_epoch.as_ref())
+            .await
     }
 }
 
@@ -356,6 +489,11 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
         let group = self
             .topology
             .resolve_consumer_group(router.as_ref(), B::BACKEND)?;
+        let epoch_candidate = self.source_epoch.clone().unwrap_or_else(fresh_log_epoch);
+        let source_epoch = self
+            .dialect
+            .prepare_log_epoch(&epoch_candidate, self.source_epoch.as_ref())
+            .await?;
         let source = SqlLogSource {
             dialect: self.dialect.clone(),
             names,
@@ -363,6 +501,7 @@ impl<B: SqlBusDialect> BusConsumer for SqlBus<B> {
             buffer: VecDeque::new(),
             last_delivered: None,
             settled_seq: Arc::new(AtomicI64::new(0)),
+            source_epoch,
         };
         run_source(router, source, options).await
     }
@@ -472,6 +611,7 @@ struct SqlLogSource<B> {
     last_delivered: Option<i64>,
     /// Highest `seq` settled forward by this source's handles.
     settled_seq: Arc<AtomicI64>,
+    source_epoch: ProjectionEpoch,
 }
 
 impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
@@ -482,6 +622,9 @@ impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
     }
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
+        // Validate even when `buffer` already contains read-ahead. A log reset
+        // retires every cached row from the prior generation immediately.
+        self.dialect.verify_log_epoch(&self.source_epoch).await?;
         if let Some(last) = self.last_delivered {
             if self.settled_seq.load(Ordering::Acquire) < last {
                 // The last entry was nacked: the offset did not move, so the
@@ -493,18 +636,38 @@ impl<B: SqlBusDialect> MessageSource for SqlLogSource<B> {
         if self.buffer.is_empty() {
             let rows = self
                 .dialect
-                .log_read(&self.names, &self.consumer, SOURCE_BATCH)
+                .log_read(
+                    &self.names,
+                    &self.consumer,
+                    SOURCE_BATCH,
+                    &self.source_epoch,
+                )
                 .await?;
             self.buffer.extend(rows);
         }
-        Ok(self.buffer.pop_front().map(|row| {
-            self.last_delivered = Some(row.seq);
-            SqlLogReceived {
-                dialect: self.dialect.clone(),
-                consumer: self.consumer.clone(),
-                settled_seq: self.settled_seq.clone(),
-                row,
-            }
+        let Some(row) = self.buffer.pop_front() else {
+            return Ok(None);
+        };
+        let position = u64::try_from(row.seq).map_err(|_| {
+            corrupt_row(
+                B::BACKEND,
+                format!(
+                    "bus_log seq {} is outside the projection cursor domain",
+                    row.seq
+                ),
+            )
+        })?;
+        let source = ProjectionSource::new(format!("{}.bus_log", B::BACKEND), b"global".to_vec())
+            .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
+        let ordered = OrderedDelivery::new(source, self.source_epoch.clone(), position, false)
+            .map_err(|error| corrupt_row(B::BACKEND, error.to_string()))?;
+        self.last_delivered = Some(row.seq);
+        Ok(Some(SqlLogReceived {
+            dialect: self.dialect.clone(),
+            consumer: self.consumer.clone(),
+            settled_seq: self.settled_seq.clone(),
+            row,
+            ordered,
         }))
     }
 }
@@ -517,6 +680,7 @@ pub struct SqlLogReceived<B> {
     consumer: String,
     settled_seq: Arc<AtomicI64>,
     row: ReceivedRow,
+    ordered: OrderedDelivery,
 }
 
 impl<B: SqlBusDialect> SqlLogReceived<B> {
@@ -524,7 +688,7 @@ impl<B: SqlBusDialect> SqlLogReceived<B> {
     /// source knows its buffered read-ahead is still valid.
     async fn settle_forward(self) -> Result<(), TransportError> {
         self.dialect
-            .advance_offset(&self.consumer, self.row.seq)
+            .advance_offset(&self.consumer, self.row.seq, self.ordered.epoch())
             .await?;
         self.settled_seq.store(self.row.seq, Ordering::Release);
         Ok(())
@@ -534,6 +698,10 @@ impl<B: SqlBusDialect> SqlLogReceived<B> {
 impl<B: SqlBusDialect> ReceivedMessage for SqlLogReceived<B> {
     fn message(&self) -> &Message {
         &self.row.message
+    }
+
+    fn ordered_delivery(&self) -> Option<&OrderedDelivery> {
+        Some(&self.ordered)
     }
 
     fn decode_error(&self) -> Option<&TransportError> {

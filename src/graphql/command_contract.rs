@@ -11,6 +11,7 @@
 use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde::ser::{
@@ -22,9 +23,15 @@ use sha2::{Digest, Sha256};
 
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef};
 use crate::outbox::OutboxMessage;
+use crate::projection_protocol::{
+    ProjectionEpoch, ProjectionModelOwnership, ProjectionPartition, ProjectionPartitionSpec,
+    ProjectionProtocolError, ProjectionScopeCodec, ProjectorTopologyId, ResolvedProjectionKey,
+    ResolvedProjectionKeyField, ResolvedProjectionObligation, SameTransactionProjectionBatch,
+};
 use crate::read_model::RelationalReadModel;
 use crate::table::{
-    RowKey, RowValue, RowValues, RowWriteMode, TableMutation, TableStoreError, TableWritePlan,
+    RowKey, RowValue, RowValues, RowWriteMode, TableMutation, TableSchema, TableStoreError,
+    TableWritePlan,
 };
 
 /// The consistency guarantee declared by a typed command handler.
@@ -115,6 +122,10 @@ where
     fn __finalize_committed(payload: T) -> Self {
         Self::from_committed_payload(payload)
     }
+
+    fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
+        Some((TypeId::of::<T>(), T::schema()))
+    }
 }
 
 macro_rules! crate_committed_constructor {
@@ -153,6 +164,15 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
 
     #[doc(hidden)]
     fn __finalize_committed(payload: Self::Payload) -> Self;
+
+    /// Compiler-only model identity retained by an ordinary
+    /// `typed_command::<I, Projected<M>>` declaration. The sealed default keeps
+    /// accepted/fact outcomes unbound while `Projected<M>` supplies its exact
+    /// relational schema without an application-facing projection target API.
+    #[doc(hidden)]
+    fn __projected_model() -> Option<(TypeId, &'static TableSchema)> {
+        None
+    }
 }
 
 /// Error produced while serializing a completion before commit I/O.
@@ -265,6 +285,42 @@ impl<K: CommandOutcome> PreparedCommand<K> {
             self.serialized_payload,
         )
     }
+
+    /// Remove the proof-matched projected upsert from ordinary table plans and
+    /// seal it as the repository's causal direct-projection participant.
+    ///
+    /// Accepted and Fact commands return no participant. A Projected command
+    /// must have exactly one resolved declaration-owned target; the extracted
+    /// mutation is never also submitted through the legacy/raw plan path.
+    pub(crate) fn seal_direct_projection(
+        &self,
+        target: Option<ResolvedDirectProjectionTarget>,
+        read_model_plans: &mut Vec<TableWritePlan>,
+        causation_id: &str,
+    ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
+        match K::CONSISTENCY {
+            CommandConsistency::Accepted | CommandConsistency::Fact => {
+                if target.is_some() {
+                    return Err(CommandCommitProofError::UnexpectedDirectProjectionTarget);
+                }
+                Ok(None)
+            }
+            CommandConsistency::Projected => {
+                let target =
+                    target.ok_or(CommandCommitProofError::MissingDirectProjectionTarget)?;
+                let proof = self
+                    .projection_proof
+                    .as_ref()
+                    .ok_or(CommandCommitProofError::MissingProjectionProof)?;
+                let mutation =
+                    proof.extract_exact_upsert(TypeId::of::<K::Payload>(), read_model_plans)?;
+                target
+                    .seal(mutation, causation_id)
+                    .map(Some)
+                    .map_err(|error| CommandCommitProofError::DirectProjection(error.to_string()))
+            }
+        }
+    }
 }
 
 impl<M> PreparedCommand<Projected<M>>
@@ -315,6 +371,9 @@ pub(crate) enum CommandCommitProofError {
     ProjectionWriteMismatch {
         model: String,
     },
+    MissingDirectProjectionTarget,
+    UnexpectedDirectProjectionTarget,
+    DirectProjection(String),
 }
 
 impl std::fmt::Display for CommandCommitProofError {
@@ -365,6 +424,15 @@ impl std::fmt::Display for CommandCommitProofError {
                 formatter,
                 "projected command staged a row that differs from returned model `{model}`"
             ),
+            Self::MissingDirectProjectionTarget => formatter.write_str(
+                "projected command has no declaration-owned direct projection target",
+            ),
+            Self::UnexpectedDirectProjectionTarget => formatter.write_str(
+                "accepted and fact commands cannot carry a direct projection target",
+            ),
+            Self::DirectProjection(error) => {
+                write!(formatter, "direct projection target could not be sealed: {error}")
+            }
         }
     }
 }
@@ -442,6 +510,46 @@ impl ProjectionCommitProof {
                 model: self.model_name.clone(),
             }),
         }
+    }
+
+    fn extract_exact_upsert(
+        &self,
+        output_type_id: TypeId,
+        plans: &mut Vec<TableWritePlan>,
+    ) -> Result<TableMutation, CommandCommitProofError> {
+        self.validate(output_type_id, plans)?;
+
+        let mut found = None;
+        for (plan_index, plan) in plans.iter().enumerate() {
+            for (mutation_index, mutation) in plan.mutations.iter().enumerate() {
+                let TableMutation::UpsertRow(row) = mutation else {
+                    continue;
+                };
+                if row.schema.table_name == self.table_name
+                    && row.schema.model_name == self.model_name
+                    && fingerprint_key(&row.key) == self.key_fingerprint
+                    && row.mode == RowWriteMode::Upsert
+                    && fingerprint_row(&row.values) == self.row_fingerprint
+                {
+                    found = Some((plan_index, mutation_index));
+                }
+            }
+        }
+        let (plan_index, mutation_index) =
+            found.ok_or_else(|| CommandCommitProofError::ProjectionWriteMissing {
+                model: self.model_name.clone(),
+            })?;
+        let mutation = plans[plan_index].mutations.remove(mutation_index);
+        if plans[plan_index].mutations.is_empty() {
+            plans.remove(plan_index);
+        } else {
+            plans[plan_index].validate().map_err(|_| {
+                CommandCommitProofError::ProjectionWriteConflict {
+                    model: self.model_name.clone(),
+                }
+            })?;
+        }
+        Ok(mutation)
     }
 }
 
@@ -583,49 +691,14 @@ pub(crate) struct CommandProjectionConfirmation {
     /// manifests, whose projector catalog already carries authorized topology.
     #[serde(skip_serializing)]
     projector_topology: ProjectorTopologyIdentity,
-}
-
-/// One declaration-owned projection obligation after every portable
-/// expression has been resolved against the exact canonical GraphQL wire
-/// input retained by the dispatcher.
-///
-/// The ordered key representation is deliberately JSON-valued. Converting
-/// through a Rust input DTO or a SQL row codec here could lose wire names,
-/// integer ranges, explicit nulls, or container values before the obligation
-/// is durably attached to the command outcome.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ResolvedProjectionObligation {
-    pub(crate) projector: String,
-    pub(crate) model: String,
-    pub(crate) key: ResolvedProjectionKey,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present_json_value"
-    )]
-    pub(crate) partition: Option<serde_json::Value>,
-}
-
-fn deserialize_present_json_value<'de, D>(
-    deserializer: D,
-) -> Result<Option<serde_json::Value>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde_json::Value::deserialize(deserializer).map(Some)
-}
-
-/// Complete model key in declaration order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ResolvedProjectionKey {
-    pub(crate) fields: Vec<ResolvedProjectionKeyField>,
-}
-
-/// One resolved field in a complete projection key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ResolvedProjectionKeyField {
-    pub(crate) field: String,
-    pub(crate) value: serde_json::Value,
+    /// Exact server-side topology identity compiled from accepted facts, the
+    /// versioned scope codec, and every complete owned table schema. Typed
+    /// declarations start unbound; Surface/engine compilation must attach this
+    /// before an obligation can be lowered or committed.
+    #[serde(skip_serializing)]
+    protocol_topology: Option<ProjectorTopologyId>,
+    #[serde(skip_serializing)]
+    schema: Option<&'static TableSchema>,
 }
 
 /// Why a declaration-owned projection obligation could not be resolved before
@@ -649,6 +722,11 @@ pub(crate) enum ProjectionObligationResolutionError {
         model: String,
         target: String,
         error: String,
+    },
+    InvalidBinding {
+        projector: String,
+        model: String,
+        reason: String,
     },
 }
 
@@ -683,6 +761,14 @@ impl std::fmt::Display for ProjectionObligationResolutionError {
                 formatter,
                 "projection obligation `{projector}`/`{model}` {target} contains an invalid constant: {error}",
             ),
+            Self::InvalidBinding {
+                projector,
+                model,
+                reason,
+            } => write!(
+                formatter,
+                "projection obligation `{projector}`/`{model}` is not bound to an exact topology: {reason}",
+            ),
         }
     }
 }
@@ -694,10 +780,16 @@ struct ProjectorTopologyIdentity {
     name: String,
     facts: Vec<String>,
     models: Vec<String>,
+    partition: ProjectionPartitionSpec,
 }
 
 impl ProjectorTopologyIdentity {
-    fn new(name: &str, facts: &[String], models: &[String]) -> Self {
+    fn new(
+        name: &str,
+        facts: &[String],
+        models: &[String],
+        partition: &ProjectionPartitionSpec,
+    ) -> Self {
         let mut facts = facts.to_vec();
         facts.sort();
         facts.dedup();
@@ -708,6 +800,7 @@ impl ProjectorTopologyIdentity {
             name: name.to_string(),
             facts,
             models,
+            partition: partition.clone(),
         }
     }
 
@@ -716,6 +809,7 @@ impl ProjectorTopologyIdentity {
             "name": self.name,
             "facts": self.facts,
             "models": self.models,
+            "partition": self.partition,
         })
     }
 }
@@ -725,14 +819,509 @@ impl CommandProjectionConfirmation {
         serde_json::json!({
             "projector": self.projector,
             "projector_topology": self.projector_topology.canonical_value(),
+            "protocol_topology": self.protocol_topology.as_ref().map(|topology| serde_json::json!({
+                "version": topology.version(),
+                "name": topology.name(),
+                "digest": topology.digest(),
+            })),
             "model": self.model,
             "key": self.key,
             "partition": self.partition,
         })
     }
 
-    pub(crate) fn topology_matches(&self, name: &str, facts: &[String], models: &[String]) -> bool {
-        self.projector_topology == ProjectorTopologyIdentity::new(name, facts, models)
+    pub(crate) fn topology_matches(
+        &self,
+        name: &str,
+        facts: &[String],
+        models: &[String],
+        partition: &ProjectionPartitionSpec,
+    ) -> bool {
+        self.projector_topology == ProjectorTopologyIdentity::new(name, facts, models, partition)
+    }
+
+    pub(crate) fn bind_protocol_topology(&mut self, topology: ProjectorTopologyId) {
+        self.protocol_topology = Some(topology);
+    }
+
+    pub(crate) fn protocol_topology(&self) -> Option<&ProjectorTopologyId> {
+        self.protocol_topology.as_ref()
+    }
+
+    pub(crate) fn clear_protocol_topology(&mut self) {
+        self.protocol_topology = None;
+    }
+
+    pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
+        match partition {
+            ProjectionPartitionSpec::Unit => self.partition.is_none(),
+            ProjectionPartitionSpec::Constant { value } => {
+                self.partition
+                    == Some(EffectExpression::Constant {
+                        value: value.clone(),
+                    })
+            }
+            ProjectionPartitionSpec::InputPath { .. } => self.partition.is_some(),
+        }
+    }
+}
+
+/// Compiler-retained relational identity for one ordinary `Projected<M>`
+/// declaration before the GraphQL Surface resolves its unique physical owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommandProjectedModel {
+    pub(crate) output_type_id: TypeId,
+    pub(crate) model: String,
+    pub(crate) table: String,
+    pub(crate) schema: &'static TableSchema,
+    pub(crate) partition: Option<EffectExpression>,
+}
+
+impl CommandProjectedModel {
+    fn new(output_type_id: TypeId, schema: &'static TableSchema) -> Self {
+        Self {
+            output_type_id,
+            model: schema.model_name.clone(),
+            table: schema.table_name.clone(),
+            schema,
+            partition: None,
+        }
+    }
+
+    fn canonical_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model,
+            "table": self.table,
+            "partition": self.partition,
+        })
+    }
+
+    pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
+        match partition {
+            ProjectionPartitionSpec::Unit => self.partition.is_none(),
+            ProjectionPartitionSpec::Constant { value } => {
+                self.partition
+                    == Some(EffectExpression::Constant {
+                        value: value.clone(),
+                    })
+            }
+            ProjectionPartitionSpec::InputPath { .. } => self.partition.is_some(),
+        }
+    }
+
+    pub(crate) fn bind(
+        &self,
+        projector: &str,
+        facts: &[String],
+        models: &[String],
+        projector_partition: &ProjectionPartitionSpec,
+        change_epoch: Option<&str>,
+        mut ownership: Vec<ProjectionModelOwnership>,
+        protocol_topology: Option<ProjectorTopologyId>,
+    ) -> CommandDirectProjectionTarget {
+        ownership.sort_by(|left, right| {
+            (left.model.as_str(), left.table.as_str())
+                .cmp(&(right.model.as_str(), right.table.as_str()))
+        });
+        CommandDirectProjectionTarget {
+            projector: projector.to_string(),
+            model: self.model.clone(),
+            table: self.table.clone(),
+            output_type_id: self.output_type_id,
+            projector_topology: ProjectorTopologyIdentity::new(
+                projector,
+                facts,
+                models,
+                projector_partition,
+            ),
+            protocol_topology,
+            partition: self.partition.clone(),
+            change_epoch: change_epoch.map(str::to_string),
+            schema: self.schema,
+            ownership,
+        }
+    }
+}
+
+/// Compiler-owned direct target for one `Projected<M>` command.
+///
+/// This metadata is deliberately hidden from ordinary handler code. Generated
+/// declarations bind it once; application handlers still only call
+/// `context.projected(view)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommandDirectProjectionTarget {
+    pub(crate) projector: String,
+    pub(crate) model: String,
+    pub(crate) table: String,
+    pub(crate) output_type_id: TypeId,
+    projector_topology: ProjectorTopologyIdentity,
+    /// Exact post-bind protocol identity compiled from accepted facts, the
+    /// versioned scope codec, and every complete owned table schema. The
+    /// pre-bind typed declaration deliberately carries `None` and cannot
+    /// resolve into a direct projection participant.
+    protocol_topology: Option<ProjectorTopologyId>,
+    pub(crate) partition: Option<EffectExpression>,
+    pub(crate) change_epoch: Option<String>,
+    pub(crate) schema: &'static TableSchema,
+    /// Complete frozen model → physical-table inventory owned by the
+    /// projector topology. Bootstrap claims this entire set atomically even
+    /// though the direct command mutates exactly one output model.
+    pub(crate) ownership: Vec<ProjectionModelOwnership>,
+}
+
+impl CommandDirectProjectionTarget {
+    pub(crate) fn canonical_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "projector": self.projector,
+            "projector_topology": self.projector_topology.canonical_value(),
+            "protocol_topology": self.protocol_topology.as_ref().map(|topology| serde_json::json!({
+                "version": topology.version(),
+                "name": topology.name(),
+                "digest": topology.digest(),
+            })),
+            "model": self.model,
+            "table": self.table,
+            "partition": self.partition,
+            "change_epoch": self.change_epoch,
+            "ownership": self.ownership.iter().map(|owner| serde_json::json!({
+                "model": owner.model,
+                "table": owner.table,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    pub(crate) fn topology_matches(
+        &self,
+        name: &str,
+        facts: &[String],
+        models: &[String],
+        projector_partition: &ProjectionPartitionSpec,
+        change_epoch: Option<&str>,
+    ) -> bool {
+        self.projector_topology
+            == ProjectorTopologyIdentity::new(name, facts, models, projector_partition)
+            && self.change_epoch.as_deref() == change_epoch
+    }
+
+    pub(crate) fn protocol_topology_matches(&self, topology: &ProjectorTopologyId) -> bool {
+        self.protocol_topology.as_ref() == Some(topology)
+    }
+
+    pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
+        match partition {
+            ProjectionPartitionSpec::Unit => self.partition.is_none(),
+            ProjectionPartitionSpec::Constant { value } => {
+                self.partition
+                    == Some(EffectExpression::Constant {
+                        value: value.clone(),
+                    })
+            }
+            ProjectionPartitionSpec::InputPath { .. } => self.partition.is_some(),
+        }
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        canonical_wire_input: &serde_json::Value,
+    ) -> Result<ResolvedDirectProjectionTarget, DirectProjectionTargetResolutionError> {
+        let change_epoch = self.change_epoch.as_ref().ok_or_else(|| {
+            DirectProjectionTargetResolutionError::InvalidTarget {
+                projector: self.projector.clone(),
+                model: self.model.clone(),
+                reason: "registered projector has no change-log epoch".into(),
+            }
+        })?;
+        let change_epoch = ProjectionEpoch::new(change_epoch.clone()).map_err(|error| {
+            DirectProjectionTargetResolutionError::InvalidTarget {
+                projector: self.projector.clone(),
+                model: self.model.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let topology = self.protocol_topology.clone().ok_or_else(|| {
+            DirectProjectionTargetResolutionError::InvalidTarget {
+                projector: self.projector.clone(),
+                model: self.model.clone(),
+                reason: "direct projection target was not bound to its complete compiled topology"
+                    .into(),
+            }
+        })?;
+        let codec = ProjectionScopeCodec::with_models(
+            topology,
+            [(self.schema.model_name.as_str(), self.schema)],
+        )
+        .map_err(
+            |error| DirectProjectionTargetResolutionError::InvalidTarget {
+                projector: self.projector.clone(),
+                model: self.model.clone(),
+                reason: error.to_string(),
+            },
+        )?;
+        let partition_value = self
+            .partition
+            .as_ref()
+            .map(|expression| {
+                resolve_direct_projection_expression(
+                    canonical_wire_input,
+                    self,
+                    "partition",
+                    expression,
+                )
+            })
+            .transpose()?;
+        let partition = codec
+            .encode_partition(partition_value.as_ref())
+            .map_err(
+                |error| DirectProjectionTargetResolutionError::InvalidTarget {
+                    projector: self.projector.clone(),
+                    model: self.model.clone(),
+                    reason: error.to_string(),
+                },
+            )?;
+        Ok(ResolvedDirectProjectionTarget {
+            codec: Arc::new(codec),
+            partition_value,
+            partition,
+            change_epoch,
+            model: self.model.clone(),
+            table: self.table.clone(),
+            schema: self.schema,
+            ownership: self.ownership.clone(),
+        })
+    }
+}
+
+/// Opaque compiler product attached to a typed projected command.
+#[doc(hidden)]
+pub struct CompiledDirectProjectionTarget<I, M>(
+    CommandDirectProjectionTarget,
+    PhantomData<fn(I) -> M>,
+);
+
+impl<I, M> CompiledDirectProjectionTarget<I, M> {
+    /// Generated declarations may resolve the registered projection partition
+    /// from one typed canonical input expression.
+    #[doc(hidden)]
+    pub fn partition<Wire>(mut self, partition: TypedEffectExpression<String, Wire>) -> Self
+    where
+        Wire: EffectWireCompatible<EffectWireString>,
+    {
+        self.0.partition = Some(partition.__into_ir());
+        self
+    }
+}
+
+pub(crate) fn compiled_direct_projection_target<I, M>(
+    projector: &str,
+    facts: &[String],
+    models: &[String],
+    projector_partition: &ProjectionPartitionSpec,
+    change_epoch: Option<&str>,
+) -> CompiledDirectProjectionTarget<I, M>
+where
+    M: RelationalReadModel + 'static,
+{
+    let schema = M::schema();
+    let mut projected = CommandProjectedModel::new(TypeId::of::<M>(), schema);
+    if let ProjectionPartitionSpec::Constant { value } = projector_partition {
+        projected.partition = Some(EffectExpression::Constant {
+            value: value.clone(),
+        });
+    }
+    CompiledDirectProjectionTarget(
+        projected.bind(
+            projector,
+            facts,
+            models,
+            projector_partition,
+            change_epoch,
+            vec![
+                ProjectionModelOwnership::new(&schema.model_name, &schema.table_name)
+                    .expect("validated relational schema has bounded model/table names"),
+            ],
+            None,
+        ),
+        PhantomData,
+    )
+}
+
+pub(crate) struct ResolvedDirectProjectionTarget {
+    codec: Arc<ProjectionScopeCodec>,
+    partition_value: Option<serde_json::Value>,
+    partition: ProjectionPartition,
+    change_epoch: ProjectionEpoch,
+    model: String,
+    table: String,
+    schema: &'static TableSchema,
+    ownership: Vec<ProjectionModelOwnership>,
+}
+
+impl ResolvedDirectProjectionTarget {
+    pub(crate) fn registration(&self) -> (&ProjectorTopologyId, &[ProjectionModelOwnership]) {
+        (self.codec.topology(), &self.ownership)
+    }
+
+    fn seal(
+        self,
+        mutation: TableMutation,
+        causation_id: &str,
+    ) -> Result<SameTransactionProjectionBatch, ProjectionProtocolError> {
+        let TableMutation::UpsertRow(row) = &mutation else {
+            return Err(ProjectionProtocolError::InvalidBatch(
+                "direct projection proof did not extract a full-row upsert".into(),
+            ));
+        };
+        if row.schema != self.schema
+            || row.schema.model_name != self.model
+            || row.schema.table_name != self.table
+        {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "direct projection target `{}`/`{}` does not match the staged row",
+                self.model, self.table
+            )));
+        }
+        let scope = self
+            .codec
+            .encode_row_scope(
+                self.codec.topology().name(),
+                &self.model,
+                self.partition_value.as_ref(),
+                &row.key,
+            )
+            .map_err(|error| ProjectionProtocolError::InvalidBatch(error.to_string()))?;
+        let ownership = ProjectionModelOwnership::new(self.model, self.table)?;
+        SameTransactionProjectionBatch::single_upsert(
+            self.codec.topology().clone(),
+            self.partition,
+            self.change_epoch,
+            ownership,
+            scope,
+            mutation,
+            causation_id,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DirectProjectionTargetResolutionError {
+    MissingInputPath {
+        projector: String,
+        model: String,
+        target: String,
+        path: Vec<String>,
+    },
+    TrustedPresetUnavailable {
+        projector: String,
+        model: String,
+        target: String,
+        preset: String,
+    },
+    InvalidConstant {
+        projector: String,
+        model: String,
+        target: String,
+        error: String,
+    },
+    InvalidTarget {
+        projector: String,
+        model: String,
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for DirectProjectionTargetResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingInputPath {
+                projector,
+                model,
+                target,
+                path,
+            } => write!(
+                formatter,
+                "direct projection `{projector}`/`{model}` {target} references absent canonical input path `{}`",
+                path.join("."),
+            ),
+            Self::TrustedPresetUnavailable {
+                projector,
+                model,
+                target,
+                preset,
+            } => write!(
+                formatter,
+                "direct projection `{projector}`/`{model}` {target} uses unavailable trusted preset `{preset}`",
+            ),
+            Self::InvalidConstant {
+                projector,
+                model,
+                target,
+                error,
+            } => write!(
+                formatter,
+                "direct projection `{projector}`/`{model}` {target} contains an invalid constant: {error}",
+            ),
+            Self::InvalidTarget {
+                projector,
+                model,
+                reason,
+            } => write!(
+                formatter,
+                "direct projection `{projector}`/`{model}` is invalid: {reason}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DirectProjectionTargetResolutionError {}
+
+fn resolve_direct_projection_expression(
+    canonical_wire_input: &serde_json::Value,
+    target: &CommandDirectProjectionTarget,
+    field: &str,
+    expression: &EffectExpression,
+) -> Result<serde_json::Value, DirectProjectionTargetResolutionError> {
+    match expression {
+        EffectExpression::Input { path } => {
+            let mut value = canonical_wire_input;
+            if path.is_empty() {
+                return Err(DirectProjectionTargetResolutionError::MissingInputPath {
+                    projector: target.projector.clone(),
+                    model: target.model.clone(),
+                    target: field.to_string(),
+                    path: path.clone(),
+                });
+            }
+            for segment in path {
+                let Some(next) = value.as_object().and_then(|object| object.get(segment)) else {
+                    return Err(DirectProjectionTargetResolutionError::MissingInputPath {
+                        projector: target.projector.clone(),
+                        model: target.model.clone(),
+                        target: field.to_string(),
+                        path: path.clone(),
+                    });
+                };
+                value = next;
+            }
+            Ok(value.clone())
+        }
+        EffectExpression::Constant { value } => Ok(value.clone()),
+        EffectExpression::Null => Ok(serde_json::Value::Null),
+        EffectExpression::TrustedPreset { name } => Err(
+            DirectProjectionTargetResolutionError::TrustedPresetUnavailable {
+                projector: target.projector.clone(),
+                model: target.model.clone(),
+                target: field.to_string(),
+                preset: name.clone(),
+            },
+        ),
+        EffectExpression::InvalidConstant { error } => {
+            Err(DirectProjectionTargetResolutionError::InvalidConstant {
+                projector: target.projector.clone(),
+                model: target.model.clone(),
+                target: field.to_string(),
+                error: error.clone(),
+            })
+        }
     }
 }
 
@@ -1535,14 +2124,22 @@ pub(crate) fn projection_confirmation<M: RelationalReadModel>(
     projector: &str,
     facts: &[String],
     models: &[String],
+    partition: &ProjectionPartitionSpec,
     key: TypedEffectKey<M>,
 ) -> CommandProjectionConfirmation {
     CommandProjectionConfirmation {
         projector: projector.to_string(),
         model: M::schema().model_name.clone(),
         key: key.key,
-        partition: None,
-        projector_topology: ProjectorTopologyIdentity::new(projector, facts, models),
+        partition: match partition {
+            ProjectionPartitionSpec::Constant { value } => Some(EffectExpression::Constant {
+                value: value.clone(),
+            }),
+            ProjectionPartitionSpec::Unit | ProjectionPartitionSpec::InputPath { .. } => None,
+        },
+        projector_topology: ProjectorTopologyIdentity::new(projector, facts, models, partition),
+        protocol_topology: None,
+        schema: Some(M::schema()),
     }
 }
 
@@ -1550,10 +2147,11 @@ pub(crate) fn compiled_projection_confirmation<I, M: RelationalReadModel>(
     projector: &str,
     facts: &[String],
     models: &[String],
+    partition: &ProjectionPartitionSpec,
     key: TypedEffectKey<M>,
 ) -> CompiledProjectionConfirmation<I> {
     CompiledProjectionConfirmation(
-        projection_confirmation(projector, facts, models, key),
+        projection_confirmation(projector, facts, models, partition, key),
         PhantomData,
     )
 }
@@ -1834,6 +2432,10 @@ pub(crate) struct TypedCommandContract {
     pub input_defaults: Vec<CommandInputDefault>,
     pub effects: CommandEffects,
     pub confirmations: Vec<CommandProjectionConfirmation>,
+    /// Present automatically for `Projected<M>` before Surface ownership is
+    /// resolved. This never requires an application declaration.
+    pub projected_model: Option<CommandProjectedModel>,
+    pub direct_projection: Option<CommandDirectProjectionTarget>,
 }
 
 impl TypedCommandContract {
@@ -1875,6 +2477,14 @@ impl TypedCommandContract {
             .iter()
             .map(CommandProjectionConfirmation::canonical_value)
             .collect::<Vec<_>>();
+        let direct_projection = self
+            .direct_projection
+            .as_ref()
+            .map(CommandDirectProjectionTarget::canonical_value);
+        let projected_model = self
+            .projected_model
+            .as_ref()
+            .map(CommandProjectedModel::canonical_value);
         serde_json::json!({
             "name": self.name,
             "field_name": self.field_name,
@@ -1885,6 +2495,8 @@ impl TypedCommandContract {
             "input_defaults": input_defaults,
             "effects": effects,
             "confirmations": confirmations,
+            "projected_model": projected_model,
+            "direct_projection": direct_projection,
         })
     }
 
@@ -1932,14 +2544,65 @@ impl TypedCommandContract {
                         )
                     })
                     .transpose()?;
+                let key = ResolvedProjectionKey { fields };
+                let topology = confirmation.protocol_topology.clone().ok_or_else(|| {
+                    ProjectionObligationResolutionError::InvalidBinding {
+                        projector: confirmation.projector.clone(),
+                        model: confirmation.model.clone(),
+                        reason: "missing compiled topology identity".into(),
+                    }
+                })?;
+                let schema = confirmation.schema.ok_or_else(|| {
+                    ProjectionObligationResolutionError::InvalidBinding {
+                        projector: confirmation.projector.clone(),
+                        model: confirmation.model.clone(),
+                        reason: "missing retained relational schema".into(),
+                    }
+                })?;
+                let codec = ProjectionScopeCodec::with_models(
+                    topology,
+                    [(schema.model_name.as_str(), schema)],
+                )
+                .map_err(|error| {
+                    ProjectionObligationResolutionError::InvalidBinding {
+                        projector: confirmation.projector.clone(),
+                        model: confirmation.model.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+                let scope = codec
+                    .encode_resolved_obligation_scope(
+                        &confirmation.projector,
+                        &confirmation.model,
+                        &key,
+                        partition.as_ref(),
+                    )
+                    .map_err(
+                        |error| ProjectionObligationResolutionError::InvalidBinding {
+                            projector: confirmation.projector.clone(),
+                            model: confirmation.model.clone(),
+                            reason: error.to_string(),
+                        },
+                    )?;
                 Ok(ResolvedProjectionObligation {
                     projector: confirmation.projector.clone(),
                     model: confirmation.model.clone(),
-                    key: ResolvedProjectionKey { fields },
+                    key,
                     partition,
+                    scope,
                 })
             })
             .collect()
+    }
+
+    pub(crate) fn resolve_direct_projection_target(
+        &self,
+        canonical_wire_input: &serde_json::Value,
+    ) -> Result<Option<ResolvedDirectProjectionTarget>, DirectProjectionTargetResolutionError> {
+        self.direct_projection
+            .as_ref()
+            .map(|target| target.resolve(canonical_wire_input))
+            .transpose()
     }
 
     /// Prove that every finite asynchronous confirmation can be driven by a
@@ -2105,16 +2768,89 @@ impl TypedServiceCommandBinding {
                         contract.name
                     ));
                 }
+                CommandConsistency::Projected if contract.projected_model.is_none() => {
+                    return Err(format!(
+                        "typed projected command `{}` is missing its compiler-retained relational model",
+                        contract.name
+                    ));
+                }
+                CommandConsistency::Accepted | CommandConsistency::Fact
+                    if contract.projected_model.is_some()
+                        || contract.direct_projection.is_some() =>
+                {
+                    return Err(format!(
+                        "typed non-projected command `{}` cannot carry direct projection metadata",
+                        contract.name
+                    ));
+                }
                 CommandConsistency::Fact
                 | CommandConsistency::Accepted
                 | CommandConsistency::Projected => {}
             }
-            if let Some(error) = contract.effects.invalid_constant_error().or_else(|| {
-                contract
-                    .confirmations
-                    .iter()
-                    .find_map(invalid_confirmation_constant)
-            }) {
+            if let Some(projected) = &contract.projected_model {
+                if projected.output_type_id != contract.output_type_id {
+                    return Err(format!(
+                        "typed projected command `{}` retained model has a different Rust output type",
+                        contract.name
+                    ));
+                }
+                if projected.model != contract.output.name {
+                    return Err(format!(
+                        "typed projected command `{}` retained model `{}` differs from output `{}`",
+                        contract.name, projected.model, contract.output.name
+                    ));
+                }
+            }
+            if let Some(target) = &contract.direct_projection {
+                if target.output_type_id != contract.output_type_id {
+                    return Err(format!(
+                        "typed projected command `{}` direct target has a different Rust output type",
+                        contract.name
+                    ));
+                }
+                if target.model != contract.output.name {
+                    return Err(format!(
+                        "typed projected command `{}` direct target model `{}` differs from output `{}`",
+                        contract.name, target.model, contract.output.name
+                    ));
+                }
+                let Some(change_epoch) = target.change_epoch.as_deref() else {
+                    return Err(format!(
+                        "typed projected command `{}` direct target has no registered change-log epoch",
+                        contract.name
+                    ));
+                };
+                ProjectionEpoch::new(change_epoch).map_err(|error| {
+                    format!(
+                        "typed projected command `{}` direct target change epoch is invalid: {error}",
+                        contract.name
+                    )
+                })?;
+            }
+            if let Some(error) = contract
+                .effects
+                .invalid_constant_error()
+                .or_else(|| {
+                    contract
+                        .confirmations
+                        .iter()
+                        .find_map(invalid_confirmation_constant)
+                })
+                .or_else(|| {
+                    contract
+                        .direct_projection
+                        .as_ref()
+                        .and_then(|target| target.partition.as_ref())
+                        .and_then(invalid_expression_constant)
+                })
+                .or_else(|| {
+                    contract
+                        .projected_model
+                        .as_ref()
+                        .and_then(|model| model.partition.as_ref())
+                        .and_then(invalid_expression_constant)
+                })
+            {
                 return Err(format!(
                     "typed command `{}` constant effect value failed to serialize: {error}",
                     contract.name
@@ -2185,6 +2921,8 @@ where
         .collect();
     let input = I::graphql_type();
     let output = K::Payload::graphql_type();
+    let projected_model = K::__projected_model()
+        .map(|(output_type_id, schema)| CommandProjectedModel::new(output_type_id, schema));
     TypedCommand {
         route_name,
         contract: TypedCommandContract {
@@ -2199,6 +2937,8 @@ where
             input_defaults: Vec::new(),
             effects: CommandEffects::revalidate(),
             confirmations: Vec::new(),
+            projected_model,
+            direct_projection: None,
         },
         _types: PhantomData,
     }
@@ -2261,10 +3001,31 @@ impl<I, K: CommandOutcome> TypedCommand<I, K> {
     }
 }
 
+impl<I, M> TypedCommand<I, Projected<M>>
+where
+    I: GraphqlInputType + DeserializeOwned + Send + 'static,
+    M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+{
+    /// Attach compiler-generated direct projection ownership metadata.
+    ///
+    /// Application handlers do not call this; generated service inventory
+    /// binds it from the registered projector declaration and handlers retain
+    /// the `context.projected(view)` API.
+    #[doc(hidden)]
+    pub fn __direct_projection(mut self, target: CompiledDirectProjectionTarget<I, M>) -> Self {
+        if let Some(projected) = &mut self.contract.projected_model {
+            projected.partition = target.0.partition.clone();
+        }
+        self.contract.direct_projection = Some(target.0);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graphql::{GraphqlTypeDef, GraphqlTypeField};
+    use crate::table::{ColumnType, PrimaryKey, TableColumn, TableKind};
     use serde::Deserialize;
 
     #[allow(dead_code)]
@@ -2338,7 +3099,10 @@ mod tests {
                     .map(|fact| (*fact).to_string())
                     .collect::<Vec<_>>(),
                 &["TodoView".into()],
+                &ProjectionPartitionSpec::unit(),
             ),
+            protocol_topology: None,
+            schema: None,
         }
     }
 
@@ -2347,24 +3111,45 @@ mod tests {
         fields: impl IntoIterator<Item = (&'static str, EffectExpression)>,
         partition: Option<EffectExpression>,
     ) -> CommandProjectionConfirmation {
+        let fields = fields
+            .into_iter()
+            .map(|(field, value)| EffectFieldValue {
+                field: field.into(),
+                value,
+            })
+            .collect::<Vec<_>>();
+        let columns = fields
+            .iter()
+            .map(|field| TableColumn {
+                primary_key: true,
+                ..TableColumn::new(&field.field, &field.field, ColumnType::Json)
+            })
+            .collect::<Vec<_>>();
+        let primary_key = fields.iter().map(|field| field.field.as_str());
+        let schema = Box::leak(Box::new(TableSchema {
+            model_name: "TodoView".into(),
+            table_name: "todo_views".into(),
+            columns,
+            primary_key: PrimaryKey::new(primary_key),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        }));
         CommandProjectionConfirmation {
             projector: projector.into(),
             model: "TodoView".into(),
-            key: EffectKey {
-                fields: fields
-                    .into_iter()
-                    .map(|(field, value)| EffectFieldValue {
-                        field: field.into(),
-                        value,
-                    })
-                    .collect(),
-            },
+            key: EffectKey { fields },
             partition,
             projector_topology: ProjectorTopologyIdentity::new(
                 projector,
                 &["todo.changed".into()],
                 &["TodoView".into()],
+                &ProjectionPartitionSpec::unit(),
             ),
+            protocol_topology: Some(ProjectorTopologyId::new(1, projector, [3; 32]).unwrap()),
+            schema: Some(schema),
         }
     }
 
@@ -2444,31 +3229,20 @@ mod tests {
         });
         contract.confirmations = vec![confirmation_with_key(
             "project_todos",
-            [
-                (
-                    "constant_key",
-                    EffectExpression::Constant {
-                        value: constant.clone(),
-                    },
-                ),
-                ("declared_null", EffectExpression::Null),
-                (
-                    "input_null",
-                    EffectExpression::Input {
-                        path: vec!["optionalKey".into()],
-                    },
-                ),
-            ],
+            [(
+                "constant_key",
+                EffectExpression::Constant {
+                    value: constant.clone(),
+                },
+            )],
             Some(EffectExpression::Null),
         )];
 
         let resolved = contract
-            .resolve_projection_obligations(&serde_json::json!({ "optionalKey": null }))
+            .resolve_projection_obligations(&serde_json::json!({}))
             .unwrap();
 
         assert_eq!(resolved[0].key.fields[0].value, constant);
-        assert_eq!(resolved[0].key.fields[1].value, serde_json::Value::Null);
-        assert_eq!(resolved[0].key.fields[2].value, serde_json::Value::Null);
         assert_eq!(resolved[0].partition, Some(serde_json::Value::Null));
 
         let encoded = serde_json::to_value(&resolved).unwrap();

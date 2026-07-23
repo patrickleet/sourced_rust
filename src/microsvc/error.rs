@@ -3,8 +3,11 @@
 use std::error::Error;
 use std::fmt;
 
+use super::projector::ProjectionRepairHandle;
 use crate::bus::{PayloadDecodeError, TransportError, TransportErrorKind};
 use crate::lock::RetryClass;
+use crate::projection_protocol::ProjectionProtocolError;
+use crate::table::TableStoreError;
 use crate::{repository::RepositoryError, EventRecordError};
 
 /// Error type for command handler operations.
@@ -25,6 +28,22 @@ pub enum HandlerError {
     Repository(RepositoryError),
     /// Guard rejected the command (input validation failed).
     GuardRejected(String),
+    /// Causal projection protocol/storage failure.
+    Projection(ProjectionProtocolError),
+    /// A causal projector route was reached without adapter-authenticated
+    /// ordered delivery or another required stable envelope identity.
+    UnqualifiedProjectionDelivery(String),
+    /// An explicitly repaired partition is waiting for its exact failed input;
+    /// unrelated delivery must remain retryable and cannot invoke the handler.
+    ProjectionRepairPending { failure_id: String },
+    /// The terminal failure is already durable. The transport must retain this
+    /// exact delivery and stop so an operator can repair then restart.
+    ProjectionTerminalRecorded { repair: ProjectionRepairHandle },
+    /// A permanent causal-projector failure could not be represented by a
+    /// durable terminal record. The transport must retain this exact delivery
+    /// and stop rather than applying an ordinary dead-letter/drop policy across
+    /// an unproven causal gap.
+    ProjectionDeliveryHalted { source: Box<HandlerError> },
     /// Other error.
     Other(Box<dyn Error + Send + Sync>),
 }
@@ -41,6 +60,22 @@ impl fmt::Display for HandlerError {
             HandlerError::GuardRejected(name) => {
                 write!(f, "guard rejected command: {}", name)
             }
+            HandlerError::Projection(error) => write!(f, "projection error: {error}"),
+            HandlerError::UnqualifiedProjectionDelivery(message) => {
+                write!(f, "unqualified causal projector delivery: {message}")
+            }
+            HandlerError::ProjectionRepairPending { failure_id } => write!(
+                f,
+                "projection repair is waiting for exact failed input `{failure_id}`"
+            ),
+            HandlerError::ProjectionTerminalRecorded { repair } => write!(
+                f,
+                "projection terminal failure `{}` was recorded; retain delivery and stop; repair handle: {repair}",
+                repair.failure_id()
+            ),
+            HandlerError::ProjectionDeliveryHalted { .. } => f.write_str(
+                "causal projector delivery halted before a durable terminal record was available; retain delivery and stop",
+            ),
             HandlerError::Other(e) => write!(f, "handler error: {}", e),
         }
     }
@@ -50,6 +85,8 @@ impl Error for HandlerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             HandlerError::Repository(e) => Some(e),
+            HandlerError::Projection(e) => Some(e),
+            HandlerError::ProjectionDeliveryHalted { source } => Some(source.as_ref()),
             HandlerError::Other(e) => Some(e.as_ref()),
             _ => None,
         }
@@ -68,6 +105,18 @@ impl From<EventRecordError> for HandlerError {
     }
 }
 
+impl From<ProjectionProtocolError> for HandlerError {
+    fn from(error: ProjectionProtocolError) -> Self {
+        Self::Projection(error)
+    }
+}
+
+impl From<TableStoreError> for HandlerError {
+    fn from(error: TableStoreError) -> Self {
+        Self::Projection(error.into())
+    }
+}
+
 impl From<serde_json::Error> for HandlerError {
     fn from(err: serde_json::Error) -> Self {
         HandlerError::DecodeFailed(err.to_string())
@@ -81,6 +130,15 @@ impl From<PayloadDecodeError> for HandlerError {
 }
 
 impl HandlerError {
+    /// Return the opaque operator repair handle carried by a durably recorded
+    /// terminal projector failure.
+    pub fn projection_repair_handle(&self) -> Option<&ProjectionRepairHandle> {
+        match self {
+            Self::ProjectionTerminalRecorded { repair } => Some(repair),
+            _ => None,
+        }
+    }
+
     /// Map this error to an HTTP-style status code.
     pub fn status_code(&self) -> u16 {
         match self {
@@ -91,6 +149,11 @@ impl HandlerError {
             HandlerError::Unauthorized(_) => 401,
             HandlerError::Repository(_) => 500,
             HandlerError::GuardRejected(_) => 400,
+            HandlerError::Projection(_)
+            | HandlerError::UnqualifiedProjectionDelivery(_)
+            | HandlerError::ProjectionRepairPending { .. }
+            | HandlerError::ProjectionTerminalRecorded { .. }
+            | HandlerError::ProjectionDeliveryHalted { .. } => 500,
             HandlerError::Other(_) => 500,
         }
     }
@@ -131,13 +194,29 @@ impl HandlerError {
                 RetryClass::Retryable => TransportErrorKind::Retryable,
                 RetryClass::Permanent => TransportErrorKind::Permanent,
             },
-            HandlerError::NotFound(_) | HandlerError::Other(_) => TransportErrorKind::Retryable,
+            HandlerError::Projection(error) => {
+                if super::projector::projection_error_is_retryable(error) {
+                    TransportErrorKind::Retryable
+                } else {
+                    TransportErrorKind::Permanent
+                }
+            }
+            HandlerError::ProjectionRepairPending { .. }
+            | HandlerError::NotFound(_)
+            | HandlerError::Other(_) => TransportErrorKind::Retryable,
+            HandlerError::ProjectionTerminalRecorded { .. }
+            | HandlerError::ProjectionDeliveryHalted { .. } => TransportErrorKind::Permanent,
             HandlerError::UnknownCommand(_)
             | HandlerError::DecodeFailed(_)
             | HandlerError::Rejected(_)
             | HandlerError::Unauthorized(_)
-            | HandlerError::GuardRejected(_) => TransportErrorKind::Permanent,
+            | HandlerError::GuardRejected(_)
+            | HandlerError::UnqualifiedProjectionDelivery(_) => TransportErrorKind::Permanent,
         }
+    }
+
+    pub(crate) fn is_projection_retryable(&self) -> bool {
+        self.transport_error_kind().is_retryable()
     }
 }
 
@@ -147,7 +226,17 @@ impl HandlerError {
 impl From<HandlerError> for TransportError {
     fn from(error: HandlerError) -> Self {
         let kind = error.transport_error_kind();
-        TransportError::new(kind, error.to_string()).with_source(error)
+        let retain_and_stop = matches!(
+            error,
+            HandlerError::ProjectionTerminalRecorded { .. }
+                | HandlerError::ProjectionDeliveryHalted { .. }
+        );
+        let transport = TransportError::new(kind, error.to_string()).with_source(error);
+        if retain_and_stop {
+            transport.retain_and_stop()
+        } else {
+            transport
+        }
     }
 }
 

@@ -140,7 +140,14 @@ where
             continue;
         }
         let kind = received.message().kind;
-        match dispatch(router.as_ref(), &options, received.message()).await {
+        match dispatch(
+            router.as_ref(),
+            &options,
+            received.message(),
+            received.ordered_delivery(),
+        )
+        .await
+        {
             Ok(()) => {
                 settle_and_record(
                     service,
@@ -151,6 +158,25 @@ where
                     || received.ack(),
                 )
                 .await?;
+            }
+            Err(error) if error.should_retain_and_stop() => {
+                record_transport_failure(
+                    service,
+                    transport,
+                    error.kind(),
+                    crate::telemetry::transport_outcome::NACK,
+                );
+                let reason = error.to_string();
+                settle_and_record(
+                    service,
+                    transport,
+                    kind,
+                    crate::telemetry::transport_outcome::NACK,
+                    crate::telemetry::transport_outcome::NACK,
+                    || received.nack(&reason),
+                )
+                .await?;
+                return Err(error);
             }
             Err(error) => match options.failure_policy.resolve(&error) {
                 action @ FailureAction::Nack => {
@@ -280,6 +306,7 @@ async fn dispatch<R: MessageRouter, I>(
     router: &R,
     options: &RunOptions<I>,
     message: &Message,
+    ordered: Option<&super::OrderedDelivery>,
 ) -> Result<(), TransportError> {
     #[cfg(feature = "otel")]
     {
@@ -294,7 +321,7 @@ async fn dispatch<R: MessageRouter, I>(
             options
                 .validate_message_id(message)
                 .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
-            router.dispatch(message).await
+            router.dispatch_ordered(message, ordered).await
         }
         .instrument(span)
         .await;
@@ -305,7 +332,7 @@ async fn dispatch<R: MessageRouter, I>(
         options
             .validate_message_id(message)
             .map_err(|err| TransportError::permanent(err.to_string()).with_source(err))?;
-        router.dispatch(message).await
+        router.dispatch_ordered(message, ordered).await
     }
 }
 
@@ -504,6 +531,7 @@ mod tests {
         let ok = recorder.clone();
         let retryable = recorder.clone();
         let permanent = recorder.clone();
+        let terminal = recorder.clone();
         Arc::new(
             Handlers::new()
                 .on_event("ok", move |msg: &Message| {
@@ -528,6 +556,15 @@ mod tests {
                     async move {
                         permanent.push(Event::Handled(name));
                         Err(TransportError::permanent("nope"))
+                    }
+                })
+                .on_event("terminal", move |msg: &Message| {
+                    let terminal = terminal.clone();
+                    let name = msg.name().to_string();
+                    async move {
+                        terminal.push(Event::Handled(name));
+                        Err(TransportError::permanent("durable projection failure")
+                            .retain_and_stop())
                     }
                 }),
         )
@@ -729,6 +766,33 @@ mod tests {
         );
         assert!(result.outcome.is_ok());
         assert_eq!(result.events.get(1), Some(&Event::Ack));
+    }
+
+    #[test]
+    fn durable_terminal_failure_nacks_and_stops_regardless_of_permanent_policy() {
+        for policy in [FailurePolicy::DeadLetter, FailurePolicy::LogAndAck] {
+            let result = run(
+                vec![event_message("terminal", None), event_message("ok", None)],
+                RunOptions::idempotent().with_failure_policy(policy),
+            );
+            let error = result
+                .outcome
+                .expect_err("durable terminal failure must stop the runner");
+            assert!(error.is_permanent());
+            assert!(error.should_retain_and_stop());
+            assert_eq!(
+                result.events.first(),
+                Some(&Event::Handled("terminal".to_string()))
+            );
+            assert!(
+                matches!(result.events.get(1), Some(Event::Nack(reason)) if reason.contains("durable projection failure"))
+            );
+            assert_eq!(
+                result.events.len(),
+                2,
+                "{policy:?} must neither settle terminal input destructively nor continue"
+            );
+        }
     }
 
     #[test]

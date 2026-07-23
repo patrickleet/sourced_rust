@@ -35,6 +35,10 @@ pub enum RepositoryError {
         consumer: String,
         message_id: String,
     },
+    /// A raw/legacy repository batch targeted a causal-owned read-model table.
+    CausalWriteRequired {
+        table: String,
+    },
     InvalidStreamIdentity {
         aggregate_type: String,
         aggregate_id: String,
@@ -130,6 +134,7 @@ impl RepositoryError {
             | RepositoryError::DuplicateOutboxMessageInBatch { .. }
             | RepositoryError::DuplicateInboxReceipt { .. }
             | RepositoryError::InvalidInboxReceipt { .. }
+            | RepositoryError::CausalWriteRequired { .. }
             | RepositoryError::InvalidStreamIdentity { .. }
             | RepositoryError::InvalidState { .. }
             | RepositoryError::Replay(_)
@@ -180,6 +185,10 @@ impl fmt::Display for RepositoryError {
                 f,
                 "invalid consumer inbox receipt (consumer `{}`, message `{}`): consumer and message id must be non-empty",
                 consumer, message_id
+            ),
+            RepositoryError::CausalWriteRequired { table } => write!(
+                f,
+                "table `{table}` is causal-owned and requires the projection commit path"
             ),
             RepositoryError::InvalidStreamIdentity {
                 aggregate_type,
@@ -240,16 +249,22 @@ impl From<LockError> for RepositoryError {
 
 impl From<TableStoreError> for RepositoryError {
     fn from(err: TableStoreError) -> Self {
+        if let TableStoreError::CausalWriteRequired { table } = err {
+            return RepositoryError::CausalWriteRequired { table };
+        }
         // Map to `Storage` so the read-model error keeps a retry signal and its
-        // source instead of collapsing to an opaque `Model` string. Only a lock
-        // failure carries a transient/permanent distinction we can recover here;
+        // source instead of collapsing to an opaque `Model` string. Locks and
+        // structured backend failures carry the retry classification through;
         // every other read-model variant is deterministic (a concurrency
         // conflict, serde/metadata fault, or not-found will fail the same way on
-        // redelivery). `TableStoreError::Storage` is itself a stringified backend
-        // error with no preserved retry signal — without changing `read_model`
-        // it is classified permanent, which is the safe default (it cannot loop
-        // forever; it surfaces to the failure policy).
-        let retryable = matches!(&err, TableStoreError::Lock(lock) if lock.is_retryable());
+        // redelivery). Legacy `TableStoreError::Storage` remains string-only and
+        // therefore permanent by default; guessing retryability from text would
+        // risk an infinite poison-message loop.
+        let retryable = match &err {
+            TableStoreError::Lock(lock) => lock.is_retryable(),
+            TableStoreError::BackendStorage { retryable, .. } => *retryable,
+            _ => false,
+        };
         RepositoryError::Storage {
             operation: "read model".into(),
             retryable,
@@ -268,5 +283,38 @@ impl From<EventRecordError> for RepositoryError {
             retryable: false,
             source: Some(Box::new(err)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_backend_retry_class_survives_repository_conversion() {
+        let transient = RepositoryError::from(TableStoreError::BackendStorage {
+            operation: "sqlite projection write".into(),
+            retryable: true,
+            message: "database is busy".into(),
+        });
+        let permanent = RepositoryError::from(TableStoreError::BackendStorage {
+            operation: "postgres projection write".into(),
+            retryable: false,
+            message: "constraint violation".into(),
+        });
+
+        assert!(transient.is_retryable());
+        assert!(!permanent.is_retryable());
+        assert!(transient.to_string().contains("retryable"));
+        assert!(permanent.to_string().contains("permanent"));
+
+        let causal = RepositoryError::from(TableStoreError::CausalWriteRequired {
+            table: "todo_views".into(),
+        });
+        assert!(matches!(
+            causal,
+            RepositoryError::CausalWriteRequired { ref table } if table == "todo_views"
+        ));
+        assert!(!causal.is_retryable());
     }
 }

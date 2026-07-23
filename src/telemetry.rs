@@ -155,7 +155,12 @@ pub(crate) fn handler_error_status(error: &HandlerError) -> &'static str {
         HandlerError::Rejected(_) => dispatch_status::REJECTED,
         HandlerError::NotFound(_) => dispatch_status::NOT_FOUND,
         HandlerError::Unauthorized(_) => dispatch_status::UNAUTHORIZED,
-        HandlerError::Repository(_) => dispatch_status::REPOSITORY_ERROR,
+        HandlerError::Repository(_)
+        | HandlerError::Projection(_)
+        | HandlerError::UnqualifiedProjectionDelivery(_)
+        | HandlerError::ProjectionRepairPending { .. }
+        | HandlerError::ProjectionTerminalRecorded { .. }
+        | HandlerError::ProjectionDeliveryHalted { .. } => dispatch_status::REPOSITORY_ERROR,
         HandlerError::GuardRejected(_) => dispatch_status::GUARD_REJECTED,
         HandlerError::Other(_) => dispatch_status::OTHER_ERROR,
     }

@@ -5,6 +5,8 @@ use crate::repository::RepositoryError;
 use crate::table::TableStoreError;
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(crate) mod projection_protocol;
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod read_model;
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) mod repo;
@@ -196,7 +198,11 @@ pub(crate) fn read_model_storage_error(
     operation: &str,
     err: sqlx::Error,
 ) -> TableStoreError {
-    TableStoreError::Storage(format!("{backend} {operation} failed: {err}"))
+    TableStoreError::BackendStorage {
+        operation: format!("{backend} {operation}"),
+        retryable: is_sqlx_transient(&err),
+        message: err.to_string(),
+    }
 }
 
 #[cfg(test)]

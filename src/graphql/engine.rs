@@ -337,6 +337,12 @@ impl GraphqlEngine {
         self.inner.command_binding.as_ref()
     }
 
+    pub(crate) fn typed_command_contracts_for_service(
+        &self,
+    ) -> Result<Vec<super::command_contract::TypedCommandContract>, String> {
+        self.inner.commands.typed_contracts_for_binding()
+    }
+
     pub(crate) fn causal_storage_identity(
         &self,
     ) -> Option<crate::command_ledger::CausalStorageIdentity> {
@@ -890,12 +896,21 @@ impl GraphqlEngineBuilder {
         self
     }
 
-    pub fn build(self) -> Result<GraphqlEngine, GraphqlBuildError> {
+    pub fn build(mut self) -> Result<GraphqlEngine, GraphqlBuildError> {
         if !self.pending_errors.is_empty() {
             return Err(GraphqlBuildError(self.pending_errors.join("; ")));
         }
 
-        if let Some(expected) = &self.command_binding {
+        let model_schemas = self
+            .catalog
+            .iter()
+            .map(|(model, entry)| (model.clone(), entry.schema.clone()))
+            .collect::<BTreeMap<_, _>>();
+        self.commands
+            .bind_direct_projection_targets(&self.projectors, &model_schemas)
+            .map_err(GraphqlBuildError)?;
+
+        if let Some(expected) = self.command_binding.as_ref() {
             let service_id = self.service_id.as_deref().ok_or_else(|| {
                 GraphqlBuildError(
                     "bound typed command inventory is missing its GraphQL service ID".into(),
@@ -907,12 +922,18 @@ impl GraphqlEngineBuilder {
                 .map_err(GraphqlBuildError)?;
             let actual = TypedServiceCommandBinding::from_contracts(service_id, &contracts)
                 .map_err(GraphqlBuildError)?;
-            if &actual != expected {
+            // The builder copied this exact private command inventory from the
+            // service and prevents later replacement. Its only intentional
+            // structural change is the framework-owned direct-owner binding
+            // above, so retain the pre-bind exact Rust type proof and publish
+            // the final bound fingerprint for Service attachment.
+            if actual.service_id != expected.service_id || actual.types != expected.types {
                 return Err(GraphqlBuildError(
                     "final GraphQL command inventory differs from the bound executable service inventory"
                         .into(),
                 ));
             }
+            self.command_binding = Some(actual);
         }
 
         // Validate permissions.
@@ -1731,7 +1752,7 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.service_id, "orders-service");
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:b3bc11b62da3502fecd01e8649f41ffa884fd501e1a2e20a785a66f109cbb87c"
+            "sha256:9bbb7fdb323594c02cc72f270488e97aa5abe33165957afc5ea217607a838e3b"
         );
     }
 

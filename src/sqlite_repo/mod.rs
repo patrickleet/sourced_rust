@@ -45,6 +45,11 @@ static SQLITE_MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
             "command ledger",
             include_str!("../../migrations/sqlite/0002_command_ledger.sql"),
         ),
+        (
+            3,
+            "projection protocol",
+            include_str!("../../migrations/sqlite/0003_projection_protocol.sql"),
+        ),
     ])
 });
 const SQLITE_BACKEND: &str = "sqlite";

@@ -18,11 +18,13 @@ use serde_json::Value;
 use uuid::{Uuid, Variant};
 
 use crate::entity::Entity;
-use crate::graphql::command_contract::ResolvedProjectionObligation;
+use crate::projection_protocol::{
+    ResolvedProjectionObligation, SameTransactionProjectionBatch, SameTransactionProjectionEvidence,
+};
 use crate::repository::{CommitBatch, RepositoryError, StreamIdentity};
 
 const SHA256_BYTES: usize = 32;
-const COMMAND_REPLAY_VERSION: u16 = 1;
+const COMMAND_REPLAY_VERSION: u16 = 2;
 
 /// Opaque identity for one concrete leaf repository instance.
 ///
@@ -407,6 +409,13 @@ fn validate_projection_obligation_semantics(
                 "projection obligation {obligation_index} has a blank model"
             ));
         }
+        if obligation.scope.topology().name() != obligation.projector
+            || obligation.scope.model() != obligation.model
+        {
+            return Err(format!(
+                "projection obligation {obligation_index} logical projector/model does not match its exact canonical scope"
+            ));
+        }
         if obligation.key.fields.is_empty() {
             return Err(format!(
                 "projection obligation {obligation_index} has no key fields"
@@ -612,6 +621,7 @@ impl CommandAttempt {
             attempt: self,
             state,
             replay,
+            direct_projection: None,
             retention,
         })
     }
@@ -686,6 +696,12 @@ pub(crate) struct CommandReplay {
     pub(crate) causation_id: CausationId,
     pub(crate) outcome: Value,
     pub(crate) projection_obligations: Vec<ResolvedProjectionObligation>,
+    /// Exact original direct-projection revision/change evidence.
+    ///
+    /// This is intentionally retained as the validated canonical replay value:
+    /// clients replay the original command outcome, while framework recovery
+    /// and diagnostics can prove which record version that transaction minted.
+    pub(crate) direct_projection: Option<Value>,
 }
 
 /// Result of one short reservation transaction.
@@ -719,6 +735,7 @@ pub(crate) struct CommandCompletion {
     attempt: CommandAttempt,
     state: TerminalCommandState,
     replay: String,
+    direct_projection: Option<Value>,
     retention: Duration,
 }
 
@@ -742,16 +759,98 @@ impl CommandCompletion {
     pub(crate) fn attempt_fence(&self) -> AttemptFence {
         self.attempt.fence()
     }
+
+    /// Attach adapter-allocated same-transaction projection evidence before
+    /// the ledger row is completed in that same transaction.
+    pub(crate) fn attach_direct_projection(
+        &mut self,
+        evidence: &SameTransactionProjectionEvidence,
+    ) -> Result<(), CommandLedgerError> {
+        if self.state != TerminalCommandState::Projected {
+            return Err(CommandLedgerError::Invalid(
+                "direct projection evidence may only complete a projected command".into(),
+            ));
+        }
+        if self.direct_projection.is_some() {
+            return Err(CommandLedgerError::Invalid(
+                "command completion already contains direct projection evidence".into(),
+            ));
+        }
+        let direct_projection = evidence.replay_value();
+        SameTransactionProjectionEvidence::validate_replay_value(&direct_projection)
+            .map_err(CommandLedgerError::Invalid)?;
+
+        let replay: Value = serde_json::from_str(&self.replay).map_err(|error| {
+            CommandLedgerError::Invalid(format!(
+                "command replay could not be extended with direct projection evidence: {error}"
+            ))
+        })?;
+        let Value::Object(mut replay) = replay else {
+            return Err(CommandLedgerError::Invalid(
+                "command replay envelope is not an object".into(),
+            ));
+        };
+        if replay
+            .insert("direct_projection".into(), direct_projection.clone())
+            .is_some()
+        {
+            return Err(CommandLedgerError::Invalid(
+                "command replay already has a direct projection field".into(),
+            ));
+        }
+        self.replay = serde_json::to_string(&replay).map_err(|error| {
+            CommandLedgerError::Invalid(format!(
+                "command replay serialization failed after direct projection: {error}"
+            ))
+        })?;
+        self.direct_projection = Some(direct_projection);
+        Ok(())
+    }
+
+    fn validate_direct_projection(&self) -> Result<(), CommandLedgerError> {
+        match (self.state, self.direct_projection.is_some()) {
+            (TerminalCommandState::Projected, true)
+            | (
+                TerminalCommandState::Accepted
+                | TerminalCommandState::AcceptedPendingProjection
+                | TerminalCommandState::Rejected,
+                false,
+            ) => Ok(()),
+            (TerminalCommandState::Projected, false) => Err(CommandLedgerError::Invalid(
+                "projected command completion has no exact direct projection evidence".into(),
+            )),
+            (_, true) => Err(CommandLedgerError::Invalid(
+                "non-projected command completion contains direct projection evidence".into(),
+            )),
+        }
+    }
 }
 
 /// Existing public domain batch plus exactly one private ledger completion.
 pub(crate) struct CausalCommitBatch<'a> {
     pub(crate) domain: CommitBatch<'a>,
     pub(crate) completion: CommandCompletion,
+    pub(crate) direct_projection: Option<SameTransactionProjectionBatch>,
 }
 
 impl<'a> CausalCommitBatch<'a> {
-    pub(crate) fn new(mut domain: CommitBatch<'a>, completion: CommandCompletion) -> Self {
+    pub(crate) fn new(domain: CommitBatch<'a>, completion: CommandCompletion) -> Self {
+        Self::build(domain, completion, None)
+    }
+
+    pub(crate) fn with_direct_projection(
+        domain: CommitBatch<'a>,
+        completion: CommandCompletion,
+        direct_projection: SameTransactionProjectionBatch,
+    ) -> Self {
+        Self::build(domain, completion, Some(direct_projection))
+    }
+
+    fn build(
+        mut domain: CommitBatch<'a>,
+        completion: CommandCompletion,
+        direct_projection: Option<SameTransactionProjectionBatch>,
+    ) -> Self {
         // The attempt's stable causation is authoritative at the final boundary:
         // handler metadata cannot accidentally (or deliberately) split the
         // event/outbox effects from their durable command identity.
@@ -762,7 +861,11 @@ impl<'a> CausalCommitBatch<'a> {
         for message in &mut domain.outbox_messages {
             message.overwrite_causation_id(causation_id);
         }
-        Self { domain, completion }
+        Self {
+            domain,
+            completion,
+            direct_projection,
+        }
     }
 }
 
@@ -1069,6 +1172,29 @@ impl CommandLedgerRecord {
         }
     }
 
+    /// Prove that a locked ledger row still belongs to this live attempt
+    /// without inspecting or mutating its eventual completion payload.
+    ///
+    /// SQL adapters use this as an early transaction preflight before any
+    /// domain or projection writes. The final conditional completion remains
+    /// the authoritative last statement and repeats the same fence check.
+    pub(crate) fn validate_live_attempt(
+        &self,
+        attempt: &AttemptFence,
+        now: SystemTime,
+    ) -> Result<(), CommandLedgerError> {
+        let lease_is_live = self
+            .lease_expires_at
+            .is_some_and(|lease_expires_at| lease_expires_at > now);
+        if self.matches_fence(attempt) && lease_is_live {
+            Ok(())
+        } else {
+            Err(CommandLedgerError::AttemptFenced {
+                command_id: attempt.key.command_id().to_string(),
+            })
+        }
+    }
+
     pub(crate) fn mark_retryable_unknown(
         &mut self,
         attempt: &AttemptFence,
@@ -1091,14 +1217,8 @@ impl CommandLedgerRecord {
         completion: &CommandCompletion,
         now: SystemTime,
     ) -> Result<(), CommandLedgerError> {
-        let lease_is_live = self
-            .lease_expires_at
-            .is_some_and(|lease_expires_at| lease_expires_at > now);
-        if !self.matches_fence(&completion.attempt.fence()) || !lease_is_live {
-            return Err(CommandLedgerError::AttemptFenced {
-                command_id: completion.attempt.key.command_id().to_string(),
-            });
-        }
+        completion.validate_direct_projection()?;
+        self.validate_live_attempt(&completion.attempt.fence(), now)?;
         let retention_expires_at =
             checked_deadline(now, completion.retention, "command retention")?;
         self.state = completion.state.into();
@@ -1193,6 +1313,32 @@ impl CommandLedgerRecord {
                 ))
             },
         )?;
+        let direct_projection = envelope.remove("direct_projection");
+        match (&direct_projection, self.state) {
+            (Some(value), CommandLedgerState::Projected) => {
+                SameTransactionProjectionEvidence::validate_replay_value(value).map_err(
+                    |error| {
+                        CommandLedgerError::Corrupt(format!(
+                            "command `{}` replay direct projection is invalid: {error}",
+                            self.key.command_id()
+                        ))
+                    },
+                )?;
+            }
+            (None, CommandLedgerState::Projected) => {
+                return Err(CommandLedgerError::Corrupt(format!(
+                    "command `{}` projected replay has no exact direct projection evidence",
+                    self.key.command_id()
+                )));
+            }
+            (Some(_), _) => {
+                return Err(CommandLedgerError::Corrupt(format!(
+                    "command `{}` non-projected replay contains direct projection evidence",
+                    self.key.command_id()
+                )));
+            }
+            (None, _) => {}
+        }
         if !envelope.is_empty() {
             return Err(CommandLedgerError::Corrupt(format!(
                 "command `{}` replay envelope has unknown fields",
@@ -1204,6 +1350,7 @@ impl CommandLedgerRecord {
             causation_id: self.causation_id.clone(),
             outcome,
             projection_obligations,
+            direct_projection,
         })
     }
 
@@ -1265,10 +1412,15 @@ pub(crate) enum ReservationDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphql::command_contract::{ResolvedProjectionKey, ResolvedProjectionKeyField};
     use crate::microsvc::HasOutboxStore;
     use crate::outbox::{OutboxMessage, OutboxMessageStatus};
     use crate::outbox_worker::OutboxStore;
+    use crate::projection_protocol::{
+        ProjectionChange, ProjectionChangeCursor, ProjectionChangeKind, ProjectionEpoch,
+        ProjectionObservation, ProjectionObservationKind, ProjectionPartition,
+        ProjectionRecordMetadata, ProjectionRecordScope, ProjectorTopologyId, RecordRevision,
+        ResolvedProjectionKey, ResolvedProjectionKeyField,
+    };
     use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
     use crate::repository::{
         GetStream, InboxReceipt, InboxStore, RelationalReadModelQueryStore, SnapshotStore,
@@ -1337,8 +1489,21 @@ mod tests {
     }
 
     fn resolved_obligation(marker: &str) -> ResolvedProjectionObligation {
+        let projector = format!("projector-{marker}");
+        let topology =
+            crate::projection_protocol::ProjectorTopologyId::new(1, &projector, [7; 32]).unwrap();
+        let partition =
+            crate::projection_protocol::ProjectionPartition::new(b"test-partition".to_vec())
+                .unwrap();
+        let scope = crate::projection_protocol::ProjectionRecordScope::new(
+            topology,
+            partition,
+            "LedgerConformanceView",
+            format!("key-{marker}").into_bytes(),
+        )
+        .unwrap();
         ResolvedProjectionObligation {
-            projector: format!("projector-{marker}"),
+            projector,
             model: "LedgerConformanceView".into(),
             key: ResolvedProjectionKey {
                 fields: vec![ResolvedProjectionKeyField {
@@ -1347,7 +1512,59 @@ mod tests {
                 }],
             },
             partition: Some(serde_json::Value::Null),
+            scope,
         }
+    }
+
+    fn direct_projection_evidence(marker: &str) -> SameTransactionProjectionEvidence {
+        let topology = ProjectorTopologyId::new(1, "ledger-direct-projector", [0x42; 32]).unwrap();
+        let partition = ProjectionPartition::new(format!("partition:{marker}")).unwrap();
+        let epoch = ProjectionEpoch::new("ledger-direct-v1").unwrap();
+        let scope = ProjectionRecordScope::new(
+            topology.clone(),
+            partition.clone(),
+            "LedgerConformanceView",
+            format!("key:{marker}"),
+        )
+        .unwrap();
+        let revision = RecordRevision::new(scope.clone(), 1, 1).unwrap();
+        let cursor = ProjectionChangeCursor::new(topology, partition, epoch, 1).unwrap();
+        let record = ProjectionRecordMetadata {
+            revision: revision.clone(),
+            tombstone: false,
+            change: cursor.clone(),
+        };
+        let change = ProjectionChange {
+            cursor: cursor.clone(),
+            kind: ProjectionChangeKind::RecordUpsert,
+            causation_id: format!("cause:{marker}"),
+            observation_kind: None,
+            scope: Some(scope.clone()),
+            revision: Some(revision.clone()),
+            failure_id: None,
+        };
+        let observation = ProjectionObservation {
+            causation_id: format!("cause:{marker}"),
+            kind: ProjectionObservationKind::Record,
+            revision: Some(revision),
+            scope,
+            change: cursor,
+        };
+        SameTransactionProjectionEvidence {
+            records: vec![record],
+            changes: vec![change],
+            observations: vec![observation],
+        }
+    }
+
+    fn attach_test_direct_projection(
+        mut completion: CommandCompletion,
+        marker: &str,
+    ) -> CommandCompletion {
+        completion
+            .attach_direct_projection(&direct_projection_evidence(marker))
+            .unwrap();
+        completion
     }
 
     fn fresh_attempt() -> CommandAttempt {
@@ -1652,7 +1869,7 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-            let completion = attempt
+            let mut completion = attempt
                 .complete_with_obligations(
                     terminal_state,
                     expected_outcome.clone(),
@@ -1660,6 +1877,12 @@ mod tests {
                     Duration::from_secs(300),
                 )
                 .unwrap();
+            let expected_direct_projection = (terminal_state == TerminalCommandState::Projected)
+                .then(|| {
+                    let evidence = direct_projection_evidence(&format!("terminal-{index}"));
+                    completion.attach_direct_projection(&evidence).unwrap();
+                    evidence.replay_value()
+                });
             repo.commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
                 .await
                 .unwrap();
@@ -1685,6 +1908,7 @@ mod tests {
             assert_eq!(first.causation_id, causation);
             assert_eq!(first.outcome, expected_outcome);
             assert_eq!(first.projection_obligations, expected_obligations);
+            assert_eq!(first.direct_projection, expected_direct_projection);
         }
     }
 
@@ -2762,6 +2986,7 @@ mod tests {
                 Duration::from_secs(300),
             )
             .unwrap();
+        let completion = attach_test_direct_projection(completion, "sqlite-winner");
         repo.commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
             .await
             .unwrap();

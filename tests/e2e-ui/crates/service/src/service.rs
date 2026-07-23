@@ -3,7 +3,7 @@
 use blob_domain::BlobGame;
 use chat_domain::ChatMessage;
 use distributed::graphql::{
-    exposed_command, read, ClientReconcile, GraphqlCommands, GraphqlEngine, GraphqlPool,
+    exposed_command, read, ClientReconcile, GraphqlCommands, GraphqlEngine, GraphqlPoolSource,
     IdentityConfig, ModelPermissions, OidcConfig,
 };
 use distributed::microsvc::{
@@ -192,9 +192,9 @@ pub fn graphql_commands() -> GraphqlCommands {
 /// All write paths are **command mutations** (not read-model writes). Owner/author is
 /// always the authenticated session principal. Roles: user, admin.
 ///
-/// Works with SQLite or Postgres pools (`GraphqlPool`).
+/// Works with SQLite or Postgres pools through [`GraphqlPoolSource`].
 pub fn build_graphql_engine(
-    pool: impl Into<GraphqlPool>,
+    pool: impl Into<GraphqlPoolSource>,
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {

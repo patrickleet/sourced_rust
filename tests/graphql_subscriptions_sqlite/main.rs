@@ -41,10 +41,10 @@ async fn setup_fixed() -> (
     GraphqlEngine,
     sqlx::SqlitePool,
 ) {
-    let pool = SqlitePoolOptions::new()
-        .connect("sqlite::memory:")
+    let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .unwrap();
+    let pool = repo.pool().clone();
     sqlx::query(
         "CREATE TABLE items (
             id TEXT PRIMARY KEY,
@@ -60,7 +60,6 @@ async fn setup_fixed() -> (
     .await
     .unwrap();
 
-    let repo = distributed::SqliteRepository::new(pool.clone());
     let change_rx = repo.read_model_changes();
 
     let manifest =
@@ -244,10 +243,10 @@ async fn subscription_claim_isolation_across_tenants() {
         body: String,
     }
 
-    let pool = SqlitePoolOptions::new()
-        .connect("sqlite::memory:")
+    let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
         .unwrap();
+    let pool = repo.pool().clone();
     sqlx::query(
         "CREATE TABLE notes (
             note_id TEXT PRIMARY KEY,
@@ -263,7 +262,6 @@ async fn subscription_claim_isolation_across_tenants() {
     .await
     .unwrap();
 
-    let repo = distributed::SqliteRepository::new(pool.clone());
     let change_rx = repo.read_model_changes();
 
     let engine = GraphqlEngine::builder(pool.clone())
@@ -289,14 +287,10 @@ async fn subscription_claim_isolation_across_tenants() {
 
     let sub_doc = r#"subscription { notes { note_id owner_id body } }"#;
 
-    let mut stream_a = Box::pin(engine.execute_stream(
-        &tenant_session("tenant-a"),
-        Request::new(sub_doc),
-    ));
-    let mut stream_b = Box::pin(engine.execute_stream(
-        &tenant_session("tenant-b"),
-        Request::new(sub_doc),
-    ));
+    let mut stream_a =
+        Box::pin(engine.execute_stream(&tenant_session("tenant-a"), Request::new(sub_doc)));
+    let mut stream_b =
+        Box::pin(engine.execute_stream(&tenant_session("tenant-b"), Request::new(sub_doc)));
 
     let first_a = tokio::time::timeout(Duration::from_secs(2), stream_a.next())
         .await
@@ -349,7 +343,8 @@ async fn subscription_claim_isolation_across_tenants() {
 
     // B's payload is unchanged (still one row) — hash gate may suppress a push.
     // If a push arrives, it must still be only tenant-b.
-    if let Ok(Some(push_b)) = tokio::time::timeout(Duration::from_millis(500), stream_b.next()).await
+    if let Ok(Some(push_b)) =
+        tokio::time::timeout(Duration::from_millis(500), stream_b.next()).await
     {
         assert!(!push_b.is_err(), "{:?}", push_b.errors);
         let data_b2 = serde_json::to_value(&push_b.data).unwrap();

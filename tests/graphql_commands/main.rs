@@ -44,10 +44,10 @@ fn static_schema() -> &'static TableSchema {
 /// Real CQRS loop: mutation dispatches handler which projects a row; query reads it.
 #[tokio::test]
 async fn mutation_handler_projection_query_loop() {
-    let pool = SqlitePoolOptions::new()
-        .connect("sqlite::memory:")
+    let repo = distributed::SqliteRepository::connect_and_migrate("sqlite::memory:")
         .await
-        .unwrap();
+        .expect("framework migrations should apply");
+    let pool = repo.pool().clone();
     sqlx::query(
         "CREATE TABLE items (
             id TEXT PRIMARY KEY,
@@ -59,7 +59,6 @@ async fn mutation_handler_projection_query_loop() {
     .await
     .unwrap();
 
-    let repo = distributed::SqliteRepository::new(pool.clone());
     let change_rx = repo.read_model_changes();
 
     // Handler: write projected row via ReadModelWritePlanStore (real shipped path).
@@ -562,7 +561,7 @@ fn derive_preserves_outer_and_item_nullability_and_serde_names() {
 }
 
 #[tokio::test]
-async fn scalar_matrix_matches_catalog_sdl_manifest_and_generated_operation() {
+async fn scalar_matrix_matches_catalog_and_sdl_while_legacy_stays_server_only() {
     let pool = SqlitePoolOptions::new()
         .connect("sqlite::memory:")
         .await
@@ -662,28 +661,10 @@ async fn scalar_matrix_matches_catalog_sdl_manifest_and_generated_operation() {
     }
 
     let client_manifest = engine.client_manifest_for_role("user").unwrap();
-    let command = client_manifest
-        .commands
-        .iter()
-        .find(|command| command.name == "matrix.echo")
-        .expect("matrix command");
-    for shape in [&command.input, &command.output] {
-        let distributed::graphql::ClientCommandShape::Object { definition } = shape else {
-            panic!("expected typed command shape")
-        };
-        for (name, nullable, list, item_nullable, _) in expected {
-            let field = definition
-                .fields
-                .iter()
-                .find(|field| field.name == name)
-                .unwrap_or_else(|| panic!("missing manifest field {name}"));
-            assert_eq!(
-                (field.nullable, field.list, field.item_nullable),
-                (nullable, list, item_nullable),
-                "manifest field {name}"
-            );
-        }
-    }
+    assert!(
+        client_manifest.commands.is_empty(),
+        "manual legacy commands must remain server-only; only compiler-bound causal commands are client-exported"
+    );
 
     let variables = Variables::from_json(json!({
         "input": {
@@ -700,14 +681,25 @@ async fn scalar_matrix_matches_catalog_sdl_manifest_and_generated_operation() {
     let response = engine
         .execute(
             &session,
-            Request::new(command.operation.clone())
-                .variables(variables)
-                .data(service),
+            Request::new(
+                "mutation EchoScalarMatrix($input: ScalarMatrixInput!) {
+                    echo_scalar_matrix(input: $input) {
+                        wireRequired
+                        optional
+                        requiredItems
+                        optionalItems
+                        nullableItems
+                        optionalNullableItems
+                    }
+                }",
+            )
+            .variables(variables)
+            .data(service),
         )
         .await;
     assert!(
         response.errors.is_empty(),
-        "generated operation must validate and execute: {:?}",
+        "explicit legacy operation must validate and execute: {:?}",
         response.errors
     );
     let data = serde_json::to_value(response.data).unwrap();

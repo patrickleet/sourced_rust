@@ -27,7 +27,7 @@
 //!     .await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -42,14 +42,19 @@ use serde_json::Value;
 use super::causal::{CausalWorkspace, CausalWorkspaceError};
 use super::context::Context;
 use super::dependencies::{
-    CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore,
-    HasRepo, RepoReadModelDependencies,
+    CausalProjectionRouteDependencies, CausalRouteDependencies, ConfigurableOutboxPublisher,
+    HasOutboxStore, HasReadModelStore, HasRepo, RepoReadModelDependencies,
 };
 use super::error::HandlerError;
+use super::projector::{
+    CausalProjectorRouteBuilder, ErasedProjectorHandler, ProjectionRepairHandle,
+    ProjectorRegistration, ProjectorRepairFuture, ProjectorRepairLookupFuture,
+};
 use super::session::Session;
 use crate::aggregate::Aggregate;
 use crate::bus::{
-    Bus, Message, MessageKind, MessagePublisher, RunOptions, SubscriptionPlan, TransportError,
+    Bus, Message, MessageKind, MessagePublisher, OrderedDelivery, RunOptions, SubscriptionPlan,
+    TransportError,
 };
 #[cfg(feature = "graphql")]
 use crate::command_ledger::{
@@ -71,10 +76,14 @@ use crate::graphql::command_contract::{
 use crate::graphql::command_input::canonicalize_command_input;
 #[cfg(feature = "graphql")]
 use crate::graphql::identity::VerifiedPrincipal;
-use crate::graphql::{GraphqlOutputType, PreparedCommand, Projected, TypedCommand};
+use crate::graphql::{
+    GraphqlOutputType, PreparedCommand, Projected, SurfaceProjector, TypedCommand,
+};
 use crate::outbox::OutboxMessage;
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
+#[cfg(feature = "graphql")]
+use crate::projection_protocol::ProjectionProtocolStore;
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 #[cfg(feature = "graphql")]
 use crate::repository::CommitBatch;
@@ -91,6 +100,8 @@ pub(crate) type ServiceRunner = Box<
 
 type GuardFn<D> = dyn Fn(&Context<D>) -> bool + Send + Sync;
 type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send + 'a>>;
+type ProjectorBootstrapFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send + 'a>>;
 type HandlerFn<D> = dyn for<'a> Fn(&'a Context<'a, D>) -> HandlerFuture<'a> + Send + Sync;
 
 /// Lets an `async fn handle(ctx: &Context<D>) -> Result<Value, HandlerError>`
@@ -428,25 +439,28 @@ pub enum DeliveryKind {
 }
 
 /// Static message names attached to a handler spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandlerNames {
     /// A single command or event name.
     One(&'static str),
     /// Multiple event names handled by one projection-style handler.
     Many(&'static [&'static str]),
+    /// Compiler-owned event names retained by a causal projector declaration.
+    Owned(Vec<String>),
 }
 
 impl HandlerNames {
-    fn to_vec(self) -> Vec<&'static str> {
+    fn to_vec(&self) -> Vec<&str> {
         match self {
-            Self::One(name) => vec![name],
+            Self::One(name) => vec![*name],
             Self::Many(names) => names.to_vec(),
+            Self::Owned(names) => names.iter().map(String::as_str).collect(),
         }
     }
 }
 
 /// Transport-visible metadata for a registered handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandlerSpec {
     names: HandlerNames,
     pub kind: MessageKind,
@@ -481,8 +495,16 @@ impl HandlerSpec {
         }
     }
 
+    pub(crate) fn projector(names: Vec<String>) -> Self {
+        Self {
+            names: HandlerNames::Owned(names),
+            kind: MessageKind::Event,
+            delivery: DeliveryKind::FanOut,
+        }
+    }
+
     /// Message names consumed by this handler.
-    pub fn names(&self) -> Vec<&'static str> {
+    pub fn names(&self) -> Vec<&str> {
         self.names.to_vec()
     }
 }
@@ -493,6 +515,7 @@ enum RegisteredHandler<D> {
         handle: Arc<HandlerFn<D>>,
     },
     Causal(Box<dyn ErasedCausalHandler<D>>),
+    Projector(Vec<Arc<dyn ErasedProjectorHandler<D>>>),
 }
 
 #[derive(Clone, Copy)]
@@ -517,6 +540,9 @@ type CausalHandlerFuture<'a> =
 
 trait ErasedCausalHandler<D>: Send + Sync {
     fn contract(&self) -> &TypedCommandContract;
+
+    #[cfg(feature = "graphql")]
+    fn contract_mut(&mut self) -> &mut TypedCommandContract;
 
     #[cfg(feature = "graphql")]
     fn storage_identity(&self, dependencies: &D) -> crate::command_ledger::CausalStorageIdentity;
@@ -556,6 +582,11 @@ where
     guard: Option<Arc<CausalGuardFn<A>>>,
     #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     handle: Arc<PreparedHandlerFn<A, I, K>>,
+    /// Retryable, fail-closed bootstrap for the bound projector's complete
+    /// model/table ownership inventory. `get_or_try_init` leaves the cell empty
+    /// after a transient registration failure.
+    #[cfg(feature = "graphql")]
+    direct_projection_bootstrap: tokio::sync::OnceCell<()>,
     _types: std::marker::PhantomData<fn(A, I) -> K>,
 }
 
@@ -573,6 +604,8 @@ where
             contract,
             guard,
             handle,
+            #[cfg(feature = "graphql")]
+            direct_projection_bootstrap: tokio::sync::OnceCell::new(),
             _types: std::marker::PhantomData,
         }
     }
@@ -585,11 +618,36 @@ trait ErasedRoutes: Send + Sync {
 
     fn typed_command_contracts(&self) -> Vec<&TypedCommandContract>;
 
+    fn projector_registrations(&self) -> Vec<ProjectorRegistration>;
+
+    fn bootstrap_projectors(&self) -> ProjectorBootstrapFuture<'_>;
+
+    fn is_causal_projector(&self, message: &Message) -> bool;
+
+    fn is_projector_route(&self, kind: MessageKind, name: &str) -> bool;
+
+    fn repair_projection<'a>(
+        &'a self,
+        handle: &'a ProjectionRepairHandle,
+    ) -> ProjectorRepairFuture<'a>;
+
+    fn locates_projection_failure<'a>(
+        &'a self,
+        handle: &'a ProjectionRepairHandle,
+    ) -> ProjectorRepairLookupFuture<'a>;
+
+    #[cfg(feature = "graphql")]
+    fn bind_typed_command_contracts(
+        &mut self,
+        contracts: &BTreeMap<String, TypedCommandContract>,
+    ) -> Result<(), String>;
+
     fn dispatch<'a>(
         &'a self,
         message: &'a Message,
         input: Value,
         session: Session,
+        ordered: Option<&'a OrderedDelivery>,
     ) -> HandlerFuture<'a>;
 
     #[cfg(feature = "graphql")]
@@ -783,6 +841,7 @@ pub struct Routes<D> {
     dependencies: D,
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
+    projectors: Vec<Arc<dyn ErasedProjectorHandler<D>>>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
 }
 
@@ -793,6 +852,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
+            projectors: Vec::new(),
             outbox_configurator: None,
         }
     }
@@ -807,7 +867,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// otherwise silently drop previously registered handlers.
     fn assert_no_registrations(&self, builder: &str) {
         assert!(
-            self.handlers.is_empty() && self.handler_specs.is_empty(),
+            self.handlers.is_empty() && self.handler_specs.is_empty() && self.projectors.is_empty(),
             "Routes::{builder} must be called before registering handlers"
         );
     }
@@ -852,6 +912,19 @@ impl<D: Send + Sync + 'static> Routes<D> {
             contract,
             _types: std::marker::PhantomData,
         }
+    }
+
+    /// Register one typed, ordered causal projector using the exact
+    /// [`SurfaceProjector`] declaration also supplied to the GraphQL engine.
+    pub fn causal_projector<I>(
+        self,
+        projector: SurfaceProjector,
+    ) -> CausalProjectorRouteBuilder<D, I>
+    where
+        D: CausalProjectionRouteDependencies,
+        I: serde::de::DeserializeOwned + Send + 'static,
+    {
+        CausalProjectorRouteBuilder::new(self, projector)
     }
 
     /// Start registering an event handler that consumes JSON payload input.
@@ -934,13 +1007,60 @@ impl<D: Send + Sync + 'static> Routes<D> {
         self
     }
 
+    pub(super) fn register_projector(
+        mut self,
+        spec: HandlerSpec,
+        handler: Box<dyn ErasedProjectorHandler<D>>,
+    ) -> Self {
+        let by_name = self.handlers.entry(MessageKind::Event).or_default();
+        let names = spec.names();
+        for (position, name) in names.iter().enumerate() {
+            assert!(
+                !names[..position].contains(name),
+                "causal projector repeats {:?} route `{}`",
+                MessageKind::Event,
+                name
+            );
+        }
+        let handler: Arc<dyn ErasedProjectorHandler<D>> = Arc::from(handler);
+        for name in names {
+            match by_name.get_mut(name) {
+                Some(RegisteredHandler::Projector(projectors)) => {
+                    projectors.push(Arc::clone(&handler));
+                    projectors.sort_by(|left, right| {
+                        let left = left.registration().topology;
+                        let right = right.registration().topology;
+                        left.name()
+                            .cmp(right.name())
+                            .then_with(|| left.digest().cmp(&right.digest()))
+                    });
+                }
+                Some(RegisteredHandler::Legacy { .. } | RegisteredHandler::Causal(_)) => {
+                    panic!(
+                        "causal projector route {:?} `{name}` collides with a non-projector handler",
+                        MessageKind::Event
+                    );
+                }
+                None => {
+                    by_name.insert(
+                        name.to_string(),
+                        RegisteredHandler::Projector(vec![Arc::clone(&handler)]),
+                    );
+                }
+            }
+        }
+        self.projectors.push(handler);
+        self.handler_specs.push(spec);
+        self
+    }
+
     fn typed_contracts(&self) -> Vec<&TypedCommandContract> {
         self.handlers
             .values()
             .flat_map(HashMap::values)
             .filter_map(|handler| match handler {
                 RegisteredHandler::Causal(handler) => Some(handler.contract()),
-                RegisteredHandler::Legacy { .. } => None,
+                RegisteredHandler::Legacy { .. } | RegisteredHandler::Projector(_) => None,
             })
             .collect()
     }
@@ -957,6 +1077,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
         message: &Message,
         input: Value,
         session: Session,
+        ordered: Option<&OrderedDelivery>,
     ) -> Result<Value, HandlerError> {
         // Clone the handler/guard Arcs so the handler map is not borrowed across
         // the (awaited) handler future.
@@ -972,6 +1093,33 @@ impl<D: Send + Sync + 'static> Routes<D> {
                     return Err(HandlerError::Unauthorized(
                         "typed causal commands require a verified GraphQL bearer envelope".into(),
                     ));
+                }
+                RegisteredHandler::Projector(projectors) => {
+                    for projector in projectors {
+                        if let Err(error) = projector
+                            .dispatch(&self.dependencies, message, ordered)
+                            .await
+                        {
+                            if error.is_projection_retryable()
+                                || matches!(
+                                    error,
+                                    HandlerError::ProjectionTerminalRecorded { .. }
+                                        | HandlerError::ProjectionDeliveryHalted { .. }
+                                )
+                            {
+                                return Err(error);
+                            }
+                            // Causal-projector delivery is stricter than the
+                            // service's ordinary permanent-failure policy. If a
+                            // permanent error was not converted to a durable
+                            // terminal record, dead-lettering or acknowledging
+                            // it would let later input cross an unproven gap.
+                            return Err(HandlerError::ProjectionDeliveryHalted {
+                                source: Box::new(error),
+                            });
+                        }
+                    }
+                    return Ok(Value::Null);
                 }
             }
         };
@@ -997,6 +1145,11 @@ where
 {
     fn contract(&self) -> &TypedCommandContract {
         &self.contract
+    }
+
+    #[cfg(feature = "graphql")]
+    fn contract_mut(&mut self) -> &mut TypedCommandContract {
+        &mut self.contract
     }
 
     #[cfg(feature = "graphql")]
@@ -1031,6 +1184,10 @@ where
                 .contract
                 .resolve_projection_obligations(&wire)
                 .map_err(|error| CausalDispatchError::Internal(error.to_string()))?;
+            let direct_projection_target = self
+                .contract
+                .resolve_direct_projection_target(&wire)
+                .map_err(|error| CausalDispatchError::Internal(error.to_string()))?;
 
             let command_id = CommandId::parse(command_id)
                 .map_err(|error| CausalDispatchError::BadRequest(error.to_string()))?;
@@ -1050,6 +1207,21 @@ where
 
             let aggregate_repository = dependencies.__causal_aggregate_repository();
             let repository = aggregate_repository.repo();
+            if let Some(target) = direct_projection_target.as_ref() {
+                let (topology, ownership) = target.registration();
+                self.direct_projection_bootstrap
+                    .get_or_try_init(|| async {
+                        repository
+                            .register_projection_models(topology, ownership)
+                            .await
+                            .map_err(|error| {
+                                CausalDispatchError::Internal(format!(
+                                    "direct projection ownership bootstrap failed: {error}"
+                                ))
+                            })
+                    })
+                    .await?;
+            }
             let attempt = match repository
                 .reserve_command(reservation)
                 .await
@@ -1132,6 +1304,16 @@ where
             if let Err(error) = parts.validate_prepared(&self.contract, &prepared) {
                 return abandon_causal_attempt(repository, attempt, error.to_string()).await;
             }
+            let direct_projection = match parts.seal_direct_projection(
+                &prepared,
+                direct_projection_target,
+                attempt.causation_id().as_str(),
+            ) {
+                Ok(direct_projection) => direct_projection,
+                Err(error) => {
+                    return abandon_causal_attempt(repository, attempt, error.to_string()).await
+                }
+            };
 
             let terminal_state = match self.contract.consistency {
                 CommandConsistency::Accepted if self.contract.confirmations.is_empty() => {
@@ -1197,7 +1379,12 @@ where
                     policy.replay_retention,
                 )
                 .map_err(internal_ledger_error)?;
-            let causal_batch = CausalCommitBatch::new(batch, completion);
+            let causal_batch = match direct_projection {
+                Some(direct_projection) => {
+                    CausalCommitBatch::with_direct_projection(batch, completion, direct_projection)
+                }
+                None => CausalCommitBatch::new(batch, completion),
+            };
             match repository.commit_causal_batch(causal_batch).await {
                 Ok(()) => {
                     parts.mark_snapshot_versions_committed();
@@ -1447,13 +1634,154 @@ where
         self.typed_contracts()
     }
 
+    fn projector_registrations(&self) -> Vec<ProjectorRegistration> {
+        self.projectors
+            .iter()
+            .map(|projector| projector.registration())
+            .collect()
+    }
+
+    fn bootstrap_projectors(&self) -> ProjectorBootstrapFuture<'_> {
+        Box::pin(async move {
+            for projector in &self.projectors {
+                projector.bootstrap(&self.dependencies).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn repair_projection<'a>(
+        &'a self,
+        handle: &'a ProjectionRepairHandle,
+    ) -> ProjectorRepairFuture<'a> {
+        Box::pin(async move {
+            let mut owner = None;
+            for (index, projector) in self.projectors.iter().enumerate() {
+                if projector
+                    .locates_failure(&self.dependencies, handle)
+                    .await?
+                {
+                    if owner.replace(index).is_some() {
+                        return Err(HandlerError::Projection(
+                            crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                                "projection failure ID resolved to multiple registered projectors"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            let Some(owner) = owner else {
+                return Ok(None);
+            };
+            self.projectors[owner]
+                .repair(&self.dependencies, handle)
+                .await
+        })
+    }
+
+    fn locates_projection_failure<'a>(
+        &'a self,
+        handle: &'a ProjectionRepairHandle,
+    ) -> ProjectorRepairLookupFuture<'a> {
+        Box::pin(async move {
+            let mut found = false;
+            for projector in &self.projectors {
+                if projector
+                    .locates_failure(&self.dependencies, handle)
+                    .await?
+                {
+                    if found {
+                        return Err(HandlerError::Projection(
+                            crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                                "projection failure ID resolved to multiple registered projectors"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                    found = true;
+                }
+            }
+            Ok(found)
+        })
+    }
+
+    fn is_causal_projector(&self, message: &Message) -> bool {
+        matches!(
+            self.handlers
+                .get(&message.kind)
+                .and_then(|handlers| handlers.get(message.name())),
+            Some(RegisteredHandler::Projector(_))
+        )
+    }
+
+    fn is_projector_route(&self, kind: MessageKind, name: &str) -> bool {
+        matches!(
+            self.handlers
+                .get(&kind)
+                .and_then(|handlers| handlers.get(name)),
+            Some(RegisteredHandler::Projector(_))
+        )
+    }
+
+    #[cfg(feature = "graphql")]
+    fn bind_typed_command_contracts(
+        &mut self,
+        contracts: &BTreeMap<String, TypedCommandContract>,
+    ) -> Result<(), String> {
+        for handlers in self.handlers.values_mut() {
+            for registered in handlers.values_mut() {
+                let RegisteredHandler::Causal(handler) = registered else {
+                    continue;
+                };
+                let current = handler.contract();
+                let bound = contracts.get(&current.name).ok_or_else(|| {
+                    format!(
+                        "GraphQL engine is missing typed command `{}` from the executable service",
+                        current.name
+                    )
+                })?;
+                let mut current_without_owner = current.clone();
+                current_without_owner.direct_projection = None;
+                for confirmation in &mut current_without_owner.confirmations {
+                    confirmation.clear_protocol_topology();
+                }
+                let mut bound_without_owner = bound.clone();
+                bound_without_owner.direct_projection = None;
+                for confirmation in &mut bound_without_owner.confirmations {
+                    confirmation.clear_protocol_topology();
+                }
+                if current.input_type_id != bound.input_type_id
+                    || current.output_type_id != bound.output_type_id
+                {
+                    return Err("typed command Rust input/output TypeId mismatch".into());
+                }
+                if current.consistency != bound.consistency
+                    || current.projected_model != bound.projected_model
+                    || current_without_owner.canonical_value()
+                        != bound_without_owner.canonical_value()
+                {
+                    return Err(format!(
+                        "typed command structural fingerprint mismatch for executable route `{}`",
+                        current.name
+                    ));
+                }
+                let contract = handler.contract_mut();
+                contract.confirmations = bound.confirmations.clone();
+                contract.direct_projection = bound.direct_projection.clone();
+            }
+        }
+        Ok(())
+    }
+
     fn dispatch<'a>(
         &'a self,
         message: &'a Message,
         input: Value,
         session: Session,
+        ordered: Option<&'a OrderedDelivery>,
     ) -> HandlerFuture<'a> {
-        Box::pin(self.invoke(message, input, session))
+        Box::pin(self.invoke(message, input, session, ordered))
     }
 
     #[cfg(feature = "graphql")]
@@ -1481,7 +1809,9 @@ where
                 principal,
                 policy,
             ),
-            Some(RegisteredHandler::Legacy { .. }) | None => Box::pin(async move {
+            Some(RegisteredHandler::Legacy { .. })
+            | Some(RegisteredHandler::Projector(_))
+            | None => Box::pin(async move {
                 Err(CausalDispatchError::BadRequest(format!(
                     "`{command}` is not a typed causal command"
                 )))
@@ -1510,7 +1840,9 @@ where
                 session,
                 principal,
             ),
-            Some(RegisteredHandler::Legacy { .. }) | None => Box::pin(async move {
+            Some(RegisteredHandler::Legacy { .. })
+            | Some(RegisteredHandler::Projector(_))
+            | None => Box::pin(async move {
                 Err(CausalDispatchError::BadRequest(format!(
                     "`{command}` is not a typed causal command"
                 )))
@@ -1529,7 +1861,9 @@ where
                 {
                     Some(handler.storage_identity(&self.dependencies))
                 }
-                RegisteredHandler::Causal(_) | RegisteredHandler::Legacy { .. } => None,
+                RegisteredHandler::Causal(_)
+                | RegisteredHandler::Legacy { .. }
+                | RegisteredHandler::Projector(_) => None,
             })
             .collect()
     }
@@ -1559,7 +1893,7 @@ where
 pub struct Service {
     name: Option<String>,
     routes: Vec<Box<dyn ErasedRoutes>>,
-    index: HashMap<MessageKind, HashMap<String, usize>>,
+    index: HashMap<MessageKind, HashMap<String, Vec<usize>>>,
     handler_specs: Vec<HandlerSpec>,
     causal_command_policy: CausalCommandPolicy,
     runner: Option<ServiceRunner>,
@@ -1641,12 +1975,27 @@ impl Service {
     /// fingerprint, and exact Rust input/output `TypeId`s. A validated engine
     /// may attach and serve reads and durable typed mutations. `Projected`
     /// commands additionally require the engine and command repository to
-    /// carry the same opaque causal-storage identity.
+    /// carry the same opaque causal-storage identity. A service with no typed
+    /// commands may still attach a manual legacy catalog; that path remains
+    /// explicitly noncausal and cannot bind typed command metadata.
     #[cfg(feature = "graphql")]
     pub fn try_with_graphql(
         mut self,
         engine: crate::graphql::GraphqlEngine,
     ) -> Result<Self, GraphqlServiceBindError> {
+        if !self.typed_command_contracts().is_empty() {
+            let contracts = engine
+                .typed_command_contracts_for_service()
+                .map_err(GraphqlServiceBindError)?
+                .into_iter()
+                .map(|contract| (contract.name.clone(), contract))
+                .collect::<BTreeMap<_, _>>();
+            for routes in &mut self.routes {
+                routes
+                    .bind_typed_command_contracts(&contracts)
+                    .map_err(GraphqlServiceBindError)?;
+            }
+        }
         self.validate_graphql_engine(&engine)?;
         self.graphql = Some(std::sync::Arc::new(engine));
         Ok(self)
@@ -1808,6 +2157,13 @@ impl Service {
         D: Send + Sync + 'static,
     {
         let keys = routes.registered_keys();
+        let new_projectors = routes.projector_registrations();
+        let existing_projectors = self
+            .routes
+            .iter()
+            .flat_map(|routes| routes.projector_registrations())
+            .collect::<Vec<_>>();
+        validate_projector_registrations(existing_projectors.iter().chain(new_projectors.iter()));
         let typed_commands = routes
             .typed_contracts()
             .into_iter()
@@ -1819,12 +2175,19 @@ impl Service {
             "cannot add typed command routes after attaching a GraphQL engine"
         );
         for (kind, name) in &keys {
-            assert!(
-                !self.handles_message(*kind, name),
-                "duplicate route registration for {:?} `{}`",
-                kind,
-                name
-            );
+            if let Some(existing) = self.index.get(kind).and_then(|by_name| by_name.get(name)) {
+                let projector_fanout = *kind == MessageKind::Event
+                    && routes.is_projector_route(*kind, name)
+                    && existing
+                        .iter()
+                        .all(|index| self.routes[*index].is_projector_route(*kind, name));
+                assert!(
+                    projector_fanout,
+                    "duplicate route registration for {:?} `{}` is allowed only between causal projectors",
+                    kind,
+                    name
+                );
+            }
             #[cfg(feature = "graphql")]
             assert!(
                 !(self.graphql.is_some()
@@ -1849,7 +2212,9 @@ impl Service {
             self.index
                 .entry(kind)
                 .or_default()
-                .insert(name, route_index);
+                .entry(name)
+                .or_default()
+                .push(route_index);
         }
         self.handler_specs.extend_from_slice(routes.handler_specs());
         self.routes.push(Box::new(routes));
@@ -1890,7 +2255,7 @@ impl Service {
             .index
             .get(&MessageKind::Command)
             .and_then(|commands| commands.get(command))
-            .copied()
+            .and_then(|indices| (indices.len() == 1).then_some(indices[0]))
             .ok_or_else(|| CausalDispatchError::BadRequest("unknown typed command".into()))?;
         self.routes[route_index]
             .dispatch_causal(
@@ -1926,7 +2291,7 @@ impl Service {
             .index
             .get(&MessageKind::Command)
             .and_then(|commands| commands.get(command))
-            .copied()
+            .and_then(|indices| (indices.len() == 1).then_some(indices[0]))
             .ok_or_else(|| CausalDispatchError::BadRequest("unknown typed command".into()))?;
         self.routes[route_index]
             .lookup_causal(command, service_id, command_id, session, principal)
@@ -1989,7 +2354,7 @@ impl Service {
             metadata,
         };
 
-        self.invoke_with_dispatch_span(&message, input, session)
+        self.invoke_with_dispatch_span(&message, input, session, None)
             .await
     }
 
@@ -2013,9 +2378,17 @@ impl Service {
 
     /// Dispatch a transport message.
     pub async fn dispatch_message(&self, message: &Message) -> Result<Value, HandlerError> {
+        self.dispatch_ordered_message(message, None).await
+    }
+
+    pub(crate) async fn dispatch_ordered_message(
+        &self,
+        message: &Message,
+        ordered: Option<&OrderedDelivery>,
+    ) -> Result<Value, HandlerError> {
         #[cfg(feature = "metrics")]
         let started = Instant::now();
-        let result = self.dispatch_message_inner(message).await;
+        let result = self.dispatch_message_inner(message, ordered).await;
         #[cfg(feature = "metrics")]
         {
             let error = result.as_ref().err();
@@ -2032,23 +2405,42 @@ impl Service {
         result
     }
 
-    async fn dispatch_message_inner(&self, message: &Message) -> Result<Value, HandlerError> {
+    async fn dispatch_message_inner(
+        &self,
+        message: &Message,
+        ordered: Option<&OrderedDelivery>,
+    ) -> Result<Value, HandlerError> {
         if !self.handles_message(message.kind, &message.name) {
             return Err(HandlerError::UnknownCommand(message.name.clone()));
         }
 
-        let input = match message_to_json_input(message) {
-            Ok(input) => input,
-            // Binary payloads (bitcode, octet-stream) legitimately fail JSON
-            // parsing: handlers for those read `ctx.message().payload` directly,
-            // so a `Null` input is the intended fallback. A payload that
-            // *claims* to be JSON but does not parse is a decode error — surface
-            // it instead of silently nulling the input.
-            Err(_) if !is_json_content_type(&message.content_type) => Value::Null,
-            Err(err) => return Err(err),
+        let route_indices = self
+            .index
+            .get(&message.kind)
+            .and_then(|by_name| by_name.get(message.name()))
+            .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
+        let projector_only = route_indices
+            .iter()
+            .all(|index| self.routes[*index].is_causal_projector(message));
+        let input = if projector_only {
+            // The causal projector owns raw parsing so unit/constant partition
+            // declarations can durably record typed decode failures at the
+            // authenticated source cursor.
+            Value::Null
+        } else {
+            match message_to_json_input(message) {
+                Ok(input) => input,
+                // Binary payloads (bitcode, octet-stream) legitimately fail JSON
+                // parsing: handlers for those read `ctx.message().payload` directly,
+                // so a `Null` input is the intended fallback. A payload that
+                // *claims* to be JSON but does not parse is a decode error — surface
+                // it instead of silently nulling the input.
+                Err(_) if !is_json_content_type(&message.content_type) => Value::Null,
+                Err(err) => return Err(err),
+            }
         };
         let session = message_to_session(message);
-        self.invoke_with_dispatch_span(message, input, session)
+        self.invoke_with_dispatch_span(message, input, session, ordered)
             .await
     }
 
@@ -2057,6 +2449,7 @@ impl Service {
         message: &Message,
         input: Value,
         session: Session,
+        ordered: Option<&OrderedDelivery>,
     ) -> Result<Value, HandlerError> {
         #[cfg(feature = "otel")]
         {
@@ -2067,12 +2460,15 @@ impl Service {
                 &span,
                 &message.metadata,
             );
-            return self.invoke(message, input, session).instrument(span).await;
+            return self
+                .invoke(message, input, session, ordered)
+                .instrument(span)
+                .await;
         }
 
         #[cfg(not(feature = "otel"))]
         {
-            self.invoke(message, input, session).await
+            self.invoke(message, input, session, ordered).await
         }
     }
 
@@ -2081,16 +2477,25 @@ impl Service {
         message: &Message,
         input: Value,
         session: Session,
+        ordered: Option<&OrderedDelivery>,
     ) -> Result<Value, HandlerError> {
-        let route_index = self
+        let route_indices = self
             .index
             .get(&message.kind)
             .and_then(|by_name| by_name.get(message.name.as_str()))
-            .copied()
+            .cloned()
             .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
         #[cfg(feature = "otel")]
         let handler_span = microsvc_handler_span(message);
-        let dispatch = self.routes[route_index].dispatch(message, input, session);
+        let dispatch = async move {
+            let mut result = Value::Null;
+            for route_index in route_indices {
+                result = self.routes[route_index]
+                    .dispatch(message, input.clone(), session.clone(), ordered)
+                    .await?;
+            }
+            Ok(result)
+        };
 
         #[cfg(feature = "otel")]
         {
@@ -2175,6 +2580,97 @@ impl Service {
                 max_attempts,
                 service_name.clone(),
             );
+        }
+    }
+
+    pub(crate) async fn bootstrap_projectors(&self) -> Result<(), HandlerError> {
+        for routes in &self.routes {
+            routes.bootstrap_projectors().await?;
+        }
+        Ok(())
+    }
+
+    /// Begin a new repair generation for the durable terminal failure named by
+    /// an opaque operator handle.
+    ///
+    /// The handle carries no partition bytes. Each configured store resolves
+    /// the globally unique failure ID to its exact durable scope; repair is
+    /// allowed only when that exact compiled topology belongs to this service.
+    /// Rebuild the service with the same repository, call this method, then
+    /// restart consumption so the retained failed delivery is retried first.
+    pub async fn repair_projection(
+        &self,
+        handle: &ProjectionRepairHandle,
+    ) -> Result<crate::projection_protocol::ProjectionGeneration, HandlerError> {
+        // Resolve every candidate before mutating any store. A corrupt
+        // deployment that presents the same globally unique failure ID through
+        // multiple stores must fail without advancing even the first one.
+        let mut owner = None;
+        for (index, routes) in self.routes.iter().enumerate() {
+            if !routes.locates_projection_failure(handle).await? {
+                continue;
+            }
+            if owner.replace(index).is_some() {
+                return Err(HandlerError::Projection(
+                    crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                        "projection failure ID resolved through multiple service route stores"
+                            .into(),
+                    ),
+                ));
+            }
+        }
+        let owner = owner.ok_or_else(|| {
+            HandlerError::Projection(
+                crate::projection_protocol::ProjectionProtocolError::InvalidBatch(format!(
+                    "projection repair handle `{handle}` does not name a failure owned by this service"
+                )),
+            )
+        })?;
+        self.routes[owner]
+            .repair_projection(handle)
+            .await?
+            .ok_or_else(|| {
+                HandlerError::Projection(
+                    crate::projection_protocol::ProjectionProtocolError::InvalidBatch(
+                        "projection failure disappeared after repair ownership resolution".into(),
+                    ),
+                )
+            })
+    }
+}
+
+fn validate_projector_registrations<'a>(
+    registrations: impl IntoIterator<Item = &'a ProjectorRegistration>,
+) {
+    let mut topologies = BTreeMap::new();
+    let mut models = BTreeMap::new();
+    let mut tables = BTreeMap::new();
+    for registration in registrations {
+        let name = registration.topology.name().to_string();
+        if let Some(existing) = topologies.insert(name.clone(), registration.topology.clone()) {
+            assert_eq!(
+                existing, registration.topology,
+                "causal projector `{name}` is registered with conflicting compiled topologies"
+            );
+            panic!("causal projector `{name}` is registered more than once");
+        }
+        for owner in &registration.ownership {
+            if let Some((existing_projector, existing_table)) =
+                models.insert(owner.model.clone(), (name.clone(), owner.table.clone()))
+            {
+                panic!(
+                    "projection model `{}` has multiple owners: `{existing_projector}`/`{existing_table}` and `{name}`/`{}`",
+                    owner.model, owner.table
+                );
+            }
+            if let Some((existing_projector, existing_model)) =
+                tables.insert(owner.table.clone(), (name.clone(), owner.model.clone()))
+            {
+                panic!(
+                    "physical projection table `{}` has multiple owners: `{existing_projector}`/`{existing_model}` and `{name}`/`{}`",
+                    owner.table, owner.model
+                );
+            }
         }
     }
 }
@@ -2321,6 +2817,19 @@ mod tests {
         typed_command, Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
         GraphqlTypeField,
     };
+    #[cfg(feature = "graphql")]
+    use crate::projection_protocol::{
+        ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
+        ProjectionCommitResult, ProjectionFailure, ProjectionFailureBatch,
+        ProjectionFailureLocation, ProjectionGeneration, ProjectionInputCursor,
+        ProjectionInputDisposition, ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest,
+        ProjectionModelOwnership, ProjectionObligationEvidenceBatch,
+        ProjectionObligationEvidenceBatchRequest, ProjectionObservation, ProjectionObservationKind,
+        ProjectionPartition, ProjectionPartitionRuntimeState, ProjectionProtocolError,
+        ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+        ProjectionQuerySnapshotRequest, ProjectionRecordMetadata, ProjectionRecordScope,
+        ProjectorTopologyId, TrustedProjectionInput,
+    };
     use crate::{
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, Queueable,
         QueuedRepository,
@@ -2423,6 +2932,29 @@ mod tests {
     )]
     struct CausalProjectionObligationView {
         id: String,
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Clone, Serialize, Deserialize, crate::ReadModel)]
+    #[readmodel(table = "causal_projection_sibling_views", primary_key = ["id"])]
+    struct CausalProjectionSiblingView {
+        id: String,
+    }
+
+    #[cfg(feature = "graphql")]
+    impl GraphqlOutputType for CausalProjectionObligationView {
+        fn graphql_type() -> GraphqlTypeDef {
+            one_string_field("CausalProjectionObligationView", "id")
+                .with_type_id(std::any::TypeId::of::<Self>())
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl GraphqlOutputType for CausalProjectionSiblingView {
+        fn graphql_type() -> GraphqlTypeDef {
+            one_string_field("CausalProjectionSiblingView", "id")
+                .with_type_id(std::any::TypeId::of::<Self>())
+        }
     }
 
     static TYPED_HANDLER_INVOKED: AtomicBool = AtomicBool::new(false);
@@ -2564,6 +3096,167 @@ mod tests {
     }
 
     #[cfg(feature = "graphql")]
+    impl ProjectionProtocolStore for AmbiguousCommitRepository {
+        fn register_projection_models<'a>(
+            &'a self,
+            topology: &'a ProjectorTopologyId,
+            ownership: &'a [ProjectionModelOwnership],
+        ) -> impl Future<Output = Result<(), ProjectionProtocolError>> + Send + 'a {
+            self.inner.register_projection_models(topology, ownership)
+        }
+
+        fn commit_projection(
+            &self,
+            batch: ProjectionCommitBatch,
+        ) -> impl Future<Output = Result<ProjectionCommitResult, ProjectionProtocolError>> + Send + '_
+        {
+            self.inner.commit_projection(batch)
+        }
+
+        fn record_projection_failure(
+            &self,
+            batch: ProjectionFailureBatch,
+        ) -> impl Future<Output = Result<ProjectionFailure, ProjectionProtocolError>> + Send + '_
+        {
+            self.inner.record_projection_failure(batch)
+        }
+
+        fn projection_checkpoint<'a>(
+            &'a self,
+            cursor_scope: &'a ProjectionInputCursor,
+            generation: ProjectionGeneration,
+        ) -> impl Future<Output = Result<Option<ProjectionCheckpoint>, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_checkpoint(cursor_scope, generation)
+        }
+
+        fn projection_record<'a>(
+            &'a self,
+            scope: &'a ProjectionRecordScope,
+        ) -> impl Future<Output = Result<Option<ProjectionRecordMetadata>, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_record(scope)
+        }
+
+        fn projection_input_disposition<'a>(
+            &'a self,
+            input: &'a TrustedProjectionInput,
+        ) -> impl Future<Output = Result<ProjectionInputDisposition, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner.projection_input_disposition(input)
+        }
+
+        fn projection_query_snapshot<'a>(
+            &'a self,
+            request: &'a ProjectionQuerySnapshotRequest,
+        ) -> impl Future<Output = Result<ProjectionQuerySnapshot, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner.projection_query_snapshot(request)
+        }
+
+        fn projection_query_snapshot_batch<'a>(
+            &'a self,
+            request: &'a ProjectionQuerySnapshotBatchRequest,
+        ) -> impl Future<Output = Result<ProjectionQuerySnapshotBatch, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_query_snapshot_batch(request)
+        }
+
+        fn projection_obligation_evidence_batch<'a>(
+            &'a self,
+            request: &'a ProjectionObligationEvidenceBatchRequest,
+        ) -> impl Future<Output = Result<ProjectionObligationEvidenceBatch, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_obligation_evidence_batch(request)
+        }
+
+        fn projection_live_record_batch<'a>(
+            &'a self,
+            request: &'a ProjectionLiveRecordBatchRequest,
+        ) -> impl Future<Output = Result<ProjectionLiveRecordBatch, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner.projection_live_record_batch(request)
+        }
+
+        fn projection_partition_runtime_state<'a>(
+            &'a self,
+            topology: &'a ProjectorTopologyId,
+            partition: &'a ProjectionPartition,
+        ) -> impl Future<
+            Output = Result<Option<ProjectionPartitionRuntimeState>, ProjectionProtocolError>,
+        > + Send
+               + 'a {
+            self.inner
+                .projection_partition_runtime_state(topology, partition)
+        }
+
+        fn projection_observation<'a>(
+            &'a self,
+            causation_id: &'a str,
+            scope: &'a ProjectionRecordScope,
+            kind: ProjectionObservationKind,
+        ) -> impl Future<Output = Result<Option<ProjectionObservation>, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_observation(causation_id, scope, kind)
+        }
+
+        fn projection_changes<'a>(
+            &'a self,
+            topology: &'a ProjectorTopologyId,
+            partition: &'a ProjectionPartition,
+            after: Option<&'a ProjectionChangeCursor>,
+            limit: usize,
+        ) -> impl Future<Output = Result<ProjectionChangeRead, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner
+                .projection_changes(topology, partition, after, limit)
+        }
+
+        fn repair_projection<'a>(
+            &'a self,
+            topology: &'a ProjectorTopologyId,
+            partition: &'a ProjectionPartition,
+            failure_id: &'a str,
+        ) -> impl Future<Output = Result<ProjectionGeneration, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner
+                .repair_projection(topology, partition, failure_id)
+        }
+
+        fn compact_projection_changes<'a>(
+            &'a self,
+            through: &'a ProjectionChangeCursor,
+        ) -> impl Future<Output = Result<u64, ProjectionProtocolError>> + Send + 'a {
+            self.inner.compact_projection_changes(through)
+        }
+
+        fn projection_failure<'a>(
+            &'a self,
+            topology: &'a ProjectorTopologyId,
+            partition: &'a ProjectionPartition,
+            failure_id: &'a str,
+        ) -> impl Future<Output = Result<Option<ProjectionFailure>, ProjectionProtocolError>> + Send + 'a
+        {
+            self.inner
+                .projection_failure(topology, partition, failure_id)
+        }
+
+        fn projection_failure_location<'a>(
+            &'a self,
+            failure_id: &'a str,
+        ) -> impl Future<Output = Result<Option<ProjectionFailureLocation>, ProjectionProtocolError>>
+               + Send
+               + 'a {
+            self.inner.projection_failure_location(failure_id)
+        }
+    }
+
+    #[cfg(feature = "graphql")]
     impl CommandLedgerStore for AmbiguousCommitRepository {
         fn reserve_command(
             &self,
@@ -2655,6 +3348,57 @@ mod tests {
         assert_eq!(
             crate::bus::MessageRouter::consumer_group(&service),
             Some("todo-api")
+        );
+    }
+
+    #[cfg(all(feature = "graphql", feature = "sqlite"))]
+    #[tokio::test]
+    async fn manual_legacy_graphql_attachment_remains_explicitly_noncausal() {
+        let service = Service::new().named("legacy-tests").routes(
+            Routes::new()
+                .command("legacy.echo")
+                .handle(|context: &Context<'_, ()>| {
+                    let input = context.raw_input().clone();
+                    async move { Ok(input) }
+                }),
+        );
+        assert!(
+            service.typed_command_contracts().is_empty(),
+            "legacy routes must not acquire causal command contracts"
+        );
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .expect("in-memory GraphQL pool");
+        let commands = crate::graphql::GraphqlCommands::new().command(
+            "legacy.echo",
+            crate::graphql::exposed_command()
+                .field_name("legacy_echo")
+                .input::<TypedInput>()
+                .output::<TypedOutput>()
+                .roles(["anonymous"]),
+        );
+        let engine = crate::graphql::GraphqlEngine::builder(pool)
+            .service_id("legacy-tests")
+            .roles(&["anonymous"])
+            .commands(commands)
+            .build()
+            .expect("manual legacy GraphQL engine");
+        assert!(
+            engine.typed_command_binding().is_none(),
+            "manual GraphQL catalogs must not forge a typed service binding"
+        );
+
+        let service = service
+            .try_with_graphql(engine)
+            .expect("an explicitly legacy service may attach a manual noncausal catalog");
+        assert!(service.graphql_engine().is_some());
+        assert_eq!(
+            service
+                .dispatch("legacy.echo", json!({ "id": "legacy-1" }), Session::new(),)
+                .await
+                .expect("legacy dispatch remains available"),
+            json!({ "id": "legacy-1" })
         );
     }
 
@@ -3377,13 +4121,16 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "graphql")]
+    #[cfg(all(feature = "graphql", feature = "sqlite"))]
     #[tokio::test]
     async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
-        let repository = InMemoryRepository::new();
+        let repository = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
+            .await
+            .expect("framework migrations should apply");
         let projector = SurfaceProjector::new("project_causal_obligation")
             .facts(["causal.obligation_fact"])
-            .models(["CausalProjectionObligationView"]);
+            .models(["CausalProjectionObligationView"])
+            .partition_by(["tenantPartition"]);
         let confirmations = crate::command_confirmations! {
             input: CausalProjectionInput;
             confirm projector -> CausalProjectionObligationView {
@@ -3408,7 +4155,10 @@ mod tests {
                                 OutboxMessage::create(
                                     format!("{}:obligation", input.id),
                                     "causal.obligation_fact",
-                                    input.partition.as_bytes().to_vec(),
+                                    serde_json::to_vec(&json!({
+                                        "tenantPartition": input.partition
+                                    }))
+                                    .map_err(|error| HandlerError::Other(Box::new(error)))?,
                                 )
                                 .map_err(|error| HandlerError::Other(Box::new(error)))?,
                             )?;
@@ -3423,6 +4173,18 @@ mod tests {
                     },
                 ),
         );
+        let engine = crate::graphql::GraphqlEngine::builder(&repository)
+            .model::<CausalProjectionObligationView>(
+                crate::graphql::ModelPermissions::new()
+                    .grant("anonymous", crate::graphql::read().all_columns()),
+            )
+            .service(&service)
+            .client_projectors([projector])
+            .build()
+            .expect("the public GraphQL binding path should compile projector topology");
+        let service = service
+            .try_with_graphql(engine)
+            .expect("compiled projector topology should bind to the executable service");
         let command_id = causal_test_command_id();
         let principal = causal_test_principal();
 
@@ -3467,6 +4229,191 @@ mod tests {
         let pending = repository.outbox_store().pending(10).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event_type, "causal.obligation_fact");
+    }
+
+    #[cfg(all(feature = "graphql", feature = "sqlite"))]
+    #[tokio::test]
+    async fn projected_command_auto_binds_bootstraps_and_replays_exact_direct_evidence() {
+        let repository = crate::SqliteRepository::connect_and_migrate("sqlite::memory:")
+            .await
+            .expect("framework migrations should apply");
+        let mut registry = crate::TableSchemaRegistry::new();
+        registry
+            .register::<CausalProjectionObligationView>()
+            .unwrap()
+            .register::<CausalProjectionSiblingView>()
+            .unwrap();
+        for statement in
+            crate::table::table_schema_statements(&registry, crate::table::TableSqlDialect::Sqlite)
+                .unwrap()
+        {
+            sqlx::query(crate::sqlx_repo::audited_table_schema_sql(statement))
+                .execute(repository.pool())
+                .await
+                .expect("test read-model schema should apply");
+        }
+
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let service = Service::new().named("causal-direct").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                // No direct-target/cache/projection call is present: the
+                // `Projected<M>` output and Surface owner are the complete
+                // declaration.
+                .typed_command(typed_command::<
+                    CausalProjectionInput,
+                    Projected<CausalProjectionObligationView>,
+                >("causal.direct"))
+                .handle(
+                    move |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalProjectionInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        let result = (|| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            let mut checkout = context.create();
+                            checkout
+                                .record(input.id.clone())
+                                .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                            context.stage(checkout)?;
+                            context.projected(CausalProjectionObligationView { id: input.id })
+                        })();
+                        async move { result }
+                    },
+                ),
+        );
+        let projector = SurfaceProjector::new("project_causal_direct")
+            .facts(["causal.recorded"])
+            .models([
+                "CausalProjectionObligationView",
+                "CausalProjectionSiblingView",
+            ])
+            .change_epoch("causal-direct-v1");
+        let engine = crate::graphql::GraphqlEngine::builder(&repository)
+            .model::<CausalProjectionObligationView>(
+                crate::graphql::ModelPermissions::new()
+                    .grant("anonymous", crate::graphql::read().all_columns()),
+            )
+            .model::<CausalProjectionSiblingView>(
+                crate::graphql::ModelPermissions::new()
+                    .grant("anonymous", crate::graphql::read().all_columns()),
+            )
+            .service(&service)
+            .client_projectors([projector])
+            .build()
+            .expect("ordinary Projected<M> declaration should auto-bind its unique owner");
+        let service = service
+            .try_with_graphql(engine)
+            .expect("bound direct target should attach to its executable route");
+        let contract = &service.typed_command_contracts()[0];
+        let target = contract
+            .direct_projection
+            .as_ref()
+            .expect("engine binding must populate the private direct target");
+        assert_eq!(target.projector, "project_causal_direct");
+        assert_eq!(
+            target.ownership.len(),
+            2,
+            "one direct route must freeze its owner's complete model inventory"
+        );
+        assert!(target.partition.is_none(), "zero-config partition is unit");
+
+        let command_id = causal_test_command_id();
+        let input = json!({
+            "todoId": "todo-direct",
+            "tenantPartition": "not-manual-projection-config"
+        });
+        let first = service
+            .dispatch_causal(
+                "causal.direct",
+                &command_id,
+                input.clone(),
+                Session::new(),
+                causal_test_principal(),
+            )
+            .await
+            .expect("direct command should atomically commit");
+        assert_eq!(first, json!({ "id": "todo-direct" }));
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+        let stored_id: String =
+            sqlx::query_scalar("SELECT id FROM causal_projection_obligation_views WHERE id = ?")
+                .bind("todo-direct")
+                .fetch_one(repository.pool())
+                .await
+                .expect("returned row should be visible through the GraphQL read database");
+        assert_eq!(stored_id, "todo-direct");
+        let registered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM projection_registered_models WHERE model_name IN \
+             ('CausalProjectionObligationView', 'CausalProjectionSiblingView')",
+        )
+        .fetch_one(repository.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            registered, 2,
+            "lazy bootstrap must atomically register the owner's full inventory"
+        );
+        let sibling_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM causal_projection_sibling_views")
+                .fetch_one(repository.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            sibling_rows, 0,
+            "the direct participant must mutate only its returned output model"
+        );
+
+        let lookup = service
+            .lookup_causal_command(
+                "causal.direct",
+                &command_id,
+                &Session::new(),
+                causal_test_principal(),
+            )
+            .await
+            .unwrap();
+        let CommandLookup::Replay(first_replay) = lookup else {
+            panic!("projected command should be terminally replayable");
+        };
+        assert_eq!(first_replay.state, CommandLedgerState::Projected);
+        let evidence = first_replay
+            .direct_projection
+            .clone()
+            .expect("replay must retain exact direct evidence");
+        crate::projection_protocol::SameTransactionProjectionEvidence::validate_replay_value(
+            &evidence,
+        )
+        .unwrap();
+        assert_eq!(evidence["records"].as_array().unwrap().len(), 1);
+        assert_eq!(evidence["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(evidence["observations"].as_array().unwrap().len(), 1);
+
+        let replayed = service
+            .dispatch_causal(
+                "causal.direct",
+                &command_id,
+                input,
+                Session::new(),
+                causal_test_principal(),
+            )
+            .await
+            .expect("response-loss retry should replay without invoking the handler");
+        assert_eq!(replayed, first);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+        let CommandLookup::Replay(second_replay) = service
+            .lookup_causal_command(
+                "causal.direct",
+                &command_id,
+                &Session::new(),
+                causal_test_principal(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("replayed command should remain terminal");
+        };
+        assert_eq!(second_replay.direct_projection, Some(evidence));
     }
 
     #[cfg(feature = "graphql")]

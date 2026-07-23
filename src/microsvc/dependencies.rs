@@ -5,6 +5,7 @@ use crate::command_ledger::{
     CausalGetStream, CausalRepositoryIdentity, CausalTransactionalCommit, CommandLedgerStore,
 };
 use crate::outbox::OutboxPublisherConfig;
+use crate::projection_protocol::ProjectionProtocolStore;
 use crate::repository::{ReadModelWritePlanStore, RelationalReadModelQueryStore, Repository};
 
 /// Dependency capability for services that expose an aggregate repository.
@@ -25,6 +26,7 @@ pub trait CausalRepositoryBackend:
     + CommandLedgerStore
     + CausalTransactionalCommit
     + CausalRepositoryIdentity
+    + ProjectionProtocolStore
     + Send
     + Sync
     + 'static
@@ -36,6 +38,7 @@ impl<T> CausalRepositoryBackend for T where
         + CommandLedgerStore
         + CausalTransactionalCommit
         + CausalRepositoryIdentity
+        + ProjectionProtocolStore
         + Send
         + Sync
         + 'static
@@ -64,6 +67,38 @@ pub trait HasReadModelStore {
     type ReadModelStore;
 
     fn read_model_store(&self) -> &Self::ReadModelStore;
+}
+
+/// Sealed storage capability required by framework-owned causal projector
+/// routes. Applications select one of the framework repository adapters; they
+/// never receive this commit capability in a projector handler.
+#[doc(hidden)]
+#[allow(private_bounds)]
+pub trait CausalProjectionStore: ProjectionProtocolStore + Clone + Send + Sync + 'static {}
+
+impl<T> CausalProjectionStore for T where T: ProjectionProtocolStore + Clone + Send + Sync + 'static {}
+
+/// Compile-time extraction of the read-model/projection store owned by a route
+/// bundle. Public only because it appears in the causal-projector builder's
+/// inferred bounds.
+#[doc(hidden)]
+pub trait CausalProjectionRouteDependencies {
+    type Store: CausalProjectionStore;
+
+    #[doc(hidden)]
+    fn __causal_projection_store(&self) -> &Self::Store;
+}
+
+impl<D> CausalProjectionRouteDependencies for D
+where
+    D: HasReadModelStore,
+    D::ReadModelStore: CausalProjectionStore,
+{
+    type Store = D::ReadModelStore;
+
+    fn __causal_projection_store(&self) -> &Self::Store {
+        self.read_model_store()
+    }
 }
 
 /// Dependency capability for repositories whose outbox commits can publish

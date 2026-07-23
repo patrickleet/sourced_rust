@@ -14,11 +14,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::source::{MessageSource, ReceivedMessage};
-use super::Message;
 use super::{run_source, Bus, BusConsumer, MessageRouter, RunOptions, TransportError};
+use super::{Message, OrderedDelivery};
+use crate::projection_protocol::{ProjectionEpoch, ProjectionSource};
 
 type Queues = Arc<Mutex<HashMap<String, VecDeque<Message>>>>;
 type Topics = Arc<Mutex<HashMap<String, Vec<Message>>>>;
+type TopicCursors = Arc<Mutex<HashMap<String, usize>>>;
 
 fn lock_poisoned(what: &str) -> TransportError {
     TransportError::permanent(format!("in-memory bus {what} lock poisoned"))
@@ -28,10 +30,22 @@ fn lock_poisoned(what: &str) -> TransportError {
 ///
 /// Cheap to clone (shares the same queues/logs), so competing listeners and
 /// fan-out subscribers can each hold a clone.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryBus {
     queues: Queues,
     topics: Topics,
+    source_epoch: ProjectionEpoch,
+}
+
+impl Default for InMemoryBus {
+    fn default() -> Self {
+        Self {
+            queues: Queues::default(),
+            topics: Topics::default(),
+            source_epoch: ProjectionEpoch::new(format!("instance-{}", uuid::Uuid::now_v7()))
+                .expect("an in-memory bus UUID is a valid projection source epoch"),
+        }
+    }
 }
 
 impl InMemoryBus {
@@ -50,14 +64,58 @@ impl InMemoryBus {
     }
 
     fn append(&self, message: Message) -> Result<(), TransportError> {
-        self.topics
-            .lock()
-            .map_err(|_| lock_poisoned("topic"))?
+        let mut topics = self.topics.lock().map_err(|_| lock_poisoned("topic"))?;
+        if let Some(id) = message.id() {
+            if let Some(existing) = topics
+                .values()
+                .flat_map(|log| log.iter())
+                .find(|existing| existing.id() == Some(id))
+            {
+                validate_topic_retry(existing, &message)?;
+                return Ok(());
+            }
+        }
+        topics
             .entry(message.name().to_string())
             .or_default()
             .push(message);
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn ordered_topic_evidence(&self, name: &str, position: u64) -> OrderedDelivery {
+        OrderedDelivery::new(
+            ProjectionSource::new("in_memory.topic", name.as_bytes().to_vec())
+                .expect("an in-memory topic name is a valid projection source partition"),
+            self.source_epoch.clone(),
+            position,
+            true,
+        )
+        .expect("an in-memory topic position is valid ordered-delivery evidence")
+    }
+}
+
+/// Verify that an ambiguous publish retry using an existing stable ID is the
+/// exact causal envelope already retained in the ordered topic log.
+///
+/// Trace metadata can legitimately change when the producer retries after an
+/// unknown acknowledgement, so it is excluded. Causation is included because
+/// it is part of the projector's canonical input identity.
+fn validate_topic_retry(existing: &Message, retry: &Message) -> Result<(), TransportError> {
+    let matches = existing.name == retry.name
+        && existing.kind == retry.kind
+        && existing.payload == retry.payload
+        && existing.content_type == retry.content_type
+        && existing.causation_id() == retry.causation_id();
+    if matches {
+        return Ok(());
+    }
+
+    Err(TransportError::permanent(format!(
+        "in-memory bus ordered-topic message ID {:?} was reused with a different \
+         name, kind, payload, content type, or causation ID",
+        retry.id()
+    )))
 }
 
 impl Bus for InMemoryBus {
@@ -93,7 +151,8 @@ impl BusConsumer for InMemoryBus {
         let source = TopicSource {
             topics: self.topics.clone(),
             names,
-            cursors: HashMap::new(),
+            cursors: TopicCursors::default(),
+            source_epoch: self.source_epoch.clone(),
         };
         run_source(router, source, options).await
     }
@@ -116,7 +175,11 @@ impl MessageSource for QueueSource {
         let mut queues = self.queues.lock().map_err(|_| lock_poisoned("queue"))?;
         for name in &self.names {
             if let Some(message) = queues.get_mut(name).and_then(VecDeque::pop_front) {
-                return Ok(Some(InMemoryReceived { message }));
+                return Ok(Some(InMemoryReceived {
+                    message,
+                    ordered: None,
+                    topic_settlement: None,
+                }));
             }
         }
         Ok(None)
@@ -128,7 +191,8 @@ impl MessageSource for QueueSource {
 struct TopicSource {
     topics: Topics,
     names: Vec<String>,
-    cursors: HashMap<String, usize>,
+    cursors: TopicCursors,
+    source_epoch: ProjectionEpoch,
 }
 
 impl MessageSource for TopicSource {
@@ -140,33 +204,91 @@ impl MessageSource for TopicSource {
 
     async fn recv(&mut self) -> Result<Option<Self::Received>, TransportError> {
         let topics = self.topics.lock().map_err(|_| lock_poisoned("topic"))?;
+        let mut cursors = self
+            .cursors
+            .lock()
+            .map_err(|_| lock_poisoned("topic cursor"))?;
         for name in &self.names {
             let Some(log) = topics.get(name) else {
                 continue;
             };
-            let cursor = self.cursors.entry(name.clone()).or_insert(0);
+            let cursor = cursors.entry(name.clone()).or_insert(0);
             if *cursor < log.len() {
                 let message = log[*cursor].clone();
-                *cursor += 1;
-                return Ok(Some(InMemoryReceived { message }));
+                let position = u64::try_from(*cursor).map_err(|_| {
+                    TransportError::permanent(
+                        "in-memory topic position cannot fit the projection cursor domain",
+                    )
+                })?;
+                let source = ProjectionSource::new("in_memory.topic", name.as_bytes().to_vec())
+                    .map_err(|error| TransportError::permanent(error.to_string()))?;
+                let ordered =
+                    OrderedDelivery::new(source, self.source_epoch.clone(), position, true)
+                        .map_err(|error| TransportError::permanent(error.to_string()))?;
+                return Ok(Some(InMemoryReceived {
+                    message,
+                    ordered: Some(ordered),
+                    topic_settlement: Some(TopicSettlement {
+                        cursors: Arc::clone(&self.cursors),
+                        name: name.clone(),
+                        position: *cursor,
+                    }),
+                }));
             }
         }
         Ok(None)
     }
 }
 
-/// In-memory delivery. Settling is a no-op: queue pops and log cursors already
-/// advanced on `recv`, and the in-memory bus does not redeliver.
+struct TopicSettlement {
+    cursors: TopicCursors,
+    name: String,
+    position: usize,
+}
+
+impl TopicSettlement {
+    fn ack(self) -> Result<(), TransportError> {
+        let mut cursors = self
+            .cursors
+            .lock()
+            .map_err(|_| lock_poisoned("topic cursor"))?;
+        let cursor = cursors.entry(self.name).or_insert(0);
+        match (*cursor).cmp(&self.position) {
+            std::cmp::Ordering::Equal => {
+                *cursor = cursor.checked_add(1).ok_or_else(|| {
+                    TransportError::permanent("in-memory topic cursor overflowed")
+                })?;
+                Ok(())
+            }
+            std::cmp::Ordering::Greater => Ok(()),
+            std::cmp::Ordering::Less => Err(TransportError::permanent(
+                "in-memory topic delivery was acknowledged out of order",
+            )),
+        }
+    }
+}
+
+/// In-memory delivery. Queue settlement remains a no-op because queue messages
+/// are popped on receive. Retained-topic cursors advance only on `ack`; `nack`
+/// leaves the exact gap-free position available for redelivery.
 pub struct InMemoryReceived {
     message: Message,
+    ordered: Option<OrderedDelivery>,
+    topic_settlement: Option<TopicSettlement>,
 }
 
 impl ReceivedMessage for InMemoryReceived {
     fn message(&self) -> &Message {
         &self.message
     }
+    fn ordered_delivery(&self) -> Option<&OrderedDelivery> {
+        self.ordered.as_ref()
+    }
     async fn ack(self) -> Result<(), TransportError> {
-        Ok(())
+        match self.topic_settlement {
+            Some(settlement) => settlement.ack(),
+            None => Ok(()),
+        }
     }
     async fn nack(self, _reason: &str) -> Result<(), TransportError> {
         Ok(())
@@ -177,6 +299,7 @@ impl ReceivedMessage for InMemoryReceived {
 mod tests {
     use super::*;
     use crate::bus::{Handlers, MessageKind};
+    use crate::trace_context::{CAUSATION_ID, TRACEPARENT};
     use std::future::Future;
 
     fn block_on<F: Future>(future: F) -> F::Output {
@@ -298,6 +421,105 @@ mod tests {
         b_ids.sort();
         assert_eq!(a_ids, vec!["e0", "e1", "e2"]);
         assert_eq!(b_ids, vec!["e0", "e1", "e2"]);
+    }
+
+    #[test]
+    fn topic_nack_redelivers_exact_gap_free_position_and_ack_advances() {
+        let bus = InMemoryBus::new();
+        for id in ["e0", "e1"] {
+            block_on(bus.publish_message(
+                Message::new("evt", MessageKind::Event, b"{}".to_vec()).with_id(id),
+            ))
+            .unwrap();
+        }
+        let mut source = TopicSource {
+            topics: bus.topics.clone(),
+            names: vec!["evt".into()],
+            cursors: TopicCursors::default(),
+            source_epoch: bus.source_epoch.clone(),
+        };
+
+        let first = block_on(source.recv()).unwrap().unwrap();
+        assert_eq!(first.message().id(), Some("e0"));
+        assert_eq!(first.ordered_delivery().unwrap().position(), 0);
+        assert!(first.ordered_delivery().unwrap().is_gap_free());
+        block_on(first.nack("transient")).unwrap();
+
+        let replay = block_on(source.recv()).unwrap().unwrap();
+        assert_eq!(replay.message().id(), Some("e0"));
+        assert_eq!(replay.ordered_delivery().unwrap().position(), 0);
+        block_on(replay.ack()).unwrap();
+
+        let second = block_on(source.recv()).unwrap().unwrap();
+        assert_eq!(second.message().id(), Some("e1"));
+        assert_eq!(second.ordered_delivery().unwrap().position(), 1);
+        block_on(second.ack()).unwrap();
+        assert!(block_on(source.recv()).unwrap().is_none());
+    }
+
+    #[test]
+    fn topic_stable_id_retry_reuses_original_position_and_ignores_trace_only_metadata() {
+        let bus = InMemoryBus::new();
+        let original = Message::new("evt", MessageKind::Event, br#"{"value":1}"#.to_vec())
+            .with_id("e0")
+            .with_metadata(CAUSATION_ID, "command-1")
+            .with_metadata(TRACEPARENT, "first-span");
+        let retry = Message::new("evt", MessageKind::Event, br#"{"value":1}"#.to_vec())
+            .with_id("e0")
+            .with_metadata(CAUSATION_ID, "command-1")
+            .with_metadata(TRACEPARENT, "retry-span");
+        block_on(bus.publish_message(original)).unwrap();
+        block_on(bus.publish_message(retry)).unwrap();
+
+        let topics = bus.topics.lock().unwrap();
+        let log = topics.get("evt").unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].traceparent(), Some("first-span"));
+        drop(topics);
+
+        let mut source = TopicSource {
+            topics: bus.topics.clone(),
+            names: vec!["evt".into()],
+            cursors: TopicCursors::default(),
+            source_epoch: bus.source_epoch.clone(),
+        };
+        let received = block_on(source.recv()).unwrap().unwrap();
+        assert_eq!(received.message().id(), Some("e0"));
+        assert_eq!(received.ordered_delivery().unwrap().position(), 0);
+        block_on(received.ack()).unwrap();
+        assert!(block_on(source.recv()).unwrap().is_none());
+    }
+
+    #[test]
+    fn topic_stable_id_reuse_with_different_causal_envelope_is_permanent() {
+        let bus = InMemoryBus::new();
+        let original = Message::new("evt", MessageKind::Event, br#"{"value":1}"#.to_vec())
+            .with_id("e0")
+            .with_metadata(CAUSATION_ID, "command-1");
+        block_on(bus.publish_message(original)).unwrap();
+
+        let cases = [
+            Message::new("other", MessageKind::Event, br#"{"value":1}"#.to_vec())
+                .with_id("e0")
+                .with_metadata(CAUSATION_ID, "command-1"),
+            Message::new("evt", MessageKind::Command, br#"{"value":1}"#.to_vec())
+                .with_id("e0")
+                .with_metadata(CAUSATION_ID, "command-1"),
+            Message::new("evt", MessageKind::Event, br#"{"value":2}"#.to_vec())
+                .with_id("e0")
+                .with_metadata(CAUSATION_ID, "command-1"),
+            Message::new("evt", MessageKind::Event, br#"{"value":1}"#.to_vec())
+                .with_id("e0")
+                .with_metadata(CAUSATION_ID, "command-2"),
+        ];
+        for retry in cases {
+            let error = block_on(bus.publish_message(retry)).unwrap_err();
+            assert!(error.is_permanent());
+            assert!(error.message().contains("message ID"));
+        }
+
+        let topics = bus.topics.lock().unwrap();
+        assert_eq!(topics.values().map(Vec::len).sum::<usize>(), 1);
     }
 
     #[test]
