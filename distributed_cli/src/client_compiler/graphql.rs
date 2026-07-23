@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use async_graphql_parser::types::{
-    BaseType, Directive, DocumentOperations, Field, OperationDefinition, OperationType, Selection,
-    Type,
+    BaseType, Directive, DocumentOperations, Field, FragmentDefinition, OperationDefinition,
+    OperationType, Selection, SelectionSet, Type,
 };
 use async_graphql_parser::{parse_query, Pos, Positioned};
-use async_graphql_value::Value;
+use async_graphql_value::{Name, Value};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
@@ -17,7 +17,8 @@ use super::{ClientCompileError, ClientDocument, ClientRouteDiscovery, GeneratedR
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_VARIABLES: usize = 256;
-const MAX_SCALAR_SELECTIONS: usize = 4096;
+const MAX_OBJECT_DEPTH: usize = 64;
+const MAX_EXPANDED_SELECTIONS: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledOperation {
@@ -54,9 +55,44 @@ pub(crate) struct CompiledRoot {
     pub(crate) arguments: BTreeMap<String, CompiledArgument>,
     pub(crate) dependencies: Vec<String>,
     pub(crate) coverage: Option<CompiledCoverage>,
+    pub(crate) selection: CompiledObject,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledObject {
     pub(crate) model_id: String,
     pub(crate) identity_fields: Vec<String>,
-    pub(crate) fields: Vec<CompiledScalar>,
+    pub(crate) members: Vec<CompiledMember>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CompiledMember {
+    Scalar(CompiledScalar),
+}
+
+struct MergedField<'a> {
+    first: &'a Positioned<Field>,
+    selection_sets: Vec<&'a Positioned<SelectionSet>>,
+    canonical_arguments: Vec<(String, String)>,
+}
+
+struct FragmentExpander<'ast, 'source> {
+    fragments: &'ast HashMap<Name, Positioned<FragmentDefinition>>,
+    document: &'source ClientDocument,
+    state: ExpansionState,
+}
+
+#[derive(Default)]
+struct ExpansionState {
+    used_fragments: BTreeSet<String>,
+    active_fragments: Vec<String>,
+    expanded_units: usize,
+}
+
+#[derive(Default)]
+struct FragmentGraphState {
+    active_fragments: Vec<String>,
+    completed_fragments: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -110,21 +146,6 @@ pub(crate) fn compile_document(
             pos,
         )
     })?;
-    if let Some((name, fragment)) = parsed
-        .fragments
-        .iter()
-        .min_by(|left, right| left.0.cmp(right.0))
-    {
-        return Err(source_error(
-            "client.graphql.fragments_unsupported",
-            format!(
-                "fragment `{name}` is not supported by the first client compiler slice; inline its scalar selections"
-            ),
-            document,
-            fragment.pos,
-        ));
-    }
-
     let (name, operation) = match &parsed.operations {
         DocumentOperations::Single(operation) => {
             return Err(source_error(
@@ -165,10 +186,12 @@ pub(crate) fn compile_document(
     }
     let compiler_directives = compiler_directives(&operation.node, document)?;
     let variables = compile_variables(&operation.node, document)?;
-    let root_field = single_root_field(&operation.node, document)?;
-    reject_directives(&root_field.node.directives, "root field", document)?;
+    let mut expander = FragmentExpander::new(&parsed.fragments, document);
+    let root_fields =
+        expander.merge_object(&[&operation.node.selection_set], "Query", 1, "root field")?;
+    let root_field = single_root_field(root_fields, &operation.node, document)?;
 
-    let root_name = root_field.node.name.node.as_str();
+    let root_name = root_field.first.node.name.node.as_str();
     let root_manifest = manifest
         .root(RootOperation::Query, root_name)
         .ok_or_else(|| {
@@ -176,7 +199,7 @@ pub(crate) fn compile_document(
                 "client.root.denied_or_unknown",
                 format!("query root `{root_name}` is absent from the selected manifest surface"),
                 document,
-                root_field.node.name.pos,
+                root_field.first.node.name.pos,
             )
         })?;
     if root_manifest.kind == RootKind::Aggregate {
@@ -186,7 +209,7 @@ pub(crate) fn compile_document(
                 "aggregate root `{root_name}` is not supported by the first client compiler slice"
             ),
             document,
-            root_field.node.name.pos,
+            root_field.first.node.name.pos,
         ));
     }
     let model = manifest.models.get(&root_manifest.model).ok_or_else(|| {
@@ -206,14 +229,16 @@ pub(crate) fn compile_document(
                 model.id
             ),
             document,
-            root_field.node.name.pos,
+            root_field.first.node.name.pos,
         )
     })?;
     let compiled_arguments =
-        compile_arguments(&root_field.node, root_manifest, &variables, document)?;
-    let mut fields = compile_scalar_selections(&root_field.node, model, document)?;
+        compile_arguments(&root_field.first.node, root_manifest, &variables, document)?;
+    validate_reachable_fragment_graph(&parsed.fragments, document, &operation.node.selection_set)?;
+    let mut members = compile_scalar_selections(&root_field, model, document, &mut expander, 2)?;
     validate_used_variables(&variables, &compiled_arguments, document, operation.pos)?;
-    inject_wire_fields(&mut fields, model, document, root_field.pos)?;
+    expander.reject_unused_fragments()?;
+    inject_wire_fields(&mut members, model, document, root_field.first.pos)?;
 
     let cardinality = match root_manifest.kind {
         RootKind::List => Cardinality::Many,
@@ -221,16 +246,18 @@ pub(crate) fn compile_document(
         RootKind::Aggregate => unreachable!("rejected above"),
     };
     let root = CompiledRoot {
-        response_key: root_field.node.response_key().node.to_string(),
+        response_key: root_field.first.node.response_key().node.to_string(),
         field: root_name.to_string(),
         cardinality,
         nullable: cardinality == Cardinality::One,
         arguments: compiled_arguments,
         dependencies: root_manifest.dependencies.clone(),
-        coverage: compile_coverage(root_manifest, document, root_field.pos)?,
-        model_id: model.id.clone(),
-        identity_fields: identity.iter().map(|field| field.name.clone()).collect(),
-        fields,
+        coverage: compile_coverage(root_manifest, document, root_field.first.pos)?,
+        selection: CompiledObject {
+            model_id: model.id.clone(),
+            identity_fields: identity.iter().map(|field| field.name.clone()).collect(),
+            members,
+        },
     };
 
     let query_document = render_operation(OperationType::Query, &name, &variables, &root)?;
@@ -371,36 +398,406 @@ fn compile_variables(
     Ok(variables)
 }
 
-fn single_root_field<'a>(
-    operation: &'a OperationDefinition,
+fn validate_reachable_fragment_graph<'ast>(
+    fragments: &'ast HashMap<Name, Positioned<FragmentDefinition>>,
     document: &ClientDocument,
-) -> Result<&'a Positioned<Field>, ClientCompileError> {
-    if operation.selection_set.node.items.len() != 1 {
+    selection_set: &'ast Positioned<SelectionSet>,
+) -> Result<(), ClientCompileError> {
+    validate_fragment_selection_set(
+        fragments,
+        document,
+        &mut FragmentGraphState::default(),
+        selection_set,
+        1,
+    )
+}
+
+fn validate_fragment_selection_set<'ast>(
+    fragments: &'ast HashMap<Name, Positioned<FragmentDefinition>>,
+    document: &ClientDocument,
+    state: &mut FragmentGraphState,
+    selection_set: &'ast Positioned<SelectionSet>,
+    depth: usize,
+) -> Result<(), ClientCompileError> {
+    check_expansion_depth(depth, document, selection_set.pos)?;
+    for selection in &selection_set.node.items {
+        match &selection.node {
+            Selection::Field(field) => {
+                if !field.node.selection_set.node.items.is_empty() {
+                    validate_fragment_selection_set(
+                        fragments,
+                        document,
+                        state,
+                        &field.node.selection_set,
+                        depth + 1,
+                    )?;
+                }
+            }
+            Selection::InlineFragment(fragment) => {
+                validate_fragment_selection_set(
+                    fragments,
+                    document,
+                    state,
+                    &fragment.node.selection_set,
+                    depth + 1,
+                )?;
+            }
+            Selection::FragmentSpread(spread) => {
+                let name = spread.node.fragment_name.node.as_str();
+                let Some(definition) = fragments.get(name) else {
+                    return Err(source_error(
+                        "client.graphql.fragment_undefined",
+                        format!("fragment spread `{name}` has no definition in this document"),
+                        document,
+                        spread.node.fragment_name.pos,
+                    ));
+                };
+                if let Some(cycle_start) = state
+                    .active_fragments
+                    .iter()
+                    .position(|active| active == name)
+                {
+                    let mut cycle = state.active_fragments[cycle_start..].to_vec();
+                    cycle.push(name.to_string());
+                    return Err(source_error(
+                        "client.graphql.fragment_cycle",
+                        format!("fragment expansion cycle: {}", cycle.join(" -> ")),
+                        document,
+                        spread.node.fragment_name.pos,
+                    ));
+                }
+                if state.completed_fragments.contains(name) {
+                    continue;
+                }
+                check_expansion_depth(depth + 1, document, spread.pos)?;
+                state.active_fragments.push(name.to_string());
+                let result = validate_fragment_selection_set(
+                    fragments,
+                    document,
+                    state,
+                    &definition.node.selection_set,
+                    depth + 1,
+                );
+                state.active_fragments.pop();
+                result?;
+                state.completed_fragments.insert(name.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+impl<'ast, 'source> FragmentExpander<'ast, 'source> {
+    fn new(
+        fragments: &'ast HashMap<Name, Positioned<FragmentDefinition>>,
+        document: &'source ClientDocument,
+    ) -> Self {
+        Self {
+            fragments,
+            document,
+            state: ExpansionState::default(),
+        }
+    }
+
+    fn merge_object(
+        &mut self,
+        selection_sets: &[&'ast Positioned<SelectionSet>],
+        typename: &str,
+        depth: usize,
+        field_owner: &str,
+    ) -> Result<Vec<MergedField<'ast>>, ClientCompileError> {
+        let position = selection_sets
+            .first()
+            .map_or_else(Pos::default, |selection_set| selection_set.pos);
+        check_expansion_depth(depth, self.document, position)?;
+        count_expansion_unit(&mut self.state, self.document, position)?;
+
+        let mut fields = Vec::new();
+        let mut response_keys = BTreeMap::new();
+        for selection_set in selection_sets {
+            expand_selection_set(
+                self.fragments,
+                self.document,
+                &mut self.state,
+                selection_set,
+                typename,
+                depth,
+                field_owner,
+                &mut fields,
+                &mut response_keys,
+            )?;
+        }
+        Ok(fields)
+    }
+
+    fn reject_unused_fragments(&self) -> Result<(), ClientCompileError> {
+        let unused = self
+            .fragments
+            .iter()
+            .filter(|(name, _)| !self.state.used_fragments.contains(name.as_str()))
+            .min_by(|left, right| {
+                (left.1.pos, left.0.as_str()).cmp(&(right.1.pos, right.0.as_str()))
+            });
+        let Some((name, definition)) = unused else {
+            return Ok(());
+        };
+        Err(source_error(
+            "client.graphql.fragment_unused",
+            format!("fragment `{name}` is not reachable from the document operation"),
+            self.document,
+            definition.pos,
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_selection_set<'ast>(
+    fragments: &'ast HashMap<Name, Positioned<FragmentDefinition>>,
+    document: &ClientDocument,
+    state: &mut ExpansionState,
+    selection_set: &'ast Positioned<SelectionSet>,
+    typename: &str,
+    depth: usize,
+    field_owner: &str,
+    fields: &mut Vec<MergedField<'ast>>,
+    response_keys: &mut BTreeMap<String, usize>,
+) -> Result<(), ClientCompileError> {
+    check_expansion_depth(depth, document, selection_set.pos)?;
+    for selection in &selection_set.node.items {
+        count_expansion_unit(state, document, selection.pos)?;
+        match &selection.node {
+            Selection::Field(field) => {
+                merge_field(document, field, field_owner, fields, response_keys)?
+            }
+            Selection::FragmentSpread(spread) => {
+                reject_directives(
+                    &spread.node.directives,
+                    &format!(
+                        "fragment spread `{}`",
+                        spread.node.fragment_name.node.as_str()
+                    ),
+                    document,
+                )?;
+                let name = spread.node.fragment_name.node.as_str();
+                let Some(definition) = fragments.get(name) else {
+                    return Err(source_error(
+                        "client.graphql.fragment_undefined",
+                        format!("fragment spread `{name}` has no definition in this document"),
+                        document,
+                        spread.node.fragment_name.pos,
+                    ));
+                };
+                state.used_fragments.insert(name.to_string());
+                reject_directives(
+                    &definition.node.directives,
+                    &format!("fragment definition `{name}`"),
+                    document,
+                )?;
+                require_fragment_type(
+                    definition.node.type_condition.node.on.node.as_str(),
+                    typename,
+                    name,
+                    document,
+                    definition.node.type_condition.pos,
+                )?;
+                if let Some(cycle_start) = state
+                    .active_fragments
+                    .iter()
+                    .position(|active| active == name)
+                {
+                    let mut cycle = state.active_fragments[cycle_start..].to_vec();
+                    cycle.push(name.to_string());
+                    return Err(source_error(
+                        "client.graphql.fragment_cycle",
+                        format!("fragment expansion cycle: {}", cycle.join(" -> ")),
+                        document,
+                        spread.node.fragment_name.pos,
+                    ));
+                }
+                check_expansion_depth(depth + 1, document, spread.pos)?;
+                state.active_fragments.push(name.to_string());
+                let result = expand_selection_set(
+                    fragments,
+                    document,
+                    state,
+                    &definition.node.selection_set,
+                    typename,
+                    depth + 1,
+                    field_owner,
+                    fields,
+                    response_keys,
+                );
+                state.active_fragments.pop();
+                result?;
+            }
+            Selection::InlineFragment(fragment) => {
+                reject_directives(&fragment.node.directives, "inline fragment", document)?;
+                if let Some(condition) = &fragment.node.type_condition {
+                    require_fragment_type(
+                        condition.node.on.node.as_str(),
+                        typename,
+                        "inline fragment",
+                        document,
+                        condition.pos,
+                    )?;
+                }
+                check_expansion_depth(depth + 1, document, fragment.pos)?;
+                expand_selection_set(
+                    fragments,
+                    document,
+                    state,
+                    &fragment.node.selection_set,
+                    typename,
+                    depth + 1,
+                    field_owner,
+                    fields,
+                    response_keys,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_field<'ast>(
+    document: &ClientDocument,
+    field: &'ast Positioned<Field>,
+    field_owner: &str,
+    fields: &mut Vec<MergedField<'ast>>,
+    response_keys: &mut BTreeMap<String, usize>,
+) -> Result<(), ClientCompileError> {
+    reject_directives(&field.node.directives, field_owner, document)?;
+    let response_key = field.node.response_key().node.as_str();
+    let canonical_arguments = canonical_field_arguments(&field.node, document)?;
+    let is_object = !field.node.selection_set.node.items.is_empty();
+
+    if let Some(index) = response_keys.get(response_key).copied() {
+        let first = &mut fields[index];
+        let first_is_object = !first.selection_sets.is_empty();
+        if first.first.node.name.node != field.node.name.node
+            || first.canonical_arguments != canonical_arguments
+            || first_is_object != is_object
+        {
+            let first_position = first.first.node.response_key().pos;
+            return Err(source_error(
+                "client.selection.conflict",
+                format!(
+                    "response key `{response_key}` conflicts with its first selection at {}:{}",
+                    first_position.line.max(1),
+                    first_position.column.max(1)
+                ),
+                document,
+                field.node.response_key().pos,
+            ));
+        }
+        if is_object {
+            first.selection_sets.push(&field.node.selection_set);
+        }
+        return Ok(());
+    }
+
+    response_keys.insert(response_key.to_string(), fields.len());
+    fields.push(MergedField {
+        first: field,
+        selection_sets: is_object
+            .then_some(&field.node.selection_set)
+            .into_iter()
+            .collect(),
+        canonical_arguments,
+    });
+    Ok(())
+}
+
+fn canonical_field_arguments(
+    field: &Field,
+    document: &ClientDocument,
+) -> Result<Vec<(String, String)>, ClientCompileError> {
+    let mut arguments = field
+        .arguments
+        .iter()
+        .map(|(name, value)| {
+            Ok((
+                name.node.to_string(),
+                render_value(&value.node, document, value.pos)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ClientCompileError>>()?;
+    arguments.sort();
+    Ok(arguments)
+}
+
+fn require_fragment_type(
+    actual: &str,
+    expected: &str,
+    fragment: &str,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(source_error(
+        "client.graphql.fragment_type",
+        format!(
+            "{fragment} has type condition `{actual}` but the current concrete type is `{expected}`"
+        ),
+        document,
+        position,
+    ))
+}
+
+fn check_expansion_depth(
+    depth: usize,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if depth <= MAX_OBJECT_DEPTH {
+        return Ok(());
+    }
+    Err(source_error(
+        "client.selection.depth",
+        format!("selection expansion exceeds the supported {MAX_OBJECT_DEPTH}-level depth"),
+        document,
+        position,
+    ))
+}
+
+fn count_expansion_unit(
+    state: &mut ExpansionState,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if state.expanded_units >= MAX_EXPANDED_SELECTIONS {
+        return Err(source_error(
+            "client.selection.expansion_bound",
+            format!(
+                "expanded selection exceeds the supported {MAX_EXPANDED_SELECTIONS}-unit bound"
+            ),
+            document,
+            position,
+        ));
+    }
+    state.expanded_units += 1;
+    Ok(())
+}
+
+fn single_root_field<'a>(
+    mut fields: Vec<MergedField<'a>>,
+    operation: &OperationDefinition,
+    document: &ClientDocument,
+) -> Result<MergedField<'a>, ClientCompileError> {
+    if fields.len() != 1 {
         return Err(source_error(
             "client.operation.single_root",
             format!(
                 "causal protocol v2 requires exactly one query root; found {}",
-                operation.selection_set.node.items.len()
+                fields.len()
             ),
             document,
             operation.selection_set.pos,
         ));
     }
-    match &operation.selection_set.node.items[0].node {
-        Selection::Field(field) => Ok(field),
-        Selection::FragmentSpread(fragment) => Err(source_error(
-            "client.graphql.fragments_unsupported",
-            "a root fragment spread is not supported",
-            document,
-            fragment.pos,
-        )),
-        Selection::InlineFragment(fragment) => Err(source_error(
-            "client.graphql.fragments_unsupported",
-            "a root inline fragment is not supported",
-            document,
-            fragment.pos,
-        )),
-    }
+    Ok(fields.pop().expect("length checked"))
 }
 
 fn compile_arguments(
@@ -527,77 +924,45 @@ fn validate_used_variables(
     Ok(())
 }
 
-fn compile_scalar_selections(
-    field: &Field,
+fn compile_scalar_selections<'ast>(
+    field: &MergedField<'ast>,
     model: &ManifestModel,
     document: &ClientDocument,
-) -> Result<Vec<CompiledScalar>, ClientCompileError> {
-    if field.selection_set.node.items.is_empty() {
+    expander: &mut FragmentExpander<'ast, '_>,
+    depth: usize,
+) -> Result<Vec<CompiledMember>, ClientCompileError> {
+    let selected_fields = expander.merge_object(
+        &field.selection_sets,
+        &model.typename,
+        depth,
+        "selected field",
+    )?;
+    if selected_fields.is_empty() {
         return Err(source_error(
             "client.selection.empty",
             format!(
                 "root `{}` must select at least one scalar field",
-                field.name.node
+                field.first.node.name.node
             ),
             document,
-            field.selection_set.pos,
+            field.first.node.selection_set.pos,
         ));
     }
-    if field.selection_set.node.items.len() > MAX_SCALAR_SELECTIONS {
-        return Err(source_error(
-            "client.selection.bound",
-            format!("selection exceeds the supported {MAX_SCALAR_SELECTIONS}-field bound"),
-            document,
-            field.selection_set.pos,
-        ));
-    }
-    let mut result = Vec::with_capacity(field.selection_set.node.items.len());
-    let mut response_keys = BTreeSet::new();
-    for selection in &field.selection_set.node.items {
-        let selected = match &selection.node {
-            Selection::Field(field) => field,
-            Selection::FragmentSpread(fragment) => {
-                return Err(source_error(
-                    "client.graphql.fragments_unsupported",
-                    format!(
-                        "fragment spread `{}` is not supported; inline its scalar selections",
-                        fragment.node.fragment_name.node
-                    ),
-                    document,
-                    fragment.pos,
-                ));
-            }
-            Selection::InlineFragment(fragment) => {
-                return Err(source_error(
-                    "client.graphql.fragments_unsupported",
-                    "inline fragments are not supported by the first compiler slice",
-                    document,
-                    fragment.pos,
-                ));
-            }
-        };
-        reject_directives(&selected.node.directives, "selected field", document)?;
-        if !selected.node.arguments.is_empty() {
+    let mut result = Vec::with_capacity(selected_fields.len());
+    for selected in selected_fields {
+        if !selected.first.node.arguments.is_empty() {
             return Err(source_error(
                 "client.selection.field_arguments",
                 format!(
                     "scalar field `{}` must not have arguments",
-                    selected.node.name.node
+                    selected.first.node.name.node
                 ),
                 document,
-                selected.pos,
+                selected.first.pos,
             ));
         }
-        let response_key = selected.node.response_key().node.as_str();
-        if !response_keys.insert(response_key) {
-            return Err(source_error(
-                "client.selection.duplicate_response_key",
-                format!("response key `{response_key}` appears more than once"),
-                document,
-                selected.node.response_key().pos,
-            ));
-        }
-        let field_name = selected.node.name.node.as_str();
+        let response_key = selected.first.node.response_key().node.as_str();
+        let field_name = selected.first.node.name.node.as_str();
         if let Some(relationship) = model.relationship(field_name) {
             return Err(source_error(
                 "client.selection.relationship_unsupported",
@@ -606,7 +971,7 @@ fn compile_scalar_selections(
                     relationship.name, model.id
                 ),
                 document,
-                selected.node.name.pos,
+                selected.first.node.name.pos,
             ));
         }
         let manifest_field = if field_name == "__typename" {
@@ -620,21 +985,21 @@ fn compile_scalar_selections(
                         model.id
                     ),
                     document,
-                    selected.node.name.pos,
+                    selected.first.node.name.pos,
                 )
             })?)
         };
-        if !selected.node.selection_set.node.items.is_empty() {
+        if !selected.selection_sets.is_empty() {
             return Err(source_error(
                 "client.selection.nested_unsupported",
                 format!(
                     "field `{field_name}` has a nested selection; only scalar leaves are supported"
                 ),
                 document,
-                selected.node.selection_set.pos,
+                selected.first.node.selection_set.pos,
             ));
         }
-        result.push(match manifest_field {
+        result.push(CompiledMember::Scalar(match manifest_field {
             Some(field) => compiled_scalar(response_key, field, true),
             None => CompiledScalar {
                 response_key: response_key.to_string(),
@@ -643,7 +1008,7 @@ fn compile_scalar_selections(
                 nullable: false,
                 expose: true,
             },
-        });
+        }));
     }
     Ok(result)
 }
@@ -659,7 +1024,7 @@ fn compiled_scalar(response_key: &str, field: &ManifestField, expose: bool) -> C
 }
 
 fn inject_wire_fields(
-    fields: &mut Vec<CompiledScalar>,
+    members: &mut Vec<CompiledMember>,
     model: &ManifestModel,
     document: &ClientDocument,
     position: Pos,
@@ -667,15 +1032,16 @@ fn inject_wire_fields(
     let identity = model
         .identity()
         .expect("embedded model rejected before injection");
-    let mut response_keys = fields
+    let mut response_keys = members
         .iter()
-        .map(|field| field.response_key.clone())
+        .map(|member| match member {
+            CompiledMember::Scalar(scalar) => scalar.response_key.clone(),
+        })
         .collect::<BTreeSet<_>>();
     for identity_field in identity {
-        if fields
-            .iter()
-            .any(|field| field.field == identity_field.name)
-        {
+        if members.iter().any(|member| match member {
+            CompiledMember::Scalar(scalar) => scalar.field == identity_field.name,
+        }) {
             continue;
         }
         let field = model.field(&identity_field.name).ok_or_else(|| {
@@ -690,17 +1056,23 @@ fn inject_wire_fields(
             )
         })?;
         let response_key = allocate_wire_alias(&identity_field.name, &mut response_keys);
-        fields.push(compiled_scalar(&response_key, field, false));
+        members.push(CompiledMember::Scalar(compiled_scalar(
+            &response_key,
+            field,
+            false,
+        )));
     }
-    if !fields.iter().any(|field| field.field == "__typename") {
+    if !members.iter().any(|member| match member {
+        CompiledMember::Scalar(scalar) => scalar.field == "__typename",
+    }) {
         let response_key = allocate_wire_alias("typename", &mut response_keys);
-        fields.push(CompiledScalar {
+        members.push(CompiledMember::Scalar(CompiledScalar {
             response_key,
             field: "__typename".into(),
             codec: "string".into(),
             nullable: false,
             expose: false,
-        });
+        }));
     }
     Ok(())
 }
@@ -938,11 +1310,15 @@ fn render_operation(
     };
     let mut lines = vec![format!("{operation_type} {name}{variable_definitions} {{")];
     lines.push(format!("  {root_prefix}{arguments} {{"));
-    for field in &root.fields {
-        if field.response_key == field.field {
-            lines.push(format!("    {}", field.field));
-        } else {
-            lines.push(format!("    {}: {}", field.response_key, field.field));
+    for member in &root.selection.members {
+        match member {
+            CompiledMember::Scalar(field) => {
+                if field.response_key == field.field {
+                    lines.push(format!("    {}", field.field));
+                } else {
+                    lines.push(format!("    {}: {}", field.response_key, field.field));
+                }
+            }
         }
     }
     lines.push("  }".into());

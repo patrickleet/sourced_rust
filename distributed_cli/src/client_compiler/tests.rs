@@ -1,6 +1,7 @@
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
+use super::manifest::{refresh_schema_fingerprint, ClientManifest};
 use super::{
     compile_client, ClientCompileInput, ClientDocument, ClientRouteDiscovery,
     ClientRouteRegistration, ClientSurfaceSelector,
@@ -57,7 +58,7 @@ fn model(id: &str, typename: &str) -> JsonValue {
                 "arguments": [],
                 "key_mapping": {"kind": "embedded"},
                 "maintenance": "revalidate",
-                "dependencies": [],
+                "dependencies": [format!("{}_rows", id.to_lowercase())],
                 "live": false
             }
         ],
@@ -102,6 +103,34 @@ fn list_arguments() -> JsonValue {
     ])
 }
 
+fn filter_semantics() -> JsonValue {
+    json!({
+        "fields": [
+            {"name": "completed", "operators": ["_eq"]},
+            {"name": "id", "operators": ["_eq"]},
+            {"name": "priority", "operators": ["_eq"]},
+            {"name": "tenantId", "operators": ["_eq"]},
+            {"name": "title", "operators": ["_eq"]}
+        ],
+        "relationships": ["owner"],
+        "row_policy": {"kind": "unrestricted"}
+    })
+}
+
+fn order_semantics() -> JsonValue {
+    json!({
+        "fields": ["completed", "id", "priority", "tenantId", "title"],
+        "values": [
+            "asc",
+            "asc_nulls_first",
+            "asc_nulls_last",
+            "desc",
+            "desc_nulls_first",
+            "desc_nulls_last"
+        ]
+    })
+}
+
 fn list_root(operation: &str) -> JsonValue {
     json!({
         "id": format!("{operation}:todos"),
@@ -110,8 +139,8 @@ fn list_root(operation: &str) -> JsonValue {
         "kind": "list",
         "model": "Todo",
         "arguments": list_arguments(),
-        "filter": null,
-        "order": null,
+        "filter": filter_semantics(),
+        "order": order_semantics(),
         "pagination": {
             "kind": "offset",
             "default_limit": 25,
@@ -159,7 +188,7 @@ fn by_pk_root() -> JsonValue {
 }
 
 fn manifest() -> JsonValue {
-    json!({
+    let mut value = json!({
         "manifest_version": 4,
         "protocol_version": 2,
         "service_id": "todos-service",
@@ -182,7 +211,130 @@ fn manifest() -> JsonValue {
         "commands": [],
         "protocol_operations": {"version": 1},
         "projectors": []
-    })
+    });
+    refresh_schema_fingerprint(&mut value);
+    value
+}
+
+fn projected_manifest() -> JsonValue {
+    let mutation = "mutation Client_projectTodo($commandId: ID!, $input: ProjectTodoInput!) { projectTodo(commandId: $commandId, input: $input) { completed id priority tenantId title } }";
+    let status =
+        "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
+    let mut value = manifest();
+    value["capabilities"]["causal_receipts"] = json!(true);
+    value["capabilities"]["cache_scope"] = json!(true);
+    value["commands"] = json!([{
+        "version": 1,
+        "name": "ProjectTodo",
+        "mutation_field": "projectTodo",
+        "grants": ["user"],
+        "input": {
+            "kind": "object",
+            "definition": {
+                "name": "ProjectTodoInput",
+                "fields": [
+                    {
+                        "name": "id",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    },
+                    {
+                        "name": "tenantId",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    }
+                ]
+            }
+        },
+        "output": {
+            "kind": "object",
+            "definition": {
+                "name": "todo",
+                "fields": [
+                    {
+                        "name": "completed",
+                        "type_name": "Boolean",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "boolean"
+                    },
+                    {
+                        "name": "id",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    },
+                    {
+                        "name": "priority",
+                        "type_name": "Int",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "int32"
+                    },
+                    {
+                        "name": "tenantId",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    },
+                    {
+                        "name": "title",
+                        "type_name": "String",
+                        "nullable": true,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    }
+                ]
+            }
+        },
+        "operation": mutation,
+        "operation_hash": fingerprint(mutation),
+        "extensions": {
+            "version": 2,
+            "consistency": {"version": 1, "kind": "projected"},
+            "direct_projection": {
+                "topology": {
+                    "version": 1,
+                    "name": "todos",
+                    "digest": fingerprint("todos topology")
+                },
+                "model": "Todo",
+                "partition": {"kind": "input", "path": ["tenantId"]},
+                "change_epoch": "todos-v1"
+            }
+        }
+    }]);
+    value["projectors"] = json!([{
+        "version": 1,
+        "name": "todos",
+        "facts": ["TodoProjected"],
+        "models": ["Todo"],
+        "dependencies": ["todo_rows"],
+        "causal_confirmation": false
+    }]);
+    value["protocol_operations"] = json!({
+        "version": 1,
+        "command_status": {
+            "name": "Distributed_CommandStatus",
+            "operation": status,
+            "operation_hash": fingerprint(status)
+        }
+    });
+    refresh_schema_fingerprint(&mut value);
+    value
 }
 
 fn input(source: &str) -> ClientCompileInput {
@@ -312,15 +464,212 @@ fn explicit_load_registration_is_the_documented_fallback() {
 }
 
 #[test]
-fn rejects_surface_relationship_fragment_conditional_and_multi_root() {
+fn expands_root_named_and_inline_fragments_into_canonical_full_text() {
+    let project = compile_client(input(
+        r#"
+          query Fragmented {
+            ...Root
+          }
+          fragment Root on Query {
+            todos {
+              ...Fields
+              ... { priority }
+              ... on todo { headline: title }
+              ...Fields
+            }
+          }
+          fragment Fields on todo { id }
+        "#,
+    ))
+    .expect("compile fragments");
+    let expected = "query Fragmented {\n  todos {\n    id\n    priority\n    headline: title\n    _distributed_tenantId: tenantId\n    _distributed_typename: __typename\n  }\n}\n";
+
+    assert_eq!(project.operations[0].operation_hash, fingerprint(expected));
+    assert!(!file(&project, &project.operations[0].module_path).contains("fragment Root"));
+}
+
+#[test]
+fn merges_identical_root_objects_and_preserves_first_encounter_order() {
+    let project = compile_client(input(
+        r#"
+          query Merged {
+            ...First
+            ...Second
+          }
+          fragment First on Query {
+            rows: todos(limit: 10, offset: 0) { title }
+          }
+          fragment Second on Query {
+            rows: todos(offset: 0, limit: 10) { id title }
+          }
+        "#,
+    ))
+    .expect("merge compatible root selections");
+    let expected = "query Merged {\n  rows: todos(limit: 10, offset: 0) {\n    title\n    id\n    _distributed_tenantId: tenantId\n    _distributed_typename: __typename\n  }\n}\n";
+
+    assert_eq!(project.operations[0].operation_hash, fingerprint(expected));
+}
+
+#[test]
+fn rejects_fragment_graph_errors_deterministically() {
+    let cases = [
+        (
+            "query Missing { todos { ...Absent } }",
+            "client.graphql.fragment_undefined",
+            "Absent",
+        ),
+        (
+            "query Cyclic { todos { ...A } } fragment A on todo { ...B } fragment B on todo { ...A }",
+            "client.graphql.fragment_cycle",
+            "A -> B -> A",
+        ),
+        (
+            "query WrongType { todos { ...Fields } } fragment Fields on Todo { id }",
+            "client.graphql.fragment_type",
+            "current concrete type is `todo`",
+        ),
+        (
+            "query WrongRoot { ...Root } fragment Root on query { todos { id } }",
+            "client.graphql.fragment_type",
+            "current concrete type is `Query`",
+        ),
+        (
+            "query WrongInline { todos { ... on Todo { id } } }",
+            "client.graphql.fragment_type",
+            "current concrete type is `todo`",
+        ),
+    ];
+    for (source, code, message) in cases {
+        let error = compile_client(input(source)).expect_err(source);
+        assert_eq!(error.code, code, "{source}: {error}");
+        assert!(error.message.contains(message), "{source}: {error}");
+        assert!(error.source.is_some());
+    }
+
+    let error = compile_client(input(
+        r#"
+          query Unused { todos { id } }
+          fragment ZedFirst on todo { id }
+          fragment AlphaLater on todo { title }
+        "#,
+    ))
+    .expect_err("source-first unused fragment");
+    assert_eq!(error.code, "client.graphql.fragment_unused");
+    assert!(error.message.contains("ZedFirst"));
+}
+
+#[test]
+fn prevalidates_fragment_graph_through_nested_fields_before_lowering() {
+    let error = compile_client(input(
+        r#"
+          query NestedCycle {
+            todos { ...Recursive }
+          }
+          fragment Recursive on todo {
+            owner { ...Recursive }
+          }
+        "#,
+    ))
+    .expect_err("fragment cycles remain invalid through relationship fields");
+    assert_eq!(error.code, "client.graphql.fragment_cycle");
+    assert!(error.message.contains("Recursive -> Recursive"));
+    assert_eq!(error.source.as_ref().map(|source| source.line), Some(6));
+
+    let error = compile_client(input(
+        "query NestedMissing { todos { owner { ...Missing } } }",
+    ))
+    .expect_err("undefined nested fragments precede unsupported relationship lowering");
+    assert_eq!(error.code, "client.graphql.fragment_undefined");
+    assert!(error.message.contains("Missing"));
+}
+
+#[test]
+fn fragment_definition_order_does_not_change_generated_output() {
+    let operation = "query Stable { todos { ...First ...Second } }\n";
+    let left = compile_client(input(&format!(
+        "{operation}fragment First on todo {{ id }}\nfragment Second on todo {{ title }}\n"
+    )))
+    .expect("first definition order");
+    let right = compile_client(input(&format!(
+        "{operation}fragment Second on todo {{ title }}\nfragment First on todo {{ id }}\n"
+    )))
+    .expect("second definition order");
+
+    assert_eq!(left, right);
+}
+
+#[test]
+fn rejects_directives_on_every_fragment_surface() {
+    let cases = [
+        (
+            "query SpreadDirective { todos { ...Fields @skip(if: true) } } fragment Fields on todo { id }",
+            "client.directive.conditional_unsupported",
+        ),
+        (
+            "query DefinitionDirective { todos { ...Fields } } fragment Fields on todo @custom { id }",
+            "client.directive.unsupported",
+        ),
+        (
+            "query InlineDirective { todos { ... @custom { id } } }",
+            "client.directive.unsupported",
+        ),
+    ];
+    for (source, code) in cases {
+        let error = compile_client(input(source)).expect_err(source);
+        assert_eq!(error.code, code, "{source}: {error}");
+    }
+}
+
+#[test]
+fn rejects_response_key_conflicts_at_the_later_selection() {
+    let source = r#"
+      query Conflict {
+        todos {
+          same: id
+          same: title
+        }
+      }
+    "#;
+    let error = compile_client(input(source)).expect_err("field-name conflict");
+    assert_eq!(error.code, "client.selection.conflict");
+    assert_eq!(error.source.as_ref().map(|source| source.line), Some(5));
+    assert!(error.message.contains("first selection at 4:"));
+
+    for source in [
+        "query ShapeConflict { todos { same: id same: id { value } } }",
+        "query ArgumentConflict { rows: todos(limit: 1) { id } rows: todos(limit: 2) { id } }",
+    ] {
+        let error = compile_client(input(source)).expect_err(source);
+        assert_eq!(error.code, "client.selection.conflict", "{source}: {error}");
+    }
+}
+
+#[test]
+fn fragment_expansion_is_bounded_by_depth_and_total_work() {
+    let mut deep = String::from("query Deep { todos { ...F0 } }\n");
+    for index in 0..65 {
+        deep.push_str(&format!(
+            "fragment F{index} on todo {{ ...F{} }}\n",
+            index + 1
+        ));
+    }
+    deep.push_str("fragment F65 on todo { id }\n");
+    let error = compile_client(input(&deep)).expect_err("depth bound");
+    assert_eq!(error.code, "client.selection.depth");
+
+    let spreads = "...Fields ".repeat(5_000);
+    let expanded =
+        format!("query Expanded {{ todos {{ {spreads} }} }} fragment Fields on todo {{ id }}");
+    let error = compile_client(input(&expanded)).expect_err("expansion work bound");
+    assert_eq!(error.code, "client.selection.expansion_bound");
+}
+
+#[test]
+fn rejects_surface_relationship_conditional_and_multi_root() {
     let cases = [
         (
             "query Wrong { todos { owner { id } } }",
             "client.selection.relationship_unsupported",
-        ),
-        (
-            "query Fragmented { todos { ...Fields } } fragment Fields on todo { id }",
-            "client.graphql.fragments_unsupported",
         ),
         (
             "query Conditional($yes: Boolean!) { todos { id @include(if: $yes) } }",
@@ -383,7 +732,8 @@ fn live_companion_fails_closed_on_dependency_or_pagination_drift() {
         .iter_mut()
         .find(|root| root["operation"] == "subscription")
         .expect("subscription");
-    subscription["dependencies"] = json!(["different_table"]);
+    subscription["pagination"]["default_limit"] = json!(24);
+    refresh_schema_fingerprint(&mut invalid);
     let error = compile_client(ClientCompileInput::new(
         invalid,
         ClientSurfaceSelector::role("user"),
@@ -398,39 +748,113 @@ fn live_companion_fails_closed_on_dependency_or_pagination_drift() {
 
 #[test]
 fn command_protocol_and_extensions_are_preserved_exactly() {
-    let mutation = "mutation Client_createTodo($commandId: ID!, $input: JSON!) { createTodo(commandId: $commandId, input: $input) }";
+    let mutation = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) }";
     let status =
         "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
     let mut value = manifest();
     value["capabilities"]["causal_receipts"] = json!(true);
+    value["capabilities"]["cache_scope"] = json!(true);
     value["commands"] = json!([{
         "version": 1,
         "name": "CreateTodo",
         "mutation_field": "createTodo",
         "grants": ["user"],
-        "input": {"kind": "json", "codec": "json"},
+        "input": {
+            "kind": "object",
+            "definition": {
+                "name": "CreateTodoInput",
+                "fields": [
+                    {
+                        "name": "id",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    },
+                    {
+                        "name": "tenantId",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    },
+                    {
+                        "name": "title",
+                        "type_name": "String",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    }
+                ]
+            }
+        },
         "output": {"kind": "json", "codec": "json"},
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
             "version": 2,
-            "consistency": {"version": 1, "kind": "projected"},
+            "consistency": {"version": 1, "kind": "fact"},
             "input_defaults": {
                 "version": 1,
                 "defaults": [{"path": ["id"], "generator": "uuid_v7"}]
             },
             "effects": {
                 "version": 1,
-                "operations": [{"kind": "upsert", "model": "Todo"}],
+                "operations": [{
+                    "kind": "upsert",
+                    "model": "Todo",
+                    "key": {
+                        "fields": [
+                            {
+                                "field": "tenantId",
+                                "value": {"kind": "input", "path": ["tenantId"]}
+                            },
+                            {
+                                "field": "id",
+                                "value": {"kind": "input", "path": ["id"]}
+                            }
+                        ]
+                    },
+                    "fields": [{
+                        "field": "title",
+                        "value": {"kind": "input", "path": ["title"]}
+                    }]
+                }],
                 "fallback": "revalidate"
             },
             "confirmations": {
                 "version": 1,
                 "kind": "finite",
-                "expected": [{"projector": "todos"}],
+                "expected": [{
+                    "projector": "todos",
+                    "model": "Todo",
+                    "key": {
+                        "fields": [
+                            {
+                                "field": "tenantId",
+                                "value": {"kind": "input", "path": ["tenantId"]}
+                            },
+                            {
+                                "field": "id",
+                                "value": {"kind": "input", "path": ["id"]}
+                            }
+                        ]
+                    }
+                }],
                 "fallback": "revalidate"
             }
         }
+    }]);
+    value["projectors"] = json!([{
+        "version": 1,
+        "name": "todos",
+        "facts": ["TodoCreated"],
+        "models": ["Todo"],
+        "dependencies": ["todo_rows"],
+        "causal_confirmation": true
     }]);
     value["protocol_operations"] = json!({
         "version": 1,
@@ -440,6 +864,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
             "operation_hash": fingerprint(status)
         }
     });
+    refresh_schema_fingerprint(&mut value);
     let project = compile_client(ClientCompileInput::new(
         value,
         ClientSurfaceSelector::role("user"),
@@ -460,8 +885,73 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
 }
 
 #[test]
+fn projected_command_requires_exact_role_safe_direct_projection() {
+    let value = projected_manifest();
+    let parsed = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect("valid projected direct target");
+    let direct = parsed.commands[0]
+        .extensions
+        .direct_projection
+        .as_ref()
+        .expect("projected command direct target");
+    assert_eq!(direct.topology.version, 1);
+    assert_eq!(direct.topology.name, "todos");
+    assert_eq!(direct.model, "Todo");
+    assert_eq!(direct.change_epoch, "todos-v1");
+    assert!(matches!(
+        direct.partition,
+        Some(super::manifest::ManifestEffectExpression::Input { ref path })
+            if path.as_slice() == ["tenantId"]
+    ));
+
+    let mut absent = projected_manifest();
+    absent["commands"][0]["extensions"]
+        .as_object_mut()
+        .expect("extensions")
+        .remove("direct_projection");
+    refresh_schema_fingerprint(&mut absent);
+    let error = ClientManifest::parse(absent, &ClientSurfaceSelector::role("user"))
+        .expect_err("projected direct target is mandatory");
+    assert_eq!(error.code, "client.manifest.direct_projection_required");
+
+    let mut non_projected = projected_manifest();
+    non_projected["commands"][0]["extensions"]["consistency"]["kind"] = json!("accepted");
+    refresh_schema_fingerprint(&mut non_projected);
+    let error = ClientManifest::parse(non_projected, &ClientSurfaceSelector::role("user"))
+        .expect_err("accepted commands cannot carry direct projection metadata");
+    assert_eq!(error.code, "client.manifest.direct_projection_unexpected");
+}
+
+#[test]
+fn projected_command_rejects_tampered_topology_and_wrong_owner() {
+    let mut tampered = projected_manifest();
+    tampered["commands"][0]["extensions"]["direct_projection"]["topology"]["digest"] =
+        json!(format!("sha256:{}", "AB".repeat(32)));
+    refresh_schema_fingerprint(&mut tampered);
+    let error = ClientManifest::parse(tampered, &ClientSurfaceSelector::role("user"))
+        .expect_err("topology digest must be canonical lowercase SHA-256");
+    assert_eq!(error.code, "client.manifest.hash");
+
+    let mut wrong_owner = projected_manifest();
+    wrong_owner["commands"][0]["extensions"]["direct_projection"]["topology"]["name"] =
+        json!("other_projector");
+    refresh_schema_fingerprint(&mut wrong_owner);
+    let error = ClientManifest::parse(wrong_owner, &ClientSurfaceSelector::role("user"))
+        .expect_err("direct target must use the visible model owner");
+    assert_eq!(error.code, "client.manifest.direct_projection_owner");
+
+    let mut trusted_preset = projected_manifest();
+    trusted_preset["commands"][0]["extensions"]["direct_projection"]["partition"] =
+        json!({"kind": "trusted_preset", "name": "current_tenant"});
+    refresh_schema_fingerprint(&mut trusted_preset);
+    let error = ClientManifest::parse(trusted_preset, &ClientSurfaceSelector::role("user"))
+        .expect_err("unresolved trusted presets cannot define a direct target");
+    assert_eq!(error.code, "client.manifest.direct_projection_partition");
+}
+
+#[test]
 fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
-    let valid = "mutation Client_createTodo($commandId: ID!, $input: JSON!) { createTodo(commandId: $commandId, input: $input) }";
+    let valid = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) }";
     let status = "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
     let command = |operation: &str, generator: &str| {
         json!({
@@ -469,7 +959,20 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
             "name": "CreateTodo",
             "mutation_field": "createTodo",
             "grants": ["user"],
-            "input": {"kind": "json", "codec": "json"},
+            "input": {
+                "kind": "object",
+                "definition": {
+                    "name": "CreateTodoInput",
+                    "fields": [{
+                        "name": "id",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    }]
+                }
+            },
             "output": {"kind": "json", "codec": "json"},
             "operation": operation,
             "operation_hash": fingerprint(operation),
@@ -486,6 +989,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
     let compile = |entry: JsonValue| {
         let mut value = manifest();
         value["capabilities"]["causal_receipts"] = json!(true);
+        value["capabilities"]["cache_scope"] = json!(true);
         value["commands"] = json!([entry]);
         value["protocol_operations"] = json!({
             "version": 1,
@@ -505,12 +1009,13 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
         ))
     };
 
-    let without_id = "mutation Client_createTodo($input: JSON!) { createTodo(input: $input) }";
+    let without_id =
+        "mutation Client_createTodo($input: CreateTodoInput!) { createTodo(input: $input) }";
     assert_eq!(
         compile(command(without_id, "uuid_v7"))
             .expect_err("missing causal identity")
             .code,
-        "client.manifest.operation_command_id"
+        "client.manifest.command_operation"
     );
     assert_eq!(
         compile(command(valid, "uuid_v4"))
@@ -521,15 +1026,17 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
 }
 
 #[test]
-fn output_is_identical_for_shuffled_set_like_manifest_and_documents() {
+fn output_is_identical_for_shuffled_documents() {
     let mut left_manifest = manifest();
     left_manifest["models"]
         .as_array_mut()
         .expect("models")
         .push(model("Unused", "unused"));
-    let mut right_manifest = left_manifest.clone();
+    refresh_schema_fingerprint(&mut left_manifest);
+    let right_manifest = left_manifest.clone();
+    let mut tampered_manifest = left_manifest.clone();
     for key in ["models", "roots", "scalar_codecs", "projectors", "commands"] {
-        right_manifest[key]
+        tampered_manifest[key]
             .as_array_mut()
             .expect("set-like array")
             .reverse();
@@ -557,6 +1064,57 @@ fn output_is_identical_for_shuffled_set_like_manifest_and_documents() {
     ))
     .expect("right");
     assert_eq!(left, right);
+
+    let error = compile_client(ClientCompileInput::new(
+        tampered_manifest,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect_err("manifest order is part of the emitter-owned fingerprint");
+    assert_eq!(error.code, "client.manifest.schema_fingerprint");
+}
+
+#[test]
+fn manifest_parser_accepts_embedded_by_pk_and_zero_sized_windows() {
+    let mut value = manifest();
+    value["models"][0]["normalization"] = json!({"kind": "embedded"});
+    value["roots"]
+        .as_array_mut()
+        .expect("roots")
+        .iter_mut()
+        .find(|root| root["kind"] == "by_pk")
+        .expect("by-pk root")["arguments"] = json!([]);
+    for root in value["roots"].as_array_mut().expect("roots") {
+        if root["kind"] == "list" {
+            root["pagination"]["default_limit"] = json!(0);
+            root["pagination"]["max_limit"] = json!(0);
+        }
+    }
+    refresh_schema_fingerprint(&mut value);
+
+    ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect("embedded models and zero-sized authorized windows are valid v4 contracts");
+}
+
+#[test]
+fn manifest_parser_accepts_mixed_per_model_revision_evidence() {
+    let mut value = manifest();
+    let mut without_evidence = model("Unowned", "Unowned");
+    without_evidence["record_revisions"] = json!(false);
+    without_evidence["tombstones"] = json!(false);
+    value["models"]
+        .as_array_mut()
+        .expect("models")
+        .push(without_evidence);
+    value["capabilities"]["record_revisions"] = json!(false);
+    value["capabilities"]["tombstones"] = json!(false);
+    refresh_schema_fingerprint(&mut value);
+
+    ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+        .expect("global record evidence describes the selected query footprint, not any model");
 }
 
 #[test]
