@@ -240,13 +240,7 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     if !surface.commands.is_empty() {
         out.push_str("\ntype Mutation {\n");
         for command in &surface.commands {
-            let input = match &command.input {
-                super::surface::SurfaceCommandShape::None => String::new(),
-                super::surface::SurfaceCommandShape::Json => "(input: JSON!)".into(),
-                super::surface::SurfaceCommandShape::Typed(definition) => {
-                    format!("(input: {}!)", definition.name)
-                }
-            };
+            let input = command_arguments_sdl(command.consistency.is_some(), &command.input);
             let output = match &command.output {
                 super::surface::SurfaceCommandShape::None => {
                     return Err(format!(
@@ -263,6 +257,25 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     }
 
     Ok(out)
+}
+
+fn command_arguments_sdl(causal: bool, input: &super::surface::SurfaceCommandShape) -> String {
+    let mut arguments = Vec::new();
+    if causal {
+        arguments.push("commandId: ID!".to_string());
+    }
+    match input {
+        super::surface::SurfaceCommandShape::None => {}
+        super::surface::SurfaceCommandShape::Json => arguments.push("input: JSON!".to_string()),
+        super::surface::SurfaceCommandShape::Typed(definition) => {
+            arguments.push(format!("input: {}!", definition.name));
+        }
+    }
+    if arguments.is_empty() {
+        String::new()
+    } else {
+        format!("({})", arguments.join(", "))
+    }
 }
 
 fn surface_root_sdl(root: &super::surface::RootField) -> String {
@@ -507,4 +520,39 @@ pub fn graphql_sdl_from_schemas(
         .filter(|t| matches!(t.kind, TableKind::ReadModel))
         .collect();
     graphql_sdl_for_tables(&tables)
+}
+
+#[cfg(test)]
+mod causal_command_sdl_tests {
+    use super::*;
+    use crate::graphql::surface::{SurfaceCommandShape, SurfaceTypeDef};
+
+    #[test]
+    fn causal_mutations_require_framework_command_id_before_input() {
+        let typed = SurfaceCommandShape::Typed(SurfaceTypeDef {
+            name: "CompleteTodoInput".into(),
+            fields: Vec::new(),
+        });
+        assert_eq!(
+            command_arguments_sdl(true, &typed),
+            "(commandId: ID!, input: CompleteTodoInput!)"
+        );
+        assert_eq!(
+            command_arguments_sdl(true, &SurfaceCommandShape::Json),
+            "(commandId: ID!, input: JSON!)"
+        );
+        assert_eq!(
+            command_arguments_sdl(true, &SurfaceCommandShape::None),
+            "(commandId: ID!)"
+        );
+    }
+
+    #[test]
+    fn legacy_mutation_arguments_are_unchanged() {
+        assert_eq!(
+            command_arguments_sdl(false, &SurfaceCommandShape::Json),
+            "(input: JSON!)"
+        );
+        assert_eq!(command_arguments_sdl(false, &SurfaceCommandShape::None), "");
+    }
 }

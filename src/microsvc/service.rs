@@ -34,25 +34,50 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(feature = "metrics")]
 use std::time::Instant;
+#[cfg(feature = "graphql")]
+use std::time::SystemTime;
 
 use serde_json::Value;
 
+use super::causal::{CausalWorkspace, CausalWorkspaceError};
 use super::context::Context;
 use super::dependencies::{
-    ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore, HasRepo,
-    RepoReadModelDependencies,
+    CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore,
+    HasRepo, RepoReadModelDependencies,
 };
 use super::error::HandlerError;
 use super::session::Session;
+use crate::aggregate::Aggregate;
 use crate::bus::{
     Bus, Message, MessageKind, MessagePublisher, RunOptions, SubscriptionPlan, TransportError,
 };
+#[cfg(feature = "graphql")]
+use crate::command_ledger::{
+    AttemptFence, CanonicalInputHash, CausalCommitBatch, CommandAttempt,
+    CommandContractFingerprint, CommandId, CommandLedgerError, CommandLedgerKey,
+    CommandLedgerState, CommandLookup, CommandLookupScope, CommandReplay, CommandReservation,
+    PrincipalPartitionId, ReservationOutcome, TerminalCommandState,
+};
+#[cfg(feature = "graphql")]
+use crate::command_ledger::{
+    CausalRepositoryIdentity, CausalTransactionalCommit, CommandLedgerStore,
+};
+#[cfg(feature = "graphql")]
+use crate::graphql::command_contract::CommandConsistency;
 use crate::graphql::command_contract::{
     CommandOutcome, TypedCommandContract, TypedServiceCommandBinding,
 };
-use crate::graphql::{PreparedCommand, TypedCommand};
+#[cfg(feature = "graphql")]
+use crate::graphql::command_input::canonicalize_command_input;
+#[cfg(feature = "graphql")]
+use crate::graphql::identity::VerifiedPrincipal;
+use crate::graphql::{GraphqlOutputType, PreparedCommand, Projected, TypedCommand};
+use crate::outbox::OutboxMessage;
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
+use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
+#[cfg(feature = "graphql")]
+use crate::repository::CommitBatch;
 
 /// The bus run behavior captured by [`Service::with_bus`](crate::microsvc::Service::with_bus).
 pub(crate) type ServiceRunner = Box<
@@ -78,21 +103,42 @@ pub trait Handler<'a, D: 'a>: Send + Sync {
     fn call(&self, ctx: &'a Context<'a, D>) -> Self::Future;
 }
 
-/// Restricted metadata context for typed causal command handlers.
+/// Restricted metadata and staging context for one typed causal command.
 ///
-/// This context intentionally has no dependency, repository, read-model, or
-/// commit access. Task 5 may extend it with a framework-owned staged unit of
-/// work, but application code can never commit and then wrap the result.
-pub struct CausalCommandContext<'a> {
+/// The aggregate type is fixed by the route bundle. The context exposes owned
+/// checkouts and staging operations, but never the dependency value, backend,
+/// repository, or a commit method; the framework retains this route's fenced
+/// durable commit capability and attaches the command-attempt fence after the
+/// handler returns.
+///
+/// This is an API capability boundary, not a Rust sandbox. Application handler
+/// code is trusted: a closure can still capture an external client/repository or
+/// reach a global. Such out-of-band effects are outside the causal contract and
+/// may repeat if an expired attempt is reclaimed. Only work staged through this
+/// context receives the at-most-once committed-effects guarantee.
+pub struct CausalCommandContext<'a, A>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
     message: &'a Message,
     session: &'a Session,
+    workspace: &'a CausalWorkspace<'a, A>,
 }
 
-impl<'a> CausalCommandContext<'a> {
-    fn from_legacy<D>(context: &'a Context<'a, D>) -> Self {
+impl<'a, A> CausalCommandContext<'a, A>
+where
+    A: Aggregate + Send + Sync + 'static,
+{
+    #[cfg(feature = "graphql")]
+    fn new(
+        message: &'a Message,
+        session: &'a Session,
+        workspace: &'a CausalWorkspace<'a, A>,
+    ) -> Self {
         Self {
-            message: context.message(),
-            session: context.session(),
+            message,
+            session,
+            workspace,
         }
     }
 
@@ -129,14 +175,73 @@ impl<'a> CausalCommandContext<'a> {
     pub fn claim(&self, name: &str) -> Option<&str> {
         self.session.get(name)
     }
+
+    /// Load one aggregate as an owned checkout without retaining a queue lock.
+    pub async fn load(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::AggregateCheckout<A>>, HandlerError> {
+        self.workspace
+            .load(id)
+            .await
+            .map_err(workspace_handler_error)
+    }
+
+    /// Start a new aggregate checkout. The handler must assign a valid entity
+    /// identity before staging it.
+    pub fn create(&self) -> super::AggregateCheckout<A> {
+        self.workspace.create()
+    }
+
+    /// Stage a checkout for the framework-owned atomic commit.
+    pub fn stage(&self, checkout: super::AggregateCheckout<A>) -> Result<(), HandlerError> {
+        self.workspace
+            .stage(checkout)
+            .map_err(workspace_handler_error)
+    }
+
+    /// Stage one durable outbox fact in the command transaction.
+    pub fn stage_outbox(&self, message: OutboxMessage) -> Result<(), HandlerError> {
+        self.workspace
+            .stage_outbox(message)
+            .map_err(workspace_handler_error)
+    }
+
+    /// Stage a validated relational read-model write plan.
+    pub fn stage_read_models(&self, writes: ReadModelWritePlanBuilder) -> Result<(), HandlerError> {
+        self.workspace
+            .stage_read_models(writes)
+            .map_err(workspace_handler_error)
+    }
+
+    /// Stage the exact returned model as a full-row upsert and prepare a sealed
+    /// same-transaction projection result.
+    pub fn projected<M>(&self, model: M) -> Result<PreparedCommand<Projected<M>>, HandlerError>
+    where
+        M: GraphqlOutputType + RelationalReadModel + serde::Serialize + Send + Sync + 'static,
+    {
+        self.workspace
+            .prepare_projected(model)
+            .map_err(workspace_handler_error)
+    }
+}
+
+fn workspace_handler_error(error: CausalWorkspaceError) -> HandlerError {
+    HandlerError::Other(Box::new(error))
 }
 
 /// A typed causal command handler. The framework binds the decoded input to
 /// the same `I` used by the GraphQL declaration, and the handler may only
 /// prepare a sealed consistency outcome for the durable committer.
-pub trait PreparedCommandHandler<'a, I, K: CommandOutcome>: Send + Sync {
+/// Captured external side effects are unsupported because handler invocation
+/// itself can repeat after lease expiry; see [`CausalCommandContext`].
+pub trait PreparedCommandHandler<'a, A, I, K>: Send + Sync
+where
+    A: Aggregate + Send + Sync + 'static,
+    K: CommandOutcome,
+{
     type Future: Future<Output = Result<PreparedCommand<K>, HandlerError>> + Send + 'a;
-    fn call(&self, ctx: &'a CausalCommandContext<'a>, input: I) -> Self::Future;
+    fn call(&self, ctx: &'a CausalCommandContext<'a, A>, input: I) -> Self::Future;
 }
 
 impl<'a, D, F, Fut> Handler<'a, D> for F
@@ -151,16 +256,17 @@ where
     }
 }
 
-impl<'a, I, K, F, Fut> PreparedCommandHandler<'a, I, K> for F
+impl<'a, A, I, K, F, Fut> PreparedCommandHandler<'a, A, I, K> for F
 where
+    A: Aggregate + Send + Sync + 'static,
     I: 'a,
     K: CommandOutcome,
-    F: Fn(&'a CausalCommandContext<'a>, I) -> Fut + Send + Sync,
+    F: Fn(&'a CausalCommandContext<'a, A>, I) -> Fut + Send + Sync,
     Fut: Future<Output = Result<PreparedCommand<K>, HandlerError>> + Send + 'a,
 {
     type Future = Fut;
 
-    fn call(&self, ctx: &'a CausalCommandContext<'a>, input: I) -> Self::Future {
+    fn call(&self, ctx: &'a CausalCommandContext<'a, A>, input: I) -> Self::Future {
         self(ctx, input)
     }
 }
@@ -172,22 +278,105 @@ where
     Arc::new(move |ctx| Box::pin(handler.call(ctx)) as HandlerFuture<'_>)
 }
 
+/// Stable transport classification for a typed causal command dispatch.
+///
+/// Public receipt/status envelopes map this private error set onto a stable
+/// mutation edge without exposing repository details.
 #[derive(Debug)]
-struct DurableCommandCommitterUnavailable;
+#[cfg(feature = "graphql")]
+pub(crate) enum CausalDispatchError {
+    BadRequest(String),
+    Forbidden,
+    CommandIdReuse,
+    InProgress,
+    Expired,
+    Rejected {
+        code: &'static str,
+        status: u16,
+        message: String,
+    },
+    Handler(HandlerError),
+    Internal(String),
+}
 
-impl std::fmt::Display for DurableCommandCommitterUnavailable {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(
-            "typed causal command dispatch requires the durable command committer (task 5)",
-        )
+#[cfg(feature = "graphql")]
+impl CausalDispatchError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "BAD_REQUEST",
+            Self::Forbidden => "FORBIDDEN",
+            Self::CommandIdReuse => "COMMAND_ID_REUSE",
+            Self::InProgress => "COMMAND_IN_PROGRESS",
+            Self::Expired => "COMMAND_EXPIRED",
+            Self::Rejected { code, .. } => code,
+            Self::Handler(error) => match error.status_code() {
+                400 => "BAD_REQUEST",
+                401 => "UNAUTHORIZED",
+                403 => "FORBIDDEN",
+                404 => "NOT_FOUND",
+                422 => "REJECTED",
+                _ => "INTERNAL",
+            },
+            Self::Internal(_) => "INTERNAL",
+        }
+    }
+
+    pub(crate) fn status_code(&self) -> u16 {
+        match self {
+            Self::BadRequest(_) => 400,
+            Self::Forbidden => 403,
+            Self::CommandIdReuse | Self::InProgress => 409,
+            Self::Expired => 410,
+            Self::Rejected { status, .. } => *status,
+            Self::Handler(error) => error.status_code(),
+            Self::Internal(_) => 500,
+        }
+    }
+
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            Self::BadRequest(message) => message.clone(),
+            Self::Rejected { message, .. } => message.clone(),
+            Self::Forbidden => "command is not allowed".into(),
+            Self::CommandIdReuse => "command ID was already used for different input".into(),
+            Self::InProgress => "command is already in progress".into(),
+            Self::Expired => "command ID has expired".into(),
+            Self::Handler(error) => error.client_facing_message(),
+            Self::Internal(_) => "internal error".into(),
+        }
     }
 }
 
-impl std::error::Error for DurableCommandCommitterUnavailable {}
+#[cfg(feature = "graphql")]
+impl std::fmt::Display for CausalDispatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Internal(detail) => formatter.write_str(detail),
+            _ => formatter.write_str(&self.client_message()),
+        }
+    }
+}
+
+#[cfg(feature = "graphql")]
+impl std::error::Error for CausalDispatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Handler(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "graphql")]
+impl From<HandlerError> for CausalDispatchError {
+    fn from(error: HandlerError) -> Self {
+        Self::Handler(error)
+    }
+}
 
 /// Error returned when attaching a GraphQL engine whose typed command
-/// inventory is not exactly the executable service inventory, or when causal
-/// execution cannot yet be fenced by the durable committer.
+/// inventory is not exactly the executable service inventory, or whose query
+/// storage cannot prove the identity required by a `Projected` command.
 #[cfg(feature = "graphql")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphqlServiceBindError(pub String);
@@ -202,43 +391,31 @@ impl std::fmt::Display for GraphqlServiceBindError {
 #[cfg(feature = "graphql")]
 impl std::error::Error for GraphqlServiceBindError {}
 
-fn boxed_prepared_handler<D, I, K, F>(
-    handler: F,
-    retained_guard: Option<Arc<GuardFn<D>>>,
-) -> Arc<HandlerFn<D>>
+type PreparedHandlerFuture<'a, K> =
+    Pin<Box<dyn Future<Output = Result<PreparedCommand<K>, HandlerError>> + Send + 'a>>;
+type PreparedHandlerFn<A, I, K> = dyn for<'a> Fn(&'a CausalCommandContext<'a, A>, I) -> PreparedHandlerFuture<'a, K>
+    + Send
+    + Sync;
+type CausalGuardFn<A> = dyn for<'a> Fn(&CausalCommandContext<'a, A>) -> bool + Send + Sync;
+
+fn boxed_prepared_handler<A, I, K, F>(handler: F) -> Arc<PreparedHandlerFn<A, I, K>>
 where
-    D: Send + Sync + 'static,
+    A: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
-    F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+    F: for<'a> PreparedCommandHandler<'a, A, I, K> + 'static,
 {
-    // Retain the type-checked executable handler without invoking it. Task 5
-    // replaces this adapter with reservation -> decode -> handler -> atomic
-    // CommitBatch/ledger completion. Calling application code before that
-    // boundary could permit an unfenced legacy commit.
-    let handler = Arc::new(handler);
-    Arc::new(move |ctx| {
-        let handler = Arc::clone(&handler);
-        let retained_guard = retained_guard.clone();
-        let causal_context = CausalCommandContext::from_legacy(ctx);
-        Box::pin(async move {
-            let _application_code_is_intentionally_not_invoked =
-                (handler, retained_guard, causal_context);
-            Err(HandlerError::Other(Box::new(
-                DurableCommandCommitterUnavailable,
-            )))
-        }) as HandlerFuture<'_>
+    Arc::new(move |context, input| {
+        Box::pin(handler.call(context, input)) as PreparedHandlerFuture<'_, K>
     })
 }
 
-fn boxed_causal_guard<D, G>(guard: G) -> Arc<GuardFn<D>>
+fn boxed_causal_guard<A, G>(guard: G) -> Arc<CausalGuardFn<A>>
 where
-    G: for<'a> Fn(&CausalCommandContext<'a>) -> bool + Send + Sync + 'static,
+    A: Aggregate + Send + Sync + 'static,
+    G: for<'a> Fn(&CausalCommandContext<'a, A>) -> bool + Send + Sync + 'static,
 {
-    Arc::new(move |context| {
-        let causal_context = CausalCommandContext::from_legacy(context);
-        guard(&causal_context)
-    })
+    Arc::new(guard)
 }
 
 /// How a handler expects the transport to deliver matching messages.
@@ -310,10 +487,95 @@ impl HandlerSpec {
     }
 }
 
-/// A registered handler with optional guard.
-struct RegisteredHandler<D> {
-    guard: Option<Arc<GuardFn<D>>>,
-    handle: Arc<HandlerFn<D>>,
+enum RegisteredHandler<D> {
+    Legacy {
+        guard: Option<Arc<GuardFn<D>>>,
+        handle: Arc<HandlerFn<D>>,
+    },
+    Causal(Box<dyn ErasedCausalHandler<D>>),
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+struct CausalCommandPolicy {
+    attempt_lease: Duration,
+    replay_retention: Duration,
+}
+
+impl Default for CausalCommandPolicy {
+    fn default() -> Self {
+        Self {
+            attempt_lease: Duration::from_secs(30),
+            replay_retention: Duration::from_secs(30 * 24 * 60 * 60),
+        }
+    }
+}
+
+#[cfg(feature = "graphql")]
+type CausalHandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Value, CausalDispatchError>> + Send + 'a>>;
+
+trait ErasedCausalHandler<D>: Send + Sync {
+    fn contract(&self) -> &TypedCommandContract;
+
+    #[cfg(feature = "graphql")]
+    fn storage_identity(&self, dependencies: &D) -> crate::command_ledger::CausalStorageIdentity;
+
+    #[cfg(feature = "graphql")]
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        policy: CausalCommandPolicy,
+    ) -> CausalHandlerFuture<'a>;
+
+    #[cfg(feature = "graphql")]
+    #[allow(dead_code)]
+    fn lookup<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a str,
+        session: &'a Session,
+        principal: VerifiedPrincipal,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>>;
+}
+
+struct RegisteredCausalHandler<A, I, K>
+where
+    A: Aggregate + Send + Sync + 'static,
+    K: CommandOutcome,
+{
+    contract: TypedCommandContract,
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    guard: Option<Arc<CausalGuardFn<A>>>,
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    handle: Arc<PreparedHandlerFn<A, I, K>>,
+    _types: std::marker::PhantomData<fn(A, I) -> K>,
+}
+
+impl<A, I, K> RegisteredCausalHandler<A, I, K>
+where
+    A: Aggregate + Send + Sync + 'static,
+    K: CommandOutcome,
+{
+    fn new(
+        contract: TypedCommandContract,
+        guard: Option<Arc<CausalGuardFn<A>>>,
+        handle: Arc<PreparedHandlerFn<A, I, K>>,
+    ) -> Self {
+        Self {
+            contract,
+            guard,
+            handle,
+            _types: std::marker::PhantomData,
+        }
+    }
 }
 
 type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32, Option<String>);
@@ -321,12 +583,41 @@ type OutboxConfigurator<D> = fn(&mut D, DynBusPublisher, String, Duration, u32, 
 trait ErasedRoutes: Send + Sync {
     fn handler_specs(&self) -> &[HandlerSpec];
 
+    fn typed_command_contracts(&self) -> Vec<&TypedCommandContract>;
+
     fn dispatch<'a>(
         &'a self,
         message: &'a Message,
         input: Value,
         session: Session,
     ) -> HandlerFuture<'a>;
+
+    #[cfg(feature = "graphql")]
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_causal<'a>(
+        &'a self,
+        command: &'a str,
+        service_id: &'a str,
+        command_id: &'a str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        policy: CausalCommandPolicy,
+    ) -> CausalHandlerFuture<'a>;
+
+    #[cfg(feature = "graphql")]
+    #[allow(dead_code)]
+    fn lookup_causal<'a>(
+        &'a self,
+        command: &'a str,
+        service_id: &'a str,
+        command_id: &'a str,
+        session: &'a Session,
+        principal: VerifiedPrincipal,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>>;
+
+    #[cfg(feature = "graphql")]
+    fn projected_storage_identities(&self) -> Vec<crate::command_ledger::CausalStorageIdentity>;
 
     fn configure_outbox_publisher(
         &mut self,
@@ -418,8 +709,8 @@ pub struct RouteBuilder<D> {
 /// Builder returned by [`Routes::typed_command`].
 ///
 /// Unlike a legacy JSON route, the declaration and executable handler share
-/// the same input and committed-outcome types. The handler is retained but
-/// cannot execute until task 5 installs the durable command committer.
+/// one route object, the same input and committed-outcome types, and the route
+/// bundle's single aggregate repository.
 pub struct TypedRouteBuilder<D, I, K: CommandOutcome> {
     routes: Routes<D>,
     route_name: &'static str,
@@ -450,33 +741,36 @@ impl<D: Send + Sync + 'static> RouteBuilder<D> {
 
 impl<D, I, K> TypedRouteBuilder<D, I, K>
 where
-    D: Send + Sync + 'static,
+    D: CausalRouteDependencies + Send + Sync + 'static,
+    D::Aggregate: Aggregate + Send + Sync + 'static,
     I: serde::de::DeserializeOwned + Send + 'static,
     K: CommandOutcome,
 {
     /// Register a typed causal command handler without a guard.
     pub fn handle<F>(self, handler: F) -> Routes<D>
     where
-        F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+        F: for<'a> PreparedCommandHandler<'a, D::Aggregate, I, K> + 'static,
     {
         self.routes.register_typed_handler(
             self.route_name,
             self.contract,
-            boxed_prepared_handler(handler, None),
+            None,
+            boxed_prepared_handler(handler),
         )
     }
 
     /// Register a typed causal command handler with a synchronous guard.
     pub fn guarded<G, F>(self, guard: G, handler: F) -> Routes<D>
     where
-        G: for<'a> Fn(&CausalCommandContext<'a>) -> bool + Send + Sync + 'static,
-        F: for<'a> PreparedCommandHandler<'a, I, K> + 'static,
+        G: for<'a> Fn(&CausalCommandContext<'a, D::Aggregate>) -> bool + Send + Sync + 'static,
+        F: for<'a> PreparedCommandHandler<'a, D::Aggregate, I, K> + 'static,
     {
         let guard = boxed_causal_guard(guard);
         self.routes.register_typed_handler(
             self.route_name,
             self.contract,
-            boxed_prepared_handler(handler, Some(guard)),
+            Some(guard),
+            boxed_prepared_handler(handler),
         )
     }
 }
@@ -489,7 +783,6 @@ pub struct Routes<D> {
     dependencies: D,
     handlers: HashMap<MessageKind, HashMap<String, RegisteredHandler<D>>>,
     handler_specs: Vec<HandlerSpec>,
-    typed_commands: Vec<TypedCommandContract>,
     outbox_configurator: Option<OutboxConfigurator<D>>,
 }
 
@@ -500,7 +793,6 @@ impl<D: Send + Sync + 'static> Routes<D> {
             dependencies,
             handlers: HashMap::new(),
             handler_specs: Vec::new(),
-            typed_commands: Vec::new(),
             outbox_configurator: None,
         }
     }
@@ -515,9 +807,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
     /// otherwise silently drop previously registered handlers.
     fn assert_no_registrations(&self, builder: &str) {
         assert!(
-            self.handlers.is_empty()
-                && self.handler_specs.is_empty()
-                && self.typed_commands.is_empty(),
+            self.handlers.is_empty() && self.handler_specs.is_empty(),
             "Routes::{builder} must be called before registering handlers"
         );
     }
@@ -600,7 +890,7 @@ impl<D: Send + Sync + 'static> Routes<D> {
         for name in names {
             by_name.insert(
                 name.to_string(),
-                RegisteredHandler {
+                RegisteredHandler::Legacy {
                     guard: guard.clone(),
                     handle: handle.clone(),
                 },
@@ -610,30 +900,49 @@ impl<D: Send + Sync + 'static> Routes<D> {
         self
     }
 
-    fn register_typed_handler(
-        self,
+    fn register_typed_handler<I, K>(
+        mut self,
         route_name: &'static str,
         contract: TypedCommandContract,
-        handle: Arc<HandlerFn<D>>,
-    ) -> Self {
+        guard: Option<Arc<CausalGuardFn<D::Aggregate>>>,
+        handle: Arc<PreparedHandlerFn<D::Aggregate, I, K>>,
+    ) -> Self
+    where
+        D: CausalRouteDependencies,
+        D::Aggregate: Aggregate + Send + Sync + 'static,
+        I: serde::de::DeserializeOwned + Send + 'static,
+        K: CommandOutcome,
+    {
         assert_eq!(
             route_name, contract.name,
             "typed command route and contract ids must match"
         );
+        let by_name = self.handlers.entry(MessageKind::Command).or_default();
         assert!(
-            !self
-                .typed_commands
-                .iter()
-                .any(|registered| registered.name == contract.name),
-            "duplicate typed command declaration for `{}`",
-            contract.name
+            !by_name.contains_key(route_name),
+            "duplicate route registration for {:?} `{}`",
+            MessageKind::Command,
+            route_name,
         );
-        // The placeholder handler owns (but never invokes) any application
-        // guard. Registering it in the legacy guard slot would run application
-        // code before the durable committer fence.
-        let mut routes = self.register_handler(HandlerSpec::command(route_name), None, handle);
-        routes.typed_commands.push(contract);
-        routes
+        by_name.insert(
+            route_name.to_string(),
+            RegisteredHandler::Causal(Box::new(
+                RegisteredCausalHandler::<D::Aggregate, I, K>::new(contract, guard, handle),
+            )),
+        );
+        self.handler_specs.push(HandlerSpec::command(route_name));
+        self
+    }
+
+    fn typed_contracts(&self) -> Vec<&TypedCommandContract> {
+        self.handlers
+            .values()
+            .flat_map(HashMap::values)
+            .filter_map(|handler| match handler {
+                RegisteredHandler::Causal(handler) => Some(handler.contract()),
+                RegisteredHandler::Legacy { .. } => None,
+            })
+            .collect()
     }
 
     fn registered_keys(&self) -> Vec<(MessageKind, String)> {
@@ -657,7 +966,14 @@ impl<D: Send + Sync + 'static> Routes<D> {
                 .get(&message.kind)
                 .and_then(|by_name| by_name.get(message.name.as_str()))
                 .ok_or_else(|| HandlerError::UnknownCommand(message.name.clone()))?;
-            (handler.guard.clone(), handler.handle.clone())
+            match handler {
+                RegisteredHandler::Legacy { guard, handle } => (guard.clone(), handle.clone()),
+                RegisteredHandler::Causal(_) => {
+                    return Err(HandlerError::Unauthorized(
+                        "typed causal commands require a verified GraphQL bearer envelope".into(),
+                    ));
+                }
+            }
         };
         let ctx = Context::new(message, input, session, &self.dependencies);
 
@@ -672,12 +988,463 @@ impl<D: Send + Sync + 'static> Routes<D> {
     }
 }
 
+impl<D, A, I, K> ErasedCausalHandler<D> for RegisteredCausalHandler<A, I, K>
+where
+    D: CausalRouteDependencies<Aggregate = A> + Send + Sync + 'static,
+    A: Aggregate + Send + Sync + 'static,
+    I: serde::de::DeserializeOwned + Send + 'static,
+    K: CommandOutcome,
+{
+    fn contract(&self) -> &TypedCommandContract {
+        &self.contract
+    }
+
+    #[cfg(feature = "graphql")]
+    fn storage_identity(&self, dependencies: &D) -> crate::command_ledger::CausalStorageIdentity {
+        dependencies
+            .__causal_aggregate_repository()
+            .repo()
+            .causal_storage_identity()
+    }
+
+    #[cfg(feature = "graphql")]
+    fn dispatch<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        policy: CausalCommandPolicy,
+    ) -> CausalHandlerFuture<'a> {
+        Box::pin(async move {
+            ensure_causal_grant(&self.contract, &session)?;
+
+            let canonical = canonicalize_command_input(&self.contract.input, input)
+                .map_err(|error| CausalDispatchError::BadRequest(error.to_string()))?;
+            let typed = canonical
+                .decode::<I>()
+                .map_err(|error| CausalDispatchError::BadRequest(error.to_string()))?;
+            let (input, wire, input_digest) = typed.into_parts();
+            let projection_obligations = self
+                .contract
+                .resolve_projection_obligations(&wire)
+                .map_err(|error| CausalDispatchError::Internal(error.to_string()))?;
+
+            let command_id = CommandId::parse(command_id)
+                .map_err(|error| CausalDispatchError::BadRequest(error.to_string()))?;
+            let partition = PrincipalPartitionId::new(principal.partition_for_service(service_id))
+                .map_err(internal_ledger_error)?;
+            let key = CommandLedgerKey::new(service_id, partition, command_id)
+                .map_err(internal_ledger_error)?;
+            let reservation = CommandReservation::new(
+                key,
+                self.contract.name.clone(),
+                CommandContractFingerprint::new(self.contract.fingerprint_bytes()),
+                CanonicalInputHash::new(input_digest),
+                policy.attempt_lease,
+                policy.replay_retention,
+            )
+            .map_err(internal_ledger_error)?;
+
+            let aggregate_repository = dependencies.__causal_aggregate_repository();
+            let repository = aggregate_repository.repo();
+            let attempt = match repository
+                .reserve_command(reservation)
+                .await
+                .map_err(internal_ledger_error)?
+            {
+                ReservationOutcome::Acquired(attempt) => attempt,
+                ReservationOutcome::InProgress { .. } => {
+                    return Err(CausalDispatchError::InProgress)
+                }
+                ReservationOutcome::Replay(replay) => return replay_result(replay),
+                ReservationOutcome::Conflict => return Err(CausalDispatchError::CommandIdReuse),
+                ReservationOutcome::Expired => return Err(CausalDispatchError::Expired),
+            };
+
+            let payload = serde_json::to_vec(&wire).map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "canonical command input could not be encoded: {error}"
+                ))
+            })?;
+            let mut metadata = session
+                .variables()
+                .iter()
+                .filter(|(name, _)| !name.eq_ignore_ascii_case(crate::trace_context::CAUSATION_ID))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            metadata.push((
+                crate::trace_context::CAUSATION_ID.to_string(),
+                attempt.causation_id().as_str().to_string(),
+            ));
+            let message = Message {
+                id: Some(attempt.key().command_id().to_string()),
+                name: self.contract.name.clone(),
+                kind: MessageKind::Command,
+                payload,
+                content_type: "application/json".into(),
+                metadata,
+            };
+
+            let workspace = CausalWorkspace::new(aggregate_repository);
+            let context = CausalCommandContext::new(&message, &session, &workspace);
+            if self.guard.as_ref().is_some_and(|guard| !guard(&context)) {
+                return commit_causal_rejection(
+                    repository,
+                    attempt,
+                    policy.replay_retention,
+                    "REJECTED",
+                    422,
+                    format!("guard rejected command: {}", self.contract.name),
+                )
+                .await;
+            }
+
+            let prepared = match (self.handle)(&context, input).await {
+                Ok(prepared) => prepared,
+                Err(error) if error.status_code() < 500 => {
+                    let code = causal_handler_error_code(&error);
+                    let status = error.status_code();
+                    let message = error.client_facing_message();
+                    return commit_causal_rejection(
+                        repository,
+                        attempt,
+                        policy.replay_retention,
+                        code,
+                        status,
+                        message,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return abandon_causal_attempt(repository, attempt, error.to_string()).await;
+                }
+            };
+
+            let mut parts = match workspace.into_parts() {
+                Ok(parts) => parts,
+                Err(error) => {
+                    return abandon_causal_attempt(repository, attempt, error.to_string()).await
+                }
+            };
+            if let Err(error) = parts.validate_prepared(&self.contract, &prepared) {
+                return abandon_causal_attempt(repository, attempt, error.to_string()).await;
+            }
+
+            let terminal_state = match self.contract.consistency {
+                CommandConsistency::Accepted if self.contract.confirmations.is_empty() => {
+                    TerminalCommandState::Accepted
+                }
+                CommandConsistency::Accepted | CommandConsistency::Fact => {
+                    TerminalCommandState::AcceptedPendingProjection
+                }
+                CommandConsistency::Projected => TerminalCommandState::Projected,
+            };
+            let replay_payload = prepared.serialized_payload().clone();
+            let publisher = aggregate_repository.outbox_publisher();
+            let mut batch = match parts.prepare_commit_batch() {
+                Ok(batch) => batch,
+                Err(error) => {
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        format!("causal commit batch preparation failed: {error}"),
+                    )
+                    .await
+                }
+            };
+
+            // Match the ordinary aggregate commit path: when Service::with_bus
+            // installed an immediate publisher, make each fresh outbox row
+            // InFlight inside the same fenced transaction and publish it only
+            // after that transaction succeeds. A crash or publish failure leaves
+            // the durable lease for a separately operated polling worker to
+            // recover.
+            let mut claimed = Vec::new();
+            if let Some(config) = publisher {
+                let now = SystemTime::now();
+                let mut claim_error = None;
+                for message in &mut batch.outbox_messages {
+                    // The post-commit hook receives clones of this staged
+                    // batch. Stamp before cloning so the broker copy and the
+                    // persisted row carry the same authoritative causation.
+                    message.overwrite_causation_id(attempt.causation_id().as_str());
+                    if let Err(error) = message.claim_at(&config.worker_id, config.lease, now) {
+                        claim_error = Some(error.to_string());
+                        break;
+                    }
+                    claimed.push(message.clone());
+                }
+                if let Some(error) = claim_error {
+                    drop(batch);
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        format!("causal outbox claim failed before commit: {error}"),
+                    )
+                    .await;
+                }
+            }
+
+            let fence = attempt.fence();
+            let completion = attempt
+                .complete_with_obligations(
+                    terminal_state,
+                    replay_payload.clone(),
+                    projection_obligations,
+                    policy.replay_retention,
+                )
+                .map_err(internal_ledger_error)?;
+            let causal_batch = CausalCommitBatch::new(batch, completion);
+            match repository.commit_causal_batch(causal_batch).await {
+                Ok(()) => {
+                    parts.mark_snapshot_versions_committed();
+                    if let Some(config) = publisher {
+                        let _ = config.hook.publish_claimed(claimed).await;
+                    }
+                    let (_committed, serialized) = prepared.finalize_after_commit();
+                    Ok(serialized)
+                }
+                Err(error) => {
+                    recover_causal_commit_error(repository, fence, error.to_string()).await
+                }
+            }
+        })
+    }
+
+    #[cfg(feature = "graphql")]
+    fn lookup<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a str,
+        session: &'a Session,
+        principal: VerifiedPrincipal,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>> {
+        Box::pin(async move {
+            ensure_causal_grant(&self.contract, session)?;
+            let command_id = CommandId::parse(command_id)
+                .map_err(|error| CausalDispatchError::BadRequest(error.to_string()))?;
+            let partition = PrincipalPartitionId::new(principal.partition_for_service(service_id))
+                .map_err(internal_ledger_error)?;
+            let key = CommandLedgerKey::new(service_id, partition, command_id)
+                .map_err(internal_ledger_error)?;
+            dependencies
+                .__causal_aggregate_repository()
+                .repo()
+                .lookup_command(&key, CommandLookupScope::CommandName(&self.contract.name))
+                .await
+                .map_err(internal_ledger_error)
+        })
+    }
+}
+
+#[cfg(feature = "graphql")]
+fn ensure_causal_grant(
+    contract: &TypedCommandContract,
+    session: &Session,
+) -> Result<(), CausalDispatchError> {
+    if contract.roles.is_empty()
+        || session
+            .role()
+            .is_some_and(|role| contract.roles.iter().any(|allowed| allowed == role))
+    {
+        Ok(())
+    } else {
+        Err(CausalDispatchError::Forbidden)
+    }
+}
+
+#[cfg(feature = "graphql")]
+fn causal_handler_error_code(error: &HandlerError) -> &'static str {
+    match error.status_code() {
+        400 => "BAD_REQUEST",
+        401 => "UNAUTHORIZED",
+        403 => "FORBIDDEN",
+        404 => "NOT_FOUND",
+        422 => "REJECTED",
+        _ => "REJECTED",
+    }
+}
+
+#[cfg(feature = "graphql")]
+fn internal_ledger_error(error: CommandLedgerError) -> CausalDispatchError {
+    CausalDispatchError::Internal(error.to_string())
+}
+
+#[cfg(feature = "graphql")]
+fn replay_result(replay: CommandReplay) -> Result<Value, CausalDispatchError> {
+    match replay.state {
+        CommandLedgerState::Accepted
+        | CommandLedgerState::AcceptedPendingProjection
+        | CommandLedgerState::Projected => Ok(replay.outcome),
+        CommandLedgerState::Rejected => replay_rejection(replay.outcome),
+        CommandLedgerState::ProjectionFailed => Err(CausalDispatchError::Internal(
+            "stored command projection failed".into(),
+        )),
+        CommandLedgerState::InProgress
+        | CommandLedgerState::RetryableUnknown
+        | CommandLedgerState::Expired => Err(CausalDispatchError::Internal(
+            "stored replay has a non-terminal state".into(),
+        )),
+    }
+}
+
+#[cfg(feature = "graphql")]
+fn replay_rejection(outcome: Value) -> Result<Value, CausalDispatchError> {
+    let error = outcome
+        .get("error")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CausalDispatchError::Internal("stored rejection is malformed".into()))?;
+    let code = match error.get("code").and_then(Value::as_str) {
+        Some("BAD_REQUEST") => "BAD_REQUEST",
+        Some("UNAUTHORIZED") => "UNAUTHORIZED",
+        Some("FORBIDDEN") => "FORBIDDEN",
+        Some("NOT_FOUND") => "NOT_FOUND",
+        Some("REJECTED") => "REJECTED",
+        _ => {
+            return Err(CausalDispatchError::Internal(
+                "stored rejection code is invalid".into(),
+            ))
+        }
+    };
+    let status = error
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+        .filter(|status| (400..500).contains(status))
+        .ok_or_else(|| {
+            CausalDispatchError::Internal("stored rejection status is invalid".into())
+        })?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CausalDispatchError::Internal("stored rejection message is invalid".into()))?
+        .to_string();
+    Err(CausalDispatchError::Rejected {
+        code,
+        status,
+        message,
+    })
+}
+
+#[cfg(feature = "graphql")]
+async fn commit_causal_rejection<R>(
+    repository: &R,
+    attempt: CommandAttempt,
+    retention: Duration,
+    code: &'static str,
+    status: u16,
+    message: String,
+) -> Result<Value, CausalDispatchError>
+where
+    R: CommandLedgerStore + CausalTransactionalCommit + Send + Sync,
+{
+    let outcome = serde_json::json!({
+        "error": {
+            "code": code,
+            "status": status,
+            "message": message,
+        }
+    });
+    let fence = attempt.fence();
+    let completion = attempt
+        .complete(TerminalCommandState::Rejected, outcome, retention)
+        .map_err(internal_ledger_error)?;
+    match repository
+        .commit_causal_batch(CausalCommitBatch::new(CommitBatch::empty(), completion))
+        .await
+    {
+        Ok(()) => Err(CausalDispatchError::Rejected {
+            code,
+            status,
+            message,
+        }),
+        Err(error) => recover_causal_commit_error(repository, fence, error.to_string()).await,
+    }
+}
+
+#[cfg(feature = "graphql")]
+async fn abandon_causal_attempt<R>(
+    repository: &R,
+    attempt: CommandAttempt,
+    detail: String,
+) -> Result<Value, CausalDispatchError>
+where
+    R: CommandLedgerStore + Send + Sync,
+{
+    let fence = attempt.fence();
+    match repository.mark_retryable_unknown(fence.clone()).await {
+        Ok(()) => Err(CausalDispatchError::Internal(detail)),
+        Err(CommandLedgerError::AttemptFenced { .. }) => {
+            resolve_ambiguous_lookup(repository, fence, detail).await
+        }
+        Err(error) => Err(CausalDispatchError::Internal(format!(
+            "{detail}; failed to mark command retryable: {error}"
+        ))),
+    }
+}
+
+#[cfg(feature = "graphql")]
+async fn recover_causal_commit_error<R>(
+    repository: &R,
+    fence: AttemptFence,
+    detail: String,
+) -> Result<Value, CausalDispatchError>
+where
+    R: CommandLedgerStore + Send + Sync,
+{
+    resolve_ambiguous_lookup(repository, fence, detail).await
+}
+
+#[cfg(feature = "graphql")]
+async fn resolve_ambiguous_lookup<R>(
+    repository: &R,
+    fence: AttemptFence,
+    detail: String,
+) -> Result<Value, CausalDispatchError>
+where
+    R: CommandLedgerStore + Send + Sync,
+{
+    match repository
+        .lookup_command(fence.key(), CommandLookupScope::Attempt(&fence))
+        .await
+    {
+        Ok(CommandLookup::Replay(replay)) => replay_result(replay),
+        Ok(CommandLookup::Expired) => Err(CausalDispatchError::Expired),
+        Ok(CommandLookup::RetryableUnknown { .. }) => Err(CausalDispatchError::Internal(detail)),
+        Ok(CommandLookup::InProgress { .. }) => {
+            match repository.mark_retryable_unknown(fence).await {
+                Ok(()) => Err(CausalDispatchError::Internal(detail)),
+                Err(CommandLedgerError::AttemptFenced { .. }) => {
+                    Err(CausalDispatchError::InProgress)
+                }
+                Err(error) => Err(CausalDispatchError::Internal(format!(
+                    "{detail}; command recovery failed: {error}"
+                ))),
+            }
+        }
+        Ok(CommandLookup::Unknown) => Err(CausalDispatchError::Internal(format!(
+            "{detail}; command ledger row disappeared"
+        ))),
+        Err(error) => Err(CausalDispatchError::Internal(format!(
+            "{detail}; command outcome lookup failed: {error}"
+        ))),
+    }
+}
+
 impl<D> ErasedRoutes for Routes<D>
 where
     D: Send + Sync + 'static,
 {
     fn handler_specs(&self) -> &[HandlerSpec] {
         &self.handler_specs
+    }
+
+    fn typed_command_contracts(&self) -> Vec<&TypedCommandContract> {
+        self.typed_contracts()
     }
 
     fn dispatch<'a>(
@@ -687,6 +1454,84 @@ where
         session: Session,
     ) -> HandlerFuture<'a> {
         Box::pin(self.invoke(message, input, session))
+    }
+
+    #[cfg(feature = "graphql")]
+    fn dispatch_causal<'a>(
+        &'a self,
+        command: &'a str,
+        service_id: &'a str,
+        command_id: &'a str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+        policy: CausalCommandPolicy,
+    ) -> CausalHandlerFuture<'a> {
+        let handler = self
+            .handlers
+            .get(&MessageKind::Command)
+            .and_then(|handlers| handlers.get(command));
+        match handler {
+            Some(RegisteredHandler::Causal(handler)) => handler.dispatch(
+                &self.dependencies,
+                service_id,
+                command_id,
+                input,
+                session,
+                principal,
+                policy,
+            ),
+            Some(RegisteredHandler::Legacy { .. }) | None => Box::pin(async move {
+                Err(CausalDispatchError::BadRequest(format!(
+                    "`{command}` is not a typed causal command"
+                )))
+            }),
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    fn lookup_causal<'a>(
+        &'a self,
+        command: &'a str,
+        service_id: &'a str,
+        command_id: &'a str,
+        session: &'a Session,
+        principal: VerifiedPrincipal,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>> {
+        let handler = self
+            .handlers
+            .get(&MessageKind::Command)
+            .and_then(|handlers| handlers.get(command));
+        match handler {
+            Some(RegisteredHandler::Causal(handler)) => handler.lookup(
+                &self.dependencies,
+                service_id,
+                command_id,
+                session,
+                principal,
+            ),
+            Some(RegisteredHandler::Legacy { .. }) | None => Box::pin(async move {
+                Err(CausalDispatchError::BadRequest(format!(
+                    "`{command}` is not a typed causal command"
+                )))
+            }),
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    fn projected_storage_identities(&self) -> Vec<crate::command_ledger::CausalStorageIdentity> {
+        self.handlers
+            .values()
+            .flat_map(|handlers| handlers.values())
+            .filter_map(|handler| match handler {
+                RegisteredHandler::Causal(handler)
+                    if handler.contract().consistency == CommandConsistency::Projected =>
+                {
+                    Some(handler.storage_identity(&self.dependencies))
+                }
+                RegisteredHandler::Causal(_) | RegisteredHandler::Legacy { .. } => None,
+            })
+            .collect()
     }
 
     fn configure_outbox_publisher(
@@ -716,7 +1561,7 @@ pub struct Service {
     routes: Vec<Box<dyn ErasedRoutes>>,
     index: HashMap<MessageKind, HashMap<String, usize>>,
     handler_specs: Vec<HandlerSpec>,
-    typed_commands: Vec<TypedCommandContract>,
+    causal_command_policy: CausalCommandPolicy,
     runner: Option<ServiceRunner>,
     /// When false, HTTP does not mount `POST /{command}` (GraphQL / health only).
     /// Commands remain dispatchable via GraphQL mutations and in-process `dispatch`.
@@ -733,7 +1578,7 @@ impl Service {
             routes: Vec::new(),
             index: HashMap::new(),
             handler_specs: Vec::new(),
-            typed_commands: Vec::new(),
+            causal_command_policy: CausalCommandPolicy::default(),
             runner: None,
             http_command_routes: true,
             #[cfg(feature = "graphql")]
@@ -755,6 +1600,31 @@ impl Service {
         self.http_command_routes
     }
 
+    /// Configure the durable command attempt lease and replay retention.
+    ///
+    /// The defaults are 30 seconds and 30 days. Retention must remain longer
+    /// than the attempt lease; deployments must also keep it beyond the retry
+    /// and resume window advertised to their generated clients.
+    pub fn causal_command_timing(
+        mut self,
+        attempt_lease: Duration,
+        replay_retention: Duration,
+    ) -> Self {
+        assert!(
+            !attempt_lease.is_zero(),
+            "causal command attempt lease must be positive"
+        );
+        assert!(
+            replay_retention > attempt_lease,
+            "causal command replay retention must exceed the attempt lease"
+        );
+        self.causal_command_policy = CausalCommandPolicy {
+            attempt_lease,
+            replay_retention,
+        };
+        self
+    }
+
     /// Attach a GraphQL query engine served at `POST /graphql`.
     ///
     /// Panics when [`Self::try_with_graphql`] rejects the attachment. New code
@@ -769,9 +1639,9 @@ impl Service {
     ///
     /// Typed commands are compared by service ID, a canonical structural
     /// fingerprint, and exact Rust input/output `TypeId`s. A validated engine
-    /// may attach and serve reads, while typed mutation dispatch fails closed
-    /// until task 5 supplies the durable command committer; application
-    /// handlers are never invoked before that boundary.
+    /// may attach and serve reads and durable typed mutations. `Projected`
+    /// commands additionally require the engine and command repository to
+    /// carry the same opaque causal-storage identity.
     #[cfg(feature = "graphql")]
     pub fn try_with_graphql(
         mut self,
@@ -808,10 +1678,8 @@ impl Service {
             ));
         }
 
-        match (
-            self.typed_commands.is_empty(),
-            engine.typed_command_binding(),
-        ) {
+        let typed_commands = self.typed_command_contracts();
+        match (typed_commands.is_empty(), engine.typed_command_binding()) {
             (true, None) => {}
             (_, Some(engine_binding)) => {
                 let service_binding = self
@@ -839,6 +1707,29 @@ impl Service {
             (false, None) => {
                 return Err(GraphqlServiceBindError(
                     "GraphQL engine was not derived from this service's typed command inventory"
+                        .into(),
+                ));
+            }
+        }
+
+        let projected_identities = self
+            .routes
+            .iter()
+            .flat_map(|routes| routes.projected_storage_identities())
+            .collect::<Vec<_>>();
+        if !projected_identities.is_empty() {
+            let engine_identity = engine.causal_storage_identity().ok_or_else(|| {
+                GraphqlServiceBindError(
+                    "Projected commands require a GraphQL pool derived from the same repository handle"
+                        .into(),
+                )
+            })?;
+            if projected_identities
+                .iter()
+                .any(|identity| *identity != engine_identity)
+            {
+                return Err(GraphqlServiceBindError(
+                    "Projected command repository and GraphQL query pool storage identities differ"
                         .into(),
                 ));
             }
@@ -917,7 +1808,11 @@ impl Service {
         D: Send + Sync + 'static,
     {
         let keys = routes.registered_keys();
-        let typed_commands = routes.typed_commands.clone();
+        let typed_commands = routes
+            .typed_contracts()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         #[cfg(feature = "graphql")]
         assert!(
             self.graphql.is_none() || typed_commands.is_empty(),
@@ -938,10 +1833,10 @@ impl Service {
                 "cannot register command `graphql` while GraphQL is enabled on this service"
             );
         }
+        let existing_commands = self.typed_command_contracts();
         for contract in &typed_commands {
             assert!(
-                !self
-                    .typed_commands
+                !existing_commands
                     .iter()
                     .any(|registered| registered.name == contract.name),
                 "duplicate typed command declaration for `{}`",
@@ -957,19 +1852,85 @@ impl Service {
                 .insert(name, route_index);
         }
         self.handler_specs.extend_from_slice(routes.handler_specs());
-        self.typed_commands.extend(typed_commands);
         self.routes.push(Box::new(routes));
     }
 
-    pub(crate) fn typed_command_contracts(&self) -> &[TypedCommandContract] {
-        &self.typed_commands
+    pub(crate) fn typed_command_contracts(&self) -> Vec<TypedCommandContract> {
+        self.routes
+            .iter()
+            .flat_map(|routes| routes.typed_command_contracts())
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn typed_command_binding(&self) -> Result<TypedServiceCommandBinding, String> {
         let service_id = self
             .name()
             .ok_or_else(|| "typed command inventory requires Service::named".to_string())?;
-        TypedServiceCommandBinding::from_contracts(service_id, &self.typed_commands)
+        TypedServiceCommandBinding::from_contracts(service_id, &self.typed_command_contracts())
+    }
+
+    /// Execute one authenticated typed causal route through its durable ledger
+    /// and framework-owned staged commit boundary.
+    #[cfg(feature = "graphql")]
+    pub(crate) async fn dispatch_causal(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+    ) -> Result<Value, CausalDispatchError> {
+        let service_id = self.name().ok_or_else(|| {
+            CausalDispatchError::Internal(
+                "typed causal dispatch requires Service::named identity".into(),
+            )
+        })?;
+        let route_index = self
+            .index
+            .get(&MessageKind::Command)
+            .and_then(|commands| commands.get(command))
+            .copied()
+            .ok_or_else(|| CausalDispatchError::BadRequest("unknown typed command".into()))?;
+        self.routes[route_index]
+            .dispatch_causal(
+                command,
+                service_id,
+                command_id,
+                input,
+                session,
+                principal,
+                self.causal_command_policy,
+            )
+            .await
+    }
+
+    /// Private lookup seam used by replay recovery and the authorized status
+    /// envelope. The route rechecks the current role grant before deriving the
+    /// bearer-scoped ledger key.
+    #[cfg(feature = "graphql")]
+    #[allow(dead_code)]
+    pub(crate) async fn lookup_causal_command(
+        &self,
+        command: &str,
+        command_id: &str,
+        session: &Session,
+        principal: VerifiedPrincipal,
+    ) -> Result<CommandLookup, CausalDispatchError> {
+        let service_id = self.name().ok_or_else(|| {
+            CausalDispatchError::Internal(
+                "typed causal lookup requires Service::named identity".into(),
+            )
+        })?;
+        let route_index = self
+            .index
+            .get(&MessageKind::Command)
+            .and_then(|commands| commands.get(command))
+            .copied()
+            .ok_or_else(|| CausalDispatchError::BadRequest("unknown typed command".into()))?;
+        self.routes[route_index]
+            .lookup_causal(command, service_id, command_id, session, principal)
+            .await
     }
 
     /// Dispatch a command by name.
@@ -1352,6 +2313,10 @@ fn message_to_session(message: &Message) -> Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "graphql")]
+    use crate::command_ledger::CausalGetStream;
+    #[cfg(feature = "graphql")]
+    use crate::graphql::SurfaceProjector;
     use crate::graphql::{
         typed_command, Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
         GraphqlTypeField,
@@ -1360,9 +2325,15 @@ mod tests {
         sourced, AggregateBuilder, AggregateRepository, Entity, InMemoryRepository, Queueable,
         QueuedRepository,
     };
+    #[cfg(feature = "graphql")]
+    use crate::{GetStream, OutboxStore};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
+    #[cfg(feature = "graphql")]
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(feature = "graphql")]
+    use std::sync::{Arc, Mutex};
 
     #[derive(Deserialize)]
     struct TypedInput {
@@ -1400,11 +2371,65 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "graphql")]
+    #[derive(Deserialize)]
+    struct CausalTestInput {
+        id: String,
+        label: String,
+    }
+
+    #[cfg(feature = "graphql")]
+    impl GraphqlInputType for CausalTestInput {
+        fn graphql_type() -> GraphqlTypeDef {
+            GraphqlTypeDef::new(
+                "CausalTestInput",
+                vec![
+                    GraphqlTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                    GraphqlTypeField {
+                        name: "label".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    },
+                ],
+            )
+            .with_type_id(std::any::TypeId::of::<Self>())
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Clone, Deserialize, crate::GraphqlInput)]
+    struct CausalProjectionInput {
+        #[serde(rename = "todoId")]
+        id: String,
+        #[serde(rename = "tenantPartition")]
+        partition: String,
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Clone, Serialize, Deserialize, crate::ReadModel)]
+    #[readmodel(
+        table = "causal_projection_obligation_views",
+        primary_key = ["id"]
+    )]
+    struct CausalProjectionObligationView {
+        id: String,
+    }
+
     static TYPED_HANDLER_INVOKED: AtomicBool = AtomicBool::new(false);
     static TYPED_GUARD_INVOKED: AtomicBool = AtomicBool::new(false);
 
     async fn typed_handler(
-        _context: &CausalCommandContext<'_>,
+        _context: &CausalCommandContext<'_, RouteComboAggregate>,
         input: TypedInput,
     ) -> Result<PreparedCommand<Accepted<TypedOutput>>, HandlerError> {
         TYPED_HANDLER_INVOKED.store(true, Ordering::SeqCst);
@@ -1421,6 +2446,191 @@ mod tests {
         #[event("created")]
         fn create(&mut self) {
             self.entity.set_id("route-combo");
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Default)]
+    struct CausalDispatcherAggregate {
+        entity: Entity,
+    }
+
+    #[cfg(feature = "graphql")]
+    impl CausalDispatcherAggregate {
+        fn record(&mut self, id: String) -> crate::SourcedResult {
+            self.entity.set_id(id);
+            self.entity.digest_empty("causal.recorded")
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl Aggregate for CausalDispatcherAggregate {
+        type ReplayError = std::convert::Infallible;
+
+        fn aggregate_type() -> &'static str {
+            "service-causal-dispatcher-test"
+        }
+
+        fn entity(&self) -> &Entity {
+            &self.entity
+        }
+
+        fn entity_mut(&mut self) -> &mut Entity {
+            &mut self.entity
+        }
+
+        fn replay_event(&mut self, _event: &crate::EventRecord) -> Result<(), Self::ReplayError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    fn causal_test_principal() -> VerifiedPrincipal {
+        VerifiedPrincipal::test_oidc(
+            "https://issuer.example/",
+            "causal-test-subject",
+            &["distributed-tests"],
+        )
+    }
+
+    #[cfg(feature = "graphql")]
+    fn causal_test_command_id() -> String {
+        uuid::Uuid::now_v7().hyphenated().to_string()
+    }
+
+    #[cfg(feature = "graphql")]
+    fn causal_test_input(id: &str, label: &str) -> Value {
+        json!({ "id": id, "label": label })
+    }
+
+    #[cfg(feature = "graphql")]
+    fn session_with_role(role: &str) -> Session {
+        let mut session = Session::new();
+        session.set(crate::microsvc::ROLE_KEY, role);
+        session
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Clone, Copy)]
+    enum InjectedCommitBehavior {
+        CommitThenErrorOnce,
+        ErrorBeforeCommitOnce,
+        Delegate,
+    }
+
+    #[cfg(feature = "graphql")]
+    #[derive(Clone)]
+    struct AmbiguousCommitRepository {
+        inner: InMemoryRepository,
+        behavior: Arc<Mutex<InjectedCommitBehavior>>,
+    }
+
+    #[cfg(feature = "graphql")]
+    impl AmbiguousCommitRepository {
+        fn new(inner: InMemoryRepository, behavior: InjectedCommitBehavior) -> Self {
+            Self {
+                inner,
+                behavior: Arc::new(Mutex::new(behavior)),
+            }
+        }
+
+        fn injected_error() -> CommandLedgerError {
+            CommandLedgerError::Storage(crate::RepositoryError::retryable_storage(
+                "injected ambiguous causal commit",
+                std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "injected transport acknowledgement loss",
+                ),
+            ))
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl CausalGetStream for AmbiguousCommitRepository {
+        fn get_causal_stream<'a>(
+            &'a self,
+            identity: &'a crate::StreamIdentity,
+        ) -> impl Future<Output = Result<Option<Entity>, crate::RepositoryError>> + Send + 'a
+        {
+            CausalGetStream::get_causal_stream(&self.inner, identity)
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl CausalRepositoryIdentity for AmbiguousCommitRepository {
+        fn causal_storage_identity(&self) -> crate::command_ledger::CausalStorageIdentity {
+            CausalRepositoryIdentity::causal_storage_identity(&self.inner)
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl CommandLedgerStore for AmbiguousCommitRepository {
+        fn reserve_command(
+            &self,
+            reservation: CommandReservation,
+        ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_
+        {
+            CommandLedgerStore::reserve_command(&self.inner, reservation)
+        }
+
+        fn lookup_command<'a>(
+            &'a self,
+            key: &'a CommandLedgerKey,
+            scope: CommandLookupScope<'a>,
+        ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
+            CommandLedgerStore::lookup_command(&self.inner, key, scope)
+        }
+
+        fn mark_retryable_unknown(
+            &self,
+            attempt: AttemptFence,
+        ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + '_ {
+            CommandLedgerStore::mark_retryable_unknown(&self.inner, attempt)
+        }
+
+        fn compact_expired_commands(
+            &self,
+            limit: usize,
+        ) -> impl Future<Output = Result<u64, CommandLedgerError>> + Send + '_ {
+            CommandLedgerStore::compact_expired_commands(&self.inner, limit)
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl CausalTransactionalCommit for AmbiguousCommitRepository {
+        fn commit_causal_batch<'a>(
+            &'a self,
+            batch: CausalCommitBatch<'a>,
+        ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
+            async move {
+                let behavior = {
+                    let mut behavior = self.behavior.lock().map_err(|_| {
+                        CommandLedgerError::Storage(crate::RepositoryError::LockPoisoned(
+                            "injected causal commit behavior",
+                        ))
+                    })?;
+                    std::mem::replace(&mut *behavior, InjectedCommitBehavior::Delegate)
+                };
+                match behavior {
+                    InjectedCommitBehavior::CommitThenErrorOnce => {
+                        CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await?;
+                        Err(Self::injected_error())
+                    }
+                    InjectedCommitBehavior::ErrorBeforeCommitOnce => Err(Self::injected_error()),
+                    InjectedCommitBehavior::Delegate => {
+                        CausalTransactionalCommit::commit_causal_batch(&self.inner, batch).await
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "graphql")]
+    impl HasOutboxStore for AmbiguousCommitRepository {
+        type OutboxStore = crate::InMemoryOutboxStore;
+
+        fn outbox_store(&self) -> Self::OutboxStore {
+            self.inner.outbox_store()
         }
     }
 
@@ -1449,10 +2659,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_dispatch_fails_before_invoking_handler_without_durable_committer() {
+    async fn typed_direct_dispatch_fails_before_invoking_handler() {
         TYPED_HANDLER_INVOKED.store(false, Ordering::SeqCst);
         let service = Service::new().named("todos").routes(
             Routes::new()
+                .with_repo(
+                    InMemoryRepository::new()
+                        .queued()
+                        .aggregate::<RouteComboAggregate>(),
+                )
                 .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
                     "todo.create",
                 ))
@@ -1462,18 +2677,23 @@ mod tests {
         let error = service
             .dispatch("todo.create", json!({ "id": "todo-1" }), Session::new())
             .await
-            .expect_err("typed dispatch must be fenced until task 5");
+            .expect_err("typed causal commands must reject direct dispatch");
 
-        assert!(error.to_string().contains("durable command committer"));
+        assert!(error.to_string().contains("verified GraphQL bearer"));
         assert!(!TYPED_HANDLER_INVOKED.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn typed_dispatch_fails_before_invoking_guard_or_handler_without_committer() {
+    async fn typed_direct_dispatch_fails_before_invoking_guard_or_handler() {
         TYPED_GUARD_INVOKED.store(false, Ordering::SeqCst);
         TYPED_HANDLER_INVOKED.store(false, Ordering::SeqCst);
         let service = Service::new().named("todos").routes(
             Routes::new()
+                .with_repo(
+                    InMemoryRepository::new()
+                        .queued()
+                        .aggregate::<RouteComboAggregate>(),
+                )
                 .typed_command(typed_command::<TypedInput, Accepted<TypedOutput>>(
                     "todo.guarded_create",
                 ))
@@ -1493,11 +2713,920 @@ mod tests {
                 Session::new(),
             )
             .await
-            .expect_err("typed dispatch must be fenced before application guards");
+            .expect_err("typed causal commands must reject before application guards");
 
-        assert!(error.to_string().contains("durable command committer"));
+        assert!(error.to_string().contains("verified GraphQL bearer"));
         assert!(!TYPED_GUARD_INVOKED.load(Ordering::SeqCst));
         assert!(!TYPED_HANDLER_INVOKED.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_replays_canonical_equivalent_input_without_reinvoking_handler() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.replay",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            let _label = input.label;
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+        let first_input = serde_json::from_str(r#"{"id":"todo-1","label":"same"}"#).unwrap();
+        let equivalent_input = serde_json::from_str(r#"{"label":"same","id":"todo-1"}"#).unwrap();
+
+        let first = service
+            .dispatch_causal(
+                "causal.replay",
+                &command_id,
+                first_input,
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .unwrap();
+        let replay = service
+            .dispatch_causal(
+                "causal.replay",
+                &command_id,
+                equivalent_input,
+                Session::new(),
+                principal,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first, json!({ "id": "todo-1" }));
+        assert_eq!(replay, first);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_rejects_same_command_id_with_different_input() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.reuse",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            let _label = input.label;
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        service
+            .dispatch_causal(
+                "causal.reuse",
+                &command_id,
+                causal_test_input("todo-1", "first"),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .unwrap();
+        let error = service
+            .dispatch_causal(
+                "causal.reuse",
+                &command_id,
+                causal_test_input("todo-1", "changed"),
+                Session::new(),
+                principal,
+            )
+            .await
+            .expect_err("different canonical input must conflict");
+
+        assert_eq!(error.code(), "COMMAND_ID_REUSE");
+        assert_eq!(error.status_code(), 409);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_guard_rejection_is_replayed_without_guard_or_handler_callback() {
+        let guard_calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_guard_calls = Arc::clone(&guard_calls);
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.guard_rejection",
+                ))
+                .guarded(
+                    move |_| {
+                        route_guard_calls.fetch_add(1, Ordering::SeqCst);
+                        false
+                    },
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        let first = service
+            .dispatch_causal(
+                "causal.guard_rejection",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect_err("guard should reject first attempt");
+        let replay = service
+            .dispatch_causal(
+                "causal.guard_rejection",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                Session::new(),
+                principal,
+            )
+            .await
+            .expect_err("guard rejection should replay");
+
+        assert_eq!(first.code(), "REJECTED");
+        assert_eq!(first.status_code(), 422);
+        assert_eq!(replay.code(), first.code());
+        assert_eq!(replay.status_code(), first.status_code());
+        assert_eq!(replay.client_message(), first.client_message());
+        assert_eq!(guard_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_handler_rejection_is_replayed_without_reinvoking_handler() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.handler_rejection",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          _input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Err::<PreparedCommand<Accepted<TypedOutput>>, HandlerError>(
+                                HandlerError::Rejected("deterministic refusal".into()),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        let first = service
+            .dispatch_causal(
+                "causal.handler_rejection",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect_err("handler should reject first attempt");
+        let replay = service
+            .dispatch_causal(
+                "causal.handler_rejection",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                Session::new(),
+                principal,
+            )
+            .await
+            .expect_err("handler rejection should replay");
+
+        assert_eq!(first.code(), "REJECTED");
+        assert_eq!(first.status_code(), 422);
+        assert_eq!(first.client_message(), "rejected: deterministic refusal");
+        assert_eq!(replay.code(), first.code());
+        assert_eq!(replay.status_code(), first.status_code());
+        assert_eq!(replay.client_message(), first.client_message());
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_checks_current_role_before_reservation_guard_and_handler() {
+        let guard_calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_guard_calls = Arc::clone(&guard_calls);
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(
+                    typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.role_guarded")
+                        .roles(["admin"]),
+                )
+                .guarded(
+                    move |_| {
+                        route_guard_calls.fetch_add(1, Ordering::SeqCst);
+                        true
+                    },
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        let denied_before_reservation = service
+            .dispatch_causal(
+                "causal.role_guarded",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                session_with_role("user"),
+                principal.clone(),
+            )
+            .await
+            .expect_err("current role must be denied before reservation");
+        assert_eq!(denied_before_reservation.code(), "FORBIDDEN");
+        assert_eq!(guard_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+
+        let accepted = service
+            .dispatch_causal(
+                "causal.role_guarded",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                session_with_role("admin"),
+                principal.clone(),
+            )
+            .await
+            .expect("denied dispatch must not have reserved the command ID");
+        assert_eq!(accepted, json!({ "id": "todo-1" }));
+
+        let denied_before_replay = service
+            .dispatch_causal(
+                "causal.role_guarded",
+                &command_id,
+                causal_test_input("todo-1", "same"),
+                session_with_role("user"),
+                principal,
+            )
+            .await
+            .expect_err("current role must be rechecked before replay");
+        assert_eq!(denied_before_replay.code(), "FORBIDDEN");
+        assert_eq!(guard_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+        let denied_lookup = service
+            .lookup_causal_command(
+                "causal.role_guarded",
+                &command_id,
+                &session_with_role("user"),
+                causal_test_principal(),
+            )
+            .await
+            .expect_err("current role must also be rechecked before status lookup");
+        assert_eq!(denied_lookup.code(), "FORBIDDEN");
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_status_lookup_does_not_disclose_another_routes_command() {
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
+                .typed_command(
+                    typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.admin_only")
+                        .roles(["admin"]),
+                )
+                .handle(
+                    |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                     input: CausalTestInput| async move {
+                        Ok(
+                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                id: input.id,
+                            })
+                            .unwrap(),
+                        )
+                    },
+                )
+                .typed_command(
+                    typed_command::<CausalTestInput, Accepted<TypedOutput>>("causal.user_allowed")
+                        .roles(["user"]),
+                )
+                .handle(
+                    |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                     input: CausalTestInput| async move {
+                        Ok(
+                            PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                id: input.id,
+                            })
+                            .unwrap(),
+                        )
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        service
+            .dispatch_causal(
+                "causal.admin_only",
+                &command_id,
+                causal_test_input("todo-secret", "classified"),
+                session_with_role("admin"),
+                principal.clone(),
+            )
+            .await
+            .expect("admin should be able to commit the protected command");
+
+        let denied = service
+            .lookup_causal_command(
+                "causal.admin_only",
+                &command_id,
+                &session_with_role("user"),
+                principal.clone(),
+            )
+            .await
+            .expect_err("the current role must not retain access to the protected route");
+        assert_eq!(denied.code(), "FORBIDDEN");
+
+        let cross_route = service
+            .lookup_causal_command(
+                "causal.user_allowed",
+                &command_id,
+                &session_with_role("user"),
+                principal,
+            )
+            .await
+            .expect("the allowed route should produce a non-disclosing status result");
+        assert_eq!(cross_route, CommandLookup::Unknown);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_overwrites_event_and_outbox_causation_with_ledger_identity() {
+        let observed_causation = Arc::new(Mutex::new(None::<String>));
+        let route_observed_causation = Arc::clone(&observed_causation);
+        let projector_causation = Arc::new(Mutex::new(None::<String>));
+        let route_projector_causation = Arc::clone(&projector_causation);
+        let repository = InMemoryRepository::new();
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.persist",
+                ))
+                .handle(
+                    move |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let observed = Arc::clone(&route_observed_causation);
+                        let result = (|| {
+                            let causation = context
+                                .causation_id()
+                                .expect("reserved command causation")
+                                .to_string();
+                            *observed.lock().unwrap() = Some(causation);
+
+                            let mut checkout = context.create();
+                            checkout
+                                .entity_mut()
+                                .set_causation_id("handler-supplied-event-causation");
+                            checkout
+                                .record(input.id.clone())
+                                .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                            context.stage(checkout)?;
+
+                            let mut outbox = OutboxMessage::create(
+                                format!("{}:fact", input.id),
+                                "causal.recorded",
+                                input.label.as_bytes().to_vec(),
+                            )
+                            .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                            outbox.set_causation_id("handler-supplied-outbox-causation");
+                            context.stage_outbox(outbox)?;
+
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        })();
+                        async move { result }
+                    },
+                )
+                .event("causal.recorded")
+                .handle(
+                    move |context: &Context<
+                        AggregateRepository<InMemoryRepository, CausalDispatcherAggregate>,
+                    >| {
+                        let causation = context.message().causation_id().map(str::to_string);
+                        let observed = Arc::clone(&route_projector_causation);
+                        async move {
+                            *observed.lock().unwrap() = causation;
+                            Ok(json!({ "projected": true }))
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let mut session = Session::new();
+        session.set(
+            crate::trace_context::CAUSATION_ID,
+            "caller-supplied-causation",
+        );
+        session.set(crate::trace_context::CORRELATION_ID, "caller-correlation");
+        session.set(
+            crate::trace_context::TRACEPARENT,
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        );
+        session.set(crate::trace_context::TRACESTATE, "vendor=value");
+
+        let result = service
+            .dispatch_causal(
+                "causal.persist",
+                &command_id,
+                causal_test_input("todo-causal", "payload"),
+                session,
+                causal_test_principal(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, json!({ "id": "todo-causal" }));
+
+        let causation = observed_causation
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("handler observed causation");
+        let parsed_causation = uuid::Uuid::parse_str(&causation).unwrap();
+        assert_eq!(parsed_causation.get_version_num(), 7);
+        assert_ne!(causation, command_id);
+        assert_ne!(causation, "caller-supplied-causation");
+        assert_ne!(causation, "handler-supplied-event-causation");
+        assert_ne!(causation, "handler-supplied-outbox-causation");
+
+        let identity =
+            crate::StreamIdentity::new(CausalDispatcherAggregate::aggregate_type(), "todo-causal")
+                .unwrap();
+        let stored = repository
+            .get_stream(&identity)
+            .await
+            .unwrap()
+            .expect("causal aggregate stream");
+        assert_eq!(stored.events().len(), 1);
+        assert_eq!(stored.events()[0].causation_id(), Some(causation.as_str()));
+
+        let outbox_store = repository.outbox_store();
+        let pending = outbox_store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].causation_id(), Some(causation.as_str()));
+
+        let projector_input = Message::from(pending[0].clone());
+        service.dispatch_message(&projector_input).await.unwrap();
+        assert_eq!(
+            projector_causation.lock().unwrap().as_deref(),
+            Some(causation.as_str())
+        );
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_uses_the_configured_immediate_outbox_publisher() {
+        let repository = InMemoryRepository::new();
+        let observed_broker_metadata = Arc::new(Mutex::new(None::<[String; 4]>));
+        let route_observed_broker_metadata = Arc::clone(&observed_broker_metadata);
+        let service = Service::new()
+            .named("causal-tests")
+            .routes(
+                Routes::new()
+                    .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                    .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                        "causal.publish_immediately",
+                    ))
+                    .handle(
+                        |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                         input: CausalTestInput| {
+                            let result =
+                                (|| {
+                                    let mut checkout = context.create();
+                                    checkout
+                                        .record(input.id.clone())
+                                        .map_err(|error| HandlerError::Other(Box::new(error)))?;
+                                    context.stage(checkout)?;
+                                    context.stage_outbox(
+                                        OutboxMessage::create(
+                                            format!("{}:immediate-fact", input.id),
+                                            "causal.immediate_fact",
+                                            input.label.as_bytes().to_vec(),
+                                        )
+                                        .map_err(|error| HandlerError::Other(Box::new(error)))?,
+                                    )?;
+                                    Ok(PreparedCommand::<Accepted<TypedOutput>>::prepare(
+                                        TypedOutput { id: input.id },
+                                    )
+                                    .unwrap())
+                                })();
+                            async move { result }
+                        },
+                    )
+                    .event("causal.immediate_fact")
+                    .handle(
+                        move |context: &Context<
+                            AggregateRepository<InMemoryRepository, CausalDispatcherAggregate>,
+                        >| {
+                            let message = context.message();
+                            let metadata = [
+                                message.causation_id().unwrap_or_default().to_string(),
+                                message
+                                    .metadata("x-sourced-source-aggregate-type")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                message
+                                    .metadata("x-sourced-source-aggregate-id")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                message
+                                    .metadata("x-sourced-source-sequence")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            ];
+                            let observed = Arc::clone(&route_observed_broker_metadata);
+                            async move {
+                                *observed.lock().unwrap() = Some(metadata);
+                                Ok(json!({ "projected": true }))
+                            }
+                        },
+                    ),
+            )
+            .with_bus(crate::bus::InMemoryBus::new());
+
+        service
+            .dispatch_causal(
+                "causal.publish_immediately",
+                &causal_test_command_id(),
+                causal_test_input("todo-immediate", "payload"),
+                Session::new(),
+                causal_test_principal(),
+            )
+            .await
+            .expect("causal dispatch should commit before immediate publication");
+
+        let outbox = repository.outbox_store();
+        assert!(outbox.pending(usize::MAX).await.unwrap().is_empty());
+        let published = outbox
+            .messages_by_status(crate::outbox::OutboxMessageStatus::Published, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].id(), "todo-immediate:immediate-fact");
+        assert_eq!(published[0].event_type, "causal.immediate_fact");
+        let causation = published[0]
+            .causation_id()
+            .expect("persisted outbox row should retain ledger causation")
+            .to_string();
+        assert_eq!(
+            published[0].source_aggregate_type.as_deref(),
+            Some(CausalDispatcherAggregate::aggregate_type())
+        );
+        assert_eq!(
+            published[0].source_aggregate_id.as_deref(),
+            Some("todo-immediate")
+        );
+        assert_eq!(published[0].source_sequence, Some(1));
+
+        service
+            .run(RunOptions::idempotent())
+            .await
+            .expect("attached bus should deliver the immediately published fact");
+        assert_eq!(
+            observed_broker_metadata.lock().unwrap().as_ref(),
+            Some(&[
+                causation,
+                CausalDispatcherAggregate::aggregate_type().to_string(),
+                "todo-immediate".to_string(),
+                "1".to_string(),
+            ]),
+            "the post-commit clone must carry authoritative causation and aggregate source metadata",
+        );
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_replay_contains_resolved_projection_obligation() {
+        let repository = InMemoryRepository::new();
+        let projector = SurfaceProjector::new("project_causal_obligation")
+            .facts(["causal.obligation_fact"])
+            .models(["CausalProjectionObligationView"]);
+        let confirmations = crate::command_confirmations! {
+            input: CausalProjectionInput;
+            confirm projector -> CausalProjectionObligationView {
+                key { id: input.id },
+                partition: input.partition
+            };
+        };
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.clone().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(
+                    typed_command::<CausalProjectionInput, Accepted<TypedOutput>>(
+                        "causal.projection_obligation",
+                    )
+                    .confirmations(confirmations),
+                )
+                .handle(
+                    |context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                     input: CausalProjectionInput| {
+                        let result = (|| {
+                            context.stage_outbox(
+                                OutboxMessage::create(
+                                    format!("{}:obligation", input.id),
+                                    "causal.obligation_fact",
+                                    input.partition.as_bytes().to_vec(),
+                                )
+                                .map_err(|error| HandlerError::Other(Box::new(error)))?,
+                            )?;
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        })();
+                        async move { result }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        let result = service
+            .dispatch_causal(
+                "causal.projection_obligation",
+                &command_id,
+                json!({
+                    "todoId": "todo-obligation",
+                    "tenantPartition": "tenant-a"
+                }),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect("matching outbox fact should make the causal dispatch commit");
+        assert_eq!(result, json!({ "id": "todo-obligation" }));
+
+        let lookup = service
+            .lookup_causal_command(
+                "causal.projection_obligation",
+                &command_id,
+                &Session::new(),
+                principal,
+            )
+            .await
+            .expect("same principal should be able to recover its command");
+        let CommandLookup::Replay(replay) = lookup else {
+            panic!("completed command should be replayable");
+        };
+        assert_eq!(replay.state, CommandLedgerState::AcceptedPendingProjection);
+        assert_eq!(replay.projection_obligations.len(), 1);
+
+        let obligation = &replay.projection_obligations[0];
+        assert_eq!(obligation.projector, "project_causal_obligation");
+        assert_eq!(obligation.model, "CausalProjectionObligationView");
+        assert_eq!(obligation.key.fields.len(), 1);
+        assert_eq!(obligation.key.fields[0].field, "id");
+        assert_eq!(obligation.key.fields[0].value, json!("todo-obligation"));
+        assert_eq!(obligation.partition, Some(json!("tenant-a")));
+
+        let pending = repository.outbox_store().pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_type, "causal.obligation_fact");
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_recovers_committed_replay_after_commit_acknowledgement_loss() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = AmbiguousCommitRepository::new(
+            InMemoryRepository::new(),
+            InjectedCommitBehavior::CommitThenErrorOnce,
+        );
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.ambiguous_committed",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+        let input = causal_test_input("todo-ambiguous", "same");
+
+        let recovered = service
+            .dispatch_causal(
+                "causal.ambiguous_committed",
+                &command_id,
+                input.clone(),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect("lookup should recover the committed outcome");
+        assert_eq!(recovered, json!({ "id": "todo-ambiguous" }));
+        assert!(matches!(
+            service
+                .lookup_causal_command(
+                    "causal.ambiguous_committed",
+                    &command_id,
+                    &Session::new(),
+                    principal.clone(),
+                )
+                .await
+                .unwrap(),
+            CommandLookup::Replay(_)
+        ));
+
+        let replay = service
+            .dispatch_causal(
+                "causal.ambiguous_committed",
+                &command_id,
+                input,
+                Session::new(),
+                principal,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay, recovered);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
+    async fn causal_dispatch_reclaims_retryable_attempt_after_precommit_failure() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let repository = AmbiguousCommitRepository::new(
+            InMemoryRepository::new(),
+            InjectedCommitBehavior::ErrorBeforeCommitOnce,
+        );
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(repository.aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.ambiguous_retry",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+        let input = causal_test_input("todo-retry", "same");
+
+        let first = service
+            .dispatch_causal(
+                "causal.ambiguous_retry",
+                &command_id,
+                input.clone(),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect_err("pre-commit failure should remain unknown to the caller");
+        assert_eq!(first.code(), "INTERNAL");
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            service
+                .lookup_causal_command(
+                    "causal.ambiguous_retry",
+                    &command_id,
+                    &Session::new(),
+                    principal.clone(),
+                )
+                .await
+                .unwrap(),
+            CommandLookup::RetryableUnknown { .. }
+        ));
+
+        let retried = service
+            .dispatch_causal(
+                "causal.ambiguous_retry",
+                &command_id,
+                input.clone(),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect("same-ID retry should reclaim and commit");
+        assert_eq!(retried, json!({ "id": "todo-retry" }));
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let replay = service
+            .dispatch_causal(
+                "causal.ambiguous_retry",
+                &command_id,
+                input,
+                Session::new(),
+                principal,
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay, retried);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

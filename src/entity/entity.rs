@@ -207,6 +207,25 @@ impl Entity {
         self.set_meta(CAUSATION_ID, id);
     }
 
+    /// Overwrite causation on every event not yet committed.
+    ///
+    /// The command ledger chooses the authoritative causation ID only after a
+    /// reservation succeeds. A handler may have emitted events before then or
+    /// replaced entity metadata, so merely configuring metadata for subsequent
+    /// events is insufficient. The causal batch constructor calls this once at
+    /// the final pre-commit boundary.
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    pub(crate) fn overwrite_new_event_causation_id(&mut self, id: &str) {
+        let start = (self.committed_version - self.prefix_version) as usize;
+        for event in &mut self.events[start..] {
+            event.overwrite_causation_id(id);
+        }
+        self.metadata
+            .retain(|key, _| !key.eq_ignore_ascii_case(CAUSATION_ID));
+        self.metadata
+            .insert(CAUSATION_ID.to_string(), id.to_string());
+    }
+
     /// Set W3C trace context for subsequent events.
     pub fn set_trace_context(&mut self, context: &TraceContext) {
         context.inject_map(&mut self.metadata);
@@ -605,6 +624,42 @@ mod tests {
 
         assert_eq!(entity.events()[0].correlation_id(), Some("req-abc"));
         assert!(entity.events()[1].metadata.is_empty());
+    }
+
+    #[test]
+    fn final_causal_stamp_overwrites_only_uncommitted_events() {
+        let mut entity = Entity::with_id("aggregate-1");
+        entity.set_causation_id("original-command");
+        entity.digest_empty("Created").unwrap();
+        entity.mark_committed();
+
+        entity.set_causation_id("handler-supplied");
+        entity.set_meta("Causation_Id", "forged-case-alias");
+        entity.digest_empty("Changed").unwrap();
+        entity.overwrite_new_event_causation_id("ledger-causation");
+
+        assert_eq!(entity.events()[0].causation_id(), Some("original-command"));
+        assert_eq!(entity.events()[1].causation_id(), Some("ledger-causation"));
+        assert_eq!(
+            entity.events()[1]
+                .metadata
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case(CAUSATION_ID))
+                .count(),
+            1
+        );
+        assert_eq!(
+            entity.metadata().get(CAUSATION_ID).map(String::as_str),
+            Some("ledger-causation")
+        );
+        assert_eq!(
+            entity
+                .metadata()
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case(CAUSATION_ID))
+                .count(),
+            1
+        );
     }
 
     #[test]

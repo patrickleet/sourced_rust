@@ -27,6 +27,13 @@ use sqlx::pool::PoolOptions;
 use sqlx::query_builder::Separated;
 use sqlx::{Encode, Executor, IntoArguments, Pool, QueryBuilder, Row, Transaction, Type};
 
+use crate::command_ledger::{
+    AttemptFence, AttemptToken, CanonicalInputHash, CausalCommitBatch, CausalGetStream,
+    CausalRepositoryIdentity, CausalStorageIdentity, CausalTransactionalCommit, CausationId,
+    CommandCompletion, CommandContractFingerprint, CommandId, CommandLedgerError, CommandLedgerKey,
+    CommandLedgerRecord, CommandLedgerState, CommandLedgerStore, CommandLookup, CommandLookupScope,
+    CommandReservation, PrincipalPartitionId, ReservationDecision, ReservationOutcome,
+};
 use crate::entity::{Entity, EventRecord, BITCODE_PAYLOAD_CODEC};
 use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{
@@ -129,6 +136,13 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
     /// SQL expression producing the database's current timestamp, used for
     /// server-side `updated_at` maintenance.
     const NOW: &'static str;
+    /// Command-ledger projection with timestamp columns normalized for
+    /// [`decode_timestamp`](Self::decode_timestamp) and JSON surfaced as text.
+    const COMMAND_LEDGER_SELECT: &'static str;
+    /// Row-lock suffix for a reservation/status transaction.
+    const COMMAND_LEDGER_LOCK_SUFFIX: &'static str;
+    /// Row-lock suffix for a bounded compaction scan.
+    const COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX: &'static str;
     /// `SELECT` list for `aggregate_events` rows. The recorded-at column must
     /// surface as `recorded_at` in whatever representation
     /// [`decode_timestamp`](Self::decode_timestamp) reads.
@@ -187,6 +201,23 @@ pub trait SqlxRepoBackend: SqlxReadModelBackend {
         epoch_secs: f64,
     );
 
+    /// Push a non-transaction-start database clock expression. PostgreSQL uses
+    /// `clock_timestamp()` so time spent waiting for a row lock counts against
+    /// leases; SQLite uses its subsecond unix epoch clock.
+    fn push_command_ledger_now(builder: &mut QueryBuilder<Self>);
+
+    /// Push the same database clock as epoch seconds for decoding into
+    /// [`SystemTime`]. This is distinct from [`Self::push_command_ledger_now`]
+    /// because PostgreSQL write/comparison expressions require `timestamptz`
+    /// while this framework's portable timestamp decoder consumes `f64`.
+    fn push_command_ledger_now_epoch(builder: &mut QueryBuilder<Self>);
+
+    /// Push database-now plus a caller-validated positive duration.
+    fn push_command_ledger_deadline(builder: &mut QueryBuilder<Self>, duration: Duration);
+
+    /// Push a JSON value bind, adding the backend's native JSON cast if needed.
+    fn push_command_ledger_json(builder: &mut QueryBuilder<Self>, json: &str);
+
     /// Decode a stored timestamp column into a [`SystemTime`].
     fn decode_timestamp(
         row: &Self::Row,
@@ -232,6 +263,7 @@ pub struct SqlxRepository<DB: sqlx::Database> {
     /// Opt-out via [`SqlxRepository::without_read_model_change_notify`]. Writers
     /// that opt out silently break cross-process GraphQL subscriptions.
     notify_enabled: bool,
+    causal_storage_identity: CausalStorageIdentity,
 }
 
 impl<DB: sqlx::Database> Clone for SqlxRepository<DB> {
@@ -241,6 +273,7 @@ impl<DB: sqlx::Database> Clone for SqlxRepository<DB> {
             read_model_schemas: Arc::clone(&self.read_model_schemas),
             read_model_change_tx: self.read_model_change_tx.clone(),
             notify_enabled: self.notify_enabled,
+            causal_storage_identity: self.causal_storage_identity,
         }
     }
 }
@@ -276,7 +309,13 @@ where
             read_model_schemas: Arc::new(RwLock::new(TableSchemaRegistry::new())),
             read_model_change_tx,
             notify_enabled: true,
+            causal_storage_identity: CausalStorageIdentity::new(),
         }
+    }
+
+    #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
+    pub(crate) fn causal_storage_identity(&self) -> CausalStorageIdentity {
+        self.causal_storage_identity
     }
 
     /// Subscribe to read-model table changes (fires after successful write-plan commits).
@@ -609,6 +648,136 @@ where
     }
 }
 
+impl<DB> CausalGetStream for SqlxRepository<DB>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    fn get_causal_stream<'a>(
+        &'a self,
+        identity: &'a StreamIdentity,
+    ) -> impl Future<Output = Result<Option<Entity>, RepositoryError>> + Send + 'a {
+        GetStream::get_stream(self, identity)
+    }
+}
+
+impl<DB> CausalRepositoryIdentity for SqlxRepository<DB>
+where
+    DB: SqlxRepoBackend,
+{
+    fn causal_storage_identity(&self) -> CausalStorageIdentity {
+        self.causal_storage_identity
+    }
+}
+
+async fn commit_sqlx_batch<'a, DB>(
+    repository: &'a SqlxRepository<DB>,
+    batch: CommitBatch<'a>,
+    completion: Option<CommandCompletion>,
+) -> Result<(), CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<i64>: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<&'q str>: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let prepared = validate_commit_batch(&batch)?;
+    for plan in &batch.read_model_plans {
+        validate_sql_write_plan(plan).map_err(RepositoryError::from)?;
+    }
+
+    let mut tx = repository
+        .pool
+        .begin()
+        .await
+        .map_err(|err| repository_storage_error::<DB>("begin commit transaction", err))?;
+
+    let versions = stream_versions_in_tx(&mut tx, &prepared).await?;
+    for append in &prepared {
+        let actual = versions
+            .get(&append.identity.storage_key())
+            .copied()
+            .unwrap_or(0);
+        if actual != append.expected_version {
+            return Err(RepositoryError::ConcurrentWrite {
+                id: append.identity.to_string(),
+                expected: append.expected_version,
+                actual,
+            }
+            .into());
+        }
+    }
+
+    insert_events_in_tx(&repository.pool, &mut tx, &prepared).await?;
+    insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
+
+    let mut changed_tables = std::collections::BTreeSet::new();
+    for plan in batch.read_model_plans {
+        for mutation in &plan.mutations {
+            changed_tables.insert(mutation.table_name().to_string());
+        }
+        apply_read_model_write_plan_in_tx(&mut tx, plan)
+            .await
+            .map_err(RepositoryError::from)?;
+    }
+
+    for write in batch.snapshots {
+        match write {
+            SnapshotWrite::Save { identity, record } => {
+                save_snapshot_in_tx(&mut tx, &identity, record).await?;
+            }
+        }
+    }
+    for receipt in &batch.inbox_receipts {
+        insert_inbox_receipt_in_tx(&mut tx, receipt).await?;
+    }
+
+    if repository.notify_enabled && !changed_tables.is_empty() {
+        DB::push_change_notify(&mut *tx, &changed_tables)
+            .await
+            .map_err(RepositoryError::from)?;
+    }
+
+    // This fenced terminal update is intentionally the final SQL statement
+    // before COMMIT. A stale/expired generation affects zero rows and rolls
+    // back every domain write above with the surrounding transaction.
+    if let Some(completion) = completion.as_ref() {
+        complete_command_in_tx(&mut tx, completion).await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|err| repository_storage_error::<DB>("commit transaction", err))?;
+
+    if !changed_tables.is_empty() {
+        repository.publish_read_model_change(crate::ReadModelChange {
+            tables: changed_tables,
+        });
+    }
+    for stream in batch.streams {
+        stream.entity.mark_committed();
+    }
+    Ok(())
+}
+
 impl<DB> TransactionalCommit for SqlxRepository<DB>
 where
     DB: SqlxRepoBackend,
@@ -630,79 +799,606 @@ where
         batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            let prepared = validate_commit_batch(&batch)?;
-
-            for plan in &batch.read_model_plans {
-                validate_sql_write_plan(plan)?;
+            match commit_sqlx_batch(self, batch, None).await {
+                Ok(()) => Ok(()),
+                Err(CommandLedgerError::Storage(error)) => Err(error),
+                Err(error) => Err(RepositoryError::Model(format!(
+                    "unexpected command ledger error in ordinary commit: {error}"
+                ))),
             }
+        }
+    }
+}
 
-            let mut tx =
-                self.pool.begin().await.map_err(|err| {
-                    repository_storage_error::<DB>("begin commit transaction", err)
+impl<DB> CausalTransactionalCommit for SqlxRepository<DB>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<i64>: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<&'q str>: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    fn commit_causal_batch<'a>(
+        &'a self,
+        batch: CausalCommitBatch<'a>,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
+        commit_sqlx_batch(self, batch.domain, Some(batch.completion))
+    }
+}
+
+fn corrupt_ledger_value(error: CommandLedgerError) -> CommandLedgerError {
+    CommandLedgerError::Corrupt(error.to_string())
+}
+
+#[allow(dead_code)]
+fn command_ledger_key_from_row<DB>(row: &DB::Row) -> Result<CommandLedgerKey, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let service_id: String = row.try_get("service_id").map_err(|error| {
+        repository_storage_error::<DB>("decode command ledger service ID", error)
+    })?;
+    let principal: String = row.try_get("principal_partition").map_err(|error| {
+        repository_storage_error::<DB>("decode command ledger principal partition", error)
+    })?;
+    let command_id: String = row.try_get("command_id").map_err(|error| {
+        repository_storage_error::<DB>("decode command ledger command ID", error)
+    })?;
+    CommandLedgerKey::new(
+        service_id,
+        PrincipalPartitionId::new(principal).map_err(corrupt_ledger_value)?,
+        CommandId::parse(command_id).map_err(corrupt_ledger_value)?,
+    )
+    .map_err(corrupt_ledger_value)
+}
+
+fn command_ledger_record_from_row<DB>(
+    row: &DB::Row,
+    key: CommandLedgerKey,
+) -> Result<CommandLedgerRecord, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'q> i64: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let decode = |operation: &'static str, error| repository_storage_error::<DB>(operation, error);
+    let command_name: String = row
+        .try_get("command_name")
+        .map_err(|error| decode("decode command ledger name", error))?;
+    let contract: Vec<u8> = row
+        .try_get("command_contract_hash")
+        .map_err(|error| decode("decode command contract hash", error))?;
+    let input: Vec<u8> = row
+        .try_get("input_hash")
+        .map_err(|error| decode("decode canonical command input hash", error))?;
+    let state: String = row
+        .try_get("state")
+        .map_err(|error| decode("decode command ledger state", error))?;
+    let causation_id: String = row
+        .try_get("causation_id")
+        .map_err(|error| decode("decode command ledger causation ID", error))?;
+    let attempt_token: Option<String> = row
+        .try_get("attempt_token")
+        .map_err(|error| decode("decode command ledger attempt token", error))?;
+    let attempt_number: i64 = row
+        .try_get("attempt_number")
+        .map_err(|error| decode("decode command ledger attempt number", error))?;
+    let outcome_json: Option<String> = row
+        .try_get("outcome")
+        .map_err(|error| decode("decode command ledger outcome", error))?;
+
+    let record = CommandLedgerRecord {
+        key,
+        command_name,
+        contract_fingerprint: CommandContractFingerprint::try_from_slice(&contract)
+            .map_err(corrupt_ledger_value)?,
+        input_hash: CanonicalInputHash::try_from_slice(&input).map_err(corrupt_ledger_value)?,
+        state: CommandLedgerState::parse(&state)?,
+        causation_id: CausationId::parse_stored(causation_id)?,
+        attempt_token: attempt_token.map(AttemptToken::parse_stored).transpose()?,
+        attempt_number: repository_u64_from_i64(
+            DB::BACKEND,
+            attempt_number,
+            "command ledger attempt number",
+        )?,
+        lease_expires_at: DB::decode_optional_timestamp(row, "lease_expires_at")?,
+        outcome_json,
+        created_at: DB::decode_timestamp(row, "created_at")?,
+        updated_at: DB::decode_timestamp(row, "updated_at")?,
+        completed_at: DB::decode_optional_timestamp(row, "completed_at")?,
+        retention_expires_at: DB::decode_timestamp(row, "retention_expires_at")?,
+        compacted_at: DB::decode_optional_timestamp(row, "compacted_at")?,
+    };
+    record.validate_stored_shape()?;
+    Ok(record)
+}
+
+async fn command_ledger_now_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+) -> Result<SystemTime, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let mut builder = QueryBuilder::<DB>::new("SELECT ");
+    DB::push_command_ledger_now_epoch(&mut builder);
+    builder.push(" AS ledger_now");
+    let row = builder
+        .build()
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| repository_storage_error::<DB>("read command ledger clock", error))?;
+    Ok(DB::decode_timestamp(&row, "ledger_now")?)
+}
+
+async fn select_command_ledger_record_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    key: &CommandLedgerKey,
+    expected_command_name: Option<&str>,
+) -> Result<Option<CommandLedgerRecord>, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let mut builder = QueryBuilder::<DB>::new("SELECT ");
+    builder.push(DB::COMMAND_LEDGER_SELECT);
+    builder.push(" FROM command_ledger WHERE service_id = ");
+    builder.push_bind(key.service_id());
+    builder.push(" AND principal_partition = ");
+    builder.push_bind(key.principal_partition());
+    builder.push(" AND command_id = ");
+    builder.push_bind(key.command_id());
+    if let Some(expected_command_name) = expected_command_name {
+        builder.push(" AND command_name = ");
+        builder.push_bind(expected_command_name);
+    }
+    builder.push(DB::COMMAND_LEDGER_LOCK_SUFFIX);
+    let row = builder
+        .build()
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|error| repository_storage_error::<DB>("select command ledger row", error))?;
+    row.map(|row| command_ledger_record_from_row::<DB>(&row, key.clone()))
+        .transpose()
+}
+
+async fn insert_command_reservation_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    reservation: &CommandReservation,
+) -> Result<bool, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+{
+    let mut builder = QueryBuilder::<DB>::new(
+        "INSERT INTO command_ledger (service_id, principal_partition, command_id, \
+         command_name, command_contract_hash, input_hash, state, causation_id, attempt_token, \
+         attempt_number, lease_expires_at, outcome, created_at, updated_at, completed_at, \
+         retention_expires_at, compacted_at) VALUES (",
+    );
+    builder.push_bind(reservation.key().service_id());
+    builder.push(", ");
+    builder.push_bind(reservation.key().principal_partition());
+    builder.push(", ");
+    builder.push_bind(reservation.key().command_id());
+    builder.push(", ");
+    builder.push_bind(reservation.command_name());
+    builder.push(", ");
+    builder.push_bind(reservation.contract_fingerprint_bytes().as_slice());
+    builder.push(", ");
+    builder.push_bind(reservation.input_hash_bytes().as_slice());
+    builder.push(", ");
+    builder.push_bind(CommandLedgerState::InProgress.as_str());
+    builder.push(", ");
+    builder.push_bind(reservation.candidate_causation().as_str());
+    builder.push(", ");
+    builder.push_bind(reservation.candidate_attempt().as_str());
+    builder.push(", ");
+    builder.push_bind(1_i64);
+    builder.push(", ");
+    DB::push_command_ledger_deadline(&mut builder, reservation.lease());
+    builder.push(", NULL, ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", NULL, ");
+    DB::push_command_ledger_deadline(&mut builder, reservation.retention());
+    builder.push(", NULL");
+    builder.push(") ON CONFLICT (service_id, principal_partition, command_id) DO NOTHING");
+    let result = builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| repository_storage_error::<DB>("insert command reservation", error))?;
+    Ok(DB::rows_affected(&result) == 1)
+}
+
+async fn expire_command_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    key: &CommandLedgerKey,
+    require_retention_due: bool,
+) -> Result<u64, CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+{
+    let mut builder = QueryBuilder::<DB>::new(
+        "UPDATE command_ledger SET state = 'expired', attempt_token = NULL, \
+         lease_expires_at = NULL, outcome = NULL, updated_at = ",
+    );
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", compacted_at = ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(" WHERE service_id = ");
+    builder.push_bind(key.service_id());
+    builder.push(" AND principal_partition = ");
+    builder.push_bind(key.principal_partition());
+    builder.push(" AND command_id = ");
+    builder.push_bind(key.command_id());
+    builder.push(" AND state <> 'expired'");
+    if require_retention_due {
+        builder.push(" AND retention_expires_at <= ");
+        DB::push_command_ledger_now(&mut builder);
+    }
+    let result = builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| repository_storage_error::<DB>("expire command ledger row", error))?;
+    Ok(DB::rows_affected(&result))
+}
+
+async fn reclaim_command_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    record: &mut CommandLedgerRecord,
+    reservation: &CommandReservation,
+    now: SystemTime,
+) -> Result<(), CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+{
+    record.reclaim(reservation, now)?;
+    let attempt_number = repository_i64_from_u64(
+        DB::BACKEND,
+        record.attempt_number,
+        "command ledger attempt number",
+        DB::INTEGER_STORAGE,
+    )?;
+    let mut builder = QueryBuilder::<DB>::new(
+        "UPDATE command_ledger SET state = 'in_progress', attempt_token = ",
+    );
+    builder.push_bind(reservation.candidate_attempt().as_str());
+    builder.push(", attempt_number = ");
+    builder.push_bind(attempt_number);
+    builder.push(", lease_expires_at = ");
+    DB::push_command_ledger_deadline(&mut builder, reservation.lease());
+    builder.push(", outcome = NULL, updated_at = ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", completed_at = NULL, retention_expires_at = ");
+    DB::push_command_ledger_deadline(&mut builder, reservation.retention());
+    builder.push(", compacted_at = NULL WHERE service_id = ");
+    builder.push_bind(record.key.service_id());
+    builder.push(" AND principal_partition = ");
+    builder.push_bind(record.key.principal_partition());
+    builder.push(" AND command_id = ");
+    builder.push_bind(record.key.command_id());
+    let result = builder
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| repository_storage_error::<DB>("reclaim command attempt", error))?;
+    if DB::rows_affected(&result) != 1 {
+        return Err(CommandLedgerError::AttemptFenced {
+            command_id: record.key.command_id().to_string(),
+        });
+    }
+    Ok(())
+}
+
+async fn complete_command_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    completion: &CommandCompletion,
+) -> Result<(), CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+{
+    let fence = completion.attempt_fence();
+    let attempt_number = repository_i64_from_u64(
+        DB::BACKEND,
+        fence.attempt_number(),
+        "command ledger attempt number",
+        DB::INTEGER_STORAGE,
+    )?;
+    let terminal_state = CommandLedgerState::from(completion.state()).as_str();
+    let mut builder = QueryBuilder::<DB>::new("UPDATE command_ledger SET state = ");
+    builder.push_bind(terminal_state);
+    builder.push(", attempt_token = NULL, lease_expires_at = NULL, outcome = ");
+    DB::push_command_ledger_json(&mut builder, completion.replay_json());
+    builder.push(", updated_at = ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", completed_at = ");
+    DB::push_command_ledger_now(&mut builder);
+    builder.push(", retention_expires_at = ");
+    DB::push_command_ledger_deadline(&mut builder, completion.retention());
+    builder.push(", compacted_at = NULL WHERE service_id = ");
+    builder.push_bind(fence.key().service_id());
+    builder.push(" AND principal_partition = ");
+    builder.push_bind(fence.key().principal_partition());
+    builder.push(" AND command_id = ");
+    builder.push_bind(fence.key().command_id());
+    builder.push(" AND command_contract_hash = ");
+    builder.push_bind(fence.contract_fingerprint_bytes().as_slice());
+    builder.push(" AND input_hash = ");
+    builder.push_bind(fence.input_hash_bytes().as_slice());
+    builder.push(" AND state = 'in_progress' AND causation_id = ");
+    builder.push_bind(fence.causation_id().as_str());
+    builder.push(" AND attempt_token = ");
+    builder.push_bind(fence.attempt_token().as_str());
+    builder.push(" AND attempt_number = ");
+    builder.push_bind(attempt_number);
+    builder.push(" AND lease_expires_at > ");
+    DB::push_command_ledger_now(&mut builder);
+    let result =
+        builder.build().execute(&mut **tx).await.map_err(|error| {
+            repository_storage_error::<DB>("complete command ledger row", error)
+        })?;
+    if DB::rows_affected(&result) != 1 {
+        return Err(CommandLedgerError::AttemptFenced {
+            command_id: fence.key().command_id().to_string(),
+        });
+    }
+    Ok(())
+}
+
+impl<DB> CommandLedgerStore for SqlxRepository<DB>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'c> &'c Pool<DB>: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> f64: Encode<'q, DB> + Type<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    fn reserve_command(
+        &self,
+        reservation: CommandReservation,
+    ) -> impl Future<Output = Result<ReservationOutcome, CommandLedgerError>> + Send + '_ {
+        async move {
+            let mut tx = self.pool.begin().await.map_err(|error| {
+                repository_storage_error::<DB>("begin command reservation", error)
+            })?;
+            if insert_command_reservation_in_tx(&mut tx, &reservation).await? {
+                tx.commit().await.map_err(|error| {
+                    repository_storage_error::<DB>("commit command reservation", error)
                 })?;
+                return Ok(ReservationOutcome::Acquired(
+                    reservation.acquired_candidate_attempt(),
+                ));
+            }
 
-            // One grouped round trip for the whole batch's optimistic
-            // concurrency pre-check instead of a MAX(sequence) query per stream.
-            let versions = stream_versions_in_tx(&mut tx, &prepared).await?;
-            for append in &prepared {
-                let actual = versions
-                    .get(&append.identity.storage_key())
-                    .copied()
-                    .unwrap_or(0);
-                if actual != append.expected_version {
-                    return Err(RepositoryError::ConcurrentWrite {
-                        id: append.identity.to_string(),
-                        expected: append.expected_version,
-                        actual,
-                    });
+            let mut record = select_command_ledger_record_in_tx(&mut tx, reservation.key(), None)
+                .await?
+                .ok_or_else(|| {
+                    CommandLedgerError::Corrupt(format!(
+                        "conflicting command `{}` disappeared during reservation",
+                        reservation.key().command_id()
+                    ))
+                })?;
+            let now = command_ledger_now_in_tx(&mut tx).await?;
+            let decision = record.classify_reservation(&reservation, now)?;
+            let outcome = match decision {
+                ReservationDecision::Expire => {
+                    expire_command_in_tx(&mut tx, reservation.key(), false).await?;
+                    ReservationOutcome::Expired
                 }
-            }
-
-            insert_events_in_tx(&self.pool, &mut tx, &prepared).await?;
-
-            insert_outbox_messages_in_tx(&mut tx, &batch.outbox_messages).await?;
-
-            let mut changed_tables = std::collections::BTreeSet::new();
-            for plan in batch.read_model_plans {
-                for mutation in &plan.mutations {
-                    changed_tables.insert(mutation.table_name().to_string());
+                ReservationDecision::Reclaim => {
+                    reclaim_command_in_tx(&mut tx, &mut record, &reservation, now).await?;
+                    ReservationOutcome::Acquired(record.acquired_attempt()?)
                 }
-                apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
+                other => record.reservation_outcome(other)?,
+            };
+            tx.commit().await.map_err(|error| {
+                repository_storage_error::<DB>("commit command reservation decision", error)
+            })?;
+            Ok(outcome)
+        }
+    }
+
+    fn lookup_command<'a>(
+        &'a self,
+        key: &'a CommandLedgerKey,
+        scope: CommandLookupScope<'a>,
+    ) -> impl Future<Output = Result<CommandLookup, CommandLedgerError>> + Send + 'a {
+        async move {
+            let mut tx = self.pool.begin().await.map_err(|error| {
+                repository_storage_error::<DB>("begin command ledger lookup", error)
+            })?;
+
+            // Establish SQLite's single-writer reservation before selecting;
+            // PostgreSQL additionally takes the row lock through its suffix.
+            let mut lock = QueryBuilder::<DB>::new(
+                "UPDATE command_ledger SET updated_at = updated_at WHERE service_id = ",
+            );
+            lock.push_bind(key.service_id());
+            lock.push(" AND principal_partition = ");
+            lock.push_bind(key.principal_partition());
+            lock.push(" AND command_id = ");
+            lock.push_bind(key.command_id());
+            if let CommandLookupScope::CommandName(expected_command_name) = scope {
+                lock.push(" AND command_name = ");
+                lock.push_bind(expected_command_name);
             }
+            lock.build().execute(&mut *tx).await.map_err(|error| {
+                repository_storage_error::<DB>("lock command ledger lookup", error)
+            })?;
 
-            for write in batch.snapshots {
-                match write {
-                    SnapshotWrite::Save { identity, record } => {
-                        save_snapshot_in_tx(&mut tx, &identity, record).await?;
-                    }
-                }
+            let expected_command_name = match scope {
+                CommandLookupScope::CommandName(expected) => Some(expected),
+                CommandLookupScope::Attempt(_) => None,
+            };
+            let Some(mut record) =
+                select_command_ledger_record_in_tx(&mut tx, key, expected_command_name).await?
+            else {
+                tx.commit().await.map_err(|error| {
+                    repository_storage_error::<DB>("commit empty command ledger lookup", error)
+                })?;
+                return Ok(CommandLookup::Unknown);
+            };
+            if !record.matches_lookup_scope(scope) {
+                tx.commit().await.map_err(|error| {
+                    repository_storage_error::<DB>("commit mismatched command ledger lookup", error)
+                })?;
+                return Ok(CommandLookup::Unknown);
             }
-
-            for receipt in &batch.inbox_receipts {
-                insert_inbox_receipt_in_tx(&mut tx, receipt).await?;
+            let now = command_ledger_now_in_tx(&mut tx).await?;
+            if record.state != CommandLedgerState::Expired && record.retention_expires_at <= now {
+                expire_command_in_tx(&mut tx, key, true).await?;
+                record.expire(now);
             }
+            let lookup = record.lookup()?;
+            tx.commit().await.map_err(|error| {
+                repository_storage_error::<DB>("commit command ledger lookup", error)
+            })?;
+            Ok(lookup)
+        }
+    }
 
-            if self.notify_enabled && !changed_tables.is_empty() {
-                DB::push_change_notify(&mut *tx, &changed_tables)
-                    .await
-                    .map_err(RepositoryError::from)?;
-            }
-
-            tx.commit()
-                .await
-                .map_err(|err| repository_storage_error::<DB>("commit transaction", err))?;
-
-            if !changed_tables.is_empty() {
-                self.publish_read_model_change(crate::ReadModelChange {
-                    tables: changed_tables,
+    fn mark_retryable_unknown(
+        &self,
+        attempt: AttemptFence,
+    ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + '_ {
+        async move {
+            let attempt_number = repository_i64_from_u64(
+                DB::BACKEND,
+                attempt.attempt_number(),
+                "command ledger attempt number",
+                DB::INTEGER_STORAGE,
+            )?;
+            let mut builder = QueryBuilder::<DB>::new(
+                "UPDATE command_ledger SET state = 'retryable_unknown', attempt_token = NULL, \
+                 lease_expires_at = NULL, updated_at = ",
+            );
+            DB::push_command_ledger_now(&mut builder);
+            builder.push(" WHERE service_id = ");
+            builder.push_bind(attempt.key().service_id());
+            builder.push(" AND principal_partition = ");
+            builder.push_bind(attempt.key().principal_partition());
+            builder.push(" AND command_id = ");
+            builder.push_bind(attempt.key().command_id());
+            builder.push(" AND command_contract_hash = ");
+            builder.push_bind(attempt.contract_fingerprint_bytes().as_slice());
+            builder.push(" AND input_hash = ");
+            builder.push_bind(attempt.input_hash_bytes().as_slice());
+            builder.push(" AND state = 'in_progress' AND causation_id = ");
+            builder.push_bind(attempt.causation_id().as_str());
+            builder.push(" AND attempt_token = ");
+            builder.push_bind(attempt.attempt_token().as_str());
+            builder.push(" AND attempt_number = ");
+            builder.push_bind(attempt_number);
+            let result = builder.build().execute(&self.pool).await.map_err(|error| {
+                repository_storage_error::<DB>("mark command retryable unknown", error)
+            })?;
+            if DB::rows_affected(&result) != 1 {
+                return Err(CommandLedgerError::AttemptFenced {
+                    command_id: attempt.key().command_id().to_string(),
                 });
             }
-
-            for stream in batch.streams {
-                stream.entity.mark_committed();
-            }
-
             Ok(())
+        }
+    }
+
+    fn compact_expired_commands(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<u64, CommandLedgerError>> + Send + '_ {
+        async move {
+            if limit == 0 {
+                return Ok(0);
+            }
+            let limit = i64::try_from(limit).map_err(|_| {
+                CommandLedgerError::Invalid("command compaction limit exceeds i64".into())
+            })?;
+            let mut tx = self.pool.begin().await.map_err(|error| {
+                repository_storage_error::<DB>("begin command ledger compaction", error)
+            })?;
+
+            // A no-op write obtains SQLite's transaction-wide writer lock.
+            // PostgreSQL relies on the per-row SKIP LOCKED suffix below.
+            QueryBuilder::<DB>::new(
+                "UPDATE command_ledger SET updated_at = updated_at WHERE 1 = 0",
+            )
+            .build()
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                repository_storage_error::<DB>("lock command ledger compaction", error)
+            })?;
+
+            let mut select = QueryBuilder::<DB>::new(
+                "SELECT service_id, principal_partition, command_id FROM command_ledger \
+                 WHERE state <> 'expired' AND retention_expires_at <= ",
+            );
+            DB::push_command_ledger_now(&mut select);
+            select.push(" ORDER BY retention_expires_at, service_id, principal_partition, command_id LIMIT ");
+            select.push_bind(limit);
+            select.push(DB::COMMAND_LEDGER_COMPACTION_LOCK_SUFFIX);
+            let rows = select.build().fetch_all(&mut *tx).await.map_err(|error| {
+                repository_storage_error::<DB>("select command ledger compaction rows", error)
+            })?;
+            let mut compacted = 0;
+            for row in rows {
+                let key = command_ledger_key_from_row::<DB>(&row)?;
+                compacted += expire_command_in_tx(&mut tx, &key, true).await?;
+            }
+            tx.commit().await.map_err(|error| {
+                repository_storage_error::<DB>("commit command ledger compaction", error)
+            })?;
+            Ok(compacted)
         }
     }
 }
@@ -779,12 +1475,8 @@ where
                 .iter()
                 .map(|m| m.table_name().to_string())
                 .collect();
-            let outcome = commit_read_model_write_plan(
-                &self.pool,
-                plan,
-                self.notify_enabled,
-            )
-            .await?;
+            let outcome =
+                commit_read_model_write_plan(&self.pool, plan, self.notify_enabled).await?;
             if outcome.was_applied() && !tables.is_empty() {
                 self.publish_read_model_change(crate::ReadModelChange { tables });
             }

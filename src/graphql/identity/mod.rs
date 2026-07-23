@@ -8,6 +8,7 @@ mod oidc;
 mod resolve;
 
 pub use claims::{map_claims_to_session, ClaimMapConfig};
+pub(crate) use oidc::VerifiedPrincipal;
 pub use oidc::{OidcConfig, OidcValidator, ValidationError};
 pub use resolve::{
     extract_bearer, public_oidc_identity_from_env, public_oidc_identity_from_env_vars,
@@ -15,6 +16,7 @@ pub use resolve::{
     IdentityMode, TrustedProxyConfig, DEFAULT_IDENTITY_STRIP_HEADERS, UNSET_OIDC_AUDIENCE,
     UNSET_OIDC_ISSUER,
 };
+pub(crate) use resolve::{resolve_identity, ResolvedIdentity};
 
 use crate::microsvc::Session;
 use axum::http::HeaderMap;

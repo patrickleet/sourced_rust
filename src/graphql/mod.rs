@@ -75,6 +75,8 @@ pub use permissions::{
 pub use types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 
 #[cfg(feature = "graphql")]
+pub(crate) mod command_input;
+#[cfg(feature = "graphql")]
 mod compile;
 #[cfg(feature = "graphql")]
 mod complexity;
@@ -93,7 +95,7 @@ pub mod subscribe;
 #[cfg(feature = "graphql")]
 pub use engine::{
     graphiql_enabled_from_env, graphiql_enabled_from_env_vars, GraphqlBuildError, GraphqlEngine,
-    GraphqlEngineBuilder, GraphqlPool,
+    GraphqlEngineBuilder, GraphqlPool, GraphqlPoolSource,
 };
 #[cfg(feature = "graphql")]
 pub use http::{graphiql_page, graphql_router, graphql_router_with_service};

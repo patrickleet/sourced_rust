@@ -3,8 +3,10 @@
 //! This module deliberately separates declaration from durable completion. A
 //! handler may prepare a typed payload, but it cannot choose which projection
 //! confirmations count. That finite plan belongs to the command declaration,
-//! and only the command-ledger committer (task 5) may turn a preparation into
+//! and only the framework-owned command-ledger committer may turn a preparation into
 //! an [`Accepted`], [`Fact`], or [`Projected`] value.
+
+#![cfg_attr(not(feature = "graphql"), allow(dead_code))]
 
 use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef};
+use crate::outbox::OutboxMessage;
 use crate::read_model::RelationalReadModel;
+use crate::table::{
+    RowKey, RowValue, RowValues, RowWriteMode, TableMutation, TableStoreError, TableWritePlan,
+};
 
 /// The consistency guarantee declared by a typed command handler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +47,7 @@ mod sealed {
 
 /// A committed accepted command result.
 ///
-/// There is intentionally no public constructor. Task 5's durable command
+/// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Accepted<T> {
@@ -50,7 +56,7 @@ pub struct Accepted<T> {
 
 /// A committed durable-fact command result.
 ///
-/// There is intentionally no public constructor. Task 5's durable command
+/// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fact<T> {
@@ -59,10 +65,10 @@ pub struct Fact<T> {
 
 /// A committed same-transaction projection result.
 ///
-/// There is intentionally no public constructor. Task 5's durable command
+/// There is intentionally no public constructor. The durable command
 /// committer is the only framework component allowed to create this wrapper.
-/// Generic declarations remain non-constructible until task 5 adds the
-/// `RelationalReadModel` bound and staged transactional projection proof.
+/// `T` must be a relational read model, and preparation is available only
+/// through the framework-owned workspace that stages the exact row upsert.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Projected<T> {
     payload: T,
@@ -82,19 +88,39 @@ macro_rules! committed_outcome {
             fn payload(&self) -> &T {
                 &self.payload
             }
+
+            fn __finalize_committed(payload: T) -> Self {
+                Self::from_committed_payload(payload)
+            }
         }
     };
 }
 
 committed_outcome!(Accepted, CommandConsistency::Accepted);
 committed_outcome!(Fact, CommandConsistency::Fact);
-committed_outcome!(Projected, CommandConsistency::Projected);
+
+impl<T> sealed::Outcome for Projected<T> where T: RelationalReadModel {}
+
+impl<T> CommandOutcome for Projected<T>
+where
+    T: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+{
+    type Payload = T;
+    const CONSISTENCY: CommandConsistency = CommandConsistency::Projected;
+
+    fn payload(&self) -> &T {
+        &self.payload
+    }
+
+    fn __finalize_committed(payload: T) -> Self {
+        Self::from_committed_payload(payload)
+    }
+}
 
 macro_rules! crate_committed_constructor {
     ($wrapper:ident) => {
         impl<T> $wrapper<T> {
-            /// Task 5's ledger-aware committer is the only intended caller.
-            #[allow(dead_code)]
+            /// The ledger-aware committer is the only intended caller.
             pub(crate) fn from_committed_payload(payload: T) -> Self {
                 Self { payload }
             }
@@ -104,31 +130,19 @@ macro_rules! crate_committed_constructor {
 
 crate_committed_constructor!(Accepted);
 crate_committed_constructor!(Fact);
-crate_committed_constructor!(Projected);
+
+impl<T> Projected<T>
+where
+    T: RelationalReadModel,
+{
+    /// Created only after a proof-bearing staged projection commits.
+    fn from_committed_payload(payload: T) -> Self {
+        Self { payload }
+    }
+}
 
 impl<T> sealed::PreparableOutcome for Accepted<T> {}
 impl<T> sealed::PreparableOutcome for Fact<T> {}
-
-pub(crate) trait FrameworkCommandOutcome: CommandOutcome {
-    fn finalize(payload: Self::Payload) -> Self;
-}
-
-macro_rules! framework_outcome {
-    ($wrapper:ident) => {
-        impl<T> FrameworkCommandOutcome for $wrapper<T>
-        where
-            T: GraphqlOutputType + Serialize + Send + Sync + 'static,
-        {
-            fn finalize(payload: T) -> Self {
-                Self::from_committed_payload(payload)
-            }
-        }
-    };
-}
-
-framework_outcome!(Accepted);
-framework_outcome!(Fact);
-framework_outcome!(Projected);
 
 /// Sealed type-level contract implemented by committed command outcomes.
 pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
@@ -136,6 +150,9 @@ pub trait CommandOutcome: sealed::Outcome + Send + Sync + 'static {
     const CONSISTENCY: CommandConsistency;
 
     fn payload(&self) -> &Self::Payload;
+
+    #[doc(hidden)]
+    fn __finalize_committed(payload: Self::Payload) -> Self;
 }
 
 /// Error produced while serializing a completion before commit I/O.
@@ -168,7 +185,7 @@ impl From<serde_json::Error> for PrepareCommandError {
     }
 }
 
-/// A serialized command completion waiting for task 5's atomic committer.
+/// A serialized command completion waiting for the atomic command committer.
 ///
 /// Preparing is deliberately separate from returning a committed outcome: it
 /// proves serialization before transaction I/O while keeping both the durable
@@ -177,6 +194,7 @@ impl From<serde_json::Error> for PrepareCommandError {
 pub struct PreparedCommand<K: CommandOutcome> {
     payload: K::Payload,
     serialized_payload: serde_json::Value,
+    projection_proof: Option<ProjectionCommitProof>,
     _outcome: PhantomData<fn() -> K>,
 }
 
@@ -186,6 +204,7 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         Ok(Self {
             payload,
             serialized_payload,
+            projection_proof: None,
             _outcome: PhantomData,
         })
     }
@@ -198,13 +217,288 @@ impl<K: CommandOutcome> PreparedCommand<K> {
         &self.serialized_payload
     }
 
-    /// Task 5's durable committer is the sole intended consumer.
-    #[allow(dead_code)]
-    pub(crate) fn finalize_after_commit(self) -> (K, serde_json::Value)
+    /// Validate declaration-owned completion obligations against exactly what
+    /// the handler staged. This runs before any commit I/O.
+    pub(crate) fn validate_commit_evidence(
+        &self,
+        contract: &TypedCommandContract,
+        has_staged_aggregate_events: bool,
+        outbox_messages: &[OutboxMessage],
+        read_model_plans: &[TableWritePlan],
+    ) -> Result<(), CommandCommitProofError> {
+        if contract.consistency != K::CONSISTENCY {
+            return Err(CommandCommitProofError::ConsistencyMismatch {
+                declared: contract.consistency,
+                prepared: K::CONSISTENCY,
+            });
+        }
+        if contract.output_type_id != TypeId::of::<K::Payload>() {
+            return Err(CommandCommitProofError::OutputTypeMismatch);
+        }
+
+        match K::CONSISTENCY {
+            CommandConsistency::Accepted | CommandConsistency::Fact => {
+                if self.projection_proof.is_some() {
+                    return Err(CommandCommitProofError::UnexpectedProjectionProof);
+                }
+                contract.validate_outbox_fact_coverage(outbox_messages)
+            }
+            CommandConsistency::Projected => {
+                if !has_staged_aggregate_events && outbox_messages.is_empty() {
+                    return Err(CommandCommitProofError::DurableFactMissing);
+                }
+                if !contract.confirmations.is_empty() {
+                    return Err(CommandCommitProofError::ProjectedHasConfirmations);
+                }
+                self.projection_proof
+                    .as_ref()
+                    .ok_or(CommandCommitProofError::MissingProjectionProof)?
+                    .validate(contract.output_type_id, read_model_plans)
+            }
+        }
+    }
+
+    /// The durable committer is the sole intended consumer.
+    pub(crate) fn finalize_after_commit(self) -> (K, serde_json::Value) {
+        (
+            K::__finalize_committed(self.payload),
+            self.serialized_payload,
+        )
+    }
+}
+
+impl<M> PreparedCommand<Projected<M>>
+where
+    M: GraphqlOutputType + RelationalReadModel + Serialize + Send + Sync + 'static,
+{
+    /// Build a projected completion from the exact model value whose full-row
+    /// upsert was staged by the framework-owned causal workspace.
+    pub(crate) fn prepare_projected(
+        payload: M,
+        proof: ProjectionCommitProof,
+    ) -> Result<Self, PrepareCommandError> {
+        let serialized_payload = serde_json::to_value(&payload)?;
+        Ok(Self {
+            payload,
+            serialized_payload,
+            projection_proof: Some(proof),
+            _outcome: PhantomData,
+        })
+    }
+}
+
+/// Why staged command work cannot prove its declared durable outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CommandCommitProofError {
+    ConsistencyMismatch {
+        declared: CommandConsistency,
+        prepared: CommandConsistency,
+    },
+    OutputTypeMismatch,
+    DurableFactMissing,
+    FactHasNoConfirmations,
+    UnreachableConfirmation {
+        projector: String,
+        expected_facts: Vec<String>,
+        staged_facts: Vec<String>,
+    },
+    UnexpectedProjectionProof,
+    MissingProjectionProof,
+    ProjectedHasConfirmations,
+    ProjectionOutputTypeMismatch,
+    ProjectionWriteMissing {
+        model: String,
+    },
+    ProjectionWriteConflict {
+        model: String,
+    },
+    ProjectionWriteMismatch {
+        model: String,
+    },
+}
+
+impl std::fmt::Display for CommandCommitProofError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConsistencyMismatch { declared, prepared } => write!(
+                formatter,
+                "prepared command consistency {prepared:?} does not match declaration {declared:?}"
+            ),
+            Self::OutputTypeMismatch => {
+                formatter.write_str("prepared command output type does not match its declaration")
+            }
+            Self::DurableFactMissing => formatter.write_str(
+                "fact and projected commands require a staged aggregate event or outbox fact",
+            ),
+            Self::FactHasNoConfirmations => formatter.write_str(
+                "a fact command requires at least one finite projector confirmation",
+            ),
+            Self::UnreachableConfirmation {
+                projector,
+                expected_facts,
+                staged_facts,
+            } => write!(
+                formatter,
+                "projector `{projector}` cannot be reached: expected one of {expected_facts:?}, staged outbox facts were {staged_facts:?}"
+            ),
+            Self::UnexpectedProjectionProof => formatter.write_str(
+                "accepted and fact commands cannot carry a same-transaction projection proof",
+            ),
+            Self::MissingProjectionProof => formatter.write_str(
+                "projected command did not stage its returned read model as an exact upsert",
+            ),
+            Self::ProjectedHasConfirmations => formatter.write_str(
+                "projected command cannot declare asynchronous projector confirmations",
+            ),
+            Self::ProjectionOutputTypeMismatch => formatter.write_str(
+                "projected command proof is for a different Rust read-model type",
+            ),
+            Self::ProjectionWriteMissing { model } => write!(
+                formatter,
+                "projected command did not stage an upsert for returned model `{model}`"
+            ),
+            Self::ProjectionWriteConflict { model } => write!(
+                formatter,
+                "projected command staged more than one mutation for returned model `{model}` and key"
+            ),
+            Self::ProjectionWriteMismatch { model } => write!(
+                formatter,
+                "projected command staged a row that differs from returned model `{model}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommandCommitProofError {}
+
+/// Private evidence tying a `Projected<M>` payload to one exact full-row
+/// upsert. Application handlers can obtain this only through the causal
+/// workspace's stage-and-prepare operation.
+pub(crate) struct ProjectionCommitProof {
+    model_type_id: TypeId,
+    model_name: String,
+    table_name: String,
+    key_fingerprint: String,
+    row_fingerprint: String,
+}
+
+impl ProjectionCommitProof {
+    pub(crate) fn for_model<M>(model: &M) -> Result<Self, TableStoreError>
     where
-        K: FrameworkCommandOutcome,
+        M: RelationalReadModel + 'static,
     {
-        (K::finalize(self.payload), self.serialized_payload)
+        let schema = M::schema();
+        schema.validate()?;
+        let key = model.primary_key()?;
+        let row = model.to_row()?;
+        Ok(Self {
+            model_type_id: TypeId::of::<M>(),
+            model_name: schema.model_name.clone(),
+            table_name: schema.table_name.clone(),
+            key_fingerprint: fingerprint_key(&key),
+            row_fingerprint: fingerprint_row(&row),
+        })
+    }
+
+    fn validate(
+        &self,
+        output_type_id: TypeId,
+        plans: &[TableWritePlan],
+    ) -> Result<(), CommandCommitProofError> {
+        if self.model_type_id != output_type_id {
+            return Err(CommandCommitProofError::ProjectionOutputTypeMismatch);
+        }
+
+        let mut target_count = 0usize;
+        let mut exact_match = false;
+        for mutation in plans.iter().flat_map(|plan| &plan.mutations) {
+            let (schema, key) = match mutation {
+                TableMutation::UpsertRow(mutation) => (mutation.schema, &mutation.key),
+                TableMutation::PatchRow(mutation) => (mutation.schema, &mutation.key),
+                TableMutation::DeleteRow(mutation) => (mutation.schema, &mutation.key),
+            };
+            if schema.table_name != self.table_name || fingerprint_key(key) != self.key_fingerprint
+            {
+                continue;
+            }
+
+            target_count += 1;
+            if let TableMutation::UpsertRow(mutation) = mutation {
+                exact_match = mutation.mode == RowWriteMode::Upsert
+                    && mutation.schema.model_name == self.model_name
+                    && fingerprint_row(&mutation.values) == self.row_fingerprint;
+            }
+        }
+
+        match target_count {
+            0 => Err(CommandCommitProofError::ProjectionWriteMissing {
+                model: self.model_name.clone(),
+            }),
+            1 if exact_match => Ok(()),
+            1 => Err(CommandCommitProofError::ProjectionWriteMismatch {
+                model: self.model_name.clone(),
+            }),
+            _ => Err(CommandCommitProofError::ProjectionWriteConflict {
+                model: self.model_name.clone(),
+            }),
+        }
+    }
+}
+
+fn fingerprint_key(key: &RowKey) -> String {
+    fingerprint_values("distributed.command-projection-key.v1", key.iter())
+}
+
+fn fingerprint_row(row: &RowValues) -> String {
+    fingerprint_values("distributed.command-projection-row.v1", row.iter())
+}
+
+fn fingerprint_values<'a>(
+    domain: &str,
+    values: impl Iterator<Item = (&'a str, &'a RowValue)>,
+) -> String {
+    let canonical = values
+        .map(|(column, value)| serde_json::json!([column, canonical_row_value(value)]))
+        .collect::<Vec<_>>();
+    let mut digest = Sha256::new();
+    digest.update(domain.as_bytes());
+    digest.update([0]);
+    digest.update(
+        serde_json::to_vec(&canonical)
+            .expect("canonical row projection fingerprint serialization cannot fail"),
+    );
+    format!("sha256:{:x}", digest.finalize())
+}
+
+fn canonical_row_value(value: &RowValue) -> serde_json::Value {
+    match value {
+        RowValue::Null => serde_json::json!(["null"]),
+        RowValue::Bool(value) => serde_json::json!(["bool", value]),
+        RowValue::I64(value) => serde_json::json!(["i64", value.to_string()]),
+        RowValue::U64(value) => serde_json::json!(["u64", value.to_string()]),
+        RowValue::F64(value) => serde_json::json!(["f64_bits", value.to_bits().to_string()]),
+        RowValue::String(value) => serde_json::json!(["string", value]),
+        RowValue::Bytes(value) => serde_json::json!(["bytes", value]),
+        RowValue::Json(value) => serde_json::json!(["json", canonical_json(value)]),
+    }
+}
+
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonical_json).collect())
+        }
+        serde_json::Value::Object(values) => {
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json(value)))
+                    .collect(),
+            )
+        }
+        scalar => scalar.clone(),
     }
 }
 
@@ -212,8 +506,8 @@ impl<K> PreparedCommand<K>
 where
     K: CommandOutcome + sealed::PreparableOutcome,
 {
-    /// Prepare an accepted or fact payload for task 5's durable committer.
-    /// Projected results require task 5's staged transactional proof and do
+    /// Prepare an accepted or fact payload for the durable committer.
+    /// Projected results require a staged transactional proof and do
     /// not implement the private preparation capability.
     pub fn prepare(payload: K::Payload) -> Result<Self, PrepareCommandError> {
         Self::prepare_payload(payload)
@@ -273,8 +567,8 @@ pub(crate) struct EffectKey {
 
 /// One declaration-owned projector/model/key confirmation target.
 ///
-/// Task 5 resolves these expressions from the retained canonical GraphQL wire
-/// input before commit I/O, then commits the finite resolved obligations
+/// The dispatcher resolves these expressions from the retained canonical
+/// GraphQL wire input before commit I/O, then commits the finite obligations
 /// atomically with the command ledger/fact. Handlers cannot add, remove, or
 /// rewrite targets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -290,6 +584,110 @@ pub(crate) struct CommandProjectionConfirmation {
     #[serde(skip_serializing)]
     projector_topology: ProjectorTopologyIdentity,
 }
+
+/// One declaration-owned projection obligation after every portable
+/// expression has been resolved against the exact canonical GraphQL wire
+/// input retained by the dispatcher.
+///
+/// The ordered key representation is deliberately JSON-valued. Converting
+/// through a Rust input DTO or a SQL row codec here could lose wire names,
+/// integer ranges, explicit nulls, or container values before the obligation
+/// is durably attached to the command outcome.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResolvedProjectionObligation {
+    pub(crate) projector: String,
+    pub(crate) model: String,
+    pub(crate) key: ResolvedProjectionKey,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_json_value"
+    )]
+    pub(crate) partition: Option<serde_json::Value>,
+}
+
+fn deserialize_present_json_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+/// Complete model key in declaration order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResolvedProjectionKey {
+    pub(crate) fields: Vec<ResolvedProjectionKeyField>,
+}
+
+/// One resolved field in a complete projection key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResolvedProjectionKeyField {
+    pub(crate) field: String,
+    pub(crate) value: serde_json::Value,
+}
+
+/// Why a declaration-owned projection obligation could not be resolved before
+/// commit I/O.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionObligationResolutionError {
+    MissingInputPath {
+        projector: String,
+        model: String,
+        target: String,
+        path: Vec<String>,
+    },
+    TrustedPresetUnavailable {
+        projector: String,
+        model: String,
+        target: String,
+        preset: String,
+    },
+    InvalidConstant {
+        projector: String,
+        model: String,
+        target: String,
+        error: String,
+    },
+}
+
+impl std::fmt::Display for ProjectionObligationResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingInputPath {
+                projector,
+                model,
+                target,
+                path,
+            } => write!(
+                formatter,
+                "projection obligation `{projector}`/`{model}` {target} references absent canonical input path `{}`",
+                path.join("."),
+            ),
+            Self::TrustedPresetUnavailable {
+                projector,
+                model,
+                target,
+                preset,
+            } => write!(
+                formatter,
+                "projection obligation `{projector}`/`{model}` {target} uses unavailable trusted preset `{preset}`",
+            ),
+            Self::InvalidConstant {
+                projector,
+                model,
+                target,
+                error,
+            } => write!(
+                formatter,
+                "projection obligation `{projector}`/`{model}` {target} contains an invalid constant: {error}",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProjectionObligationResolutionError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ProjectorTopologyIdentity {
@@ -1439,6 +1837,23 @@ pub(crate) struct TypedCommandContract {
 }
 
 impl TypedCommandContract {
+    /// Stable per-route identity used in the command ledger fingerprint.
+    ///
+    /// This is intentionally distinct from the service inventory digest: a
+    /// deployment may add unrelated routes without invalidating safe retries
+    /// for this command. The explicit domain/version prevents this byte digest
+    /// from aliasing any other SHA-256 use in the framework.
+    pub(crate) fn fingerprint_bytes(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"distributed.typed-command-contract.v1");
+        digest.update([0]);
+        digest.update(
+            serde_json::to_vec(&self.canonical_value())
+                .expect("canonical typed command contract serialization cannot fail"),
+        );
+        digest.finalize().into()
+    }
+
     pub(crate) fn canonical_value(&self) -> serde_json::Value {
         let mut roles = self.roles.clone();
         roles.sort();
@@ -1471,6 +1886,145 @@ impl TypedCommandContract {
             "effects": effects,
             "confirmations": confirmations,
         })
+    }
+
+    /// Resolve the finite declaration-owned projection plan from the exact
+    /// canonical GraphQL wire input retained beside the decoded command.
+    ///
+    /// Resolution is pure and must run before commit I/O. Confirmation and key
+    /// field order are retained exactly as declared. Input values and constants
+    /// are cloned without a Rust DTO or SQL codec round trip, while explicit
+    /// null remains distinguishable from an undeclared partition.
+    pub(crate) fn resolve_projection_obligations(
+        &self,
+        canonical_wire_input: &serde_json::Value,
+    ) -> Result<Vec<ResolvedProjectionObligation>, ProjectionObligationResolutionError> {
+        self.confirmations
+            .iter()
+            .map(|confirmation| {
+                let fields = confirmation
+                    .key
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let target = format!("key field `{}`", field.field);
+                        resolve_projection_obligation_expression(
+                            canonical_wire_input,
+                            confirmation,
+                            &target,
+                            &field.value,
+                        )
+                        .map(|value| ResolvedProjectionKeyField {
+                            field: field.field.clone(),
+                            value,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let partition = confirmation
+                    .partition
+                    .as_ref()
+                    .map(|expression| {
+                        resolve_projection_obligation_expression(
+                            canonical_wire_input,
+                            confirmation,
+                            "partition",
+                            expression,
+                        )
+                    })
+                    .transpose()?;
+                Ok(ResolvedProjectionObligation {
+                    projector: confirmation.projector.clone(),
+                    model: confirmation.model.clone(),
+                    key: ResolvedProjectionKey { fields },
+                    partition,
+                })
+            })
+            .collect()
+    }
+
+    /// Prove that every finite asynchronous confirmation can be driven by a
+    /// fact staged in the durable outbox. Aggregate event records intentionally
+    /// do not count: they are write-side history and have no publication path.
+    fn validate_outbox_fact_coverage(
+        &self,
+        outbox_messages: &[OutboxMessage],
+    ) -> Result<(), CommandCommitProofError> {
+        if self.consistency == CommandConsistency::Fact && self.confirmations.is_empty() {
+            return Err(CommandCommitProofError::FactHasNoConfirmations);
+        }
+
+        let staged_facts = outbox_messages
+            .iter()
+            .filter(|message| message.destination.is_none() && message.is_pending())
+            .map(|message| message.event_type.clone())
+            .collect::<BTreeSet<_>>();
+        for confirmation in &self.confirmations {
+            if confirmation
+                .projector_topology
+                .facts
+                .iter()
+                .any(|fact| staged_facts.contains(fact))
+            {
+                continue;
+            }
+            return Err(CommandCommitProofError::UnreachableConfirmation {
+                projector: confirmation.projector.clone(),
+                expected_facts: confirmation.projector_topology.facts.clone(),
+                staged_facts: staged_facts.iter().cloned().collect(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn resolve_projection_obligation_expression(
+    canonical_wire_input: &serde_json::Value,
+    confirmation: &CommandProjectionConfirmation,
+    target: &str,
+    expression: &EffectExpression,
+) -> Result<serde_json::Value, ProjectionObligationResolutionError> {
+    match expression {
+        EffectExpression::Input { path } => {
+            let mut value = canonical_wire_input;
+            if path.is_empty() {
+                return Err(ProjectionObligationResolutionError::MissingInputPath {
+                    projector: confirmation.projector.clone(),
+                    model: confirmation.model.clone(),
+                    target: target.to_string(),
+                    path: path.clone(),
+                });
+            }
+            for segment in path {
+                let Some(next) = value.as_object().and_then(|object| object.get(segment)) else {
+                    return Err(ProjectionObligationResolutionError::MissingInputPath {
+                        projector: confirmation.projector.clone(),
+                        model: confirmation.model.clone(),
+                        target: target.to_string(),
+                        path: path.clone(),
+                    });
+                };
+                value = next;
+            }
+            Ok(value.clone())
+        }
+        EffectExpression::Constant { value } => Ok(value.clone()),
+        EffectExpression::Null => Ok(serde_json::Value::Null),
+        EffectExpression::TrustedPreset { name } => Err(
+            ProjectionObligationResolutionError::TrustedPresetUnavailable {
+                projector: confirmation.projector.clone(),
+                model: confirmation.model.clone(),
+                target: target.to_string(),
+                preset: name.clone(),
+            },
+        ),
+        EffectExpression::InvalidConstant { error } => {
+            Err(ProjectionObligationResolutionError::InvalidConstant {
+                projector: confirmation.projector.clone(),
+                model: confirmation.model.clone(),
+                target: target.to_string(),
+                error: error.clone(),
+            })
+        }
     }
 }
 
@@ -1769,6 +2323,328 @@ mod tests {
         let (committed, serialized) = prepared.finalize_after_commit();
         assert_eq!(committed.payload().id, "todo-1");
         assert_eq!(serialized["id"], "todo-1");
+    }
+
+    fn confirmation_with_facts(facts: &[&str]) -> CommandProjectionConfirmation {
+        CommandProjectionConfirmation {
+            projector: "project_todos".into(),
+            model: "TodoView".into(),
+            key: EffectKey { fields: Vec::new() },
+            partition: None,
+            projector_topology: ProjectorTopologyIdentity::new(
+                "project_todos",
+                &facts
+                    .iter()
+                    .map(|fact| (*fact).to_string())
+                    .collect::<Vec<_>>(),
+                &["TodoView".into()],
+            ),
+        }
+    }
+
+    fn confirmation_with_key(
+        projector: &str,
+        fields: impl IntoIterator<Item = (&'static str, EffectExpression)>,
+        partition: Option<EffectExpression>,
+    ) -> CommandProjectionConfirmation {
+        CommandProjectionConfirmation {
+            projector: projector.into(),
+            model: "TodoView".into(),
+            key: EffectKey {
+                fields: fields
+                    .into_iter()
+                    .map(|(field, value)| EffectFieldValue {
+                        field: field.into(),
+                        value,
+                    })
+                    .collect(),
+            },
+            partition,
+            projector_topology: ProjectorTopologyIdentity::new(
+                projector,
+                &["todo.changed".into()],
+                &["TodoView".into()],
+            ),
+        }
+    }
+
+    #[test]
+    fn projection_obligations_resolve_nested_canonical_wire_paths_in_declaration_order() {
+        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+        contract.confirmations = vec![
+            confirmation_with_key(
+                "project_second",
+                [
+                    (
+                        "tenant_id",
+                        EffectExpression::Input {
+                            path: vec!["scope".into(), "tenantId".into()],
+                        },
+                    ),
+                    (
+                        "id",
+                        EffectExpression::Input {
+                            path: vec!["todoId".into()],
+                        },
+                    ),
+                ],
+                Some(EffectExpression::Input {
+                    path: vec!["scope".into(), "tenantId".into()],
+                }),
+            ),
+            confirmation_with_key(
+                "project_first",
+                [(
+                    "id",
+                    EffectExpression::Input {
+                        path: vec!["todoId".into()],
+                    },
+                )],
+                None,
+            ),
+        ];
+        let canonical_wire = serde_json::json!({
+            "scope": { "tenantId": "tenant-7" },
+            "todoId": "todo-1"
+        });
+
+        let resolved = contract
+            .resolve_projection_obligations(&canonical_wire)
+            .unwrap();
+
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|obligation| obligation.projector.as_str())
+                .collect::<Vec<_>>(),
+            ["project_second", "project_first"]
+        );
+        assert_eq!(
+            resolved[0]
+                .key
+                .fields
+                .iter()
+                .map(|field| field.field.as_str())
+                .collect::<Vec<_>>(),
+            ["tenant_id", "id"]
+        );
+        assert_eq!(resolved[0].key.fields[0].value, "tenant-7");
+        assert_eq!(resolved[0].key.fields[1].value, "todo-1");
+        assert_eq!(resolved[0].partition, Some(serde_json::json!("tenant-7")));
+        assert_eq!(resolved[1].key.fields[0].value, "todo-1");
+        assert_eq!(resolved[1].partition, None);
+    }
+
+    #[test]
+    fn projection_obligations_preserve_constants_and_nulls_through_serde() {
+        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+        let constant = serde_json::json!({
+            "nested": [1, "two", null],
+            "large": u64::MAX,
+        });
+        contract.confirmations = vec![confirmation_with_key(
+            "project_todos",
+            [
+                (
+                    "constant_key",
+                    EffectExpression::Constant {
+                        value: constant.clone(),
+                    },
+                ),
+                ("declared_null", EffectExpression::Null),
+                (
+                    "input_null",
+                    EffectExpression::Input {
+                        path: vec!["optionalKey".into()],
+                    },
+                ),
+            ],
+            Some(EffectExpression::Null),
+        )];
+
+        let resolved = contract
+            .resolve_projection_obligations(&serde_json::json!({ "optionalKey": null }))
+            .unwrap();
+
+        assert_eq!(resolved[0].key.fields[0].value, constant);
+        assert_eq!(resolved[0].key.fields[1].value, serde_json::Value::Null);
+        assert_eq!(resolved[0].key.fields[2].value, serde_json::Value::Null);
+        assert_eq!(resolved[0].partition, Some(serde_json::Value::Null));
+
+        let encoded = serde_json::to_value(&resolved).unwrap();
+        assert!(encoded[0]["partition"].is_null());
+        let decoded: Vec<ResolvedProjectionObligation> = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, resolved);
+    }
+
+    #[test]
+    fn projection_obligation_resolution_fails_on_absent_input_paths() {
+        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+        contract.confirmations = vec![confirmation_with_key(
+            "project_todos",
+            [(
+                "tenant_id",
+                EffectExpression::Input {
+                    path: vec!["scope".into(), "tenantId".into()],
+                },
+            )],
+            None,
+        )];
+
+        let error = contract
+            .resolve_projection_obligations(&serde_json::json!({ "scope": null }))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProjectionObligationResolutionError::MissingInputPath { path, .. }
+                if path == ["scope", "tenantId"]
+        ));
+    }
+
+    #[test]
+    fn projection_obligation_resolution_rejects_unresolved_private_expressions() {
+        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+        contract.confirmations = vec![confirmation_with_key(
+            "project_todos",
+            [(
+                "tenant_id",
+                EffectExpression::TrustedPreset {
+                    name: "tenant".into(),
+                },
+            )],
+            None,
+        )];
+        assert!(matches!(
+            contract.resolve_projection_obligations(&serde_json::json!({})),
+            Err(ProjectionObligationResolutionError::TrustedPresetUnavailable {
+                preset,
+                ..
+            }) if preset == "tenant"
+        ));
+
+        contract.confirmations = vec![confirmation_with_key(
+            "project_todos",
+            [],
+            Some(EffectExpression::InvalidConstant {
+                error: "not portable".into(),
+            }),
+        )];
+        assert!(matches!(
+            contract.resolve_projection_obligations(&serde_json::json!({})),
+            Err(ProjectionObligationResolutionError::InvalidConstant {
+                target,
+                error,
+                ..
+            }) if target == "partition" && error == "not portable"
+        ));
+    }
+
+    #[test]
+    fn projection_obligation_resolution_is_empty_without_confirmations() {
+        let contract = typed_command::<Input, Accepted<Payload>>("todo.check").into_contract();
+
+        assert!(contract
+            .resolve_projection_obligations(&serde_json::json!("unused"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn finite_confirmation_requires_a_reachable_staged_outbox_fact() {
+        let mut contract = typed_command::<Input, Accepted<Payload>>("todo.create").into_contract();
+        contract.confirmations = vec![confirmation_with_facts(&["todo.created", "todo.recreated"])];
+        let prepared = PreparedCommand::<Accepted<Payload>>::prepare(Payload {
+            id: "todo-1".into(),
+        })
+        .unwrap();
+
+        let no_fact = prepared
+            .validate_commit_evidence(&contract, false, &[], &[])
+            .unwrap_err();
+        assert!(matches!(
+            no_fact,
+            CommandCommitProofError::UnreachableConfirmation { .. }
+        ));
+
+        let unrelated = OutboxMessage::create("message-1", "account.changed", Vec::new()).unwrap();
+        assert!(matches!(
+            prepared.validate_commit_evidence(&contract, false, &[unrelated], &[]),
+            Err(CommandCommitProofError::UnreachableConfirmation { .. })
+        ));
+
+        let reachable = OutboxMessage::create("message-2", "todo.created", Vec::new()).unwrap();
+        prepared
+            .validate_commit_evidence(&contract, false, &[reachable], &[])
+            .unwrap();
+
+        let directed =
+            OutboxMessage::create_to("message-3", "todo.created", "todo-projector", Vec::new())
+                .unwrap();
+        assert!(matches!(
+            prepared.validate_commit_evidence(&contract, false, &[directed], &[]),
+            Err(CommandCommitProofError::UnreachableConfirmation { .. })
+        ));
+
+        let mut published = OutboxMessage::create("message-4", "todo.created", Vec::new()).unwrap();
+        published.status = crate::outbox::OutboxMessageStatus::Published;
+        assert!(matches!(
+            prepared.validate_commit_evidence(&contract, false, &[published], &[]),
+            Err(CommandCommitProofError::UnreachableConfirmation { .. })
+        ));
+
+        let mut failed = OutboxMessage::create("message-5", "todo.created", Vec::new()).unwrap();
+        failed.status = crate::outbox::OutboxMessageStatus::Failed;
+        assert!(matches!(
+            prepared.validate_commit_evidence(&contract, false, &[failed], &[]),
+            Err(CommandCommitProofError::UnreachableConfirmation { .. })
+        ));
+    }
+
+    #[test]
+    fn accepted_without_confirmations_allows_an_empty_domain_batch() {
+        let contract = typed_command::<Input, Accepted<Payload>>("todo.check").into_contract();
+        let prepared = PreparedCommand::<Accepted<Payload>>::prepare(Payload {
+            id: "todo-1".into(),
+        })
+        .unwrap();
+
+        prepared
+            .validate_commit_evidence(&contract, false, &[], &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn fact_without_a_finite_confirmation_fails_at_commit_validation() {
+        let contract = typed_command::<Input, Fact<Payload>>("todo.create").into_contract();
+        let prepared = PreparedCommand::<Fact<Payload>>::prepare(Payload {
+            id: "todo-1".into(),
+        })
+        .unwrap();
+        let fact = OutboxMessage::create("message-1", "todo.created", Vec::new()).unwrap();
+
+        assert_eq!(
+            prepared
+                .validate_commit_evidence(&contract, false, &[fact], &[])
+                .unwrap_err(),
+            CommandCommitProofError::FactHasNoConfirmations
+        );
+    }
+
+    #[test]
+    fn per_route_fingerprint_is_stable_and_contract_sensitive() {
+        let first = typed_command::<Input, Accepted<Payload>>("todo.create")
+            .roles(["writer", "admin"])
+            .into_contract();
+        let reordered = typed_command::<Input, Accepted<Payload>>("todo.create")
+            .roles(["admin", "writer"])
+            .into_contract();
+        let renamed = typed_command::<Input, Accepted<Payload>>("todo.rename")
+            .roles(["admin", "writer"])
+            .into_contract();
+
+        assert_eq!(first.fingerprint_bytes(), reordered.fingerprint_bytes());
+        assert_ne!(first.fingerprint_bytes(), renamed.fingerprint_bytes());
     }
 
     #[test]
