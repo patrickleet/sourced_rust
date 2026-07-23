@@ -13,6 +13,18 @@ use crate::command_ledger::{
 };
 use crate::entity::Entity;
 use crate::lock::{InMemoryLockManager, Lock, LockManager};
+use crate::projection_protocol::{
+    ProjectionChangeCursor, ProjectionChangeRead, ProjectionCheckpoint, ProjectionCommitBatch,
+    ProjectionCommitResult, ProjectionFailure, ProjectionFailureBatch, ProjectionFailureLocation,
+    ProjectionGeneration, ProjectionInputCursor, ProjectionInputDisposition,
+    ProjectionLiveRecordBatch, ProjectionLiveRecordBatchRequest, ProjectionModelOwnership,
+    ProjectionObligationEvidenceBatch, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObservation, ProjectionObservationKind, ProjectionPartition,
+    ProjectionPartitionRuntimeState, ProjectionProtocolError, ProjectionProtocolStore,
+    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
+    ProjectionQuerySnapshotRequest, ProjectionRecordMetadata, ProjectionRecordScope,
+    ProjectorTopologyId, TrustedProjectionInput,
+};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
     CommitBatch, GetStream, InboxStore, ReadModelWritePlanStore, RelationalReadModelQueryStore,
@@ -281,6 +293,165 @@ where
         // the lock manager is essential: a matching lock may belong to an
         // unrelated legacy load/commit flow that is still in progress.
         self.inner.commit_causal_batch(batch)
+    }
+}
+
+impl<R, L> ProjectionProtocolStore for QueuedRepository<R, L>
+where
+    R: ProjectionProtocolStore,
+    L: LockManager,
+{
+    fn register_projection_models<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        ownership: &'a [ProjectionModelOwnership],
+    ) -> impl Future<Output = Result<(), ProjectionProtocolError>> + Send + 'a {
+        self.inner.register_projection_models(topology, ownership)
+    }
+
+    fn commit_projection(
+        &self,
+        batch: ProjectionCommitBatch,
+    ) -> impl Future<Output = Result<ProjectionCommitResult, ProjectionProtocolError>> + Send + '_
+    {
+        self.inner.commit_projection(batch)
+    }
+
+    fn record_projection_failure(
+        &self,
+        batch: ProjectionFailureBatch,
+    ) -> impl Future<Output = Result<ProjectionFailure, ProjectionProtocolError>> + Send + '_ {
+        self.inner.record_projection_failure(batch)
+    }
+
+    fn projection_checkpoint<'a>(
+        &'a self,
+        cursor_scope: &'a ProjectionInputCursor,
+        generation: ProjectionGeneration,
+    ) -> impl Future<Output = Result<Option<ProjectionCheckpoint>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_checkpoint(cursor_scope, generation)
+    }
+
+    fn projection_record<'a>(
+        &'a self,
+        scope: &'a ProjectionRecordScope,
+    ) -> impl Future<Output = Result<Option<ProjectionRecordMetadata>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_record(scope)
+    }
+
+    fn projection_input_disposition<'a>(
+        &'a self,
+        input: &'a TrustedProjectionInput,
+    ) -> impl Future<Output = Result<ProjectionInputDisposition, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_input_disposition(input)
+    }
+
+    fn projection_query_snapshot<'a>(
+        &'a self,
+        request: &'a ProjectionQuerySnapshotRequest,
+    ) -> impl Future<Output = Result<ProjectionQuerySnapshot, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_query_snapshot(request)
+    }
+
+    fn projection_query_snapshot_batch<'a>(
+        &'a self,
+        request: &'a ProjectionQuerySnapshotBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionQuerySnapshotBatch, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_query_snapshot_batch(request)
+    }
+
+    fn projection_obligation_evidence_batch<'a>(
+        &'a self,
+        request: &'a ProjectionObligationEvidenceBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionObligationEvidenceBatch, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_obligation_evidence_batch(request)
+    }
+
+    fn projection_live_record_batch<'a>(
+        &'a self,
+        request: &'a ProjectionLiveRecordBatchRequest,
+    ) -> impl Future<Output = Result<ProjectionLiveRecordBatch, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_live_record_batch(request)
+    }
+
+    fn projection_partition_runtime_state<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+    ) -> impl Future<Output = Result<Option<ProjectionPartitionRuntimeState>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner
+            .projection_partition_runtime_state(topology, partition)
+    }
+
+    fn projection_observation<'a>(
+        &'a self,
+        causation_id: &'a str,
+        scope: &'a ProjectionRecordScope,
+        kind: ProjectionObservationKind,
+    ) -> impl Future<Output = Result<Option<ProjectionObservation>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner.projection_observation(causation_id, scope, kind)
+    }
+
+    fn projection_changes<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        after: Option<&'a ProjectionChangeCursor>,
+        limit: usize,
+    ) -> impl Future<Output = Result<ProjectionChangeRead, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .projection_changes(topology, partition, after, limit)
+    }
+
+    fn repair_projection<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<ProjectionGeneration, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .repair_projection(topology, partition, failure_id)
+    }
+
+    fn compact_projection_changes<'a>(
+        &'a self,
+        through: &'a ProjectionChangeCursor,
+    ) -> impl Future<Output = Result<u64, ProjectionProtocolError>> + Send + 'a {
+        self.inner.compact_projection_changes(through)
+    }
+
+    fn projection_failure<'a>(
+        &'a self,
+        topology: &'a ProjectorTopologyId,
+        partition: &'a ProjectionPartition,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<Option<ProjectionFailure>, ProjectionProtocolError>> + Send + 'a
+    {
+        self.inner
+            .projection_failure(topology, partition, failure_id)
+    }
+
+    fn projection_failure_location<'a>(
+        &'a self,
+        failure_id: &'a str,
+    ) -> impl Future<Output = Result<Option<ProjectionFailureLocation>, ProjectionProtocolError>>
+           + Send
+           + 'a {
+        self.inner.projection_failure_location(failure_id)
     }
 }
 

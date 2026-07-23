@@ -19,10 +19,12 @@ use serde::Serialize;
 use crate::aggregate::{hydrate, Aggregate, AggregateRepository};
 use crate::command_ledger::CausalGetStream;
 use crate::graphql::command_contract::{
-    CommandCommitProofError, CommandOutcome, ProjectionCommitProof, TypedCommandContract,
+    CommandCommitProofError, CommandOutcome, ProjectionCommitProof, ResolvedDirectProjectionTarget,
+    TypedCommandContract,
 };
 use crate::graphql::{GraphqlOutputType, PrepareCommandError, PreparedCommand, Projected};
 use crate::outbox::OutboxMessage;
+use crate::projection_protocol::SameTransactionProjectionBatch;
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 use crate::repository::{CommitBatch, RepositoryError, SnapshotWrite, StreamIdentity, StreamWrite};
 use crate::table::{TableStoreError, TableWritePlan};
@@ -439,6 +441,18 @@ where
             &self.outbox_messages,
             &self.read_model_plans,
         )
+    }
+
+    /// Seal the proof-matched projected row into the repository's private
+    /// direct-projection participant. This must run after evidence validation
+    /// and before the remaining ordinary table plans become a commit batch.
+    pub(crate) fn seal_direct_projection<K: CommandOutcome>(
+        &mut self,
+        prepared: &PreparedCommand<K>,
+        target: Option<ResolvedDirectProjectionTarget>,
+        causation_id: &str,
+    ) -> Result<Option<SameTransactionProjectionBatch>, CommandCommitProofError> {
+        prepared.seal_direct_projection(target, &mut self.read_model_plans, causation_id)
     }
 
     /// Borrow staged aggregates into the existing public commit-batch shape.

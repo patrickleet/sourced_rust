@@ -97,6 +97,16 @@ fn scaffolded_http_tracing_service_compiles() {
 
 #[test]
 #[ignore = "compiles the scaffolded project via a nested cargo build; run in the integration job"]
+fn scaffolded_query_api_service_compiles() {
+    let out_dir = scaffold(
+        "compile-query-api-sqlite",
+        &["--query-api", "--store", "sqlite", "--model", "order"],
+    );
+    cargo_check(&out_dir);
+}
+
+#[test]
+#[ignore = "compiles the scaffolded project via a nested cargo build; run in the integration job"]
 fn scaffolded_knative_service_compiles() {
     // The other main.rs branch: CloudEvents ingress served through the
     // scaffold's own axum dependency, with the in-memory store and the

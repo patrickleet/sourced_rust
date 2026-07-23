@@ -209,7 +209,7 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
         }
     }
 
-    emit_command_types(&mut out, &surface.commands)?;
+    emit_command_types(&mut out, &surface.commands, &surface.models)?;
 
     // Roots are emitted from the Surface inventory, not reconstructed from
     // schemas. This is what keeps hidden/partial by-PK identity and per-model
@@ -310,6 +310,7 @@ fn surface_root_sdl(root: &super::surface::RootField) -> String {
 fn emit_command_types(
     out: &mut String,
     commands: &[super::surface::SurfaceCommand],
+    models: &BTreeMap<String, super::surface::SurfaceModel>,
 ) -> Result<(), String> {
     let mut inputs = BTreeMap::new();
     let mut outputs = BTreeMap::new();
@@ -318,7 +319,16 @@ fn emit_command_types(
             collect_command_type(definition, &mut inputs)?;
         }
         if let super::surface::SurfaceCommandShape::Typed(definition) = &command.output {
-            collect_command_type(definition, &mut outputs)?;
+            let reuses_visible_model = super::surface::projected_output_reuses_surface_model(
+                &command.command_name,
+                command.consistency,
+                command.projected_model.as_ref(),
+                definition,
+                models,
+            )?;
+            if !reuses_visible_model {
+                collect_command_type(definition, &mut outputs)?;
+            }
         }
     }
     for definition in inputs.values() {

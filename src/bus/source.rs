@@ -12,7 +12,7 @@
 
 use std::future::Future;
 
-use super::{Message, TransportError};
+use super::{Message, OrderedDelivery, TransportError};
 
 /// A transport a runner can pull messages from, one at a time.
 ///
@@ -50,6 +50,17 @@ pub trait MessageSource: Send {
 pub trait ReceivedMessage: Send {
     /// The canonical message to dispatch.
     fn message(&self) -> &Message;
+
+    /// Adapter-authenticated ordered source position for causal projection.
+    ///
+    /// The default is deliberately unqualified. A source must override this
+    /// only when it has a durable numeric source position and an explicit epoch;
+    /// delivery tags, attempts, timestamps, UUIDs, and arrival order do not
+    /// qualify. The runner forwards this sealed value separately from message
+    /// metadata.
+    fn ordered_delivery(&self) -> Option<&OrderedDelivery> {
+        None
+    }
 
     /// A permanent decode failure for this delivery, if the transport could not
     /// reconstruct the message from its stored representation.

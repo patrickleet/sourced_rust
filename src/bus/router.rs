@@ -10,7 +10,7 @@
 use std::future::Future;
 
 use super::TransportError;
-use super::{Message, MessageKind, SubscriptionPlan};
+use super::{Message, MessageKind, OrderedDelivery, SubscriptionPlan};
 
 /// What the receive loop and the consumer adapters need from a message consumer.
 ///
@@ -48,4 +48,17 @@ pub trait MessageRouter: Send + Sync {
         &self,
         message: &Message,
     ) -> impl Future<Output = Result<(), TransportError>> + Send;
+
+    /// Route one message together with adapter-authenticated ordering evidence.
+    ///
+    /// Ordinary routers and legacy event handlers keep the default behavior.
+    /// A causal projector-aware router overrides this method and fails closed
+    /// for its projector routes when `ordered` is absent.
+    fn dispatch_ordered(
+        &self,
+        message: &Message,
+        _ordered: Option<&OrderedDelivery>,
+    ) -> impl Future<Output = Result<(), TransportError>> + Send {
+        self.dispatch(message)
+    }
 }

@@ -480,8 +480,8 @@ mod tests {
             "build_with_graphql must open the persistent repository: {service}"
         );
         assert!(
-            service.contains("let engine = crate::query::build_engine(repo.pool().clone())?;"),
-            "build_with_graphql must build GraphQL from the repository pool: {service}"
+            service.contains("let engine = crate::query::build_engine(&repo)?;"),
+            "build_with_graphql must preserve the repository's GraphQL storage identity: {service}"
         );
         assert!(
             service.contains("Routes::new().with_dependencies(repo),"),
@@ -498,11 +498,15 @@ mod tests {
         );
         let query_mod = contents(&project, "src/query/mod.rs");
         assert!(
-            query_mod.contains(".graphiql(")
+            query_mod.contains(
+                "use distributed::graphql::{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource};"
+            )
+                && query_mod.contains("source: impl Into<GraphqlPoolSource>")
+                && query_mod.contains(".graphiql(")
                 && query_mod.contains("graphiql_enabled_from_env")
                 && query_mod.contains(".identity(")
                 && query_mod.contains("public_oidc_identity_from_env"),
-            "query build_engine must wire GraphiQL + OIDC identity defaults: {query_mod}"
+            "query build_engine must accept a causal pool source and wire GraphiQL + OIDC identity defaults: {query_mod}"
         );
         // D6: generated public scaffold must wire library OidcBearer helper (not DevHeaders).
         assert!(
