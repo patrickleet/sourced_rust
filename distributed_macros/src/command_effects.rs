@@ -616,6 +616,7 @@ impl FieldMap {
 
 enum ValueExpression {
     Input(Vec<InputPathSegment>),
+    Trusted(syn::LitStr),
     Null,
     Constant(Expr),
     Literal(Lit),
@@ -674,10 +675,22 @@ impl Parse for ValueExpression {
                 Ok(Self::Constant(value))
             }
             "trusted" => {
-                Err(syn::Error::new(
-                    function_or_input.span(),
-                    "trusted presets are not available until a cache-scope-bound server preset capability is installed",
-                ))
+                let name: syn::LitStr = arguments.parse()?;
+                if !arguments.is_empty() {
+                    return Err(arguments.error("trusted() accepts exactly one string literal"));
+                }
+                let value = name.value();
+                if value.is_empty()
+                    || value.len() > 128
+                    || value.trim() != value
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        "trusted() preset name must be 1..=128 bytes, have no surrounding whitespace, and contain no control characters",
+                    ));
+                }
+                Ok(Self::Trusted(name))
             }
             other => Err(syn::Error::new(
                 function_or_input.span(),
@@ -721,6 +734,9 @@ impl ValueExpression {
                 }
                 quote! { distributed::graphql::__effect_input::<#input, #marker>() }
             }
+            Self::Trusted(name) => quote! {
+                distributed::graphql::__effect_trusted(#name)
+            },
             Self::Null => quote! {
                 distributed::graphql::__effect_null()
             },

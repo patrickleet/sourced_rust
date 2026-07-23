@@ -6,10 +6,10 @@ use sha2::{Digest, Sha256};
 
 use super::{ClientCompileError, ClientSurfaceSelector};
 
-const MANIFEST_VERSION: u64 = 6;
+const MANIFEST_VERSION: u64 = 7;
 const PROTOCOL_VERSION: u64 = 2;
 const PROTOCOL_FINGERPRINT: &str =
-    "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc";
+    "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientManifest {
@@ -517,8 +517,16 @@ pub(crate) struct ManifestCommandExtensions {
     pub(crate) effects: Option<ManifestEffects>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) confirmations: Option<ManifestConfirmations>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) trusted_presets: Vec<ManifestTrustedPresetDescriptor>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestTrustedPresetDescriptor {
+    pub(crate) name: String,
+    pub(crate) codec: String,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestCommandConsistency {
@@ -1176,7 +1184,7 @@ fn validate_capabilities(capabilities: &ManifestCapabilities) -> Result<(), Clie
         return Err(ClientCompileError::manifest(
             "client.manifest.query_fallback",
             format!(
-                "unsupported query fallback `{}`; manifest v6 requires `revalidate`",
+                "unsupported query fallback `{}`; manifest v7 requires `revalidate`",
                 capabilities.query_fallback
             ),
         ));
@@ -1255,16 +1263,16 @@ fn validate_derived_capabilities(
         ));
     }
     let has_commands = !commands.is_empty();
-    if capabilities.causal_receipts != has_commands || capabilities.cache_scope != has_commands {
+    if capabilities.causal_receipts != has_commands || !capabilities.cache_scope {
         return Err(ClientCompileError::manifest(
             "client.manifest.command_capability",
-            "manifest command inventory, causal_receipts, and cache_scope must agree",
+            "causal_receipts must agree with command inventory and cache_scope must be enabled for every generated surface",
         ));
     }
     if capabilities.confirmed_persistence {
         return Err(ClientCompileError::manifest(
             "client.manifest.persistence_capability",
-            "manifest v6 does not yet support confirmed client persistence",
+            "manifest v7 does not yet support confirmed client persistence",
         ));
     }
     Ok(())
@@ -2219,7 +2227,7 @@ fn validate_order_semantics(
         return Err(ClientCompileError::manifest(
             "client.manifest.order_values",
             format!(
-                "order semantics for model `{}` must use the manifest v6 direction set",
+                "order semantics for model `{}` must use the manifest v7 direction set",
                 model.id
             ),
         ));
@@ -2477,7 +2485,7 @@ fn validate_root_contract(
         return Err(ClientCompileError::manifest(
             "client.manifest.subscription_kind",
             format!(
-                "subscription root `{}` must use list cardinality in manifest v6",
+                "subscription root `{}` must use list cardinality in manifest v7",
                 root.name
             ),
         ));
@@ -3082,13 +3090,23 @@ fn validate_direct_projection_partition(
             }
             unreachable!("non-empty direct projection path resolves or returns an error")
         }
-        ManifestEffectExpression::TrustedPreset { name } => Err(ClientCompileError::manifest(
-            "client.manifest.direct_projection_partition",
-            format!(
-                "manifest command `{}` direct projection partition uses unsupported trusted preset `{name}`",
-                command.name
-            ),
-        )),
+        ManifestEffectExpression::TrustedPreset { name } => {
+            let declared = command
+                .extensions
+                .trusted_presets
+                .iter()
+                .any(|descriptor| descriptor.name == *name && descriptor.codec == "string");
+            if !declared {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.direct_projection_partition",
+                    format!(
+                        "manifest command `{}` direct projection partition trusted preset `{name}` must declare the string codec",
+                        command.name
+                    ),
+                ));
+            }
+            Ok(false)
+        }
         ManifestEffectExpression::Constant { .. } | ManifestEffectExpression::Null => Ok(false),
     }
 }
@@ -3099,6 +3117,37 @@ fn canonicalize_commands(commands: &mut [ManifestCommand]) -> Result<(), ClientC
             &mut command.grants,
             &format!("command `{}` grant", command.name),
         )?;
+        for descriptor in &command.extensions.trusted_presets {
+            validate_nonempty(&descriptor.name, "trusted preset name")?;
+            validate_nonempty(&descriptor.codec, "trusted preset codec")?;
+            if descriptor.name.len() > 128
+                || descriptor.name.trim() != descriptor.name
+                || descriptor.name.chars().any(char::is_control)
+            {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.trusted_preset_name",
+                    format!(
+                        "manifest command `{}` has an invalid trusted preset name",
+                        command.name
+                    ),
+                ));
+            }
+        }
+        command.extensions.trusted_presets.sort();
+        if command
+            .extensions
+            .trusted_presets
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(ClientCompileError::manifest(
+                "client.manifest.trusted_preset_inventory",
+                format!(
+                    "manifest command `{}` repeats a trusted preset descriptor",
+                    command.name
+                ),
+            ));
+        }
         if let Some(defaults) = &mut command.extensions.input_defaults {
             for default in &mut defaults.defaults {
                 validate_nonempty_strings(

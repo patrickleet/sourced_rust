@@ -10,8 +10,8 @@ use super::manifest::{
     ManifestEffectKey, ManifestEffects, ManifestField, ManifestFilterField, ManifestFilterInput,
     ManifestInputDefault, ManifestInputDefaultGenerator, ManifestInputDefaults, ManifestKeyField,
     ManifestModel, ManifestNormalization, ManifestProjector, ManifestProtocolOperation,
-    ManifestProtocolOperations, ManifestRevalidationFallback, ManifestRowPolicy, ManifestTypeDef,
-    ManifestTypeField,
+    ManifestProtocolOperations, ManifestRevalidationFallback, ManifestRowPolicy,
+    ManifestTrustedPresetDescriptor, ManifestTypeDef, ManifestTypeField,
 };
 
 fn field(
@@ -163,7 +163,7 @@ fn command() -> ManifestCommand {
         operation: operation.into(),
         operation_hash: hash_bytes(operation.as_bytes()),
         extensions: ManifestCommandExtensions {
-            version: 2,
+            version: 3,
             consistency: Some(ManifestCommandConsistency {
                 version: 1,
                 kind: ManifestConsistencyKind::Fact,
@@ -199,6 +199,7 @@ fn command() -> ManifestCommand {
                 }],
                 fallback: ManifestRevalidationFallback::Revalidate,
             }),
+            trusted_presets: Vec::new(),
         },
     }
 }
@@ -281,7 +282,7 @@ fn requires_byte_exact_canonical_operation_and_recursive_codecs() {
 }
 
 #[test]
-fn trusted_presets_are_rejected_until_the_server_binds_them() {
+fn trusted_presets_require_an_exact_typed_descriptor() {
     let mut trusted = command();
     let Some(effects) = &mut trusted.extensions.effects else {
         unreachable!()
@@ -292,8 +293,17 @@ fn trusted_presets_are_rejected_until_the_server_binds_them() {
     fields[0].value = ManifestEffectExpression::TrustedPreset {
         name: "subject".into(),
     };
-    let error = validate(&trusted).expect_err("trusted preset must fail closed");
+    let error = validate(&trusted).expect_err("undeclared trusted preset must fail closed");
     assert_eq!(error.code, "client.manifest.effect_trusted_preset");
+
+    trusted
+        .extensions
+        .trusted_presets
+        .push(ManifestTrustedPresetDescriptor {
+            name: "subject".into(),
+            codec: "string".into(),
+        });
+    validate(&trusted).expect("matching descriptor binds the trusted preset");
 }
 
 #[test]

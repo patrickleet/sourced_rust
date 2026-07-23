@@ -40,6 +40,7 @@ struct ArtifactProtocol<'a> {
     version: u32,
     #[serde(rename = "schemaHash")]
     schema_hash: &'a str,
+    surface: &'a super::manifest::ManifestSurface,
     operation: &'a str,
 }
 
@@ -372,6 +373,7 @@ pub(super) fn render_operation_artifact_json(
         protocol: ArtifactProtocol {
             version: 2,
             schema_hash: &manifest.schema_fingerprint,
+            surface: &manifest.surface,
             operation: &operation.query_hash,
         },
         live: operation.live.as_ref().map(|live| ArtifactLive {
@@ -1086,6 +1088,7 @@ fn command_artifact_json(
             "version": 2,
             "schemaHash": manifest.schema_fingerprint,
             "protocolHash": manifest.protocol_fingerprint,
+            "surface": &manifest.surface,
             "operation": command.operation_hash,
         }),
     );
@@ -1123,6 +1126,12 @@ fn command_artifact_json(
         artifact.insert(
             "directProjection".into(),
             direct_projection_json(direct, manifest)?,
+        );
+    }
+    if !command.extensions.trusted_presets.is_empty() {
+        artifact.insert(
+            "trustedPresets".into(),
+            serde_json::json!(command.extensions.trusted_presets),
         );
     }
     artifact.insert(
@@ -1455,11 +1464,18 @@ fn render_protocol(manifest: &ClientManifest) -> Result<String, ClientCompileErr
          \tserviceId: {},\n\
          \tschemaHash: {},\n\
          \tprotocolHash: {},\n\
+         \tsurface: {},\n\
          \toperations: {operations}\n\
          }} as const;\n",
         json_string(&manifest.service_id)?,
         json_string(&manifest.schema_fingerprint)?,
         json_string(&manifest.protocol_fingerprint)?,
+        serde_json::to_string(&manifest.surface).map_err(|error| {
+            ClientCompileError::manifest(
+                "client.render.protocol",
+                format!("failed to render client surface selector: {error}"),
+            )
+        })?,
     ))
 }
 
@@ -1485,7 +1501,7 @@ fn render_compiler_manifest(
 ) -> Result<String, ClientCompileError> {
     let provenance = CompilerManifest {
         compiler_manifest_version: 1,
-        distributed_manifest_version: 6,
+        distributed_manifest_version: 7,
         protocol_version: 2,
         service_id: &manifest.service_id,
         surface: &manifest.surface,

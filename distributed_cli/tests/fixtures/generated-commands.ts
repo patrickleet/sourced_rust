@@ -35,8 +35,12 @@ export const Command_importTodos: ReplicaCommandArtifact<Command_importTodos_Inp
   },
   "protocol": {
     "operation": "sha256:4de86b23830266823fab843da7dfc060b17dd3ef1991f67616b5af7d5d94bf12",
-    "protocolHash": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
-    "schemaHash": "sha256:9628515198bbad604f45b47b225dabc420fc55779daeaa3562c2712bb168c0ec",
+    "protocolHash": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
+    "schemaHash": "sha256:8bd33a03a54b35fa66182653e7449e796a0fd6651df91b849a5144a2f19b0510",
+    "surface": {
+      "kind": "role",
+      "name": "user"
+    },
     "version": 2
   },
   "revalidation": {
@@ -85,8 +89,12 @@ export const Command_pingTodos: ReplicaCommandArtifact<Command_pingTodos_Input, 
   },
   "protocol": {
     "operation": "sha256:c2e57712f08ce1b185b07393c2f6ee30e40a4e50608509497dcd303e5ff3c100",
-    "protocolHash": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
-    "schemaHash": "sha256:9628515198bbad604f45b47b225dabc420fc55779daeaa3562c2712bb168c0ec",
+    "protocolHash": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
+    "schemaHash": "sha256:8bd33a03a54b35fa66182653e7449e796a0fd6651df91b849a5144a2f19b0510",
+    "surface": {
+      "kind": "role",
+      "name": "user"
+    },
     "version": 2
   },
   "revalidation": {
@@ -227,8 +235,12 @@ export const Command_projectTodo: ReplicaCommandArtifact<Command_projectTodo_Inp
   },
   "protocol": {
     "operation": "sha256:f986d060555cdedfe94621914116306af704d8bb90e75289722a3b7119211d32",
-    "protocolHash": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
-    "schemaHash": "sha256:9628515198bbad604f45b47b225dabc420fc55779daeaa3562c2712bb168c0ec",
+    "protocolHash": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
+    "schemaHash": "sha256:8bd33a03a54b35fa66182653e7449e796a0fd6651df91b849a5144a2f19b0510",
+    "surface": {
+      "kind": "role",
+      "name": "user"
+    },
     "version": 2
   },
   "revalidation": {

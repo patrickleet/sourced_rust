@@ -1,5 +1,5 @@
 //! Integration tests for `dctl client`: drive the real binary against a small
-//! manifest-v6 project and verify generation, read-only drift checking,
+//! manifest-v7 project and verify generation, read-only drift checking,
 //! authorization-surface selection, document discovery, and explicit `@load`
 //! route registration.
 
@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const ROLE_MANIFEST: &str = r#"{
-  "manifest_version": 6,
+  "manifest_version": 7,
   "protocol_version": 2,
   "service_id": "todos",
   "surface": {
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:6f78d8c128d018c54d70ce2a1c5374828d14585339c63a6e49d028534fee8b6c",
-  "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
+  "schema_fingerprint": "sha256:0d721d983c42fb732e10e8a2d45f0ab06497fb77fcddb9c9305f779b86c086c9",
+  "protocol_fingerprint": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
   "execution": {
     "max_depth": 8,
     "max_complexity": 500,
@@ -42,7 +42,7 @@ const ROLE_MANIFEST: &str = r#"{
     "causal_receipts": false,
     "live_resume": false,
     "query_fallback": "revalidate",
-    "cache_scope": false,
+    "cache_scope": true,
     "confirmed_persistence": false
   },
   "scalar_codecs": [

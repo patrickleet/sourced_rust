@@ -408,6 +408,17 @@ pub(crate) struct DistributedLiveMetadata {
     pub(crate) cursors: Vec<DistributedLiveCursor>,
 }
 
+/// One server-derived value for a descriptor already present in the selected
+/// static client surface. Values are valid only under this envelope's exact
+/// cache scope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DistributedTrustedPreset {
+    pub(crate) name: String,
+    pub(crate) codec: String,
+    pub(crate) value: serde_json::Value,
+}
+
 /// Canonical contents of GraphQL's top-level `extensions.distributed`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -423,6 +434,8 @@ pub(crate) struct DistributedEnvelopeV2 {
     pub(crate) snapshot: Option<DistributedQuerySnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) live: Option<DistributedLiveMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) trusted_presets: Vec<DistributedTrustedPreset>,
 }
 
 impl DistributedEnvelopeV2 {
@@ -439,7 +452,16 @@ impl DistributedEnvelopeV2 {
             command: None,
             snapshot: None,
             live: None,
+            trusted_presets: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_trusted_presets(
+        mut self,
+        trusted_presets: Vec<DistributedTrustedPreset>,
+    ) -> Self {
+        self.trusted_presets = trusted_presets;
+        self
     }
 }
 

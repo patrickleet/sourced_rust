@@ -17,7 +17,7 @@ fn main() {
         input: Input;
         patch View {
             key { view_id: input.view_id },
-            set { status: trusted("caller-value") }
+            set { status: trusted("") }
         };
     };
 }

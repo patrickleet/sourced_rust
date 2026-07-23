@@ -146,11 +146,11 @@ fn validate_command(
     validate_exact_operation_hash(&command.operation, &command.operation_hash, "command")?;
 
     let extensions = &command.extensions;
-    if extensions.version != 2 {
+    if extensions.version != 3 {
         return Err(command_error(
             command,
             "client.manifest.command_extensions",
-            "extensions.version must be 2",
+            "extensions.version must be 3",
         ));
     }
     let consistency = extensions.consistency.as_ref().ok_or_else(|| {
@@ -191,7 +191,74 @@ fn validate_command(
             .commands_requiring_revalidation
             .insert(command.name.clone());
     }
-    validate_confirmations(command, models, projectors, report)
+    validate_confirmations(command, models, projectors, report)?;
+    validate_trusted_preset_inventory(command)
+}
+
+fn validate_trusted_preset_inventory(command: &ManifestCommand) -> Result<(), ClientCompileError> {
+    fn expression_names<'a>(expression: &'a ManifestEffectExpression, out: &mut BTreeSet<&'a str>) {
+        if let ManifestEffectExpression::TrustedPreset { name } = expression {
+            out.insert(name);
+        }
+    }
+    fn key_names<'a>(key: &'a ManifestEffectKey, out: &mut BTreeSet<&'a str>) {
+        for field in &key.fields {
+            expression_names(&field.value, out);
+        }
+    }
+
+    let mut referenced = BTreeSet::new();
+    if let Some(effects) = &command.extensions.effects {
+        for effect in &effects.operations {
+            match effect {
+                ManifestEffect::Upsert { key, fields, .. }
+                | ManifestEffect::Patch { key, fields, .. } => {
+                    key_names(key, &mut referenced);
+                    for field in fields {
+                        expression_names(&field.value, &mut referenced);
+                    }
+                }
+                ManifestEffect::Delete { key, .. } => key_names(key, &mut referenced),
+                ManifestEffect::Link { source, target, .. }
+                | ManifestEffect::Unlink { source, target, .. } => {
+                    key_names(source, &mut referenced);
+                    key_names(target, &mut referenced);
+                }
+                ManifestEffect::InvalidateRelationship { source, .. } => {
+                    key_names(source, &mut referenced);
+                }
+                ManifestEffect::InvalidateModel { .. } => {}
+            }
+        }
+    }
+    if let Some(confirmations) = &command.extensions.confirmations {
+        for confirmation in &confirmations.expected {
+            key_names(&confirmation.key, &mut referenced);
+            if let Some(partition) = &confirmation.partition {
+                expression_names(partition, &mut referenced);
+            }
+        }
+    }
+    if let Some(direct) = &command.extensions.direct_projection {
+        if let Some(partition) = &direct.partition {
+            expression_names(partition, &mut referenced);
+        }
+    }
+
+    let declared = command
+        .extensions
+        .trusted_presets
+        .iter()
+        .map(|descriptor| descriptor.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if declared != referenced {
+        return Err(command_error(
+            command,
+            "client.manifest.trusted_preset_inventory",
+            "trusted_presets must exactly describe every trusted preset expression",
+        ));
+    }
+    Ok(())
 }
 
 fn projected_output_typename<'a>(
@@ -758,11 +825,34 @@ fn validate_expression(
             }
             Ok(())
         }
-        ManifestEffectExpression::TrustedPreset { .. } => Err(command_error(
-            command,
-            "client.manifest.effect_trusted_preset",
-            "uses a trusted preset before a cache-scope-bound server preset capability is installed",
-        )),
+        ManifestEffectExpression::TrustedPreset { name } => {
+            let descriptor = command
+                .extensions
+                .trusted_presets
+                .iter()
+                .find(|descriptor| descriptor.name == *name)
+                .ok_or_else(|| {
+                    command_error(
+                        command,
+                        "client.manifest.effect_trusted_preset",
+                        format!("uses undeclared trusted preset `{name}`"),
+                    )
+                })?;
+            if descriptor.codec != expected.codec {
+                return Err(command_error(
+                    command,
+                    "client.manifest.effect_trusted_preset",
+                    format!(
+                        "trusted preset `{name}` codec `{}` cannot populate `{}:{}` with codec `{}`",
+                        descriptor.codec,
+                        expected.name,
+                        expected.scalar,
+                        expected.codec
+                    ),
+                ));
+            }
+            Ok(())
+        }
         ManifestEffectExpression::Constant { value } if constant_matches(value, expected) => Ok(()),
         ManifestEffectExpression::Constant { .. } => Err(command_error(
             command,
