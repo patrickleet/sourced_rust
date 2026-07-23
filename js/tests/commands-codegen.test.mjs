@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -13,6 +14,7 @@ import {
 	fieldToFunctionName,
 	generateCommandArtifacts,
 	generateCommandPoliciesTs,
+	parseCodegenManifest,
 	parseCommandManifest
 } from '@hops-ops/distributed/codegen';
 
@@ -296,6 +298,132 @@ test('codegen validates once and produces deterministic aligned artifacts', () =
 	assert.ok(first.operations.includes(buildMutationOperation(normalized.commands[0])));
 });
 
+test('v3 codegen consumes exact causal operations and emits one shared protocol descriptor', () => {
+	const commandOperation =
+		'mutation Client_todos_create($commandId: ID!, $input: TodoInput!) { todos_create(commandId: $commandId, input: $input) { id title } }';
+	const statusOperation =
+		'query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }';
+	const manifest = {
+		manifest_version: 3,
+		protocol_version: 2,
+		schema_fingerprint: hash('role-selected-schema'),
+		capabilities: { causal_receipts: true },
+		commands: [
+			{
+				version: 1,
+				name: 'todo.create',
+				mutation_field: 'todos_create',
+				grants: ['user'],
+				input: {
+					kind: 'object',
+					definition: {
+						name: 'TodoInput',
+						fields: [
+							{
+								name: 'title',
+								type_name: 'String',
+								nullable: false,
+								list: false,
+								item_nullable: false,
+								codec: 'string'
+							}
+						]
+					}
+				},
+				output: {
+					kind: 'object',
+					definition: {
+						name: 'Todo',
+						fields: [
+							{
+								name: 'id',
+								type_name: 'ID',
+								nullable: false,
+								list: false,
+								item_nullable: false,
+								codec: 'string'
+							},
+							{
+								name: 'title',
+								type_name: 'String',
+								nullable: false,
+								list: false,
+								item_nullable: false,
+								codec: 'string'
+							}
+						]
+					}
+				},
+				operation: commandOperation,
+				operation_hash: hash(commandOperation),
+				extensions: {
+					version: 2,
+					consistency: { version: 1, kind: 'fact' },
+					confirmations: {
+						version: 1,
+						kind: 'finite',
+						expected: [],
+						fallback: 'revalidate'
+					}
+				}
+			}
+		],
+		protocol_operations: {
+			version: 1,
+			command_status: {
+				name: 'Distributed_CommandStatus',
+				operation: statusOperation,
+				operation_hash: hash(statusOperation)
+			}
+		}
+	};
+
+	const parsed = parseCodegenManifest(manifest);
+	const artifacts = generateCommandArtifacts(parsed);
+	assert.ok(artifacts.operations.includes(commandOperation));
+	assert.ok(artifacts.operations.includes(statusOperation));
+	assert.ok(
+		artifacts.commands.includes(
+			`${JSON.stringify('todos_create')}: ${JSON.stringify(commandOperation)},`
+		)
+	);
+	assert.ok(
+		artifacts.commands.includes(`document: ${JSON.stringify(statusOperation)},`)
+	);
+	assert.match(artifacts.commands, /export const COMMAND_PROTOCOL = defineCausalProtocol/);
+	assert.match(
+		artifacts.commands,
+		new RegExp(`operationHash: ${JSON.stringify(hash(commandOperation))}`)
+	);
+	assert.match(artifacts.commands, /projects: true/);
+	assert.match(
+		artifacts.commands,
+		/export function todosCreate\(input: TodoInput, client: CommandClient, options\?: CommandCallOptions\)/
+	);
+	assert.equal(
+		artifacts.operations.match(/Distributed_CommandStatus/g)?.length,
+		1
+	);
+	const accepted = structuredClone(manifest);
+	accepted.commands[0].extensions.consistency.kind = 'accepted';
+	delete accepted.commands[0].extensions.confirmations;
+	assert.match(generateCommandArtifacts(accepted).commands, /projects: false/);
+
+	const drifted = structuredClone(manifest);
+	drifted.commands[0].operation_hash = hash('different bytes');
+	assert.throws(
+		() => parseCodegenManifest(drifted),
+		/does not match operation bytes/
+	);
+
+	const missingStatus = structuredClone(manifest);
+	delete missingStatus.protocol_operations.command_status;
+	assert.throws(
+		() => parseCodegenManifest(missingStatus),
+		/require command_status/
+	);
+});
+
 test('codegen rejects malformed, ambiguous, and unsafe manifests', () => {
 	assert.throws(
 		() => parseCommandManifest({ version: 2, commands: [] }),
@@ -371,3 +499,7 @@ test('command definitions validate field names and are frozen', () => {
 	const commands = defineCommands({ create: CREATE });
 	assert.equal(Object.isFrozen(commands), true);
 });
+
+function hash(value) {
+	return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}

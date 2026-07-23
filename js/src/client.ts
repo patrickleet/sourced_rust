@@ -9,6 +9,7 @@ import {
 import type { QueryCache } from './cache/query-cache.js';
 import { documentToString, type GqlDocument } from './document.js';
 import { authIdentityKey } from './identity.js';
+import type { DistributedLiveCursor } from './protocol.js';
 import {
 	requestGraphql,
 	type FetchLike
@@ -41,6 +42,8 @@ export type GraphqlClientOptions = {
 export type RequestWriteOptions = {
 	/** Merge spec used to retain pending optimistic rows. */
 	list?: ListMergeSpec;
+	/** Framework status/recovery operations bypass application query caching. */
+	cache?: 'write' | 'skip';
 };
 
 export type SubscribeCallOptions<
@@ -49,6 +52,11 @@ export type SubscribeCallOptions<
 	variables?: TVariables;
 	/** Merge spec used to retain pending optimistic rows. */
 	list?: ListMergeSpec;
+	/**
+	 * Server-issued cursors retained by the generated live coordinator.
+	 * @internal Application code must not synthesize resume tokens.
+	 */
+	resume?: readonly DistributedLiveCursor[];
 };
 
 export type GraphqlClient = {
@@ -153,6 +161,7 @@ export function createGraphqlClient(options: GraphqlClientOptions): GraphqlClien
 			if (
 				options.cache &&
 				writeThrough &&
+				writeOptions?.cache !== 'skip' &&
 				cacheOwnershipCurrent &&
 				result.data !== undefined &&
 				result.data !== null &&
@@ -240,6 +249,7 @@ export function createGraphqlClient(options: GraphqlClientOptions): GraphqlClien
 					unsubscribe = subscribeWs(document, auth, wrappedHandlers, {
 						httpUrl: options.getUrl(),
 						variables,
+						resume: callOptions.resume,
 						webSocket: options.webSocket
 					});
 					if (cancelled) unsubscribe();

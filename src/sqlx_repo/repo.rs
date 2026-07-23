@@ -1396,9 +1396,16 @@ where
             lock.push_bind(key.principal_partition());
             lock.push(" AND command_id = ");
             lock.push_bind(key.command_id());
-            if let CommandLookupScope::CommandName(expected_command_name) = scope {
-                lock.push(" AND command_name = ");
-                lock.push_bind(expected_command_name);
+            match scope {
+                CommandLookupScope::CommandName(expected_command_name)
+                | CommandLookupScope::CommandContract {
+                    command_name: expected_command_name,
+                    ..
+                } => {
+                    lock.push(" AND command_name = ");
+                    lock.push_bind(expected_command_name);
+                }
+                CommandLookupScope::Attempt(_) => {}
             }
             lock.build().execute(&mut *tx).await.map_err(|error| {
                 repository_storage_error::<DB>("lock command ledger lookup", error)
@@ -1406,6 +1413,10 @@ where
 
             let expected_command_name = match scope {
                 CommandLookupScope::CommandName(expected) => Some(expected),
+                CommandLookupScope::CommandContract {
+                    command_name: expected,
+                    ..
+                } => Some(expected),
                 CommandLookupScope::Attempt(_) => None,
             };
             let Some(mut record) =

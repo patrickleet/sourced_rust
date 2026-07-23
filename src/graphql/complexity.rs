@@ -77,7 +77,9 @@ pub fn estimate_root_complexity(
     let w = default_weights();
     let child = estimate_object_selection(inner, &entry.schema, selection, &w)?;
     let root = match kind {
-        RootKind::List => w.list_root.saturating_add(w.list_fanout.saturating_mul(child)),
+        RootKind::List => w
+            .list_root
+            .saturating_add(w.list_fanout.saturating_mul(child)),
         RootKind::ByPk => w.by_pk.saturating_add(child),
         RootKind::Aggregate => {
             // Aggregate selection often has `nodes { ... }` and `aggregate { count }`.
@@ -114,7 +116,11 @@ fn estimate_field(
 
     // Nested aggregate field: `<rel>_aggregate`
     if let Some(rel_name) = name.strip_suffix("_aggregate") {
-        if let Some(rel) = schema.relationships.iter().find(|r| r.field_name == rel_name) {
+        if let Some(rel) = schema
+            .relationships
+            .iter()
+            .find(|r| r.field_name == rel_name)
+        {
             let target = match inner.catalog.get(&rel.target_model) {
                 Some(t) => t,
                 None => return Ok(w.aggregate),

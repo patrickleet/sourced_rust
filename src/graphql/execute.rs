@@ -7,18 +7,27 @@ use std::time::Duration;
 use async_graphql::Value;
 use serde_json::Value as JsonValue;
 
-use super::compile::{BindValue, SqlDialect, SqlPlan};
+use super::compile::{BindValue, ExtractedQueryEvidence, SqlDialect, SqlPlan};
 use super::engine::{EngineInner, GraphqlPool};
 
 pub async fn execute_sql(inner: &EngineInner, plan: &SqlPlan) -> Result<Value, String> {
     match &inner.pool {
         #[cfg(feature = "sqlite")]
-        GraphqlPool::Sqlite(pool) => execute_sqlite(pool, plan, inner.statement_timeout).await,
+        GraphqlPool::Sqlite(pool) => execute_sqlite(pool, plan, inner.statement_timeout)
+            .await
+            .map(|executed| executed.value),
         #[cfg(feature = "postgres")]
-        GraphqlPool::Postgres(pool) => execute_postgres(pool, plan, inner.statement_timeout).await,
+        GraphqlPool::Postgres(pool) => execute_postgres(pool, plan, inner.statement_timeout)
+            .await
+            .map(|executed| executed.value),
         #[allow(unreachable_patterns)]
         _ => Err("no database pool available for GraphQL execution".into()),
     }
+}
+
+pub(crate) struct ExecutedSql {
+    pub(crate) value: Value,
+    pub(crate) evidence: ExtractedQueryEvidence,
 }
 
 /// Wall-clock budget around a single statement future.
@@ -64,37 +73,54 @@ async fn execute_sqlite(
     pool: &sqlx::SqlitePool,
     plan: &SqlPlan,
     timeout: std::time::Duration,
-) -> Result<Value, String> {
+) -> Result<ExecutedSql, String> {
+    // SQL is compiler-produced from schema metadata + bound parameters only.
+    let text = apply_statement_timeout(timeout, fetch_sqlite_json(pool, plan)).await?;
+    decode_sqlite_value(text, plan)
+}
+
+/// Execute a compiled SQLite plan on a caller-owned read snapshot.
+#[cfg(feature = "sqlite")]
+pub(crate) async fn execute_sqlite_in_connection(
+    connection: &mut sqlx::SqliteConnection,
+    plan: &SqlPlan,
+) -> Result<ExecutedSql, String> {
+    let text = fetch_sqlite_json(&mut *connection, plan).await?;
+    decode_sqlite_value(text, plan)
+}
+
+#[cfg(feature = "sqlite")]
+async fn fetch_sqlite_json<'e, E>(executor: E, plan: &SqlPlan) -> Result<String, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     use sqlx::Row;
 
-    // SQL is compiler-produced from schema metadata + bound parameters only.
-    let run = async {
-        let qb = apply_binds!(
-            sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone())),
-            &plan.binds
-        );
-        // Read-only SELECT: no write transaction required.
-        // by_pk and filtered lookups may return zero rows → GraphQL null, not INTERNAL.
-        let row = qb
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("sqlite execute: {e}"))?;
-        let raw: String = match row {
-            Some(r) => r
-                .try_get::<Option<String>, _>(0)
-                .map_err(|e| format!("sqlite json column: {e}"))?
-                .unwrap_or_else(|| "null".into()),
-            None => "null".into(),
-        };
-        Ok::<_, String>(raw)
-    };
+    let qb = apply_binds!(
+        sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone())),
+        &plan.binds
+    );
+    // by_pk and filtered lookups may return zero rows → GraphQL null.
+    let row = qb
+        .fetch_optional(executor)
+        .await
+        .map_err(|e| format!("sqlite execute: {e}"))?;
+    match row {
+        Some(row) => row
+            .try_get::<Option<String>, _>(0)
+            .map_err(|e| format!("sqlite json column: {e}"))
+            .map(|value| value.unwrap_or_else(|| "null".into())),
+        None => Ok("null".into()),
+    }
+}
 
-    let text = apply_statement_timeout(timeout, run).await?;
+#[cfg(feature = "sqlite")]
+fn decode_sqlite_value(text: String, plan: &SqlPlan) -> Result<ExecutedSql, String> {
     let mut json: JsonValue =
         serde_json::from_str(&text).map_err(|e| format!("json decode: {e}"))?;
     deep_parse_json_strings(&mut json);
     rewrite_hex_bytes(&mut json, &plan.bytes_hex_paths);
-    Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
+    finish_executed_value(json, plan)
 }
 
 #[cfg(test)]
@@ -178,7 +204,7 @@ async fn execute_postgres(
     pool: &sqlx::PgPool,
     plan: &SqlPlan,
     timeout: std::time::Duration,
-) -> Result<Value, String> {
+) -> Result<ExecutedSql, String> {
     use sqlx::Row;
     let mut tx = pool
         .begin()
@@ -192,17 +218,39 @@ async fn execute_postgres(
     .await
     .map_err(|e| format!("statement_timeout: {e}"))?;
 
+    let value = fetch_postgres_value(&mut *tx, plan).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("postgres commit: {e}"))?;
+
+    Ok(value)
+}
+
+/// Execute a compiled PostgreSQL plan on a caller-owned repeatable read
+/// snapshot. The caller configures `SET LOCAL statement_timeout` once for the
+/// complete physical-query/evidence transaction.
+#[cfg(feature = "postgres")]
+pub(crate) async fn execute_postgres_in_connection(
+    connection: &mut sqlx::PgConnection,
+    plan: &SqlPlan,
+) -> Result<ExecutedSql, String> {
+    fetch_postgres_value(&mut *connection, plan).await
+}
+
+#[cfg(feature = "postgres")]
+async fn fetch_postgres_value<'e, E>(executor: E, plan: &SqlPlan) -> Result<ExecutedSql, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    use sqlx::Row;
     let qb = apply_binds!(
         sqlx::query(sqlx::AssertSqlSafe(plan.sql.clone())),
         &plan.binds
     );
     let row = qb
-        .fetch_optional(&mut *tx)
+        .fetch_optional(executor)
         .await
         .map_err(|e| format!("postgres execute: {e}"))?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("postgres commit: {e}"))?;
 
     // Postgres returns `json`/`jsonb` which sqlx decodes as `Json<T>` when the
     // `json` feature is on; some plans also cast to text. Accept both.
@@ -222,7 +270,13 @@ async fn execute_postgres(
         }
         None => JsonValue::Null,
     };
-    Value::from_json(json).map_err(|e| format!("graphql value: {e}"))
+    finish_executed_value(json, plan)
+}
+
+fn finish_executed_value(mut json: JsonValue, plan: &SqlPlan) -> Result<ExecutedSql, String> {
+    let evidence = plan.extract_evidence_and_strip(&mut json)?;
+    let value = Value::from_json(json).map_err(|e| format!("graphql value: {e}"))?;
+    Ok(ExecutedSql { value, evidence })
 }
 
 /// Rewrite hex-encoded Bytes paths to base64 (SQLite executor path).

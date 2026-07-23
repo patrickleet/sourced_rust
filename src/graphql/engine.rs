@@ -1,6 +1,7 @@
 //! GraphqlEngine builder, validation, and execute entrypoint.
 #![allow(clippy::items_after_test_module)]
 
+use std::any::TypeId;
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,9 +9,11 @@ use std::time::Duration;
 use async_graphql::{Request, Response, ServerError, Value};
 use futures_util::stream::{self, BoxStream};
 use futures_util::StreamExt;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::manifest::DistributedProjectManifest;
-use crate::microsvc::{Service, Session};
+use crate::microsvc::{Service, Session, ROLE_KEY, USER_ID_KEY};
 use crate::read_model::{ReadModelChange, RelationalReadModelIncludes};
 use crate::table::{
     resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableKind, TableSchema,
@@ -24,13 +27,18 @@ use super::commands::GraphqlCommands;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
 use super::filter::{FilterExpr, Operand};
-use super::identity::IdentityConfig;
+use super::identity::{IdentityConfig, IdentityMode, VerifiedPrincipal};
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
 };
 use super::permissions::{
     read, role_grants_from_model_role_perms, ModelPermissions, ReadPermission,
 };
+use super::protocol::{
+    DistributedEnvelopeV2, DistributedLiveCursor, OpaqueProtocolToken, ProtocolResponseAccumulator,
+    ProtocolTokenCodec, ProtocolTokenPurpose, RequestedLiveResume, MAX_LIVE_RESUME_CURSORS,
+};
+use super::query_protocol::QueryProtocolRuntime;
 use super::schema as dyn_schema;
 use super::sdl::{graphql_sdl_for_tables_with_options, graphql_sdl_from_surface, SdlOptions};
 use super::surface::{
@@ -206,6 +214,22 @@ pub(crate) struct RoleModelPerm {
     pub permission: ReadPermission,
 }
 
+#[derive(Clone)]
+struct ProtocolRoleInfo {
+    schema_fingerprint: String,
+    protocol_fingerprint: String,
+    authorization_fingerprint: String,
+    claim_keys: Vec<String>,
+}
+
+#[derive(Clone)]
+struct ProtocolRuntime {
+    codec: ProtocolTokenCodec,
+    namespace: String,
+    service_id: String,
+    roles: BTreeMap<String, ProtocolRoleInfo>,
+}
+
 pub(crate) struct EngineInner {
     /// Stable service identity used by client manifest hashes and cache scopes.
     /// Manifest-built engines populate this automatically; manual builders may
@@ -244,6 +268,8 @@ pub(crate) struct EngineInner {
     pub dialect: SqlDialect,
     /// Identity mode for HTTP session construction (see `identity` module).
     pub identity: IdentityConfig,
+    protocol: Option<ProtocolRuntime>,
+    pub(crate) query_protocol: QueryProtocolRuntime,
 }
 
 pub struct GraphqlEngine {
@@ -252,6 +278,8 @@ pub struct GraphqlEngine {
 
 pub struct GraphqlEngineBuilder {
     service_id: Option<String>,
+    protocol_token_key: Option<[u8; 32]>,
+    protocol_namespace: Option<String>,
     command_binding: Option<TypedServiceCommandBinding>,
     causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pool: GraphqlPool,
@@ -349,6 +377,10 @@ impl GraphqlEngine {
         self.inner.causal_storage_identity
     }
 
+    pub(crate) fn causal_protocol_configured(&self) -> bool {
+        self.inner.protocol.is_some()
+    }
+
     pub fn client_surface_for_role(
         &self,
         role: &str,
@@ -439,17 +471,27 @@ impl GraphqlEngine {
                 None,
             )]);
         };
+        if has_multiple_protocol_query_roots(&self.inner, &role, &request) {
+            return protocol_multi_root_error_response();
+        }
 
-        let request = request.data(session.clone()).data(Arc::clone(&self.inner));
+        let accumulator = match self.protocol_accumulator(&role, session, &request) {
+            Ok(accumulator) => accumulator,
+            Err(()) => return protocol_internal_error_response(),
+        };
+        let mut request = request.data(session.clone()).data(Arc::clone(&self.inner));
+        if let Some(accumulator) = &accumulator {
+            request = request.data(accumulator.clone());
+        }
         let start = std::time::Instant::now();
-        let response = schema.execute(request).await;
+        let response =
+            attach_protocol_response(schema.execute(request).await, accumulator.as_ref());
         let status = metrics_status_for_response(&response);
         let root_field = match &response.data {
             Value::Object(map) => map.keys().next().map(|s| s.as_str()).unwrap_or("_"),
             _ => "_",
         };
         record_metrics(session, root_field, status, start.elapsed());
-        let _ = role;
         response
     }
 
@@ -474,10 +516,488 @@ impl GraphqlEngine {
             })
             .boxed();
         };
-        let request = request
+        if has_multiple_protocol_query_roots(&self.inner, &role, &request) {
+            return stream::once(async { protocol_multi_root_error_response() }).boxed();
+        }
+        let accumulator = match self.protocol_accumulator(&role, session, &request) {
+            Ok(accumulator) => accumulator,
+            Err(()) => {
+                return stream::once(async { protocol_internal_error_response() }).boxed();
+            }
+        };
+        if accumulator
+            .as_ref()
+            .is_some_and(|accumulator| accumulator.begin_stream().is_err())
+        {
+            return stream::once(async { protocol_internal_error_response() }).boxed();
+        }
+        let mut request = request
             .data(session.clone())
             .data(std::sync::Arc::clone(&self.inner));
-        schema.execute_stream(request).boxed()
+        if let Some(accumulator) = &accumulator {
+            request = request.data(accumulator.clone());
+        }
+        schema
+            .execute_stream(request)
+            .map(move |response| attach_protocol_response(response, accumulator.as_ref()))
+            .boxed()
+    }
+
+    fn protocol_accumulator(
+        &self,
+        role: &str,
+        session: &Session,
+        request: &Request,
+    ) -> Result<Option<ProtocolResponseAccumulator>, ()> {
+        let Some(runtime) = &self.inner.protocol else {
+            return Ok(None);
+        };
+        let role_info = runtime.roles.get(role).ok_or(())?;
+        let principal = request
+            .data
+            .get(&TypeId::of::<VerifiedPrincipal>())
+            .and_then(|principal| principal.downcast_ref::<VerifiedPrincipal>());
+        let principal_partition =
+            principal.map(|principal| principal.partition_for_service(&runtime.service_id));
+        let session_authorization_context = role_info
+            .claim_keys
+            .iter()
+            .map(|key| (key.as_str(), session.get(key)))
+            .collect::<Vec<_>>();
+
+        #[derive(Serialize)]
+        struct CacheScopeMaterial<'a> {
+            domain: &'static str,
+            version: u32,
+            namespace: &'a str,
+            service_id: &'a str,
+            role: &'a str,
+            schema_fingerprint: &'a str,
+            protocol_fingerprint: &'a str,
+            authorization_surface_fingerprint: &'a str,
+            identity_mode: &'static str,
+            verified_principal_partition: Option<&'a str>,
+            session_authorization_context: Vec<(&'a str, Option<&'a str>)>,
+        }
+
+        // Only session values that can affect authorization enter the HMAC:
+        // role/user plus claim keys referenced by this role's row policies.
+        // Ambient headers such as cookies or user-agent must not churn caches.
+        // Raw values and the verified principal partition remain private HMAC
+        // inputs and are never echoed in the response.
+        let material = CacheScopeMaterial {
+            domain: "distributed.graphql.cache-scope",
+            version: 1,
+            namespace: &runtime.namespace,
+            service_id: &runtime.service_id,
+            role,
+            schema_fingerprint: &role_info.schema_fingerprint,
+            protocol_fingerprint: &role_info.protocol_fingerprint,
+            authorization_surface_fingerprint: &role_info.authorization_fingerprint,
+            identity_mode: identity_mode_label(self.inner.identity.mode),
+            verified_principal_partition: principal_partition.as_deref(),
+            session_authorization_context,
+        };
+        let cache_scope = runtime
+            .codec
+            .issue(ProtocolTokenPurpose::CacheScope, &material)
+            .map_err(|_| ())?;
+        let envelope = DistributedEnvelopeV2::new(
+            role_info.schema_fingerprint.clone(),
+            cache_scope,
+            // Generated artifacts submit this exact document. Hashing its
+            // bytes matches manifest operation_hash and provides a useful
+            // identity/drift fence without claiming APQ negotiation.
+            Some(operation_fingerprint(&request.query)),
+        );
+        let accumulator = ProtocolResponseAccumulator::new(envelope, runtime.codec.clone());
+        accumulator
+            .set_requested_live_resume(parse_requested_live_resume(request))
+            .map_err(|_| ())?;
+        Ok(Some(accumulator))
+    }
+}
+
+fn operation_fingerprint(document: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(document.as_bytes()))
+}
+
+/// Until the query executor owns an operation-wide database transaction, two
+/// independent read roots cannot truthfully share one causal snapshot. Fail
+/// closed instead of merging separately observed rows and duplicate index
+/// vectors into an envelope that generated clients would treat as atomic.
+fn has_multiple_protocol_query_roots(inner: &EngineInner, role: &str, request: &Request) -> bool {
+    if inner.protocol.is_none() {
+        return false;
+    }
+    let Some(surface) = inner.role_surfaces.get(role) else {
+        return false;
+    };
+    let query_roots = surface
+        .query_root_names()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if query_roots.is_empty() {
+        return false;
+    }
+
+    let Ok(document) = async_graphql::parser::parse_query(&request.query) else {
+        return false;
+    };
+    let mut operations = document.operations.iter();
+    let operation = if let Some(requested) = request.operation_name.as_deref() {
+        operations
+            .find(|(name, _)| name.map(|name| name.as_str()) == Some(requested))
+            .map(|(_, operation)| operation)
+    } else {
+        let first = operations.next().map(|(_, operation)| operation);
+        if operations.next().is_some() {
+            None
+        } else {
+            first
+        }
+    };
+    let Some(operation) = operation else {
+        return false;
+    };
+    if operation.node.ty != async_graphql::parser::types::OperationType::Query {
+        return false;
+    }
+
+    fn collect_root_keys<'a>(
+        selection: &'a async_graphql::parser::types::SelectionSet,
+        document: &'a async_graphql::parser::types::ExecutableDocument,
+        query_roots: &BTreeSet<&str>,
+        visiting: &mut BTreeSet<String>,
+        response_keys: &mut BTreeSet<String>,
+        depth: usize,
+    ) {
+        if depth > 128 || response_keys.len() > 1 {
+            return;
+        }
+        for item in &selection.items {
+            match &item.node {
+                async_graphql::parser::types::Selection::Field(field) => {
+                    if query_roots.contains(field.node.name.node.as_str()) {
+                        response_keys.insert(field.node.response_key().node.to_string());
+                    }
+                }
+                async_graphql::parser::types::Selection::InlineFragment(fragment) => {
+                    collect_root_keys(
+                        &fragment.node.selection_set.node,
+                        document,
+                        query_roots,
+                        visiting,
+                        response_keys,
+                        depth + 1,
+                    );
+                }
+                async_graphql::parser::types::Selection::FragmentSpread(spread) => {
+                    let name = spread.node.fragment_name.node.to_string();
+                    if !visiting.insert(name.clone()) {
+                        continue;
+                    }
+                    if let Some(fragment) = document.fragments.get(&spread.node.fragment_name.node)
+                    {
+                        collect_root_keys(
+                            &fragment.node.selection_set.node,
+                            document,
+                            query_roots,
+                            visiting,
+                            response_keys,
+                            depth + 1,
+                        );
+                    }
+                    visiting.remove(&name);
+                }
+            }
+        }
+    }
+
+    let mut response_keys = BTreeSet::new();
+    collect_root_keys(
+        &operation.node.selection_set.node,
+        &document,
+        &query_roots,
+        &mut BTreeSet::new(),
+        &mut response_keys,
+        0,
+    );
+    response_keys.len() > 1
+}
+
+fn protocol_multi_root_error_response() -> Response {
+    Response::from_errors(vec![ServerError::new(
+        "causal GraphQL operations currently support one read root so data and revision evidence share one atomic snapshot; split this operation into separate requests",
+        None,
+    )])
+}
+
+const MAX_LIVE_RESUME_PROJECTION_BYTES: usize = 512;
+
+/// Parse the private request extension used by generated live operations.
+/// Invalid input is a conservative reset signal, never trusted cursor state.
+fn parse_requested_live_resume(request: &Request) -> RequestedLiveResume {
+    let Some(distributed) = request.extensions.get("distributed") else {
+        return RequestedLiveResume::Absent;
+    };
+    let Ok(distributed) = distributed.clone().into_json() else {
+        return RequestedLiveResume::Invalid;
+    };
+    let Some(distributed) = distributed.as_object() else {
+        return RequestedLiveResume::Invalid;
+    };
+    let Some(resume) = distributed.get("resume") else {
+        return RequestedLiveResume::Absent;
+    };
+    let Some(cursors) = resume
+        .as_object()
+        .and_then(|resume| resume.get("cursors"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return RequestedLiveResume::Invalid;
+    };
+    if cursors.len() > MAX_LIVE_RESUME_CURSORS {
+        return RequestedLiveResume::Invalid;
+    }
+
+    let mut parsed = Vec::with_capacity(cursors.len());
+    for cursor in cursors {
+        let Some(cursor) = cursor.as_object() else {
+            return RequestedLiveResume::Invalid;
+        };
+        let Some(projection) = cursor.get("projection").and_then(serde_json::Value::as_str) else {
+            return RequestedLiveResume::Invalid;
+        };
+        if projection.is_empty() || projection.len() > MAX_LIVE_RESUME_PROJECTION_BYTES {
+            return RequestedLiveResume::Invalid;
+        }
+        let Some(position) = cursor.get("position").and_then(serde_json::Value::as_str) else {
+            return RequestedLiveResume::Invalid;
+        };
+        let Ok(parsed_position) = position.parse::<u64>() else {
+            return RequestedLiveResume::Invalid;
+        };
+        if parsed_position.to_string() != position {
+            return RequestedLiveResume::Invalid;
+        }
+        let Some(token) = cursor.get("token").and_then(serde_json::Value::as_str) else {
+            return RequestedLiveResume::Invalid;
+        };
+        let Ok(token) = OpaqueProtocolToken::parse(token) else {
+            return RequestedLiveResume::Invalid;
+        };
+        parsed.push(DistributedLiveCursor {
+            projection: projection.to_string(),
+            position: position.to_string(),
+            token,
+        });
+    }
+    RequestedLiveResume::Cursors(parsed)
+}
+
+#[cfg(test)]
+mod live_resume_request_tests {
+    use super::*;
+
+    fn request_with_resume(value: serde_json::Value) -> Request {
+        serde_json::from_value(serde_json::json!({
+            "query": "subscription Watch { todos { id } }",
+            "extensions": { "distributed": { "resume": value } }
+        }))
+        .expect("GraphQL request")
+    }
+
+    #[test]
+    fn live_resume_request_is_bounded_and_canonical() {
+        let token = ProtocolTokenCodec::new([9; 32])
+            .issue(ProtocolTokenPurpose::LiveResume, &("bounded-test", 7_u64))
+            .unwrap();
+        let request = request_with_resume(serde_json::json!({
+            "cursors": [{
+                "projection": "todos",
+                "position": "7",
+                "token": token.as_str()
+            }]
+        }));
+        let RequestedLiveResume::Cursors(cursors) = parse_requested_live_resume(&request) else {
+            panic!("valid cursor must parse")
+        };
+        assert_eq!(cursors.len(), 1);
+        assert_eq!(cursors[0].projection, "todos");
+        assert_eq!(cursors[0].position, "7");
+
+        for invalid in [
+            serde_json::json!({"cursors": [{
+                "projection": "todos", "position": "07", "token": token.as_str()
+            }]}),
+            serde_json::json!({"cursors": [{
+                "projection": "todos", "position": "7", "token": "not-a-token"
+            }]}),
+            serde_json::json!({"cursors": "not-an-array"}),
+        ] {
+            assert_eq!(
+                parse_requested_live_resume(&request_with_resume(invalid)),
+                RequestedLiveResume::Invalid
+            );
+        }
+
+        let too_many = vec![
+            serde_json::json!({
+                "projection": "todos",
+                "position": "7",
+                "token": token.as_str()
+            });
+            MAX_LIVE_RESUME_CURSORS + 1
+        ];
+        assert_eq!(
+            parse_requested_live_resume(&request_with_resume(
+                serde_json::json!({"cursors": too_many})
+            )),
+            RequestedLiveResume::Invalid
+        );
+    }
+
+    #[test]
+    fn request_without_resume_remains_a_fresh_subscription() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "query": "subscription Watch { todos { id } }",
+            "extensions": { "distributed": {} }
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_requested_live_resume(&request),
+            RequestedLiveResume::Absent
+        );
+    }
+}
+
+fn role_authorization_info(
+    role: &str,
+    permissions: &BTreeMap<(String, String), RoleModelPerm>,
+) -> Result<(String, Vec<String>), GraphqlBuildError> {
+    #[derive(Serialize)]
+    struct PermissionMaterial<'a> {
+        model: &'a str,
+        all_columns: bool,
+        columns: Vec<&'a str>,
+        row_filter: Option<&'a FilterExpr>,
+        limit: Option<u64>,
+        aggregations: bool,
+    }
+
+    #[derive(Serialize)]
+    struct RoleAuthorizationMaterial<'a> {
+        domain: &'static str,
+        version: u32,
+        role: &'a str,
+        permissions: Vec<PermissionMaterial<'a>>,
+    }
+
+    let mut claim_keys = BTreeSet::from([ROLE_KEY.to_string(), USER_ID_KEY.to_string()]);
+    let mut role_permissions = Vec::new();
+    for ((model, permission_role), entry) in permissions {
+        if permission_role != role {
+            continue;
+        }
+        if let Some(filter) = &entry.permission.row_filter {
+            collect_filter_claim_keys(filter, &mut claim_keys);
+        }
+        role_permissions.push(PermissionMaterial {
+            model,
+            all_columns: entry.permission.all_columns,
+            columns: entry
+                .permission
+                .columns
+                .as_ref()
+                .map(|columns| columns.iter().map(String::as_str).collect())
+                .unwrap_or_default(),
+            row_filter: entry.permission.row_filter.as_ref(),
+            limit: entry.permission.limit,
+            aggregations: entry.permission.aggregations,
+        });
+    }
+    let canonical = serde_json::to_vec(&RoleAuthorizationMaterial {
+        domain: "distributed.graphql.authorization-surface",
+        version: 1,
+        role,
+        permissions: role_permissions,
+    })
+    .map_err(|_| {
+        GraphqlBuildError(format!(
+            "failed to encode GraphQL authorization surface for role `{role}`"
+        ))
+    })?;
+    Ok((
+        format!("sha256:{:x}", Sha256::digest(canonical)),
+        claim_keys.into_iter().collect(),
+    ))
+}
+
+fn collect_filter_claim_keys(filter: &FilterExpr, keys: &mut BTreeSet<String>) {
+    fn collect_operand(operand: &Operand, keys: &mut BTreeSet<String>) {
+        if let Operand::Claim(claim) = operand {
+            keys.insert(claim.header.clone());
+        }
+    }
+
+    match filter {
+        FilterExpr::And(items) | FilterExpr::Or(items) => {
+            for item in items {
+                collect_filter_claim_keys(item, keys);
+            }
+        }
+        FilterExpr::Not(item)
+        | FilterExpr::Rel {
+            predicate: item, ..
+        } => {
+            collect_filter_claim_keys(item, keys);
+        }
+        FilterExpr::Cmp { rhs, .. } => collect_operand(rhs, keys),
+        FilterExpr::In { values, .. } => {
+            for value in values {
+                collect_operand(value, keys);
+            }
+        }
+        FilterExpr::IsNull { .. } => {}
+    }
+}
+
+fn identity_mode_label(mode: IdentityMode) -> &'static str {
+    match mode {
+        IdentityMode::TrustedProxy => "trusted_proxy",
+        IdentityMode::OidcBearer => "oidc_bearer",
+        IdentityMode::Hybrid => "hybrid",
+        IdentityMode::DevHeaders => "dev_headers",
+    }
+}
+
+fn protocol_internal_error_response() -> Response {
+    Response::from_errors(vec![ServerError::new(
+        "internal protocol response error",
+        None,
+    )])
+}
+
+fn attach_protocol_response(
+    mut response: Response,
+    accumulator: Option<&ProtocolResponseAccumulator>,
+) -> Response {
+    let Some(accumulator) = accumulator else {
+        return response;
+    };
+    if accumulator.attach(&mut response).is_ok() {
+        return response;
+    }
+
+    // A resolver cannot shadow the framework-owned extension. Replace a
+    // colliding response with a closed internal error and attach the one
+    // authoritative envelope.
+    let mut failure = protocol_internal_error_response();
+    if accumulator.attach(&mut failure).is_ok() {
+        failure
+    } else {
+        protocol_internal_error_response()
     }
 }
 
@@ -538,6 +1058,8 @@ impl GraphqlEngineBuilder {
     fn new(source: GraphqlPoolSource) -> Self {
         Self {
             service_id: None,
+            protocol_token_key: None,
+            protocol_namespace: None,
             command_binding: None,
             causal_storage_identity: source.causal_storage_identity,
             pool: source.pool,
@@ -755,6 +1277,44 @@ impl GraphqlEngineBuilder {
         self
     }
 
+    /// Configure the stable deployment key used for opaque GraphQL protocol
+    /// tokens.
+    ///
+    /// All replicas serving the same endpoint namespace must receive the same
+    /// key, and rotations intentionally create new cache/projection scopes.
+    /// The key is never exposed to resolvers or serialized to clients.
+    pub fn protocol_token_key(mut self, key: [u8; 32]) -> Self {
+        if key.iter().all(|byte| *byte == 0) {
+            self.pending_errors
+                .push("GraphQL protocol token key must not be all zero".into());
+            return self;
+        }
+        self.protocol_token_key = Some(key);
+        self
+    }
+
+    /// Optionally isolate protocol tokens for one stable public endpoint.
+    ///
+    /// When omitted, the engine's service ID is the namespace. This is useful
+    /// when the same service exposes independently deployed GraphQL surfaces.
+    pub fn protocol_namespace(mut self, namespace: impl Into<String>) -> Self {
+        let namespace = namespace.into();
+        if namespace.trim().is_empty() {
+            self.pending_errors
+                .push("GraphQL protocol namespace must not be empty".into());
+            return self;
+        }
+        if namespace.len() > 255 || namespace.chars().any(char::is_control) {
+            self.pending_errors.push(
+                "GraphQL protocol namespace must be at most 255 bytes and contain no control characters"
+                    .into(),
+            );
+            return self;
+        }
+        self.protocol_namespace = Some(namespace);
+        self
+    }
+
     /// Derive GraphQL command mutations from the service's typed executable
     /// inventory. This is the authoritative path: no second command list is
     /// accepted, and attachment later verifies the complete structural digest
@@ -899,6 +1459,17 @@ impl GraphqlEngineBuilder {
     pub fn build(mut self) -> Result<GraphqlEngine, GraphqlBuildError> {
         if !self.pending_errors.is_empty() {
             return Err(GraphqlBuildError(self.pending_errors.join("; ")));
+        }
+        if self.protocol_namespace.is_some() && self.protocol_token_key.is_none() {
+            return Err(GraphqlBuildError(
+                "GraphQL protocol namespace requires a protocol token key".into(),
+            ));
+        }
+        if self.protocol_token_key.is_some() && self.service_id.is_none() {
+            return Err(GraphqlBuildError(
+                "GraphQL protocol tokens require a stable service ID; construct the engine with GraphqlEngine::from_manifest or GraphqlEngineBuilder::service_id"
+                    .into(),
+            ));
         }
 
         let model_schemas = self
@@ -1052,6 +1623,11 @@ impl GraphqlEngineBuilder {
                 .with_projectors(self.projectors.clone())
                 .map_err(GraphqlBuildError)?,
         );
+        let query_protocol = if self.protocol_token_key.is_some() {
+            QueryProtocolRuntime::compile(&full_surface).map_err(GraphqlBuildError)?
+        } else {
+            QueryProtocolRuntime::default()
+        };
 
         let mut roles: BTreeSet<String> = self.permissions.keys().map(|(_, r)| r.clone()).collect();
         if let Some(declared) = &declared_roles {
@@ -1062,6 +1638,7 @@ impl GraphqlEngineBuilder {
         // Build per-role dynamic schemas.
         let mut schemas = HashMap::new();
         let mut role_surfaces = BTreeMap::new();
+        let mut protocol_roles = BTreeMap::new();
         for role in &roles {
             let grants = role_grants_from_model_role_perms(
                 role,
@@ -1079,6 +1656,33 @@ impl GraphqlEngineBuilder {
                 role == &anonymous && !self.introspection_for_anonymous,
             )
             .map_err(GraphqlBuildError)?;
+            if self.protocol_token_key.is_some() {
+                let service_id = self
+                    .service_id
+                    .as_deref()
+                    .expect("protocol configuration validated a service ID");
+                let (authorization_fingerprint, claim_keys) =
+                    role_authorization_info(role, &self.permissions)?;
+                let manifest = DistributedClientSurfaceExport::from_selected(
+                    service_id,
+                    Arc::clone(&role_surface),
+                )
+                .and_then(|export| export.manifest())
+                .map_err(|error| {
+                    GraphqlBuildError(format!(
+                        "failed to derive GraphQL protocol surface for role `{role}`: {error}"
+                    ))
+                })?;
+                protocol_roles.insert(
+                    role.clone(),
+                    ProtocolRoleInfo {
+                        schema_fingerprint: manifest.schema_fingerprint,
+                        protocol_fingerprint: manifest.protocol_fingerprint,
+                        authorization_fingerprint,
+                        claim_keys,
+                    },
+                );
+            }
             schemas.insert(role.clone(), schema);
             role_surfaces.insert(role.clone(), role_surface);
         }
@@ -1088,6 +1692,20 @@ impl GraphqlEngineBuilder {
             super::subscribe::spawn_change_forwarder(change_hub.clone(), rx);
         }
 
+        let protocol = self.protocol_token_key.map(|key| {
+            let service_id = self
+                .service_id
+                .clone()
+                .expect("protocol configuration validated a service ID");
+            ProtocolRuntime {
+                codec: ProtocolTokenCodec::new(key),
+                namespace: self
+                    .protocol_namespace
+                    .unwrap_or_else(|| service_id.clone()),
+                service_id,
+                roles: protocol_roles,
+            }
+        });
         let inner = Arc::new(EngineInner {
             service_id: self.service_id,
             command_binding: self.command_binding,
@@ -1115,6 +1733,8 @@ impl GraphqlEngineBuilder {
             change_hub,
             dialect,
             identity: self.identity,
+            protocol,
+            query_protocol,
         });
 
         Ok(GraphqlEngine { inner })
@@ -1440,7 +2060,7 @@ mod client_surface_parity_tests {
     #[cfg(feature = "sqlite")]
     use crate::graphql::ModelNormalization;
     use crate::graphql::{
-        col, exposed_command, ClientRootOperation, DistributedClientSurfaceExport,
+        claim, col, exposed_command, ClientRootOperation, DistributedClientSurfaceExport,
         GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
     #[cfg(feature = "sqlite")]
@@ -1501,6 +2121,296 @@ mod client_surface_parity_tests {
                     .map(str::to_string)
             })
             .collect()
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn protocol_engine(namespace: &str) -> GraphqlEngine {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .protocol_token_key([7; 32])
+            .protocol_namespace(namespace)
+            .build()
+            .unwrap()
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn policy_protocol_engine(namespace: &str, claim_key: &str) -> GraphqlEngine {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user");
+        builder
+            .permissions
+            .get_mut(&("OrderView".into(), "user".into()))
+            .unwrap()
+            .permission
+            .row_filter = Some(col("status").eq(claim(claim_key)));
+        builder
+            .protocol_token_key([7; 32])
+            .protocol_namespace(namespace)
+            .build()
+            .unwrap()
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn distributed_extension(response: &Response) -> serde_json::Value {
+        serde_json::to_value(
+            response
+                .extensions
+                .get("distributed")
+                .expect("configured protocol response must carry one envelope"),
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn configured_protocol_attaches_stable_role_and_identity_bound_envelopes() {
+        use crate::graphql::identity::VerifiedPrincipal;
+
+        let engine = protocol_engine("public/graphql");
+        let manifest = engine.client_manifest_for_role("user").unwrap();
+        let role_info = &engine
+            .inner
+            .protocol
+            .as_ref()
+            .unwrap()
+            .roles
+            .get("user")
+            .unwrap();
+        assert_eq!(role_info.schema_fingerprint, manifest.schema_fingerprint);
+        assert_eq!(
+            role_info.protocol_fingerprint,
+            manifest.protocol_fingerprint
+        );
+
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        session.set("x-tenant", "tenant-a");
+        let principal = VerifiedPrincipal::test_oidc(
+            "https://issuer.example",
+            "principal-a",
+            &["orders-service"],
+        );
+        let first = engine
+            .execute(
+                &session,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        let second = engine
+            .execute(
+                &session,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        let first = distributed_extension(&first);
+        let second = distributed_extension(&second);
+        assert_eq!(first, second);
+        assert_eq!(first["protocolVersion"], 2);
+        assert_eq!(first["schemaHash"], manifest.schema_fingerprint);
+        assert_eq!(
+            first["operation"],
+            "sha256:7f56e67dd21ab3f30d1ff8b7bed08893f0a0db86449836189b361dd1e56ddb4b"
+        );
+        let scope = first["cacheScope"].as_str().unwrap();
+        assert!(scope.starts_with("v1.cache-scope."));
+        assert!(!scope.contains("principal-a"));
+        assert!(!scope.contains("tenant-a"));
+
+        let mut other_session = session.clone();
+        other_session.set("user-agent", "a totally different browser");
+        let other_session_response = engine
+            .execute(
+                &other_session,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        assert_eq!(
+            first["cacheScope"],
+            distributed_extension(&other_session_response)["cacheScope"]
+        );
+
+        let mut other_user = session.clone();
+        other_user.set("x-user-id", "user-b");
+        let other_user_response = engine
+            .execute(
+                &other_user,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        assert_ne!(
+            first["cacheScope"],
+            distributed_extension(&other_user_response)["cacheScope"]
+        );
+
+        let other_principal = VerifiedPrincipal::test_oidc(
+            "https://issuer.example",
+            "principal-b",
+            &["orders-service"],
+        );
+        let other_principal_response = engine
+            .execute(
+                &session,
+                Request::new("{ __typename }").data(other_principal),
+            )
+            .await;
+        assert_ne!(
+            first["cacheScope"],
+            distributed_extension(&other_principal_response)["cacheScope"]
+        );
+
+        let other_namespace = protocol_engine("internal/graphql");
+        let namespaced_response = other_namespace
+            .execute(&session, Request::new("{ __typename }").data(principal))
+            .await;
+        assert_ne!(
+            first["cacheScope"],
+            distributed_extension(&namespaced_response)["cacheScope"]
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn cache_scope_tracks_only_relevant_claims_and_private_policy() {
+        use crate::graphql::identity::VerifiedPrincipal;
+
+        let engine = policy_protocol_engine("public/graphql", "x-tenant");
+        let principal = VerifiedPrincipal::test_oidc(
+            "https://issuer.example",
+            "principal-a",
+            &["orders-service"],
+        );
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        session.set("x-user-id", "user-a");
+        session.set("x-tenant", "tenant-a");
+        session.set("x-organization", "organization-a");
+        let response = engine
+            .execute(
+                &session,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        let envelope = distributed_extension(&response);
+
+        let mut irrelevant = session.clone();
+        irrelevant.set("cookie", "rotated-cookie");
+        irrelevant.set("x-organization", "organization-b");
+        let response = engine
+            .execute(
+                &irrelevant,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        assert_eq!(
+            envelope["cacheScope"],
+            distributed_extension(&response)["cacheScope"]
+        );
+
+        let mut other_tenant = session.clone();
+        other_tenant.set("x-tenant", "tenant-b");
+        let response = engine
+            .execute(
+                &other_tenant,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        assert_ne!(
+            envelope["cacheScope"],
+            distributed_extension(&response)["cacheScope"]
+        );
+
+        let other_policy = policy_protocol_engine("public/graphql", "x-organization");
+        let response = other_policy
+            .execute(
+                &session,
+                Request::new("{ __typename }").data(principal.clone()),
+            )
+            .await;
+        assert_ne!(
+            envelope["cacheScope"],
+            distributed_extension(&response)["cacheScope"]
+        );
+
+        let mut anonymous = session;
+        anonymous.set("x-role", "anonymous");
+        let response = engine
+            .execute(&anonymous, Request::new("{ __typename }").data(principal))
+            .await;
+        assert_ne!(
+            envelope["cacheScope"],
+            distributed_extension(&response)["cacheScope"]
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn protocol_stream_uses_one_request_accumulator_and_raw_engine_has_no_envelope() {
+        use crate::graphql::identity::VerifiedPrincipal;
+
+        let engine = protocol_engine("public/graphql");
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        let principal = VerifiedPrincipal::test_oidc(
+            "https://issuer.example",
+            "principal-a",
+            &["orders-service"],
+        );
+        let mut responses =
+            engine.execute_stream(&session, Request::new("{ __typename }").data(principal));
+        let response = responses.next().await.expect("one query response");
+        assert!(response.extensions.contains_key("distributed"));
+        assert!(responses.next().await.is_none());
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let raw = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["user"])
+            .grant_all("user")
+            .build()
+            .unwrap();
+        let response = raw.execute(&session, Request::new("{ __typename }")).await;
+        assert!(!response.extensions.contains_key("distributed"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn protocol_configuration_requires_real_key_and_service_identity() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let result = GraphqlEngine::builder(pool.clone())
+            .service_id("orders-service")
+            .protocol_token_key([0; 32])
+            .build();
+        let error = match result {
+            Ok(_) => panic!("all-zero protocol key must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("must not be all zero"));
+
+        let result = GraphqlEngine::builder(pool)
+            .protocol_token_key([7; 32])
+            .build();
+        let error = match result {
+            Ok(_) => panic!("protocol key without service identity must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("stable service ID"));
     }
 
     #[cfg(feature = "sqlite")]
@@ -1621,7 +2531,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:b1c037bbb006fa8149ae0f91f076c2e96e84cfc691a58b3330d6344a473aca4b"
+            "sha256:b45b3e96c1573607b726d8b4467a5eaea95d590f892b1c2ec822a7e8695c0cf9"
         );
     }
 
@@ -1752,7 +2662,7 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.service_id, "orders-service");
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:9bbb7fdb323594c02cc72f270488e97aa5abe33165957afc5ea217607a838e3b"
+            "sha256:a1cf7ce0949361a14f912f032da79bcd832db5899db2ffd2824f5825ebb84a7f"
         );
     }
 
@@ -2180,28 +3090,28 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:e89e7b425423f2b9cc7a0e3485606d7db41921223043bd54a9a6ac74bbd59edc",
+        manifest: "sha256:50c7bb9faeaf4c6d18e31ba6b61a8b919a78f00e86b9cb6bedae824f827fcdec",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:c193df0ca186e151cb2f6471455295cf50ad0e0411a3a51c3a5b4f96db8f4c81",
+        manifest: "sha256:40baafb93b18f9af50292cc3d8498fef1a59b7ac2b1fdfa4e0859c018b2e230b",
         static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
         runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:e89e7b425423f2b9cc7a0e3485606d7db41921223043bd54a9a6ac74bbd59edc",
+        manifest: "sha256:50c7bb9faeaf4c6d18e31ba6b61a8b919a78f00e86b9cb6bedae824f827fcdec",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:3ec1a9cc3d70bb2dfb9af164384dab2512195e025e1a71dade89883255c6a13b",
+        manifest: "sha256:6c1a02dcb6543ebb3d74bc244326025cdb08a6246d1d52221ffbd27bd6e33213",
         static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
         runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
     };

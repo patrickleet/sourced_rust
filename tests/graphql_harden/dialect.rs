@@ -65,9 +65,7 @@ async fn sqlite_json_contains_is_unknown_field() {
     let resp = engine
         .execute(
             &s,
-            Request::new(
-                r#"{ docs(where: { payload: { _contains: { a: 1 } } }) { doc_id } }"#,
-            ),
+            Request::new(r#"{ docs(where: { payload: { _contains: { a: 1 } } }) { doc_id } }"#),
         )
         .await;
     assert!(
@@ -78,9 +76,7 @@ async fn sqlite_json_contains_is_unknown_field() {
     assert_no_sql_leak(&resp);
     let msgs = error_messages(&resp);
     assert!(
-        msgs.contains("_contains")
-            || msgs.contains("unknown field")
-            || msgs.contains("invalid"),
+        msgs.contains("_contains") || msgs.contains("unknown field") || msgs.contains("invalid"),
         "expected unknown/invalid field for _contains, got {msgs}"
     );
 }

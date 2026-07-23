@@ -84,7 +84,11 @@ async fn e3_sqlite_statement_timeout_returns_timeout_code() {
     let _ = sqlx::query("ROLLBACK").execute(&mut *hold).await;
     drop(hold);
 
-    assert!(!resp.errors.is_empty(), "expected timeout; data={:?}", resp.data);
+    assert!(
+        !resp.errors.is_empty(),
+        "expected timeout; data={:?}",
+        resp.data
+    );
     let err = &resp.errors[0];
     assert!(
         err.message.to_ascii_lowercase().contains("timeout"),
@@ -136,11 +140,7 @@ async fn e2_execute_failure_is_internal_without_sql_leak() {
         }
     }
     // Prefer INTERNAL when extensions present.
-    let codes: Vec<_> = resp
-        .errors
-        .iter()
-        .filter_map(extension_code)
-        .collect();
+    let codes: Vec<_> = resp.errors.iter().filter_map(extension_code).collect();
     if !codes.is_empty() {
         assert!(
             codes.iter().any(|c| c.contains("INTERNAL")),

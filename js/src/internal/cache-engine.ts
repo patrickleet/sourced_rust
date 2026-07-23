@@ -136,7 +136,9 @@ export interface CacheReader {
 export interface BaseCacheWriter {
 	recordClock(key: RecordKey): BaseRecordClock | undefined;
 	writeRecord(write: RecordWrite): boolean;
-	tombstoneRecord(key: RecordKey, revision: Revision): boolean;
+	tombstoneRecord(key: RecordKey, revision: Revision, incarnation?: Revision): boolean;
+	/** Drop uncertified fields while preserving higher protocol clocks externally. */
+	discardRecord(key: RecordKey): boolean;
 	writeIndex(write: IndexWrite): boolean;
 	markIndexStale(key: IndexKey, reason: string, revision?: Revision): boolean;
 	deleteIndex(key: IndexKey, revision: Revision): boolean;
@@ -199,10 +201,19 @@ export interface CacheEngine {
 	createOptimisticLayer(id: string, update: (writer: OptimisticCacheWriter) => void): void;
 	markOptimisticLayerAccepted(id: string): boolean;
 	confirmOptimisticLayer<T>(id: string, update: (writer: BaseCacheWriter) => T): T;
+	confirmOptimisticLayers<T>(
+		ids: readonly string[],
+		update: (writer: BaseCacheWriter) => T
+	): T;
 	rejectOptimisticLayer(id: string): boolean;
 	optimisticLayerState(id: string): OptimisticLayerState | undefined;
 	extract(): CacheEngineSnapshot;
 	restore(snapshot: CacheEngineSnapshot): void;
+	/**
+	 * Drop incomparable/reset base indexes without assigning them a fabricated
+	 * revision. Pending optimistic overlays remain layered above the new gap.
+	 */
+	discardIndexes(keys: readonly IndexKey[]): void;
 	retain(key: RecordKey): void;
 	release(key: RecordKey): void;
 	gc(): readonly RecordKey[];
@@ -379,15 +390,34 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 	}
 
 	confirmOptimisticLayer<T>(id: string, update: (writer: BaseCacheWriter) => T): T {
-		const layer = this.#layers.find((candidate) => candidate.id === id);
-		if (!layer) throw new Error(`unknown optimistic layer: ${id}`);
+		return this.confirmOptimisticLayers([id], update);
+	}
+
+	confirmOptimisticLayers<T>(
+		ids: readonly string[],
+		update: (writer: BaseCacheWriter) => T
+	): T {
+		const unique = [...new Set(ids)];
+		if (unique.length !== ids.length) {
+			throw new Error('optimistic layer confirmation contains duplicate ids');
+		}
+		const layers = unique.map((id) => {
+			const layer = this.#layers.find((candidate) => candidate.id === id);
+			if (!layer) throw new Error(`unknown optimistic layer: ${id}`);
+			return layer;
+		});
 
 		return this.#transaction(() => {
 			const before = this.#materialize();
-			const layerDependencies = new Set<string>();
-			for (const operation of layer.operations) {
-				for (const dependency of operationDependencies(operation)) {
-					layerDependencies.add(dependency);
+			const layerDependencies = new Map<string, number>();
+			for (const layer of layers) {
+				for (const operation of layer.operations) {
+					for (const dependency of operationDependencies(operation)) {
+						layerDependencies.set(
+							dependency,
+							Math.max(layerDependencies.get(dependency) ?? 0, layer.sequence)
+						);
+					}
 				}
 			}
 
@@ -395,12 +425,15 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			// optimistic layer are confirmed. Advancing floors for every field in the
 			// server payload would incorrectly erase independent, older overlays.
 			const result = this.#runBaseUpdate(update);
-			for (const dependency of layerDependencies) {
+			for (const [dependency, sequence] of layerDependencies) {
 				const previous = this.#confirmedFloors.get(dependency) ?? 0;
-				if (layer.sequence > previous) this.#confirmedFloors.set(dependency, layer.sequence);
+				if (sequence > previous) this.#confirmedFloors.set(dependency, sequence);
 			}
-			this.#layers = this.#layers.filter((candidate) => candidate !== layer);
-			this.#markOverlayChanges(layer.operations, before, this.#materialize());
+			const removed = new Set(layers);
+			this.#layers = this.#layers.filter((candidate) => !removed.has(candidate));
+			for (const layer of layers) {
+				this.#markOverlayChanges(layer.operations, before, this.#materialize());
+			}
 			if (this.#layers.length === 0) this.#confirmedFloors.clear();
 			this.#dirty = true;
 			return result;
@@ -495,6 +528,24 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#nextLayerSequence = 0;
 			this.#changedDependencies.add('*');
 			this.#dirty = true;
+		});
+	}
+
+	discardIndexes(keys: readonly IndexKey[]): void {
+		const unique = new Set<IndexKey>();
+		for (const key of keys) {
+			assertName(key, 'index key');
+			unique.add(key);
+		}
+		if (unique.size === 0) return;
+		this.#transaction(() => {
+			let changed = false;
+			for (const key of unique) {
+				if (!this.#indexes.delete(key)) continue;
+				this.#changedDependencies.add(indexDependency(key));
+				changed = true;
+			}
+			if (changed) this.#dirty = true;
 		});
 	}
 
@@ -884,9 +935,17 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 				assertWriterActive(isActive());
 				return this.#writeBaseRecord(write, touched);
 			},
-			tombstoneRecord: (key: RecordKey, revision: Revision) => {
+			tombstoneRecord: (
+				key: RecordKey,
+				revision: Revision,
+				incarnation?: Revision
+			) => {
 				assertWriterActive(isActive());
-				return this.#tombstoneBaseRecord(key, revision, touched);
+				return this.#tombstoneBaseRecord(key, revision, incarnation, touched);
+			},
+			discardRecord: (key: RecordKey) => {
+				assertWriterActive(isActive());
+				return this.#discardBaseRecord(key, touched);
 			},
 			writeIndex: (write: IndexWrite) => {
 				assertWriterActive(isActive());
@@ -978,9 +1037,6 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		const revision = revisionToken(write.revision);
 		const requestedIncarnation =
 			write.incarnation === undefined ? undefined : revisionToken(write.incarnation);
-		if (requestedIncarnation !== undefined && requestedIncarnation > revision) {
-			throw new TypeError('record incarnation cannot exceed its revision');
-		}
 		const fields = cloneFields(write.fields);
 		const links = cloneLinks(write.links);
 		for (const name of Object.keys(fields)) {
@@ -994,28 +1050,49 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		}
 
 		let record = this.#records.get(write.key);
-		if (record?.tombstoneRevision !== undefined) {
-			if (revision < record.tombstoneRevision) return false;
-			if (revision === record.tombstoneRevision) {
+		if (
+			requestedIncarnation === undefined &&
+			record?.tombstoneRevision !== undefined
+		) {
+			if (revision < record.revision) return false;
+			if (revision === record.revision) {
+				throw new CacheRevisionConflictError(
+					recordSeenDependency(write.key),
+					revision
+				);
+			}
+		}
+		const incarnation =
+			requestedIncarnation ??
+			(record === undefined
+				? revision
+				: record.tombstoneRevision === undefined
+					? record.incarnation
+					: revision);
+		if (record !== undefined) {
+			const comparison = compareRecordTuple(
+				incarnation,
+				revision,
+				record.incarnation,
+				record.revision
+			);
+			if (comparison < 0) return false;
+			if (comparison === 0 && record.tombstoneRevision !== undefined) {
 				throw new CacheRevisionConflictError(
 					recordSeenDependency(write.key),
 					revision
 				);
 			}
 			if (
-				requestedIncarnation !== undefined &&
-				requestedIncarnation <= record.incarnation
+				comparison > 0 &&
+				record.tombstoneRevision !== undefined &&
+				incarnation === record.incarnation
 			) {
-				throw new CacheRevisionConflictError(recordSeenDependency(write.key), revision);
+				throw new CacheRevisionConflictError(
+					recordSeenDependency(write.key),
+					revision
+				);
 			}
-		}
-		if (record && revision < record.revision) return false;
-		if (
-			record &&
-			requestedIncarnation !== undefined &&
-			requestedIncarnation < record.incarnation
-		) {
-			return false;
 		}
 
 		let changed = false;
@@ -1024,32 +1101,20 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			this.#invalidateIndexesForRecordLifecycle(write.key, touched);
 			record = {
 				revision,
-				incarnation: requestedIncarnation ?? revision,
+				incarnation,
 				fields: new Map(),
 				links: new Map()
 			};
 			this.#records.set(write.key, record);
 			changed = true;
 			presenceChanged = true;
-		} else if (record.tombstoneRevision !== undefined) {
+		} else if (incarnation > record.incarnation) {
 			this.#invalidateIndexesForRecordLifecycle(write.key, touched);
 			record.fields.clear();
 			record.links.clear();
 			record.tombstoneRevision = undefined;
-			record.incarnation = requestedIncarnation ?? revision;
-			changed = true;
-			presenceChanged = true;
-		} else if (
-			requestedIncarnation !== undefined &&
-			requestedIncarnation > record.incarnation
-		) {
-			if (revision === record.revision) {
-				throw new CacheRevisionConflictError(recordSeenDependency(write.key), revision);
-			}
-			this.#invalidateIndexesForRecordLifecycle(write.key, touched);
-			record.fields.clear();
-			record.links.clear();
-			record.incarnation = requestedIncarnation;
+			record.incarnation = incarnation;
+			record.revision = revision;
 			changed = true;
 			presenceChanged = true;
 		}
@@ -1080,7 +1145,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 			record.links.set(name, { revision, value });
 			changed = true;
 		}
-		if (revision > record.revision) {
+		if (incarnation === record.incarnation && revision > record.revision) {
 			record.revision = revision;
 			changed = true;
 		}
@@ -1105,6 +1170,7 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 	#tombstoneBaseRecord(
 		key: RecordKey,
 		revisionValue: Revision,
+		incarnationValue?: Revision,
 		touched?: Set<string>
 	): boolean {
 		validateRecordKey(key);
@@ -1112,13 +1178,23 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		touched?.add(recordWildcardDependency(key));
 		touched?.add(recordSeenDependency(key));
 		const record = this.#records.get(key);
+		const incarnation =
+			incarnationValue === undefined
+				? (record?.incarnation ?? revision)
+				: revisionToken(incarnationValue);
 		if (record) {
-			if (record.tombstoneRevision !== undefined) {
-				if (revision <= record.tombstoneRevision) return false;
-			} else if (revision === record.revision) {
+			const comparison = compareRecordTuple(
+				incarnation,
+				revision,
+				record.incarnation,
+				record.revision
+			);
+			if (comparison < 0) return false;
+			if (comparison === 0) {
+				if (record.tombstoneRevision !== undefined) return false;
 				throw new CacheRevisionConflictError(recordSeenDependency(key), revision);
 			}
-			if (record.tombstoneRevision === undefined && revision < record.revision) return false;
+			record.incarnation = incarnation;
 			record.revision = revision;
 			record.tombstoneRevision = revision;
 			record.fields.clear();
@@ -1126,12 +1202,31 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		} else {
 			this.#records.set(key, {
 				revision,
-				incarnation: revision,
+				incarnation,
 				tombstoneRevision: revision,
 				fields: new Map(),
 				links: new Map()
 			});
 		}
+		this.#invalidateIndexesForRecordLifecycle(key, touched);
+		this.#changedDependencies.add(recordSeenDependency(key));
+		this.#changedDependencies.add(recordWildcardDependency(key));
+		this.#dirty = true;
+		return true;
+	}
+
+	#discardBaseRecord(key: RecordKey, touched?: Set<string>): boolean {
+		validateRecordKey(key);
+		const hadRecord = this.#records.has(key);
+		const hasIndexReference = [...this.#indexes.values()].some(
+			(index) =>
+				!index.deleted &&
+				(index.metadata?.parent === key || index.records.includes(key))
+		);
+		if (!hadRecord && !hasIndexReference) return false;
+		this.#records.delete(key);
+		touched?.add(recordSeenDependency(key));
+		touched?.add(recordWildcardDependency(key));
 		this.#invalidateIndexesForRecordLifecycle(key, touched);
 		this.#changedDependencies.add(recordSeenDependency(key));
 		this.#changedDependencies.add(recordWildcardDependency(key));
@@ -1472,9 +1567,6 @@ function parseSnapshot(snapshot: CacheEngineSnapshot): {
 		if (records.has(input.key)) throw new TypeError(`duplicate snapshot record: ${input.key}`);
 		const revision = revisionToken(input.revision);
 		const incarnation = revisionToken(input.incarnation ?? input.revision);
-		if (incarnation > revision) {
-			throw new TypeError(`record incarnation exceeds ${input.key}`);
-		}
 		const tombstoneRevision =
 			input.tombstoneRevision === undefined
 				? undefined
@@ -1877,6 +1969,19 @@ function revisionToken(value: Revision): bigint {
 		throw new TypeError('string revision must be a canonical unsigned integer');
 	}
 	return BigInt(value);
+}
+
+function compareRecordTuple(
+	leftIncarnation: bigint,
+	leftRevision: bigint,
+	rightIncarnation: bigint,
+	rightRevision: bigint
+): -1 | 0 | 1 {
+	if (leftIncarnation < rightIncarnation) return -1;
+	if (leftIncarnation > rightIncarnation) return 1;
+	if (leftRevision < rightRevision) return -1;
+	if (leftRevision > rightRevision) return 1;
+	return 0;
 }
 
 function revisionString(value: bigint): string {

@@ -6,6 +6,7 @@ import type {
 	Revision
 } from '../internal/cache-engine.js';
 import type { GqlError, GraphqlVariables } from '../types.js';
+import type { DistributedRecordRevision } from '../protocol.js';
 import {
 	cloneJsonValue,
 	coverageFromArtifact,
@@ -17,6 +18,7 @@ import type {
 	ReplicaEntitySelection,
 	ReplicaOperationArtifact,
 	ReplicaRelationshipSelection,
+	ReplicaRevision,
 	ReplicaResultEnvelope,
 	ReplicaRootSelection
 } from './types.js';
@@ -25,6 +27,23 @@ export type ReplicaNormalizationSummary = {
 	readonly wrote: boolean;
 	readonly partial: boolean;
 	readonly indexKeys: readonly string[];
+};
+
+export type ReplicaProtocolRecordResolution = {
+	readonly evidence: DistributedRecordRevision;
+	/** False means a same-scope newer base record already won. */
+	readonly apply: boolean;
+};
+
+export type ReplicaNormalizationProtocol = {
+	readonly indexRevision: ReplicaRevision;
+	readonly writeIndexes: boolean;
+	readonly indexesComplete: boolean;
+	readonly record: (
+		path: readonly string[],
+		model: string,
+		key: string
+	) => ReplicaProtocolRecordResolution | undefined;
 };
 
 type NormalizedBranch = {
@@ -45,9 +64,12 @@ export function normalizeReplicaResult<
 	writer: BaseCacheWriter,
 	artifact: ReplicaOperationArtifact<TData, TVariables>,
 	variables: TVariables,
-	envelope: ReplicaResultEnvelope<TData>
+	envelope: ReplicaResultEnvelope<TData>,
+	protocol?: ReplicaNormalizationProtocol
 ): ReplicaNormalizationSummary {
 	validateArtifact(artifact);
+	const snapshotRevision =
+		protocol?.indexRevision ?? requireLegacyRevision(envelope.revision);
 	const errors = collectErrorPaths(envelope.errors ?? []);
 	if (errors.global || envelope.data === undefined) {
 		return Object.freeze({ wrote: false, partial: errors.global, indexKeys: [] });
@@ -75,11 +97,13 @@ export function normalizeReplicaResult<
 		const rawValue = hasValue ? envelope.data[root.responseKey] : undefined;
 		if (blocked || !hasValue || (rawValue === null && hasErrors)) {
 			wrote =
-				writer.markIndexStale(
-					key,
-					hasErrors ? 'graphql-partial-error' : 'incomplete-result',
-					envelope.revision
-				) || wrote;
+				(protocol?.writeIndexes ?? true)
+					? writer.markIndexStale(
+							key,
+							hasErrors ? 'graphql-partial-error' : 'incomplete-result',
+							snapshotRevision
+						) || wrote
+					: wrote;
 			indexKeys.push(key);
 			partial = true;
 			continue;
@@ -90,11 +114,18 @@ export function normalizeReplicaResult<
 			root,
 			value,
 			path,
-			envelope.revision,
+			snapshotRevision,
 			variables,
-			errors
+			errors,
+			protocol,
+			indexKeys
 		);
-		const rootPartial = blocked || !hasValue || branch.partial || hasErrors;
+		const rootPartial =
+			blocked ||
+			!hasValue ||
+			branch.partial ||
+			hasErrors ||
+			(protocol !== undefined && !protocol.indexesComplete);
 		const metadata = indexMetadata(
 			root,
 			argumentsValue,
@@ -103,9 +134,10 @@ export function normalizeReplicaResult<
 			hasErrors
 		);
 		if (
+			(protocol?.writeIndexes ?? true) &&
 			writer.writeIndex({
 				key,
-				revision: envelope.revision,
+				revision: snapshotRevision,
 				records: branch.keys,
 				complete: !rootPartial,
 				metadata
@@ -130,7 +162,9 @@ function normalizeBranch(
 	path: readonly (string | number)[],
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
-	errors: ErrorPaths
+	errors: ErrorPaths,
+	protocol: ReplicaNormalizationProtocol | undefined,
+	indexKeys: string[]
 ): NormalizedBranch {
 	if (value === null) return { keys: [], nullValue: true, partial: false };
 	if (value === undefined) return { keys: [], nullValue: false, partial: true };
@@ -142,7 +176,9 @@ function normalizeBranch(
 			path,
 			snapshotRevision,
 			variables,
-			errors
+			errors,
+			protocol,
+			indexKeys
 		);
 		return {
 			keys: entity.key === undefined ? [] : [entity.key],
@@ -167,7 +203,9 @@ function normalizeBranch(
 			[...path, index],
 			snapshotRevision,
 			variables,
-			errors
+			errors,
+			protocol,
+			indexKeys
 		);
 		if (entity.key === undefined) partial = true;
 		else keys.push(entity.key);
@@ -183,7 +221,9 @@ function normalizeEntity(
 	path: readonly (string | number)[],
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
-	errors: ErrorPaths
+	errors: ErrorPaths,
+	protocol: ReplicaNormalizationProtocol | undefined,
+	indexKeys: string[]
 ): { key?: RecordKey; partial: boolean } {
 	if (!isObject(value) || pathBlocked(errors, path)) return { partial: true };
 
@@ -232,34 +272,53 @@ function normalizeEntity(
 		// clock or rejecting an otherwise valid partial-error envelope.
 		return { key, partial: true };
 	}
-	const revision = responseRevision(
-		value,
-		selection.revisionResponseKey,
-		snapshotRevision,
-		'row revision'
+	const resolution = protocol?.record(
+		path.map(String),
+		selection.model.id,
+		key
 	);
+	if (protocol !== undefined && resolution === undefined) {
+		return { key, partial: true };
+	}
+	if (resolution?.evidence.tombstone) {
+		throw new TypeError('live GraphQL row carries tombstone record evidence');
+	}
+	const revision =
+		resolution?.evidence.revision ??
+		responseRevision(
+			value,
+			selection.revisionResponseKey,
+			snapshotRevision,
+			'row revision'
+		);
 	if (revision === undefined) throw new TypeError('row revision is missing');
-	const incarnation = responseRevision(
-		value,
-		selection.incarnationResponseKey,
-		undefined,
-		'row incarnation'
-	);
+	const incarnation =
+		resolution?.evidence.incarnation ??
+		responseRevision(
+			value,
+			selection.incarnationResponseKey,
+			undefined,
+			'row incarnation'
+		);
 	// Establish (or validate) the parent lifecycle before attaching exact
 	// relationship indexes. The enclosing engine batch still makes the entire
 	// response visible atomically.
-	writer.writeRecord({
-		key,
-		revision,
-		...(incarnation === undefined ? {} : { incarnation }),
-		fields
-	});
+	if (resolution?.apply !== false) {
+		writer.writeRecord({
+			key,
+			revision,
+			...(incarnation === undefined ? {} : { incarnation }),
+			fields
+		});
+	}
 	const storedClock = writer.recordClock(key);
 	if (
 		storedClock === undefined ||
 		storedClock.tombstoned ||
-		storedClock.revision !== String(revision) ||
-		(incarnation !== undefined && storedClock.incarnation !== String(incarnation))
+		(resolution?.apply !== false &&
+			(storedClock.revision !== String(revision) ||
+				(incarnation !== undefined &&
+					storedClock.incarnation !== String(incarnation))))
 	) {
 		// The row was rejected by a newer revision/lifecycle fence. Its identity
 		// cannot certify membership for the current incarnation, even if this
@@ -278,12 +337,15 @@ function normalizeEntity(
 			field: relationship.field,
 			arguments: argumentsValue
 		});
+		indexKeys.push(indexKey);
 		if (!hasValue || blocked || (rawValue === null && hasErrors)) {
-			writer.markIndexStale(
-				indexKey,
-				hasErrors ? 'graphql-partial-error' : 'incomplete-result',
-				snapshotRevision
-			);
+			if (protocol?.writeIndexes ?? true) {
+				writer.markIndexStale(
+					indexKey,
+					hasErrors ? 'graphql-partial-error' : 'incomplete-result',
+					snapshotRevision
+				);
+			}
 			partial = true;
 			continue;
 		}
@@ -294,31 +356,49 @@ function normalizeEntity(
 			relationshipPath,
 			snapshotRevision,
 			variables,
-			errors
+			errors,
+			protocol,
+			indexKeys
 		);
-		const relationshipPartial = branch.partial || hasErrors;
+		const relationshipPartial =
+			branch.partial ||
+			hasErrors ||
+			(protocol !== undefined && !protocol.indexesComplete);
 		// The exact parent+field+arguments index is authoritative. A single link
 		// slot on the parent cannot represent two aliases/operations with different
 		// arguments and cannot safely share the entity row's revision clock.
-		writer.writeIndex({
-			key: indexKey,
-			revision: snapshotRevision,
-			records: branch.keys,
-			complete: !relationshipPartial,
-			metadata: indexMetadata(
-				relationship,
-				argumentsValue,
-				branch,
-				relationshipPartial,
-				hasErrors,
-				key,
-				revision
-			)
-		});
+		if (protocol?.writeIndexes ?? true) {
+			writer.writeIndex({
+				key: indexKey,
+				revision: snapshotRevision,
+				records: branch.keys,
+				complete: !relationshipPartial,
+				metadata: indexMetadata(
+					relationship,
+					argumentsValue,
+					branch,
+					relationshipPartial,
+					hasErrors,
+					key,
+					storedClock.revision
+				)
+			});
+		}
 		partial ||= relationshipPartial;
 	}
 
 	return { key, partial };
+}
+
+function requireLegacyRevision(
+	value: ReplicaRevision | undefined
+): ReplicaRevision {
+	if (value === undefined) {
+		throw new TypeError(
+			'replica result requires either Distributed v2 snapshot evidence or a legacy revision'
+		);
+	}
+	return value;
 }
 
 function indexMetadata(

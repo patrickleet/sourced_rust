@@ -21,6 +21,7 @@ use crate::read_model::ReadModelChange;
 
 use super::compile::{self, RootKind, SelectionNode, SqlPlan};
 use super::engine::{execute_plan, EngineInner};
+use super::protocol::{ProtocolResponseAccumulator, RequestedLiveResume};
 
 /// Fan-out hub for read-model change notifications.
 #[derive(Clone, Debug)]
@@ -97,6 +98,7 @@ pub(crate) async fn live_query_stream(
     role: String,
     model: String,
     selection: SelectionNode,
+    protocol: Option<ProtocolResponseAccumulator>,
 ) -> Result<LiveQueryStream, String> {
     let plan: SqlPlan =
         compile::compile_root(&inner, &session, &role, &model, RootKind::List, &selection)?;
@@ -104,22 +106,39 @@ pub(crate) async fn live_query_stream(
     let mut change_rx = inner.change_hub.subscribe();
     let (tx, rx) = mpsc::channel::<LiveItem>(8);
     let debounce = Duration::from_millis(100);
+    let requested_live_resume = protocol
+        .as_ref()
+        .map(ProtocolResponseAccumulator::requested_live_resume)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(RequestedLiveResume::Absent);
 
     tokio::spawn(async move {
         // 1) Initial execution + yield
-        let mut last_hash = match execute_list(&inner, &session, &role, &model, &selection).await {
-            Ok(value) => {
-                let h = response_hash(&value);
-                if tx.send(Ok(value)).await.is_err() {
-                    return;
-                }
-                Some(h)
-            }
+        let mut initial = match execute_list(
+            &inner,
+            &role,
+            &plan,
+            protocol.as_ref(),
+            requested_live_resume,
+        )
+        .await
+        {
+            Ok(executed) => executed,
             Err(e) => {
                 let _ = tx.send(Err(async_graphql::Error::new(e))).await;
                 return;
             }
         };
+        if let Err(error) = initial.record_protocol_metadata(protocol.as_ref()) {
+            let _ = tx.send(Err(async_graphql::Error::new(error))).await;
+            return;
+        }
+        let mut last_hash = Some(initial.hash);
+        let mut next_live_resume = initial.next_live_resume;
+        if tx.send(Ok(initial.value)).await.is_err() {
+            return;
+        }
 
         // 2) Change loop: dirty → debounce → re-exec → hash-gate → yield
         loop {
@@ -149,14 +168,36 @@ pub(crate) async fn live_query_stream(
                 }
             }
 
-            match execute_list(&inner, &session, &role, &model, &selection).await {
-                Ok(value) => {
-                    let h = response_hash(&value);
-                    if last_hash == Some(h) {
+            match execute_list(
+                &inner,
+                &role,
+                &plan,
+                protocol.as_ref(),
+                next_live_resume.clone(),
+            )
+            .await
+            {
+                Ok(mut executed) => {
+                    // Advance the private replay cursor even when a redundant
+                    // execution is hash-gated. Protocol frame metadata is
+                    // enqueued only when the matching GraphQL value is emitted,
+                    // preserving exact data/envelope FIFO ordering.
+                    next_live_resume = executed.next_live_resume.clone();
+                    if last_hash == Some(executed.hash) {
                         continue; // hash gate: no push on no-change
                     }
-                    last_hash = Some(h);
-                    if tx.send(Ok(value)).await.is_err() {
+                    if let Err(error) = executed.record_protocol_metadata(protocol.as_ref()) {
+                        if tx
+                            .send(Err(async_graphql::Error::new(error)))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                    last_hash = Some(executed.hash);
+                    if tx.send(Ok(executed.value)).await.is_err() {
                         return;
                     }
                 }
@@ -172,15 +213,77 @@ pub(crate) async fn live_query_stream(
     Ok(LiveQueryStream { rx })
 }
 
+struct ExecutedLiveQuery {
+    value: Value,
+    hash: u64,
+    snapshot: Option<super::protocol::DistributedQuerySnapshot>,
+    live: Option<super::protocol::DistributedLiveMetadata>,
+    next_live_resume: RequestedLiveResume,
+}
+
+impl ExecutedLiveQuery {
+    fn record_protocol_metadata(
+        &mut self,
+        protocol: Option<&ProtocolResponseAccumulator>,
+    ) -> Result<(), String> {
+        let Some(protocol) = protocol else {
+            return Ok(());
+        };
+        let snapshot = self
+            .snapshot
+            .take()
+            .ok_or_else(|| "causal live query omitted its snapshot metadata".to_string())?;
+        protocol
+            .record_query_metadata(snapshot, self.live.take())
+            .map_err(|error| error.to_string())
+    }
+}
+
 async fn execute_list(
     inner: &EngineInner,
-    session: &Session,
     role: &str,
-    model: &str,
-    selection: &SelectionNode,
-) -> Result<Value, String> {
-    let plan = compile::compile_root(inner, session, role, model, RootKind::List, selection)?;
-    execute_plan(inner, &plan).await
+    plan: &SqlPlan,
+    protocol: Option<&ProtocolResponseAccumulator>,
+    requested_live_resume: RequestedLiveResume,
+) -> Result<ExecutedLiveQuery, String> {
+    let Some(protocol) = protocol else {
+        let value = execute_plan(inner, plan).await?;
+        return Ok(ExecutedLiveQuery {
+            hash: response_hash(&value),
+            value,
+            snapshot: None,
+            live: None,
+            next_live_resume: RequestedLiveResume::Absent,
+        });
+    };
+
+    let role_surface = inner
+        .role_surfaces
+        .get(role)
+        .cloned()
+        .ok_or_else(|| "authorized GraphQL role surface is unavailable".to_string())?;
+    let executed = super::query_protocol::execute_query_with_protocol(
+        inner,
+        role_surface,
+        protocol.clone(),
+        plan,
+        Some(requested_live_resume),
+    )
+    .await?;
+    let hash = protocol_response_hash(&executed.value, &executed.snapshot, &executed.live);
+    let next_live_resume = executed
+        .live
+        .as_ref()
+        .filter(|live| live.supported)
+        .map(|live| RequestedLiveResume::Cursors(live.cursors.clone()))
+        .unwrap_or(RequestedLiveResume::Absent);
+    Ok(ExecutedLiveQuery {
+        value: executed.value,
+        hash,
+        snapshot: Some(executed.snapshot),
+        live: executed.live,
+        next_live_resume,
+    })
 }
 
 fn footprint_hits(footprint: &BTreeSet<String>, change: &ReadModelChange) -> bool {
@@ -207,6 +310,21 @@ pub fn response_hash(value: &Value) -> u64 {
         format!("{value:?}").hash(&mut h);
     }
     h.finish()
+}
+
+fn protocol_response_hash(
+    value: &Value,
+    snapshot: &super::protocol::DistributedQuerySnapshot,
+    live: &Option<super::protocol::DistributedLiveMetadata>,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hash = DefaultHasher::new();
+    match serde_json::to_string(&(value, snapshot, live)) {
+        Ok(encoded) => encoded.hash(&mut hash),
+        Err(_) => format!("{value:?}:{snapshot:?}:{live:?}").hash(&mut hash),
+    }
+    hash.finish()
 }
 
 /// Forward an external change receiver into the engine hub.

@@ -51,7 +51,10 @@ async fn e1_through_e8_live() {
         let base = iss.trim_end_matches('/');
         // Token endpoint is always under /application/o/token/ for Authentik
         if base.contains("/application/o/") {
-            format!("{base}/../token/").replace("/application/o/graphql-e2e-customer/../token/", "/application/o/token/")
+            format!("{base}/../token/").replace(
+                "/application/o/graphql-e2e-customer/../token/",
+                "/application/o/token/",
+            )
         } else {
             format!("{base}/application/o/token/")
         }
@@ -76,12 +79,8 @@ async fn e1_through_e8_live() {
 
     common::run_e1_through_e8(
         oidc,
-        async {
-            mint_client_credentials(&token_url, &c_id, &c_sec).await
-        },
-        async {
-            mint_client_credentials(&token_url, &a_id, &a_sec).await
-        },
+        async { mint_client_credentials(&token_url, &c_id, &c_sec).await },
+        async { mint_client_credentials(&token_url, &a_id, &a_sec).await },
     )
     .await;
 }
@@ -148,8 +147,8 @@ fn decode_sub(token: &str) -> Option<String> {
     while s.len() % 4 != 0 {
         s.push('=');
     }
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes())
-        .ok()?;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes()).ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
     v.get("sub")?.as_str().map(|s| s.to_string())
 }
@@ -158,7 +157,9 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }

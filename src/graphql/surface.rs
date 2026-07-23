@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use super::command_contract::{
-    compiled_direct_projection_target, compiled_projection_confirmation, CommandConsistency,
-    CommandDirectProjectionTarget, CommandEffect, CommandEffects, CommandInputDefault,
-    CommandProjectedModel, CommandProjectionConfirmation, CompiledDirectProjectionTarget,
-    CompiledProjectionConfirmation, EffectExpression, EffectFieldValue, EffectKey,
-    EffectRelationship, TypedEffectKey,
+    compiled_direct_projection_target, compiled_projection_confirmation,
+    validate_projection_confirmation_count, CommandConsistency, CommandDirectProjectionTarget,
+    CommandEffect, CommandEffects, CommandInputDefault, CommandProjectedModel,
+    CommandProjectionConfirmation, CompiledDirectProjectionTarget, CompiledProjectionConfirmation,
+    EffectExpression, EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
 };
 use super::filter::{FilterExpr, Operand};
 use crate::projection_protocol::ProjectionPartitionSpec;
@@ -1895,6 +1895,7 @@ fn validate_command_confirmations(
     models: &BTreeMap<String, SurfaceModel>,
     command: &SurfaceCommand,
 ) -> Result<(), String> {
+    validate_projection_confirmation_count(&command.command_name, command.confirmations.len())?;
     match command.consistency {
         Some(CommandConsistency::Fact) if command.confirmations.is_empty() => {
             return Err(format!(

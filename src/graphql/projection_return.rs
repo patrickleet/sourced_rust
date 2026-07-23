@@ -58,9 +58,8 @@ where
     M: RelationalReadModel + Serialize,
 {
     plan.upsert(row)?;
-    serde_json::to_value(row).map_err(|e| {
-        TableStoreError::Metadata(format!("projection payload serialize failed: {e}"))
-    })
+    serde_json::to_value(row)
+        .map_err(|e| TableStoreError::Metadata(format!("projection payload serialize failed: {e}")))
 }
 
 #[cfg(test)]
