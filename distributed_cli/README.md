@@ -102,6 +102,49 @@ compile the target crate, they need the local `distributed` crate to be
 resolvable — found automatically from the workspace, or pass `--distributed-path`
 / set `DISTRIBUTED_PATH`.
 
+## `dctl client-manifest` — authorized client surface
+
+```bash
+dctl client-manifest > target/distributed-client.json
+```
+
+Compiles the service's `distributed_client_surface` export into the versioned,
+role/application-selected manifest used by the operation compiler. The export
+already contains one concrete role or named application surface; it is not an
+admin catalog that downstream tools filter themselves.
+
+## `dctl client` — typed query, live, and command artifacts
+
+```bash
+dctl client \
+  --manifest target/distributed-client.json \
+  --role user \
+  --documents 'src/**/*.graphql' \
+  --out src/generated/distributed
+
+# CI: parse, validate, and compare without writing
+dctl client \
+  --manifest target/distributed-client.json \
+  --role user \
+  --documents 'src/**/*.graphql' \
+  --out src/generated/distributed \
+  --check
+```
+
+The requested `--role` or `--surface` must exactly match the manifest's
+authorized identity. Generation validates the GraphQL documents, injects only
+authorized wire-only identity metadata, derives an exact live companion for
+`@live`, and emits framework-neutral TypeScript replica artifacts alongside the
+manifest-owned command and protocol operations. Operation IDs hash the exact
+full document sent over GraphQL; they do not imply an APQ/persisted-operation
+registry.
+
+`@load` is discovered automatically for `src/routes/**/+page.graphql`. A
+co-located document with a different filename can use the explicit fallback
+`--route OperationName=/route`. Unsupported or unprovable selections fail at
+build time with their source location; the compiler does not emit a partial
+normalization plan.
+
 ## `dctl describe` — manifest as JSON
 
 ```bash

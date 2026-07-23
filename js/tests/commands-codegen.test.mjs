@@ -298,13 +298,13 @@ test('codegen validates once and produces deterministic aligned artifacts', () =
 	assert.ok(first.operations.includes(buildMutationOperation(normalized.commands[0])));
 });
 
-test('v3 codegen consumes exact causal operations and emits one shared protocol descriptor', () => {
+test('v4 codegen consumes exact causal operations and emits one shared protocol descriptor', () => {
 	const commandOperation =
 		'mutation Client_todos_create($commandId: ID!, $input: TodoInput!) { todos_create(commandId: $commandId, input: $input) { id title } }';
 	const statusOperation =
 		'query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }';
 	const manifest = {
-		manifest_version: 3,
+		manifest_version: 4,
 		protocol_version: 2,
 		schema_fingerprint: hash('role-selected-schema'),
 		capabilities: { causal_receipts: true },
@@ -379,6 +379,12 @@ test('v3 codegen consumes exact causal operations and emits one shared protocol 
 	};
 
 	const parsed = parseCodegenManifest(manifest);
+	const stale = structuredClone(manifest);
+	stale.manifest_version = 3;
+	assert.throws(
+		() => parseCodegenManifest(stale),
+		/manifest_version 4/
+	);
 	const artifacts = generateCommandArtifacts(parsed);
 	assert.ok(artifacts.operations.includes(commandOperation));
 	assert.ok(artifacts.operations.includes(statusOperation));
