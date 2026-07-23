@@ -2658,11 +2658,17 @@ fn validate_effect_expression(
                 ));
             }
         }
-        EffectExpression::TrustedPreset { .. } => {
-            return Err(format!(
-                "typed command `{}` uses a trusted preset before a cache-scope-bound server preset capability is installed",
-                command.command_name
-            ));
+        EffectExpression::TrustedPreset { name } => {
+            if name.is_empty()
+                || name.len() > 128
+                || name.trim() != name
+                || name.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "typed command `{}` trusted preset name must be 1..=128 bytes, have no surrounding whitespace, and contain no control characters",
+                    command.command_name
+                ));
+            }
         }
         EffectExpression::Constant { value } => {
             let compatible = constant_matches_scalar(value, expected);
@@ -2916,12 +2922,10 @@ fn effect_operation_visible(
 }
 
 fn effect_expression_visible(expression: &EffectExpression) -> bool {
-    // Trusted preset values are intentionally unavailable until the server has
-    // produced a verified, cache-scope-bound preset inventory (task 10).
-    !matches!(
-        expression,
-        EffectExpression::TrustedPreset { .. } | EffectExpression::InvalidConstant { .. }
-    )
+    // A selected client surface may expose the descriptor name, but never its
+    // value. Runtime values are read from the verified Session and travel only
+    // in the cache-scope-bound protocol envelope.
+    !matches!(expression, EffectExpression::InvalidConstant { .. })
 }
 
 fn reject_occupied_command_types(
@@ -3677,7 +3681,7 @@ mod tests {
     }
 
     #[test]
-    fn role_surface_erases_effects_that_reference_denied_fields_or_unbound_presets() {
+    fn role_surface_erases_denied_effects_and_retains_valid_trusted_presets() {
         let mut full = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
         let input = SurfaceTypeDef {
             name: "UpdateOrderInput".into(),
@@ -3754,13 +3758,7 @@ mod tests {
             direct_projection: None,
             confirmation_unavailable: false,
         };
-        let mut trusted = vec![trusted_preset_command];
-        let error =
-            validate_and_canonicalize_commands(&full.models, &full.comparison_ops, &mut trusted)
-                .unwrap_err();
-        assert!(error.contains("cache-scope-bound server preset capability"));
-
-        full.commands = vec![denied_field_command];
+        full.commands = vec![denied_field_command, trusted_preset_command];
         validate_and_canonicalize_commands(&full.models, &full.comparison_ops, &mut full.commands)
             .unwrap();
 
@@ -3773,10 +3771,24 @@ mod tests {
             )]),
         )
         .unwrap();
-        assert!(selected.commands.iter().all(|command| command
+        let denied = selected
+            .commands
+            .iter()
+            .find(|command| command.command_name == "order.assign_customer")
+            .expect("denied-field command");
+        assert!(denied
             .effects
             .as_ref()
-            .is_some_and(|effects| effects.operations.is_empty())));
+            .is_some_and(|effects| effects.operations.is_empty()));
+        let trusted = selected
+            .commands
+            .iter()
+            .find(|command| command.command_name == "order.apply_preset")
+            .expect("trusted-preset command");
+        assert!(trusted
+            .effects
+            .as_ref()
+            .is_some_and(|effects| !effects.operations.is_empty()));
 
         let manifest = super::super::client_manifest_from_surface(
             "orders",
@@ -3784,16 +3796,49 @@ mod tests {
             &selected,
         )
         .unwrap();
-        assert!(manifest.commands.iter().all(|command| command
+        let denied = manifest
+            .commands
+            .iter()
+            .find(|command| command.name == "order.assign_customer")
+            .expect("denied-field manifest command");
+        assert!(denied
             .extensions
             .effects
             .as_ref()
             .is_some_and(
                 |effects| effects.operations.is_empty() && effects.fallback == "revalidate"
-            )));
-        let effects_json = serde_json::to_string(&manifest.commands[0].extensions.effects).unwrap();
-        assert!(!effects_json.contains("customer_id"), "{effects_json}");
-        assert!(!effects_json.contains("tenant-secret"), "{effects_json}");
+            ));
+        assert!(denied.extensions.trusted_presets.is_empty());
+        let denied_effects_json = serde_json::to_string(&denied.extensions.effects).unwrap();
+        assert!(
+            !denied_effects_json.contains("customer_id"),
+            "{denied_effects_json}"
+        );
+        assert!(
+            !denied_effects_json.contains("tenant-secret"),
+            "{denied_effects_json}"
+        );
+
+        let trusted = manifest
+            .commands
+            .iter()
+            .find(|command| command.name == "order.apply_preset")
+            .expect("trusted-preset manifest command");
+        assert_eq!(
+            trusted.extensions.trusted_presets,
+            vec![super::super::ClientTrustedPresetDescriptor {
+                name: "tenant-secret".into(),
+                codec: "string".into(),
+            }]
+        );
+        let trusted_json = serde_json::to_string(trusted).unwrap();
+        assert!(trusted_json.contains("tenant-secret"), "{trusted_json}");
+        let preset_descriptors_json =
+            serde_json::to_string(&trusted.extensions.trusted_presets).unwrap();
+        assert!(
+            !preset_descriptors_json.contains("\"value\":"),
+            "{preset_descriptors_json}"
+        );
     }
 
     #[test]

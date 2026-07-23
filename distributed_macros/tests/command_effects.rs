@@ -116,6 +116,13 @@ fn command_effects_compile_complete_typed_keys_and_assignments() {
             key { tenant_id: input.tenant_id, todo_id: input.todo_id },
             set { title: input.title, count: constant(-1) }
         };
+        patch TodoView {
+            key {
+                tenant_id: trusted("x-tenant-id"),
+                todo_id: input.todo_id
+            },
+            set { status: trusted("x-default-status") }
+        };
         delete TodoView {
             key { tenant_id: input.tenant_id, todo_id: input.todo_id }
         };

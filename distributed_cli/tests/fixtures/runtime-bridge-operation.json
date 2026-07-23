@@ -93,7 +93,11 @@
   ],
   "protocol": {
     "version": 2,
-    "schemaHash": "sha256:f0efa0091f24a7d2c84068ff0cae10e5488ecda73a97c15a115c6de483aa3c1c",
+    "schemaHash": "sha256:932aaf585be36d8eb05c646a66a1c44c94303f398577c71512491d26347e78f5",
+    "surface": {
+      "kind": "role",
+      "name": "user"
+    },
     "operation": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878"
   }
 }
