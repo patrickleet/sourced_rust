@@ -144,6 +144,7 @@ function runtimeObject(
 				...(relationship.coverage === undefined
 					? {}
 					: { coverage: relationship.coverage }),
+				relationship: relationship.relationship,
 				...(relationship.expose === undefined
 					? {}
 					: { expose: relationship.expose }),

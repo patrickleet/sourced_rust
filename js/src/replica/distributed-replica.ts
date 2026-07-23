@@ -23,8 +23,8 @@ import {
 	type DistributedRecordRevision
 } from '../protocol.js';
 import {
+	canonicalizeOperationVariables,
 	canonicalVariables,
-	cloneJsonObject,
 	cloneJsonValue,
 	replicaIndexKey,
 	replicaRecordKey,
@@ -81,6 +81,14 @@ type ProtocolGeneration = {
 	cacheScope: DistributedOpaqueString;
 	schemaHash: string;
 };
+
+type ReplicaArtifactBinding =
+	| { kind: 'legacy' }
+	| { kind: 'protocol'; version: 2; schemaHash: string };
+
+type ValidatedArtifactBinding =
+	| { kind: 'legacy' }
+	| { kind: 'protocol'; version: 2; schemaHash: string; operation: string };
 
 type RecordProtocolClock = {
 	scopeToken: DistributedOpaqueString;
@@ -151,6 +159,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		AnonymousRecordProtocolClock
 	>();
 	readonly #optimisticReceipts = new Map<string, OptimisticReceiptState>();
+	#artifactBinding: ReplicaArtifactBinding | undefined;
 	#protocolGeneration: ProtocolGeneration | undefined;
 	#protocolGenerationSequence = 0;
 	#nextIndexRevision = '0';
@@ -165,7 +174,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		artifact: ReplicaOperationArtifact<TData, TVariables>,
 		variables: TVariables
 	): ReplicaSnapshot<TData> {
-		const stableVariables = cloneJsonObject(variables) as TVariables;
+		this.#bindArtifact(artifact);
+		const stableVariables = canonicalizeOperationVariables(artifact, variables);
 		const key = operationKey(artifact, stableVariables);
 		const materialized = this.#engine.read((reader) =>
 			materializeReplicaOperation(reader, artifact, stableVariables)
@@ -178,6 +188,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		variables: TVariables,
 		options: WatchReplicaOptions = {}
 	): ReplicaWatch<TData> {
+		this.#bindArtifact(artifact);
 		return new ReplicaWatchState(this, artifact, variables, options);
 	}
 
@@ -188,12 +199,55 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		source: ReplicaWriteSource
 	): void {
 		assertWriteSource(source);
+		this.#bindArtifact(artifact);
+		const stableVariables = canonicalizeOperationVariables(artifact, variables);
+		this.#writeCanonicalResult(artifact, stableVariables, envelope, source);
+	}
+
+	#bindArtifact<TData, TVariables extends GraphqlVariables>(
+		artifact: ReplicaOperationArtifact<TData, TVariables>
+	): void {
+		const next = validatedArtifactBinding(artifact);
+		const current = this.#artifactBinding;
+		if (current === undefined) {
+			this.#artifactBinding =
+				next.kind === 'legacy'
+					? Object.freeze({ kind: 'legacy' })
+					: Object.freeze({
+							kind: 'protocol',
+							version: next.version,
+							schemaHash: next.schemaHash
+						});
+			return;
+		}
+		if (
+			current.kind !== next.kind ||
+			(
+				current.kind === 'protocol' &&
+				next.kind === 'protocol' &&
+				(
+					current.version !== next.version ||
+					current.schemaHash !== next.schemaHash
+				)
+			)
+		) {
+			throw new TypeError(
+				'replica artifact schema does not match the active replica binding'
+			);
+		}
+	}
+
+	#writeCanonicalResult<TData, TVariables extends GraphqlVariables>(
+		artifact: ReplicaOperationArtifact<TData, TVariables>,
+		stableVariables: TVariables,
+		envelope: ReplicaResultEnvelope<TData>,
+		source: ReplicaWriteSource
+	): void {
 		const extensions = parseGraphqlResponseExtensions(envelope.extensions);
 		const parsedEnvelope: ReplicaResultEnvelope<TData> = Object.freeze({
 			...envelope,
 			...(extensions === undefined ? {} : { extensions })
 		});
-		const stableVariables = cloneJsonObject(variables) as TVariables;
 		const key = operationKey(artifact, stableVariables);
 		const distributed = extensions?.distributed;
 		if (distributed) {
@@ -239,7 +293,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				);
 				if ((envelope.errors?.length ?? 0) > 0 && summary.indexKeys.length === 0) {
 					for (const root of artifact.roots) {
-						const argumentsValue = resolveArguments(root.arguments, stableVariables);
+						const argumentsValue = resolveArguments(
+							root.arguments,
+							stableVariables,
+							root.coverage
+						);
 						writer.markIndexStale(
 							replicaIndexKey({ field: root.field, arguments: argumentsValue }),
 							'graphql-error',
@@ -811,7 +869,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				keys.add(
 					replicaIndexKey({
 						field: root.field,
-						arguments: resolveArguments(root.arguments, variables)
+						arguments: resolveArguments(
+							root.arguments,
+							variables,
+							root.coverage
+						)
 					})
 				);
 			}
@@ -856,7 +918,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			keys.add(
 				replicaIndexKey({
 					field: root.field,
-					arguments: resolveArguments(root.arguments, variables)
+					arguments: resolveArguments(
+						root.arguments,
+						variables,
+						root.coverage
+					)
 				})
 			);
 		}
@@ -1315,7 +1381,12 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				) {
 					return;
 				}
-				this.writeResult(watch.artifact, watch.variables, result, 'network');
+				this.#writeCanonicalResult(
+					watch.artifact,
+					watch.variables,
+					result,
+					'network'
+				);
 			})
 			.catch((error: unknown) => {
 				if (this.#inFlight.get(watch.key) !== flight) return;
@@ -1398,7 +1469,12 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 						}
 						state.live = 'active';
 						try {
-							this.writeResult(watch.artifact, watch.variables, result, 'live');
+							this.#writeCanonicalResult(
+								watch.artifact,
+								watch.variables,
+								result,
+								'live'
+							);
 							entry.operationGeneration =
 								this.#operationGeneration(watch.key);
 						} catch (error) {
@@ -1475,7 +1551,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 	): void {
 		this.#engine.batch((writer) => {
 			for (const root of artifact.roots) {
-				const argumentsValue = resolveArguments(root.arguments, variables);
+				const argumentsValue = resolveArguments(
+					root.arguments,
+					variables,
+					root.coverage
+				);
 				writer.markIndexStale(
 					replicaIndexKey({ field: root.field, arguments: argumentsValue }),
 					reason,
@@ -1760,7 +1840,7 @@ class ReplicaWatchState<TData, TVariables extends GraphqlVariables>
 	) {
 		this.#owner = owner;
 		this.artifact = artifact;
-		this.variables = cloneJsonObject(variables) as TVariables;
+		this.variables = canonicalizeOperationVariables(artifact, variables);
 		this.key = operationKey(artifact, this.variables);
 		this.liveRequested = options.live === true;
 		this.materialized = owner._materialize(artifact, this.variables);
@@ -1935,10 +2015,48 @@ function operationKey<TData, TVariables extends GraphqlVariables>(
 	artifact: ReplicaOperationArtifact<TData, TVariables>,
 	variables: TVariables
 ): string {
+	const binding = validatedArtifactBinding(artifact);
+	if (binding.kind === 'legacy') {
+		return `legacy:${artifact.id}:${canonicalVariables(variables)}`;
+	}
+	const artifactIdentity = JSON.stringify([
+		binding.version,
+		binding.schemaHash,
+		binding.operation,
+		artifact.id
+	]);
+	return `protocol:${artifactIdentity}:${canonicalVariables(variables)}`;
+}
+
+function validatedArtifactBinding<TData, TVariables extends GraphqlVariables>(
+	artifact: ReplicaOperationArtifact<TData, TVariables>
+): ValidatedArtifactBinding {
 	if (typeof artifact.id !== 'string' || artifact.id.length === 0) {
 		throw new TypeError('replica artifact id must be a non-empty string');
 	}
-	return `${artifact.id}:${canonicalVariables(variables)}`;
+	const binding = artifact.protocol;
+	if (binding === undefined) {
+		return { kind: 'legacy' };
+	}
+	if (
+		binding.version !== 2 ||
+		typeof binding.schemaHash !== 'string' ||
+		binding.schemaHash.length === 0 ||
+		typeof binding.operation !== 'string' ||
+		binding.operation.length === 0 ||
+		binding.operation !== artifact.id
+	) {
+		throw new TypeError('replica artifact protocol binding is invalid');
+	}
+	if (artifact.variableCodec === undefined) {
+		throw new TypeError('protocol-v2 replica artifact requires variableCodec');
+	}
+	return {
+		kind: 'protocol',
+		version: binding.version,
+		schemaHash: binding.schemaHash,
+		operation: binding.operation
+	};
 }
 
 function snapshotFrom<TData>(

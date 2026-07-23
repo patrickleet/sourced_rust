@@ -27,7 +27,7 @@ use super::command_contract::TypedServiceCommandBinding;
 use super::commands::GraphqlCommands;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
-use super::filter::{FilterExpr, Operand};
+use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use super::identity::{IdentityConfig, IdentityMode, VerifiedPrincipal};
 use super::naming::{
     by_pk_field, is_valid_graphql_name, object_type_name, reserved_type_names, root_list_field,
@@ -393,7 +393,12 @@ impl GraphqlEngine {
         DistributedClientSurfaceExport::from_selected_with_execution(
             service_id,
             surface,
-            ClientExecutionLimits::from_runtime(self.inner.max_depth, self.inner.max_complexity)?,
+            ClientExecutionLimits::from_runtime(
+                self.inner.max_depth,
+                self.inner.max_complexity,
+                self.inner.max_bool_width,
+                self.inner.max_in_list,
+            )?,
         )
     }
 
@@ -435,7 +440,12 @@ impl GraphqlEngine {
         DistributedClientSurfaceExport::from_selected_with_execution(
             service_id,
             surface,
-            ClientExecutionLimits::from_runtime(self.inner.max_depth, self.inner.max_complexity)?,
+            ClientExecutionLimits::from_runtime(
+                self.inner.max_depth,
+                self.inner.max_complexity,
+                self.inner.max_bool_width,
+                self.inner.max_in_list,
+            )?,
         )
     }
 
@@ -1675,8 +1685,13 @@ impl GraphqlEngineBuilder {
                 let manifest = DistributedClientSurfaceExport::from_selected_with_execution(
                     service_id,
                     Arc::clone(&role_surface),
-                    ClientExecutionLimits::from_runtime(self.max_depth, self.max_complexity)
-                        .map_err(|error| GraphqlBuildError(error.to_string()))?,
+                    ClientExecutionLimits::from_runtime(
+                        self.max_depth,
+                        self.max_complexity,
+                        self.max_bool_width,
+                        self.max_in_list,
+                    )
+                    .map_err(|error| GraphqlBuildError(error.to_string()))?,
                 )
                 .and_then(|export| export.manifest())
                 .map_err(|error| {
@@ -2001,9 +2016,34 @@ fn validate_filter_inner(
                     "claims cannot compare to Json columns (`{column}` on `{model}`)"
                 )));
             }
-            let _ = op;
+            validate_row_policy_operand_literal(column, &col.column_type, Some(*op), rhs).map_err(
+                |error| {
+                    GraphqlBuildError(format!(
+                        "invalid row policy for model `{model}` role `{role}`: {error}"
+                    ))
+                },
+            )?;
         }
-        FilterExpr::In { column, .. } | FilterExpr::IsNull { column, .. } => {
+        FilterExpr::In { column, values, .. } => {
+            let col = schema
+                .columns
+                .iter()
+                .find(|candidate| candidate.column_name == *column)
+                .ok_or_else(|| {
+                    GraphqlBuildError(format!(
+                        "unknown column `{column}` in filter for `{model}` role `{role}`"
+                    ))
+                })?;
+            for (index, value) in values.iter().enumerate() {
+                validate_row_policy_operand_literal(column, &col.column_type, None, value)
+                    .map_err(|error| {
+                        GraphqlBuildError(format!(
+                            "invalid row policy for model `{model}` role `{role}` IN operand {index}: {error}"
+                        ))
+                    })?;
+            }
+        }
+        FilterExpr::IsNull { column, .. } => {
             if !schema.columns.iter().any(|c| c.column_name == *column) {
                 return Err(GraphqlBuildError(format!(
                     "unknown column `{column}` in filter for `{model}` role `{role}`"
@@ -2566,7 +2606,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:266c9e43a7d9e8985fdfdef468996da570057b92d8b8f1e50e86b88b93ffcb1e"
+            "sha256:d0cc6378447381edeacb4da65705adab53c7444d6f5d8d2bcd5c25d7c06260fb"
         );
     }
 
@@ -3125,28 +3165,28 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:e863c15521ebbf2196ef03e226515ac8ca70bab69e1e1cf53803aff0490878b5",
+        manifest: "sha256:2d7da0fcbdf25cbeb473efd41d039df3024ddcaed6bbc8bf305f9812eadb9cee",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:49056576b1492df41c551a4339a5734ab26fe80b08308e4dcedd0e94f4e1a15b",
+        manifest: "sha256:57260b2cb79d8a35512790a0cd862070935876c261a0f67b8f7bf2410f66fe56",
         static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
         runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:e863c15521ebbf2196ef03e226515ac8ca70bab69e1e1cf53803aff0490878b5",
+        manifest: "sha256:2d7da0fcbdf25cbeb473efd41d039df3024ddcaed6bbc8bf305f9812eadb9cee",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:a6fe4ce8142f89ff52445cb73851408b5c0a1e5d6b3c45ccdca80a8992327d44",
+        manifest: "sha256:42ec8306b1d212e688830902da9754330c4ef42c2b150df9d1fde1c773d725cb",
         static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
         runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
     };
@@ -3654,5 +3694,75 @@ mod client_surface_parity_tests {
             ])),
         );
         builder.build().unwrap();
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn engine_rejects_mistyped_cmp_and_every_in_row_policy_literal() {
+        let invalid = [
+            (
+                FilterExpr::Cmp {
+                    column: "metric_id".into(),
+                    op: super::super::filter::CmpOp::Eq,
+                    rhs: Operand::Lit(super::super::LitValue::Json(serde_json::json!("metric-1"))),
+                },
+                "literal kind `json`",
+            ),
+            (
+                FilterExpr::In {
+                    column: "value".into(),
+                    values: vec![
+                        Operand::from(1.0),
+                        Operand::Lit(super::super::LitValue::Json(serde_json::json!(2.0))),
+                    ],
+                    negated: false,
+                },
+                "IN operand 1",
+            ),
+            (
+                FilterExpr::Cmp {
+                    column: "metric_id".into(),
+                    op: super::super::filter::CmpOp::HasKey,
+                    rhs: Operand::from("tenant"),
+                },
+                "operator `HasKey`",
+            ),
+        ];
+        for (predicate, expected) in invalid {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap();
+            let project =
+                DistributedProjectManifest::new("metrics-service").table_schema(metrics());
+            let mut builder = GraphqlEngine::from_manifest(&project, pool)
+                .unwrap()
+                .roles(&["restricted"]);
+            insert_permission(
+                &mut builder,
+                "MetricView",
+                "restricted",
+                read().all_columns().rows(predicate),
+            );
+            let error = builder
+                .build()
+                .err()
+                .expect("mistyped row-policy literal must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn sqlite_nocase_can_equate_unequal_code_unit_strings() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let equal: i64 = sqlx::query_scalar("SELECT 'A' = 'a' COLLATE NOCASE")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(equal, 1);
+        assert_ne!("A", "a");
     }
 }

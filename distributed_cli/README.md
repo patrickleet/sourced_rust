@@ -139,6 +139,19 @@ manifest-owned command and protocol operations. Operation IDs hash the exact
 full document sent over GraphQL; they do not imply an APQ/persisted-operation
 registry.
 
+Each operation artifact also contains the closed variable/input codec compiled
+from that selected surface. The runtime applies GraphQL singleton-list coercion,
+canonical scalar encoding, unknown-field rejection, and deterministic deep
+freezing before variables can identify a cache entry or reach the network.
+Manifest v6 and variable codec v2 carry the selected service's exact
+`max_depth`, `max_bool_width`, and `max_in_list` contract. Static literal and
+mixed-variable filters are rejected during generation when their known shape
+exceeds those limits; runtime variables carry per-use `filterBaseDepth` and
+`maxItems` constraints. Reused variables receive the most restrictive
+intersection across every root, relationship selection, and aggregate use.
+The current query surface supports complete and offset-window roots; cursor
+artifacts are not certified and therefore fail closed to revalidation.
+
 `@load` is discovered automatically for `src/routes/**/+page.graphql`. A
 co-located document with a different filename can use the explicit fallback
 `--route OperationName=/route`. Unsupported or unprovable selections fail at
