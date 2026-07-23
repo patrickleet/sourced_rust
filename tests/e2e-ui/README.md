@@ -8,7 +8,7 @@ A **copyable starting point** for a Distributed service + SvelteKit UI with:
 | Projectors-only read models | command handlers never dual-write |
 | GraphQL RLS | `owner_id = claim(x-user-id)` on todos / blob |
 | Live subscriptions | `subscription { chat_messages }` + ChangeHub |
-| **Zitadel ingestor** | `POST /zitadel.ingress.v1` + scrape reconcile → `auth_users` ([docs](docs/zitadel-ingestor.md)) |
+| **Zitadel ingestor** | `POST /zitadel.ingress.v1` + scrape reconcile → `auth_users` ([local runbook](docs/zitadel-ingestor.md); design: `specs/e2e-ui/zitadel-ingestor`) |
 | **GraphQL joins** | `chat_messages.author` / `blob_games.owner` → `auth_users` |
 | **WebSocket auth** | Bearer access token in `connection_init` (OIDC best practice) |
 | **Real OIDC** | Zitadel in Docker + Auth.js (PKCE + session cookie) |
@@ -160,8 +160,8 @@ e2e-runner (Distributed)
 
 | Package | Role |
 |---------|------|
-| `todo-domain` / `chat-domain` | Aggregates |
-| `e2e-readmodels` | `todos`, `chat_messages` |
+| `todo-domain` / `chat-domain` / `blob-domain` | Aggregates |
+| `e2e-readmodels` | `todos`, `chat_messages`, `blob_games`, `auth_users`, and relationships |
 | `e2e-service` | Handlers + GraphQL |
 | `e2e-runner` → bin `e2e-ui` | Process |
 | `e2e-suite` | Behavioral + gated OIDC |
@@ -182,6 +182,8 @@ Normative design lives in the Distributed GitKB attached to this repository:
 | Spec | Content |
 |------|---------|
 | `specs/e2e-ui/layout` | Crate map, projector/RLS rules, UI surface |
+| `specs/e2e-ui/blob-game` | Blob Game aggregate, facts, projection, GraphQL, and UI contract |
+| `specs/e2e-ui/zitadel-ingestor` | Provider ingress, reconciliation, directory projection, and joins |
 | `specs/e2e-ui/sveltekit-dx` | SvelteKit GraphQL DX (unified client, defineResource) |
 | `specs/e2e-ui/gql-codegen-dx` | Co-located `.gql` + graphql-codegen |
 | `specs/e2e-ui/rust-role-sdl-codegen` | Role SDL from Rust engine → UI schema |
