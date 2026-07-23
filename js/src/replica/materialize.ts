@@ -47,7 +47,7 @@ export function materializeReplicaOperation<
 	const signatures: string[] = [];
 	for (const artifactRoot of artifact.roots) {
 		const root = runtimeRoot(artifactRoot);
-		const argumentsValue = resolveArguments(root.arguments, variables);
+		const argumentsValue = resolveArguments(root.arguments, variables, root.coverage);
 		const indexKey = replicaIndexKey({ field: root.field, arguments: argumentsValue });
 		const index = reader.index(indexKey);
 		const branch = materializeBranch(reader, root, index, variables);
@@ -195,7 +195,11 @@ function materializeNestedBranch(
 	selection: RuntimeObjectBranch,
 	variables: GraphqlVariables
 ): MaterializedBranch {
-	const argumentsValue = resolveArguments(selection.arguments, variables);
+	const argumentsValue = resolveArguments(
+		selection.arguments,
+		variables,
+		selection.coverage
+	);
 	const indexKey = replicaIndexKey({
 		parent: parentKey,
 		field: selection.field,

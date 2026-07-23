@@ -6,14 +6,16 @@ use async_graphql_parser::types::{
 };
 use async_graphql_parser::{parse_query, Pos, Positioned};
 use async_graphql_value::{Name, Value};
+use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::manifest::{
     hash_bytes, ClientManifest, ManifestAggregateSemantics, ManifestArgument, ManifestArgumentKind,
-    ManifestExecutionLimits, ManifestField, ManifestModel, ManifestPagination,
-    ManifestRelationshipKind, ManifestRelationshipMaintenance, ManifestRoot, RootKind,
-    RootOperation,
+    ManifestExecutionLimits, ManifestField, ManifestFilterExpr, ManifestFilterInput,
+    ManifestFilterSemantics, ManifestModel, ManifestOrderSemantics, ManifestPagination,
+    ManifestRelationship, ManifestRelationshipKeyMapping, ManifestRelationshipKind,
+    ManifestRelationshipMaintenance, ManifestRoot, ManifestRowPolicy, RootKind, RootOperation,
 };
 use super::{ClientCompileError, ClientDocument, ClientRouteDiscovery, GeneratedRoutePlan};
 
@@ -32,6 +34,7 @@ pub(crate) struct CompiledOperation {
     pub(crate) query_hash: String,
     pub(crate) live: Option<CompiledLiveOperation>,
     pub(crate) variables: Vec<CompiledVariable>,
+    pub(crate) variable_codec: CompiledVariableCodec,
     pub(crate) root: CompiledRoot,
     pub(crate) route: Option<GeneratedRoutePlan>,
 }
@@ -48,6 +51,96 @@ pub(crate) struct CompiledVariable {
     pub(crate) graphql_type: Type,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CompiledVariableCodec {
+    pub(crate) version: u32,
+    pub(crate) limits: CompiledVariableCodecLimits,
+    pub(crate) variables: BTreeMap<String, CompiledInputType>,
+    pub(crate) inputs: BTreeMap<String, CompiledInputDefinition>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CompiledVariableCodecLimits {
+    #[serde(rename = "maxDepth")]
+    pub(crate) max_depth: u64,
+    #[serde(rename = "maxBoolWidth")]
+    pub(crate) max_bool_width: u64,
+    #[serde(rename = "maxInList")]
+    pub(crate) max_in_list: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CompiledInputType {
+    Scalar {
+        scalar: String,
+        codec: String,
+        nullable: bool,
+    },
+    Enum {
+        name: String,
+        values: Vec<String>,
+        nullable: bool,
+    },
+    Input {
+        name: String,
+        nullable: bool,
+        #[serde(rename = "filterBaseDepth", skip_serializing_if = "Option::is_none")]
+        filter_base_depth: Option<u64>,
+    },
+    List {
+        nullable: bool,
+        #[serde(rename = "maxItems", skip_serializing_if = "Option::is_none")]
+        max_items: Option<u64>,
+        item: Box<CompiledInputType>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CompiledInputDefinition {
+    Filter {
+        model: String,
+        fields: Vec<CompiledFilterInputField>,
+        relationships: Vec<CompiledFilterInputRelationship>,
+    },
+    Order {
+        model: String,
+        fields: Vec<CompiledOrderInputField>,
+        values: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CompiledFilterInputField {
+    pub(crate) field: String,
+    pub(crate) scalar: String,
+    pub(crate) codec: String,
+    pub(crate) nullable: bool,
+    pub(crate) operators: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CompiledOrderInputField {
+    pub(crate) field: String,
+    pub(crate) scalar: String,
+    pub(crate) codec: String,
+    pub(crate) nullable: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CompiledFilterInputRelationship {
+    pub(crate) field: String,
+    pub(crate) target: CompiledFilterInputTarget,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CompiledFilterInputTarget {
+    Input { name: String },
+    Opaque,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledRoot {
     pub(crate) response_key: String,
@@ -57,6 +150,9 @@ pub(crate) struct CompiledRoot {
     pub(crate) arguments: BTreeMap<String, CompiledArgument>,
     pub(crate) dependencies: Vec<String>,
     pub(crate) coverage: Option<CompiledCoverage>,
+    pub(crate) filter: Option<CompiledFilterPlan>,
+    pub(crate) order: Option<CompiledOrderPlan>,
+    pub(crate) pagination: Option<CompiledPaginationPlan>,
     pub(crate) selection: CompiledObject,
 }
 
@@ -92,9 +188,11 @@ pub(crate) struct CompiledBranch {
     pub(crate) arguments: BTreeMap<String, CompiledArgument>,
     pub(crate) dependencies: Vec<String>,
     pub(crate) coverage: Option<CompiledCoverage>,
-    pub(crate) maintenance: Option<String>,
+    pub(crate) filter: Option<CompiledFilterPlan>,
+    pub(crate) order: Option<CompiledOrderPlan>,
+    pub(crate) pagination: Option<CompiledPaginationPlan>,
+    pub(crate) relationship: Option<CompiledRelationshipPlan>,
     pub(crate) selection: CompiledObject,
-    relationship_kind: Option<ManifestRelationshipKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -142,6 +240,8 @@ pub(crate) enum Cardinality {
 pub(crate) enum CompiledArgument {
     Literal { value: JsonValue, wire: String },
     Variable(String),
+    List(Vec<CompiledArgument>),
+    Object(BTreeMap<String, CompiledArgument>),
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +252,104 @@ pub(crate) struct CompiledCoverage {
     pub(crate) default_limit: Option<u64>,
     pub(crate) max_limit: Option<u64>,
 }
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledFilterPlan {
+    pub(crate) input: Option<CompiledArgument>,
+    pub(crate) fields: Vec<CompiledFilterField>,
+    pub(crate) relationships: Vec<CompiledRelationshipPlan>,
+    pub(crate) row_policy: ManifestRowPolicy,
+    variable_constraints: BTreeMap<String, VariableUseConstraint>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct VariableUseConstraint {
+    filter_base_depth: Option<u64>,
+    max_items: Option<u64>,
+    item: Option<Box<VariableUseConstraint>>,
+}
+
+impl VariableUseConstraint {
+    fn filter(base_depth: u64) -> Self {
+        Self {
+            filter_base_depth: Some(base_depth),
+            ..Self::default()
+        }
+    }
+
+    fn list(max_items: u64, item: Option<Self>) -> Self {
+        Self {
+            max_items: Some(max_items),
+            item: item.map(Box::new),
+            ..Self::default()
+        }
+    }
+
+    fn intersect(&mut self, other: &Self) {
+        self.filter_base_depth = match (self.filter_base_depth, other.filter_base_depth) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
+        self.max_items = match (self.max_items, other.max_items) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        match (&mut self.item, &other.item) {
+            (Some(left), Some(right)) => left.intersect(right),
+            (None, Some(right)) => self.item = Some(right.clone()),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledFilterField {
+    pub(crate) name: String,
+    pub(crate) scalar: String,
+    pub(crate) codec: String,
+    pub(crate) nullable: bool,
+    pub(crate) operators: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledRelationshipPlan {
+    pub(crate) field: String,
+    pub(crate) target_model: String,
+    pub(crate) kind: ManifestRelationshipKind,
+    pub(crate) key_mapping: ManifestRelationshipKeyMapping,
+    pub(crate) maintenance: ManifestRelationshipMaintenance,
+    pub(crate) dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledOrderPlan {
+    pub(crate) input: Option<CompiledArgument>,
+    pub(crate) fields: Vec<CompiledOrderField>,
+    pub(crate) identity: Vec<CompiledOrderField>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledOrderField {
+    pub(crate) name: String,
+    pub(crate) scalar: String,
+    pub(crate) codec: String,
+    pub(crate) nullable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledPaginationPlan {
+    pub(crate) kind: String,
+    pub(crate) insert: String,
+    pub(crate) delete: String,
+    pub(crate) reorder: String,
+    pub(crate) stable_update: String,
+}
+
+type CompiledQueryPlans = (
+    Option<CompiledFilterPlan>,
+    Option<CompiledOrderPlan>,
+    Option<CompiledPaginationPlan>,
+);
 
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledScalar {
@@ -255,11 +453,13 @@ pub(crate) fn compile_document(
         &root_field.first.node,
         &root_manifest.name,
         &root_manifest.arguments,
+        model,
+        manifest,
         &variables,
         &mut used_variables,
         document,
     )?;
-    let selection = match root_manifest.kind {
+    let mut selection = match root_manifest.kind {
         RootKind::List | RootKind::ByPk => compile_model_object(
             &root_field,
             model,
@@ -282,6 +482,9 @@ pub(crate) fn compile_document(
                 model,
                 semantics,
                 &root_manifest.arguments,
+                &compiled_arguments,
+                root_manifest.filter.as_ref(),
+                root_manifest.order.as_ref(),
                 &root_manifest.dependencies,
                 manifest,
                 &variables,
@@ -292,6 +495,22 @@ pub(crate) fn compile_document(
             )?
         }
     };
+    if root_manifest.kind == RootKind::List {
+        let dependencies = query_plan_field_dependencies(
+            model,
+            root_manifest.filter.as_ref(),
+            root_manifest.order.as_ref(),
+            &root_manifest.arguments,
+            &compiled_arguments,
+        );
+        inject_dependency_fields(
+            &mut selection,
+            model,
+            &dependencies,
+            document,
+            root_field.first.pos,
+        )?;
+    }
     validate_used_variables(&variables, &used_variables, document, operation.pos)?;
     expander.reject_unused_fragments()?;
 
@@ -300,6 +519,30 @@ pub(crate) fn compile_document(
         RootKind::ByPk => Cardinality::One,
         RootKind::Aggregate => Cardinality::One,
     };
+    let coverage = match root_manifest.kind {
+        RootKind::Aggregate => Some(complete_coverage()),
+        RootKind::List | RootKind::ByPk => compile_coverage(
+            root_manifest.pagination.as_ref(),
+            &root_manifest.arguments,
+            &root_manifest.name,
+            document,
+            root_field.first.pos,
+        )?,
+    };
+    let (filter, order, pagination) = compile_query_plans(
+        model,
+        root_manifest.filter.as_ref(),
+        root_manifest.order.as_ref(),
+        &root_manifest.arguments,
+        &compiled_arguments,
+        &variables,
+        manifest,
+        document,
+        &root_field.first.node,
+        coverage.as_ref(),
+        0,
+        root_manifest.kind == RootKind::List,
+    )?;
     let root = CompiledRoot {
         response_key: root_field.first.node.response_key().node.to_string(),
         field: root_name.to_string(),
@@ -307,16 +550,10 @@ pub(crate) fn compile_document(
         nullable: matches!(root_manifest.kind, RootKind::ByPk | RootKind::Aggregate),
         arguments: compiled_arguments,
         dependencies: root_manifest.dependencies.clone(),
-        coverage: match root_manifest.kind {
-            RootKind::Aggregate => Some(complete_coverage()),
-            RootKind::List | RootKind::ByPk => compile_coverage(
-                root_manifest.pagination.as_ref(),
-                &root_manifest.arguments,
-                &root_manifest.name,
-                document,
-                root_field.first.pos,
-            )?,
-        },
+        coverage,
+        filter,
+        order,
+        pagination,
         selection,
     };
     validate_execution_limits(
@@ -349,6 +586,8 @@ pub(crate) fn compile_document(
         registrations.get(&name),
         operation.pos,
     )?;
+    let variable_constraints = operation_variable_constraints(&root);
+    let variable_codec = compile_variable_codec(&variables, manifest, &variable_constraints)?;
     let module_stem = module_stem(&name);
     Ok(CompiledOperation {
         name: name.clone(),
@@ -359,6 +598,7 @@ pub(crate) fn compile_document(
         query_hash,
         live,
         variables,
+        variable_codec,
         root,
         route,
     })
@@ -435,8 +675,10 @@ fn compiled_object_complexity(
                 CompiledBranchSemantic::Relationship => {
                     let child = compiled_object_complexity(&branch.selection, weights);
                     match branch
-                        .relationship_kind
-                        .expect("relationship branches retain their manifest kind")
+                        .relationship
+                        .as_ref()
+                        .expect("relationship branches retain their compiled descriptor")
+                        .kind
                     {
                         ManifestRelationshipKind::BelongsTo => {
                             weights.belongs_to.saturating_add(child)
@@ -562,6 +804,459 @@ fn compile_variables(
     }
     variables.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(variables)
+}
+
+#[derive(Clone, Copy)]
+struct FilterInputCandidate<'a> {
+    model: &'a ManifestModel,
+    semantics: &'a ManifestFilterInput,
+}
+
+#[derive(Clone, Copy)]
+struct OrderInputCandidate<'a> {
+    model: &'a ManifestModel,
+    semantics: &'a ManifestOrderSemantics,
+}
+
+fn compile_variable_codec(
+    variables: &[CompiledVariable],
+    manifest: &ClientManifest,
+    constraints: &BTreeMap<String, VariableUseConstraint>,
+) -> Result<CompiledVariableCodec, ClientCompileError> {
+    let mut filters = BTreeMap::<String, FilterInputCandidate<'_>>::new();
+    let mut orders = BTreeMap::<String, OrderInputCandidate<'_>>::new();
+
+    for model in manifest.models.values() {
+        register_filter_input(
+            &model.filter_input.type_name,
+            model,
+            &model.filter_input,
+            &mut filters,
+        )?;
+    }
+
+    for root in manifest.roots.values() {
+        let model = manifest.models.get(&root.model).ok_or_else(|| {
+            ClientCompileError::manifest(
+                "client.manifest.root_model",
+                format!(
+                    "root `{}` references absent model `{}`",
+                    root.name, root.model
+                ),
+            )
+        })?;
+        register_order_input_candidate(&root.arguments, root.order.as_ref(), model, &mut orders)?;
+    }
+
+    for source in manifest.models.values() {
+        for relationship in &source.relationships {
+            let target = manifest
+                .models
+                .get(&relationship.target_model)
+                .ok_or_else(|| {
+                    ClientCompileError::manifest(
+                        "client.manifest.relationship_target",
+                        format!(
+                            "relationship `{}.{}` references absent model `{}`",
+                            source.id, relationship.name, relationship.target_model
+                        ),
+                    )
+                })?;
+            register_order_input_candidate(
+                &relationship.arguments,
+                relationship.order.as_ref(),
+                target,
+                &mut orders,
+            )?;
+            if let Some(aggregate) = &relationship.aggregate {
+                register_order_input_candidate(
+                    &aggregate.arguments,
+                    relationship.order.as_ref(),
+                    target,
+                    &mut orders,
+                )?;
+            }
+        }
+    }
+
+    if let Some(name) = filters.keys().find(|name| orders.contains_key(*name)) {
+        return Err(ClientCompileError::manifest(
+            "client.variable.input_type_conflict",
+            format!(
+                "selected manifest uses input type `{name}` for both filter and order contracts"
+            ),
+        ));
+    }
+
+    let order_values = orders
+        .values()
+        .next()
+        .map(|candidate| candidate.semantics.values.clone())
+        .unwrap_or_default();
+    if orders
+        .values()
+        .any(|candidate| candidate.semantics.values != order_values)
+    {
+        return Err(ClientCompileError::manifest(
+            "client.variable.order_enum_conflict",
+            "selected order input contracts disagree on the direction enum",
+        ));
+    }
+
+    let mut inputs = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    let mut compiled_variables = BTreeMap::new();
+    for variable in variables {
+        let input_type = compile_variable_input_type(
+            &variable.graphql_type,
+            manifest,
+            &filters,
+            &orders,
+            &order_values,
+            &mut inputs,
+            &mut visiting,
+            constraints.get(&variable.name),
+        )?;
+        compiled_variables.insert(variable.name.clone(), input_type);
+    }
+    Ok(CompiledVariableCodec {
+        version: 2,
+        limits: CompiledVariableCodecLimits {
+            max_depth: manifest.execution.max_depth,
+            max_bool_width: manifest.execution.max_bool_width,
+            max_in_list: manifest.execution.max_in_list,
+        },
+        variables: compiled_variables,
+        inputs,
+    })
+}
+
+fn operation_variable_constraints(root: &CompiledRoot) -> BTreeMap<String, VariableUseConstraint> {
+    let mut constraints = BTreeMap::new();
+    merge_filter_constraints(root.filter.as_ref(), &mut constraints);
+    merge_object_variable_constraints(&root.selection, &mut constraints);
+    constraints
+}
+
+fn merge_object_variable_constraints(
+    object: &CompiledObject,
+    constraints: &mut BTreeMap<String, VariableUseConstraint>,
+) {
+    for member in &object.members {
+        let CompiledMember::Branch(branch) = member else {
+            continue;
+        };
+        merge_filter_constraints(branch.filter.as_ref(), constraints);
+        merge_object_variable_constraints(&branch.selection, constraints);
+    }
+}
+
+fn merge_filter_constraints(
+    filter: Option<&CompiledFilterPlan>,
+    constraints: &mut BTreeMap<String, VariableUseConstraint>,
+) {
+    let Some(filter) = filter else {
+        return;
+    };
+    for (name, constraint) in &filter.variable_constraints {
+        constraints
+            .entry(name.clone())
+            .and_modify(|existing| existing.intersect(constraint))
+            .or_insert_with(|| constraint.clone());
+    }
+}
+
+fn register_order_input_candidate<'a>(
+    arguments: &[ManifestArgument],
+    order: Option<&'a ManifestOrderSemantics>,
+    model: &'a ManifestModel,
+    orders: &mut BTreeMap<String, OrderInputCandidate<'a>>,
+) -> Result<(), ClientCompileError> {
+    if let Some(semantics) = order {
+        if let Some(argument) = arguments
+            .iter()
+            .find(|argument| argument.kind == ManifestArgumentKind::Order)
+        {
+            register_order_input(&argument.type_name, model, semantics, orders)?;
+        }
+    }
+    Ok(())
+}
+
+fn register_filter_input<'a>(
+    name: &str,
+    model: &'a ManifestModel,
+    semantics: &'a ManifestFilterInput,
+    candidates: &mut BTreeMap<String, FilterInputCandidate<'a>>,
+) -> Result<(), ClientCompileError> {
+    if let Some(existing) = candidates.get(name) {
+        if existing.model.id != model.id || existing.semantics != semantics {
+            return Err(ClientCompileError::manifest(
+                "client.variable.input_type_conflict",
+                format!("filter input type `{name}` has multiple selected structural contracts"),
+            ));
+        }
+        return Ok(());
+    }
+    candidates.insert(name.to_string(), FilterInputCandidate { model, semantics });
+    Ok(())
+}
+
+fn register_order_input<'a>(
+    name: &str,
+    model: &'a ManifestModel,
+    semantics: &'a ManifestOrderSemantics,
+    candidates: &mut BTreeMap<String, OrderInputCandidate<'a>>,
+) -> Result<(), ClientCompileError> {
+    if let Some(existing) = candidates.get(name) {
+        if existing.model.id != model.id || existing.semantics != semantics {
+            return Err(ClientCompileError::manifest(
+                "client.variable.input_type_conflict",
+                format!("order input type `{name}` has multiple selected structural contracts"),
+            ));
+        }
+        return Ok(());
+    }
+    candidates.insert(name.to_string(), OrderInputCandidate { model, semantics });
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_variable_input_type(
+    graphql_type: &Type,
+    manifest: &ClientManifest,
+    filters: &BTreeMap<String, FilterInputCandidate<'_>>,
+    orders: &BTreeMap<String, OrderInputCandidate<'_>>,
+    order_values: &[String],
+    inputs: &mut BTreeMap<String, CompiledInputDefinition>,
+    visiting: &mut BTreeSet<String>,
+    constraint: Option<&VariableUseConstraint>,
+) -> Result<CompiledInputType, ClientCompileError> {
+    let nullable = graphql_type.nullable;
+    match &graphql_type.base {
+        BaseType::List(item) => {
+            if constraint.is_some_and(|constraint| constraint.filter_base_depth.is_some()) {
+                return Err(ClientCompileError::manifest(
+                    "client.variable.constraint_type",
+                    "filterBaseDepth cannot apply to a list variable",
+                ));
+            }
+            Ok(CompiledInputType::List {
+                nullable,
+                max_items: constraint.and_then(|constraint| constraint.max_items),
+                item: Box::new(compile_variable_input_type(
+                    item,
+                    manifest,
+                    filters,
+                    orders,
+                    order_values,
+                    inputs,
+                    visiting,
+                    constraint.and_then(|constraint| constraint.item.as_deref()),
+                )?),
+            })
+        }
+        BaseType::Named(name) => {
+            let name = name.as_str();
+            if let Some(codec) = manifest.scalar_codecs.get(name) {
+                require_leaf_constraint(name, constraint)?;
+                return Ok(CompiledInputType::Scalar {
+                    scalar: name.to_string(),
+                    codec: codec.clone(),
+                    nullable,
+                });
+            }
+            if filters.contains_key(name) {
+                if constraint.is_some_and(|constraint| {
+                    constraint.max_items.is_some() || constraint.item.is_some()
+                }) {
+                    return Err(ClientCompileError::manifest(
+                        "client.variable.constraint_type",
+                        format!("filter input `{name}` received list constraints"),
+                    ));
+                }
+                compile_filter_input_definition(name, filters, inputs, visiting)?;
+                return Ok(CompiledInputType::Input {
+                    name: name.to_string(),
+                    nullable,
+                    filter_base_depth: constraint
+                        .and_then(|constraint| constraint.filter_base_depth),
+                });
+            }
+            if orders.contains_key(name) {
+                require_leaf_constraint(name, constraint)?;
+                compile_order_input_definition(name, orders, inputs)?;
+                return Ok(CompiledInputType::Input {
+                    name: name.to_string(),
+                    nullable,
+                    filter_base_depth: None,
+                });
+            }
+            if name == "order_by" && !order_values.is_empty() {
+                require_leaf_constraint(name, constraint)?;
+                return Ok(CompiledInputType::Enum {
+                    name: name.to_string(),
+                    values: order_values.to_vec(),
+                    nullable,
+                });
+            }
+            Err(ClientCompileError::manifest(
+                "client.variable.input_type_unsupported",
+                format!(
+                    "variable input type `{name}` has no compiler-owned scalar, filter, order, or enum contract"
+                ),
+            ))
+        }
+    }
+}
+
+fn require_leaf_constraint(
+    name: &str,
+    constraint: Option<&VariableUseConstraint>,
+) -> Result<(), ClientCompileError> {
+    if constraint.is_none_or(|constraint| {
+        constraint.filter_base_depth.is_none()
+            && constraint.max_items.is_none()
+            && constraint.item.is_none()
+    }) {
+        return Ok(());
+    }
+    Err(ClientCompileError::manifest(
+        "client.variable.constraint_type",
+        format!("variable type `{name}` received incompatible input constraints"),
+    ))
+}
+
+fn compile_filter_input_definition(
+    name: &str,
+    candidates: &BTreeMap<String, FilterInputCandidate<'_>>,
+    inputs: &mut BTreeMap<String, CompiledInputDefinition>,
+    visiting: &mut BTreeSet<String>,
+) -> Result<(), ClientCompileError> {
+    if inputs.contains_key(name) || !visiting.insert(name.to_string()) {
+        return Ok(());
+    }
+    let candidate = *candidates.get(name).ok_or_else(|| {
+        ClientCompileError::manifest(
+            "client.variable.filter_input",
+            format!("filter input type `{name}` has no selected contract"),
+        )
+    })?;
+    let fields = candidate
+        .semantics
+        .fields
+        .iter()
+        .map(|semantics| {
+            let field = candidate.model.field(&semantics.name).ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.variable.filter_field",
+                    format!(
+                        "filter input `{name}` references absent field `{}.{}`",
+                        candidate.model.id, semantics.name
+                    ),
+                )
+            })?;
+            Ok(CompiledFilterInputField {
+                field: field.name.clone(),
+                scalar: field.scalar.clone(),
+                codec: field.codec.clone(),
+                nullable: field.nullable,
+                operators: semantics.operators.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, ClientCompileError>>()?;
+
+    let mut relationships = Vec::with_capacity(candidate.semantics.relationships.len());
+    for relationship_input in &candidate.semantics.relationships {
+        candidate
+            .model
+            .relationship(&relationship_input.field)
+            .ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.variable.filter_relationship",
+                    format!(
+                        "filter input `{name}` references absent relationship `{}.{}`",
+                        candidate.model.id, relationship_input.field
+                    ),
+                )
+            })?;
+        let target = candidates
+            .contains_key(&relationship_input.target_type)
+            .then(|| {
+                compile_filter_input_definition(
+                    &relationship_input.target_type,
+                    candidates,
+                    inputs,
+                    visiting,
+                )?;
+                Ok(CompiledFilterInputTarget::Input {
+                    name: relationship_input.target_type.clone(),
+                })
+            })
+            .transpose()?
+            .unwrap_or(CompiledFilterInputTarget::Opaque);
+        relationships.push(CompiledFilterInputRelationship {
+            field: relationship_input.field.clone(),
+            target,
+        });
+    }
+    inputs.insert(
+        name.to_string(),
+        CompiledInputDefinition::Filter {
+            model: candidate.model.id.clone(),
+            fields,
+            relationships,
+        },
+    );
+    visiting.remove(name);
+    Ok(())
+}
+
+fn compile_order_input_definition(
+    name: &str,
+    candidates: &BTreeMap<String, OrderInputCandidate<'_>>,
+    inputs: &mut BTreeMap<String, CompiledInputDefinition>,
+) -> Result<(), ClientCompileError> {
+    if inputs.contains_key(name) {
+        return Ok(());
+    }
+    let candidate = *candidates.get(name).ok_or_else(|| {
+        ClientCompileError::manifest(
+            "client.variable.order_input",
+            format!("order input type `{name}` has no selected contract"),
+        )
+    })?;
+    let fields = candidate
+        .semantics
+        .fields
+        .iter()
+        .map(|field_name| {
+            let field = candidate.model.field(field_name).ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.variable.order_field",
+                    format!(
+                        "order input `{name}` references absent field `{}.{field_name}`",
+                        candidate.model.id
+                    ),
+                )
+            })?;
+            Ok(CompiledOrderInputField {
+                field: field.name.clone(),
+                scalar: field.scalar.clone(),
+                codec: field.codec.clone(),
+                nullable: field.nullable,
+            })
+        })
+        .collect::<Result<Vec<_>, ClientCompileError>>()?;
+    inputs.insert(
+        name.to_string(),
+        CompiledInputDefinition::Order {
+            model: candidate.model.id.clone(),
+            fields,
+            values: candidate.semantics.values.clone(),
+        },
+    );
+    Ok(())
 }
 
 fn validate_reachable_fragment_graph<'ast>(
@@ -966,10 +1661,13 @@ fn single_root_field<'a>(
     Ok(fields.pop().expect("length checked"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_arguments(
     field: &Field,
     owner: &str,
     allowed_arguments: &[ManifestArgument],
+    model: &ManifestModel,
+    manifest: &ClientManifest,
     variables: &[CompiledVariable],
     used_variables: &mut BTreeSet<String>,
     document: &ClientDocument,
@@ -1031,12 +1729,17 @@ fn compile_arguments(
                 CompiledArgument::Variable(variable.to_string())
             }
             literal => {
-                reject_nested_variable(literal, name_string, document, value.pos)?;
-                validate_literal(literal, manifest_argument, document, value.pos)?;
-                CompiledArgument::Literal {
-                    value: value_to_json(literal, document, value.pos)?,
-                    wire: render_value(literal, document, value.pos)?,
-                }
+                let literal =
+                    canonicalize_argument_literal(literal, manifest_argument, model, manifest);
+                validate_literal(&literal, manifest_argument, document, value.pos)?;
+                compile_argument_source(
+                    &literal,
+                    name_string,
+                    &variables,
+                    used_variables,
+                    document,
+                    value.pos,
+                )?
             }
         };
         result.insert(name_string.to_string(), compiled);
@@ -1110,6 +1813,7 @@ fn compile_model_object<'ast>(
         ));
     }
     let mut result = Vec::with_capacity(selected_fields.len());
+    let mut relationship_source_fields = BTreeSet::new();
     for selected in selected_fields {
         let response_key = selected.first.node.response_key().node.as_str();
         let field_name = selected.first.node.name.node.as_str();
@@ -1141,11 +1845,16 @@ fn compile_model_object<'ast>(
                 &selected.first.node,
                 &format!("{}.{}", model.id, relationship.name),
                 &relationship.arguments,
+                target,
+                manifest,
                 variables,
                 used_variables,
                 document,
             )?;
-            let selection = compile_model_object(
+            let relationship_plan = compiled_relationship_plan(relationship);
+            let (local_keys, remote_keys) = relationship_key_fields(&relationship_plan.key_mapping);
+            relationship_source_fields.extend(local_keys.iter().cloned());
+            let mut selection = compile_model_object(
                 &selected,
                 target,
                 manifest,
@@ -1155,15 +1864,52 @@ fn compile_model_object<'ast>(
                 expander,
                 depth + 1,
             )?;
+            let mut dependencies = BTreeSet::new();
+            if relationship.list {
+                dependencies.extend(query_plan_field_dependencies(
+                    target,
+                    relationship.filter.as_ref(),
+                    relationship.order.as_ref(),
+                    &relationship.arguments,
+                    &arguments,
+                ));
+            }
+            dependencies.extend(remote_keys.iter().cloned());
+            if !dependencies.is_empty() {
+                inject_dependency_fields(
+                    &mut selection,
+                    target,
+                    &dependencies,
+                    document,
+                    selected.first.pos,
+                )?;
+            }
             let cardinality = if relationship.list {
                 Cardinality::Many
             } else {
                 Cardinality::One
             };
-            let maintenance = match relationship.maintenance {
-                ManifestRelationshipMaintenance::Local => "local",
-                ManifestRelationshipMaintenance::Revalidate => "revalidate",
-            };
+            let coverage = compile_coverage(
+                relationship.pagination.as_ref(),
+                &relationship.arguments,
+                &format!("{}.{}", model.id, relationship.name),
+                document,
+                selected.first.pos,
+            )?;
+            let (filter, order, pagination) = compile_query_plans(
+                target,
+                relationship.filter.as_ref(),
+                relationship.order.as_ref(),
+                &relationship.arguments,
+                &arguments,
+                variables,
+                manifest,
+                document,
+                &selected.first.node,
+                coverage.as_ref(),
+                filter_depth_from_selection(depth, 1),
+                relationship.list,
+            )?;
             result.push(CompiledMember::Branch(Box::new(CompiledBranch {
                 semantic: CompiledBranchSemantic::Relationship,
                 response_key: response_key.to_string(),
@@ -1172,16 +1918,12 @@ fn compile_model_object<'ast>(
                 nullable: relationship.nullable,
                 arguments,
                 dependencies: relationship.dependencies.clone(),
-                coverage: compile_coverage(
-                    relationship.pagination.as_ref(),
-                    &relationship.arguments,
-                    &format!("{}.{}", model.id, relationship.name),
-                    document,
-                    selected.first.pos,
-                )?,
-                maintenance: Some(maintenance.into()),
+                coverage,
+                filter,
+                order,
+                pagination,
+                relationship: Some(relationship_plan),
                 selection,
-                relationship_kind: Some(relationship.kind),
             })));
             continue;
         }
@@ -1219,6 +1961,8 @@ fn compile_model_object<'ast>(
                 &selected.first.node,
                 &format!("{}.{}", model.id, aggregate.name),
                 &aggregate.arguments,
+                target,
+                manifest,
                 variables,
                 used_variables,
                 document,
@@ -1228,6 +1972,9 @@ fn compile_model_object<'ast>(
                 target,
                 &aggregate.semantics,
                 &aggregate.arguments,
+                &arguments,
+                relationship.filter.as_ref(),
+                relationship.order.as_ref(),
                 &aggregate.dependencies,
                 manifest,
                 variables,
@@ -1235,6 +1982,20 @@ fn compile_model_object<'ast>(
                 document,
                 expander,
                 depth + 1,
+            )?;
+            let (filter, order, pagination) = compile_query_plans(
+                target,
+                relationship.filter.as_ref(),
+                relationship.order.as_ref(),
+                &aggregate.arguments,
+                &arguments,
+                variables,
+                manifest,
+                document,
+                &selected.first.node,
+                None,
+                filter_depth_from_selection(depth, 1),
+                false,
             )?;
             result.push(CompiledMember::Branch(Box::new(CompiledBranch {
                 semantic: CompiledBranchSemantic::Aggregate,
@@ -1245,9 +2006,11 @@ fn compile_model_object<'ast>(
                 arguments,
                 dependencies: aggregate.dependencies.clone(),
                 coverage: Some(complete_coverage()),
-                maintenance: Some("revalidate".into()),
+                filter,
+                order,
+                pagination,
+                relationship: None,
                 selection,
-                relationship_kind: None,
             })));
             continue;
         }
@@ -1296,11 +2059,19 @@ fn compile_model_object<'ast>(
     if model.identity().is_some() {
         inject_wire_fields(&mut result, model, document, field.first.pos)?;
     }
-    Ok(CompiledObject {
+    let mut object = CompiledObject {
         typename: model.typename.clone(),
         storage: compiled_storage(model),
         members: result,
-    })
+    };
+    inject_dependency_fields(
+        &mut object,
+        model,
+        &relationship_source_fields,
+        document,
+        field.first.pos,
+    )?;
+    Ok(object)
 }
 
 fn compiled_storage(model: &ManifestModel) -> CompiledStorage {
@@ -1313,12 +2084,41 @@ fn compiled_storage(model: &ManifestModel) -> CompiledStorage {
     }
 }
 
+fn compiled_relationship_plan(relationship: &ManifestRelationship) -> CompiledRelationshipPlan {
+    let maintenance = match &relationship.key_mapping {
+        ManifestRelationshipKeyMapping::Direct { .. }
+        | ManifestRelationshipKeyMapping::Through { .. } => relationship.maintenance,
+        ManifestRelationshipKeyMapping::ThroughOpaque { .. }
+        | ManifestRelationshipKeyMapping::Embedded => ManifestRelationshipMaintenance::Revalidate,
+    };
+    CompiledRelationshipPlan {
+        field: relationship.name.clone(),
+        target_model: relationship.target_model.clone(),
+        kind: relationship.kind,
+        key_mapping: relationship.key_mapping.clone(),
+        maintenance,
+        dependencies: relationship.dependencies.clone(),
+    }
+}
+
+fn relationship_key_fields(mapping: &ManifestRelationshipKeyMapping) -> (&[String], &[String]) {
+    match mapping {
+        ManifestRelationshipKeyMapping::Direct { local, remote }
+        | ManifestRelationshipKeyMapping::Through { local, remote, .. }
+        | ManifestRelationshipKeyMapping::ThroughOpaque { local, remote, .. } => (local, remote),
+        ManifestRelationshipKeyMapping::Embedded => (&[], &[]),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_aggregate_object<'ast>(
     field: &MergedField<'ast>,
     model: &ManifestModel,
     semantics: &ManifestAggregateSemantics,
     arguments: &[ManifestArgument],
+    compiled_arguments: &BTreeMap<String, CompiledArgument>,
+    filter_semantics: Option<&ManifestFilterSemantics>,
+    order_semantics: Option<&ManifestOrderSemantics>,
     dependencies: &[String],
     manifest: &ClientManifest,
     variables: &[CompiledVariable],
@@ -1375,7 +2175,10 @@ fn compile_aggregate_object<'ast>(
                     arguments: BTreeMap::new(),
                     dependencies: dependencies.to_vec(),
                     coverage: Some(complete_coverage()),
-                    maintenance: None,
+                    filter: None,
+                    order: None,
+                    pagination: None,
+                    relationship: None,
                     selection: compile_aggregate_fields_object(
                         &selected,
                         semantics,
@@ -1383,7 +2186,6 @@ fn compile_aggregate_object<'ast>(
                         expander,
                         depth + 1,
                     )?,
-                    relationship_kind: None,
                 })));
             }
             "nodes" if semantics.nodes => {
@@ -1395,6 +2197,51 @@ fn compile_aggregate_object<'ast>(
                         selected.first.node.selection_set.pos,
                     ));
                 }
+                let coverage = compile_coverage(
+                    Some(&semantics.nodes_pagination),
+                    arguments,
+                    &format!("{}.nodes", field.first.node.name.node),
+                    document,
+                    selected.first.pos,
+                )?;
+                let mut selection = compile_model_object(
+                    &selected,
+                    model,
+                    manifest,
+                    variables,
+                    used_variables,
+                    document,
+                    expander,
+                    depth + 1,
+                )?;
+                let dependency_fields = query_plan_field_dependencies(
+                    model,
+                    filter_semantics,
+                    order_semantics,
+                    arguments,
+                    compiled_arguments,
+                );
+                inject_dependency_fields(
+                    &mut selection,
+                    model,
+                    &dependency_fields,
+                    document,
+                    selected.first.pos,
+                )?;
+                let (filter, order, pagination) = compile_query_plans(
+                    model,
+                    filter_semantics,
+                    order_semantics,
+                    arguments,
+                    compiled_arguments,
+                    variables,
+                    manifest,
+                    document,
+                    &field.first.node,
+                    coverage.as_ref(),
+                    filter_depth_from_selection(depth, 2),
+                    true,
+                )?;
                 members.push(CompiledMember::Branch(Box::new(CompiledBranch {
                     semantic: CompiledBranchSemantic::AggregateNodes,
                     response_key,
@@ -1403,25 +2250,12 @@ fn compile_aggregate_object<'ast>(
                     nullable: false,
                     arguments: BTreeMap::new(),
                     dependencies: dependencies.to_vec(),
-                    coverage: compile_coverage(
-                        Some(&semantics.nodes_pagination),
-                        arguments,
-                        &format!("{}.nodes", field.first.node.name.node),
-                        document,
-                        selected.first.pos,
-                    )?,
-                    maintenance: None,
-                    selection: compile_model_object(
-                        &selected,
-                        model,
-                        manifest,
-                        variables,
-                        used_variables,
-                        document,
-                        expander,
-                        depth + 1,
-                    )?,
-                    relationship_kind: None,
+                    coverage,
+                    filter,
+                    order,
+                    pagination,
+                    relationship: None,
+                    selection,
                 })));
             }
             "__typename" => {
@@ -1616,6 +2450,228 @@ fn inject_wire_fields(
     Ok(())
 }
 
+fn query_plan_field_dependencies(
+    model: &ManifestModel,
+    filter: Option<&ManifestFilterSemantics>,
+    order: Option<&ManifestOrderSemantics>,
+    declared_arguments: &[ManifestArgument],
+    compiled_arguments: &BTreeMap<String, CompiledArgument>,
+) -> BTreeSet<String> {
+    let mut fields = BTreeSet::new();
+    let mut relationships = BTreeSet::new();
+    if let Some(filter) = filter {
+        if let ManifestRowPolicy::Predicate { expression } = &filter.row_policy {
+            collect_policy_fields(expression, &mut fields, &mut relationships);
+        }
+        if let Some(argument) = declared_arguments
+            .iter()
+            .find(|argument| argument.kind == ManifestArgumentKind::Filter)
+            .and_then(|argument| compiled_arguments.get(&argument.name))
+        {
+            collect_filter_source_fields(argument, filter, &mut fields, &mut relationships);
+        }
+    }
+    if let Some(order) = order {
+        if let Some(argument) = declared_arguments
+            .iter()
+            .find(|argument| argument.kind == ManifestArgumentKind::Order)
+            .and_then(|argument| compiled_arguments.get(&argument.name))
+        {
+            collect_order_source_fields(argument, order, &mut fields);
+        }
+    }
+    for relationship_name in relationships {
+        if let Some(relationship) = model.relationship(&relationship_name) {
+            let (local, _) = relationship_key_fields(&relationship.key_mapping);
+            fields.extend(local.iter().cloned());
+        }
+    }
+    fields
+}
+
+fn collect_filter_source_fields(
+    source: &CompiledArgument,
+    semantics: &ManifestFilterSemantics,
+    fields: &mut BTreeSet<String>,
+    relationships: &mut BTreeSet<String>,
+) {
+    match source {
+        CompiledArgument::Variable(_) => {
+            fields.extend(semantics.fields.iter().map(|field| field.name.clone()));
+            relationships.extend(semantics.relationships.iter().cloned());
+        }
+        CompiledArgument::Literal { value, .. } => {
+            collect_client_filter_fields(value, semantics, fields, relationships);
+        }
+        CompiledArgument::List(items) => {
+            for item in items {
+                collect_filter_source_fields(item, semantics, fields, relationships);
+            }
+        }
+        CompiledArgument::Object(values) => {
+            for (name, value) in values {
+                match name.as_str() {
+                    "_and" | "_or" | "_not" => {
+                        collect_filter_source_fields(value, semantics, fields, relationships);
+                    }
+                    field
+                        if semantics
+                            .fields
+                            .iter()
+                            .any(|candidate| candidate.name == field) =>
+                    {
+                        fields.insert(field.to_string());
+                    }
+                    relationship
+                        if semantics
+                            .relationships
+                            .iter()
+                            .any(|candidate| candidate == relationship) =>
+                    {
+                        relationships.insert(relationship.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn collect_order_source_fields(
+    source: &CompiledArgument,
+    semantics: &ManifestOrderSemantics,
+    fields: &mut BTreeSet<String>,
+) {
+    match source {
+        CompiledArgument::Variable(_) => fields.extend(semantics.fields.iter().cloned()),
+        CompiledArgument::Literal { value, .. } => {
+            if let Some(entries) = value.as_array() {
+                for entry in entries {
+                    if let Some(object) = entry.as_object() {
+                        fields.extend(object.keys().cloned());
+                    }
+                }
+            }
+        }
+        CompiledArgument::List(items) => {
+            for item in items {
+                collect_order_source_fields(item, semantics, fields);
+            }
+        }
+        CompiledArgument::Object(values) => fields.extend(values.keys().cloned()),
+    }
+}
+
+fn collect_policy_fields(
+    expression: &ManifestFilterExpr,
+    fields: &mut BTreeSet<String>,
+    relationships: &mut BTreeSet<String>,
+) {
+    match expression {
+        ManifestFilterExpr::And(expressions) | ManifestFilterExpr::Or(expressions) => {
+            for expression in expressions {
+                collect_policy_fields(expression, fields, relationships);
+            }
+        }
+        ManifestFilterExpr::Not(expression) => {
+            collect_policy_fields(expression, fields, relationships)
+        }
+        ManifestFilterExpr::Cmp { column, .. }
+        | ManifestFilterExpr::In { column, .. }
+        | ManifestFilterExpr::IsNull { column, .. } => {
+            fields.insert(column.clone());
+        }
+        ManifestFilterExpr::Rel { field, .. } => {
+            relationships.insert(field.clone());
+        }
+    }
+}
+
+fn collect_client_filter_fields(
+    value: &JsonValue,
+    semantics: &ManifestFilterSemantics,
+    fields: &mut BTreeSet<String>,
+    relationships: &mut BTreeSet<String>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    for (name, value) in object {
+        match name.as_str() {
+            "_and" | "_or" => {
+                if let Some(items) = value.as_array() {
+                    for item in items {
+                        collect_client_filter_fields(item, semantics, fields, relationships);
+                    }
+                }
+            }
+            "_not" => collect_client_filter_fields(value, semantics, fields, relationships),
+            field
+                if semantics
+                    .fields
+                    .iter()
+                    .any(|candidate| candidate.name == field) =>
+            {
+                fields.insert(field.to_string());
+            }
+            relationship
+                if semantics
+                    .relationships
+                    .iter()
+                    .any(|candidate| candidate == relationship) =>
+            {
+                relationships.insert(relationship.to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn inject_dependency_fields(
+    selection: &mut CompiledObject,
+    model: &ManifestModel,
+    dependencies: &BTreeSet<String>,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    let mut response_keys = selection
+        .members
+        .iter()
+        .map(|member| match member {
+            CompiledMember::Scalar(scalar) => scalar.response_key.clone(),
+            CompiledMember::Branch(branch) => branch.response_key.clone(),
+        })
+        .collect::<BTreeSet<_>>();
+    for dependency in dependencies {
+        if selection.members.iter().any(|member| match member {
+            CompiledMember::Scalar(scalar) => scalar.field == *dependency,
+            CompiledMember::Branch(_) => false,
+        }) {
+            continue;
+        }
+        let field = model.field(dependency).ok_or_else(|| {
+            source_error(
+                "client.selection.dependency_denied",
+                format!(
+                    "query-index dependency `{dependency}` is not selectable on model `{}`",
+                    model.id
+                ),
+                document,
+                position,
+            )
+        })?;
+        let response_key = allocate_wire_alias(dependency, &mut response_keys);
+        selection
+            .members
+            .push(CompiledMember::Scalar(compiled_scalar(
+                &response_key,
+                field,
+                false,
+            )));
+    }
+    Ok(())
+}
+
 fn allocate_wire_alias(field: &str, used: &mut BTreeSet<String>) -> String {
     let stem = format!("_distributed_{field}");
     if used.insert(stem.clone()) {
@@ -1673,6 +2729,1335 @@ fn complete_coverage() -> CompiledCoverage {
         limit_argument: None,
         default_limit: None,
         max_limit: None,
+    }
+}
+
+fn compiled_pagination_plan(coverage: &CompiledCoverage) -> CompiledPaginationPlan {
+    match coverage.kind.as_str() {
+        "complete" => CompiledPaginationPlan {
+            kind: "complete".into(),
+            insert: "local".into(),
+            delete: "local".into(),
+            reorder: "local".into(),
+            stable_update: "local".into(),
+        },
+        "offset" => CompiledPaginationPlan {
+            kind: "offset".into(),
+            insert: "revalidate".into(),
+            delete: "revalidate".into(),
+            reorder: "revalidate".into(),
+            stable_update: "local".into(),
+        },
+        other => CompiledPaginationPlan {
+            kind: other.into(),
+            insert: "revalidate".into(),
+            delete: "revalidate".into(),
+            reorder: "revalidate".into(),
+            stable_update: "revalidate".into(),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_query_plans(
+    model: &ManifestModel,
+    filter: Option<&ManifestFilterSemantics>,
+    order: Option<&ManifestOrderSemantics>,
+    declared_arguments: &[ManifestArgument],
+    compiled_arguments: &BTreeMap<String, CompiledArgument>,
+    variables: &[CompiledVariable],
+    manifest: &ClientManifest,
+    document: &ClientDocument,
+    field: &Field,
+    pagination: Option<&CompiledCoverage>,
+    filter_base_depth: u64,
+    list_index: bool,
+) -> Result<CompiledQueryPlans, ClientCompileError> {
+    let filter_argument = declared_arguments
+        .iter()
+        .find(|argument| argument.kind == ManifestArgumentKind::Filter);
+    let order_argument = declared_arguments
+        .iter()
+        .find(|argument| argument.kind == ManifestArgumentKind::Order);
+
+    let filter_plan = match filter {
+        Some(semantics) => {
+            let mut variable_constraints = BTreeMap::new();
+            let input = filter_argument
+                .and_then(|argument| compiled_arguments.get(&argument.name))
+                .cloned();
+            if let Some(input) = &input {
+                let input_type = filter_argument
+                    .map(ManifestArgument::graphql_type)
+                    .ok_or_else(|| {
+                        ClientCompileError::manifest(
+                            "client.manifest.filter_argument",
+                            format!(
+                                "model `{}` has filter semantics without an argument",
+                                model.id
+                            ),
+                        )
+                    })?;
+                validate_filter_source(
+                    input,
+                    model,
+                    &model.filter_input,
+                    &input_type,
+                    variables,
+                    manifest,
+                    &manifest.execution,
+                    document,
+                    argument_position(field, filter_argument.map(|value| value.name.as_str())),
+                    filter_base_depth,
+                    &mut variable_constraints,
+                )?;
+            }
+            let fields = semantics
+                .fields
+                .iter()
+                .map(|filter_field| {
+                    let field = model.field(&filter_field.name).ok_or_else(|| {
+                        ClientCompileError::manifest(
+                            "client.manifest.filter_field",
+                            format!(
+                                "filter plan for model `{}` references absent field `{}`",
+                                model.id, filter_field.name
+                            ),
+                        )
+                    })?;
+                    Ok(CompiledFilterField {
+                        name: field.name.clone(),
+                        scalar: field.scalar.clone(),
+                        codec: field.codec.clone(),
+                        nullable: field.nullable,
+                        operators: filter_field.operators.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ClientCompileError>>()?;
+            let relationships = semantics
+                .relationships
+                .iter()
+                .map(|name| {
+                    model
+                        .relationship(name)
+                        .map(compiled_relationship_plan)
+                        .ok_or_else(|| {
+                            ClientCompileError::manifest(
+                                "client.manifest.filter_relationship",
+                                format!(
+                                    "filter plan for model `{}` references absent relationship `{name}`",
+                                    model.id
+                                ),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, ClientCompileError>>()?;
+            Some(CompiledFilterPlan {
+                input,
+                fields,
+                relationships,
+                row_policy: semantics.row_policy.clone(),
+                variable_constraints,
+            })
+        }
+        None => None,
+    };
+
+    let order_plan = match order {
+        Some(semantics) => {
+            let input = order_argument
+                .and_then(|argument| compiled_arguments.get(&argument.name))
+                .cloned();
+            if let Some(input) = &input {
+                validate_order_source(
+                    input,
+                    semantics,
+                    order_argument,
+                    variables,
+                    document,
+                    argument_position(field, order_argument.map(|value| value.name.as_str())),
+                )?;
+            }
+            let fields = semantics
+                .fields
+                .iter()
+                .map(|name| compiled_order_field(model, name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let identity = model
+                .identity()
+                .unwrap_or_default()
+                .iter()
+                .map(|identity| compiled_order_field(model, &identity.name))
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(CompiledOrderPlan {
+                input,
+                fields,
+                identity,
+            })
+        }
+        None if list_index => Some(CompiledOrderPlan {
+            input: None,
+            fields: Vec::new(),
+            identity: model
+                .identity()
+                .unwrap_or_default()
+                .iter()
+                .map(|identity| compiled_order_field(model, &identity.name))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        None => None,
+    };
+
+    let pagination_plan = if list_index {
+        pagination.map(compiled_pagination_plan)
+    } else {
+        None
+    };
+
+    Ok((filter_plan, order_plan, pagination_plan))
+}
+
+fn compiled_order_field(
+    model: &ManifestModel,
+    name: &str,
+) -> Result<CompiledOrderField, ClientCompileError> {
+    let field = model.field(name).ok_or_else(|| {
+        ClientCompileError::manifest(
+            "client.manifest.order_field",
+            format!(
+                "order plan for model `{}` references absent field `{name}`",
+                model.id
+            ),
+        )
+    })?;
+    Ok(CompiledOrderField {
+        name: field.name.clone(),
+        scalar: field.scalar.clone(),
+        codec: field.codec.clone(),
+        nullable: field.nullable,
+    })
+}
+
+fn argument_position(field: &Field, name: Option<&str>) -> Pos {
+    name.and_then(|name| {
+        field
+            .arguments
+            .iter()
+            .find(|(argument, _)| argument.node.as_str() == name)
+            .map(|(_, value)| value.pos)
+    })
+    .unwrap_or(field.name.pos)
+}
+
+fn filter_depth_from_selection(selection_depth: usize, root_offset: usize) -> u64 {
+    u64::try_from(selection_depth.saturating_sub(root_offset))
+        .expect("compiler selection depth fits in u64")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_filter_source(
+    source: &CompiledArgument,
+    model: &ManifestModel,
+    input: &ManifestFilterInput,
+    expected_type: &str,
+    variables: &[CompiledVariable],
+    manifest: &ClientManifest,
+    execution: &ManifestExecutionLimits,
+    document: &ClientDocument,
+    position: Pos,
+    depth: u64,
+    constraints: &mut BTreeMap<String, VariableUseConstraint>,
+) -> Result<(), ClientCompileError> {
+    validate_filter_depth(model, execution, depth, document, position)?;
+    match source {
+        CompiledArgument::Literal { value, .. } => validate_filter_literal(
+            value, model, input, manifest, execution, document, position, depth,
+        ),
+        CompiledArgument::Variable(name) => {
+            validate_nested_variable(name, expected_type, variables, document, position)?;
+            constrain_variable(constraints, name, VariableUseConstraint::filter(depth));
+            Ok(())
+        }
+        CompiledArgument::List(_) => Err(source_error(
+            "client.filter.object_required",
+            format!("filter for model `{}` must be an object or null", model.id),
+            document,
+            position,
+        )),
+        CompiledArgument::Object(values) => {
+            for (name, value) in values {
+                match name.as_str() {
+                    "_and" | "_or" => match value {
+                        CompiledArgument::List(items) => {
+                            validate_filter_width(
+                                name,
+                                items.len(),
+                                execution.max_bool_width,
+                                document,
+                                position,
+                            )?;
+                            for item in items {
+                                if let CompiledArgument::Variable(variable) = item {
+                                    validate_nested_variable(
+                                        variable,
+                                        &format!("{}!", input.type_name),
+                                        variables,
+                                        document,
+                                        position,
+                                    )?;
+                                    constrain_variable(
+                                        constraints,
+                                        variable,
+                                        VariableUseConstraint::filter(depth.saturating_add(1)),
+                                    );
+                                } else {
+                                    validate_filter_source(
+                                        item,
+                                        model,
+                                        input,
+                                        &input.type_name,
+                                        variables,
+                                        manifest,
+                                        execution,
+                                        document,
+                                        position,
+                                        depth.saturating_add(1),
+                                        constraints,
+                                    )?;
+                                }
+                            }
+                        }
+                        CompiledArgument::Variable(variable) => {
+                            validate_nested_variable(
+                                variable,
+                                &format!("[{}!]", input.type_name),
+                                variables,
+                                document,
+                                position,
+                            )?;
+                            constrain_variable(
+                                constraints,
+                                variable,
+                                VariableUseConstraint::list(
+                                    execution.max_bool_width,
+                                    Some(VariableUseConstraint::filter(depth.saturating_add(1))),
+                                ),
+                            );
+                        }
+                        CompiledArgument::Literal { value, .. } => {
+                            validate_filter_literal(
+                                &json_singleton(name, value.clone()),
+                                model,
+                                input,
+                                manifest,
+                                execution,
+                                document,
+                                position,
+                                depth,
+                            )?;
+                        }
+                        CompiledArgument::Object(_) => {
+                            return Err(source_error(
+                                "client.filter.boolean_list",
+                                format!("filter operator `{name}` must contain a list of objects"),
+                                document,
+                                position,
+                            ));
+                        }
+                    },
+                    "_not" => validate_filter_source(
+                        value,
+                        model,
+                        input,
+                        &input.type_name,
+                        variables,
+                        manifest,
+                        execution,
+                        document,
+                        position,
+                        depth.saturating_add(1),
+                        constraints,
+                    )?,
+                    field_name => {
+                        if let Some(filter_field) =
+                            input.fields.iter().find(|field| field.name == field_name)
+                        {
+                            let field = model.field(field_name).ok_or_else(|| {
+                                ClientCompileError::manifest(
+                                    "client.manifest.filter_field",
+                                    format!(
+                                        "filter plan for model `{}` references absent field `{field_name}`",
+                                        model.id
+                                    ),
+                                )
+                            })?;
+                            validate_filter_comparison_source(
+                                value,
+                                model,
+                                field,
+                                filter_field,
+                                variables,
+                                execution,
+                                document,
+                                position,
+                                constraints,
+                            )?;
+                        } else if let Some(relationship_input) = input
+                            .relationships
+                            .iter()
+                            .find(|relationship| relationship.field == field_name)
+                        {
+                            let relationship = model.relationship(field_name).ok_or_else(|| {
+                                ClientCompileError::manifest(
+                                    "client.manifest.filter_relationship",
+                                    format!(
+                                        "filter plan for model `{}` references absent relationship `{field_name}`",
+                                        model.id
+                                    ),
+                                )
+                            })?;
+                            let target = manifest.models.get(&relationship.target_model).ok_or_else(|| {
+                                ClientCompileError::manifest(
+                                    "client.manifest.filter_relationship",
+                                    format!(
+                                        "filter relationship `{}.{field_name}` has an absent target",
+                                        model.id
+                                    ),
+                                )
+                            })?;
+                            validate_filter_source(
+                                value,
+                                target,
+                                &target.filter_input,
+                                &relationship_input.target_type,
+                                variables,
+                                manifest,
+                                execution,
+                                document,
+                                position,
+                                depth.saturating_add(1),
+                                constraints,
+                            )?;
+                        } else {
+                            return Err(source_error(
+                                "client.filter.field_denied_or_unknown",
+                                format!(
+                                    "filter field `{field_name}` is absent from selected model `{}`",
+                                    model.id
+                                ),
+                                document,
+                                position,
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_filter_depth(
+    model: &ManifestModel,
+    execution: &ManifestExecutionLimits,
+    depth: u64,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if depth > MAX_OBJECT_DEPTH as u64 {
+        return Err(source_error(
+            "client.filter.safety_depth",
+            format!(
+                "filter for model `{}` exceeds the compiler safety depth {MAX_OBJECT_DEPTH}",
+                model.id
+            ),
+            document,
+            position,
+        ));
+    }
+    if depth > execution.max_depth {
+        return Err(source_error(
+            "client.filter.depth_limit",
+            format!(
+                "filter for model `{}` reaches semantic depth {depth}, exceeding max_depth {}",
+                model.id, execution.max_depth
+            ),
+            document,
+            position,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_filter_width(
+    operator: &str,
+    actual: usize,
+    maximum: u64,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    let actual = u64::try_from(actual).unwrap_or(u64::MAX);
+    if actual <= maximum {
+        return Ok(());
+    }
+    Err(source_error(
+        "client.filter.width_limit",
+        format!(
+            "filter operator `{operator}` contains {actual} items, exceeding its limit {maximum}"
+        ),
+        document,
+        position,
+    ))
+}
+
+fn constrain_variable(
+    constraints: &mut BTreeMap<String, VariableUseConstraint>,
+    name: &str,
+    constraint: VariableUseConstraint,
+) {
+    constraints
+        .entry(name.to_string())
+        .and_modify(|existing| existing.intersect(&constraint))
+        .or_insert(constraint);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_filter_comparison_source(
+    source: &CompiledArgument,
+    model: &ManifestModel,
+    field: &ManifestField,
+    semantics: &super::manifest::ManifestFilterField,
+    variables: &[CompiledVariable],
+    execution: &ManifestExecutionLimits,
+    document: &ClientDocument,
+    position: Pos,
+    constraints: &mut BTreeMap<String, VariableUseConstraint>,
+) -> Result<(), ClientCompileError> {
+    if let CompiledArgument::Literal { value, .. } = source {
+        let operators = value.as_object().ok_or_else(|| {
+            source_error(
+                "client.filter.comparison_object",
+                format!(
+                    "filter field `{}.{}` must contain a comparison object",
+                    model.id, field.name
+                ),
+                document,
+                position,
+            )
+        })?;
+        for (operator, operand) in operators {
+            if !semantics
+                .operators
+                .iter()
+                .any(|allowed| allowed == operator)
+            {
+                return Err(source_error(
+                    "client.filter.operator_denied_or_unknown",
+                    format!(
+                        "filter operator `{operator}` is absent from selected field `{}.{}`",
+                        model.id, field.name
+                    ),
+                    document,
+                    position,
+                ));
+            }
+            match operator.as_str() {
+                "_in" | "_nin" => {
+                    let items = operand.as_array().ok_or_else(|| {
+                        source_error(
+                            "client.filter.list_required",
+                            format!("filter operator `{operator}` requires a list"),
+                            document,
+                            position,
+                        )
+                    })?;
+                    validate_filter_width(
+                        operator,
+                        items.len(),
+                        execution.max_in_list,
+                        document,
+                        position,
+                    )?;
+                    for item in items {
+                        validate_filter_scalar_literal(
+                            item, model, field, false, document, position,
+                        )?;
+                    }
+                }
+                "_is_null" if !operand.is_boolean() && !operand.is_null() => {
+                    return Err(source_error(
+                        "client.filter.boolean_required",
+                        "filter operator `_is_null` requires a boolean or null",
+                        document,
+                        position,
+                    ));
+                }
+                "_is_null" => {}
+                "_has_key" => validate_filter_typed_literal(
+                    operand, model, field, "String", "string", true, document, position,
+                )?,
+                _ => {
+                    validate_filter_scalar_literal(operand, model, field, true, document, position)?
+                }
+            }
+        }
+        return Ok(());
+    }
+    let CompiledArgument::Object(operators) = source else {
+        return Err(source_error(
+            "client.filter.comparison_object",
+            format!(
+                "filter field `{}.{}` must contain a comparison object",
+                model.id, field.name
+            ),
+            document,
+            position,
+        ));
+    };
+    for (operator, operand) in operators {
+        if !semantics
+            .operators
+            .iter()
+            .any(|allowed| allowed == operator)
+        {
+            return Err(source_error(
+                "client.filter.operator_denied_or_unknown",
+                format!(
+                    "filter operator `{operator}` is absent from selected field `{}.{}`",
+                    model.id, field.name
+                ),
+                document,
+                position,
+            ));
+        }
+        match (operator.as_str(), operand) {
+            ("_in" | "_nin", CompiledArgument::Variable(variable)) => {
+                validate_nested_variable(
+                    variable,
+                    &format!("[{}!]", field.scalar),
+                    variables,
+                    document,
+                    position,
+                )?;
+                constrain_variable(
+                    constraints,
+                    variable,
+                    VariableUseConstraint::list(execution.max_in_list, None),
+                );
+            }
+            ("_in" | "_nin", CompiledArgument::List(items)) => {
+                validate_filter_width(
+                    operator,
+                    items.len(),
+                    execution.max_in_list,
+                    document,
+                    position,
+                )?;
+                for item in items {
+                    match item {
+                        CompiledArgument::Variable(variable) => validate_nested_variable(
+                            variable,
+                            &format!("{}!", field.scalar),
+                            variables,
+                            document,
+                            position,
+                        )?,
+                        item => validate_compiled_filter_literal(
+                            item, model, field, false, document, position,
+                        )?,
+                    }
+                }
+            }
+            (
+                "_in" | "_nin",
+                CompiledArgument::Literal {
+                    value: JsonValue::Array(items),
+                    ..
+                },
+            ) => {
+                validate_filter_width(
+                    operator,
+                    items.len(),
+                    execution.max_in_list,
+                    document,
+                    position,
+                )?;
+                for item in items {
+                    validate_filter_scalar_literal(item, model, field, false, document, position)?;
+                }
+            }
+            ("_in" | "_nin", _) => {
+                return Err(source_error(
+                    "client.filter.list_required",
+                    format!("filter operator `{operator}` requires a list"),
+                    document,
+                    position,
+                ));
+            }
+            ("_is_null", CompiledArgument::Variable(variable)) => {
+                validate_nested_variable(variable, "Boolean", variables, document, position)?;
+            }
+            (
+                "_is_null",
+                CompiledArgument::Literal {
+                    value: JsonValue::Bool(_) | JsonValue::Null,
+                    ..
+                },
+            ) => {}
+            ("_is_null", _) => {
+                return Err(source_error(
+                    "client.filter.boolean_required",
+                    "filter operator `_is_null` requires a boolean or null",
+                    document,
+                    position,
+                ));
+            }
+            ("_has_key", CompiledArgument::Variable(variable)) => {
+                validate_nested_variable(variable, "String", variables, document, position)?;
+            }
+            ("_has_key", operand) => validate_compiled_filter_typed_literal(
+                operand, model, field, "String", "string", true, document, position,
+            )?,
+            (_, CompiledArgument::Variable(variable)) => {
+                validate_nested_variable(variable, &field.scalar, variables, document, position)?;
+            }
+            (_, operand) => {
+                validate_compiled_filter_literal(operand, model, field, true, document, position)?
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_compiled_filter_literal(
+    source: &CompiledArgument,
+    model: &ManifestModel,
+    field: &ManifestField,
+    nullable: bool,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    validate_compiled_filter_typed_literal(
+        source,
+        model,
+        field,
+        &field.scalar,
+        &field.codec,
+        nullable,
+        document,
+        position,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_compiled_filter_typed_literal(
+    source: &CompiledArgument,
+    model: &ManifestModel,
+    field: &ManifestField,
+    scalar: &str,
+    codec: &str,
+    nullable: bool,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    let Some(value) = compiled_literal_json(source) else {
+        return Err(source_error(
+            "client.filter.operand",
+            format!(
+                "filter operand on `{}.{}` cannot contain a nested variable",
+                model.id, field.name
+            ),
+            document,
+            position,
+        ));
+    };
+    validate_filter_typed_literal(
+        &value, model, field, scalar, codec, nullable, document, position,
+    )
+}
+
+fn compiled_literal_json(source: &CompiledArgument) -> Option<JsonValue> {
+    match source {
+        CompiledArgument::Literal { value, .. } => Some(value.clone()),
+        CompiledArgument::Variable(_) => None,
+        CompiledArgument::List(items) => items
+            .iter()
+            .map(compiled_literal_json)
+            .collect::<Option<Vec<_>>>()
+            .map(JsonValue::Array),
+        CompiledArgument::Object(fields) => fields
+            .iter()
+            .map(|(name, value)| Some((name.clone(), compiled_literal_json(value)?)))
+            .collect::<Option<JsonMap<String, JsonValue>>>()
+            .map(JsonValue::Object),
+    }
+}
+
+fn validate_filter_scalar_literal(
+    value: &JsonValue,
+    model: &ManifestModel,
+    field: &ManifestField,
+    nullable: bool,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    validate_filter_typed_literal(
+        value,
+        model,
+        field,
+        &field.scalar,
+        &field.codec,
+        nullable,
+        document,
+        position,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_filter_typed_literal(
+    value: &JsonValue,
+    model: &ManifestModel,
+    field: &ManifestField,
+    scalar: &str,
+    codec: &str,
+    nullable: bool,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if scalar_json_literal_matches(value, scalar, codec, nullable) {
+        return Ok(());
+    }
+    Err(source_error(
+        "client.filter.literal_type",
+        format!(
+            "filter literal for `{}.{}` does not match scalar `{}` / codec `{}`{}",
+            model.id,
+            field.name,
+            scalar,
+            codec,
+            if nullable { " or null" } else { "" }
+        ),
+        document,
+        position,
+    ))
+}
+
+fn scalar_json_literal_matches(
+    value: &JsonValue,
+    scalar: &str,
+    codec: &str,
+    nullable: bool,
+) -> bool {
+    match (scalar, codec, value) {
+        (_, _, JsonValue::Null) => nullable,
+        ("ID" | "String", "string", JsonValue::String(_))
+        | ("Timestamptz", "string_unvalidated_timestamp", JsonValue::String(_))
+        | ("Boolean", "boolean", JsonValue::Bool(_)) => true,
+        ("Bytea", "base64", JsonValue::String(value)) => canonical_standard_base64(value).is_some(),
+        ("Int", "int32", JsonValue::Number(number)) => {
+            number
+                .as_i64()
+                .is_some_and(|number| i32::try_from(number).is_ok())
+                || number
+                    .as_u64()
+                    .is_some_and(|number| i32::try_from(number).is_ok())
+        }
+        ("Float", "float64", JsonValue::Number(number)) => {
+            number.as_f64().is_some_and(f64::is_finite)
+        }
+        ("BigInt", "json_number_precision_limited", JsonValue::Number(number)) => {
+            json_number_is_safe_integer(number)
+        }
+        ("JSON", "json", value) => json_value_roundtrips_javascript(value),
+        _ => false,
+    }
+}
+
+fn json_value_roundtrips_javascript(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Number(number) => json_number_roundtrips_javascript(number),
+        JsonValue::Array(values) => values.iter().all(json_value_roundtrips_javascript),
+        JsonValue::Object(values) => values.values().all(json_value_roundtrips_javascript),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::String(_) => true,
+    }
+}
+
+fn json_number_roundtrips_javascript(number: &serde_json::Number) -> bool {
+    let Some(value) = number.as_f64().filter(|value| value.is_finite()) else {
+        return false;
+    };
+    value.fract() != 0.0 || value.abs() <= 9_007_199_254_740_991.0
+}
+
+fn json_number_is_safe_integer(number: &serde_json::Number) -> bool {
+    const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    json_number_is_negative_zero(number)
+        || number
+            .as_i64()
+            .is_some_and(|number| number.unsigned_abs() <= JS_MAX_SAFE_INTEGER)
+        || number
+            .as_u64()
+            .is_some_and(|number| number <= JS_MAX_SAFE_INTEGER)
+}
+
+fn json_number_is_negative_zero(number: &serde_json::Number) -> bool {
+    number
+        .as_f64()
+        .is_some_and(|number| number == 0.0 && number.is_sign_negative())
+}
+
+fn canonical_standard_base64(value: &str) -> Option<String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value.as_bytes())
+        .ok()
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn validate_nested_variable(
+    name: &str,
+    expected: &str,
+    variables: &[CompiledVariable],
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    let variable = variables
+        .iter()
+        .find(|variable| variable.name == name)
+        .expect("nested variable existence checked while compiling arguments");
+    let expected_type = Type::new(expected).ok_or_else(|| {
+        ClientCompileError::manifest(
+            "client.manifest.argument_type",
+            format!("invalid nested variable target type `{expected}`"),
+        )
+    })?;
+    if variable_type_compatible(&variable.graphql_type, &expected_type) {
+        return Ok(());
+    }
+    Err(source_error(
+        "client.variable.type_mismatch",
+        format!(
+            "nested variable `${name}` has type `{}`; selected filter/order position requires `{expected}`",
+            variable.graphql_type
+        ),
+        document,
+        position,
+    ))
+}
+
+fn json_singleton(name: &str, value: JsonValue) -> JsonValue {
+    let mut object = JsonMap::new();
+    object.insert(name.to_string(), value);
+    JsonValue::Object(object)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_filter_literal(
+    value: &JsonValue,
+    model: &ManifestModel,
+    input: &ManifestFilterInput,
+    manifest: &ClientManifest,
+    execution: &ManifestExecutionLimits,
+    document: &ClientDocument,
+    position: Pos,
+    depth: u64,
+) -> Result<(), ClientCompileError> {
+    validate_filter_depth(model, execution, depth, document, position)?;
+    if value.is_null() {
+        return Ok(());
+    }
+    let object = value.as_object().ok_or_else(|| {
+        source_error(
+            "client.filter.object_required",
+            format!("filter for model `{}` must be an object or null", model.id),
+            document,
+            position,
+        )
+    })?;
+    for (name, value) in object {
+        match name.as_str() {
+            "_and" | "_or" => {
+                if value.is_null() {
+                    continue;
+                }
+                let items = value.as_array().ok_or_else(|| {
+                    source_error(
+                        "client.filter.boolean_list",
+                        format!("filter operator `{name}` must contain a list of objects"),
+                        document,
+                        position,
+                    )
+                })?;
+                validate_filter_width(
+                    name,
+                    items.len(),
+                    execution.max_bool_width,
+                    document,
+                    position,
+                )?;
+                for item in items {
+                    validate_filter_literal(
+                        item,
+                        model,
+                        input,
+                        manifest,
+                        execution,
+                        document,
+                        position,
+                        depth.saturating_add(1),
+                    )?;
+                }
+            }
+            "_not" => validate_filter_literal(
+                value,
+                model,
+                input,
+                manifest,
+                execution,
+                document,
+                position,
+                depth.saturating_add(1),
+            )?,
+            field_name => {
+                if let Some(field) = input.fields.iter().find(|field| field.name == field_name) {
+                    let operators = value.as_object().ok_or_else(|| {
+                        source_error(
+                            "client.filter.comparison_object",
+                            format!(
+                                "filter field `{}.{field_name}` must contain a comparison object",
+                                model.id
+                            ),
+                            document,
+                            position,
+                        )
+                    })?;
+                    for (operator, operand) in operators {
+                        if !field.operators.iter().any(|allowed| allowed == operator) {
+                            return Err(source_error(
+                                "client.filter.operator_denied_or_unknown",
+                                format!(
+                                    "filter operator `{operator}` is absent from selected field `{}.{field_name}`",
+                                    model.id
+                                ),
+                                document,
+                                position,
+                            ));
+                        }
+                        let model_field = model.field(field_name).ok_or_else(|| {
+                            ClientCompileError::manifest(
+                                "client.manifest.filter_field",
+                                format!(
+                                    "filter plan for model `{}` references absent field `{field_name}`",
+                                    model.id
+                                ),
+                            )
+                        })?;
+                        match operator.as_str() {
+                            "_in" | "_nin" => {
+                                let items = operand.as_array().ok_or_else(|| {
+                                    source_error(
+                                        "client.filter.list_required",
+                                        format!("filter operator `{operator}` requires a list"),
+                                        document,
+                                        position,
+                                    )
+                                })?;
+                                validate_filter_width(
+                                    operator,
+                                    items.len(),
+                                    execution.max_in_list,
+                                    document,
+                                    position,
+                                )?;
+                                for item in items {
+                                    validate_filter_scalar_literal(
+                                        item,
+                                        model,
+                                        model_field,
+                                        false,
+                                        document,
+                                        position,
+                                    )?;
+                                }
+                            }
+                            "_is_null" if !operand.is_boolean() && !operand.is_null() => {
+                                return Err(source_error(
+                                    "client.filter.boolean_required",
+                                    "filter operator `_is_null` requires a boolean or null",
+                                    document,
+                                    position,
+                                ));
+                            }
+                            "_is_null" => {}
+                            _ => validate_filter_scalar_literal(
+                                operand,
+                                model,
+                                model_field,
+                                true,
+                                document,
+                                position,
+                            )?,
+                        }
+                    }
+                } else if let Some(relationship_input) = input
+                    .relationships
+                    .iter()
+                    .find(|relationship| relationship.field == field_name)
+                {
+                    let relationship = model.relationship(field_name).ok_or_else(|| {
+                        ClientCompileError::manifest(
+                            "client.manifest.filter_relationship",
+                            format!(
+                                "filter plan for model `{}` references absent relationship `{field_name}`",
+                                model.id
+                            ),
+                        )
+                    })?;
+                    let target =
+                        manifest
+                            .models
+                            .get(&relationship.target_model)
+                            .ok_or_else(|| {
+                                ClientCompileError::manifest(
+                                    "client.manifest.filter_relationship",
+                                    format!(
+                                "filter relationship `{}.{field_name}` has an absent target",
+                                model.id
+                            ),
+                                )
+                            })?;
+                    if relationship_input.target_type != target.filter_input.type_name {
+                        return Err(ClientCompileError::manifest(
+                            "client.manifest.filter_relationship",
+                            format!(
+                                "filter relationship `{}.{field_name}` targets input `{}` but model `{}` declares `{}`",
+                                model.id,
+                                relationship_input.target_type,
+                                target.id,
+                                target.filter_input.type_name
+                            ),
+                        ));
+                    }
+                    validate_filter_literal(
+                        value,
+                        target,
+                        &target.filter_input,
+                        manifest,
+                        execution,
+                        document,
+                        position,
+                        depth.saturating_add(1),
+                    )?;
+                } else {
+                    return Err(source_error(
+                        "client.filter.field_denied_or_unknown",
+                        format!(
+                            "filter field `{field_name}` is absent from selected model `{}`",
+                            model.id
+                        ),
+                        document,
+                        position,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_order_literal(
+    value: &JsonValue,
+    semantics: &ManifestOrderSemantics,
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let entries = value.as_array().ok_or_else(|| {
+        source_error(
+            "client.order.list_required",
+            "order_by must be a list or null",
+            document,
+            position,
+        )
+    })?;
+    for entry in entries {
+        let object = entry.as_object().ok_or_else(|| {
+            source_error(
+                "client.order.object_required",
+                "each order_by entry must be an object",
+                document,
+                position,
+            )
+        })?;
+        if object.len() != 1 {
+            return Err(source_error(
+                "client.order.ambiguous",
+                "each order_by entry must contain exactly one field to declare priority",
+                document,
+                position,
+            ));
+        }
+        let (field, direction) = object.iter().next().expect("length checked");
+        if !semantics.fields.iter().any(|allowed| allowed == field) {
+            return Err(source_error(
+                "client.order.field_denied_or_unknown",
+                format!("order_by field `{field}` is absent from the selected model"),
+                document,
+                position,
+            ));
+        }
+        let direction = direction.as_str().ok_or_else(|| {
+            source_error(
+                "client.order.direction",
+                format!("order_by field `{field}` must use a declared direction enum"),
+                document,
+                position,
+            )
+        })?;
+        if !semantics.values.iter().any(|allowed| allowed == direction) {
+            return Err(source_error(
+                "client.order.direction",
+                format!("order_by direction `{direction}` is absent from the selected manifest"),
+                document,
+                position,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_order_source(
+    source: &CompiledArgument,
+    semantics: &ManifestOrderSemantics,
+    argument: Option<&ManifestArgument>,
+    variables: &[CompiledVariable],
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    match source {
+        CompiledArgument::Literal { value, .. } => {
+            validate_order_literal(value, semantics, document, position)
+        }
+        CompiledArgument::Variable(name) => {
+            let expected = argument
+                .map(ManifestArgument::graphql_type)
+                .ok_or_else(|| {
+                    ClientCompileError::manifest(
+                        "client.manifest.order_argument",
+                        "order semantics exist without an order argument",
+                    )
+                })?;
+            validate_nested_variable(name, &expected, variables, document, position)
+        }
+        CompiledArgument::List(entries) => {
+            for entry in entries {
+                match entry {
+                    CompiledArgument::Variable(name) => {
+                        let item_type = argument
+                            .map(|argument| argument.type_name.as_str())
+                            .ok_or_else(|| {
+                                ClientCompileError::manifest(
+                                    "client.manifest.order_argument",
+                                    "order semantics exist without an order argument",
+                                )
+                            })?;
+                        validate_nested_variable(
+                            name,
+                            &format!("{item_type}!"),
+                            variables,
+                            document,
+                            position,
+                        )?;
+                    }
+                    CompiledArgument::Object(fields) => validate_order_entry_source(
+                        fields, semantics, variables, document, position,
+                    )?,
+                    CompiledArgument::Literal { value, .. } => {
+                        validate_order_literal(
+                            &JsonValue::Array(vec![value.clone()]),
+                            semantics,
+                            document,
+                            position,
+                        )?;
+                    }
+                    CompiledArgument::List(_) => {
+                        return Err(source_error(
+                            "client.order.object_required",
+                            "each order_by entry must be an object",
+                            document,
+                            position,
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+        CompiledArgument::Object(_) => Err(source_error(
+            "client.order.list_required",
+            "order_by must be a list or null",
+            document,
+            position,
+        )),
+    }
+}
+
+fn validate_order_entry_source(
+    fields: &BTreeMap<String, CompiledArgument>,
+    semantics: &ManifestOrderSemantics,
+    variables: &[CompiledVariable],
+    document: &ClientDocument,
+    position: Pos,
+) -> Result<(), ClientCompileError> {
+    if fields.len() != 1 {
+        return Err(source_error(
+            "client.order.ambiguous",
+            "each order_by entry must contain exactly one field to declare priority",
+            document,
+            position,
+        ));
+    }
+    let (field, direction) = fields.iter().next().expect("length checked");
+    if !semantics.fields.iter().any(|allowed| allowed == field) {
+        return Err(source_error(
+            "client.order.field_denied_or_unknown",
+            format!("order_by field `{field}` is absent from the selected model"),
+            document,
+            position,
+        ));
+    }
+    match direction {
+        CompiledArgument::Variable(name) => {
+            validate_nested_variable(name, "order_by", variables, document, position)
+        }
+        CompiledArgument::Literal { value, .. } => {
+            let direction = value.as_str().ok_or_else(|| {
+                source_error(
+                    "client.order.direction",
+                    format!("order_by field `{field}` must use a declared direction enum"),
+                    document,
+                    position,
+                )
+            })?;
+            if semantics.values.iter().any(|allowed| allowed == direction) {
+                Ok(())
+            } else {
+                Err(source_error(
+                    "client.order.direction",
+                    format!(
+                        "order_by direction `{direction}` is absent from the selected manifest"
+                    ),
+                    document,
+                    position,
+                ))
+            }
+        }
+        CompiledArgument::List(_) | CompiledArgument::Object(_) => Err(source_error(
+            "client.order.direction",
+            format!("order_by field `{field}` must use a declared direction enum"),
+            document,
+            position,
+        )),
     }
 }
 
@@ -1883,16 +4268,33 @@ fn render_compiled_arguments(arguments: &BTreeMap<String, CompiledArgument>) -> 
         "({})",
         arguments
             .iter()
-            .map(|(name, value)| format!(
-                "{name}: {}",
-                match value {
-                    CompiledArgument::Literal { wire, .. } => wire.clone(),
-                    CompiledArgument::Variable(variable) => format!("${variable}"),
-                }
-            ))
+            .map(|(name, value)| format!("{name}: {}", render_compiled_argument(value)))
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+fn render_compiled_argument(value: &CompiledArgument) -> String {
+    match value {
+        CompiledArgument::Literal { wire, .. } => wire.clone(),
+        CompiledArgument::Variable(variable) => format!("${variable}"),
+        CompiledArgument::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(render_compiled_argument)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        CompiledArgument::Object(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(name, value)| format!("{name}: {}", render_compiled_argument(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn render_variable(variable: &CompiledVariable) -> Result<String, ClientCompileError> {
@@ -1982,29 +4384,68 @@ fn reject_directives(
     Err(source_error(code, message, document, directive.pos))
 }
 
-fn reject_nested_variable(
+fn compile_argument_source(
     value: &Value,
     argument: &str,
+    variables: &BTreeMap<&str, &CompiledVariable>,
+    used_variables: &mut BTreeSet<String>,
     document: &ClientDocument,
     position: Pos,
-) -> Result<(), ClientCompileError> {
-    let nested = match value {
-        Value::Variable(_) => false,
-        Value::List(values) => values.iter().any(contains_variable),
-        Value::Object(values) => values.values().any(contains_variable),
-        _ => false,
-    };
-    if nested {
-        return Err(source_error(
-            "client.argument.nested_variable",
-            format!(
-                "argument `{argument}` mixes variables inside a literal; pass the complete root argument as one variable"
-            ),
-            document,
-            position,
-        ));
+) -> Result<CompiledArgument, ClientCompileError> {
+    if !contains_variable(value) {
+        return Ok(CompiledArgument::Literal {
+            value: value_to_json(value, document, position)?,
+            wire: render_value(value, document, position)?,
+        });
     }
-    Ok(())
+    match value {
+        Value::Variable(variable) => {
+            if !variables.contains_key(variable.as_str()) {
+                return Err(source_error(
+                    "client.variable.undefined",
+                    format!(
+                        "argument `{argument}` references undefined nested variable `${variable}`"
+                    ),
+                    document,
+                    position,
+                ));
+            }
+            used_variables.insert(variable.to_string());
+            Ok(CompiledArgument::Variable(variable.to_string()))
+        }
+        Value::List(values) => values
+            .iter()
+            .map(|value| {
+                compile_argument_source(
+                    value,
+                    argument,
+                    variables,
+                    used_variables,
+                    document,
+                    position,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(CompiledArgument::List),
+        Value::Object(values) => values
+            .iter()
+            .map(|(name, value)| {
+                Ok((
+                    name.to_string(),
+                    compile_argument_source(
+                        value,
+                        argument,
+                        variables,
+                        used_variables,
+                        document,
+                        position,
+                    )?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, ClientCompileError>>()
+            .map(CompiledArgument::Object),
+        _ => unreachable!("non-container value with no variable returned above"),
+    }
 }
 
 fn contains_variable(value: &Value) -> bool {
@@ -2013,6 +4454,202 @@ fn contains_variable(value: &Value) -> bool {
         Value::List(values) => values.iter().any(contains_variable),
         Value::Object(values) => values.values().any(contains_variable),
         _ => false,
+    }
+}
+
+fn canonicalize_argument_literal(
+    value: &Value,
+    argument: &ManifestArgument,
+    model: &ManifestModel,
+    manifest: &ClientManifest,
+) -> Value {
+    let value = if argument.kind == ManifestArgumentKind::Filter {
+        canonicalize_filter_literal(value, model, &model.filter_input, manifest)
+    } else {
+        value.clone()
+    };
+    let value =
+        if argument.list && !matches!(&value, Value::List(_) | Value::Null | Value::Variable(_)) {
+            Value::List(vec![value])
+        } else {
+            value
+        };
+    match &argument.codec {
+        Some(codec) if argument.list => match value {
+            Value::List(items) => Value::List(
+                items
+                    .iter()
+                    .map(|item| canonicalize_scalar_literal(item, &argument.type_name, codec))
+                    .collect(),
+            ),
+            value => value,
+        },
+        Some(codec) => canonicalize_scalar_literal(&value, &argument.type_name, codec),
+        None => value,
+    }
+}
+
+fn canonicalize_filter_literal(
+    value: &Value,
+    model: &ManifestModel,
+    input: &ManifestFilterInput,
+    manifest: &ClientManifest,
+) -> Value {
+    let Value::Object(fields) = value else {
+        return value.clone();
+    };
+    let mut canonical = fields.clone();
+    for (name, value) in fields {
+        let value = match name.as_str() {
+            "_and" | "_or" => canonicalize_filter_literal_list(value, model, input, manifest),
+            "_not" => canonicalize_filter_literal(value, model, input, manifest),
+            field_name if input.fields.iter().any(|field| field.name == field_name) => model
+                .field(field_name)
+                .map(|field| canonicalize_filter_comparison_literal(value, field))
+                .unwrap_or_else(|| value.clone()),
+            relationship_name
+                if input
+                    .relationships
+                    .iter()
+                    .any(|relationship| relationship.field == relationship_name) =>
+            {
+                model
+                    .relationship(relationship_name)
+                    .and_then(|relationship| manifest.models.get(&relationship.target_model))
+                    .map(|target| {
+                        canonicalize_filter_literal(value, target, &target.filter_input, manifest)
+                    })
+                    .unwrap_or_else(|| value.clone())
+            }
+            _ => value.clone(),
+        };
+        canonical.insert(name.clone(), value);
+    }
+    Value::Object(canonical)
+}
+
+fn canonicalize_filter_literal_list(
+    value: &Value,
+    model: &ManifestModel,
+    input: &ManifestFilterInput,
+    manifest: &ClientManifest,
+) -> Value {
+    match value {
+        Value::List(items) => Value::List(
+            items
+                .iter()
+                .map(|item| canonicalize_filter_literal(item, model, input, manifest))
+                .collect(),
+        ),
+        Value::Null | Value::Variable(_) => value.clone(),
+        value => Value::List(vec![canonicalize_filter_literal(
+            value, model, input, manifest,
+        )]),
+    }
+}
+
+fn canonicalize_filter_comparison_literal(value: &Value, field: &ManifestField) -> Value {
+    let Value::Object(operators) = value else {
+        return value.clone();
+    };
+    let mut canonical = operators.clone();
+    for (operator, operand) in operators {
+        let operand = match operator.as_str() {
+            "_in" | "_nin" => {
+                let operand =
+                    if matches!(operand, Value::List(_) | Value::Null | Value::Variable(_)) {
+                        operand.clone()
+                    } else {
+                        Value::List(vec![operand.clone()])
+                    };
+                match operand {
+                    Value::List(items) => Value::List(
+                        items
+                            .iter()
+                            .map(|item| {
+                                canonicalize_scalar_literal(item, &field.scalar, &field.codec)
+                            })
+                            .collect(),
+                    ),
+                    operand => operand,
+                }
+            }
+            "_is_null" | "_has_key" => operand.clone(),
+            _ => canonicalize_scalar_literal(operand, &field.scalar, &field.codec),
+        };
+        canonical.insert(operator.clone(), operand);
+    }
+    Value::Object(canonical)
+}
+
+fn canonicalize_scalar_literal(value: &Value, scalar: &str, codec: &str) -> Value {
+    match (scalar, codec, value) {
+        ("ID", "string", Value::Number(number)) if json_number_is_negative_zero(number) => {
+            Value::String("0".into())
+        }
+        ("ID", "string", Value::Number(number)) if json_number_is_safe_integer(number) => {
+            Value::String(number.to_string())
+        }
+        ("Bytea", "base64", Value::String(value)) => canonical_standard_base64(value)
+            .map(Value::String)
+            .unwrap_or_else(|| Value::String(value.clone())),
+        ("Float", "float64", Value::Number(number)) => canonicalize_float_number(number)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::Number(number.clone())),
+        ("Int", "int32", Value::Number(number))
+        | ("BigInt", "json_number_precision_limited", Value::Number(number))
+            if json_number_is_negative_zero(number) =>
+        {
+            Value::Number(serde_json::Number::from(0))
+        }
+        ("JSON", "json", value) => canonicalize_json_literal(value),
+        _ => value.clone(),
+    }
+}
+
+fn canonicalize_json_literal(value: &Value) -> Value {
+    match value {
+        Value::Number(number) => canonicalize_json_number(number)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::Number(number.clone())),
+        Value::List(values) => Value::List(values.iter().map(canonicalize_json_literal).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), canonicalize_json_literal(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn canonicalize_json_number(number: &serde_json::Number) -> Option<serde_json::Number> {
+    if json_number_is_negative_zero(number) {
+        return Some(serde_json::Number::from(0));
+    }
+    if number.as_i64().is_some() || number.as_u64().is_some() {
+        return Some(number.clone());
+    }
+    let value = number.as_f64().filter(|value| value.is_finite())?;
+    if value.fract() == 0.0 {
+        if value.abs() > 9_007_199_254_740_991.0 {
+            return None;
+        }
+        return if value.is_sign_negative() {
+            Some(serde_json::Number::from(value as i64))
+        } else {
+            Some(serde_json::Number::from(value as u64))
+        };
+    }
+    serde_json::Number::from_f64(value)
+}
+
+fn canonicalize_float_number(number: &serde_json::Number) -> Option<serde_json::Number> {
+    let value = number.as_f64()?;
+    if value == 0.0 {
+        Some(serde_json::Number::from(0))
+    } else {
+        serde_json::Number::from_f64(value)
     }
 }
 
@@ -2047,6 +4684,35 @@ fn validate_literal(
             document,
             position,
         ));
+    }
+    if let Some(codec) = &argument.codec {
+        let valid = if argument.list {
+            let Value::List(items) = value else {
+                unreachable!("list shape checked above")
+            };
+            items.iter().all(|item| {
+                value_to_json(item, document, position).is_ok_and(|item| {
+                    scalar_json_literal_matches(&item, &argument.type_name, codec, false)
+                })
+            })
+        } else {
+            value_to_json(value, document, position).is_ok_and(|value| {
+                scalar_json_literal_matches(&value, &argument.type_name, codec, false)
+            })
+        };
+        return if valid {
+            Ok(())
+        } else {
+            Err(source_error(
+                "client.argument.literal_type",
+                format!(
+                    "literal for argument `{}` does not match scalar `{}` / codec `{}`",
+                    argument.name, argument.type_name, codec
+                ),
+                document,
+                position,
+            ))
+        };
     }
     if argument.list {
         return Ok(());
@@ -2116,20 +4782,6 @@ fn value_to_json(
     }
 }
 
-pub(crate) fn typescript_type(graphql_type: &Type) -> String {
-    let base = match &graphql_type.base {
-        BaseType::Named(name) => typescript_named_type(name.as_str()),
-        BaseType::List(item) => {
-            format!("readonly {}[]", parenthesize_union(&typescript_type(item)))
-        }
-    };
-    if graphql_type.nullable {
-        format!("{base} | null")
-    } else {
-        base
-    }
-}
-
 pub(crate) fn typescript_scalar(
     field: &CompiledScalar,
 ) -> Result<&'static str, ClientCompileError> {
@@ -2145,24 +4797,6 @@ pub(crate) fn typescript_scalar(
                 field.field
             ),
         )),
-    }
-}
-
-fn typescript_named_type(name: &str) -> String {
-    match name {
-        "Boolean" => "boolean".into(),
-        "Float" | "Int" | "BigInt" => "number".into(),
-        "ID" | "String" | "Bytea" | "Timestamptz" => "string".into(),
-        "JSON" => "unknown".into(),
-        _ => "Readonly<Record<string, unknown>>".into(),
-    }
-}
-
-fn parenthesize_union(value: &str) -> String {
-    if value.contains(" | ") {
-        format!("({value})")
-    } else {
-        value.to_string()
     }
 }
 

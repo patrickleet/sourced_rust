@@ -1,5 +1,5 @@
 //! Integration tests for `dctl client`: drive the real binary against a small
-//! manifest-v5 project and verify generation, read-only drift checking,
+//! manifest-v6 project and verify generation, read-only drift checking,
 //! authorization-surface selection, document discovery, and explicit `@load`
 //! route registration.
 
@@ -9,18 +9,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const ROLE_MANIFEST: &str = r#"{
-  "manifest_version": 5,
+  "manifest_version": 6,
   "protocol_version": 2,
   "service_id": "todos",
   "surface": {
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:13d6089128ffb0749a4b3c6956f343d35d72ba638a73c25b3c553aa15223e57e",
+  "schema_fingerprint": "sha256:6f78d8c128d018c54d70ce2a1c5374828d14585339c63a6e49d028534fee8b6c",
   "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
   "execution": {
     "max_depth": 8,
     "max_complexity": 500,
+    "max_bool_width": 256,
+    "max_in_list": 1000,
     "complexity": {
       "version": 1,
       "scalar": 1,
@@ -114,6 +116,42 @@ const ROLE_MANIFEST: &str = r#"{
         }
       ],
       "relationships": [],
+      "filter_input": {
+        "type_name": "todos_bool_exp",
+        "fields": [
+          {
+            "name": "id",
+            "operators": [
+              "_eq",
+              "_neq",
+              "_gt",
+              "_gte",
+              "_lt",
+              "_lte",
+              "_in",
+              "_nin",
+              "_is_null"
+            ]
+          },
+          {
+            "name": "title",
+            "operators": [
+              "_eq",
+              "_neq",
+              "_gt",
+              "_gte",
+              "_lt",
+              "_lte",
+              "_in",
+              "_nin",
+              "_is_null",
+              "_like",
+              "_ilike"
+            ]
+          }
+        ],
+        "relationships": []
+      },
       "row_policy": {
         "kind": "unrestricted"
       },
@@ -128,10 +166,96 @@ const ROLE_MANIFEST: &str = r#"{
       "name": "todos",
       "kind": "list",
       "model": "Todo",
-      "arguments": [],
-      "filter": null,
-      "order": null,
-      "pagination": null,
+      "arguments": [
+        {
+          "name": "where",
+          "kind": "filter",
+          "type_name": "todos_bool_exp",
+          "nullable": true,
+          "list": false
+        },
+        {
+          "name": "order_by",
+          "kind": "order",
+          "type_name": "todos_order_by",
+          "nullable": true,
+          "list": true
+        },
+        {
+          "name": "limit",
+          "kind": "limit",
+          "type_name": "Int",
+          "nullable": true,
+          "list": false,
+          "codec": "int32"
+        },
+        {
+          "name": "offset",
+          "kind": "offset",
+          "type_name": "Int",
+          "nullable": true,
+          "list": false,
+          "codec": "int32"
+        }
+      ],
+      "filter": {
+        "fields": [
+          {
+            "name": "id",
+            "operators": [
+              "_eq",
+              "_neq",
+              "_gt",
+              "_gte",
+              "_lt",
+              "_lte",
+              "_in",
+              "_nin",
+              "_is_null"
+            ]
+          },
+          {
+            "name": "title",
+            "operators": [
+              "_eq",
+              "_neq",
+              "_gt",
+              "_gte",
+              "_lt",
+              "_lte",
+              "_in",
+              "_nin",
+              "_is_null",
+              "_like",
+              "_ilike"
+            ]
+          }
+        ],
+        "relationships": [],
+        "row_policy": {
+          "kind": "unrestricted"
+        }
+      },
+      "order": {
+        "fields": [
+          "id",
+          "title"
+        ],
+        "values": [
+          "asc",
+          "asc_nulls_first",
+          "asc_nulls_last",
+          "desc",
+          "desc_nulls_first",
+          "desc_nulls_last"
+        ]
+      },
+      "pagination": {
+        "kind": "offset",
+        "default_limit": 100,
+        "max_limit": 1000,
+        "coverage": "window"
+      },
       "aggregate": null,
       "dependencies": [
         "todos"
@@ -281,6 +405,19 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
             "missing generated artifact {expected}"
         );
     }
+    let operation = fs::read_to_string(project.join("generated/operations/todos.ts"))
+        .expect("read generated operation");
+    assert!(
+        operation.contains("\"order\": {")
+            && operation.contains("\"tieBreakers\": [")
+            && operation.contains("\"field\": \"id\"")
+            && operation.contains("\"filter\": {")
+            && operation.contains("\"pagination\": {")
+            && operation.contains("\"kind\": \"offset\"")
+            && operation.contains("\"defaultLimit\": 100")
+            && operation.contains("\"maxLimit\": 1000"),
+        "list operations must encode filter, stable identity ordering, and bounded offset-window maintenance"
+    );
 
     let checked = generate(&project, "queries/*.graphql", &["--check"]);
     assert_success(&checked, "client artifact check");

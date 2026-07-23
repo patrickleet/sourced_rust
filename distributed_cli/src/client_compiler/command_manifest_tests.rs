@@ -7,9 +7,9 @@ use super::manifest::{
     hash_bytes, ManifestCommand, ManifestCommandConsistency, ManifestCommandExtensions,
     ManifestCommandShape, ManifestConfirmation, ManifestConfirmationKind, ManifestConfirmations,
     ManifestConsistencyKind, ManifestEffect, ManifestEffectExpression, ManifestEffectField,
-    ManifestEffectKey, ManifestEffects, ManifestField, ManifestInputDefault,
-    ManifestInputDefaultGenerator, ManifestInputDefaults, ManifestKeyField, ManifestModel,
-    ManifestNormalization, ManifestProjector, ManifestProtocolOperation,
+    ManifestEffectKey, ManifestEffects, ManifestField, ManifestFilterField, ManifestFilterInput,
+    ManifestInputDefault, ManifestInputDefaultGenerator, ManifestInputDefaults, ManifestKeyField,
+    ManifestModel, ManifestNormalization, ManifestProjector, ManifestProtocolOperation,
     ManifestProtocolOperations, ManifestRevalidationFallback, ManifestRowPolicy, ManifestTypeDef,
     ManifestTypeField,
 };
@@ -65,6 +65,17 @@ fn model() -> ManifestModel {
             },
         ],
         relationships: Vec::new(),
+        filter_input: ManifestFilterInput {
+            type_name: "todos_bool_exp".into(),
+            fields: ["id", "payload", "title"]
+                .into_iter()
+                .map(|name| ManifestFilterField {
+                    name: name.into(),
+                    operators: vec!["_eq".into()],
+                })
+                .collect(),
+            relationships: Vec::new(),
+        },
         row_policy: ManifestRowPolicy::Unrestricted,
         record_revisions: true,
         tombstones: true,

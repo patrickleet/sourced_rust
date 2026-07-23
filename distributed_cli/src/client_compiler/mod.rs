@@ -415,3 +415,6 @@ pub(crate) fn is_graphql_name(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod runtime_bridge_tests;

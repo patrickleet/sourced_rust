@@ -58,7 +58,7 @@ distributed-gen-commands \
   --policies src/lib/api/commands.policies.generated.ts
 ```
 
-Client manifest v4 carries nested command types, scalar codecs, the exact
+Client manifest v6 carries nested command types, scalar codecs, the exact
 compiler-owned mutation documents, and one exact command-status operation. The
 generator validates operation hashes and emits those bytes verbatim; the
 runtime never guesses a status query or mutation field. Legacy command manifest
@@ -105,6 +105,44 @@ Projection evidence does not fabricate a browser row. The runtime never invents
 a complete projection from an acknowledgement, partial fact, or status result;
 apps use their generated query/live/refetch path to materialize authoritative
 read-model data.
+
+## Compiler-backed replica artifacts
+
+`dctl client` emits framework-neutral query, live, and prepared-command modules
+from the role/application-selected Rust manifest and co-located GraphQL
+documents. Generated query artifacts carry exact result/variable types,
+normalization and selection plans, portable filter/order facts, pagination
+fallbacks, a schema/protocol binding, and the variable codec used for cache
+identity and transport.
+
+```ts
+import { createDistributedReplica } from '@hops-ops/distributed/replica';
+import { Todos } from './generated/distributed/index.js';
+
+const replica = createDistributedReplica({ transport });
+const todos = replica.watch(Todos, { where: { completed: { _eq: false } } }, {
+  live: true
+});
+
+const unsubscribe = todos.subscribe((snapshot) => render(snapshot));
+```
+
+Variables are validated and canonicalized before lookup or I/O, so GraphQL
+singleton-list forms, IDs, object key order, and omitted versus explicit-null
+values have one deterministic identity. One replica accepts artifacts from one
+generated schema surface; mixing legacy, stale-schema, or elevated-surface
+artifacts fails before cached data can be observed or a request can be sent.
+Framework adapters consume this API rather than owning normalization, command,
+auth, or protocol behavior.
+
+Variable codec v2 also carries the service's exact filter execution limits.
+Boolean-list and IN-list widths are checked after GraphQL singleton coercion,
+while filter depth follows server semantics: only `_and`/`_or` children,
+`_not`, and relationship predicates enter a child. Root filters begin at depth
+zero; relationship selection and aggregate arguments inherit their model-edge
+depth. Compiler-emitted `filterBaseDepth` and `maxItems` constraints preserve
+the most restrictive use when one variable appears more than once. A separate
+64-level input traversal cap remains in place as a client-runtime safety bound.
 
 ## SvelteKit
 

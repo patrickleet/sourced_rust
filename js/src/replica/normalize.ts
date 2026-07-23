@@ -98,7 +98,7 @@ export function normalizeReplicaResult<
 		const path: readonly (string | number)[] = [root.responseKey];
 		const hasValue = Object.prototype.hasOwnProperty.call(envelope.data, root.responseKey);
 		const blocked = pathBlocked(errors, path);
-		const argumentsValue = resolveArguments(root.arguments, variables);
+		const argumentsValue = resolveArguments(root.arguments, variables, root.coverage);
 		const key = replicaIndexKey({ field: root.field, arguments: argumentsValue });
 		const hasErrors = pathHasErrors(errors, path);
 		const rawValue = hasValue ? envelope.data[root.responseKey] : undefined;
@@ -403,7 +403,11 @@ function normalizeObject(
 		const blocked = pathBlocked(errors, branchPath);
 		const hasErrors = pathHasErrors(errors, branchPath);
 		const rawValue = hasValue ? value[member.responseKey] : undefined;
-		const argumentsValue = resolveArguments(member.arguments, variables);
+		const argumentsValue = resolveArguments(
+			member.arguments,
+			variables,
+			member.coverage
+		);
 		const branchIndexKey = replicaIndexKey({
 			parent: key,
 			field: member.field,
