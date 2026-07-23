@@ -24,9 +24,9 @@ use super::surface::{
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 5;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 6;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
-// Manifest v5 extends only compiler-owned query metadata. Keep the causal
+// Manifest v6 extends only compiler-owned query metadata. Keep the causal
 // protocol fingerprint on the manifest epoch that introduced protocol v2 so
 // receipt/status/live envelopes do not become falsely incompatible.
 const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 4;
@@ -37,6 +37,8 @@ const PROTOCOL_OPERATIONS_VERSION: u32 = 1;
 const QUERY_CAPABILITIES_VERSION: u32 = 1;
 const QUERY_COMPLEXITY_VERSION: u32 = 1;
 const KEY_ENCODING: &str = "canonical_json_tuple_v1";
+const DEFAULT_MAX_BOOL_WIDTH: u64 = 256;
+const DEFAULT_MAX_IN_LIST: u64 = 1_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientManifestError(pub String);
@@ -284,6 +286,8 @@ pub struct DistributedClientManifest {
 pub struct ClientExecutionLimits {
     pub max_depth: u64,
     pub max_complexity: u64,
+    pub max_bool_width: u64,
+    pub max_in_list: u64,
     pub complexity: ClientComplexityWeights,
 }
 
@@ -292,6 +296,8 @@ impl Default for ClientExecutionLimits {
         Self {
             max_depth: DEFAULT_MAX_DEPTH as u64,
             max_complexity: DEFAULT_MAX_COMPLEXITY as u64,
+            max_bool_width: DEFAULT_MAX_BOOL_WIDTH,
+            max_in_list: DEFAULT_MAX_IN_LIST,
             complexity: ClientComplexityWeights::current(),
         }
     }
@@ -301,6 +307,8 @@ impl ClientExecutionLimits {
     pub(crate) fn from_runtime(
         max_depth: usize,
         max_complexity: usize,
+        max_bool_width: usize,
+        max_in_list: usize,
     ) -> Result<Self, ClientManifestError> {
         Ok(Self {
             max_depth: u64::try_from(max_depth).map_err(|_| {
@@ -310,6 +318,14 @@ impl ClientExecutionLimits {
                 ClientManifestError(
                     "GraphQL max_complexity exceeds the client manifest range".into(),
                 )
+            })?,
+            max_bool_width: u64::try_from(max_bool_width).map_err(|_| {
+                ClientManifestError(
+                    "GraphQL max_bool_width exceeds the client manifest range".into(),
+                )
+            })?,
+            max_in_list: u64::try_from(max_in_list).map_err(|_| {
+                ClientManifestError("GraphQL max_in_list exceeds the client manifest range".into())
             })?,
             complexity: ClientComplexityWeights::current(),
         })
@@ -393,6 +409,12 @@ pub struct ClientModel {
     pub normalization: ModelNormalization,
     pub fields: Vec<ClientField>,
     pub relationships: Vec<ClientRelationship>,
+    /// Exact GraphQL predicate input owned by this role-selected model.
+    ///
+    /// This is deliberately model-level rather than copied from a list root or
+    /// relationship selection. GraphQL bool-exp relationships exist regardless
+    /// of whether the corresponding object field accepts list arguments.
+    pub filter_input: ClientFilterInput,
     pub row_policy: ClientRowPolicy,
     pub record_revisions: bool,
     pub tombstones: bool,
@@ -420,6 +442,19 @@ pub struct ClientField {
     pub scalar: String,
     pub codec: String,
     pub nullable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientFilterInput {
+    pub type_name: String,
+    pub fields: Vec<ClientFilterField>,
+    pub relationships: Vec<ClientFilterInputRelationship>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientFilterInputRelationship {
+    pub field: String,
+    pub target_type: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1204,6 +1239,7 @@ fn client_manifest_from_surface_with_execution(
             });
         }
         relationships.sort_by(|a, b| a.name.cmp(&b.name));
+        let filter_input = filter_input(surface, model)?;
         let causal_owner = model_has_visible_causal_owner(surface, &model.model_name);
         models.push(ClientModel {
             id: model.model_name.clone(),
@@ -1213,6 +1249,7 @@ fn client_manifest_from_surface_with_execution(
             normalization,
             fields,
             relationships,
+            filter_input,
             row_policy: row_policy_manifest(&model.row_policy),
             // `_sourced_version` is only source metadata. These flags derive
             // from the role-visible Task 15 causal owner, never that column.
@@ -1654,6 +1691,48 @@ fn filter_semantics(
     surface: &Surface,
     model: &super::surface::SurfaceModel,
 ) -> ClientFilterSemantics {
+    ClientFilterSemantics {
+        fields: filter_fields(surface, model),
+        relationships: filter_relationship_names(model),
+        row_policy: row_policy_manifest(&model.row_policy),
+    }
+}
+
+fn filter_input(
+    surface: &Surface,
+    model: &super::surface::SurfaceModel,
+) -> Result<ClientFilterInput, ClientManifestError> {
+    let mut relationships = model
+        .relationships
+        .iter()
+        .map(|relationship| {
+            let target = surface
+                .models
+                .get(&relationship.target_model)
+                .ok_or_else(|| {
+                    ClientManifestError(format!(
+                        "model `{}` filter relationship `{}` targets absent model `{}`",
+                        model.model_name, relationship.name, relationship.target_model
+                    ))
+                })?;
+            Ok(ClientFilterInputRelationship {
+                field: relationship.name.clone(),
+                target_type: format!("{}_bool_exp", target.table_name),
+            })
+        })
+        .collect::<Result<Vec<_>, ClientManifestError>>()?;
+    relationships.sort_by(|left, right| left.field.cmp(&right.field));
+    Ok(ClientFilterInput {
+        type_name: format!("{}_bool_exp", model.table_name),
+        fields: filter_fields(surface, model),
+        relationships,
+    })
+}
+
+fn filter_fields(
+    surface: &Surface,
+    model: &super::surface::SurfaceModel,
+) -> Vec<ClientFilterField> {
     let mut fields: Vec<ClientFilterField> = model
         .columns
         .iter()
@@ -1667,17 +1746,17 @@ fn filter_semantics(
         })
         .collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
+}
+
+fn filter_relationship_names(model: &super::surface::SurfaceModel) -> Vec<String> {
     let mut relationships: Vec<String> = model
         .relationships
         .iter()
         .map(|relationship| relationship.name.clone())
         .collect();
     relationships.sort();
-    ClientFilterSemantics {
-        fields,
-        relationships,
-        row_policy: row_policy_manifest(&model.row_policy),
-    }
+    relationships
 }
 
 fn order_semantics(model: &super::surface::SurfaceModel) -> ClientOrderSemantics {
@@ -2474,11 +2553,11 @@ mod tests {
         let first = export.manifest().unwrap();
         let second = export.manifest().unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.manifest_version, 5);
+        assert_eq!(first.manifest_version, 6);
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:10d8b7ab693f1d78d01d25c78e1dd0c042ff8e026654c0a617aa7ea74b6cd158"
+            "sha256:0e991fd37a1fe8f81cb9bba505592d7d7f257c685f71c58a3abbd5ec54fdf890"
         );
         assert_eq!(
             first.protocol_fingerprint,
@@ -2519,6 +2598,19 @@ mod tests {
             !owner.live,
             "singular relationships are not live list plans"
         );
+        assert!(owner.arguments.is_empty());
+        assert!(owner.filter.is_none());
+        assert_eq!(todo.filter_input.type_name, "todos_bool_exp");
+        assert_eq!(
+            todo.filter_input
+                .relationships
+                .iter()
+                .find(|relationship| relationship.field == "owner")
+                .expect("singular relationship predicate")
+                .target_type,
+            user.filter_input.type_name
+        );
+        assert_eq!(user.filter_input.type_name, "users_bool_exp");
         assert!(first.capabilities.live_queries);
         assert!(!first.capabilities.record_revisions);
         assert!(!first.capabilities.tombstones);
@@ -2569,6 +2661,58 @@ mod tests {
         assert!(!json.contains("user_id"));
         assert!(!json.contains("force_archive"));
         assert!(!json.contains("x-user-id"));
+    }
+
+    #[test]
+    fn filter_execution_limits_are_schema_fingerprinted_without_changing_protocol_epoch() {
+        let full = full_surface();
+        let selected = surface_for_role(&full, "user", &grants()["user"]).unwrap();
+        let baseline =
+            DistributedClientSurfaceExport::from_selected("todos-service", selected.clone())
+                .unwrap()
+                .manifest()
+                .unwrap();
+
+        let mut bool_limits = ClientExecutionLimits::default();
+        bool_limits.max_bool_width += 1;
+        let bool_manifest = DistributedClientSurfaceExport::from_selected_with_execution(
+            "todos-service",
+            selected.clone(),
+            bool_limits,
+        )
+        .unwrap()
+        .manifest()
+        .unwrap();
+
+        let mut in_limits = ClientExecutionLimits::default();
+        in_limits.max_in_list += 1;
+        let in_manifest = DistributedClientSurfaceExport::from_selected_with_execution(
+            "todos-service",
+            selected,
+            in_limits,
+        )
+        .unwrap()
+        .manifest()
+        .unwrap();
+
+        assert_ne!(
+            baseline.schema_fingerprint,
+            bool_manifest.schema_fingerprint
+        );
+        assert_ne!(baseline.schema_fingerprint, in_manifest.schema_fingerprint);
+        assert_ne!(
+            bool_manifest.schema_fingerprint,
+            in_manifest.schema_fingerprint
+        );
+        assert_eq!(baseline.protocol_version, 2);
+        assert_eq!(
+            baseline.protocol_fingerprint,
+            bool_manifest.protocol_fingerprint
+        );
+        assert_eq!(
+            baseline.protocol_fingerprint,
+            in_manifest.protocol_fingerprint
+        );
     }
 
     #[test]

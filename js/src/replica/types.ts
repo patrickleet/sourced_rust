@@ -52,8 +52,305 @@ export type ReplicaVariableValue = {
 	readonly name: string;
 };
 
-export type ReplicaArgumentValue = ReplicaLiteralValue | ReplicaVariableValue;
+export type ReplicaListValue = {
+	readonly kind: 'list';
+	readonly items: readonly ReplicaArgumentValue[];
+};
+
+export type ReplicaObjectValue = {
+	readonly kind: 'object';
+	readonly fields: Readonly<Record<string, ReplicaArgumentValue>>;
+};
+
+export type ReplicaArgumentValue =
+	| ReplicaLiteralValue
+	| ReplicaVariableValue
+	| ReplicaListValue
+	| ReplicaObjectValue;
 export type ReplicaArgumentsArtifact = Readonly<Record<string, ReplicaArgumentValue>>;
+
+export type ReplicaVariableScalarInputRef = {
+	readonly kind: 'scalar';
+	readonly scalar: string;
+	readonly codec: string;
+	readonly nullable: boolean;
+};
+
+export type ReplicaVariableEnumInputRef = {
+	readonly kind: 'enum';
+	readonly name: string;
+	readonly values: readonly string[];
+	readonly nullable: boolean;
+};
+
+export type ReplicaVariableNamedInputRef = {
+	readonly kind: 'input';
+	readonly name: string;
+	readonly nullable: boolean;
+	/** Required for filter inputs; omitted for other named inputs. */
+	readonly filterBaseDepth?: number;
+};
+
+export type ReplicaVariableListInputRef = {
+	readonly kind: 'list';
+	readonly nullable: boolean;
+	/** Most restrictive list-width cap across every use of this variable. */
+	readonly maxItems?: number;
+	readonly item: ReplicaVariableInputRef;
+};
+
+/** Compiler-owned GraphQL input coercion contract for one operation variable. */
+export type ReplicaVariableInputRef =
+	| ReplicaVariableScalarInputRef
+	| ReplicaVariableEnumInputRef
+	| ReplicaVariableNamedInputRef
+	| ReplicaVariableListInputRef;
+
+export type ReplicaVariableFilterInputField = {
+	readonly field: string;
+	readonly scalar: string;
+	readonly codec: string;
+	/** Record-column nullability; comparison operands follow the GraphQL input grammar. */
+	readonly nullable: boolean;
+	readonly operators: readonly ReplicaFilterOperator[];
+};
+
+export type ReplicaVariableFilterInputTarget =
+	| { readonly kind: 'input'; readonly name: string }
+	| { readonly kind: 'opaque' };
+
+export type ReplicaVariableFilterInputRelationship = {
+	readonly field: string;
+	readonly target: ReplicaVariableFilterInputTarget;
+};
+
+export type ReplicaVariableFilterInputDefinition = {
+	readonly kind: 'filter';
+	readonly model: string;
+	readonly fields: readonly ReplicaVariableFilterInputField[];
+	readonly relationships: readonly ReplicaVariableFilterInputRelationship[];
+};
+
+export type ReplicaVariableOrderInputField = {
+	readonly field: string;
+	readonly scalar: string;
+	readonly codec: string;
+	readonly nullable: boolean;
+};
+
+export type ReplicaVariableOrderInputDefinition = {
+	readonly kind: 'order';
+	readonly model: string;
+	readonly fields: readonly ReplicaVariableOrderInputField[];
+	readonly values: readonly string[];
+};
+
+export type ReplicaVariableInputDefinition =
+	| ReplicaVariableFilterInputDefinition
+	| ReplicaVariableOrderInputDefinition;
+
+export type ReplicaVariableCodecLimits = {
+	readonly maxDepth: number;
+	readonly maxBoolWidth: number;
+	readonly maxInList: number;
+};
+
+/** Exact variable codec emitted beside a generated operation artifact. */
+export type ReplicaVariableCodecArtifact = {
+	readonly version: 2;
+	readonly limits: ReplicaVariableCodecLimits;
+	readonly variables: Readonly<Record<string, ReplicaVariableInputRef>>;
+	readonly inputs: Readonly<Record<string, ReplicaVariableInputDefinition>>;
+};
+
+export type ReplicaFilterOperator =
+	| '_eq'
+	| '_neq'
+	| '_gt'
+	| '_gte'
+	| '_lt'
+	| '_lte'
+	| '_in'
+	| '_nin'
+	| '_is_null'
+	| '_like'
+	| '_ilike'
+	| '_contains'
+	| '_contained_in'
+	| '_has_key';
+
+export type ReplicaFilterFieldArtifact = {
+	readonly field: string;
+	readonly scalar: string;
+	readonly codec: string;
+	readonly nullable: boolean;
+	readonly operators: readonly ReplicaFilterOperator[];
+};
+
+export type ReplicaRelationshipKind =
+	| 'has_many'
+	| 'belongs_to'
+	| 'many_to_many';
+
+export type ReplicaRelationshipKeyMapping =
+	| {
+			readonly kind: 'direct';
+			readonly local: readonly string[];
+			readonly remote: readonly string[];
+	  }
+	| {
+			readonly kind: 'through';
+			readonly local: readonly string[];
+			readonly remote: readonly string[];
+			readonly table: string;
+			readonly sourceForeignKey: string;
+			readonly targetForeignKey: string;
+	  }
+	| {
+			readonly kind: 'through_opaque';
+			readonly local: readonly string[];
+			readonly remote: readonly string[];
+			readonly dependency: string;
+	  }
+	| { readonly kind: 'embedded' };
+
+/**
+ * Compiler-owned relationship facts. Task 8 consumes this descriptor to
+ * resolve predicates and maintain links without rediscovering schema metadata.
+ */
+export type ReplicaRelationshipArtifact = {
+	readonly field: string;
+	readonly targetModel: string;
+	readonly kind: ReplicaRelationshipKind;
+	readonly keyMapping: ReplicaRelationshipKeyMapping;
+	readonly maintenance: 'local' | 'revalidate';
+	readonly dependencies: readonly string[];
+};
+
+export type ReplicaFilterLiteral =
+	| { readonly kind: 'string'; readonly value: string }
+	| { readonly kind: 'i64'; readonly value: number }
+	| { readonly kind: 'f64'; readonly value: number }
+	| { readonly kind: 'bool'; readonly value: boolean }
+	| { readonly kind: 'json'; readonly value: ReplicaValue }
+	| { readonly kind: 'null' };
+
+/** Manifest-v5 row-policy operand, preserved without ambient claim access. */
+export type ReplicaFilterOperand =
+	| { readonly kind: 'lit'; readonly value: ReplicaFilterLiteral }
+	| {
+			readonly kind: 'claim';
+			readonly value: { readonly header: string };
+	  };
+
+/** Manifest-v5 tagged row-policy expression. */
+export type ReplicaFilterExpression =
+	| {
+			readonly kind: 'and' | 'or';
+			readonly value: readonly ReplicaFilterExpression[];
+	  }
+	| { readonly kind: 'not'; readonly value: ReplicaFilterExpression }
+	| {
+			readonly kind: 'cmp';
+			readonly value: {
+				readonly column: string;
+				readonly op:
+					| 'eq'
+					| 'neq'
+					| 'gt'
+					| 'gte'
+					| 'lt'
+					| 'lte'
+					| 'like'
+					| 'ilike'
+					| 'contains'
+					| 'contained_in'
+					| 'has_key';
+				readonly rhs: ReplicaFilterOperand;
+			};
+	  }
+	| {
+			readonly kind: 'in';
+			readonly value: {
+				readonly column: string;
+				readonly values: readonly ReplicaFilterOperand[];
+				readonly negated: boolean;
+			};
+	  }
+	| {
+			readonly kind: 'is_null';
+			readonly value: {
+				readonly column: string;
+				readonly is_null: boolean;
+			};
+	  }
+	| {
+			readonly kind: 'rel';
+			readonly value: {
+				readonly field: string;
+				readonly predicate: ReplicaFilterExpression;
+			};
+	  };
+
+export type ReplicaRowPolicyArtifact =
+	| { readonly kind: 'unrestricted' }
+	| { readonly kind: 'server_only' }
+	| {
+			readonly kind: 'predicate';
+			readonly expression: ReplicaFilterExpression;
+	  };
+
+export type ReplicaFilterArtifact = {
+	/** Exact literal or variable supplying the operation's `where` input. */
+	readonly input?: ReplicaArgumentValue;
+	readonly fields: readonly ReplicaFilterFieldArtifact[];
+	readonly relationships: readonly ReplicaRelationshipArtifact[];
+	readonly rowPolicy: ReplicaRowPolicyArtifact;
+};
+
+export type ReplicaOrderFieldArtifact = {
+	readonly field: string;
+	readonly scalar: string;
+	readonly codec: string;
+	readonly nullable: boolean;
+};
+
+export type ReplicaOrderTieBreakerArtifact = {
+	readonly field: string;
+	readonly scalar: string;
+	readonly codec: string;
+	/** Generated identity fields are always non-null; omission is accepted for hand-written fixtures. */
+	readonly nullable?: false;
+};
+
+export type ReplicaOrderArtifact = {
+	/** Exact literal or variable supplying the operation's `order_by` input. */
+	readonly input?: ReplicaArgumentValue;
+	readonly fields: readonly ReplicaOrderFieldArtifact[];
+	/** Server-appended primary-key fields, in their exact comparison order. */
+	readonly tieBreakers: readonly ReplicaOrderTieBreakerArtifact[];
+};
+
+export type ReplicaPaginationDisposition = 'local' | 'revalidate';
+
+type ReplicaPaginationPolicies = {
+	readonly insert: ReplicaPaginationDisposition;
+	readonly delete: ReplicaPaginationDisposition;
+	readonly reorder: ReplicaPaginationDisposition;
+	readonly stableUpdate: ReplicaPaginationDisposition;
+};
+
+export type ReplicaPaginationArtifact = ReplicaPaginationPolicies &
+	(
+		| { readonly kind: 'complete' | 'offset' }
+		| {
+				/**
+				 * Cursor locality is unavailable until the compiler emits a
+				 * versioned proof IR understood by the runtime.
+				 */
+				readonly kind: 'cursor';
+		  }
+	);
 
 export type ReplicaCoverageArtifact =
 	| { readonly kind: 'complete' }
@@ -78,7 +375,7 @@ export type ReplicaScalarSelection = {
 	readonly responseKey: string;
 	/** Canonical schema/read-model field name. */
 	readonly field: string;
-	/** Exact scalar codec and nullability emitted by compiler manifest v5. */
+	/** Exact scalar codec and nullability emitted by compiler manifest v6. */
 	readonly codec?: string;
 	readonly nullable?: boolean;
 	/** Wire-only identity/revision fields set this false. Defaults to true. */
@@ -99,16 +396,15 @@ export type ReplicaBranchSemantic =
 	| 'aggregate_fields'
 	| 'aggregate_nodes';
 
-/** Recursive compiler-owned object algebra used by manifest v5 artifacts. */
+/** Recursive compiler-owned object algebra used by manifest v6 artifacts. */
 export type ReplicaObjectSelection = {
 	readonly typename: string;
 	readonly storage: ReplicaSelectionStorage;
 	readonly members: readonly ReplicaObjectMember[];
 };
 
-export type ReplicaObjectBranch = {
+type ReplicaObjectBranchBase = {
 	readonly kind: 'branch';
-	readonly semantic: ReplicaBranchSemantic;
 	readonly responseKey: string;
 	readonly field: string;
 	readonly cardinality: 'one' | 'many';
@@ -116,9 +412,21 @@ export type ReplicaObjectBranch = {
 	readonly arguments?: ReplicaArgumentsArtifact;
 	readonly dependencies: readonly string[];
 	readonly coverage?: ReplicaCoverageArtifact;
-	readonly maintenance?: 'local' | 'revalidate';
+	readonly filter?: ReplicaFilterArtifact;
+	readonly order?: ReplicaOrderArtifact;
+	readonly pagination?: ReplicaPaginationArtifact;
 	readonly selection: ReplicaObjectSelection;
 };
+
+export type ReplicaObjectBranch =
+	| (ReplicaObjectBranchBase & {
+			readonly semantic: 'relationship';
+			readonly relationship: ReplicaRelationshipArtifact;
+	  })
+	| (ReplicaObjectBranchBase & {
+			readonly semantic: Exclude<ReplicaBranchSemantic, 'relationship'>;
+			readonly relationship?: never;
+	  });
 
 export type ReplicaObjectMember = ReplicaScalarSelection | ReplicaObjectBranch;
 
@@ -140,6 +448,10 @@ export type ReplicaRelationshipSelection = {
 	readonly arguments?: ReplicaArgumentsArtifact;
 	readonly dependencies: readonly string[];
 	readonly coverage?: ReplicaCoverageArtifact;
+	readonly filter?: ReplicaFilterArtifact;
+	readonly order?: ReplicaOrderArtifact;
+	readonly pagination?: ReplicaPaginationArtifact;
+	readonly relationship: ReplicaRelationshipArtifact;
 	readonly selection: ReplicaEntitySelection;
 	readonly expose?: boolean;
 };
@@ -152,6 +464,9 @@ export type ReplicaRootSelection = {
 	readonly arguments?: ReplicaArgumentsArtifact;
 	readonly dependencies: readonly string[];
 	readonly coverage?: ReplicaCoverageArtifact;
+	readonly filter?: ReplicaFilterArtifact;
+	readonly order?: ReplicaOrderArtifact;
+	readonly pagination?: ReplicaPaginationArtifact;
 	readonly selection: ReplicaEntitySelection | ReplicaObjectSelection;
 	readonly expose?: boolean;
 };
@@ -162,22 +477,13 @@ export type ReplicaRootSelection = {
  * It deliberately does not mirror the Rust client-manifest JSON. The compiler
  * owns lowering the manifest and GraphQL AST into this executable descriptor.
  */
-export type ReplicaOperationArtifact<
+type ReplicaOperationArtifactBase<
 	TData = Record<string, unknown>,
 	TVariables extends GraphqlVariables = GraphqlVariables
 > = {
 	readonly id: string;
 	readonly document: string;
 	readonly roots: readonly ReplicaRootSelection[];
-	/**
-	 * Exact generated protocol binding. Manifest-v1 fixture artifacts may omit
-	 * it and continue through the explicitly noncausal compatibility path.
-	 */
-	readonly protocol?: {
-		readonly version: 2;
-		readonly schemaHash: string;
-		readonly operation: string;
-	};
 	readonly live?: {
 		readonly id: string;
 		readonly document: string;
@@ -186,6 +492,39 @@ export type ReplicaOperationArtifact<
 	readonly __result?: TData;
 	readonly __variables?: TVariables;
 };
+
+export type ReplicaOperationProtocol = {
+	readonly version: 2;
+	readonly schemaHash: string;
+	readonly operation: string;
+};
+
+/** Compiler-owned causal artifact. Protocol and variable identity are inseparable. */
+export type ReplicaProtocolOperationArtifact<
+	TData = Record<string, unknown>,
+	TVariables extends GraphqlVariables = GraphqlVariables
+> = ReplicaOperationArtifactBase<TData, TVariables> & {
+	readonly protocol: ReplicaOperationProtocol;
+	/** Exact compiler-owned GraphQL variable coercion and identity contract. */
+	readonly variableCodec: ReplicaVariableCodecArtifact;
+};
+
+/** Explicit noncausal compatibility shape for hand-written manifest-v1 fixtures. */
+export type ReplicaLegacyOperationArtifact<
+	TData = Record<string, unknown>,
+	TVariables extends GraphqlVariables = GraphqlVariables
+> = ReplicaOperationArtifactBase<TData, TVariables> & {
+	readonly protocol?: undefined;
+	/** Legacy artifacts may opt into compiler-equivalent canonicalization. */
+	readonly variableCodec?: ReplicaVariableCodecArtifact;
+};
+
+export type ReplicaOperationArtifact<
+	TData = Record<string, unknown>,
+	TVariables extends GraphqlVariables = GraphqlVariables
+> =
+	| ReplicaProtocolOperationArtifact<TData, TVariables>
+	| ReplicaLegacyOperationArtifact<TData, TVariables>;
 
 export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'projected';
 

@@ -27,6 +27,7 @@ fn scalar_codecs() -> JsonValue {
 }
 
 fn model(id: &str, typename: &str) -> JsonValue {
+    let filter_input_type = format!("{typename}_bool_exp");
     json!({
         "id": id,
         "typename": typename,
@@ -62,6 +63,13 @@ fn model(id: &str, typename: &str) -> JsonValue {
                 "live": false
             }
         ],
+        "filter_input": {
+            "type_name": filter_input_type,
+            "fields": filter_semantics()["fields"].clone(),
+            "relationships": [
+                {"field": "owner", "target_type": filter_input_type}
+            ]
+        },
         "row_policy": {"kind": "unrestricted"},
         "record_revisions": true,
         "tombstones": true
@@ -108,7 +116,7 @@ fn filter_semantics() -> JsonValue {
         "fields": [
             {"name": "completed", "operators": ["_eq"]},
             {"name": "id", "operators": ["_eq"]},
-            {"name": "priority", "operators": ["_eq"]},
+            {"name": "priority", "operators": ["_eq", "_in", "_nin"]},
             {"name": "tenantId", "operators": ["_eq"]},
             {"name": "title", "operators": ["_eq"]}
         ],
@@ -254,9 +262,9 @@ fn aggregate_root() -> JsonValue {
     })
 }
 
-fn manifest() -> JsonValue {
+pub(super) fn manifest() -> JsonValue {
     let mut value = json!({
-        "manifest_version": 5,
+        "manifest_version": 6,
         "protocol_version": 2,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
@@ -265,6 +273,8 @@ fn manifest() -> JsonValue {
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,
+            "max_bool_width": 256,
+            "max_in_list": 1000,
             "complexity": {
                 "version": 1,
                 "scalar": 1,
@@ -299,6 +309,90 @@ fn manifest() -> JsonValue {
         "protocol_operations": {"version": 1},
         "projectors": []
     });
+    refresh_schema_fingerprint(&mut value);
+    value
+}
+
+fn custom_scalar_manifest() -> JsonValue {
+    let mut value = manifest();
+    value["models"][0]["fields"]
+        .as_array_mut()
+        .expect("model fields")
+        .extend([
+            json!({"name": "blob", "scalar": "Bytea", "codec": "base64", "nullable": true}),
+            json!({"name": "payload", "scalar": "JSON", "codec": "json", "nullable": true}),
+            json!({"name": "sequence", "scalar": "BigInt", "codec": "json_number_precision_limited", "nullable": false}),
+            json!({"name": "updatedAt", "scalar": "Timestamptz", "codec": "string_unvalidated_timestamp", "nullable": true}),
+        ]);
+    value["models"][0]["filter_input"]["fields"]
+        .as_array_mut()
+        .expect("model filter input fields")
+        .extend([
+            json!({"name": "blob", "operators": ["_eq"]}),
+            json!({"name": "payload", "operators": ["_eq"]}),
+            json!({"name": "sequence", "operators": ["_eq", "_in"]}),
+            json!({"name": "updatedAt", "operators": ["_eq"]}),
+        ]);
+    for root in value["roots"].as_array_mut().expect("manifest roots") {
+        if let Some(fields) = root
+            .get_mut("filter")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|filter| filter.get_mut("fields"))
+            .and_then(JsonValue::as_array_mut)
+        {
+            fields.extend([
+                json!({"name": "blob", "operators": ["_eq"]}),
+                json!({"name": "payload", "operators": ["_eq"]}),
+                json!({"name": "sequence", "operators": ["_eq", "_in"]}),
+                json!({"name": "updatedAt", "operators": ["_eq"]}),
+            ]);
+        }
+        if let Some(fields) = root
+            .get_mut("order")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|order| order.get_mut("fields"))
+            .and_then(JsonValue::as_array_mut)
+        {
+            fields.extend(["blob", "payload", "sequence", "updatedAt"].map(JsonValue::from));
+        }
+    }
+    refresh_schema_fingerprint(&mut value);
+    value
+}
+
+fn literal_scalar_manifest() -> JsonValue {
+    let mut value = custom_scalar_manifest();
+    value["models"][0]["fields"]
+        .as_array_mut()
+        .expect("model fields")
+        .push(json!({
+            "name": "ratio",
+            "scalar": "Float",
+            "codec": "float64",
+            "nullable": false
+        }));
+    value["models"][0]["filter_input"]["fields"]
+        .as_array_mut()
+        .expect("model filter input fields")
+        .push(json!({"name": "ratio", "operators": ["_eq"]}));
+    for root in value["roots"].as_array_mut().expect("manifest roots") {
+        if let Some(fields) = root
+            .get_mut("filter")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|filter| filter.get_mut("fields"))
+            .and_then(JsonValue::as_array_mut)
+        {
+            fields.push(json!({"name": "ratio", "operators": ["_eq"]}));
+        }
+        if let Some(fields) = root
+            .get_mut("order")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|order| order.get_mut("fields"))
+            .and_then(JsonValue::as_array_mut)
+        {
+            fields.push(json!("ratio"));
+        }
+    }
     refresh_schema_fingerprint(&mut value);
     value
 }
@@ -424,6 +518,45 @@ fn projected_manifest() -> JsonValue {
     value
 }
 
+fn generated_command_types_manifest() -> JsonValue {
+    let import = "mutation Client_importTodos($commandId: ID!, $input: JSON!) { importTodos(commandId: $commandId, input: $input) }";
+    let ping = "mutation Client_pingTodos($commandId: ID!) { pingTodos(commandId: $commandId) }";
+    let mut value = projected_manifest();
+    value["commands"][0]["name"] = json!("todo.project");
+    value["commands"].as_array_mut().expect("commands").extend([
+        json!({
+            "version": 1,
+            "name": "todo.import",
+            "mutation_field": "importTodos",
+            "grants": ["user"],
+            "input": {"kind": "json", "codec": "json"},
+            "output": {"kind": "json", "codec": "json"},
+            "operation": import,
+            "operation_hash": fingerprint(import),
+            "extensions": {
+                "version": 2,
+                "consistency": {"version": 1, "kind": "accepted"}
+            }
+        }),
+        json!({
+            "version": 1,
+            "name": "todo.ping",
+            "mutation_field": "pingTodos",
+            "grants": ["user"],
+            "input": {"kind": "none"},
+            "output": {"kind": "json", "codec": "json"},
+            "operation": ping,
+            "operation_hash": fingerprint(ping),
+            "extensions": {
+                "version": 2,
+                "consistency": {"version": 1, "kind": "accepted"}
+            }
+        }),
+    ]);
+    refresh_schema_fingerprint(&mut value);
+    value
+}
+
 fn input(source: &str) -> ClientCompileInput {
     ClientCompileInput::new(
         manifest(),
@@ -446,6 +579,42 @@ fn input_with_manifest(manifest: JsonValue, source: &str) -> ClientCompileInput 
     )
 }
 
+const CUSTOM_SCALAR_QUERY: &str = r#"
+  query ScalarInputs(
+    $where: todo_bool_exp!
+    $order: [todo_order_by!]
+    $id: ID!
+    $big: BigInt!
+    $bytes: Bytea
+    $json: JSON
+    $timestamp: Timestamptz
+  ) {
+    todos(
+      where: {
+        _and: [
+          $where,
+          {
+            id: {_eq: $id},
+            sequence: {_eq: $big},
+            blob: {_eq: $bytes},
+            payload: {_eq: $json},
+            updatedAt: {_eq: $timestamp}
+          }
+        ]
+      },
+      order_by: $order
+    ) { id }
+  }
+"#;
+
+fn custom_scalar_project() -> super::GeneratedClientProject {
+    compile_client(input_with_manifest(
+        custom_scalar_manifest(),
+        CUSTOM_SCALAR_QUERY,
+    ))
+    .expect("compile recursive custom-scalar inputs")
+}
+
 fn file<'a>(project: &'a super::GeneratedClientProject, path: &str) -> &'a str {
     project
         .files
@@ -454,6 +623,40 @@ fn file<'a>(project: &'a super::GeneratedClientProject, path: &str) -> &'a str {
         .unwrap_or_else(|| panic!("missing generated file {path}"))
         .contents
         .as_str()
+}
+
+fn operation_artifact(project: &super::GeneratedClientProject) -> JsonValue {
+    let operation = &project.operations[0];
+    let generated = file(project, &operation.module_path);
+    let start = generated
+        .rfind(" = {")
+        .expect("generated operation artifact")
+        + 3;
+    let json = generated[start..]
+        .strip_suffix(";\n")
+        .expect("generated operation artifact terminator");
+    serde_json::from_str(json).expect("generated operation artifact JSON")
+}
+
+fn object_member<'a>(selection: &'a JsonValue, field: &str) -> &'a JsonValue {
+    selection["members"]
+        .as_array()
+        .expect("selection members")
+        .iter()
+        .find(|member| member["field"] == field)
+        .unwrap_or_else(|| panic!("missing selection member {field}"))
+}
+
+fn selected_relationship_artifact(relationship: JsonValue) -> JsonValue {
+    let mut value = manifest();
+    value["models"][0]["relationships"][0] = relationship;
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(input_with_manifest(
+        value,
+        "query RelationshipPlan { todos { owner { id } } }",
+    ))
+    .expect("compile relationship plan");
+    operation_artifact(&project)
 }
 
 #[test]
@@ -586,6 +789,197 @@ fn compiles_recursive_normalized_relationships_and_nested_fragments() {
 }
 
 #[test]
+fn emits_exact_relationship_plans_and_injects_direct_through_and_opaque_keys() {
+    let mut belongs_to = model("Todo", "todo")["relationships"][0].clone();
+    belongs_to["key_mapping"] = json!({
+        "kind": "direct",
+        "local": ["title"],
+        "remote": ["title"]
+    });
+    belongs_to["maintenance"] = json!("local");
+
+    let mut has_many = normalized_list_relationship();
+    has_many["key_mapping"] = json!({
+        "kind": "direct",
+        "local": ["title"],
+        "remote": ["title"]
+    });
+
+    let mut many_to_many = normalized_list_relationship();
+    many_to_many["kind"] = json!("many_to_many");
+    many_to_many["key_mapping"] = json!({
+        "kind": "through",
+        "local": ["title"],
+        "remote": ["title"],
+        "table": "todo_members",
+        "source_foreign_key": "todo_id",
+        "target_foreign_key": "member_id"
+    });
+    many_to_many["dependencies"] = json!(["todo_members", "todo_rows"]);
+
+    let mut opaque = normalized_list_relationship();
+    opaque["kind"] = json!("many_to_many");
+    opaque["key_mapping"] = json!({
+        "kind": "through_opaque",
+        "local": ["title"],
+        "remote": ["title"],
+        "dependency": "todo_members"
+    });
+    opaque["maintenance"] = json!("revalidate");
+    opaque["dependencies"] = json!(["todo_members", "todo_rows"]);
+
+    let cases = [
+        (
+            "belongs_to direct",
+            belongs_to,
+            json!({
+                "field": "owner",
+                "targetModel": "Todo",
+                "kind": "belongs_to",
+                "keyMapping": {
+                    "kind": "direct",
+                    "local": ["title"],
+                    "remote": ["title"]
+                },
+                "maintenance": "local",
+                "dependencies": ["todo_rows"]
+            }),
+            "one",
+        ),
+        (
+            "has_many direct",
+            has_many,
+            json!({
+                "field": "owner",
+                "targetModel": "Todo",
+                "kind": "has_many",
+                "keyMapping": {
+                    "kind": "direct",
+                    "local": ["title"],
+                    "remote": ["title"]
+                },
+                "maintenance": "local",
+                "dependencies": ["todo_rows"]
+            }),
+            "many",
+        ),
+        (
+            "many_to_many through",
+            many_to_many,
+            json!({
+                "field": "owner",
+                "targetModel": "Todo",
+                "kind": "many_to_many",
+                "keyMapping": {
+                    "kind": "through",
+                    "local": ["title"],
+                    "remote": ["title"],
+                    "table": "todo_members",
+                    "sourceForeignKey": "todo_id",
+                    "targetForeignKey": "member_id"
+                },
+                "maintenance": "local",
+                "dependencies": ["todo_members", "todo_rows"]
+            }),
+            "many",
+        ),
+        (
+            "many_to_many opaque",
+            opaque,
+            json!({
+                "field": "owner",
+                "targetModel": "Todo",
+                "kind": "many_to_many",
+                "keyMapping": {
+                    "kind": "through_opaque",
+                    "local": ["title"],
+                    "remote": ["title"],
+                    "dependency": "todo_members"
+                },
+                "maintenance": "revalidate",
+                "dependencies": ["todo_members", "todo_rows"]
+            }),
+            "many",
+        ),
+    ];
+
+    for (label, relationship, expected, cardinality) in cases {
+        let artifact = selected_relationship_artifact(relationship);
+        let root = &artifact["roots"][0];
+        let branch = object_member(&root["selection"], "owner");
+        assert_eq!(branch["relationship"], expected, "{label}");
+        assert_eq!(branch["cardinality"], cardinality, "{label}");
+        assert_eq!(
+            root["filter"]["relationships"][0], expected,
+            "{label} filter catalog"
+        );
+
+        let source_key = object_member(&root["selection"], "title");
+        assert_eq!(source_key["expose"], false, "{label} source key");
+        let target_key = object_member(&branch["selection"], "title");
+        assert_eq!(target_key["expose"], false, "{label} target key");
+    }
+}
+
+#[test]
+fn embedded_relationship_plans_remain_revalidate_without_invented_keys() {
+    let artifact =
+        selected_relationship_artifact(model("Todo", "todo")["relationships"][0].clone());
+    let root = &artifact["roots"][0];
+    let branch = object_member(&root["selection"], "owner");
+    let expected = json!({
+        "field": "owner",
+        "targetModel": "Todo",
+        "kind": "belongs_to",
+        "keyMapping": {"kind": "embedded"},
+        "maintenance": "revalidate",
+        "dependencies": ["todo_rows"]
+    });
+    assert_eq!(branch["relationship"], expected);
+    assert_eq!(root["filter"]["relationships"][0], expected);
+    assert!(
+        root["selection"]["members"]
+            .as_array()
+            .expect("root members")
+            .iter()
+            .all(|member| member["field"] != "title"),
+        "embedded mappings must not invent unavailable relationship keys"
+    );
+}
+
+#[test]
+fn relationship_filter_catalog_injects_its_referenced_source_keys() {
+    let mut value = manifest();
+    let mut relationship = normalized_list_relationship();
+    relationship["key_mapping"] = json!({
+        "kind": "direct",
+        "local": ["title"],
+        "remote": ["title"]
+    });
+    value["models"][0]["relationships"][0] = relationship;
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(input_with_manifest(
+        value,
+        r#"query RelationshipFilter {
+            todos(where: {owner: {title: {_eq: "owned"}}}) { id }
+        }"#,
+    ))
+    .expect("compile relationship predicate");
+    let artifact = operation_artifact(&project);
+    let root = &artifact["roots"][0];
+    assert_eq!(
+        root["filter"]["relationships"][0]["keyMapping"],
+        json!({
+            "kind": "direct",
+            "local": ["title"],
+            "remote": ["title"]
+        })
+    );
+    let source_key = object_member(&root["selection"], "title");
+    assert_eq!(source_key["expose"], false);
+}
+
+#[test]
 fn compiles_nested_list_arguments_coverage_and_variable_usage() {
     let mut value = manifest();
     value["models"][0]["relationships"][0] = normalized_list_relationship();
@@ -628,6 +1022,13 @@ fn compiles_embedded_objects_without_inventing_wire_identity() {
             "nullable": true
         }],
         "relationships": [],
+        "filter_input": {
+            "type_name": "todo_details_bool_exp",
+            "fields": [
+                {"name": "note", "operators": ["_eq"]}
+            ],
+            "relationships": []
+        },
         "row_policy": {"kind": "unrestricted"},
         "record_revisions": false,
         "tombstones": false
@@ -647,6 +1048,13 @@ fn compiles_embedded_objects_without_inventing_wire_identity() {
             "maintenance": "revalidate",
             "dependencies": ["todo_details_rows", "todo_rows"],
             "live": false
+        }));
+    value["models"][0]["filter_input"]["relationships"]
+        .as_array_mut()
+        .expect("filter input relationships")
+        .push(json!({
+            "field": "details",
+            "target_type": "todo_details_bool_exp"
         }));
     value["roots"][0]["filter"]["relationships"] = json!(["details", "owner"]);
     value["roots"][1]["filter"]["relationships"] = json!(["details", "owner"]);
@@ -691,7 +1099,7 @@ fn compiles_aggregate_count_and_nodes_with_exact_typenames_and_window() {
     .expect("compile aggregate");
     let operation = &project.operations[0];
     let generated = file(&project, &operation.module_path);
-    let canonical = "query AggregateTodos($where: todo_bool_exp) {\n  stats: todos_aggregate(where: $where) {\n    summary: aggregate {\n      total: count\n    }\n    items: nodes {\n      headline: title\n      _distributed_tenantId: tenantId\n      _distributed_id: id\n      _distributed_typename: __typename\n    }\n  }\n}\n";
+    let canonical = "query AggregateTodos($where: todo_bool_exp) {\n  stats: todos_aggregate(where: $where) {\n    summary: aggregate {\n      total: count\n    }\n    items: nodes {\n      headline: title\n      _distributed_tenantId: tenantId\n      _distributed_id: id\n      _distributed_typename: __typename\n      _distributed_completed: completed\n      _distributed_priority: priority\n    }\n  }\n}\n";
 
     assert!(
         generated.contains(&serde_json::to_string(canonical).unwrap()),
@@ -796,6 +1204,546 @@ fn preserves_enum_wire_syntax_and_json_runtime_value() {
 }
 
 #[test]
+fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies() {
+    let project = compile_client(input(
+        r#"
+          query Planned($where: todo_bool_exp, $order: [todo_order_by!]) {
+            todos(where: $where, order_by: $order, limit: 10) { id }
+          }
+        "#,
+    ))
+    .expect("compile executable index plan");
+    let generated = file(&project, &project.operations[0].module_path);
+
+    assert!(generated.contains("\"filter\": {"));
+    assert!(generated.contains("\"input\": {"));
+    assert!(generated.contains("\"name\": \"where\""));
+    assert!(generated.contains("\"rowPolicy\": {"));
+    assert!(generated.contains("\"kind\": \"unrestricted\""));
+    assert!(generated.contains("\"field\": \"priority\""));
+    assert!(generated.contains("\"codec\": \"int32\""));
+    assert!(generated.contains("\"order\": {"));
+    assert!(generated.contains("\"tieBreakers\": ["));
+    assert!(generated.contains("\"pagination\": {"));
+    assert!(generated.contains("\"insert\": \"revalidate\""));
+    assert!(generated.contains("\"delete\": \"revalidate\""));
+    assert!(generated.contains("\"reorder\": \"revalidate\""));
+    assert!(generated.contains("\"stableUpdate\": \"local\""));
+    assert!(generated.contains("type Operation_Planned_Input_todo_bool_exp = {"));
+    assert!(generated.contains(
+        "readonly \"_and\"?: Operation_Planned_Input_todo_bool_exp | readonly Operation_Planned_Input_todo_bool_exp[] | null;"
+    ));
+    assert!(generated.contains("readonly \"_in\"?: number | readonly number[];"));
+    assert!(generated.contains("type Operation_Planned_Input_todo_order_by_Direction ="));
+    assert!(generated.contains("readonly \"order\"?: Operation_Planned_Input_todo_order_by | readonly Operation_Planned_Input_todo_order_by[] | null;"));
+    assert!(generated.contains("\"variableCodec\": {"));
+    assert!(generated.contains("\"version\": 2"));
+    assert!(generated.contains("\"maxBoolWidth\": 256"));
+    assert!(generated.contains("\"maxInList\": 1000"));
+    let provenance: JsonValue =
+        serde_json::from_str(file(&project, "manifest.json")).expect("compiler manifest JSON");
+    assert_eq!(provenance["distributed_manifest_version"], 6);
+    assert!(generated.contains(
+        "\"target\": {\n              \"kind\": \"input\",\n              \"name\": \"todo_bool_exp\""
+    ));
+    assert!(!generated.contains("Readonly<Record<string, unknown>>"));
+
+    // A whole-object filter/order variable may reference every authorized
+    // field, so the compiler must inject their complete conservative envelope.
+    assert!(generated.contains("_distributed_completed: completed"));
+    assert!(generated.contains("_distributed_priority: priority"));
+    assert!(generated.contains("_distributed_tenantId: tenantId"));
+    assert!(generated.contains("_distributed_title: title"));
+    let public_data = generated
+        .split("export type Operation_Planned_Data =")
+        .nth(1)
+        .expect("generated public data type")
+        .split("/** Exact canonical query bytes")
+        .next()
+        .expect("public data type boundary");
+    assert!(!public_data.contains("readonly \"priority\""));
+    assert!(!public_data.contains("readonly \"title\""));
+}
+
+#[test]
+fn generated_variable_codec_types_recursive_inputs_and_custom_scalars() {
+    let project = custom_scalar_project();
+    let generated = file(&project, &project.operations[0].module_path);
+
+    assert_eq!(
+        generated,
+        include_str!("../../tests/fixtures/generated-operation.ts"),
+        "the checked-in TypeScript consumer fixture must remain byte-exact"
+    );
+    assert!(generated.contains("readonly \"id\": string | number;"));
+    assert!(generated.contains("readonly \"big\": number;"));
+    assert!(generated.contains("readonly \"bytes\"?: string | null;"));
+    assert!(generated.contains("readonly \"json\"?: ReplicaValue | null;"));
+    assert!(generated.contains("readonly \"timestamp\"?: string | null;"));
+    assert!(generated.contains("readonly \"payload\"?: {"));
+    assert!(generated.contains("readonly \"_eq\"?: ReplicaValue | null;"));
+    assert!(generated.contains("readonly \"_in\"?: number | readonly number[];"));
+    assert!(!generated.contains("Readonly<Record<string, unknown>>"));
+
+    let artifact = operation_artifact(&project);
+    assert_eq!(artifact["variableCodec"]["version"], 2);
+    assert_eq!(
+        artifact["variableCodec"]["limits"],
+        json!({
+            "maxDepth": 8,
+            "maxBoolWidth": 256,
+            "maxInList": 1000
+        })
+    );
+    assert_eq!(
+        artifact["variableCodec"]["variables"]["where"]["filterBaseDepth"],
+        1
+    );
+    assert_eq!(
+        artifact["variableCodec"]["variables"]["id"],
+        json!({
+            "kind": "scalar",
+            "scalar": "ID",
+            "codec": "string",
+            "nullable": false
+        })
+    );
+    assert_eq!(
+        artifact["variableCodec"]["variables"]["order"]["kind"],
+        "list"
+    );
+    assert_eq!(
+        artifact["variableCodec"]["variables"]["order"]["item"]["name"],
+        "todo_order_by"
+    );
+    let filter_fields = artifact["variableCodec"]["inputs"]["todo_bool_exp"]["fields"]
+        .as_array()
+        .expect("compiled filter input fields");
+    let sequence = filter_fields
+        .iter()
+        .find(|field| field["field"] == "sequence")
+        .expect("BigInt filter field");
+    assert_eq!(sequence["scalar"], "BigInt");
+    assert_eq!(sequence["codec"], "json_number_precision_limited");
+    assert_eq!(
+        artifact["variableCodec"]["inputs"]["todo_bool_exp"]["relationships"][0]["target"]["kind"],
+        "input"
+    );
+}
+
+#[test]
+fn model_filter_contract_resolves_belongs_to_and_has_many_cycles() {
+    let mut recursive = manifest();
+    let mut children = normalized_list_relationship();
+    children["name"] = json!("children");
+    children["filter"]["relationships"] = json!(["children", "owner"]);
+    recursive["models"][0]["relationships"]
+        .as_array_mut()
+        .expect("relationships")
+        .push(children);
+    recursive["models"][0]["filter_input"]["relationships"]
+        .as_array_mut()
+        .expect("filter input relationships")
+        .push(json!({
+            "field": "children",
+            "target_type": "todo_bool_exp"
+        }));
+    for root in recursive["roots"].as_array_mut().expect("roots") {
+        if let Some(relationships) = root
+            .get_mut("filter")
+            .and_then(JsonValue::as_object_mut)
+            .and_then(|filter| filter.get_mut("relationships"))
+        {
+            *relationships = json!(["children", "owner"]);
+        }
+    }
+    refresh_schema_fingerprint(&mut recursive);
+    let project = compile_client(input_with_manifest(
+        recursive,
+        "query RecursiveWhere($where: todo_bool_exp) { todos(where: $where) { id } }",
+    ))
+    .expect("compile explicit self-recursive filter contract");
+    let generated = file(&project, &project.operations[0].module_path);
+
+    assert_eq!(
+        generated
+            .matches("type Operation_RecursiveWhere_Input_todo_bool_exp = {")
+            .count(),
+        1,
+        "recursive aliases must be declared once"
+    );
+    assert!(generated
+        .contains("readonly \"children\"?: Operation_RecursiveWhere_Input_todo_bool_exp | null;"));
+    assert!(generated
+        .contains("readonly \"owner\"?: Operation_RecursiveWhere_Input_todo_bool_exp | null;"));
+    let artifact = operation_artifact(&project);
+    let relationships = artifact["variableCodec"]["inputs"]["todo_bool_exp"]["relationships"]
+        .as_array()
+        .expect("compiled filter input relationships");
+    assert_eq!(relationships.len(), 2);
+    for relationship in relationships {
+        assert_eq!(
+            relationship["target"],
+            json!({"kind": "input", "name": "todo_bool_exp"})
+        );
+    }
+}
+
+#[test]
+fn literal_index_plans_inject_only_referenced_fields_and_validate_shape() {
+    let project = compile_client(input(
+        "query LiteralPlan { todos(where: {priority: {_eq: 3}}, order_by: [{priority: desc}]) { id } }",
+    ))
+    .expect("compile literal index plan");
+    let generated = file(&project, &project.operations[0].module_path);
+    assert!(generated.contains("_distributed_priority: priority"));
+    assert!(!generated.contains("_distributed_completed: completed"));
+    assert!(!generated.contains("_distributed_title: title"));
+    assert!(generated.contains("\"kind\": \"literal\""));
+    assert!(generated.contains("\"priority\": {"));
+    assert!(generated.contains("\"_eq\": 3"));
+
+    let error = compile_client(input(
+        "query BadFilterField { todos(where: {missing: {_eq: 3}}) { id } }",
+    ))
+    .expect_err("unknown filter field must fail at build time");
+    assert_eq!(error.code, "client.filter.field_denied_or_unknown");
+
+    let error = compile_client(input(
+        "query BadFilterOperator { todos(where: {priority: {_gt: 3}}) { id } }",
+    ))
+    .expect_err("unselected filter operator must fail at build time");
+    assert_eq!(error.code, "client.filter.operator_denied_or_unknown");
+
+    let error = compile_client(input(
+        "query BadFilterLiteral { todos(where: {priority: {_eq: \"bad\"}}) { id } }",
+    ))
+    .expect_err("filter literals must match the selected scalar codec");
+    assert_eq!(error.code, "client.filter.literal_type");
+
+    let error = compile_client(input(
+        "query BadFilterList { todos(where: {priority: {_in: [1, \"bad\"]}}) { id } }",
+    ))
+    .expect_err("every filter list item must match the selected scalar codec");
+    assert_eq!(error.code, "client.filter.literal_type");
+
+    let error = compile_client(input(
+        "query AmbiguousOrder { todos(order_by: [{priority: asc, id: desc}]) { id } }",
+    ))
+    .expect_err("ambiguous order priority must fail at build time");
+    assert_eq!(error.code, "client.order.ambiguous");
+}
+
+#[test]
+fn scalar_literals_use_the_same_canonical_domains_as_variables() {
+    let project = compile_client(input_with_manifest(
+        literal_scalar_manifest(),
+        r#"
+          query LiteralScalarCodecs {
+            todos(
+              where: {
+                id: {_eq: -0}
+                priority: {_eq: -0}
+                blob: {_eq: "AQI="}
+                payload: {_eq: {z: -0, a: 1, safe: 9007199254740991, decimal: 0.100000000000000005}}
+                ratio: {_eq: -0}
+                sequence: {_eq: -0}
+              }
+            ) { id }
+          }
+        "#,
+    ))
+    .expect("compile canonical scalar literals");
+    let operation = operation_artifact(&project);
+    let value = &operation["roots"][0]["filter"]["input"]["value"];
+    assert_eq!(value["id"]["_eq"], "0");
+    assert_eq!(value["priority"]["_eq"], 0);
+    assert_eq!(value["blob"]["_eq"], "AQI=");
+    assert_eq!(
+        value["payload"]["_eq"],
+        json!({"a": 1, "decimal": 0.1, "safe": 9_007_199_254_740_991_u64, "z": 0})
+    );
+    assert_eq!(value["ratio"]["_eq"], 0);
+    assert_eq!(value["sequence"]["_eq"], 0);
+    let document = operation["document"].as_str().expect("operation document");
+    assert!(document.contains("id: {_eq: \"0\"}"));
+    assert!(document.contains("decimal: 0.1"));
+    assert!(!document.contains("0.100000000000000005"));
+
+    let rounded_float = compile_client(input_with_manifest(
+        literal_scalar_manifest(),
+        "query RoundedFloat { todos(where: {ratio: {_eq: 9007199254740993}}) { id } }",
+    ))
+    .expect("Float literals canonicalize through the JavaScript/server f64 domain");
+    let rounded_float = operation_artifact(&rounded_float);
+    assert_eq!(
+        rounded_float["roots"][0]["filter"]["input"]["value"]["ratio"]["_eq"].as_f64(),
+        Some(9_007_199_254_740_992.0)
+    );
+    let rounded_document = rounded_float["document"]
+        .as_str()
+        .expect("rounded document");
+    assert!(!rounded_document.contains("9007199254740993"));
+
+    let mixed_json = compile_client(input_with_manifest(
+        custom_scalar_manifest(),
+        "query MixedJson($id: ID!) { todos(where: {id: {_eq: $id}, payload: {_eq: {a: 1}}}) { id } }",
+    ))
+    .expect("a JSON scalar literal remains a scalar beside an unrelated variable");
+    let mixed_json = operation_artifact(&mixed_json);
+    assert_eq!(
+        mixed_json["roots"][0]["filter"]["input"]["fields"]["payload"]["value"]["_eq"]["a"],
+        1
+    );
+
+    let by_pk = compile_client(input(
+        "query LiteralIds { todo(id: -0, tenantId: 1) { id } }",
+    ))
+    .expect("GraphQL integer ID literals coerce to canonical strings");
+    let by_pk = operation_artifact(&by_pk);
+    assert_eq!(by_pk["roots"][0]["arguments"]["id"]["value"], "0");
+    assert_eq!(by_pk["roots"][0]["arguments"]["tenantId"]["value"], "1");
+
+    for (source, label) in [
+        (
+            "query UnsafeId { todos(where: {id: {_eq: 9007199254740992}}) { id } }",
+            "unsafe integer ID",
+        ),
+        (
+            "query WideInt { todos(where: {priority: {_eq: 2147483648}}) { id } }",
+            "out-of-range Int",
+        ),
+        (
+            "query FractionalBigInt { todos(where: {sequence: {_eq: 1.5}}) { id } }",
+            "fractional BigInt",
+        ),
+        (
+            "query UnsafeBigInt { todos(where: {sequence: {_eq: 9007199254740992}}) { id } }",
+            "unsafe BigInt",
+        ),
+        (
+            "query NonCanonicalBytea { todos(where: {blob: {_eq: \"AB==\"}}) { id } }",
+            "non-canonical Bytea",
+        ),
+        (
+            "query UnsafeJsonInteger { todos(where: {payload: {_eq: {n: 9007199254740993}}}) { id } }",
+            "JSON integer that cannot round-trip through JavaScript",
+        ),
+        (
+            "query UnsafeJsonStringifyInteger { todos(where: {payload: {_eq: {n: 36028797018963968}}}) { id } }",
+            "JSON integer whose JavaScript decimal serialization changes",
+        ),
+    ] {
+        let error = match compile_client(input_with_manifest(literal_scalar_manifest(), source)) {
+            Ok(_) => panic!("{label} must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "client.filter.literal_type", "{label}");
+    }
+
+    let error = compile_client(input("query WideLimit { todos(limit: 2147483648) { id } }"))
+        .expect_err("root Int literals use the same signed 32-bit domain as variables");
+    assert_eq!(error.code, "client.argument.literal_type");
+}
+
+#[test]
+fn canonicalizes_graphql_singletons_at_every_filter_and_order_list_position() {
+    let project = compile_client(input(
+        r#"
+          query SingletonLists {
+            todos(
+              where: {
+                _and: {priority: {_in: 3}}
+                _or: {completed: {_eq: true}}
+              }
+              order_by: {priority: desc}
+            ) { id }
+          }
+        "#,
+    ))
+    .expect("GraphQL singleton input coercion must compile");
+    let generated = file(&project, &project.operations[0].module_path);
+    assert!(generated.contains(
+        "todos(order_by: [{priority: desc}], where: {_and: [{priority: {_in: [3]}}], _or: [{completed: {_eq: true}}]})"
+    ));
+
+    let artifact = operation_artifact(&project);
+    let root = &artifact["roots"][0];
+    let expected_filter = json!({
+        "kind": "literal",
+        "value": {
+            "_and": [{"priority": {"_in": [3]}}],
+            "_or": [{"completed": {"_eq": true}}]
+        }
+    });
+    let expected_order = json!({
+        "kind": "literal",
+        "value": [{"priority": "desc"}]
+    });
+    assert_eq!(root["arguments"]["where"], expected_filter);
+    assert_eq!(root["filter"]["input"], expected_filter);
+    assert_eq!(root["arguments"]["order_by"], expected_order);
+    assert_eq!(root["order"]["input"], expected_order);
+}
+
+#[test]
+fn enforces_filter_depth_and_width_limits_after_graphql_singleton_coercion() {
+    let mut depth_manifest = manifest();
+    depth_manifest["execution"]["max_depth"] = json!(2);
+    refresh_schema_fingerprint(&mut depth_manifest);
+    compile_client(input_with_manifest(
+        depth_manifest.clone(),
+        r#"
+          query ExactFilterDepth {
+            todos(where: {
+              _not: {
+                _not: {
+                  _and: null
+                  _or: []
+                  priority: {_in: [1, 2]}
+                }
+              }
+            }) { id }
+          }
+        "#,
+    ))
+    .expect("semantic filter depth exactly at max_depth must compile");
+
+    for source in [
+        "query TooDeepNot { todos(where: {_not: {_not: {_not: null}}}) { id } }",
+        "query TooDeepRelationship { todos(where: {owner: {owner: {owner: null}}}) { id } }",
+    ] {
+        let error = compile_client(input_with_manifest(depth_manifest.clone(), source))
+            .expect_err("null still enters _not and relationship filter children");
+        assert_eq!(error.code, "client.filter.depth_limit", "{source}");
+    }
+
+    let mut width_manifest = manifest();
+    width_manifest["execution"]["max_bool_width"] = json!(1);
+    width_manifest["execution"]["max_in_list"] = json!(1);
+    refresh_schema_fingerprint(&mut width_manifest);
+    compile_client(input_with_manifest(
+        width_manifest.clone(),
+        r#"
+          query ExactFilterWidths {
+            todos(where: {_and: {priority: {_in: 1}}}) { id }
+          }
+        "#,
+    ))
+    .expect("singleton boolean and IN inputs coerce to their exact width boundary");
+
+    for (source, label) in [
+        (
+            "query WideBool { todos(where: {_and: [{priority: {_eq: 1}}, {priority: {_eq: 2}}]}) { id } }",
+            "literal boolean list",
+        ),
+        (
+            "query WideIn { todos(where: {priority: {_in: [1, 2]}}) { id } }",
+            "literal IN list",
+        ),
+        (
+            "query WideMixedBool($where: todo_bool_exp!) { todos(where: {_and: [$where, {priority: {_eq: 1}}]}) { id } }",
+            "mixed boolean list",
+        ),
+        (
+            "query WideMixedIn($priority: Int!) { todos(where: {priority: {_in: [$priority, 1]}}) { id } }",
+            "mixed IN list",
+        ),
+    ] {
+        let error = compile_client(input_with_manifest(width_manifest.clone(), source))
+            .expect_err("filter width above the exact service boundary must fail");
+        assert_eq!(error.code, "client.filter.width_limit", "{label}");
+    }
+}
+
+#[test]
+fn variable_codec_intersects_filter_depth_and_list_constraints() {
+    let mut value = manifest();
+    value["execution"]["max_bool_width"] = json!(7);
+    value["execution"]["max_in_list"] = json!(11);
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(input_with_manifest(
+        value,
+        r#"
+          query VariableConstraints(
+            $where: todo_bool_exp!
+            $clauses: [todo_bool_exp!]
+            $ids: [Int!]
+          ) {
+            todos(where: {
+              _and: [
+                $where
+                {_not: $where}
+                {_and: $clauses}
+                {priority: {_in: $ids}}
+              ]
+            }) { id }
+          }
+        "#,
+    ))
+    .expect("compile variables reused at multiple filter positions");
+    let artifact = operation_artifact(&project);
+    let variables = &artifact["variableCodec"]["variables"];
+    assert_eq!(variables["where"]["filterBaseDepth"], 2);
+    assert_eq!(variables["clauses"]["maxItems"], 7);
+    assert_eq!(variables["clauses"]["item"]["filterBaseDepth"], 2);
+    assert_eq!(variables["ids"]["maxItems"], 11);
+}
+
+#[test]
+fn relationship_selection_and_aggregate_filters_inherit_model_edge_depth() {
+    let mut value = manifest();
+    let mut relationship = normalized_list_relationship();
+    relationship["aggregate"] = json!({
+        "name": "owner_aggregate",
+        "arguments": list_arguments(),
+        "semantics": {
+            "wrapper_typename": "todo_aggregate",
+            "fields_typename": "todo_aggregate_fields",
+            "nodes_pagination": {
+                "kind": "offset",
+                "default_limit": 25,
+                "max_limit": 100,
+                "coverage": "window"
+            },
+            "count": true,
+            "nodes": true,
+            "sum": [],
+            "avg": [],
+            "min": [],
+            "max": []
+        },
+        "dependencies": ["todo_rows"]
+    });
+    value["models"][0]["relationships"][0] = relationship;
+    refresh_schema_fingerprint(&mut value);
+    let project = compile_client(input_with_manifest(
+        value,
+        r#"
+          query EdgeFilterDepth(
+            $selectedWhere: todo_bool_exp
+            $aggregateWhere: todo_bool_exp
+          ) {
+            todos {
+              owner(where: $selectedWhere) { id }
+              owner_aggregate(where: $aggregateWhere) {
+                aggregate { count }
+              }
+            }
+          }
+        "#,
+    ))
+    .expect("compile relationship selection and aggregate filter variables");
+    let artifact = operation_artifact(&project);
+    for variable in ["selectedWhere", "aggregateWhere"] {
+        assert_eq!(
+            artifact["variableCodec"]["variables"][variable]["filterBaseDepth"], 1,
+            "{variable}"
+        );
+    }
+}
+
+#[test]
 fn variable_nullability_is_compatible_but_never_weaker() {
     compile_client(input(
         "query Strict($limit: Int!) { todos(limit: $limit) { id } }",
@@ -816,12 +1764,103 @@ fn variable_nullability_is_compatible_but_never_weaker() {
 }
 
 #[test]
+fn compiles_nested_filter_and_order_variables_with_recursive_value_sources() {
+    let project = compile_client(input(
+        r#"
+          query Nested($priority: Int!, $direction: order_by!) {
+            todos(
+              where: {priority: {_eq: $priority}}
+              order_by: [{priority: $direction}]
+            ) { id }
+          }
+        "#,
+    ))
+    .expect("compile nested variables");
+    let generated = file(&project, &project.operations[0].module_path);
+    assert!(generated.contains("where: {priority: {_eq: $priority}}"));
+    assert!(generated.contains("order_by: [{priority: $direction}]"));
+    assert!(generated.contains("\"kind\": \"object\""));
+    assert!(generated.contains("\"kind\": \"list\""));
+    assert!(generated.contains("\"name\": \"priority\""));
+    assert!(generated.contains("\"name\": \"direction\""));
+    assert!(generated.contains("_distributed_priority: priority"));
+    assert!(!generated.contains("_distributed_completed: completed"));
+    assert!(generated.contains(
+        "readonly \"direction\": \"asc\" | \"asc_nulls_first\" | \"asc_nulls_last\" | \"desc\" | \"desc_nulls_first\" | \"desc_nulls_last\";"
+    ));
+    assert!(generated.contains("\"kind\": \"enum\""));
+    assert!(!generated.contains("Readonly<Record<string, unknown>>"));
+
+    let error = compile_client(input(
+        "query WrongNested($priority: String!) { todos(where: {priority: {_eq: $priority}}) { id } }",
+    ))
+    .expect_err("nested variable type must match its scalar position");
+    assert_eq!(error.code, "client.variable.type_mismatch");
+
+    let error = compile_client(input(
+        "query MissingNested { todos(where: {priority: {_eq: $missing}}) { id } }",
+    ))
+    .expect_err("nested variable must be defined");
+    assert_eq!(error.code, "client.variable.undefined");
+
+    let error = compile_client(input(
+        "query WrongListItem($priority: String!) { todos(where: {priority: {_in: [$priority]}}) { id } }",
+    ))
+    .expect_err("nested list-item variables must match the non-null scalar item type");
+    assert_eq!(error.code, "client.variable.type_mismatch");
+}
+
+#[test]
 fn rejects_variable_defaults_until_cache_identity_can_apply_them() {
     let error = compile_client(input(
         "query Defaulted($limit: Int = 10) { todos(limit: $limit) { id } }",
     ))
     .expect_err("defaults would currently diverge from replica argument identity");
     assert_eq!(error.code, "client.variable.default_unsupported");
+}
+
+#[test]
+fn application_surfaces_are_explicit_and_fingerprint_separate_chunks() {
+    let document = ClientDocument::new(
+        "src/routes/todos/+page.graphql",
+        "query Todos { todos { id } }",
+    );
+    let mut common = manifest();
+    common["surface"] = json!({"kind": "application", "name": "web-common", "roles": ["user"]});
+    refresh_schema_fingerprint(&mut common);
+    let common_fingerprint = common["schema_fingerprint"]
+        .as_str()
+        .expect("common fingerprint")
+        .to_string();
+    let common_project = compile_client(ClientCompileInput::new(
+        common.clone(),
+        ClientSurfaceSelector::application("web-common"),
+        vec![document.clone()],
+    ))
+    .expect("compile exact application surface");
+    assert_eq!(common_project.schema_fingerprint, common_fingerprint);
+
+    let mismatch = compile_client(ClientCompileInput::new(
+        common,
+        ClientSurfaceSelector::role("user"),
+        vec![document.clone()],
+    ))
+    .expect_err("a role selector cannot relabel an application surface");
+    assert_eq!(mismatch.code, "client.manifest.surface_mismatch");
+
+    let mut elevated = manifest();
+    elevated["surface"] = json!({"kind": "application", "name": "web-admin", "roles": ["admin"]});
+    refresh_schema_fingerprint(&mut elevated);
+    let elevated_project = compile_client(ClientCompileInput::new(
+        elevated,
+        ClientSurfaceSelector::application("web-admin"),
+        vec![document],
+    ))
+    .expect("compile separate elevated application surface");
+    assert_ne!(
+        common_project.schema_fingerprint,
+        elevated_project.schema_fingerprint
+    );
 }
 
 #[test]
@@ -1166,7 +2205,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     value["capabilities"]["cache_scope"] = json!(true);
     value["commands"] = json!([{
         "version": 1,
-        "name": "CreateTodo",
+        "name": "todo.create",
         "mutation_field": "createTodo",
         "grants": ["user"],
         "input": {
@@ -1287,11 +2326,40 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     let commands = file(&project, "commands.ts");
     let protocol = file(&project, "protocol.ts");
     assert!(commands.contains(mutation));
-    assert!(commands.contains("\"input_defaults\""));
+    assert!(commands.contains("import { prepareReplicaCommand }"));
+    assert!(commands.contains("export type Command_createTodo_Input"));
+    assert!(commands.contains("readonly \"id\"?: string;"));
+    assert!(commands.contains("readonly \"tenantId\": string;"));
+    assert!(commands.contains("\"mutationField\": \"createTodo\""));
+    assert!(commands.contains("\"inputDefaults\""));
     assert!(commands.contains("\"effects\""));
     assert!(commands.contains("\"confirmations\""));
+    assert!(commands.contains("\"consistency\": \"fact\""));
+    assert!(commands.contains("\"revalidation\""));
+    assert!(commands.contains("export function prepareCommand_createTodo"));
+    assert!(commands.contains("\"todo.create\": { artifact: Command_createTodo"));
+    assert!(!commands.contains("Command_todo.create"));
+    assert!(!commands.contains("\"extensions\""));
     assert!(protocol.contains(status));
     assert!(protocol.contains(&fingerprint(status)));
+}
+
+#[test]
+fn generated_command_typescript_covers_object_json_and_no_input_wrappers() {
+    let project = compile_client(ClientCompileInput::new(
+        generated_command_types_manifest(),
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect("compile generated command type fixture");
+    let commands = file(&project, "commands.ts");
+    assert_eq!(
+        commands,
+        include_str!("../../tests/fixtures/generated-commands.ts")
+    );
 }
 
 #[test]
@@ -1314,6 +2382,15 @@ fn projected_command_requires_exact_role_safe_direct_projection() {
             if path.as_slice() == ["tenantId"]
     ));
 
+    let project = compile_client(input_with_manifest(
+        projected_manifest(),
+        "query Todos { todos { id } }",
+    ))
+    .expect("compile projected command");
+    let commands = file(&project, "commands.ts");
+    assert!(commands.contains("\"identityFields\": [\n      \"tenantId\",\n      \"id\"\n    ]"));
+    assert!(!commands.contains("\"identity_fields\""));
+
     let mut absent = projected_manifest();
     absent["commands"][0]["extensions"]
         .as_object_mut()
@@ -1330,6 +2407,13 @@ fn projected_command_requires_exact_role_safe_direct_projection() {
     let error = ClientManifest::parse(non_projected, &ClientSurfaceSelector::role("user"))
         .expect_err("accepted commands cannot carry direct projection metadata");
     assert_eq!(error.code, "client.manifest.direct_projection_unexpected");
+
+    let mut embedded = projected_manifest();
+    embedded["models"][0]["normalization"] = json!({"kind": "embedded"});
+    refresh_schema_fingerprint(&mut embedded);
+    let error = ClientManifest::parse(embedded, &ClientSurfaceSelector::role("user"))
+        .expect_err("direct projection requires a complete normalized identity");
+    assert_eq!(error.code, "client.manifest.direct_projection_model");
 }
 
 #[test]
@@ -1506,7 +2590,73 @@ fn manifest_parser_accepts_embedded_by_pk_and_zero_sized_windows() {
     refresh_schema_fingerprint(&mut value);
 
     ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
-        .expect("embedded models and zero-sized authorized windows are valid v4 contracts");
+        .expect("embedded models and zero-sized authorized windows are valid v6 contracts");
+}
+
+#[test]
+fn manifest_parser_rejects_execution_limits_outside_javascript_integer_range() {
+    for name in ["max_depth", "max_bool_width", "max_in_list"] {
+        let mut value = manifest();
+        value["execution"][name] = json!(9_007_199_254_740_992_u64);
+        refresh_schema_fingerprint(&mut value);
+        let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+            .expect_err("runtime codec limits must remain exact JavaScript integers");
+        assert_eq!(error.code, "client.manifest.execution_js_integer", "{name}");
+    }
+}
+
+#[test]
+fn manifest_parser_rejects_list_roots_without_executable_query_plan_semantics() {
+    let cases = [
+        ("filter", &["filter"][..], "client.manifest.root_filter"),
+        ("order", &["order"][..], "client.manifest.root_order"),
+        (
+            "pagination",
+            &["limit", "offset"][..],
+            "client.manifest.root_pagination",
+        ),
+    ];
+
+    for (semantic, removed_argument_kinds, expected_code) in cases {
+        let mut value = manifest();
+        let root = value["roots"]
+            .as_array_mut()
+            .expect("roots")
+            .iter_mut()
+            .find(|root| root["operation"] == "query" && root["kind"] == "list")
+            .expect("query list root");
+        root[semantic] = JsonValue::Null;
+        root["arguments"]
+            .as_array_mut()
+            .expect("list arguments")
+            .retain(|argument| {
+                let kind = argument["kind"].as_str().expect("argument kind");
+                !removed_argument_kinds.contains(&kind)
+            });
+        refresh_schema_fingerprint(&mut value);
+
+        let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+            .expect_err("list roots require the complete executable query-plan contract");
+        assert_eq!(error.code, expected_code, "missing {semantic}");
+    }
+}
+
+#[test]
+fn manifest_parser_rejects_filter_input_target_and_argument_drift() {
+    let mut wrong_target = manifest();
+    wrong_target["models"][0]["filter_input"]["relationships"][0]["target_type"] =
+        json!("other_bool_exp");
+    refresh_schema_fingerprint(&mut wrong_target);
+    let error = ClientManifest::parse(wrong_target, &ClientSurfaceSelector::role("user"))
+        .expect_err("relationship filter targets must resolve to the target model contract");
+    assert_eq!(error.code, "client.manifest.filter_input_target_type");
+
+    let mut wrong_argument = manifest();
+    wrong_argument["roots"][0]["arguments"][0]["type_name"] = json!("other_bool_exp");
+    refresh_schema_fingerprint(&mut wrong_argument);
+    let error = ClientManifest::parse(wrong_argument, &ClientSurfaceSelector::role("user"))
+        .expect_err("root filter arguments must name the model filter contract");
+    assert_eq!(error.code, "client.manifest.filter_argument_type");
 }
 
 #[test]

@@ -18,7 +18,7 @@ use super::command_contract::{
     CommandProjectionConfirmation, CompiledDirectProjectionTarget, CompiledProjectionConfirmation,
     EffectExpression, EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
 };
-use super::filter::{FilterExpr, Operand};
+use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
 use crate::projection_protocol::ProjectionPartitionSpec;
 use crate::projection_protocol::{compile_projection_topology, ProjectionModelOwnership};
 use crate::table::{
@@ -1296,7 +1296,7 @@ fn validate_surface_filter(
         FilterExpr::Not(item) => {
             validate_surface_filter(item, schema, catalog, model, role)?;
         }
-        FilterExpr::Cmp { column, rhs, .. } => {
+        FilterExpr::Cmp { column, op, rhs } => {
             let column_schema = schema
                 .columns
                 .iter()
@@ -1311,8 +1311,34 @@ fn validate_surface_filter(
                     "claims cannot compare to Json columns (`{column}` on `{model}`)"
                 ));
             }
+            validate_row_policy_operand_literal(column, &column_schema.column_type, Some(*op), rhs)
+                .map_err(|error| {
+                    format!("invalid row policy for model `{model}` surface `{role}`: {error}")
+                })?;
         }
-        FilterExpr::In { column, .. } | FilterExpr::IsNull { column, .. } => {
+        FilterExpr::In { column, values, .. } => {
+            let column_schema = schema
+                .columns
+                .iter()
+                .find(|candidate| candidate.column_name == *column)
+                .ok_or_else(|| {
+                    format!("unknown column `{column}` in filter for `{model}` surface `{role}`")
+                })?;
+            for (index, value) in values.iter().enumerate() {
+                validate_row_policy_operand_literal(
+                    column,
+                    &column_schema.column_type,
+                    None,
+                    value,
+                )
+                .map_err(|error| {
+                        format!(
+                            "invalid row policy for model `{model}` surface `{role}` IN operand {index}: {error}"
+                        )
+                    })?;
+            }
+        }
+        FilterExpr::IsNull { column, .. } => {
             if !schema
                 .columns
                 .iter()
@@ -3455,10 +3481,17 @@ mod tests {
                 .contains("must be finite"));
         }
 
+        let mut integer_orders = orders();
+        integer_orders.columns.push(TableColumn::new(
+            "sequence",
+            "sequence",
+            ColumnType::Integer,
+        ));
+        let full = build_surface(&[integer_orders], &SurfaceOptions::sqlite()).unwrap();
         let grants = BTreeMap::from([(
             "OrderView".into(),
             RoleGrant::all_columns()
-                .rows(super::super::col("order_id").eq(9_007_199_254_740_992_i64)),
+                .rows(super::super::col("sequence").eq(9_007_199_254_740_992_i64)),
         )]);
         let selected = surface_for_role(&full, "user", &grants).unwrap();
         assert_eq!(
@@ -3810,6 +3843,44 @@ mod tests {
         )
         .unwrap_err();
         assert!(unknown_relationship.contains("is not a relationship on model `OrderView`"));
+    }
+
+    #[test]
+    fn pool_free_role_selection_rejects_mistyped_row_policy_literals() {
+        let full = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
+        let cmp_error = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([(
+                "OrderView".into(),
+                RoleGrant::all_columns().rows(FilterExpr::Cmp {
+                    column: "status".into(),
+                    op: super::super::filter::CmpOp::Eq,
+                    rhs: Operand::Lit(super::super::LitValue::Json(serde_json::json!("open"))),
+                }),
+            )]),
+        )
+        .unwrap_err();
+        assert!(cmp_error.contains("literal kind `json`"), "{cmp_error}");
+        assert!(cmp_error.contains("column `status`"), "{cmp_error}");
+
+        let in_error = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([(
+                "OrderView".into(),
+                RoleGrant::all_columns().rows(FilterExpr::In {
+                    column: "status".into(),
+                    values: vec![
+                        Operand::from("open"),
+                        Operand::Lit(super::super::LitValue::Json(serde_json::json!("closed"))),
+                    ],
+                    negated: false,
+                }),
+            )]),
+        )
+        .unwrap_err();
+        assert!(in_error.contains("IN operand 1"), "{in_error}");
     }
 
     #[test]

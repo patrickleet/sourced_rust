@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::table::ColumnType;
+
 /// Right-hand side of a comparison: literal, claim header, or nested operand.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -21,6 +23,77 @@ pub enum LitValue {
     Bool(bool),
     Json(JsonValue),
     Null,
+}
+
+pub(crate) fn validate_row_policy_operand_literal(
+    column: &str,
+    column_type: &ColumnType,
+    op: Option<CmpOp>,
+    operand: &Operand,
+) -> Result<(), String> {
+    if let Some(op) = op {
+        let supported = match op {
+            CmpOp::Like | CmpOp::Ilike => matches!(column_type, ColumnType::Text),
+            CmpOp::Contains | CmpOp::ContainedIn | CmpOp::HasKey => {
+                matches!(column_type, ColumnType::Json)
+            }
+            CmpOp::Eq | CmpOp::Neq | CmpOp::Gt | CmpOp::Gte | CmpOp::Lt | CmpOp::Lte => true,
+        };
+        if !supported {
+            return Err(format!(
+                "row-policy operator `{op:?}` cannot target column `{column}` of type `{column_type:?}`"
+            ));
+        }
+    }
+    let Operand::Lit(literal) = operand else {
+        return Ok(());
+    };
+    if matches!(literal, LitValue::Null) {
+        return Ok(());
+    }
+    if let LitValue::F64(value) = literal {
+        if !value.is_finite() {
+            return Err(format!(
+                "row-policy floating-point literal `{value}` for column `{column}` must be finite"
+            ));
+        }
+    }
+    let compatible = match (column_type, literal) {
+        (ColumnType::Text | ColumnType::Timestamp, LitValue::String(_))
+        | (ColumnType::Boolean, LitValue::Bool(_))
+        | (ColumnType::Integer, LitValue::I64(_))
+        | (ColumnType::UnsignedInteger, LitValue::I64(0..))
+        | (ColumnType::Float, LitValue::F64(_) | LitValue::I64(_)) => true,
+        (ColumnType::Json, LitValue::String(_)) if matches!(op, Some(CmpOp::HasKey)) => true,
+        (ColumnType::Json, LitValue::Json(_)) if !matches!(op, Some(CmpOp::HasKey)) => true,
+        _ => false,
+    };
+    if compatible {
+        return Ok(());
+    }
+
+    let literal_kind = match literal {
+        LitValue::String(_) => "string",
+        LitValue::I64(_) => "i64",
+        LitValue::F64(_) => "f64",
+        LitValue::Bool(_) => "bool",
+        LitValue::Json(_) => "json",
+        LitValue::Null => "null",
+    };
+    let expected = match column_type {
+        ColumnType::Text | ColumnType::Timestamp => "a string literal",
+        ColumnType::Boolean => "a boolean literal",
+        ColumnType::Integer => "an i64 literal",
+        ColumnType::UnsignedInteger => "a non-negative i64 literal",
+        ColumnType::Float => "a finite f64 or i64 literal",
+        ColumnType::Json if matches!(op, Some(CmpOp::HasKey)) => "a string key literal",
+        ColumnType::Json => "an explicitly tagged JSON literal",
+        ColumnType::Bytes => "no non-null row-policy literal encoding is defined",
+        ColumnType::Unsupported(_) => "no row-policy literal encoding is supported",
+    };
+    Err(format!(
+        "row-policy literal kind `{literal_kind}` cannot target column `{column}` of type `{column_type:?}`; expected {expected}"
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,7 +571,10 @@ impl std::ops::Not for FilterExpr {
 
 #[cfg(test)]
 mod tests {
-    use super::{claim, col, CmpOp, FilterExpr, LitValue, Operand};
+    use super::{
+        claim, col, validate_row_policy_operand_literal, CmpOp, FilterExpr, LitValue, Operand,
+    };
+    use crate::table::ColumnType;
 
     #[test]
     fn comparison_operands_accept_float_literals() {
@@ -541,6 +617,116 @@ mod tests {
                 .validate_row_policy_literals()
                 .unwrap_err()
                 .contains("must be finite"));
+        }
+    }
+
+    #[test]
+    fn row_policy_literal_kinds_must_match_the_authoritative_column_type() {
+        let valid = [
+            (ColumnType::Text, LitValue::String("text".into())),
+            (
+                ColumnType::Timestamp,
+                LitValue::String("2026-01-01T00:00:00Z".into()),
+            ),
+            (ColumnType::Boolean, LitValue::Bool(true)),
+            (ColumnType::Integer, LitValue::I64(-1)),
+            (ColumnType::UnsignedInteger, LitValue::I64(1)),
+            (ColumnType::Float, LitValue::F64(1.5)),
+            (
+                ColumnType::Json,
+                LitValue::Json(serde_json::json!({"nested": true})),
+            ),
+            (ColumnType::Float, LitValue::I64(1)),
+        ];
+        for (column_type, literal) in valid {
+            validate_row_policy_operand_literal(
+                "value",
+                &column_type,
+                Some(CmpOp::Eq),
+                &Operand::Lit(literal),
+            )
+            .unwrap();
+            validate_row_policy_operand_literal(
+                "value",
+                &column_type,
+                Some(CmpOp::Eq),
+                &Operand::Lit(LitValue::Null),
+            )
+            .unwrap();
+        }
+
+        for (column_type, literal, expected) in [
+            (
+                ColumnType::Text,
+                LitValue::Json(serde_json::json!("text")),
+                "literal kind `json`",
+            ),
+            (
+                ColumnType::Json,
+                LitValue::String("text".into()),
+                "explicitly tagged JSON",
+            ),
+            (
+                ColumnType::UnsignedInteger,
+                LitValue::I64(-1),
+                "non-negative i64",
+            ),
+            (ColumnType::Boolean, LitValue::I64(1), "boolean literal"),
+            (
+                ColumnType::Bytes,
+                LitValue::String("YQ==".into()),
+                "no non-null",
+            ),
+            (
+                ColumnType::Unsupported("custom".into()),
+                LitValue::String("value".into()),
+                "no row-policy literal encoding",
+            ),
+        ] {
+            let error = validate_row_policy_operand_literal(
+                "value",
+                &column_type,
+                Some(CmpOp::Eq),
+                &Operand::Lit(literal),
+            )
+            .unwrap_err();
+            assert!(error.contains("column `value`"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+
+        validate_row_policy_operand_literal(
+            "metadata",
+            &ColumnType::Json,
+            Some(CmpOp::HasKey),
+            &Operand::Lit(LitValue::String("tenant".into())),
+        )
+        .unwrap();
+        let has_key_error = validate_row_policy_operand_literal(
+            "metadata",
+            &ColumnType::Json,
+            Some(CmpOp::HasKey),
+            &Operand::Lit(LitValue::Json(serde_json::json!("tenant"))),
+        )
+        .unwrap_err();
+        assert!(
+            has_key_error.contains("string key literal"),
+            "{has_key_error}"
+        );
+
+        for (column_type, op) in [
+            (ColumnType::Text, CmpOp::HasKey),
+            (ColumnType::Boolean, CmpOp::Like),
+            (ColumnType::Json, CmpOp::Ilike),
+        ] {
+            let error = validate_row_policy_operand_literal(
+                "value",
+                &column_type,
+                Some(op),
+                &Operand::Lit(LitValue::String("value".into())),
+            )
+            .unwrap_err();
+            assert!(error.contains("operator"), "{error}");
+            assert!(error.contains("column `value`"), "{error}");
         }
     }
 

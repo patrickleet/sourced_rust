@@ -16,6 +16,17 @@ const Todo = Object.freeze({
 	identityFields: Object.freeze(['id'])
 });
 
+const NoVariables = Object.freeze({
+	version: 2,
+	limits: Object.freeze({
+		maxDepth: 8,
+		maxBoolWidth: 256,
+		maxInList: 1000
+	}),
+	variables: Object.freeze({}),
+	inputs: Object.freeze({})
+});
+
 const Todos = Object.freeze({
 	id: 'query:todos',
 	document: 'query Todos { todos { id title } }',
@@ -24,6 +35,7 @@ const Todos = Object.freeze({
 		schemaHash: 'schema-a',
 		operation: 'query:todos'
 	}),
+	variableCodec: NoVariables,
 	live: Object.freeze({
 		id: 'live:todos',
 		document: 'subscription TodosLive { todos { id title } }'

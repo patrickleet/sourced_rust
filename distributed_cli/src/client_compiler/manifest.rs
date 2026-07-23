@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use super::{ClientCompileError, ClientSurfaceSelector};
 
-const MANIFEST_VERSION: u64 = 5;
+const MANIFEST_VERSION: u64 = 6;
 const PROTOCOL_VERSION: u64 = 2;
 const PROTOCOL_FINGERPRINT: &str =
     "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc";
@@ -33,6 +33,8 @@ pub(crate) struct ClientManifest {
 pub(crate) struct ManifestExecutionLimits {
     pub(crate) max_depth: u64,
     pub(crate) max_complexity: u64,
+    pub(crate) max_bool_width: u64,
+    pub(crate) max_in_list: u64,
     pub(crate) complexity: ManifestComplexityWeights,
 }
 
@@ -87,6 +89,7 @@ pub(crate) struct ManifestModel {
     pub(crate) normalization: ManifestNormalization,
     pub(crate) fields: Vec<ManifestField>,
     pub(crate) relationships: Vec<ManifestRelationship>,
+    pub(crate) filter_input: ManifestFilterInput,
     pub(crate) row_policy: ManifestRowPolicy,
     pub(crate) record_revisions: bool,
     pub(crate) tombstones: bool,
@@ -135,6 +138,21 @@ pub(crate) struct ManifestField {
     pub(crate) scalar: String,
     pub(crate) codec: String,
     pub(crate) nullable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestFilterInput {
+    pub(crate) type_name: String,
+    pub(crate) fields: Vec<ManifestFilterField>,
+    pub(crate) relationships: Vec<ManifestFilterInputRelationship>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestFilterInputRelationship {
+    pub(crate) field: String,
+    pub(crate) target_type: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -859,6 +877,7 @@ impl ClientManifest {
         let mut models = BTreeMap::new();
         let mut typenames = BTreeSet::new();
         let mut source_tables = BTreeSet::new();
+        let mut filter_input_types = BTreeSet::new();
         for mut model in wire.models {
             canonicalize_model(&mut model)?;
             validate_model(&model, &scalar_codecs)?;
@@ -874,6 +893,15 @@ impl ClientManifest {
                     format!(
                         "multiple manifest models claim source table `{}`",
                         model.source_table
+                    ),
+                ));
+            }
+            if !filter_input_types.insert(model.filter_input.type_name.clone()) {
+                return Err(ClientCompileError::manifest(
+                    "client.manifest.duplicate_filter_input",
+                    format!(
+                        "multiple manifest models claim filter input type `{}`",
+                        model.filter_input.type_name
                     ),
                 ));
             }
@@ -1148,7 +1176,7 @@ fn validate_capabilities(capabilities: &ManifestCapabilities) -> Result<(), Clie
         return Err(ClientCompileError::manifest(
             "client.manifest.query_fallback",
             format!(
-                "unsupported query fallback `{}`; manifest v5 requires `revalidate`",
+                "unsupported query fallback `{}`; manifest v6 requires `revalidate`",
                 capabilities.query_fallback
             ),
         ));
@@ -1171,6 +1199,19 @@ fn validate_capabilities(capabilities: &ManifestCapabilities) -> Result<(), Clie
 fn validate_execution_limits(
     execution: &ManifestExecutionLimits,
 ) -> Result<(), ClientCompileError> {
+    const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    for (name, value) in [
+        ("max_depth", execution.max_depth),
+        ("max_bool_width", execution.max_bool_width),
+        ("max_in_list", execution.max_in_list),
+    ] {
+        if value > JS_MAX_SAFE_INTEGER {
+            return Err(ClientCompileError::manifest(
+                "client.manifest.execution_js_integer",
+                format!("execution.{name} `{value}` exceeds JavaScript's exact integer range"),
+            ));
+        }
+    }
     if execution.complexity.version != 1 {
         return Err(ClientCompileError::manifest(
             "client.manifest.complexity_version",
@@ -1223,7 +1264,7 @@ fn validate_derived_capabilities(
     if capabilities.confirmed_persistence {
         return Err(ClientCompileError::manifest(
             "client.manifest.persistence_capability",
-            "manifest v5 does not yet support confirmed client persistence",
+            "manifest v6 does not yet support confirmed client persistence",
         ));
     }
     Ok(())
@@ -1305,6 +1346,7 @@ fn canonicalize_model(model: &mut ManifestModel) -> Result<(), ClientCompileErro
     model
         .relationships
         .sort_by(|left, right| left.name.cmp(&right.name));
+    canonicalize_filter_input(&mut model.filter_input)?;
     canonicalize_row_policy(&mut model.row_policy);
     for relationship in &mut model.relationships {
         canonicalize_arguments(
@@ -1384,17 +1426,30 @@ fn canonicalize_operand(operand: &mut ManifestOperand) {
 fn canonicalize_filter_semantics(
     semantics: &mut ManifestFilterSemantics,
 ) -> Result<(), ClientCompileError> {
-    semantics
-        .fields
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    for field in &mut semantics.fields {
+    canonicalize_filter_fields(&mut semantics.fields)?;
+    canonicalize_string_set(&mut semantics.relationships, "filter relationship")?;
+    canonicalize_row_policy(&mut semantics.row_policy);
+    Ok(())
+}
+
+fn canonicalize_filter_input(input: &mut ManifestFilterInput) -> Result<(), ClientCompileError> {
+    canonicalize_filter_fields(&mut input.fields)?;
+    input
+        .relationships
+        .sort_by(|left, right| left.field.cmp(&right.field));
+    Ok(())
+}
+
+fn canonicalize_filter_fields(
+    fields: &mut [ManifestFilterField],
+) -> Result<(), ClientCompileError> {
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
+    for field in fields {
         canonicalize_string_set(
             &mut field.operators,
             &format!("filter field `{}` operator", field.name),
         )?;
     }
-    canonicalize_string_set(&mut semantics.relationships, "filter relationship")?;
-    canonicalize_row_policy(&mut semantics.row_policy);
     Ok(())
 }
 
@@ -1429,6 +1484,10 @@ fn validate_model(
     validate_graphql_name(&model.id, "manifest model id")?;
     validate_graphql_name(&model.typename, "manifest model typename")?;
     validate_nonempty(&model.source_table, "manifest model source_table")?;
+    validate_graphql_name(
+        &model.filter_input.type_name,
+        "manifest model filter input type",
+    )?;
     validate_nonempty_strings(
         &model.dependencies,
         &format!("model `{}` dependency", model.id),
@@ -1581,6 +1640,7 @@ fn validate_model_graph(
 ) -> Result<(), ClientCompileError> {
     for model in models.values() {
         validate_row_policy(&model.row_policy, model, models)?;
+        validate_filter_input(&model.filter_input, model, models)?;
         for relationship in &model.relationships {
             let target = models.get(&relationship.target_model).ok_or_else(|| {
                 ClientCompileError::manifest(
@@ -1792,6 +1852,11 @@ fn validate_relationship_semantics(
     models: &BTreeMap<String, ManifestModel>,
     scalar_codecs: &BTreeMap<String, String>,
 ) -> Result<(), ClientCompileError> {
+    validate_filter_argument_type(
+        &relationship.arguments,
+        target,
+        &format!("relationship `{}.{}`", source.id, relationship.name),
+    )?;
     let has_filter_argument = relationship
         .arguments
         .iter()
@@ -1911,31 +1976,94 @@ fn validate_relationship_semantics(
     Ok(())
 }
 
-fn validate_filter_semantics(
-    semantics: &ManifestFilterSemantics,
+fn validate_filter_input(
+    input: &ManifestFilterInput,
     model: &ManifestModel,
     models: &BTreeMap<String, ManifestModel>,
+) -> Result<(), ClientCompileError> {
+    validate_filter_fields(&input.fields, model)?;
+    let expected_relationships = model
+        .relationships
+        .iter()
+        .map(|relationship| relationship.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let actual_relationships = input
+        .relationships
+        .iter()
+        .map(|relationship| relationship.field.as_str())
+        .collect::<BTreeSet<_>>();
+    if actual_relationships != expected_relationships
+        || input.relationships.len() != expected_relationships.len()
+    {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.filter_input_relationships",
+            format!(
+                "model `{}` filter input must describe every authorized relationship exactly once",
+                model.id
+            ),
+        ));
+    }
+    for relationship_input in &input.relationships {
+        validate_graphql_name(
+            &relationship_input.field,
+            "manifest filter input relationship field",
+        )?;
+        validate_graphql_name(
+            &relationship_input.target_type,
+            "manifest filter input relationship target type",
+        )?;
+        let relationship = model
+            .relationship(&relationship_input.field)
+            .expect("filter input relationship inventory checked above");
+        let target = models.get(&relationship.target_model).ok_or_else(|| {
+            ClientCompileError::manifest(
+                "client.manifest.filter_input_target",
+                format!(
+                    "model `{}` filter relationship `{}` targets absent model `{}`",
+                    model.id, relationship.name, relationship.target_model
+                ),
+            )
+        })?;
+        if relationship_input.target_type != target.filter_input.type_name {
+            return Err(ClientCompileError::manifest(
+                "client.manifest.filter_input_target_type",
+                format!(
+                    "model `{}` filter relationship `{}` target type `{}` does not match model `{}` filter input `{}`",
+                    model.id,
+                    relationship.name,
+                    relationship_input.target_type,
+                    target.id,
+                    target.filter_input.type_name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_filter_fields(
+    fields: &[ManifestFilterField],
+    model: &ManifestModel,
 ) -> Result<(), ClientCompileError> {
     let expected_fields = model
         .fields
         .iter()
         .map(|field| field.name.as_str())
         .collect::<BTreeSet<_>>();
-    let actual_fields = semantics
-        .fields
+    let actual_fields = fields
         .iter()
         .map(|field| field.name.as_str())
         .collect::<BTreeSet<_>>();
-    if actual_fields != expected_fields || semantics.fields.len() != expected_fields.len() {
+    if actual_fields != expected_fields || fields.len() != expected_fields.len() {
         return Err(ClientCompileError::manifest(
             "client.manifest.filter_fields",
             format!(
-                "filter semantics for model `{}` must describe every authorized scalar field exactly once",
+                "filter input for model `{}` must describe every authorized scalar field exactly once",
                 model.id
             ),
         ));
     }
-    for field in &semantics.fields {
+    for field in fields {
         validate_nonempty_strings(
             &field.operators,
             &format!("model `{}` filter operator", model.id),
@@ -1977,23 +2105,39 @@ fn validate_filter_semantics(
             ));
         }
     }
-    let expected_relationships = model
+    Ok(())
+}
+
+fn validate_filter_semantics(
+    semantics: &ManifestFilterSemantics,
+    model: &ManifestModel,
+    models: &BTreeMap<String, ManifestModel>,
+) -> Result<(), ClientCompileError> {
+    if semantics.fields != model.filter_input.fields {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.filter_contract",
+            format!(
+                "filter semantics for model `{}` do not match its authoritative filter input fields",
+                model.id
+            ),
+        ));
+    }
+    let input_relationships = model
+        .filter_input
         .relationships
         .iter()
-        .map(|relationship| relationship.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let actual_relationships = semantics
+        .map(|relationship| relationship.field.as_str())
+        .collect::<Vec<_>>();
+    if semantics
         .relationships
         .iter()
         .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    if actual_relationships != expected_relationships
-        || semantics.relationships.len() != expected_relationships.len()
+        .ne(input_relationships)
     {
         return Err(ClientCompileError::manifest(
-            "client.manifest.filter_relationships",
+            "client.manifest.filter_contract",
             format!(
-                "filter semantics for model `{}` must describe every authorized relationship exactly once",
+                "filter semantics for model `{}` do not match its authoritative filter input relationships",
                 model.id
             ),
         ));
@@ -2008,6 +2152,29 @@ fn validate_filter_semantics(
         ));
     }
     validate_row_policy(&semantics.row_policy, model, models)
+}
+
+fn validate_filter_argument_type(
+    arguments: &[ManifestArgument],
+    model: &ManifestModel,
+    owner: &str,
+) -> Result<(), ClientCompileError> {
+    let Some(argument) = arguments
+        .iter()
+        .find(|argument| argument.kind == ManifestArgumentKind::Filter)
+    else {
+        return Ok(());
+    };
+    if argument.list || argument.type_name != model.filter_input.type_name {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.filter_argument_type",
+            format!(
+                "{owner} filter argument `{}` must use non-list input `{}`, received `{}`",
+                argument.name, model.filter_input.type_name, argument.type_name
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_order_semantics(
@@ -2052,7 +2219,7 @@ fn validate_order_semantics(
         return Err(ClientCompileError::manifest(
             "client.manifest.order_values",
             format!(
-                "order semantics for model `{}` must use the manifest v5 direction set",
+                "order semantics for model `{}` must use the manifest v6 direction set",
                 model.id
             ),
         ));
@@ -2292,6 +2459,11 @@ fn validate_root_contract(
             ),
         )
     })?;
+    validate_filter_argument_type(
+        &root.arguments,
+        model,
+        &format!("manifest root `{}`", root.name),
+    )?;
     validate_nonempty_strings(
         &root.dependencies,
         &format!("manifest root `{}` dependency", root.name),
@@ -2305,7 +2477,7 @@ fn validate_root_contract(
         return Err(ClientCompileError::manifest(
             "client.manifest.subscription_kind",
             format!(
-                "subscription root `{}` must use list cardinality in manifest v5",
+                "subscription root `{}` must use list cardinality in manifest v6",
                 root.name
             ),
         ));
@@ -2353,9 +2525,27 @@ fn validate_root_contract(
     }
     match root.kind {
         RootKind::List => {
-            if let Some(pagination) = &root.pagination {
-                validate_pagination(pagination, &format!("root `{}`", root.name))?;
-            }
+            root.filter.as_ref().ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.manifest.root_filter",
+                    format!("list root `{}` requires filter semantics", root.name),
+                )
+            })?;
+            root.order.as_ref().ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.manifest.root_order",
+                    format!("list root `{}` requires order semantics", root.name),
+                )
+            })?;
+            validate_pagination(
+                root.pagination.as_ref().ok_or_else(|| {
+                    ClientCompileError::manifest(
+                        "client.manifest.root_pagination",
+                        format!("list root `{}` requires pagination semantics", root.name),
+                    )
+                })?,
+                &format!("root `{}`", root.name),
+            )?;
             if root.aggregate.is_some() {
                 return Err(ClientCompileError::manifest(
                     "client.manifest.root_aggregate",
