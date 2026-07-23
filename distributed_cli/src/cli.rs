@@ -1848,7 +1848,9 @@ mod tests {
         stale["manifest_version"] = serde_json::json!(3);
         let error = validate_client_manifest_json(&stale)
             .expect_err("pre-release v3 manifests must be rejected");
-        assert!(error.to_string().contains("version 3; expected 6"));
+        assert!(error.to_string().contains(&format!(
+            "version 3; expected {DISTRIBUTED_CLIENT_MANIFEST_VERSION}"
+        )));
     }
 
     #[test]
