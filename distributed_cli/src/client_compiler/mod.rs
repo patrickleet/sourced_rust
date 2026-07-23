@@ -4,9 +4,13 @@
 //! one role/application-selected manifest and the colocated GraphQL documents,
 //! then decide how to write or check the returned files.
 
+mod command_manifest;
 mod graphql;
 mod manifest;
 mod render;
+
+#[cfg(test)]
+mod command_manifest_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

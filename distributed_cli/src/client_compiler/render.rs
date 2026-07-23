@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use super::graphql::{
-    typescript_scalar, typescript_type, Cardinality, CompiledArgument, CompiledOperation,
+    typescript_scalar, typescript_type, Cardinality, CompiledArgument, CompiledMember,
+    CompiledOperation,
 };
 use super::manifest::ClientManifest;
 use super::{
@@ -232,17 +233,20 @@ fn artifact_root(operation: &CompiledOperation) -> ArtifactRoot<'_> {
         }),
         selection: ArtifactSelection {
             model: ArtifactModel {
-                id: &root.model_id,
-                identity_fields: &root.identity_fields,
+                id: &root.selection.model_id,
+                identity_fields: &root.selection.identity_fields,
             },
             fields: root
-                .fields
+                .selection
+                .members
                 .iter()
-                .map(|field| ArtifactScalar {
-                    kind: "scalar",
-                    response_key: &field.response_key,
-                    field: &field.field,
-                    expose: (!field.expose).then_some(false),
+                .map(|member| match member {
+                    CompiledMember::Scalar(scalar) => ArtifactScalar {
+                        kind: "scalar",
+                        response_key: &scalar.response_key,
+                        field: &scalar.field,
+                        expose: (!scalar.expose).then_some(false),
+                    },
                 })
                 .collect(),
         },
@@ -273,7 +277,15 @@ fn render_data_type(
 ) -> Result<String, ClientCompileError> {
     let root = &operation.root;
     let mut entity = vec!["{".to_string()];
-    for field in root.fields.iter().filter(|field| field.expose) {
+    for field in root
+        .selection
+        .members
+        .iter()
+        .map(|member| match member {
+            CompiledMember::Scalar(scalar) => scalar,
+        })
+        .filter(|field| field.expose)
+    {
         let scalar = typescript_scalar(field)?;
         entity.push(format!(
             "    readonly {}: {}{};",
@@ -354,9 +366,11 @@ struct CompilerManifest<'a> {
     distributed_manifest_version: u32,
     protocol_version: u32,
     service_id: &'a str,
+    surface: &'a super::manifest::ManifestSurface,
     schema_fingerprint: &'a str,
     protocol_fingerprint: &'a str,
     scalar_codecs: &'a BTreeMap<String, String>,
+    commands_requiring_revalidation: &'a BTreeSet<String>,
     operations: &'a [GeneratedOperationSummary],
     routes: &'a [GeneratedRoutePlan],
 }
@@ -371,9 +385,11 @@ fn render_compiler_manifest(
         distributed_manifest_version: 4,
         protocol_version: 2,
         service_id: &manifest.service_id,
+        surface: &manifest.surface,
         schema_fingerprint: &manifest.schema_fingerprint,
         protocol_fingerprint: &manifest.protocol_fingerprint,
         scalar_codecs: &manifest.scalar_codecs,
+        commands_requiring_revalidation: &manifest.commands_requiring_revalidation,
         operations,
         routes,
     };

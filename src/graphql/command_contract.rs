@@ -1020,6 +1020,15 @@ impl CommandDirectProjectionTarget {
         self.protocol_topology.as_ref() == Some(topology)
     }
 
+    /// Exact compiled protocol topology retained by the declaration binder.
+    ///
+    /// Client-manifest export exposes only this opaque identity. The full
+    /// projector facts, schemas, tables, and ownership inventory remain
+    /// server-private.
+    pub(crate) fn protocol_topology(&self) -> Option<&ProjectorTopologyId> {
+        self.protocol_topology.as_ref()
+    }
+
     pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
         match partition {
             ProjectionPartitionSpec::Unit => self.partition.is_none(),
