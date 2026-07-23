@@ -674,6 +674,10 @@ impl AttemptFence {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CommandLookupScope<'a> {
     CommandName(&'a str),
+    CommandContract {
+        command_name: &'a str,
+        contract_fingerprint: &'a [u8; SHA256_BYTES],
+    },
     Attempt(&'a AttemptFence),
 }
 
@@ -692,6 +696,7 @@ impl fmt::Debug for CommandAttempt {
 /// A terminal command replay recovered without invoking application code.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CommandReplay {
+    pub(crate) command_id: CommandId,
     pub(crate) state: CommandLedgerState,
     pub(crate) causation_id: CausationId,
     pub(crate) outcome: Value,
@@ -1158,6 +1163,13 @@ impl CommandLedgerRecord {
     pub(crate) fn matches_lookup_scope(&self, scope: CommandLookupScope<'_>) -> bool {
         match scope {
             CommandLookupScope::CommandName(expected) => self.command_name == expected,
+            CommandLookupScope::CommandContract {
+                command_name,
+                contract_fingerprint,
+            } => {
+                self.command_name == command_name
+                    && self.contract_fingerprint.as_bytes() == contract_fingerprint
+            }
             CommandLookupScope::Attempt(attempt) => {
                 self.key == attempt.key
                     && self.contract_fingerprint == attempt.contract_fingerprint
@@ -1346,6 +1358,7 @@ impl CommandLedgerRecord {
             )));
         }
         Ok(CommandReplay {
+            command_id: self.key.command_id.clone(),
             state: self.state,
             causation_id: self.causation_id.clone(),
             outcome,
@@ -1748,6 +1761,31 @@ mod tests {
             CommandLookup::Unknown,
             "status lookup must not disclose a command owned by a different route"
         );
+        let wrong_contract = [99; SHA256_BYTES];
+        assert_eq!(
+            repo.lookup_command(
+                &key,
+                CommandLookupScope::CommandContract {
+                    command_name: "order.create",
+                    contract_fingerprint: &wrong_contract,
+                },
+            )
+            .await
+            .unwrap(),
+            CommandLookup::Unknown,
+            "status lookup must not disclose a command owned by a drifted contract"
+        );
+        let current_contract = [11; SHA256_BYTES];
+        let contract_lookup = repo
+            .lookup_command(
+                &key,
+                CommandLookupScope::CommandContract {
+                    command_name: "order.create",
+                    contract_fingerprint: &current_contract,
+                },
+            )
+            .await
+            .unwrap();
         let lookup_replay = match repo
             .lookup_command(&key, CommandLookupScope::CommandName("order.create"))
             .await
@@ -1756,6 +1794,10 @@ mod tests {
             CommandLookup::Replay(replay) => replay,
             other => panic!("completed command lookup should replay, got {other:?}"),
         };
+        assert_eq!(
+            contract_lookup,
+            CommandLookup::Replay(lookup_replay.clone())
+        );
         assert_eq!(reserved_replay, lookup_replay);
         assert_eq!(reserved_replay.state, CommandLedgerState::Accepted);
         assert_eq!(reserved_replay.causation_id, causation);

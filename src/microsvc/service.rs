@@ -83,7 +83,11 @@ use crate::outbox::OutboxMessage;
 use crate::outbox::OutboxPublisherConfig;
 use crate::outbox_worker::BusOutboxPublishHook;
 #[cfg(feature = "graphql")]
-use crate::projection_protocol::ProjectionProtocolStore;
+use crate::projection_protocol::{
+    ProjectionObligationEvidence, ProjectionObligationEvidenceBatchRequest,
+    ProjectionObligationEvidenceRequest, ProjectionObservationKind, ProjectionProtocolStore,
+    ProjectionRecordScope, SameTransactionProjectionEvidence,
+};
 use crate::read_model::{ReadModelWritePlanBuilder, RelationalReadModel};
 #[cfg(feature = "graphql")]
 use crate::repository::CommitBatch;
@@ -385,6 +389,176 @@ impl From<HandlerError> for CausalDispatchError {
     }
 }
 
+/// Exact compiler-bound projection obligation retained by the durable command
+/// replay.
+///
+/// The canonical scope remains a crate-private typed value. A transport layer
+/// may hand it to the protocol token codec, but this type deliberately has no
+/// serialization implementation that could expose topology, partition, or key
+/// bytes directly.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CausalCommandProjectionObligation {
+    pub(crate) projector: String,
+    pub(crate) model: String,
+    pub(crate) scope: ProjectionRecordScope,
+    pub(crate) observation_kind: ProjectionObservationKind,
+}
+
+/// Durable receipt material for one exact command attempt.
+///
+/// `direct_projection` is decoded from the versioned ledger replay envelope;
+/// it is never reconstructed from the current read-model row.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CausalCommandReceiptSource {
+    pub(crate) command_id: String,
+    pub(crate) causation_id: String,
+    pub(crate) consistency: CommandConsistency,
+    pub(crate) state: CommandLedgerState,
+    pub(crate) outcome: Value,
+    pub(crate) obligations: Vec<CausalCommandProjectionObligation>,
+    pub(crate) direct_projection: Option<SameTransactionProjectionEvidence>,
+}
+
+#[cfg(feature = "graphql")]
+impl CausalCommandReceiptSource {
+    fn from_replay(
+        consistency: CommandConsistency,
+        replay: CommandReplay,
+    ) -> Result<Self, CausalDispatchError> {
+        let direct_projection = replay
+            .direct_projection
+            .as_ref()
+            .map(SameTransactionProjectionEvidence::from_replay_value)
+            .transpose()
+            .map_err(|error| {
+                CausalDispatchError::Internal(format!(
+                    "stored direct projection evidence is invalid: {error}"
+                ))
+            })?;
+        let obligations = replay
+            .projection_obligations
+            .into_iter()
+            .map(|obligation| CausalCommandProjectionObligation {
+                projector: obligation.projector,
+                model: obligation.model,
+                scope: obligation.scope,
+                // The current command compiler binds finite confirmations only
+                // to relational records. Persisting dependency-vs-record kind
+                // becomes mandatory before embedded confirmations are enabled.
+                observation_kind: ProjectionObservationKind::Record,
+            })
+            .collect();
+        Ok(Self {
+            command_id: replay.command_id.as_str().to_string(),
+            causation_id: replay.causation_id.as_str().to_string(),
+            consistency,
+            state: replay.state,
+            outcome: replay.outcome,
+            obligations,
+            direct_projection,
+        })
+    }
+}
+
+/// Successful typed causal dispatch plus its exact durable receipt source.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CausalDispatchResult {
+    pub(crate) payload: Value,
+    pub(crate) receipt: CausalCommandReceiptSource,
+}
+
+/// Stable public command-status vocabulary.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CausalCommandPublicState {
+    InProgress,
+    Accepted,
+    AcceptedPendingProjection,
+    Projected,
+    Rejected,
+    ProjectionFailed,
+    Expired,
+    Unknown,
+}
+
+#[cfg(feature = "graphql")]
+impl CausalCommandPublicState {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::InProgress => "in_progress",
+            Self::Accepted => "accepted",
+            Self::AcceptedPendingProjection => "accepted_pending_projection",
+            Self::Projected => "projected",
+            Self::Rejected => "rejected",
+            Self::ProjectionFailed => "projection_failed",
+            Self::Expired => "expired",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Sanitized evidence state for one durable obligation.
+///
+/// A terminal failure is intentionally only a semantic marker. Failure IDs,
+/// codes, bytes, digests, source cursors, and repair generations never cross
+/// this service boundary.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CausalProjectionEvidenceState {
+    Pending,
+    Observed,
+    TerminalFailure,
+}
+
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CausalCommandProjectionEvidence {
+    pub(crate) obligation_index: usize,
+    pub(crate) state: CausalProjectionEvidenceState,
+    pub(crate) incarnation: Option<u64>,
+    pub(crate) revision: Option<u64>,
+}
+
+/// Authorized, non-enumerating status for a client-created command ID.
+///
+/// Typed scopes and observations are crate-private inputs to the opaque token
+/// codec. This type is not serializable and contains no raw failure material.
+#[cfg(feature = "graphql")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CausalCommandPublicStatus {
+    pub(crate) state: CausalCommandPublicState,
+    pub(crate) command_id: String,
+    pub(crate) causation_id: Option<String>,
+    pub(crate) consistency: Option<CommandConsistency>,
+    pub(crate) outcome: Option<Value>,
+    pub(crate) obligations: Vec<CausalCommandProjectionObligation>,
+    pub(crate) evidence: Vec<CausalCommandProjectionEvidence>,
+    pub(crate) direct_projection: Option<SameTransactionProjectionEvidence>,
+}
+
+#[cfg(feature = "graphql")]
+impl CausalCommandPublicStatus {
+    fn unknown(command_id: impl Into<String>) -> Self {
+        Self {
+            state: CausalCommandPublicState::Unknown,
+            command_id: command_id.into(),
+            causation_id: None,
+            consistency: None,
+            outcome: None,
+            obligations: Vec::new(),
+            evidence: Vec::new(),
+            direct_projection: None,
+        }
+    }
+
+    fn is_unknown(&self) -> bool {
+        self.state == CausalCommandPublicState::Unknown
+    }
+}
+
 /// Error returned when attaching a GraphQL engine whose typed command
 /// inventory is not exactly the executable service inventory, or whose query
 /// storage cannot prove the identity required by a `Projected` command.
@@ -536,7 +710,11 @@ impl Default for CausalCommandPolicy {
 
 #[cfg(feature = "graphql")]
 type CausalHandlerFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Value, CausalDispatchError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<CausalDispatchResult, CausalDispatchError>> + Send + 'a>>;
+#[cfg(feature = "graphql")]
+type CausalStatusFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<CausalCommandPublicStatus, CausalDispatchError>> + Send + 'a>,
+>;
 
 trait ErasedCausalHandler<D>: Send + Sync {
     fn contract(&self) -> &TypedCommandContract;
@@ -570,6 +748,16 @@ trait ErasedCausalHandler<D>: Send + Sync {
         session: &'a Session,
         principal: VerifiedPrincipal,
     ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>>;
+
+    #[cfg(feature = "graphql")]
+    fn status<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a CommandId,
+        principal_partition: &'a PrincipalPartitionId,
+        session: &'a Session,
+    ) -> CausalStatusFuture<'a>;
 }
 
 struct RegisteredCausalHandler<A, I, K>
@@ -673,6 +861,15 @@ trait ErasedRoutes: Send + Sync {
         session: &'a Session,
         principal: VerifiedPrincipal,
     ) -> Pin<Box<dyn Future<Output = Result<CommandLookup, CausalDispatchError>> + Send + 'a>>;
+
+    #[cfg(feature = "graphql")]
+    fn causal_command_status<'a>(
+        &'a self,
+        service_id: &'a str,
+        command_id: &'a CommandId,
+        principal_partition: &'a PrincipalPartitionId,
+        session: &'a Session,
+    ) -> CausalStatusFuture<'a>;
 
     #[cfg(feature = "graphql")]
     fn projected_storage_identities(&self) -> Vec<crate::command_ledger::CausalStorageIdentity>;
@@ -1231,7 +1428,9 @@ where
                 ReservationOutcome::InProgress { .. } => {
                     return Err(CausalDispatchError::InProgress)
                 }
-                ReservationOutcome::Replay(replay) => return replay_result(replay),
+                ReservationOutcome::Replay(replay) => {
+                    return replay_result(self.contract.consistency, replay)
+                }
                 ReservationOutcome::Conflict => return Err(CausalDispatchError::CommandIdReuse),
                 ReservationOutcome::Expired => return Err(CausalDispatchError::Expired),
             };
@@ -1266,6 +1465,7 @@ where
                 return commit_causal_rejection(
                     repository,
                     attempt,
+                    self.contract.consistency,
                     policy.replay_retention,
                     "REJECTED",
                     422,
@@ -1283,6 +1483,7 @@ where
                     return commit_causal_rejection(
                         repository,
                         attempt,
+                        self.contract.consistency,
                         policy.replay_retention,
                         code,
                         status,
@@ -1291,18 +1492,36 @@ where
                     .await;
                 }
                 Err(error) => {
-                    return abandon_causal_attempt(repository, attempt, error.to_string()).await;
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        error.to_string(),
+                    )
+                    .await;
                 }
             };
 
             let mut parts = match workspace.into_parts() {
                 Ok(parts) => parts,
                 Err(error) => {
-                    return abandon_causal_attempt(repository, attempt, error.to_string()).await
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        error.to_string(),
+                    )
+                    .await
                 }
             };
             if let Err(error) = parts.validate_prepared(&self.contract, &prepared) {
-                return abandon_causal_attempt(repository, attempt, error.to_string()).await;
+                return abandon_causal_attempt(
+                    repository,
+                    attempt,
+                    self.contract.consistency,
+                    error.to_string(),
+                )
+                .await;
             }
             let direct_projection = match parts.seal_direct_projection(
                 &prepared,
@@ -1311,7 +1530,13 @@ where
             ) {
                 Ok(direct_projection) => direct_projection,
                 Err(error) => {
-                    return abandon_causal_attempt(repository, attempt, error.to_string()).await
+                    return abandon_causal_attempt(
+                        repository,
+                        attempt,
+                        self.contract.consistency,
+                        error.to_string(),
+                    )
+                    .await
                 }
             };
 
@@ -1332,6 +1557,7 @@ where
                     return abandon_causal_attempt(
                         repository,
                         attempt,
+                        self.contract.consistency,
                         format!("causal commit batch preparation failed: {error}"),
                     )
                     .await
@@ -1364,6 +1590,7 @@ where
                     return abandon_causal_attempt(
                         repository,
                         attempt,
+                        self.contract.consistency,
                         format!("causal outbox claim failed before commit: {error}"),
                     )
                     .await;
@@ -1392,10 +1619,28 @@ where
                         let _ = config.hook.publish_claimed(claimed).await;
                     }
                     let (_committed, serialized) = prepared.finalize_after_commit();
-                    Ok(serialized)
+                    let result = load_committed_dispatch_result(
+                        repository,
+                        &fence,
+                        self.contract.consistency,
+                    )
+                    .await?;
+                    if result.payload != serialized {
+                        return Err(CausalDispatchError::Internal(
+                            "durable command replay outcome differs from the committed handler payload"
+                                .into(),
+                        ));
+                    }
+                    Ok(result)
                 }
                 Err(error) => {
-                    recover_causal_commit_error(repository, fence, error.to_string()).await
+                    recover_causal_commit_error(
+                        repository,
+                        fence,
+                        self.contract.consistency,
+                        error.to_string(),
+                    )
+                    .await
                 }
             }
         })
@@ -1424,6 +1669,49 @@ where
                 .lookup_command(&key, CommandLookupScope::CommandName(&self.contract.name))
                 .await
                 .map_err(internal_ledger_error)
+        })
+    }
+
+    #[cfg(feature = "graphql")]
+    fn status<'a>(
+        &'a self,
+        dependencies: &'a D,
+        service_id: &'a str,
+        command_id: &'a CommandId,
+        principal_partition: &'a PrincipalPartitionId,
+        session: &'a Session,
+    ) -> CausalStatusFuture<'a> {
+        Box::pin(async move {
+            // Status is deliberately non-enumerating: handlers that are no
+            // longer visible under the caller's current grant are skipped as
+            // if no command had ever existed.
+            if ensure_causal_grant(&self.contract, session).is_err() {
+                return Ok(CausalCommandPublicStatus::unknown(command_id.as_str()));
+            }
+
+            let key =
+                CommandLedgerKey::new(service_id, principal_partition.clone(), command_id.clone())
+                    .map_err(internal_ledger_error)?;
+            let contract_fingerprint = self.contract.fingerprint_bytes();
+            let lookup = dependencies
+                .__causal_aggregate_repository()
+                .repo()
+                .lookup_command(
+                    &key,
+                    CommandLookupScope::CommandContract {
+                        command_name: &self.contract.name,
+                        contract_fingerprint: &contract_fingerprint,
+                    },
+                )
+                .await
+                .map_err(internal_ledger_error)?;
+            evaluate_causal_command_status(
+                dependencies.__causal_aggregate_repository().repo(),
+                command_id,
+                self.contract.consistency,
+                lookup,
+            )
+            .await
         })
     }
 }
@@ -1462,15 +1750,22 @@ fn internal_ledger_error(error: CommandLedgerError) -> CausalDispatchError {
 }
 
 #[cfg(feature = "graphql")]
-fn replay_result(replay: CommandReplay) -> Result<Value, CausalDispatchError> {
+fn replay_result(
+    consistency: CommandConsistency,
+    replay: CommandReplay,
+) -> Result<CausalDispatchResult, CausalDispatchError> {
     match replay.state {
         CommandLedgerState::Accepted
         | CommandLedgerState::AcceptedPendingProjection
-        | CommandLedgerState::Projected => Ok(replay.outcome),
+        | CommandLedgerState::Projected
+        | CommandLedgerState::ProjectionFailed => {
+            let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
+            Ok(CausalDispatchResult {
+                payload: receipt.outcome.clone(),
+                receipt,
+            })
+        }
         CommandLedgerState::Rejected => replay_rejection(replay.outcome),
-        CommandLedgerState::ProjectionFailed => Err(CausalDispatchError::Internal(
-            "stored command projection failed".into(),
-        )),
         CommandLedgerState::InProgress
         | CommandLedgerState::RetryableUnknown
         | CommandLedgerState::Expired => Err(CausalDispatchError::Internal(
@@ -1480,7 +1775,7 @@ fn replay_result(replay: CommandReplay) -> Result<Value, CausalDispatchError> {
 }
 
 #[cfg(feature = "graphql")]
-fn replay_rejection(outcome: Value) -> Result<Value, CausalDispatchError> {
+fn replay_rejection(outcome: Value) -> Result<CausalDispatchResult, CausalDispatchError> {
     let error = outcome
         .get("error")
         .and_then(Value::as_object)
@@ -1521,11 +1816,12 @@ fn replay_rejection(outcome: Value) -> Result<Value, CausalDispatchError> {
 async fn commit_causal_rejection<R>(
     repository: &R,
     attempt: CommandAttempt,
+    consistency: CommandConsistency,
     retention: Duration,
     code: &'static str,
     status: u16,
     message: String,
-) -> Result<Value, CausalDispatchError>
+) -> Result<CausalDispatchResult, CausalDispatchError>
 where
     R: CommandLedgerStore + CausalTransactionalCommit + Send + Sync,
 {
@@ -1549,7 +1845,33 @@ where
             status,
             message,
         }),
-        Err(error) => recover_causal_commit_error(repository, fence, error.to_string()).await,
+        Err(error) => {
+            recover_causal_commit_error(repository, fence, consistency, error.to_string()).await
+        }
+    }
+}
+
+#[cfg(feature = "graphql")]
+async fn load_committed_dispatch_result<R>(
+    repository: &R,
+    fence: &AttemptFence,
+    consistency: CommandConsistency,
+) -> Result<CausalDispatchResult, CausalDispatchError>
+where
+    R: CommandLedgerStore + Send + Sync,
+{
+    match repository
+        .lookup_command(fence.key(), CommandLookupScope::Attempt(fence))
+        .await
+        .map_err(internal_ledger_error)?
+    {
+        CommandLookup::Replay(replay) => replay_result(consistency, replay),
+        CommandLookup::Expired => Err(CausalDispatchError::Expired),
+        CommandLookup::InProgress { .. }
+        | CommandLookup::RetryableUnknown { .. }
+        | CommandLookup::Unknown => Err(CausalDispatchError::Internal(
+            "committed command has no exact durable replay receipt".into(),
+        )),
     }
 }
 
@@ -1557,8 +1879,9 @@ where
 async fn abandon_causal_attempt<R>(
     repository: &R,
     attempt: CommandAttempt,
+    consistency: CommandConsistency,
     detail: String,
-) -> Result<Value, CausalDispatchError>
+) -> Result<CausalDispatchResult, CausalDispatchError>
 where
     R: CommandLedgerStore + Send + Sync,
 {
@@ -1566,7 +1889,7 @@ where
     match repository.mark_retryable_unknown(fence.clone()).await {
         Ok(()) => Err(CausalDispatchError::Internal(detail)),
         Err(CommandLedgerError::AttemptFenced { .. }) => {
-            resolve_ambiguous_lookup(repository, fence, detail).await
+            resolve_ambiguous_lookup(repository, fence, consistency, detail).await
         }
         Err(error) => Err(CausalDispatchError::Internal(format!(
             "{detail}; failed to mark command retryable: {error}"
@@ -1578,20 +1901,22 @@ where
 async fn recover_causal_commit_error<R>(
     repository: &R,
     fence: AttemptFence,
+    consistency: CommandConsistency,
     detail: String,
-) -> Result<Value, CausalDispatchError>
+) -> Result<CausalDispatchResult, CausalDispatchError>
 where
     R: CommandLedgerStore + Send + Sync,
 {
-    resolve_ambiguous_lookup(repository, fence, detail).await
+    resolve_ambiguous_lookup(repository, fence, consistency, detail).await
 }
 
 #[cfg(feature = "graphql")]
 async fn resolve_ambiguous_lookup<R>(
     repository: &R,
     fence: AttemptFence,
+    consistency: CommandConsistency,
     detail: String,
-) -> Result<Value, CausalDispatchError>
+) -> Result<CausalDispatchResult, CausalDispatchError>
 where
     R: CommandLedgerStore + Send + Sync,
 {
@@ -1599,7 +1924,7 @@ where
         .lookup_command(fence.key(), CommandLookupScope::Attempt(&fence))
         .await
     {
-        Ok(CommandLookup::Replay(replay)) => replay_result(replay),
+        Ok(CommandLookup::Replay(replay)) => replay_result(consistency, replay),
         Ok(CommandLookup::Expired) => Err(CausalDispatchError::Expired),
         Ok(CommandLookup::RetryableUnknown { .. }) => Err(CausalDispatchError::Internal(detail)),
         Ok(CommandLookup::InProgress { .. }) => {
@@ -1619,6 +1944,225 @@ where
         Err(error) => Err(CausalDispatchError::Internal(format!(
             "{detail}; command outcome lookup failed: {error}"
         ))),
+    }
+}
+
+#[cfg(feature = "graphql")]
+async fn evaluate_causal_command_status<R>(
+    repository: &R,
+    command_id: &CommandId,
+    consistency: CommandConsistency,
+    lookup: CommandLookup,
+) -> Result<CausalCommandPublicStatus, CausalDispatchError>
+where
+    R: CommandLedgerStore + ProjectionProtocolStore + Send + Sync,
+{
+    match lookup {
+        CommandLookup::Unknown => Ok(CausalCommandPublicStatus::unknown(command_id.as_str())),
+        CommandLookup::Expired => Ok(CausalCommandPublicStatus {
+            state: CausalCommandPublicState::Expired,
+            command_id: command_id.as_str().to_string(),
+            causation_id: None,
+            consistency: Some(consistency),
+            outcome: None,
+            obligations: Vec::new(),
+            evidence: Vec::new(),
+            direct_projection: None,
+        }),
+        CommandLookup::InProgress { causation_id }
+        | CommandLookup::RetryableUnknown { causation_id } => Ok(CausalCommandPublicStatus {
+            state: CausalCommandPublicState::InProgress,
+            command_id: command_id.as_str().to_string(),
+            causation_id: Some(causation_id.as_str().to_string()),
+            consistency: Some(consistency),
+            outcome: None,
+            obligations: Vec::new(),
+            evidence: Vec::new(),
+            direct_projection: None,
+        }),
+        CommandLookup::Replay(replay) => {
+            let receipt = CausalCommandReceiptSource::from_replay(consistency, replay)?;
+            let (state, evidence) = match receipt.state {
+                CommandLedgerState::Accepted => (CausalCommandPublicState::Accepted, Vec::new()),
+                CommandLedgerState::Projected => (
+                    CausalCommandPublicState::Projected,
+                    receipt
+                        .obligations
+                        .iter()
+                        .enumerate()
+                        .map(|(obligation_index, _)| CausalCommandProjectionEvidence {
+                            obligation_index,
+                            state: CausalProjectionEvidenceState::Observed,
+                            // The durable ledger state proves every finite
+                            // obligation. Exact record positions are optional
+                            // status detail and are not reconstructed from a
+                            // later row head.
+                            incarnation: None,
+                            revision: None,
+                        })
+                        .collect(),
+                ),
+                CommandLedgerState::Rejected => (CausalCommandPublicState::Rejected, Vec::new()),
+                CommandLedgerState::ProjectionFailed => {
+                    (CausalCommandPublicState::ProjectionFailed, Vec::new())
+                }
+                CommandLedgerState::AcceptedPendingProjection => {
+                    evaluate_pending_projection_evidence(repository, &receipt).await?
+                }
+                CommandLedgerState::InProgress
+                | CommandLedgerState::RetryableUnknown
+                | CommandLedgerState::Expired => {
+                    return Err(CausalDispatchError::Internal(format!(
+                        "stored replay has non-terminal state `{}`",
+                        receipt.state.as_str()
+                    )));
+                }
+            };
+            Ok(CausalCommandPublicStatus {
+                state,
+                command_id: receipt.command_id,
+                causation_id: Some(receipt.causation_id),
+                consistency: Some(receipt.consistency),
+                outcome: Some(receipt.outcome),
+                obligations: receipt.obligations,
+                evidence,
+                direct_projection: receipt.direct_projection,
+            })
+        }
+    }
+}
+
+#[cfg(feature = "graphql")]
+async fn evaluate_pending_projection_evidence<R>(
+    repository: &R,
+    receipt: &CausalCommandReceiptSource,
+) -> Result<
+    (
+        CausalCommandPublicState,
+        Vec<CausalCommandProjectionEvidence>,
+    ),
+    CausalDispatchError,
+>
+where
+    R: ProjectionProtocolStore + Send + Sync,
+{
+    let requests = receipt
+        .obligations
+        .iter()
+        .map(|obligation| {
+            ProjectionObligationEvidenceRequest::new(
+                receipt.causation_id.clone(),
+                obligation.scope.clone(),
+                obligation.observation_kind,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "stored projection obligation cannot be evaluated: {error}"
+            ))
+        })?;
+    let request = ProjectionObligationEvidenceBatchRequest::new(requests).map_err(|error| {
+        CausalDispatchError::Internal(format!(
+            "stored projection obligation batch is invalid: {error}"
+        ))
+    })?;
+    let batch = repository
+        .projection_obligation_evidence_batch(&request)
+        .await
+        .map_err(|error| {
+            CausalDispatchError::Internal(format!(
+                "projection obligation evidence lookup failed: {error}"
+            ))
+        })?;
+    if batch.evidence.len() != receipt.obligations.len() {
+        return Err(CausalDispatchError::Internal(format!(
+            "projection obligation evidence returned {} items for {} exact probes",
+            batch.evidence.len(),
+            receipt.obligations.len()
+        )));
+    }
+
+    let mut evidence = Vec::with_capacity(batch.evidence.len());
+    for (obligation_index, (obligation, item)) in
+        receipt.obligations.iter().zip(batch.evidence).enumerate()
+    {
+        let item = match item {
+            ProjectionObligationEvidence::Pending => CausalCommandProjectionEvidence {
+                obligation_index,
+                state: CausalProjectionEvidenceState::Pending,
+                incarnation: None,
+                revision: None,
+            },
+            ProjectionObligationEvidence::TerminalFailure(_) => CausalCommandProjectionEvidence {
+                obligation_index,
+                state: CausalProjectionEvidenceState::TerminalFailure,
+                incarnation: None,
+                revision: None,
+            },
+            ProjectionObligationEvidence::Observed(observation) => {
+                if observation.causation_id != receipt.causation_id
+                    || observation.kind != obligation.observation_kind
+                    || observation.scope != obligation.scope
+                {
+                    return Err(CausalDispatchError::Internal(
+                        "projection store returned evidence outside the exact obligation probe"
+                            .into(),
+                    ));
+                }
+                let (incarnation, revision) = match observation.revision.as_ref() {
+                    Some(record)
+                        if obligation.observation_kind == ProjectionObservationKind::Record
+                            && record.scope() == &obligation.scope =>
+                    {
+                        (Some(record.incarnation()), Some(record.revision()))
+                    }
+                    None if obligation.observation_kind
+                        == ProjectionObservationKind::Dependency =>
+                    {
+                        (None, None)
+                    }
+                    _ => {
+                        return Err(CausalDispatchError::Internal(
+                            "projection store returned an invalid revision for the obligation kind"
+                                .into(),
+                        ));
+                    }
+                };
+                CausalCommandProjectionEvidence {
+                    obligation_index,
+                    state: CausalProjectionEvidenceState::Observed,
+                    incarnation,
+                    revision,
+                }
+            }
+        };
+        evidence.push(item);
+    }
+
+    // Failure precedence is intentional: a terminal failure must never be
+    // hidden by observations from the remaining obligations.
+    let state = collapse_projection_evidence(&evidence);
+    Ok((state, evidence))
+}
+
+#[cfg(feature = "graphql")]
+fn collapse_projection_evidence(
+    evidence: &[CausalCommandProjectionEvidence],
+) -> CausalCommandPublicState {
+    if evidence
+        .iter()
+        .any(|item| item.state == CausalProjectionEvidenceState::TerminalFailure)
+    {
+        CausalCommandPublicState::ProjectionFailed
+    } else if !evidence.is_empty()
+        && evidence
+            .iter()
+            .all(|item| item.state == CausalProjectionEvidenceState::Observed)
+    {
+        CausalCommandPublicState::Projected
+    } else {
+        CausalCommandPublicState::AcceptedPendingProjection
     }
 }
 
@@ -1851,6 +2395,45 @@ where
     }
 
     #[cfg(feature = "graphql")]
+    fn causal_command_status<'a>(
+        &'a self,
+        service_id: &'a str,
+        command_id: &'a CommandId,
+        principal_partition: &'a PrincipalPartitionId,
+        session: &'a Session,
+    ) -> CausalStatusFuture<'a> {
+        Box::pin(async move {
+            let mut handlers = self
+                .handlers
+                .get(&MessageKind::Command)
+                .into_iter()
+                .flat_map(HashMap::values)
+                .filter_map(|handler| match handler {
+                    RegisteredHandler::Causal(handler) => Some(handler.as_ref()),
+                    RegisteredHandler::Legacy { .. } | RegisteredHandler::Projector(_) => None,
+                })
+                .collect::<Vec<_>>();
+            handlers.sort_by(|left, right| left.contract().name.cmp(&right.contract().name));
+
+            for handler in handlers {
+                let status = handler
+                    .status(
+                        &self.dependencies,
+                        service_id,
+                        command_id,
+                        principal_partition,
+                        session,
+                    )
+                    .await?;
+                if !status.is_unknown() {
+                    return Ok(status);
+                }
+            }
+            Ok(CausalCommandPublicStatus::unknown(command_id.as_str()))
+        })
+    }
+
+    #[cfg(feature = "graphql")]
     fn projected_storage_identities(&self) -> Vec<crate::command_ledger::CausalStorageIdentity> {
         self.handlers
             .values()
@@ -1973,11 +2556,12 @@ impl Service {
     ///
     /// Typed commands are compared by service ID, a canonical structural
     /// fingerprint, and exact Rust input/output `TypeId`s. A validated engine
-    /// may attach and serve reads and durable typed mutations. `Projected`
-    /// commands additionally require the engine and command repository to
-    /// carry the same opaque causal-storage identity. A service with no typed
-    /// commands may still attach a manual legacy catalog; that path remains
-    /// explicitly noncausal and cannot bind typed command metadata.
+    /// may attach and serve reads and durable typed mutations only when its
+    /// opaque causal protocol tokens are configured. `Projected` commands
+    /// additionally require the engine and command repository to carry the
+    /// same opaque causal-storage identity. A service with no typed commands
+    /// may still attach a manual legacy catalog; that path remains explicitly
+    /// noncausal and cannot bind typed command metadata.
     #[cfg(feature = "graphql")]
     pub fn try_with_graphql(
         mut self,
@@ -2059,6 +2643,12 @@ impl Service {
                         .into(),
                 ));
             }
+        }
+
+        if !typed_commands.is_empty() && !engine.causal_protocol_configured() {
+            return Err(GraphqlServiceBindError(
+                "typed causal commands require a configured GraphQL protocol token key".into(),
+            ));
         }
 
         let projected_identities = self
@@ -2246,6 +2836,22 @@ impl Service {
         session: Session,
         principal: VerifiedPrincipal,
     ) -> Result<Value, CausalDispatchError> {
+        self.dispatch_causal_with_receipt(command, command_id, input, session, principal)
+            .await
+            .map(|result| result.payload)
+    }
+
+    /// Execute one authenticated typed causal route and retain the exact
+    /// durable replay material needed to construct a causal receipt.
+    #[cfg(feature = "graphql")]
+    pub(crate) async fn dispatch_causal_with_receipt(
+        &self,
+        command: &str,
+        command_id: &str,
+        input: Value,
+        session: Session,
+        principal: VerifiedPrincipal,
+    ) -> Result<CausalDispatchResult, CausalDispatchError> {
         let service_id = self.name().ok_or_else(|| {
             CausalDispatchError::Internal(
                 "typed causal dispatch requires Service::named identity".into(),
@@ -2268,6 +2874,56 @@ impl Service {
                 self.causal_command_policy,
             )
             .await
+    }
+
+    /// Resolve one client-created command ID without accepting a command name.
+    ///
+    /// The verified principal determines the private ledger partition and each
+    /// finite causal handler rechecks its current role grant and contract
+    /// fingerprint. Malformed, absent, wrong-principal, revoked, drifted, and
+    /// ambiguous IDs all collapse to `unknown`.
+    #[cfg(feature = "graphql")]
+    pub(crate) async fn causal_command_status(
+        &self,
+        command_id: &str,
+        session: &Session,
+        principal: VerifiedPrincipal,
+    ) -> Result<CausalCommandPublicStatus, CausalDispatchError> {
+        let Ok(parsed_command_id) = CommandId::parse(command_id) else {
+            return Ok(CausalCommandPublicStatus::unknown(command_id));
+        };
+        let service_id = self.name().ok_or_else(|| {
+            CausalDispatchError::Internal(
+                "typed causal status requires Service::named identity".into(),
+            )
+        })?;
+        let principal_partition =
+            PrincipalPartitionId::new(principal.partition_for_service(service_id))
+                .map_err(internal_ledger_error)?;
+
+        let mut found = None;
+        for routes in &self.routes {
+            let status = routes
+                .causal_command_status(
+                    service_id,
+                    &parsed_command_id,
+                    &principal_partition,
+                    session,
+                )
+                .await?;
+            if status.is_unknown() {
+                continue;
+            }
+            if found.replace(status).is_some() {
+                // Separate route bundles may use separate repositories. A
+                // duplicated bearer-scoped command ID is intentionally not
+                // enumerated or resolved by registration order.
+                return Ok(CausalCommandPublicStatus::unknown(
+                    parsed_command_id.as_str(),
+                ));
+            }
+        }
+        Ok(found.unwrap_or_else(|| CausalCommandPublicStatus::unknown(parsed_command_id.as_str())))
     }
 
     /// Private lookup seam used by replay recovery and the authorized status
@@ -2843,6 +3499,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     #[cfg(feature = "graphql")]
     use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "graphql")]
+    const TEST_PROTOCOL_TOKEN_KEY: [u8; 32] = [0x5a; 32];
 
     #[derive(Deserialize)]
     struct TypedInput {
@@ -3526,6 +4185,121 @@ mod tests {
 
     #[cfg(feature = "graphql")]
     #[tokio::test]
+    async fn causal_dispatch_receipt_and_status_use_the_exact_durable_replay() {
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let route_handler_calls = Arc::clone(&handler_calls);
+        let service = Service::new().named("causal-tests").routes(
+            Routes::new()
+                .with_repo(InMemoryRepository::new().aggregate::<CausalDispatcherAggregate>())
+                .typed_command(typed_command::<CausalTestInput, Accepted<TypedOutput>>(
+                    "causal.receipt",
+                ))
+                .handle(
+                    move |_context: &CausalCommandContext<'_, CausalDispatcherAggregate>,
+                          input: CausalTestInput| {
+                        let calls = Arc::clone(&route_handler_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(
+                                PreparedCommand::<Accepted<TypedOutput>>::prepare(TypedOutput {
+                                    id: input.id,
+                                })
+                                .unwrap(),
+                            )
+                        }
+                    },
+                ),
+        );
+        let command_id = causal_test_command_id();
+        let principal = causal_test_principal();
+
+        let first = service
+            .dispatch_causal_with_receipt(
+                "causal.receipt",
+                &command_id,
+                causal_test_input("todo-receipt", "first"),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect("fresh dispatch should return its durable receipt source");
+        let replay = service
+            .dispatch_causal_with_receipt(
+                "causal.receipt",
+                &command_id,
+                causal_test_input("todo-receipt", "first"),
+                Session::new(),
+                principal.clone(),
+            )
+            .await
+            .expect("response-loss retry should recover the same receipt source");
+
+        assert_eq!(first, replay);
+        assert_eq!(first.payload, json!({ "id": "todo-receipt" }));
+        assert_eq!(first.receipt.command_id, command_id);
+        assert_eq!(first.receipt.state, CommandLedgerState::Accepted);
+        assert_eq!(first.receipt.consistency, CommandConsistency::Accepted);
+        assert!(first.receipt.obligations.is_empty());
+        assert!(first.receipt.direct_projection.is_none());
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+        let status = service
+            .causal_command_status(&command_id, &Session::new(), principal)
+            .await
+            .expect("same principal and current grant should resolve status");
+        assert_eq!(status.state, CausalCommandPublicState::Accepted);
+        assert_eq!(status.command_id, first.receipt.command_id);
+        assert_eq!(
+            status.causation_id.as_deref(),
+            Some(first.receipt.causation_id.as_str())
+        );
+        assert_eq!(status.consistency, Some(CommandConsistency::Accepted));
+        assert_eq!(status.outcome, Some(first.payload));
+        assert!(status.obligations.is_empty());
+        assert!(status.evidence.is_empty());
+        assert!(status.direct_projection.is_none());
+    }
+
+    #[cfg(feature = "graphql")]
+    #[test]
+    fn causal_status_projection_failure_precedes_observed_and_pending_evidence() {
+        let item = |obligation_index, state| CausalCommandProjectionEvidence {
+            obligation_index,
+            state,
+            incarnation: (state == CausalProjectionEvidenceState::Observed).then_some(1),
+            revision: (state == CausalProjectionEvidenceState::Observed).then_some(2),
+        };
+
+        assert_eq!(
+            collapse_projection_evidence(&[
+                item(0, CausalProjectionEvidenceState::Observed),
+                item(1, CausalProjectionEvidenceState::TerminalFailure),
+                item(2, CausalProjectionEvidenceState::Pending),
+            ]),
+            CausalCommandPublicState::ProjectionFailed
+        );
+        assert_eq!(
+            collapse_projection_evidence(&[
+                item(0, CausalProjectionEvidenceState::Observed),
+                item(1, CausalProjectionEvidenceState::Observed),
+            ]),
+            CausalCommandPublicState::Projected
+        );
+        assert_eq!(
+            collapse_projection_evidence(&[
+                item(0, CausalProjectionEvidenceState::Observed),
+                item(1, CausalProjectionEvidenceState::Pending),
+            ]),
+            CausalCommandPublicState::AcceptedPendingProjection
+        );
+        assert_eq!(
+            collapse_projection_evidence(&[]),
+            CausalCommandPublicState::AcceptedPendingProjection
+        );
+    }
+
+    #[cfg(feature = "graphql")]
+    #[tokio::test]
     async fn causal_dispatch_rejects_same_command_id_with_different_input() {
         let handler_calls = Arc::new(AtomicUsize::new(0));
         let route_handler_calls = Arc::clone(&handler_calls);
@@ -3865,11 +4639,53 @@ mod tests {
                 "causal.user_allowed",
                 &command_id,
                 &session_with_role("user"),
-                principal,
+                principal.clone(),
             )
             .await
             .expect("the allowed route should produce a non-disclosing status result");
         assert_eq!(cross_route, CommandLookup::Unknown);
+
+        let authorized = service
+            .causal_command_status(&command_id, &session_with_role("admin"), principal.clone())
+            .await
+            .expect("current admin grant should recover the command without its route name");
+        assert_eq!(authorized.state, CausalCommandPublicState::Accepted);
+        assert_eq!(authorized.command_id, command_id);
+
+        let revoked = service
+            .causal_command_status(&command_id, &session_with_role("user"), principal.clone())
+            .await
+            .expect("revoked routes must collapse to a non-enumerating status");
+        assert_eq!(revoked.state, CausalCommandPublicState::Unknown);
+
+        let other_principal = VerifiedPrincipal::test_oidc(
+            "https://issuer.example/",
+            "another-subject",
+            &["distributed-tests"],
+        );
+        let wrong_principal = service
+            .causal_command_status(&command_id, &session_with_role("admin"), other_principal)
+            .await
+            .expect("another principal must not learn whether the command exists");
+        assert_eq!(wrong_principal.state, CausalCommandPublicState::Unknown);
+
+        let malformed = service
+            .causal_command_status(
+                "not-a-command-id",
+                &session_with_role("admin"),
+                principal.clone(),
+            )
+            .await
+            .expect("malformed IDs are non-enumerating, not validation or storage errors");
+        assert_eq!(malformed.state, CausalCommandPublicState::Unknown);
+        assert_eq!(malformed.command_id, "not-a-command-id");
+
+        let missing_id = causal_test_command_id();
+        let missing = service
+            .causal_command_status(&missing_id, &session_with_role("admin"), principal)
+            .await
+            .expect("absent IDs are non-enumerating");
+        assert_eq!(missing.state, CausalCommandPublicState::Unknown);
     }
 
     #[cfg(feature = "graphql")]
@@ -4174,6 +4990,7 @@ mod tests {
                 ),
         );
         let engine = crate::graphql::GraphqlEngine::builder(&repository)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
             .model::<CausalProjectionObligationView>(
                 crate::graphql::ModelPermissions::new()
                     .grant("anonymous", crate::graphql::read().all_columns()),
@@ -4202,6 +5019,26 @@ mod tests {
             .await
             .expect("matching outbox fact should make the causal dispatch commit");
         assert_eq!(result, json!({ "id": "todo-obligation" }));
+
+        let status = service
+            .causal_command_status(&command_id, &Session::new(), principal.clone())
+            .await
+            .expect("status should evaluate the stored finite obligation batch");
+        assert_eq!(
+            status.state,
+            CausalCommandPublicState::AcceptedPendingProjection
+        );
+        assert_eq!(status.consistency, Some(CommandConsistency::Accepted));
+        assert_eq!(status.obligations.len(), 1);
+        assert_eq!(status.obligations[0].projector, "project_causal_obligation");
+        assert_eq!(status.evidence.len(), 1);
+        assert_eq!(
+            status.evidence[0].state,
+            CausalProjectionEvidenceState::Pending
+        );
+        assert_eq!(status.evidence[0].obligation_index, 0);
+        assert_eq!(status.evidence[0].incarnation, None);
+        assert_eq!(status.evidence[0].revision, None);
 
         let lookup = service
             .lookup_causal_command(
@@ -4290,6 +5127,7 @@ mod tests {
             ])
             .change_epoch("causal-direct-v1");
         let engine = crate::graphql::GraphqlEngine::builder(&repository)
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
             .model::<CausalProjectionObligationView>(
                 crate::graphql::ModelPermissions::new()
                     .grant("anonymous", crate::graphql::read().all_columns()),
@@ -4335,6 +5173,21 @@ mod tests {
             .expect("direct command should atomically commit");
         assert_eq!(first, json!({ "id": "todo-direct" }));
         assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+        let direct_status = service
+            .causal_command_status(&command_id, &Session::new(), causal_test_principal())
+            .await
+            .expect("direct projected status should use ledger replay evidence");
+        assert_eq!(direct_status.state, CausalCommandPublicState::Projected);
+        assert_eq!(
+            direct_status.consistency,
+            Some(CommandConsistency::Projected)
+        );
+        assert!(direct_status.obligations.is_empty());
+        assert!(direct_status.evidence.is_empty());
+        let direct_status_evidence = direct_status
+            .direct_projection
+            .expect("direct status must retain the exact same-attempt evidence");
 
         let stored_id: String =
             sqlx::query_scalar("SELECT id FROM causal_projection_obligation_views WHERE id = ?")
@@ -4385,6 +5238,7 @@ mod tests {
             &evidence,
         )
         .unwrap();
+        assert_eq!(direct_status_evidence.replay_value(), evidence);
         assert_eq!(evidence["records"].as_array().unwrap().len(), 1);
         assert_eq!(evidence["changes"].as_array().unwrap().len(), 1);
         assert_eq!(evidence["observations"].as_array().unwrap().len(), 1);

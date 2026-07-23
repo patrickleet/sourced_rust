@@ -1,5 +1,6 @@
 /** Optimistic -> network -> result -> effects -> reconcile command pipeline. */
 import type { GqlError, GraphqlVariables } from '../types.js';
+import type { GraphqlResponseExtensions } from '../protocol.js';
 import {
 	applyCacheOps,
 	applyProjectionPayload,
@@ -18,6 +19,8 @@ import { cacheKey, type QueryCache } from './query-cache.js';
 export type NetworkResult<TData = Record<string, unknown>> = {
 	data?: TData | null;
 	errors?: GqlError[] | null;
+	/** Validated GraphQL response extensions preserved for command receipts. */
+	extensions?: GraphqlResponseExtensions;
 	/** HTTP status when the transport has one. Network exceptions use 0. */
 	status?: number;
 };
@@ -44,6 +47,8 @@ export type PipelineDeps = {
 		document: string,
 		variables?: GraphqlVariables
 	) => Promise<NetworkResult>;
+	/** Set only after a generated causal receipt was strictly correlated. */
+	retainOptimismOnError?: (result: NetworkResult<unknown>) => boolean;
 	runEffects?: (effects: Effect[]) => void;
 };
 
@@ -86,7 +91,7 @@ function splitOps(items: Array<CacheOp | Effect>): { ops: CacheOp[]; effects: Ef
 export async function runCommandPipeline<TData = Record<string, unknown>>(
 	deps: PipelineDeps,
 	commandDocument: string,
-	input: Record<string, unknown> | undefined,
+	input: unknown,
 	options: CommandPipelineOptions = {}
 ): Promise<NetworkResult<TData>> {
 	const browser = options.browser !== false;
@@ -134,6 +139,27 @@ export async function runCommandPipeline<TData = Record<string, unknown>>(
 	}
 
 	if (result.errors?.length) {
+		const correlatedPending =
+			deps.retainOptimismOnError?.(result) === true;
+		if (
+			isAmbiguousCausalTransport(result) ||
+			correlatedPending
+		) {
+			// The server may have committed. Retain the named optimistic layer;
+			// only an authoritative replay/status outcome may confirm or reject it.
+			if (
+				correlatedPending &&
+				browser &&
+				policy.optimistic?.targets.length
+			) {
+				markOptimisticTargetsPending(
+					deps.cache,
+					policy.optimistic.targets
+				);
+			}
+			options.onSettled?.();
+			return result;
+		}
 		if (browser && snapshots.length) rollback(deps.cache, snapshots);
 		const { ops, effects } = splitOps(
 			options.onError?.({ errors: result.errors }) ?? [
@@ -156,11 +182,10 @@ export async function runCommandPipeline<TData = Record<string, unknown>>(
 			(policy.resultKind === 'ack' || policy.resultKind === 'fact') &&
 			policy.optimistic?.targets.length
 		) {
-			for (const target of policy.optimistic.targets) {
-				const key = cacheKey(target.document, target.variables);
-				const entry = deps.cache.get(key);
-				if (entry) deps.cache.set(key, { ...entry, pending: true, optimistic: true });
-			}
+			markOptimisticTargetsPending(
+				deps.cache,
+				policy.optimistic.targets
+			);
 		}
 	}
 
@@ -207,6 +232,33 @@ export async function runCommandPipeline<TData = Record<string, unknown>>(
 
 	options.onSettled?.();
 	return result;
+}
+
+function isAmbiguousCausalTransport(result: NetworkResult<unknown>): boolean {
+	return (
+		result.status === 0 &&
+		result.errors?.some(
+			(error) =>
+				error.extensions?.code === 'CAUSAL_TRANSPORT_AMBIGUOUS'
+		) === true
+	);
+}
+
+function markOptimisticTargetsPending(
+	cache: QueryCache,
+	targets: readonly CacheTarget[]
+): void {
+	for (const target of targets) {
+		const key = cacheKey(target.document, target.variables);
+		const entry = cache.get(key);
+		if (entry) {
+			cache.set(key, {
+				...entry,
+				pending: true,
+				optimistic: true
+			});
+		}
+	}
 }
 
 function projectionPayload(data: unknown): Record<string, unknown> | null {

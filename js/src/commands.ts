@@ -7,6 +7,16 @@ import {
   type CommandPipelineOptions,
   type CommandPolicy
 } from './cache/pipeline.js';
+import {
+  CausalReceiptError,
+  causalReceiptFailure,
+  causalTransportFailure,
+  createCausalCommandReceipt,
+  requestCausalCommand,
+  type CausalCommandCallOptions,
+  type CausalCommandDefinition,
+  type CausalCommandReceipt
+} from './causal.js';
 
 /** The request surface needed by generated command clients. */
 export type CommandClient = {
@@ -30,13 +40,15 @@ declare const commandTypes: unique symbol;
  * variable by accident.
  */
 export type CommandDefinition<
-  TInput extends object | void = object,
+  TInput = object,
   TOutput = unknown
 > = Readonly<{
   field: string;
   document: GqlDocument;
   hasInput: [TInput] extends [void] ? false : true;
   roles?: readonly string[];
+  /** Present only for generated v3 causal commands. */
+  causal?: CausalCommandDefinition;
   /** Type-only marker; `defineCommand` does not add it at runtime. */
   [commandTypes]?: {
     input: TInput;
@@ -45,7 +57,7 @@ export type CommandDefinition<
 }>;
 
 export type AnyCommandDefinition =
-  | CommandDefinition<object, unknown>
+  | CommandDefinition<unknown, unknown>
   | CommandDefinition<void, unknown>;
 
 export type CommandDefinitionMap = Readonly<Record<string, AnyCommandDefinition>>;
@@ -65,7 +77,7 @@ export type CommandOutput<TCommand> = TCommand extends CommandDefinition<
   : never;
 
 /** Define one command while retaining its input/output types. */
-export function defineCommand<TInput extends object | void, TOutput>(
+export function defineCommand<TInput, TOutput>(
   definition: CommandDefinition<TInput, TOutput>
 ): CommandDefinition<TInput, TOutput> {
   if (!definition.field.trim()) {
@@ -82,8 +94,8 @@ export function defineCommands<const TCommands extends CommandDefinitionMap>(
 }
 
 export type ExecuteCommandArgs<TCommand> = [CommandInput<TCommand>] extends [void]
-  ? []
-  : [input: CommandInput<TCommand>];
+  ? [options?: CommandCallOptions]
+  : [input: CommandInput<TCommand>, options?: CommandCallOptions];
 
 /** Execute a command directly, without client-cache policy handling. */
 export async function executeCommand<TCommand extends AnyCommandDefinition>(
@@ -91,15 +103,20 @@ export async function executeCommand<TCommand extends AnyCommandDefinition>(
   command: TCommand,
   ...args: ExecuteCommandArgs<TCommand>
 ): Promise<GqlResult<CommandOutput<TCommand>>> {
+  const input = command.hasInput ? args[0] : undefined;
+  const options = (
+    command.hasInput ? args[1] : args[0]
+  ) as CommandCallOptions | undefined;
   return executeCommandInternal(
     client,
     command,
-    command.hasInput ? (args[0] as object) : undefined
+    input,
+    options
   );
 }
 
 /** Per-call cache/pipeline overrides accepted by every bound command. */
-export type CommandCallOptions = CommandPipelineOptions;
+export type CommandCallOptions = CommandPipelineOptions & CausalCommandCallOptions;
 
 export type BoundCommand<TCommand> = [CommandInput<TCommand>] extends [void]
   ? (options?: CommandCallOptions) => Promise<GqlResult<CommandOutput<TCommand>>>
@@ -163,13 +180,13 @@ export function bindCommandsPipeline<TCommands extends CommandDefinitionMap>(
           ? executePipelinedCommand(
               client,
               command,
-              input as object,
+              input,
               cache,
               policy,
               options.runEffects,
               callOptions
             )
-          : executeCommandInternal(client, command, input as object);
+          : executeCommandInternal(client, command, input, callOptions);
     } else {
       bound[name] = (callOptions: CommandCallOptions = {}) =>
         cache
@@ -182,7 +199,7 @@ export function bindCommandsPipeline<TCommands extends CommandDefinitionMap>(
               options.runEffects,
               callOptions
             )
-          : executeCommandInternal(client, command, undefined);
+          : executeCommandInternal(client, command, undefined, callOptions);
     }
   }
 
@@ -194,22 +211,49 @@ async function executePipelinedCommand<
 >(
   client: CommandClient,
   command: TCommand,
-  input: object | undefined,
+  input: unknown,
   cache: QueryCache,
   policy: CommandPolicy | undefined,
   runEffects: ((effects: Effect[]) => void) | undefined,
   callOptions: CommandCallOptions
 ): Promise<GqlResult<CommandOutput<TCommand>>> {
   let commandStatus = 0;
+  const receipt = command.causal
+    ? createCausalCommandReceipt(client, command.causal, callOptions)
+    : undefined;
   const document = documentToString(command.document);
   const result = await runCommandPipeline<Record<string, CommandOutput<TCommand>>>(
     {
       cache,
       request: async (requestDocument, variables) => {
-        const response = await client.request<Record<string, CommandOutput<TCommand>>>(
-          requestDocument,
-          variables
+        const commandVariables = variablesForCommand(
+          command,
+          input,
+          receipt
         );
+        let response;
+        try {
+          response = receipt
+            ? await requestCausalCommand<
+                Record<string, CommandOutput<TCommand>>,
+                GraphqlVariables
+              >(
+                client,
+                receipt,
+                requestDocument,
+                commandVariables ?? {}
+              )
+            : await client.request<Record<string, CommandOutput<TCommand>>>(
+                requestDocument,
+                commandVariables
+              );
+        } catch (error) {
+          if (!receipt) throw error;
+          response =
+            error instanceof CausalReceiptError
+              ? causalReceiptFailure(error, receipt)
+              : causalTransportFailure(error, receipt);
+        }
         commandStatus = response.status;
         return response;
       },
@@ -220,10 +264,26 @@ async function executePipelinedCommand<
         );
         return response;
       },
+      retainOptimismOnError: (response) => {
+        const correlated = response.extensions?.distributed?.command;
+        return (
+          receipt !== undefined &&
+          correlated?.commandId === receipt.commandId &&
+          correlated.state === receipt.state &&
+          (
+            receipt.state === 'in_progress' ||
+            receipt.state === 'accepted_pending_projection' ||
+            (
+              receipt.state === 'accepted' &&
+              command.causal?.projects === false
+            )
+          )
+        );
+      },
       runEffects
     },
     document,
-    input as Record<string, unknown> | undefined,
+    input,
     {
       ...callOptions,
       policy: callOptions.policy ?? policy,
@@ -241,6 +301,10 @@ async function executePipelinedCommand<
   return {
     data: unwrapField<CommandOutput<TCommand>>(result.data, command.field),
     errors,
+    ...(result.extensions === undefined
+      ? {}
+      : { extensions: result.extensions }),
+    ...(receipt === undefined ? {} : { receipt }),
     // A thrown transport request has no HTTP response; the pipeline returns 0.
     status: result.status ?? commandStatus
   };
@@ -249,20 +313,64 @@ async function executePipelinedCommand<
 async function executeCommandInternal<TOutput>(
   client: CommandClient,
   command: AnyCommandDefinition,
-  input: object | undefined
+  input: unknown,
+  callOptions: CommandCallOptions = {}
 ): Promise<GqlResult<TOutput>> {
-  const variables = command.hasInput
-    ? { input: input as Record<string, unknown> }
+  const receipt = command.causal
+    ? createCausalCommandReceipt(client, command.causal, callOptions)
     : undefined;
-  const result = await client.request<Record<string, TOutput>>(
-    command.document as GqlDocument<Record<string, TOutput>, GraphqlVariables>,
-    variables
-  );
+  const variables = variablesForCommand(command, input, receipt);
+  let result: GqlResult<Record<string, TOutput>>;
+  try {
+    result = receipt
+      ? await requestCausalCommand<
+          Record<string, TOutput>,
+          GraphqlVariables
+        >(
+          client,
+          receipt,
+          command.document as GqlDocument<
+            Record<string, TOutput>,
+            GraphqlVariables
+          >,
+          variables ?? {}
+        )
+      : await client.request<Record<string, TOutput>>(
+          command.document as GqlDocument<
+            Record<string, TOutput>,
+            GraphqlVariables
+          >,
+          variables
+        );
+  } catch (error) {
+    if (!receipt) throw error;
+    return error instanceof CausalReceiptError
+      ? causalReceiptFailure(error, receipt)
+      : causalTransportFailure(error, receipt);
+  }
 
   return {
     data: unwrapField<TOutput>(result.data, command.field),
     errors: result.errors,
+    ...(result.extensions === undefined
+      ? {}
+      : { extensions: result.extensions }),
+    ...(receipt === undefined ? {} : { receipt }),
     status: result.status
+  };
+}
+
+function variablesForCommand(
+  command: AnyCommandDefinition,
+  input: unknown,
+  receipt: CausalCommandReceipt | undefined
+): GraphqlVariables | undefined {
+  if (!command.hasInput && !receipt) return undefined;
+  return {
+    ...(receipt ? { commandId: receipt.commandId } : {}),
+    ...(command.hasInput
+      ? { input }
+      : {})
   };
 }
 
@@ -274,3 +382,18 @@ function unwrapField<TOutput>(data: unknown, field: string): TOutput | undefined
 function hasBrowserWindow(): boolean {
   return typeof (globalThis as { window?: unknown }).window !== 'undefined';
 }
+
+export {
+  CausalCommandReceipt,
+  CausalReceiptError,
+  createCommandId,
+  defineCausalProtocol,
+  type CausalCommandCallOptions,
+  type CausalCommandDefinition,
+  type CausalCommandProtocol,
+  type CausalCommandStatus,
+  type CausalProjectedOutcome,
+  type CausalReceiptErrorCode,
+  type CausalRecoveryOptions,
+  type CausalStatusOperation
+} from './causal.js';

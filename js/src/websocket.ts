@@ -4,6 +4,13 @@ import {
 	wsConnectionInitPayload
 } from './auth-headers.js';
 import { documentToString, type GqlDocument } from './document.js';
+import {
+	DistributedProtocolError,
+	distributedLiveResumeExtensions,
+	parseGraphqlResponseExtensions,
+	type DistributedLiveCursor,
+	type GraphqlResponseExtensions
+} from './protocol.js';
 import type {
 	GqlAuth,
 	GqlError,
@@ -17,6 +24,8 @@ export type WebSocketConstructor = typeof globalThis.WebSocket;
 export type GqlWsResult<TData = unknown> = {
 	data?: TData | null;
 	errors?: GqlError[];
+	/** Validated top-level GraphQL extensions for this live frame. */
+	extensions?: GraphqlResponseExtensions;
 };
 
 export type GqlWsHandlers<TData = unknown> = {
@@ -32,6 +41,11 @@ export type SubscribeOptions<
 	httpUrl?: string;
 	/** Variables for the subscription operation. */
 	variables?: TVariables;
+	/**
+	 * Latest server-issued cursors for a generated live operation.
+	 * @internal Application code must not synthesize resume tokens.
+	 */
+	resume?: readonly DistributedLiveCursor[];
 	/** Override the runtime's global WebSocket constructor. */
 	webSocket?: WebSocketConstructor;
 };
@@ -105,6 +119,20 @@ export function subscribe<
 	const operationId = '1';
 	let closed = false;
 
+	const rejectProtocolFrame = (error: unknown) => {
+		handlers.onError?.(error);
+		if (closed) return;
+		closed = true;
+		if (socket.readyState === WebSocketImpl.OPEN) {
+			try {
+				socket.send(JSON.stringify({ type: 'complete', id: operationId }));
+			} catch {
+				// The protocol is already rejected; closing is the remaining fence.
+			}
+		}
+		socket.close();
+	};
+
 	socket.onopen = () => {
 		socket.send(
 			JSON.stringify({
@@ -124,16 +152,28 @@ export function subscribe<
 
 		switch (message.type) {
 			case 'connection_ack':
+				const extensions =
+					options.resume === undefined || options.resume.length === 0
+						? undefined
+						: distributedLiveResumeExtensions(options.resume);
 				socket.send(
 					JSON.stringify({
 						type: 'subscribe',
 						id: operationId,
-						payload: { query, variables: options.variables ?? {} }
+						payload: {
+							query,
+							variables: options.variables ?? {},
+							...(extensions === undefined ? {} : { extensions })
+						}
 					})
 				);
 				break;
 			case 'next':
-				handlers.onNext(message.payload as GqlWsResult<TData>);
+				try {
+					handlers.onNext(parseNextPayload<TData>(message.payload));
+				} catch (error) {
+					rejectProtocolFrame(error);
+				}
 				break;
 			case 'error':
 				handlers.onError?.(message.payload ?? 'subscription error');
@@ -173,5 +213,26 @@ export function subscribe<
 			}
 		}
 		socket.close();
+	};
+}
+
+function parseNextPayload<TData>(value: unknown): GqlWsResult<TData> {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		throw new DistributedProtocolError(
+			'DISTRIBUTED_PROTOCOL_INVALID',
+			'websocket.next.payload'
+		);
+	}
+	const payload = value as Record<string, unknown>;
+	if (payload.errors !== undefined && !Array.isArray(payload.errors)) {
+		throw new DistributedProtocolError(
+			'DISTRIBUTED_PROTOCOL_INVALID',
+			'websocket.next.payload.errors'
+		);
+	}
+	const extensions = parseGraphqlResponseExtensions(payload.extensions);
+	return {
+		...(payload as GqlWsResult<TData>),
+		...(extensions === undefined ? {} : { extensions })
 	};
 }

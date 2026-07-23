@@ -1,6 +1,10 @@
 /** Isomorphic HTTP GraphQL request helper with injectable URL and authentication. */
 import { buildAuthHeaders } from './auth-headers.js';
 import { documentToString, type GqlDocument } from './document.js';
+import {
+	DistributedProtocolError,
+	parseGraphqlResponseExtensions
+} from './protocol.js';
 import type {
 	GqlAuth,
 	GqlError,
@@ -20,6 +24,7 @@ type GraphqlResponseBody<TData> = {
 	data?: TData;
 	errors?: GqlError[];
 	error?: string;
+	extensions?: unknown;
 };
 
 type ParsedResponseBody<TData> = {
@@ -110,6 +115,26 @@ export async function requestGraphql<
 	});
 
 	const { body, rawText } = await readResponseBody<TData>(response);
+	let extensions;
+	try {
+		extensions = parseGraphqlResponseExtensions(body.extensions);
+	} catch (error) {
+		if (error instanceof DistributedProtocolError) {
+			return {
+				data: undefined,
+				errors: [
+					...(body.errors ?? []),
+					{
+						message: error.message,
+						extensions: { code: error.code }
+					}
+				],
+				status: response.status
+			};
+		}
+		throw error;
+	}
+
 	if (response.status === 401) {
 		const detail =
 			body.errors?.[0]?.message ??
@@ -121,6 +146,7 @@ export async function requestGraphql<
 		return {
 			data: body.data,
 			errors: [{ message: detail }],
+			...(extensions === undefined ? {} : { extensions }),
 			status: response.status
 		};
 	}
@@ -133,6 +159,7 @@ export async function requestGraphql<
 		return {
 			data: body.data,
 			errors: [{ message: httpFailureMessage(response, body, rawText) }],
+			...(extensions === undefined ? {} : { extensions }),
 			status: response.status
 		};
 	}
@@ -140,6 +167,7 @@ export async function requestGraphql<
 	return {
 		data: body.data,
 		errors: body.errors,
+		...(extensions === undefined ? {} : { extensions }),
 		status: response.status
 	};
 }

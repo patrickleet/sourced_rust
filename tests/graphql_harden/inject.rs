@@ -4,8 +4,7 @@ use async_graphql::Request;
 use distributed::graphql::{read, GraphqlEngine, ModelPermissions};
 
 use super::common::{
-    assert_no_sql_leak, engine_all_columns, exec_json, seed_orders, session,
-    OrderView,
+    assert_no_sql_leak, engine_all_columns, exec_json, seed_orders, session, OrderView,
 };
 
 /// S1: response keys are GraphQL Names; free-form injection cannot reach SQL keys.
@@ -22,9 +21,7 @@ async fn s1_response_key_field_selection_safe_roundtrip() {
     let resp = engine
         .execute(
             &s,
-            Request::new(
-                r#"{ orders(where: { status: { _eq: "x' OR '1'='1" } }) { order_id } }"#,
-            ),
+            Request::new(r#"{ orders(where: { status: { _eq: "x' OR '1'='1" } }) { order_id } }"#),
         )
         .await;
     assert_no_sql_leak(&resp);
@@ -69,8 +66,9 @@ async fn s3_like_wildcards_are_bound_and_safe() {
     .await;
     let orders = data["orders"].as_array().unwrap();
     assert!(
-        orders.iter().all(|o| o["status"].as_str().unwrap().contains("pen")
-            || o["status"] == "open"),
+        orders
+            .iter()
+            .all(|o| o["status"].as_str().unwrap().contains("pen") || o["status"] == "open"),
         "{data}"
     );
     // Malicious-looking pattern must not cause SQL error leak.

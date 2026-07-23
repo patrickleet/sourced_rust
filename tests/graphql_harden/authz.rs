@@ -19,7 +19,9 @@ async fn claim_row_filter_isolates_tenants() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user", "anonymous"])
         .model::<OrderView>(
-            ModelPermissions::new().grant("user", read()
+            ModelPermissions::new().grant(
+                "user",
+                read()
                     .all_columns()
                     .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
@@ -59,7 +61,9 @@ async fn a2_claim_filter_on_by_pk_isolates_tenants() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().grant("user", read()
+            ModelPermissions::new().grant(
+                "user",
+                read()
                     .all_columns()
                     .rows(col("customer_id").eq(claim("x-user-id"))),
             ),
@@ -97,7 +101,9 @@ async fn a3_claim_filter_on_aggregate_count() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().grant("user", read()
+            ModelPermissions::new().grant(
+                "user",
+                read()
                     .all_columns()
                     .aggregations()
                     .rows(col("customer_id").eq(claim("x-user-id"))),
@@ -107,24 +113,14 @@ async fn a3_claim_filter_on_aggregate_count() {
         .unwrap();
 
     let a = session("user", "tenant-a");
-    let data = exec_json(
-        &engine,
-        &a,
-        "{ orders_aggregate { aggregate { count } } }",
-    )
-    .await;
+    let data = exec_json(&engine, &a, "{ orders_aggregate { aggregate { count } } }").await;
     assert_eq!(
         data["orders_aggregate"]["aggregate"]["count"], 2,
         "tenant-a has 2 orders: {data}"
     );
 
     let b = session("user", "tenant-b");
-    let data = exec_json(
-        &engine,
-        &b,
-        "{ orders_aggregate { aggregate { count } } }",
-    )
-    .await;
+    let data = exec_json(&engine, &b, "{ orders_aggregate { aggregate { count } } }").await;
     assert_eq!(
         data["orders_aggregate"]["aggregate"]["count"], 1,
         "tenant-b has 1 order: {data}"

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { generateCommandArtifacts, parseCommandManifest } from '../codegen.js';
+import { generateCommandArtifacts, parseCodegenManifest } from '../codegen.js';
 
 type CliPaths = {
   cwd: string;
@@ -24,7 +24,7 @@ const DEFAULT_PATHS = {
 const HELP = `Usage: distributed-gen-commands [options]
 
 Generate app-owned TypeScript commands, GraphQL operations, and client policies
-from a Distributed command manifest (version 1).
+from a Distributed command manifest (legacy version 1 or client manifest v3).
 
 Options:
   --cwd <directory>       Base directory for relative paths (default: cwd)
@@ -62,7 +62,7 @@ export function runCommandCodegenCli(
     throw new Error(`invalid JSON in ${paths.manifest}: ${errorMessage(error)}`);
   }
 
-  const manifest = parseCommandManifest(json);
+  const manifest = parseCodegenManifest(json);
   const artifacts = generateCommandArtifacts(manifest, {
     commandsImport: relativeNodeImport(paths.policies, paths.commands)
   });
@@ -72,9 +72,13 @@ export function runCommandCodegenCli(
   writeGeneratedFile(paths.operations, artifacts.operations);
   writeGeneratedFile(paths.policies, artifacts.policies);
 
-  const policyCount = manifest.commands.filter(
-    (command) => command.client_reconcile?.result || command.client_reconcile?.reconcile
-  ).length;
+  const policyCount =
+    'version' in manifest
+      ? manifest.commands.filter(
+          (command) =>
+            command.client_reconcile?.result || command.client_reconcile?.reconcile
+        ).length
+      : 0;
   process.stderr.write(
     `distributed-gen-commands: wrote ${displayPath(paths.cwd, paths.commands)}, ` +
       `${displayPath(paths.cwd, paths.operations)}, and ` +

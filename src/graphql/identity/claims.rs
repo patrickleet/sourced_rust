@@ -188,8 +188,9 @@ mod tests {
                 "admin": { "280664559058878577": "zitadel.localhost" }
             }
         });
-        let session = map_claims_to_session(&claims, &cfg_with_engine(&["admin", "customer", "user"]))
-            .unwrap();
+        let session =
+            map_claims_to_session(&claims, &cfg_with_engine(&["admin", "customer", "user"]))
+                .unwrap();
         assert_eq!(session.user_id(), Some("user-a-001"));
         assert_eq!(session.role(), Some("admin"));
         assert_eq!(session.get("x-roles"), Some("admin,customer"));

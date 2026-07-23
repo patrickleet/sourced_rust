@@ -79,11 +79,18 @@ pub use projector::{
     ProjectionRepairHandleParseError,
 };
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
+#[cfg(all(feature = "graphql", test))]
+pub(crate) use service::CausalCommandProjectionEvidence;
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;
 pub use service::{
     CausalCommandContext, CommandRequest, CommandResponse, DeliveryKind, HandlerNames, HandlerSpec,
     PreparedCommandHandler, RouteBuilder, Routes, Service, TypedRouteBuilder,
+};
+#[cfg(feature = "graphql")]
+pub(crate) use service::{
+    CausalCommandProjectionObligation, CausalCommandPublicState, CausalCommandPublicStatus,
+    CausalCommandReceiptSource, CausalProjectionEvidenceState,
 };
 pub use session::{Session, ROLE_KEY, USER_ID_KEY};
 

@@ -95,10 +95,13 @@ import {
   QueryCache,
   bindCommands,
   createGraphqlClient,
+  defineCausalProtocol,
   defineCommand,
   defineCommands,
   defineResource,
   type GqlDocument,
+  type CausalCommandReceipt,
+  type CausalReceiptErrorCode,
   type GqlResult,
   type GraphqlClient
 } from '@hops-ops/distributed';
@@ -153,11 +156,25 @@ const pageClient = useGraphql(() => pageData, { cache });
 pageClient.commands.missing();
 const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
 const commandClient: CommandClient = client;
+const causalProtocol = defineCausalProtocol({
+  protocolVersion: 2,
+  schemaHash: \`sha256:\${'a'.repeat(64)}\`,
+  commandStatus: {
+    name: 'Distributed_CommandStatus',
+    document: 'query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }',
+    operationHash: \`sha256:\${'b'.repeat(64)}\`
+  }
+});
 const commandDefinitions = defineCommands({
   create: defineCommand<{ id: string }, { id: string }>({
     field: 'create',
-    document: 'mutation Create($input: CreateInput!) { create(input: $input) { id } }',
-    hasInput: true
+    document: 'mutation Create($commandId: ID!, $input: CreateInput!) { create(commandId: $commandId, input: $input) { id } }',
+    hasInput: true,
+    causal: {
+      protocol: causalProtocol,
+      operationHash: \`sha256:\${'c'.repeat(64)}\`,
+      projects: true
+    }
   }),
   ping: defineCommand<void, { ok: boolean }>({
     field: 'ping',
@@ -166,8 +183,12 @@ const commandDefinitions = defineCommands({
   })
 });
 const commands = bindCommands(commandClient, commandDefinitions);
-void commands.create({ id: 'one' });
+void commands.create({ id: 'one' }).then((result) => {
+  const receipt: CausalCommandReceipt | undefined = result.receipt;
+  void receipt?.projected;
+});
 void commands.ping();
+const receiptCode: CausalReceiptErrorCode = 'CAUSAL_DEADLINE_EXCEEDED';
 void cacheKey('query Smoke { health }');
 void fieldToFunctionName('todos_create');
 
@@ -181,14 +202,16 @@ const loadHealth = loadQuery<HealthData, { health: string }>(
   (data) => ({ health: data?.health ?? 'unknown' })
 );
 
-void [resource, client, pageClient, proxy, loadHealth, createDistributedReplica, sparseTodos];
+void [resource, client, pageClient, proxy, loadHealth, createDistributedReplica, sparseTodos, receiptCode];
 `;
 
 const runtimeSource = `
 import assert from 'node:assert/strict';
 import {
   QueryCache,
+  CausalReceiptError,
   createGraphqlClient,
+  defineCausalProtocol,
   defineResource,
   looksLikeMutation
 } from '@hops-ops/distributed';
@@ -222,6 +245,8 @@ const result = await client.request(document);
 assert.equal(result.status, 200);
 assert.equal(resource.select(result.data), 'ok');
 assert.equal(looksLikeMutation('# comment\\nmutation Smoke { run }'), true);
+assert.equal(typeof defineCausalProtocol, 'function');
+assert.equal(typeof CausalReceiptError, 'function');
 
 const proxy = distributedGraphqlProxy('http://127.0.0.1:8791');
 assert.deepEqual(proxy, {

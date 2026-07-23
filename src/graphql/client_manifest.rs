@@ -22,11 +22,13 @@ use super::surface::{
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 2;
-pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 1;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 3;
+pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
 const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
+const PROTOCOL_OPERATIONS_VERSION: u32 = 1;
+const QUERY_CAPABILITIES_VERSION: u32 = 1;
 const KEY_ENCODING: &str = "canonical_json_tuple_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,16 +252,37 @@ pub struct DistributedClientManifest {
     pub models: Vec<ClientModel>,
     pub roots: Vec<ClientRoot>,
     pub commands: Vec<ClientCommand>,
+    pub protocol_operations: ClientProtocolOperations,
     pub projectors: Vec<ClientProjector>,
+}
+
+/// Framework-owned operations generated alongside application operations.
+///
+/// Keeping these documents in the manifest means clients never synthesize a
+/// status query or guess the server's protocol field selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientProtocolOperations {
+    pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_status: Option<ClientProtocolOperation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientProtocolOperation {
+    pub name: String,
+    pub operation: String,
+    pub operation_hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCapabilities {
     pub live_queries: bool,
-    pub framework_revisions: bool,
+    pub record_revisions: bool,
     pub tombstones: bool,
     pub causal_receipts: bool,
     pub live_resume: bool,
+    /// Safe behavior whenever exact query evidence or resume is unavailable.
+    pub query_fallback: String,
     pub cache_scope: bool,
     /// Durable restore of confirmed normalized state (task 11).
     pub confirmed_persistence: bool,
@@ -281,7 +304,7 @@ pub struct ClientModel {
     pub fields: Vec<ClientField>,
     pub relationships: Vec<ClientRelationship>,
     pub row_policy: ClientRowPolicy,
-    pub framework_revision: bool,
+    pub record_revisions: bool,
     pub tombstones: bool,
 }
 
@@ -570,6 +593,102 @@ pub struct ClientProjector {
     pub causal_confirmation: bool,
 }
 
+fn model_has_visible_causal_owner(surface: &Surface, model: &str) -> bool {
+    surface
+        .projectors
+        .iter()
+        .filter(|projector| projector.models.iter().any(|candidate| candidate == model))
+        .take(2)
+        .count()
+        == 1
+}
+
+fn selected_query_models(surface: &Surface) -> BTreeSet<String> {
+    let mut selected = surface
+        .query_fields
+        .iter()
+        .map(|root| root.model_name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut pending = selected.iter().cloned().collect::<Vec<_>>();
+    while let Some(model_name) = pending.pop() {
+        let Some(model) = surface.models.get(&model_name) else {
+            continue;
+        };
+        for relationship in &model.relationships {
+            if selected.insert(relationship.target_model.clone()) {
+                pending.push(relationship.target_model.clone());
+            }
+        }
+    }
+    selected
+}
+
+fn selected_query_dependencies(surface: &Surface) -> BTreeSet<String> {
+    let mut dependencies = surface
+        .query_fields
+        .iter()
+        .flat_map(|root| root.dependencies.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    for model_name in selected_query_models(surface) {
+        let Some(model) = surface.models.get(&model_name) else {
+            continue;
+        };
+        dependencies.insert(model.table_name.clone());
+        for relationship in &model.relationships {
+            dependencies.extend(relationship.dependencies.iter().cloned());
+            if let Some(aggregate) = &relationship.aggregate {
+                dependencies.extend(aggregate.dependencies.iter().cloned());
+            }
+        }
+    }
+    dependencies
+}
+
+fn query_footprint_has_record_evidence(surface: &Surface) -> bool {
+    let models = selected_query_models(surface);
+    !models.is_empty()
+        && models
+            .iter()
+            .all(|model| model_has_visible_causal_owner(surface, model))
+}
+
+fn projector_partition_matches_authorization(
+    surface: &Surface,
+    projector: &super::surface::SurfaceProjector,
+) -> bool {
+    projector.models.iter().all(|model| {
+        surface
+            .models
+            .get(model)
+            .is_some_and(|model| matches!(model.row_policy, SurfaceRowPolicy::Unrestricted))
+    })
+}
+
+fn query_footprint_supports_live_resume(surface: &Surface) -> bool {
+    if surface.subscription_fields.is_empty() {
+        return false;
+    }
+    let dependencies = selected_query_dependencies(surface);
+    if dependencies.is_empty() {
+        return false;
+    }
+    dependencies.iter().all(|dependency| {
+        let mut owners = surface.projectors.iter().filter(|projector| {
+            projector
+                .dependencies
+                .iter()
+                .any(|candidate| candidate == dependency)
+        });
+        let Some(owner) = owners.next() else {
+            return false;
+        };
+        owners.next().is_none()
+            && owner.partition.preserves_source_sequence()
+            && owner.change_epoch.is_some()
+            && projector_partition_matches_authorization(surface, owner)
+    })
+}
+
 pub(crate) fn client_manifest_from_surface(
     service_id: &str,
     identity: ClientSurfaceIdentity,
@@ -761,6 +880,7 @@ pub(crate) fn client_manifest_from_surface(
             });
         }
         relationships.sort_by(|a, b| a.name.cmp(&b.name));
+        let causal_owner = model_has_visible_causal_owner(surface, &model.model_name);
         models.push(ClientModel {
             id: model.model_name.clone(),
             typename: model.object_name.clone(),
@@ -770,10 +890,10 @@ pub(crate) fn client_manifest_from_surface(
             fields,
             relationships,
             row_policy: row_policy_manifest(&model.row_policy),
-            // `_sourced_version` is projection source metadata, not the
-            // monotonic revision+tombstone protocol owned by task 15.
-            framework_revision: false,
-            tombstones: false,
+            // `_sourced_version` is only source metadata. These flags derive
+            // from the role-visible Task 15 causal owner, never that column.
+            record_revisions: causal_owner,
+            tombstones: causal_owner,
         });
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -945,6 +1065,19 @@ pub(crate) fn client_manifest_from_surface(
     }
     commands.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let command_status = (!commands.is_empty()).then(|| {
+        let operation = command_status_operation();
+        ClientProtocolOperation {
+            name: "Distributed_CommandStatus".into(),
+            operation_hash: hash_bytes(operation.as_bytes()),
+            operation,
+        }
+    });
+    let protocol_operations = ClientProtocolOperations {
+        version: PROTOCOL_OPERATIONS_VERSION,
+        command_status,
+    };
+
     let confirming_projectors: BTreeSet<&str> = surface
         .commands
         .iter()
@@ -970,15 +1103,18 @@ pub(crate) fn client_manifest_from_surface(
     projectors.sort_by(|a, b| a.name.cmp(&b.name));
 
     let scalar_codecs = supported_scalar_codecs();
+    let record_evidence = query_footprint_has_record_evidence(surface);
     let capabilities = ClientCapabilities {
         live_queries: !surface.subscription_fields.is_empty(),
-        framework_revisions: false,
-        tombstones: false,
-        causal_receipts: false,
-        live_resume: false,
-        // The versioned derivation slot exists, but task 10 owns wiring the
-        // verified identity inputs through runtime responses and persistence.
-        cache_scope: false,
+        record_revisions: record_evidence,
+        tombstones: record_evidence,
+        causal_receipts: !commands.is_empty(),
+        live_resume: query_footprint_supports_live_resume(surface),
+        query_fallback: "revalidate".into(),
+        // Task 16 requires a scope envelope for generated causal receipts.
+        // Query-only scope generation, SSR, hydration, and persistence remain
+        // capability-disabled until task 10 wires that lifecycle end to end.
+        cache_scope: !commands.is_empty(),
         confirmed_persistence: false,
     };
     let protocol_fingerprint = protocol_fingerprint()?;
@@ -994,6 +1130,7 @@ pub(crate) fn client_manifest_from_surface(
         models: &'a [ClientModel],
         roots: &'a [ClientRoot],
         commands: &'a [ClientCommand],
+        protocol_operations: &'a ClientProtocolOperations,
         projectors: &'a [ClientProjector],
     }
     let schema_fingerprint = hash_json(&SchemaMaterial {
@@ -1006,6 +1143,7 @@ pub(crate) fn client_manifest_from_surface(
         models: &models,
         roots: &roots,
         commands: &commands,
+        protocol_operations: &protocol_operations,
         projectors: &projectors,
     })?;
 
@@ -1021,6 +1159,7 @@ pub(crate) fn client_manifest_from_surface(
         models,
         roots,
         commands,
+        protocol_operations,
         projectors,
     })
 }
@@ -1353,6 +1492,11 @@ fn command_operation(
     format!("mutation {operation_name}{variables} {{ {mutation_field}{arguments}{selection} }}")
 }
 
+fn command_status_operation() -> String {
+    "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }"
+        .into()
+}
+
 fn command_selection(definition: &ClientTypeDef) -> String {
     definition
         .fields
@@ -1411,6 +1555,8 @@ fn protocol_fingerprint() -> Result<String, ClientManifestError> {
         key_encoding: &'static str,
         command_extension_slots_version: u32,
         projector_entry_version: u32,
+        protocol_operations_version: u32,
+        query_capabilities_version: u32,
         scalar_codecs: Vec<ScalarCodec>,
     }
     hash_json(&ProtocolMaterial {
@@ -1419,6 +1565,8 @@ fn protocol_fingerprint() -> Result<String, ClientManifestError> {
         key_encoding: KEY_ENCODING,
         command_extension_slots_version: COMMAND_EXTENSION_SLOTS_VERSION,
         projector_entry_version: PROJECTOR_ENTRY_VERSION,
+        protocol_operations_version: PROTOCOL_OPERATIONS_VERSION,
+        query_capabilities_version: QUERY_CAPABILITIES_VERSION,
         scalar_codecs: supported_scalar_codecs(),
     })
 }
@@ -1791,6 +1939,21 @@ mod tests {
         ])
     }
 
+    fn manifest_for_all_models(
+        service_id: &str,
+        role: &str,
+        full: &Surface,
+    ) -> DistributedClientManifest {
+        let grants = full
+            .models
+            .keys()
+            .map(|model| (model.clone(), RoleGrant::all_columns().with_aggregations()))
+            .collect();
+        let selected = surface_for_role(full, role, &grants).expect("role surface");
+        client_manifest_from_surface(service_id, ClientSurfaceIdentity::role(role), &selected)
+            .expect("client manifest")
+    }
+
     #[test]
     fn role_manifest_is_deterministic_and_hides_denied_identity_and_commands() {
         let full = full_surface();
@@ -1803,11 +1966,11 @@ mod tests {
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:68243da4f0128e3ea52e339f3125f66d7eee580a1614727c6adb5d31fc7293be"
+            "sha256:4cbe76e14bf6cbecc729b5ae495739ade8887557090d3f9bf203eb064718d555"
         );
         assert_eq!(
             first.protocol_fingerprint,
-            "sha256:88f44c370674bde0d63fb54eff10745f81bd12de1359f37a3be6ae4656b9faaf"
+            "sha256:2ad00d4436516864f0f331f8421099b876e9a49eb4f19754ce80110836d6710b"
         );
 
         let user = first
@@ -1816,6 +1979,7 @@ mod tests {
             .find(|model| model.id == "UserView")
             .unwrap();
         assert_eq!(user.normalization, ModelNormalization::Embedded);
+        assert!(user.record_revisions && user.tombstones);
         assert_eq!(
             user.fields
                 .iter()
@@ -1828,6 +1992,7 @@ mod tests {
             .iter()
             .find(|model| model.id == "TodoView")
             .unwrap();
+        assert!(todo.record_revisions && todo.tombstones);
         assert_eq!(todo.row_policy, ClientRowPolicy::ServerOnly);
         let owner = todo
             .relationships
@@ -1842,6 +2007,29 @@ mod tests {
             "singular relationships are not live list plans"
         );
         assert!(first.capabilities.live_queries);
+        assert!(!first.capabilities.record_revisions);
+        assert!(!first.capabilities.tombstones);
+        assert!(!first.capabilities.live_resume);
+        assert_eq!(first.capabilities.query_fallback, "revalidate");
+        assert!(first.capabilities.causal_receipts);
+        assert!(first.capabilities.cache_scope);
+        let membership = first
+            .models
+            .iter()
+            .find(|model| model.id == "MembershipView")
+            .unwrap();
+        assert!(!membership.record_revisions && !membership.tombstones);
+        let status = first
+            .protocol_operations
+            .command_status
+            .as_ref()
+            .expect("causal surfaces generate the framework status operation");
+        assert_eq!(status.name, "Distributed_CommandStatus");
+        assert_eq!(status.operation, command_status_operation());
+        assert_eq!(
+            status.operation_hash,
+            hash_bytes(status.operation.as_bytes())
+        );
         assert!(first
             .commands
             .iter()
@@ -1868,6 +2056,172 @@ mod tests {
         assert!(!json.contains("user_id"));
         assert!(!json.contains("force_archive"));
         assert!(!json.contains("x-user-id"));
+    }
+
+    #[test]
+    fn query_protocol_capabilities_are_complete_or_explicitly_revalidate() {
+        let fully_owned = build_surface(&[todos(), users()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projectors([
+                SurfaceProjector::new("project_todos")
+                    .facts(["todo.changed"])
+                    .models(["TodoView"])
+                    .change_epoch("todos-v1"),
+                SurfaceProjector::new("project_users")
+                    .facts(["user.changed"])
+                    .models(["UserView"])
+                    .partition_constant(serde_json::json!({"scope": "all"}))
+                    .change_epoch("users-v1"),
+            ])
+            .unwrap();
+        let fully_owned = manifest_for_all_models("query-capabilities", "user", &fully_owned);
+        assert!(fully_owned.capabilities.record_revisions);
+        assert!(fully_owned.capabilities.tombstones);
+        assert!(fully_owned.capabilities.live_resume);
+        assert_eq!(fully_owned.capabilities.query_fallback, "revalidate");
+        assert!(fully_owned
+            .models
+            .iter()
+            .all(|model| model.record_revisions && model.tombstones));
+        let wire = serde_json::to_value(&fully_owned).unwrap();
+        assert_eq!(wire["capabilities"]["record_revisions"], true);
+        assert_eq!(wire["capabilities"]["query_fallback"], "revalidate");
+        assert!(wire["capabilities"].get("framework_revisions").is_none());
+        assert!(wire["models"][0].get("framework_revision").is_none());
+
+        let dynamic = build_surface(&[users()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projectors([SurfaceProjector::new("project_users")
+                .facts(["user.changed"])
+                .models(["UserView"])
+                .partition_by(["tenant_id"])
+                .change_epoch("users-v1")])
+            .unwrap();
+        let dynamic = manifest_for_all_models("query-capabilities", "user", &dynamic);
+        assert!(dynamic.capabilities.record_revisions);
+        assert!(dynamic.capabilities.tombstones);
+        assert!(!dynamic.capabilities.live_resume);
+        assert_eq!(dynamic.capabilities.query_fallback, "revalidate");
+
+        let row_filtered = build_surface(&[users()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projectors([SurfaceProjector::new("project_users")
+                .facts(["user.changed"])
+                .models(["UserView"])
+                .change_epoch("users-v1")])
+            .unwrap();
+        let row_filtered = surface_for_role(
+            &row_filtered,
+            "user",
+            &BTreeMap::from([(
+                "UserView".into(),
+                RoleGrant::all_columns().rows(col("user_id").eq("visible-user")),
+            )]),
+        )
+        .unwrap();
+        let row_filtered = client_manifest_from_surface(
+            "query-capabilities",
+            ClientSurfaceIdentity::role("user"),
+            &row_filtered,
+        )
+        .unwrap();
+        assert!(row_filtered.capabilities.record_revisions);
+        assert!(row_filtered.capabilities.tombstones);
+        assert!(
+            !row_filtered.capabilities.live_resume,
+            "partition-wide positions and changes must not cross a row-authorization boundary"
+        );
+
+        let epochless = build_surface(&[users()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projectors([SurfaceProjector::new("project_users")
+                .facts(["user.changed"])
+                .models(["UserView"])])
+            .unwrap();
+        let epochless = manifest_for_all_models("query-capabilities", "user", &epochless);
+        assert!(epochless.capabilities.record_revisions);
+        assert!(epochless.capabilities.tombstones);
+        assert!(!epochless.capabilities.live_resume);
+        assert_eq!(epochless.capabilities.query_fallback, "revalidate");
+
+        let unowned = build_surface(&[users()], &SurfaceOptions::sqlite()).unwrap();
+        let unowned = manifest_for_all_models("query-capabilities", "user", &unowned);
+        assert!(!unowned.capabilities.record_revisions);
+        assert!(!unowned.capabilities.tombstones);
+        assert!(!unowned.capabilities.live_resume);
+        assert_eq!(unowned.capabilities.query_fallback, "revalidate");
+        assert!(unowned
+            .models
+            .iter()
+            .all(|model| !model.record_revisions && !model.tombstones));
+
+        let mixed = build_surface(&[todos(), users()], &SurfaceOptions::sqlite())
+            .unwrap()
+            .with_projectors([SurfaceProjector::new("project_todos")
+                .facts(["todo.changed"])
+                .models(["TodoView"])
+                .change_epoch("todos-v1")])
+            .unwrap();
+        let mixed = manifest_for_all_models("query-capabilities", "user", &mixed);
+        assert!(!mixed.capabilities.record_revisions);
+        assert!(!mixed.capabilities.tombstones);
+        assert!(!mixed.capabilities.live_resume);
+        assert_eq!(mixed.capabilities.query_fallback, "revalidate");
+        assert!(mixed
+            .models
+            .iter()
+            .find(|model| model.id == "TodoView")
+            .is_some_and(|model| model.record_revisions && model.tombstones));
+        assert!(mixed
+            .models
+            .iter()
+            .find(|model| model.id == "UserView")
+            .is_some_and(|model| !model.record_revisions && !model.tombstones));
+
+        let uncovered_join = build_surface(
+            &[teams(), users(), team_members()],
+            &SurfaceOptions::sqlite(),
+        )
+        .unwrap()
+        .with_projectors([
+            SurfaceProjector::new("project_teams")
+                .facts(["team.changed"])
+                .models(["TeamView"])
+                .change_epoch("teams-v1"),
+            SurfaceProjector::new("project_users")
+                .facts(["user.changed"])
+                .models(["UserView"])
+                .change_epoch("users-v1"),
+        ])
+        .unwrap();
+        let uncovered_join = manifest_for_all_models("query-capabilities", "user", &uncovered_join);
+        assert!(uncovered_join.capabilities.record_revisions);
+        assert!(uncovered_join.capabilities.tombstones);
+        assert!(!uncovered_join.capabilities.live_resume);
+        assert_eq!(uncovered_join.capabilities.query_fallback, "revalidate");
+
+        let mut query_only_options = SurfaceOptions::sqlite();
+        query_only_options.subscriptions = false;
+        let query_only = build_surface(&[users()], &query_only_options)
+            .unwrap()
+            .with_projectors([SurfaceProjector::new("project_users")
+                .facts(["user.changed"])
+                .models(["UserView"])
+                .change_epoch("users-v1")])
+            .unwrap();
+        let query_only = manifest_for_all_models("query-capabilities", "user", &query_only);
+        assert!(query_only.capabilities.record_revisions);
+        assert!(query_only.capabilities.tombstones);
+        assert!(!query_only.capabilities.live_queries);
+        assert!(!query_only.capabilities.live_resume);
+        assert_eq!(query_only.capabilities.query_fallback, "revalidate");
+
+        let empty = build_surface(&[], &SurfaceOptions::sqlite()).unwrap();
+        let empty = manifest_for_all_models("query-capabilities", "user", &empty);
+        assert!(!empty.capabilities.record_revisions);
+        assert!(!empty.capabilities.tombstones);
+        assert!(!empty.capabilities.live_resume);
+        assert_eq!(empty.capabilities.query_fallback, "revalidate");
     }
 
     #[test]
@@ -2088,6 +2442,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["project_todos"]
         );
+        assert!(!role_manifest.capabilities.record_revisions);
+        assert!(!role_manifest.capabilities.tombstones);
+        assert!(!role_manifest.capabilities.live_resume);
+        assert!(role_manifest
+            .models
+            .iter()
+            .find(|model| model.id == "TodoView")
+            .is_some_and(|model| model.record_revisions && model.tombstones));
+        assert!(role_manifest
+            .models
+            .iter()
+            .find(|model| model.id == "UserView")
+            .is_some_and(|model| !model.record_revisions && !model.tombstones));
         let role_json = serde_json::to_string(&role_manifest).unwrap();
         assert!(!role_json.contains("project_user_team"));
         assert!(!role_json.contains("private-user.changed"));
@@ -2112,6 +2479,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["project_todos"]
         );
+        assert!(!application_manifest.capabilities.record_revisions);
+        assert!(!application_manifest.capabilities.tombstones);
+        assert!(!application_manifest.capabilities.live_resume);
         let application_json = serde_json::to_string(&application_manifest).unwrap();
         assert!(!application_json.contains("project_user_team"));
         assert!(!application_json.contains("private-user.changed"));
@@ -2142,6 +2512,9 @@ mod tests {
             &admin,
         )
         .unwrap();
+        assert!(!manifest.capabilities.causal_receipts);
+        assert!(!manifest.capabilities.cache_scope);
+        assert!(manifest.protocol_operations.command_status.is_none());
         let members = manifest
             .models
             .iter()

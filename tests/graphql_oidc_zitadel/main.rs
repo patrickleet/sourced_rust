@@ -34,8 +34,7 @@ async fn e1_through_e8_live() {
     }
     let iss = std::env::var("OIDC_ISSUER").expect("OIDC_ISSUER");
     assert!(
-        common::discovery_ready(&iss).await
-            || issuer_ready_debug(&iss).await,
+        common::discovery_ready(&iss).await || issuer_ready_debug(&iss).await,
         "issuer not ready: {iss}"
     );
     let audience = std::env::var("OIDC_AUDIENCE")
@@ -73,7 +72,8 @@ async fn issuer_ready_debug(iss: &str) -> bool {
 }
 
 async fn mint_jwt_bearer(issuer: &str, key_path: &str, user_id: &str) -> Result<String, String> {
-    let raw = std::fs::read_to_string(PathBuf::from(key_path)).map_err(|e| format!("read key: {e}"))?;
+    let raw =
+        std::fs::read_to_string(PathBuf::from(key_path)).map_err(|e| format!("read key: {e}"))?;
     let key_json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse key: {e}"))?;
     let key_id = key_json
         .get("keyId")
@@ -132,7 +132,10 @@ async fn mint_jwt_bearer(issuer: &str, key_path: &str, user_id: &str) -> Result<
         .await
         .map_err(|e| format!("token request: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("token endpoint error: {}", resp.text().await.unwrap_or_default()));
+        return Err(format!(
+            "token endpoint error: {}",
+            resp.text().await.unwrap_or_default()
+        ));
     }
     let body: Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
     body.get("access_token")
@@ -145,7 +148,9 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }

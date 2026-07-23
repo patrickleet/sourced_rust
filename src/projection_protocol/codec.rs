@@ -141,12 +141,12 @@ pub(crate) struct CompiledProjectionTopology {
 }
 
 impl CompiledProjectionTopology {
-    pub(crate) fn compile(
+    pub(crate) fn compile<'a>(
         name: &str,
         facts: &[String],
         declared_models: &[String],
         partition: &ProjectionPartitionSpec,
-        schemas: impl IntoIterator<Item = &'static TableSchema>,
+        schemas: impl IntoIterator<Item = &'a TableSchema>,
     ) -> Result<Self, ProjectionProtocolError> {
         let schemas = schemas.into_iter().collect::<Vec<_>>();
         let (topology, ownership) = compile_projection_topology(
@@ -320,7 +320,7 @@ pub(crate) fn compile_projection_topology<'a>(
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectionScopeCodec {
     topology: ProjectorTopologyId,
-    models: BTreeMap<String, &'static TableSchema>,
+    models: BTreeMap<String, Arc<TableSchema>>,
 }
 
 impl ProjectionScopeCodec {
@@ -331,9 +331,9 @@ impl ProjectionScopeCodec {
         }
     }
 
-    pub(crate) fn with_models(
+    pub(crate) fn with_models<'a>(
         topology: ProjectorTopologyId,
-        models: impl IntoIterator<Item = (&'static str, &'static TableSchema)>,
+        models: impl IntoIterator<Item = (&'a str, &'a TableSchema)>,
     ) -> Result<Self, ProjectionScopeCodecError> {
         let mut codec = Self::new(topology);
         for (model, schema) in models {
@@ -348,13 +348,14 @@ impl ProjectionScopeCodec {
 
     /// Register one projection model under its compiler-declared model name.
     ///
-    /// The codec retains the schema by static reference because table schemas
-    /// are generated application metadata and must not change beneath a live
-    /// topology.
+    /// The codec owns an immutable clone so runtime-loaded manifests and
+    /// generated static schemas have identical lifetime and mutation
+    /// semantics. A caller may discard or mutate its original clone after
+    /// registration without changing the compiled topology.
     pub(crate) fn register_model(
         &mut self,
         declared_model: &str,
-        schema: &'static TableSchema,
+        schema: &TableSchema,
     ) -> Result<&mut Self, ProjectionScopeCodecError> {
         validate_registration_name(declared_model)?;
         if declared_model != schema.model_name {
@@ -369,7 +370,8 @@ impl ProjectionScopeCodec {
             });
         }
         validate_model_schema(schema)?;
-        self.models.insert(declared_model.to_string(), schema);
+        self.models
+            .insert(declared_model.to_string(), Arc::new(schema.clone()));
         Ok(self)
     }
 
@@ -531,6 +533,53 @@ impl ProjectionScopeCodec {
         self.encode_row_key(schema, key)
     }
 
+    /// Decode complete primary-key columns from GraphQL/JSON without passing
+    /// through JavaScript numeric coercion or a second schema interpretation.
+    ///
+    /// Integer keys accept either an exact JSON integer or the canonical
+    /// decimal string used by GraphQL `BigInt`. Byte keys require canonical
+    /// standard-base64. Returned [`RowKey`] values use physical column names,
+    /// ready for [`Self::encode_unpartitioned_row_key`].
+    pub(crate) fn row_key_from_json_columns(
+        &self,
+        model: &str,
+        values: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<RowKey, ProjectionScopeCodecError> {
+        let schema = self.model(model)?;
+        let primary_key_columns = schema
+            .primary_key
+            .columns
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if let Some(extra) = values
+            .keys()
+            .find(|column| !primary_key_columns.contains(column.as_str()))
+        {
+            return Err(ProjectionScopeCodecError::ExtraKeyColumn {
+                model: schema.model_name.clone(),
+                column: extra.clone(),
+            });
+        }
+
+        let mut key = RowKey::default();
+        for column_name in &schema.primary_key.columns {
+            let column = key_column(schema, column_name)
+                .expect("registered projection schemas retain their validated key columns");
+            let value = values.get(column_name).ok_or_else(|| {
+                ProjectionScopeCodecError::MissingKeyColumn {
+                    model: schema.model_name.clone(),
+                    column: column_name.clone(),
+                }
+            })?;
+            key.insert(
+                column_name,
+                row_value_from_graphql_json(schema, column, value)?,
+            );
+        }
+        Ok(key)
+    }
+
     fn encode_row_key(
         &self,
         schema: &TableSchema,
@@ -565,8 +614,21 @@ impl ProjectionScopeCodec {
     pub(crate) fn registered_schema(
         &self,
         model: &str,
-    ) -> Result<&'static TableSchema, ProjectionScopeCodecError> {
+    ) -> Result<&TableSchema, ProjectionScopeCodecError> {
         self.model(model)
+    }
+
+    pub(crate) fn registered_schema_owned(
+        &self,
+        model: &str,
+    ) -> Result<Arc<TableSchema>, ProjectionScopeCodecError> {
+        self.models
+            .get(model)
+            .cloned()
+            .ok_or_else(|| ProjectionScopeCodecError::UnknownModel {
+                projector: self.topology.name().to_string(),
+                model: model.to_string(),
+            })
     }
 
     fn validate_projector(&self, projector: &str) -> Result<(), ProjectionScopeCodecError> {
@@ -580,14 +642,13 @@ impl ProjectionScopeCodec {
         }
     }
 
-    fn model(&self, model: &str) -> Result<&'static TableSchema, ProjectionScopeCodecError> {
-        self.models
-            .get(model)
-            .copied()
-            .ok_or_else(|| ProjectionScopeCodecError::UnknownModel {
+    fn model(&self, model: &str) -> Result<&TableSchema, ProjectionScopeCodecError> {
+        self.models.get(model).map(AsRef::as_ref).ok_or_else(|| {
+            ProjectionScopeCodecError::UnknownModel {
                 projector: self.topology.name().to_string(),
                 model: model.to_string(),
-            })
+            }
+        })
     }
 
     fn encode_key(
@@ -1004,6 +1065,74 @@ fn typed_value_from_json(
             })
         }
     }
+}
+
+fn row_value_from_graphql_json(
+    schema: &TableSchema,
+    column: &TableColumn,
+    value: &serde_json::Value,
+) -> Result<RowValue, ProjectionScopeCodecError> {
+    if value.is_null() {
+        return Err(ProjectionScopeCodecError::NullPrimaryKey {
+            model: schema.model_name.clone(),
+            field: column.field_name.clone(),
+        });
+    }
+
+    let integer_out_of_range = |expected| ProjectionScopeCodecError::IntegerOutOfRange {
+        model: schema.model_name.clone(),
+        field: column.field_name.clone(),
+        expected,
+    };
+    let typed = match &column.column_type {
+        ColumnType::Integer => match value {
+            serde_json::Value::String(value) => {
+                let parsed = value
+                    .parse::<i64>()
+                    .map_err(|_| integer_out_of_range("signed 64-bit integer"))?;
+                if parsed.to_string() != *value {
+                    return Err(integer_out_of_range(
+                        "canonical signed 64-bit integer string",
+                    ));
+                }
+                TypedKeyValue::Integer(parsed)
+            }
+            _ => typed_value_from_json(schema, column, value)?,
+        },
+        ColumnType::UnsignedInteger => match value {
+            serde_json::Value::String(value) => {
+                let parsed = value
+                    .parse::<u64>()
+                    .map_err(|_| integer_out_of_range("unsigned 64-bit integer"))?;
+                if parsed.to_string() != *value {
+                    return Err(integer_out_of_range(
+                        "canonical unsigned 64-bit integer string",
+                    ));
+                }
+                TypedKeyValue::UnsignedInteger(parsed)
+            }
+            _ => typed_value_from_json(schema, column, value)?,
+        },
+        // SQLite's JSON1 extension exposes BOOLEAN-affinity columns as the
+        // lossless integer values 0/1. Accept exactly those private evidence
+        // representations in addition to native JSON booleans.
+        ColumnType::Boolean => match value.as_i64() {
+            Some(0) => TypedKeyValue::Boolean(false),
+            Some(1) => TypedKeyValue::Boolean(true),
+            _ => typed_value_from_json(schema, column, value)?,
+        },
+        _ => typed_value_from_json(schema, column, value)?,
+    };
+
+    Ok(match typed {
+        TypedKeyValue::Text(value) | TypedKeyValue::Timestamp(value) => RowValue::String(value),
+        TypedKeyValue::Boolean(value) => RowValue::Bool(value),
+        TypedKeyValue::Integer(value) => RowValue::I64(value),
+        TypedKeyValue::UnsignedInteger(value) => RowValue::U64(value),
+        TypedKeyValue::Float(value) => RowValue::F64(value),
+        TypedKeyValue::Bytes(value) => RowValue::Bytes(value),
+        TypedKeyValue::Json(value) => RowValue::Json(value),
+    })
 }
 
 fn typed_value_from_row(
@@ -1719,6 +1848,139 @@ mod tests {
         );
         assert!(matches!(
             codec.encode_obligation_scope(&noncanonical_base64),
+            Err(ProjectionScopeCodecError::InvalidBytes { .. })
+        ));
+    }
+
+    #[test]
+    fn codec_owns_registered_schema_independently_of_the_caller() {
+        let mut original = TableSchema {
+            model_name: "OwnedRecord".into(),
+            table_name: "owned_records".into(),
+            columns: vec![key_column("id", "record_id", ColumnType::Text)],
+            primary_key: PrimaryKey::new(["record_id"]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        };
+        let codec =
+            ProjectionScopeCodec::with_models(topology(), [("OwnedRecord", &original)]).unwrap();
+
+        original.model_name = "MutatedAfterRegistration".into();
+        original.table_name = "mutated_after_registration".into();
+        original.primary_key = PrimaryKey::new(["not_the_registered_key"]);
+        drop(original);
+
+        let registered = codec.registered_schema("OwnedRecord").unwrap();
+        assert_eq!(registered.model_name, "OwnedRecord");
+        assert_eq!(registered.table_name, "owned_records");
+        assert_eq!(registered.primary_key.columns, ["record_id"]);
+        assert_eq!(
+            codec
+                .registered_schema_owned("OwnedRecord")
+                .unwrap()
+                .table_name,
+            "owned_records"
+        );
+    }
+
+    #[test]
+    fn graphql_json_columns_decode_lossless_composite_row_keys() {
+        let composite = TableSchema {
+            model_name: "CompositeRecord".into(),
+            table_name: "composite_records".into(),
+            columns: vec![
+                key_column("signed", "signed_id", ColumnType::Integer),
+                key_column("unsigned", "unsigned_id", ColumnType::UnsignedInteger),
+                key_column("active", "is_active", ColumnType::Boolean),
+                key_column("digest", "digest_bytes", ColumnType::Bytes),
+                key_column("attributes", "attributes_json", ColumnType::Json),
+            ],
+            primary_key: PrimaryKey::new([
+                "signed_id",
+                "unsigned_id",
+                "is_active",
+                "digest_bytes",
+                "attributes_json",
+            ]),
+            version_column: None,
+            foreign_keys: Vec::new(),
+            indexes: Vec::new(),
+            relationships: Vec::new(),
+            kind: TableKind::ReadModel,
+        };
+        let codec =
+            ProjectionScopeCodec::with_models(topology(), [("CompositeRecord", &composite)])
+                .unwrap();
+        let values = BTreeMap::from([
+            (
+                "signed_id".into(),
+                serde_json::Value::String(i64::MIN.to_string()),
+            ),
+            (
+                "unsigned_id".into(),
+                serde_json::Value::String(u64::MAX.to_string()),
+            ),
+            ("is_active".into(), serde_json::json!(1)),
+            ("digest_bytes".into(), serde_json::json!("AP8=")),
+            (
+                "attributes_json".into(),
+                serde_json::json!({"z": [2, 1], "a": true}),
+            ),
+        ]);
+
+        let decoded = codec
+            .row_key_from_json_columns("CompositeRecord", &values)
+            .unwrap();
+        let expected = RowKey::new([
+            ("signed_id", RowValue::I64(i64::MIN)),
+            ("unsigned_id", RowValue::U64(u64::MAX)),
+            ("is_active", RowValue::Bool(true)),
+            ("digest_bytes", RowValue::Bytes(vec![0, 255])),
+            (
+                "attributes_json",
+                RowValue::Json(serde_json::json!({"a": true, "z": [2, 1]})),
+            ),
+        ]);
+        assert_eq!(decoded, expected);
+        assert_eq!(
+            codec
+                .encode_unpartitioned_row_key("CompositeRecord", &decoded)
+                .unwrap(),
+            codec
+                .encode_unpartitioned_row_key("CompositeRecord", &expected)
+                .unwrap()
+        );
+
+        let mut missing = values.clone();
+        missing.remove("digest_bytes");
+        assert!(matches!(
+            codec.row_key_from_json_columns("CompositeRecord", &missing),
+            Err(ProjectionScopeCodecError::MissingKeyColumn { column, .. })
+                if column == "digest_bytes"
+        ));
+
+        let mut extra = values.clone();
+        extra.insert("other".into(), serde_json::json!(1));
+        assert!(matches!(
+            codec.row_key_from_json_columns("CompositeRecord", &extra),
+            Err(ProjectionScopeCodecError::ExtraKeyColumn { column, .. })
+                if column == "other"
+        ));
+
+        let mut noncanonical_integer = values.clone();
+        noncanonical_integer.insert("signed_id".into(), serde_json::json!("01"));
+        assert!(matches!(
+            codec.row_key_from_json_columns("CompositeRecord", &noncanonical_integer),
+            Err(ProjectionScopeCodecError::IntegerOutOfRange { .. })
+        ));
+
+        let mut noncanonical_bytes = values;
+        noncanonical_bytes.insert("digest_bytes".into(), serde_json::json!("AB=="));
+        assert!(matches!(
+            codec.row_key_from_json_columns("CompositeRecord", &noncanonical_bytes),
             Err(ProjectionScopeCodecError::InvalidBytes { .. })
         ));
     }

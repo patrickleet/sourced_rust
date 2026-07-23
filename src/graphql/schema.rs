@@ -5,14 +5,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, InputObject, InputValue, Object, Scalar, Schema, SchemaError, TypeRef,
+    Enum, Field, FieldFuture, InputObject, InputValue, Object, Scalar, Schema, SchemaError, TypeRef,
 };
 use async_graphql::Value;
 
 use super::compile::{self, RootKind};
 use super::engine::EngineInner;
 use super::identity::VerifiedPrincipal;
-use super::naming::{bool_exp_name, comparison_exp_name, order_by_name, CUSTOM_SCALARS};
+use super::naming::{
+    bool_exp_name, causal_protocol_type_names, comparison_exp_name, order_by_name,
+    COMMAND_STATUS_ROOT_FIELD, CUSTOM_SCALARS, DISTRIBUTED_COMMAND_STATE_TYPE,
+    DISTRIBUTED_COMMAND_STATE_VALUES, DISTRIBUTED_COMMAND_STATUS_TYPE,
+};
+use super::protocol::ProtocolResponseAccumulator;
 use super::surface::{
     RootKind as SurfaceRootKind, Surface, SurfaceArgument, SurfaceCommandShape, SurfaceModel,
     SurfaceTypeDef, SurfaceTypeField,
@@ -25,6 +30,14 @@ pub fn build_role_schema(
     max_complexity: usize,
     disable_introspection: bool,
 ) -> Result<Schema, String> {
+    let has_causal_commands = role_surface
+        .commands
+        .iter()
+        .any(|command| command.consistency.is_some());
+    if has_causal_commands {
+        validate_causal_protocol_names(role_surface)?;
+    }
+
     let mut query = Object::new("Query");
     let mut registered_objects: BTreeMap<String, Object> = BTreeMap::new();
     let mut registered_inputs: BTreeMap<String, InputObject> = BTreeMap::new();
@@ -44,6 +57,21 @@ pub fn build_role_schema(
         .item("desc")
         .item("desc_nulls_first")
         .item("desc_nulls_last");
+    let command_state_enum = has_causal_commands.then(|| {
+        let mut command_state = Enum::new(DISTRIBUTED_COMMAND_STATE_TYPE);
+        for state in DISTRIBUTED_COMMAND_STATE_VALUES {
+            command_state = command_state.item(*state);
+        }
+        command_state
+    });
+    if has_causal_commands {
+        let status = Object::new(DISTRIBUTED_COMMAND_STATUS_TYPE).field(Field::new(
+            "state",
+            TypeRef::named_nn(DISTRIBUTED_COMMAND_STATE_TYPE),
+            |ctx| FieldFuture::new(async move { passthrough(&ctx, "state") }),
+        ));
+        registered_objects.insert(DISTRIBUTED_COMMAND_STATUS_TYPE.into(), status);
+    }
 
     // Emit roots only for fields present on the role surface (IR inventory).
     for root in &role_surface.query_fields {
@@ -153,7 +181,7 @@ pub fn build_role_schema(
 
     // Empty-role Query must still define ≥1 field (async-graphql requirement).
     // Spec: empty role → FORBIDDEN with extensions.code (no query surface).
-    if role_surface.models.is_empty() {
+    if role_surface.query_fields.is_empty() && !has_causal_commands {
         query = query.field(Field::new(
             "_empty",
             TypeRef::named_nn(TypeRef::BOOLEAN),
@@ -163,6 +191,16 @@ pub fn build_role_schema(
                 })
             },
         ));
+    }
+    if has_causal_commands {
+        query = query.field(
+            Field::new(
+                COMMAND_STATUS_ROOT_FIELD,
+                TypeRef::named_nn(DISTRIBUTED_COMMAND_STATUS_TYPE),
+                |ctx| FieldFuture::new(async move { resolve_command_status(&ctx).await }),
+            )
+            .argument(InputValue::new("commandId", TypeRef::named_nn(TypeRef::ID))),
+        );
     }
 
     // Mutation root from commands
@@ -241,6 +279,7 @@ pub fn build_role_schema(
                         .data_opt::<Session>()
                         .cloned()
                         .unwrap_or_else(Session::new);
+                    let protocol = ctx.data_opt::<ProtocolResponseAccumulator>().cloned();
                     let selection = compile::selection_from_field(ctx.field());
                     SubscriptionFieldFuture::new(async move {
                         let inner = inner.ok_or_else(|| {
@@ -251,7 +290,7 @@ pub fn build_role_schema(
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| inner.anonymous_role.clone());
                         let stream = super::subscribe::live_query_stream(
-                            inner, session, role, model, selection,
+                            inner, session, role, model, selection, protocol,
                         )
                         .await
                         .map_err(async_graphql::Error::new)?;
@@ -289,6 +328,9 @@ pub fn build_role_schema(
     };
 
     builder = builder.register(order_by_enum);
+    if let Some(command_state_enum) = command_state_enum {
+        builder = builder.register(command_state_enum);
+    }
     for name in CUSTOM_SCALARS {
         builder = builder.register(Scalar::new(*name));
     }
@@ -306,6 +348,60 @@ pub fn build_role_schema(
         builder = builder.disable_introspection();
     }
     builder.finish().map_err(|e: SchemaError| e.to_string())
+}
+
+fn validate_causal_protocol_names(surface: &Surface) -> Result<(), String> {
+    if surface
+        .query_fields
+        .iter()
+        .any(|root| root.name == COMMAND_STATUS_ROOT_FIELD)
+    {
+        return Err(format!(
+            "generated name `{COMMAND_STATUS_ROOT_FIELD}` collides with another type or field"
+        ));
+    }
+
+    for protocol_name in causal_protocol_type_names() {
+        let model_collision = surface.models.values().any(|model| {
+            model.object_name == protocol_name
+                || bool_exp_name(&model.schema) == protocol_name
+                || order_by_name(&model.schema) == protocol_name
+                || (model.aggregations
+                    && (format!("{}_aggregate", model.table_name) == protocol_name
+                        || format!("{}_aggregate_fields", model.table_name) == protocol_name))
+        });
+        let command_collision = surface.commands.iter().any(|command| {
+            command_shape_uses_type_name(&command.input, protocol_name)
+                || command_shape_uses_type_name(&command.output, protocol_name)
+        });
+        if surface.comparison_ops.contains_key(protocol_name)
+            || model_collision
+            || command_collision
+        {
+            return Err(format!(
+                "generated name `{protocol_name}` collides with a causal protocol type"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn command_shape_uses_type_name(shape: &SurfaceCommandShape, name: &str) -> bool {
+    match shape {
+        SurfaceCommandShape::None | SurfaceCommandShape::Json => false,
+        SurfaceCommandShape::Typed(definition) => command_type_uses_name(definition, name),
+    }
+}
+
+fn command_type_uses_name(definition: &SurfaceTypeDef, name: &str) -> bool {
+    definition.name == name
+        || definition.fields.iter().any(|field| {
+            field.type_name == name
+                || field
+                    .nested
+                    .as_deref()
+                    .is_some_and(|nested| command_type_uses_name(nested, name))
+        })
 }
 
 fn ensure_object_type(
@@ -605,9 +701,28 @@ async fn resolve_root(
     let selection = compile::selection_from_field(ctx.field());
     let plan = compile::compile_root(&inner, &session, &role, model, kind, &selection)
         .map_err(|e| client_error("BAD_REQUEST", sanitize_compile_error(&e)))?;
-    let value = super::engine::execute_plan(&inner, &plan)
+    let value = if let Some(protocol) = ctx.data_opt::<ProtocolResponseAccumulator>().cloned() {
+        let role_surface = inner.role_surfaces.get(&role).cloned().ok_or_else(|| {
+            client_error("INTERNAL", "authorized GraphQL role surface is unavailable")
+        })?;
+        let executed = super::query_protocol::execute_query_with_protocol(
+            &inner,
+            role_surface,
+            protocol.clone(),
+            &plan,
+            None,
+        )
         .await
         .map_err(|e| client_error_for_execute_err(&e))?;
+        protocol
+            .record_query_metadata(executed.snapshot, None)
+            .map_err(|_| client_error("INTERNAL", "query evidence encoding failed"))?;
+        executed.value
+    } else {
+        super::engine::execute_plan(&inner, &plan)
+            .await
+            .map_err(|e| client_error_for_execute_err(&e))?
+    };
     // `None` (not `Some(Null)`) so nullable by_pk roots do not try to resolve
     // non-null child fields on a null parent.
     if matches!(value, Value::Null) {
@@ -842,6 +957,18 @@ async fn resolve_command(
         .unwrap_or(serde_json::json!({}));
 
     if causal {
+        let protocol = ctx
+            .data_opt::<ProtocolResponseAccumulator>()
+            .cloned()
+            .ok_or_else(|| {
+                client_error(
+                    "INTERNAL",
+                    "causal command protocol is not configured for this endpoint",
+                )
+            })?;
+        protocol
+            .claim_dispatch()
+            .map_err(|error| client_error("BAD_REQUEST", error.to_string()))?;
         let command_id = ctx
             .args
             .get("commandId")
@@ -858,13 +985,16 @@ async fn resolve_command(
                     "durable commands require a verified OIDC bearer",
                 )
             })?;
-        let payload = service
-            .dispatch_causal(command_name, &command_id, input, session, principal)
+        let result = service
+            .dispatch_causal_with_receipt(command_name, &command_id, input, session, principal)
             .await
             .map_err(|error| {
                 client_error_with_status(error.code(), error.status_code(), error.client_message())
             })?;
-        return Value::from_json(payload)
+        protocol
+            .record_receipt(&result.receipt)
+            .map_err(|_| client_error("INTERNAL", "causal receipt encoding failed"))?;
+        return Value::from_json(result.payload)
             .map(Some)
             .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")));
     }
@@ -895,6 +1025,65 @@ async fn resolve_command(
         .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")))
 }
 
+async fn resolve_command_status(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<Value>, async_graphql::Error> {
+    use crate::microsvc::Service;
+    use async_graphql::indexmap::IndexMap;
+
+    let session = ctx
+        .data_opt::<Session>()
+        .cloned()
+        .unwrap_or_else(Session::new);
+    let principal = ctx
+        .data_opt::<VerifiedPrincipal>()
+        .cloned()
+        .ok_or_else(|| {
+            client_error_with_status(
+                "UNAUTHORIZED",
+                401,
+                "durable command status requires a verified OIDC bearer",
+            )
+        })?;
+    let protocol = ctx
+        .data_opt::<ProtocolResponseAccumulator>()
+        .cloned()
+        .ok_or_else(|| {
+            client_error(
+                "INTERNAL",
+                "causal command protocol is not configured for this endpoint",
+            )
+        })?;
+    let service = ctx.data_opt::<Arc<Service>>().ok_or_else(|| {
+        client_error(
+            "INTERNAL",
+            "command dispatcher not configured (use graphql_router_with_service)",
+        )
+    })?;
+    let command_id = ctx
+        .args
+        .get("commandId")
+        .ok_or_else(|| client_error("BAD_REQUEST", "missing commandId"))?
+        .deserialize::<String>()
+        .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
+
+    let status = service
+        .causal_command_status(&command_id, &session, principal)
+        .await
+        .map_err(|error| {
+            client_error_with_status(error.code(), error.status_code(), error.client_message())
+        })?;
+    protocol
+        .record_status(&status)
+        .map_err(|_| client_error("INTERNAL", "causal status encoding failed"))?;
+    let mut value = IndexMap::new();
+    value.insert(
+        async_graphql::Name::new("state"),
+        Value::Enum(async_graphql::Name::new(status.state.as_str())),
+    );
+    Ok(Some(Value::Object(value)))
+}
+
 /// Map HTTP command status → frozen `extensions.code` (see security/http specs).
 ///
 /// 400→BAD_REQUEST, 401→UNAUTHORIZED, 404→NOT_FOUND, 422→REJECTED,
@@ -908,5 +1097,238 @@ pub(crate) fn command_status_code(status: u16) -> &'static str {
         422 => "REJECTED",
         s if (400..500).contains(&s) => "BAD_REQUEST",
         _ => "INTERNAL",
+    }
+}
+
+#[cfg(test)]
+mod causal_command_schema_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::graphql::command_contract::CommandConsistency;
+    use crate::graphql::protocol::{
+        DistributedEnvelopeV2, ProtocolResponseAccumulator, ProtocolTokenCodec,
+        ProtocolTokenPurpose,
+    };
+    use crate::graphql::sdl::graphql_sdl_from_surface;
+    use crate::graphql::surface::{
+        RootField, RootKind, SurfaceCommand, SurfaceDialect, SurfaceSelection,
+    };
+    use crate::microsvc::Service;
+
+    fn command_surface(consistency: Option<CommandConsistency>) -> Surface {
+        Surface {
+            selection: SurfaceSelection::Role {
+                name: "user".into(),
+            },
+            dialect: SurfaceDialect::Sqlite,
+            aggregates: false,
+            subscriptions: false,
+            default_limit: 100,
+            max_limit: 1000,
+            catalog: BTreeMap::new(),
+            models: BTreeMap::new(),
+            query_fields: Vec::new(),
+            subscription_fields: Vec::new(),
+            comparison_ops: BTreeMap::new(),
+            commands: vec![SurfaceCommand {
+                command_name: "todo.complete".into(),
+                field_name: "todo_complete".into(),
+                roles: vec!["user".into()],
+                input: SurfaceCommandShape::None,
+                output: SurfaceCommandShape::Json,
+                consistency,
+                input_defaults: Vec::new(),
+                effects: None,
+                confirmations: Vec::new(),
+                projected_model: None,
+                direct_projection: None,
+                confirmation_unavailable: false,
+            }],
+            commands_attached: true,
+            projectors: Vec::new(),
+            projectors_attached: false,
+            service_binding: None,
+        }
+    }
+
+    fn runtime_sdl(surface: &Surface) -> String {
+        build_role_schema(surface, 32, 1_000, false)
+            .expect("role schema should build")
+            .sdl()
+    }
+
+    fn protocol_accumulator() -> ProtocolResponseAccumulator {
+        let codec = ProtocolTokenCodec::new([0x51; 32]);
+        let cache_scope = codec
+            .issue(
+                ProtocolTokenPurpose::CacheScope,
+                &("schema-unit-test", "status-test"),
+            )
+            .expect("test cache scope should encode");
+        ProtocolResponseAccumulator::new(
+            DistributedEnvelopeV2::new("sha256:schema-unit-test", cache_scope, None),
+            codec,
+        )
+    }
+
+    #[test]
+    fn causal_runtime_and_static_sdl_share_status_protocol() {
+        let surface = command_surface(Some(CommandConsistency::Accepted));
+        let static_sdl = graphql_sdl_from_surface(&surface).unwrap();
+        let runtime_sdl = runtime_sdl(&surface);
+
+        for expected in [
+            "enum DistributedCommandState",
+            "type DistributedCommandStatus",
+            "state: DistributedCommandState!",
+            "commandStatus(commandId: ID!): DistributedCommandStatus!",
+        ] {
+            assert!(
+                static_sdl.contains(expected),
+                "static SDL missing `{expected}`"
+            );
+            assert!(
+                runtime_sdl.contains(expected),
+                "runtime SDL missing `{expected}`:\n{runtime_sdl}"
+            );
+        }
+        for state in DISTRIBUTED_COMMAND_STATE_VALUES {
+            assert!(static_sdl.contains(&format!("\n  {state}\n")));
+            assert!(
+                runtime_sdl.contains(&format!("\t{state}\n"))
+                    || runtime_sdl.contains(&format!("\n  {state}\n")),
+                "runtime SDL missing lowercase enum value `{state}`:\n{runtime_sdl}"
+            );
+        }
+        assert!(!static_sdl.contains("_empty: Boolean!"));
+        assert!(!runtime_sdl.contains("_empty: Boolean!"));
+    }
+
+    #[test]
+    fn legacy_runtime_and_static_sdl_do_not_reserve_status_protocol() {
+        let surface = command_surface(None);
+        let static_sdl = graphql_sdl_from_surface(&surface).unwrap();
+        let runtime_sdl = runtime_sdl(&surface);
+
+        for unexpected in [
+            COMMAND_STATUS_ROOT_FIELD,
+            DISTRIBUTED_COMMAND_STATE_TYPE,
+            DISTRIBUTED_COMMAND_STATUS_TYPE,
+        ] {
+            assert!(!static_sdl.contains(unexpected));
+            assert!(!runtime_sdl.contains(unexpected));
+        }
+        assert!(static_sdl.contains("_empty: Boolean!"));
+        assert!(runtime_sdl.contains("_empty: Boolean!"));
+
+        let mut reusable = surface;
+        reusable.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
+            name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
+            fields: Vec::new(),
+        });
+        build_role_schema(&reusable, 32, 1_000, false)
+            .expect("legacy-only surfaces must retain the pre-protocol namespace");
+    }
+
+    #[test]
+    fn causal_runtime_schema_fails_closed_on_root_and_type_collisions() {
+        let mut root_collision = command_surface(Some(CommandConsistency::Accepted));
+        root_collision.query_fields.push(RootField {
+            name: COMMAND_STATUS_ROOT_FIELD.into(),
+            kind: RootKind::List,
+            object: "Unused".into(),
+            model_name: "Unused".into(),
+            arguments: Vec::new(),
+            dependencies: Vec::new(),
+            default_limit: None,
+            max_limit: None,
+        });
+        let error = build_role_schema(&root_collision, 32, 1_000, false).unwrap_err();
+        assert!(
+            error.contains(COMMAND_STATUS_ROOT_FIELD) && error.contains("collides"),
+            "{error}"
+        );
+
+        let mut type_collision = command_surface(Some(CommandConsistency::Accepted));
+        type_collision.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
+            name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
+            fields: Vec::new(),
+        });
+        let error = build_role_schema(&type_collision, 32, 1_000, false).unwrap_err();
+        assert!(
+            error.contains(DISTRIBUTED_COMMAND_STATUS_TYPE)
+                && error.contains("causal protocol type"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn command_status_requires_verified_principal() {
+        let schema = build_role_schema(
+            &command_surface(Some(CommandConsistency::Accepted)),
+            32,
+            1_000,
+            false,
+        )
+        .unwrap();
+        let response = schema
+            .execute(format!(
+                "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ state }} }}",
+                uuid::Uuid::now_v7()
+            ))
+            .await;
+
+        assert_eq!(response.errors.len(), 1, "{response:?}");
+        assert_eq!(
+            response.errors[0].message,
+            "durable command status requires a verified OIDC bearer"
+        );
+        let extensions = response.errors[0]
+            .extensions
+            .as_ref()
+            .expect("auth error extensions");
+        assert!(
+            format!("{:?}", extensions.get("code")).contains("UNAUTHORIZED"),
+            "{extensions:?}"
+        );
+        assert!(
+            format!("{:?}", extensions.get("status")).contains("401"),
+            "{extensions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorized_unknown_status_returns_only_public_state() {
+        let schema = build_role_schema(
+            &command_surface(Some(CommandConsistency::Accepted)),
+            32,
+            1_000,
+            false,
+        )
+        .unwrap();
+        let request = async_graphql::Request::new(format!(
+            "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ state }} }}",
+            uuid::Uuid::now_v7()
+        ))
+        .data(Arc::new(Service::new().named("status-test")))
+        .data(VerifiedPrincipal::test_oidc(
+            "https://issuer.example/",
+            "status-test-subject",
+            &["status-test-audience"],
+        ))
+        .data(protocol_accumulator());
+        let response = schema.execute(request).await;
+
+        assert!(response.errors.is_empty(), "{response:?}");
+        assert_eq!(
+            response.data.into_json().unwrap(),
+            serde_json::json!({
+                COMMAND_STATUS_ROOT_FIELD: {
+                    "state": "unknown"
+                }
+            })
+        );
     }
 }
