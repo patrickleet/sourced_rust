@@ -2054,21 +2054,25 @@ mod tests {
 
     #[test]
     fn mixed_target_projectors_are_omitted_for_role_and_application_surfaces() {
-        let full = build_surface(&[todos(), users()], &SurfaceOptions::sqlite())
+        let full = build_surface(&[todos(), users(), teams()], &SurfaceOptions::sqlite())
             .unwrap()
             .with_projectors([
                 SurfaceProjector::new("project_todos")
                     .facts(["todo.changed"])
                     .models(["TodoView"]),
-                SurfaceProjector::new("project_todo_owner")
+                SurfaceProjector::new("project_user_team")
                     .facts(["private-user.changed"])
-                    .models(["TodoView", "UserView"]),
+                    .models(["UserView", "TeamView"]),
             ])
             .unwrap();
-        let restricted = BTreeMap::from([("TodoView".into(), RoleGrant::all_columns())]);
+        let restricted = BTreeMap::from([
+            ("TodoView".into(), RoleGrant::all_columns()),
+            ("UserView".into(), RoleGrant::all_columns()),
+        ]);
         let admin = BTreeMap::from([
             ("TodoView".into(), RoleGrant::all_columns()),
             ("UserView".into(), RoleGrant::all_columns()),
+            ("TeamView".into(), RoleGrant::all_columns()),
         ]);
 
         let role = surface_for_role(&full, "restricted", &restricted).unwrap();
@@ -2085,7 +2089,7 @@ mod tests {
             vec!["project_todos"]
         );
         let role_json = serde_json::to_string(&role_manifest).unwrap();
-        assert!(!role_json.contains("project_todo_owner"));
+        assert!(!role_json.contains("project_user_team"));
         assert!(!role_json.contains("private-user.changed"));
 
         let application = surface_for_application(
@@ -2109,7 +2113,7 @@ mod tests {
             vec!["project_todos"]
         );
         let application_json = serde_json::to_string(&application_manifest).unwrap();
-        assert!(!application_json.contains("project_todo_owner"));
+        assert!(!application_json.contains("project_user_team"));
         assert!(!application_json.contains("private-user.changed"));
     }
 

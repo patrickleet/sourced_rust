@@ -8,6 +8,9 @@ use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
+use super::projection_protocol::{
+    reject_causal_owned_plans, stage_same_transaction_projection, InMemoryProjectionProtocolState,
+};
 use crate::command_ledger::{
     AttemptFence, CausalCommitBatch, CausalGetStream, CausalRepositoryIdentity,
     CausalStorageIdentity, CausalTransactionalCommit, CommandCompletion, CommandLedgerError,
@@ -16,6 +19,9 @@ use crate::command_ledger::{
 };
 use crate::entity::{Entity, EventRecord};
 use crate::outbox::OutboxMessage;
+use crate::projection_protocol::{
+    ProjectionChangeRetention, ProjectionProtocolError, SameTransactionProjectionBatch,
+};
 use crate::read_model::in_memory::apply_read_model_write_plan;
 use crate::read_model::{
     InMemoryReadModelStore, ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities,
@@ -41,7 +47,7 @@ use crate::table::{TableAdapterCapabilities, TableCommitOutcome, TableStoreError
 pub struct InMemoryRepository {
     event_store: Arc<RwLock<HashMap<String, Vec<EventRecord>>>>,
     outbox_store: Arc<RwLock<HashMap<String, OutboxMessage>>>,
-    model_store: InMemoryReadModelStore,
+    pub(super) model_store: InMemoryReadModelStore,
     snapshot_store: InMemorySnapshotStore,
     /// Consumer inbox: the set of recorded `(consumer, message_id)` receipts.
     ///
@@ -50,8 +56,11 @@ pub struct InMemoryRepository {
     /// local development, not production effectively-once dedup — back a real
     /// deployment with the Postgres or SQLite inbox, which support
     /// [`purge_inbox_older_than`](crate::repository::InboxStore::purge_inbox_older_than).
-    inbox_store: Arc<RwLock<HashSet<(String, String)>>>,
+    pub(super) inbox_store: Arc<RwLock<HashSet<(String, String)>>>,
     command_ledger: Arc<RwLock<HashMap<CommandLedgerKey, CommandLedgerRecord>>>,
+    pub(super) projection_protocol: Arc<RwLock<InMemoryProjectionProtocolState>>,
+    pub(super) causal_tables: Arc<RwLock<HashSet<String>>>,
+    pub(super) projection_change_retention: ProjectionChangeRetention,
     #[cfg_attr(not(feature = "graphql"), allow(dead_code))]
     causal_storage_identity: CausalStorageIdentity,
 }
@@ -71,15 +80,34 @@ impl Default for InMemoryRepository {
 impl InMemoryRepository {
     /// Create a new empty repository.
     pub fn new() -> Self {
+        let causal_tables = Arc::new(RwLock::new(HashSet::new()));
         InMemoryRepository {
             event_store: Arc::new(RwLock::new(HashMap::new())),
             outbox_store: Arc::new(RwLock::new(HashMap::new())),
-            model_store: InMemoryReadModelStore::new(),
+            model_store: InMemoryReadModelStore::with_causal_table_marker(Arc::clone(
+                &causal_tables,
+            )),
             snapshot_store: InMemorySnapshotStore::new(),
             inbox_store: Arc::new(RwLock::new(HashSet::new())),
             command_ledger: Arc::new(RwLock::new(HashMap::new())),
+            projection_protocol: Arc::new(RwLock::new(InMemoryProjectionProtocolState::default())),
+            causal_tables,
+            projection_change_retention: ProjectionChangeRetention::default(),
             causal_storage_identity: CausalStorageIdentity::new(),
         }
+    }
+
+    /// Configure the maximum newest projection changes retained per partition.
+    ///
+    /// The persisted compacted-through watermark remains authoritative when
+    /// this value is lengthened; previously compacted changes are never
+    /// advertised as restored.
+    pub fn with_projection_change_retention(
+        mut self,
+        retention: ProjectionChangeRetention,
+    ) -> Self {
+        self.projection_change_retention = retention;
+        self
     }
 
     #[cfg(test)]
@@ -137,6 +165,7 @@ impl InMemoryRepository {
 enum InMemoryCommitError {
     Repository(RepositoryError),
     Ledger(CommandLedgerError),
+    Projection(ProjectionProtocolError),
 }
 
 impl From<RepositoryError> for InMemoryCommitError {
@@ -157,13 +186,34 @@ impl From<TableStoreError> for InMemoryCommitError {
     }
 }
 
+impl From<ProjectionProtocolError> for InMemoryCommitError {
+    fn from(error: ProjectionProtocolError) -> Self {
+        Self::Projection(error)
+    }
+}
+
 impl InMemoryRepository {
     fn commit_batch_inner<'a>(
         &'a self,
         batch: CommitBatch<'a>,
-        completion: Option<CommandCompletion>,
+        mut completion: Option<CommandCompletion>,
+        direct_projection: Option<SameTransactionProjectionBatch>,
     ) -> Result<(), InMemoryCommitError> {
         let prepared = validate_commit_batch(&batch)?;
+        if let Some(direct_projection) = &direct_projection {
+            direct_projection.validate()?;
+            let completion = completion.as_ref().ok_or_else(|| {
+                CommandLedgerError::Invalid(
+                    "same-transaction direct projection requires a command completion".into(),
+                )
+            })?;
+            if direct_projection.causation_id != completion.attempt().causation_id().as_str() {
+                return Err(CommandLedgerError::Invalid(
+                    "direct projection causation differs from its command attempt".into(),
+                )
+                .into());
+            }
+        }
 
         // All-or-nothing without cloning whole stores: every fallible check
         // below runs against live maps or a batch-bounded staging copy. The
@@ -179,6 +229,31 @@ impl InMemoryRepository {
             .relational_rows
             .write()
             .map_err(|_| RepositoryError::LockPoisoned("async read model write"))?;
+        let causal_tables = self
+            .causal_tables
+            .read()
+            .map_err(|_| RepositoryError::LockPoisoned("projection ownership read"))?;
+        reject_causal_owned_plans(&causal_tables, &batch.read_model_plans)?;
+        if let Some(unregistered) = direct_projection.as_ref().and_then(|direct| {
+            direct
+                .mutations
+                .iter()
+                .map(|mutation| mutation.mutation.table_name())
+                .find(|table| !causal_tables.contains(*table))
+        }) {
+            return Err(ProjectionProtocolError::InvalidBatch(format!(
+                "direct projection table `{unregistered}` is not registered as causal-owned"
+            ))
+            .into());
+        }
+        let mut protocol = direct_projection
+            .as_ref()
+            .map(|_| {
+                self.projection_protocol
+                    .write()
+                    .map_err(|_| RepositoryError::LockPoisoned("direct projection protocol write"))
+            })
+            .transpose()?;
         let mut snapshot_storage = self
             .snapshot_store
             .storage
@@ -201,6 +276,20 @@ impl InMemoryRepository {
             })
             .transpose()?;
 
+        // Match the SQL adapter's precedence: once every store lock is held,
+        // reject a stale/expired command attempt before inspecting projection
+        // tombstones, row drift, or any other domain participant. The final
+        // staged completion below repeats this fence at the atomic boundary.
+        if let Some(completion) = completion.as_ref() {
+            let record = ledger_storage
+                .as_ref()
+                .and_then(|ledger| ledger.get(completion.attempt().key()))
+                .ok_or_else(|| CommandLedgerError::AttemptFenced {
+                    command_id: completion.attempt().key().command_id().to_string(),
+                })?;
+            record.validate_live_attempt(&completion.attempt_fence(), SystemTime::now())?;
+        }
+
         // Events: optimistic-concurrency check (reads only; appends cannot
         // fail once every stream passed).
         for append in &prepared {
@@ -216,11 +305,19 @@ impl InMemoryRepository {
         }
 
         // Read models can fail mid-application, so stage only touched rows.
-        let touched_rows: HashSet<String> = batch
+        let mut touched_rows: HashSet<String> = batch
             .read_model_plans
             .iter()
             .flat_map(|plan| plan.mutations.iter().map(|mutation| mutation.lock_key()))
             .collect();
+        if let Some(direct_projection) = &direct_projection {
+            touched_rows.extend(
+                direct_projection
+                    .mutations
+                    .iter()
+                    .map(|mutation| mutation.mutation.lock_key()),
+            );
+        }
         let mut staged_rows = HashMap::with_capacity(touched_rows.len());
         for key in &touched_rows {
             if let Some(row) = relational_rows.get(key) {
@@ -229,6 +326,22 @@ impl InMemoryRepository {
         }
         for plan in batch.read_model_plans.iter().cloned() {
             apply_read_model_write_plan(plan, &mut staged_rows)?;
+        }
+        let mut staged_protocol = protocol.as_deref().cloned();
+        let direct_evidence = match (&mut staged_protocol, &direct_projection) {
+            (Some(staged_protocol), Some(direct_projection)) => {
+                Some(stage_same_transaction_projection(
+                    staged_protocol,
+                    &mut staged_rows,
+                    direct_projection,
+                    self.projection_change_retention,
+                )?)
+            }
+            (None, None) => None,
+            _ => unreachable!("direct projection protocol state is acquired with its batch"),
+        };
+        if let (Some(completion), Some(evidence)) = (&mut completion, &direct_evidence) {
+            completion.attach_direct_projection(evidence)?;
         }
         debug_assert!(
             staged_rows.keys().all(|key| touched_rows.contains(key)),
@@ -312,6 +425,10 @@ impl InMemoryRepository {
             stream.entity.mark_committed();
         }
 
+        if let (Some(protocol), Some(staged_protocol)) = (protocol.as_deref_mut(), staged_protocol)
+        {
+            *protocol = staged_protocol;
+        }
         if let (Some(ledger), Some(record)) = (ledger_storage.as_mut(), staged_ledger_record) {
             ledger.insert(record.key.clone(), record);
         }
@@ -492,12 +609,15 @@ impl TransactionalCommit for InMemoryRepository {
         batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            match self.commit_batch_inner(batch, None) {
+            match self.commit_batch_inner(batch, None, None) {
                 Ok(()) => Ok(()),
                 Err(InMemoryCommitError::Repository(error)) => Err(error),
                 Err(InMemoryCommitError::Ledger(error)) => Err(RepositoryError::Model(format!(
                     "unexpected command ledger error in ordinary commit: {error}"
                 ))),
+                Err(InMemoryCommitError::Projection(error)) => Err(RepositoryError::Model(
+                    format!("unexpected projection protocol error in ordinary commit: {error}"),
+                )),
             }
         }
     }
@@ -509,12 +629,19 @@ impl CausalTransactionalCommit for InMemoryRepository {
         batch: CausalCommitBatch<'a>,
     ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
         async move {
-            match self.commit_batch_inner(batch.domain, Some(batch.completion)) {
+            match self.commit_batch_inner(
+                batch.domain,
+                Some(batch.completion),
+                batch.direct_projection,
+            ) {
                 Ok(()) => Ok(()),
                 Err(InMemoryCommitError::Repository(error)) => {
                     Err(CommandLedgerError::Storage(error))
                 }
                 Err(InMemoryCommitError::Ledger(error)) => Err(error),
+                Err(InMemoryCommitError::Projection(error)) => Err(CommandLedgerError::Storage(
+                    RepositoryError::Model(error.to_string()),
+                )),
             }
         }
     }

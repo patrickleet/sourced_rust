@@ -14,11 +14,14 @@
 use serde::Serialize;
 
 use super::command_contract::{
-    CommandConsistency, CommandEffects, CommandInputDefault, CommandProjectionConfirmation,
-    TypedCommandContract,
+    CommandConsistency, CommandDirectProjectionTarget, CommandEffects, CommandInputDefault,
+    CommandProjectedModel, CommandProjectionConfirmation, TypedCommandContract,
 };
-use super::surface::{SurfaceCommand, SurfaceCommandShape, SurfaceTypeDef, SurfaceTypeField};
+use super::surface::{
+    SurfaceCommand, SurfaceCommandShape, SurfaceProjector, SurfaceTypeDef, SurfaceTypeField,
+};
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
+use crate::projection_protocol::compile_projection_topology;
 
 /// How the browser interprets a successful mutation payload.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -125,6 +128,8 @@ pub struct ExposedCommand {
     pub(crate) input_defaults: Vec<CommandInputDefault>,
     pub(crate) effects: Option<CommandEffects>,
     pub(crate) confirmations: Vec<CommandProjectionConfirmation>,
+    pub(crate) projected_model: Option<CommandProjectedModel>,
+    pub(crate) direct_projection: Option<CommandDirectProjectionTarget>,
     pub(crate) confirmation_unavailable: bool,
 }
 
@@ -153,6 +158,8 @@ pub fn exposed_command() -> ExposedCommand {
         input_defaults: Vec::new(),
         effects: None,
         confirmations: Vec::new(),
+        projected_model: None,
+        direct_projection: None,
         confirmation_unavailable: false,
     }
 }
@@ -325,6 +332,8 @@ impl GraphqlCommands {
                     input_defaults: command.input_defaults.clone(),
                     effects: command.effects.clone(),
                     confirmations: command.confirmations.clone(),
+                    projected_model: command.projected_model.clone(),
+                    direct_projection: command.direct_projection.clone(),
                     confirmation_unavailable: command.confirmation_unavailable,
                 }
             })
@@ -350,6 +359,8 @@ impl GraphqlCommands {
                 input_defaults: contract.input_defaults.clone(),
                 effects: Some(contract.effects.clone()),
                 confirmations: contract.confirmations.clone(),
+                projected_model: contract.projected_model.clone(),
+                direct_projection: contract.direct_projection.clone(),
                 confirmation_unavailable: false,
             };
             commands = commands.command(&contract.name, command);
@@ -397,9 +408,170 @@ impl GraphqlCommands {
                     input_defaults: command.input_defaults.clone(),
                     effects,
                     confirmations: command.confirmations.clone(),
+                    projected_model: command.projected_model.clone(),
+                    direct_projection: command.direct_projection.clone(),
                 })
             })
             .collect()
+    }
+
+    /// Bind every confirmation and ordinary `Projected<M>` target to the exact
+    /// compiled projector registry. The digest covers the full model schemas,
+    /// accepted facts, and versioned scope codec; runtime lowering never
+    /// reconstructs authority from projector/model strings.
+    #[cfg(feature = "graphql")]
+    pub(crate) fn bind_direct_projection_targets(
+        &mut self,
+        projectors: &[SurfaceProjector],
+        model_schemas: &std::collections::BTreeMap<String, crate::table::TableSchema>,
+    ) -> Result<(), String> {
+        let mut compiled_projectors = std::collections::BTreeMap::new();
+        for projector in projectors {
+            let schemas = projector
+                .models
+                .iter()
+                .map(|model| {
+                    model_schemas.get(model).ok_or_else(|| {
+                        format!(
+                            "projector `{}` references unknown model `{model}`",
+                            projector.name
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let compiled = compile_projection_topology(
+                &projector.name,
+                &projector.facts,
+                &projector.models,
+                &projector.partition,
+                schemas,
+            )
+            .map_err(|error| {
+                format!(
+                    "projector `{}` has invalid compiled topology: {error}",
+                    projector.name
+                )
+            })?;
+            compiled_projectors.insert(projector.name.clone(), compiled);
+        }
+
+        for (name, command) in &mut self.commands {
+            for confirmation in &mut command.confirmations {
+                let projector = projectors
+                    .iter()
+                    .find(|projector| projector.name == confirmation.projector)
+                    .ok_or_else(|| {
+                        format!(
+                            "typed command `{name}` expects unknown projector `{}`",
+                            confirmation.projector
+                        )
+                    })?;
+                if !confirmation.topology_matches(
+                    &projector.name,
+                    &projector.facts,
+                    &projector.models,
+                    &projector.partition,
+                ) {
+                    return Err(format!(
+                        "typed command `{name}` captured projector `{}` topology identity does not match the registered projector facts/models",
+                        confirmation.projector
+                    ));
+                }
+                if !confirmation.partition_matches(&projector.partition) {
+                    return Err(format!(
+                        "typed command `{name}` confirmation for projector `{}` does not provide the partition mapping required by its declaration",
+                        confirmation.projector
+                    ));
+                }
+                if !projector
+                    .models
+                    .iter()
+                    .any(|model| model == &confirmation.model)
+                {
+                    return Err(format!(
+                        "typed command `{name}` expects projector `{}` to confirm model `{}`, but that model is not in the projector topology",
+                        confirmation.projector, confirmation.model
+                    ));
+                }
+                let (topology, _) = compiled_projectors
+                    .get(&projector.name)
+                    .expect("every registered projector was compiled above");
+                confirmation.bind_protocol_topology(topology.clone());
+            }
+
+            match command.consistency {
+                Some(CommandConsistency::Projected) => {}
+                _ => continue,
+            }
+            let projected = command.projected_model.as_ref().ok_or_else(|| {
+                format!(
+                    "typed projected command `{name}` is missing its compiler-retained relational model"
+                )
+            })?;
+            let owners = projectors
+                .iter()
+                .filter(|projector| {
+                    projector
+                        .models
+                        .iter()
+                        .any(|model| model == &projected.model)
+                })
+                .collect::<Vec<_>>();
+            let projector = match owners.as_slice() {
+                [projector] => *projector,
+                [] => {
+                    return Err(format!(
+                        "typed projected command `{name}` output model `{}` has no registered SurfaceProjector owner",
+                        projected.model
+                    ))
+                }
+                _ => {
+                    return Err(format!(
+                        "typed projected command `{name}` output model `{}` has ambiguous SurfaceProjector ownership: {}",
+                        projected.model,
+                        owners
+                            .iter()
+                            .map(|owner| owner.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                }
+            };
+            if projector.change_epoch.is_none() {
+                return Err(format!(
+                    "typed projected command `{name}` owner `{}` has no registered change-log epoch",
+                    projector.name
+                ));
+            }
+            let registered_schema = model_schemas
+                .get(&projected.model)
+                .expect("projector ownership above requires a registered model schema");
+            if projected.schema != registered_schema {
+                return Err(format!(
+                    "typed projected command `{name}` retained schema for `{}` differs from the registered full table schema",
+                    projected.model
+                ));
+            }
+            if !projected.partition_matches(&projector.partition) {
+                return Err(format!(
+                    "typed projected command `{name}` does not provide the partition mapping required by projector `{}`",
+                    projector.name
+                ));
+            }
+            let (protocol_topology, ownership) = compiled_projectors
+                .get(&projector.name)
+                .expect("every registered projector was compiled above");
+            command.direct_projection = Some(projected.bind(
+                &projector.name,
+                &projector.facts,
+                &projector.models,
+                &projector.partition,
+                projector.change_epoch.as_deref(),
+                ownership.clone(),
+                Some(protocol_topology.clone()),
+            ));
+        }
+        Ok(())
     }
 
     /// Machine-readable command registry for TypeScript (or other) client generators.

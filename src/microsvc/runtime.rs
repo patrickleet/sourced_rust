@@ -81,6 +81,9 @@ impl Service {
                 "Service::run requires a bus; call `with_bus` first",
             ));
         };
+        self.bootstrap_projectors()
+            .await
+            .map_err(TransportError::from)?;
         runner(Arc::new(self), options).await
     }
 }

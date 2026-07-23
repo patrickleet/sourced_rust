@@ -60,6 +60,7 @@ mod context;
 mod dependencies;
 mod error;
 mod message_router;
+mod projector;
 mod runtime;
 mod service;
 mod session;
@@ -68,11 +69,15 @@ pub use crate::bus::{Message, MessageKind, PayloadDecodeError, SubscriptionPlan}
 pub use causal::AggregateCheckout;
 pub use context::Context;
 pub use dependencies::{
-    CausalRepositoryBackend, CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore,
-    HasReadModelStore, HasRepo, ReadModelStoreDependencies, RepoDependencies,
-    RepoReadModelDependencies,
+    CausalProjectionRouteDependencies, CausalProjectionStore, CausalRepositoryBackend,
+    CausalRouteDependencies, ConfigurableOutboxPublisher, HasOutboxStore, HasReadModelStore,
+    HasRepo, ReadModelStoreDependencies, RepoDependencies, RepoReadModelDependencies,
 };
 pub use error::HandlerError;
+pub use projector::{
+    CausalProjectorContext, CausalProjectorRouteBuilder, LoadedProjection, ProjectionRepairHandle,
+    ProjectionRepairHandleParseError,
+};
 pub use runtime::{DEFAULT_MAX_PUBLISH_ATTEMPTS, DEFAULT_PUBLISH_LEASE};
 #[cfg(feature = "graphql")]
 pub use service::GraphqlServiceBindError;

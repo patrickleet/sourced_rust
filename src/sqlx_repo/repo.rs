@@ -39,6 +39,7 @@ use crate::outbox::{OutboxMessage, OutboxMessageStatus};
 use crate::outbox_worker::{
     ensure_active_claim, ClaimOutboxMessages, OutboxBacklogStats, OutboxClaimRef, OutboxStore,
 };
+use crate::projection_protocol::{ProjectionChangeRetention, SameTransactionProjectionBatch};
 use crate::read_model::{ReadModelLoadGraph, ReadModelLoadRequest, ReadModelQueryCapabilities};
 use crate::repository::{
     validate_commit_batch, validate_snapshot_identity, validate_supported_event_codec, CommitBatch,
@@ -47,10 +48,14 @@ use crate::repository::{
     TransactionalCommit,
 };
 use crate::snapshot::SnapshotRecord;
+use crate::sqlx_repo::projection_protocol::{
+    apply_same_transaction_projection_in_tx, reject_causal_table_writes_in_tx,
+    PROJECTION_CHANGE_NOTIFY_TABLE,
+};
 use crate::sqlx_repo::read_model::{
-    apply_read_model_write_plan_in_tx, commit_read_model_write_plan, empty_string_as_none,
-    load_read_model_graph, remember_read_model_schemas, sql_read_model_capabilities,
-    validate_sql_write_plan, SqlxReadModelBackend,
+    apply_read_model_write_plan_in_tx, begin_read_model_tx, commit_read_model_tx,
+    empty_string_as_none, load_read_model_graph, remember_read_model_schemas,
+    sql_read_model_capabilities, validate_sql_write_plan, SqlxReadModelBackend,
 };
 use crate::sqlx_repo::{
     audited_table_schema_sql, deserialize_event_metadata, repository_i64_from_u64,
@@ -263,6 +268,7 @@ pub struct SqlxRepository<DB: sqlx::Database> {
     /// Opt-out via [`SqlxRepository::without_read_model_change_notify`]. Writers
     /// that opt out silently break cross-process GraphQL subscriptions.
     notify_enabled: bool,
+    projection_change_retention: ProjectionChangeRetention,
     causal_storage_identity: CausalStorageIdentity,
 }
 
@@ -273,6 +279,7 @@ impl<DB: sqlx::Database> Clone for SqlxRepository<DB> {
             read_model_schemas: Arc::clone(&self.read_model_schemas),
             read_model_change_tx: self.read_model_change_tx.clone(),
             notify_enabled: self.notify_enabled,
+            projection_change_retention: self.projection_change_retention,
             causal_storage_identity: self.causal_storage_identity,
         }
     }
@@ -309,6 +316,7 @@ where
             read_model_schemas: Arc::new(RwLock::new(TableSchemaRegistry::new())),
             read_model_change_tx,
             notify_enabled: true,
+            projection_change_retention: ProjectionChangeRetention::default(),
             causal_storage_identity: CausalStorageIdentity::new(),
         }
     }
@@ -336,12 +344,32 @@ where
         self
     }
 
+    /// Configure the maximum newest projection changes retained per partition.
+    ///
+    /// Lengthening this value never restores a prefix already represented by
+    /// the durable compacted-through watermark.
+    pub fn with_projection_change_retention(
+        mut self,
+        retention: ProjectionChangeRetention,
+    ) -> Self {
+        self.projection_change_retention = retention;
+        self
+    }
+
     pub fn publish_read_model_change(&self, change: crate::ReadModelChange) {
         if change.is_empty() {
             return;
         }
         // Zero receivers is a no-op (broadcast::send returns Err).
         let _ = self.read_model_change_tx.send(change);
+    }
+
+    pub(super) fn projection_notify_enabled(&self) -> bool {
+        self.notify_enabled
+    }
+
+    pub(super) fn projection_change_retention(&self) -> ProjectionChangeRetention {
+        self.projection_change_retention
     }
 
     /// Open a pool without applying migrations.
@@ -679,10 +707,58 @@ where
     }
 }
 
+async fn preflight_command_completion_in_tx<DB>(
+    tx: &mut Transaction<'_, DB>,
+    completion: &CommandCompletion,
+) -> Result<(), CommandLedgerError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let fence = completion.attempt_fence();
+
+    // SQLite needs a write statement to reserve the database writer before
+    // the read; PostgreSQL's subsequent SELECT also carries FOR UPDATE. This
+    // establishes one portable lock order before any domain participant is
+    // mutated.
+    let mut lock = QueryBuilder::<DB>::new(
+        "UPDATE command_ledger SET updated_at = updated_at WHERE service_id = ",
+    );
+    lock.push_bind(fence.key().service_id());
+    lock.push(" AND principal_partition = ");
+    lock.push_bind(fence.key().principal_partition());
+    lock.push(" AND command_id = ");
+    lock.push_bind(fence.key().command_id());
+    let result =
+        lock.build().execute(&mut **tx).await.map_err(|error| {
+            repository_storage_error::<DB>("lock command attempt preflight", error)
+        })?;
+    if DB::rows_affected(&result) != 1 {
+        return Err(CommandLedgerError::AttemptFenced {
+            command_id: fence.key().command_id().to_string(),
+        });
+    }
+
+    let record = select_command_ledger_record_in_tx(tx, fence.key(), None)
+        .await?
+        .ok_or_else(|| CommandLedgerError::AttemptFenced {
+            command_id: fence.key().command_id().to_string(),
+        })?;
+    let now = command_ledger_now_in_tx(tx).await?;
+    record.validate_live_attempt(&fence, now)
+}
+
 async fn commit_sqlx_batch<'a, DB>(
     repository: &'a SqlxRepository<DB>,
     batch: CommitBatch<'a>,
-    completion: Option<CommandCompletion>,
+    mut completion: Option<CommandCompletion>,
+    direct_projection: Option<SameTransactionProjectionBatch>,
 ) -> Result<(), CommandLedgerError>
 where
     DB: SqlxRepoBackend,
@@ -703,12 +779,40 @@ where
     for plan in &batch.read_model_plans {
         validate_sql_write_plan(plan).map_err(RepositoryError::from)?;
     }
+    if let Some(direct_projection) = &direct_projection {
+        direct_projection.validate().map_err(|error| {
+            CommandLedgerError::Storage(RepositoryError::Model(error.to_string()))
+        })?;
+        let completion = completion.as_ref().ok_or_else(|| {
+            CommandLedgerError::Invalid(
+                "same-transaction direct projection requires a command completion".into(),
+            )
+        })?;
+        if direct_projection.causation_id != completion.attempt().causation_id().as_str() {
+            return Err(CommandLedgerError::Invalid(
+                "direct projection causation differs from its command attempt".into(),
+            ));
+        }
+    }
 
     let mut tx = repository
         .pool
         .begin()
         .await
         .map_err(|err| repository_storage_error::<DB>("begin commit transaction", err))?;
+    if let Some(completion) = completion.as_ref() {
+        preflight_command_completion_in_tx(&mut tx, completion).await?;
+    }
+
+    let requested_tables = batch
+        .read_model_plans
+        .iter()
+        .flat_map(|plan| plan.mutations.iter())
+        .map(|mutation| mutation.table_name().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    reject_causal_table_writes_in_tx(&mut tx, &requested_tables)
+        .await
+        .map_err(RepositoryError::from)?;
 
     let versions = stream_versions_in_tx(&mut tx, &prepared).await?;
     for append in &prepared {
@@ -737,6 +841,24 @@ where
         apply_read_model_write_plan_in_tx(&mut tx, plan)
             .await
             .map_err(RepositoryError::from)?;
+    }
+
+    if let Some(direct_projection) = &direct_projection {
+        let evidence = apply_same_transaction_projection_in_tx(
+            &mut tx,
+            direct_projection,
+            repository.projection_change_retention,
+        )
+        .await
+        .map_err(|error| CommandLedgerError::Storage(RepositoryError::Model(error.to_string())))?;
+        let completion = completion
+            .as_mut()
+            .expect("direct projection completion was validated before opening its transaction");
+        completion.attach_direct_projection(&evidence)?;
+        for mutation in &direct_projection.mutations {
+            changed_tables.insert(mutation.mutation.table_name().to_string());
+        }
+        changed_tables.insert(PROJECTION_CHANGE_NOTIFY_TABLE.to_string());
     }
 
     for write in batch.snapshots {
@@ -799,7 +921,7 @@ where
         batch: CommitBatch<'a>,
     ) -> impl Future<Output = Result<(), RepositoryError>> + Send + 'a {
         async move {
-            match commit_sqlx_batch(self, batch, None).await {
+            match commit_sqlx_batch(self, batch, None, None).await {
                 Ok(()) => Ok(()),
                 Err(CommandLedgerError::Storage(error)) => Err(error),
                 Err(error) => Err(RepositoryError::Model(format!(
@@ -830,7 +952,12 @@ where
         &'a self,
         batch: CausalCommitBatch<'a>,
     ) -> impl Future<Output = Result<(), CommandLedgerError>> + Send + 'a {
-        commit_sqlx_batch(self, batch.domain, Some(batch.completion))
+        commit_sqlx_batch(
+            self,
+            batch.domain,
+            Some(batch.completion),
+            batch.direct_projection,
+        )
     }
 }
 
@@ -1459,6 +1586,7 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
     for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
 {
     fn read_model_capabilities(&self) -> ReadModelAdapterCapabilities {
@@ -1475,8 +1603,14 @@ where
                 .iter()
                 .map(|m| m.table_name().to_string())
                 .collect();
-            let outcome =
-                commit_read_model_write_plan(&self.pool, plan, self.notify_enabled).await?;
+            validate_sql_write_plan(&plan)?;
+            let mut tx = begin_read_model_tx(&self.pool).await?;
+            reject_causal_table_writes_in_tx(&mut tx, &tables).await?;
+            let outcome = apply_read_model_write_plan_in_tx(&mut tx, plan).await?;
+            if self.notify_enabled && !tables.is_empty() {
+                DB::push_change_notify(&mut *tx, &tables).await?;
+            }
+            commit_read_model_tx(tx).await?;
             if outcome.was_applied() && !tables.is_empty() {
                 self.publish_read_model_change(crate::ReadModelChange { tables });
             }

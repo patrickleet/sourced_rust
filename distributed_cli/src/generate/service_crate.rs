@@ -319,7 +319,7 @@ pub async fn build_with_graphql() -> Result<Arc<Service>, Box<dyn std::error::Er
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| {connect_default}.to_string());
     let repo = ServiceRepo::connect_and_migrate(&database_url).await?;
-    let engine = crate::query::build_engine(repo.pool().clone())?;
+    let engine = crate::query::build_engine(&repo)?;
     let routes = distributed::routes!(
         Routes::new().with_dependencies(repo),
 {registrations}    );
@@ -585,13 +585,15 @@ use serde::{{Deserialize, Serialize}};
 {mods}pub mod commands;
 pub mod roles;
 
-use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPool}};
+use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource}};
 
 /// Build the GraphQL engine for this service.
 ///
 /// `DATABASE_URL` is used by `service::build_with_graphql`; defaults to an
 /// in-memory SQLite database when unset (dev only).
-pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, GraphqlBuildError> {{
+pub fn build_engine(
+    source: impl Into<GraphqlPoolSource>,
+) -> Result<GraphqlEngine, GraphqlBuildError> {{
 {tighten_hint}    // GraphiQL policy lives in `distributed::graphql::graphiql_enabled_from_env`
     // (GRAPHIQL override; RUST_ENV/ENV/APP_ENV production → off; else on).
     let graphiql = distributed::graphql::graphiql_enabled_from_env();
@@ -600,7 +602,7 @@ pub fn build_engine(pool: impl Into<GraphqlPool>) -> Result<GraphqlEngine, Graph
     // issuer (still OidcBearer; ambient headers never trusted). For local
     // GraphiQL ambient headers only, pass IdentityMode::DevHeaders explicitly.
     let identity = distributed::graphql::public_oidc_identity_from_env();
-    GraphqlEngine::from_manifest(&crate::distributed_manifest(), pool)?
+    GraphqlEngine::from_manifest(&crate::distributed_manifest(), source)?
         .roles(roles::ALL)
         .grant_all(roles::USER)
         .commands(commands::commands())

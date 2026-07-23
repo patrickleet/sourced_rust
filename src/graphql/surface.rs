@@ -12,11 +12,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use super::command_contract::{
-    compiled_projection_confirmation, CommandConsistency, CommandEffect, CommandEffects,
-    CommandInputDefault, CommandProjectionConfirmation, CompiledProjectionConfirmation,
-    EffectExpression, EffectFieldValue, EffectKey, EffectRelationship, TypedEffectKey,
+    compiled_direct_projection_target, compiled_projection_confirmation, CommandConsistency,
+    CommandDirectProjectionTarget, CommandEffect, CommandEffects, CommandInputDefault,
+    CommandProjectedModel, CommandProjectionConfirmation, CompiledDirectProjectionTarget,
+    CompiledProjectionConfirmation, EffectExpression, EffectFieldValue, EffectKey,
+    EffectRelationship, TypedEffectKey,
 };
 use super::filter::{FilterExpr, Operand};
+use crate::projection_protocol::ProjectionPartitionSpec;
+use crate::projection_protocol::{compile_projection_topology, ProjectionModelOwnership};
 use crate::table::{
     resolve_m2m_target_foreign_key, ColumnType, RelationshipKind, TableColumn, TableSchema,
 };
@@ -227,6 +231,8 @@ pub struct SurfaceCommand {
     pub(crate) input_defaults: Vec<CommandInputDefault>,
     pub(crate) effects: Option<CommandEffects>,
     pub(crate) confirmations: Vec<CommandProjectionConfirmation>,
+    pub(crate) projected_model: Option<CommandProjectedModel>,
+    pub(crate) direct_projection: Option<CommandDirectProjectionTarget>,
     /// Authorization selection erased at least one required confirmation.
     /// No hidden projector/model/key IDs may survive into client artifacts.
     pub(crate) confirmation_unavailable: bool,
@@ -240,6 +246,8 @@ pub struct SurfaceProjector {
     pub facts: Vec<String>,
     pub models: Vec<String>,
     pub dependencies: Vec<String>,
+    pub(crate) change_epoch: Option<String>,
+    pub(crate) partition: ProjectionPartitionSpec,
 }
 
 impl SurfaceProjector {
@@ -249,6 +257,8 @@ impl SurfaceProjector {
             facts: Vec::new(),
             models: Vec::new(),
             dependencies: Vec::new(),
+            change_epoch: None,
+            partition: ProjectionPartitionSpec::unit(),
         }
     }
 
@@ -262,6 +272,31 @@ impl SurfaceProjector {
         self
     }
 
+    /// Register the opaque change-log epoch owned by this projector topology.
+    ///
+    /// Epoch contents have no ordering meaning. They fence live resume and
+    /// same-transaction record-change evidence across projector rebuilds.
+    pub fn change_epoch(mut self, epoch: impl Into<String>) -> Self {
+        self.change_epoch = Some(epoch.into());
+        self
+    }
+
+    /// Derive a stable projection partition from one raw event JSON path.
+    ///
+    /// This closed declaration is evaluated before typed event decoding and is
+    /// hashed into the durable topology. Reuse this exact projector value for
+    /// GraphQL/direct binding and the asynchronous runtime.
+    pub fn partition_by(mut self, path: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.partition = ProjectionPartitionSpec::input_path(path);
+        self
+    }
+
+    /// Use one deterministic constant partition (including explicit JSON null).
+    pub fn partition_constant(mut self, value: serde_json::Value) -> Self {
+        self.partition = ProjectionPartitionSpec::constant(value);
+        self
+    }
+
     /// Reuse this exact topology declaration in a typed command confirmation
     /// plan. `command_confirmations!` calls this hidden seam so applications do
     /// not repeat projector or model IDs as strings.
@@ -270,7 +305,29 @@ impl SurfaceProjector {
         &self,
         key: TypedEffectKey<M>,
     ) -> CompiledProjectionConfirmation<I> {
-        compiled_projection_confirmation(&self.name, &self.facts, &self.models, key)
+        compiled_projection_confirmation(
+            &self.name,
+            &self.facts,
+            &self.models,
+            &self.partition,
+            key,
+        )
+    }
+
+    /// Compiler seam for binding one `Projected<M>` command to this exact
+    /// registered topology. Ordinary handlers never receive or construct it.
+    #[doc(hidden)]
+    pub fn __distributed_direct_projection<I, M>(&self) -> CompiledDirectProjectionTarget<I, M>
+    where
+        M: crate::read_model::RelationalReadModel + 'static,
+    {
+        compiled_direct_projection_target(
+            &self.name,
+            &self.facts,
+            &self.models,
+            &self.partition,
+            self.change_epoch.as_deref(),
+        )
     }
 }
 
@@ -424,7 +481,12 @@ impl Surface {
         self.commands = commands.surface_commands();
         validate_and_canonicalize_commands(&self.models, &self.comparison_ops, &mut self.commands)?;
         if self.projectors_attached {
-            validate_command_confirmation_topology(&self.commands, &self.projectors)?;
+            bind_surface_direct_projection_targets(
+                &mut self.commands,
+                &self.projectors,
+                &self.models,
+            )?;
+            validate_command_confirmation_topology(&self.commands, &self.projectors, &self.models)?;
         }
         self.commands_attached = true;
         Ok(self)
@@ -503,6 +565,20 @@ impl Surface {
                 &projector.models,
                 &format!("projector `{}` model", projector.name),
             )?;
+            if let Some(epoch) = projector.change_epoch.as_deref() {
+                crate::projection_protocol::ProjectionEpoch::new(epoch).map_err(|error| {
+                    format!(
+                        "projector `{}` change-log epoch is invalid: {error}",
+                        projector.name
+                    )
+                })?;
+            }
+            projector.partition.validate().map_err(|error| {
+                format!(
+                    "projector `{}` has invalid partition declaration: {error}",
+                    projector.name
+                )
+            })?;
             projector.facts.sort();
             projector.models.sort();
             let mut dependencies = BTreeSet::new();
@@ -519,9 +595,10 @@ impl Surface {
             out.push(projector);
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
+        bind_surface_direct_projection_targets(&mut self.commands, &out, &self.models)?;
         self.projectors = out;
         self.projectors_attached = true;
-        validate_command_confirmation_topology(&self.commands, &self.projectors)?;
+        validate_command_confirmation_topology(&self.commands, &self.projectors, &self.models)?;
         Ok(self)
     }
 }
@@ -894,7 +971,11 @@ pub fn surface_for_role(
     // Validate the complete declared topology before authorization filtering.
     // Only a projector hidden by a valid role selection may become
     // `confirmation_unavailable`; an omitted catalog topology is an error.
-    validate_command_confirmation_topology(&surface.commands, &surface.projectors)?;
+    validate_command_confirmation_topology(
+        &surface.commands,
+        &surface.projectors,
+        &surface.models,
+    )?;
     validate_role_grants(surface, role, grants)?;
     let mut models: BTreeMap<String, SurfaceModel> = BTreeMap::new();
 
@@ -1095,6 +1176,8 @@ pub fn surface_for_role(
             facts: projector.facts.clone(),
             models: projector.models.clone(),
             dependencies,
+            change_epoch: projector.change_epoch.clone(),
+            partition: projector.partition.clone(),
         });
     }
     sanitize_command_confirmations(&mut commands, &projectors, &models);
@@ -1659,6 +1742,9 @@ fn validate_and_canonicalize_commands(
             }
             SurfaceCommandShape::None | SurfaceCommandShape::Json => {}
         }
+        let output_command_name = command.command_name.clone();
+        let output_consistency = command.consistency;
+        let output_projected_model = command.projected_model.clone();
         match &mut command.output {
             SurfaceCommandShape::None => {
                 return Err(format!(
@@ -1668,8 +1754,20 @@ fn validate_and_canonicalize_commands(
             }
             SurfaceCommandShape::Typed(definition) => {
                 canonicalize_type_def(definition)?;
-                reject_occupied_command_types(definition, &occupied_types)?;
-                register_type_def(definition, false, &mut type_defs)?;
+                if projected_output_reuses_surface_model(
+                    &output_command_name,
+                    output_consistency,
+                    output_projected_model.as_ref(),
+                    definition,
+                    models,
+                )? {
+                    // `Projected<M>` deliberately returns the already-exposed
+                    // normalized model object. Do not claim or re-emit a second
+                    // GraphQL type with the same name.
+                } else {
+                    reject_occupied_command_types(definition, &occupied_types)?;
+                    register_type_def(definition, false, &mut type_defs)?;
+                }
             }
             SurfaceCommandShape::Json => {}
         }
@@ -1690,6 +1788,57 @@ fn validate_and_canonicalize_commands(
     }
     commands.sort_by(|a, b| a.command_name.cmp(&b.command_name));
     Ok(())
+}
+
+pub(crate) fn projected_output_reuses_surface_model(
+    command_name: &str,
+    consistency: Option<CommandConsistency>,
+    projected: Option<&CommandProjectedModel>,
+    definition: &SurfaceTypeDef,
+    models: &BTreeMap<String, SurfaceModel>,
+) -> Result<bool, String> {
+    if consistency != Some(CommandConsistency::Projected) {
+        return Ok(false);
+    }
+    let Some(projected) = projected else {
+        return Ok(false);
+    };
+    let Some(model) = models.get(&projected.model) else {
+        return Ok(false);
+    };
+    if definition.name != model.object_name {
+        return Ok(false);
+    }
+    if definition.fields.len() != model.columns.len() {
+        return Err(format!(
+            "typed projected command `{}` output `{}` does not match the normalized Surface model columns",
+            command_name, definition.name
+        ));
+    }
+    for field in &definition.fields {
+        let Some(column) = model
+            .columns
+            .iter()
+            .find(|column| column.name == field.name)
+        else {
+            return Err(format!(
+                "typed projected command `{}` output `{}` contains non-model field `{}`",
+                command_name, definition.name, field.name
+            ));
+        };
+        if field.type_name != column.scalar
+            || field.nullable != column.nullable
+            || field.list
+            || field.item_nullable
+            || field.nested.is_some()
+        {
+            return Err(format!(
+                "typed projected command `{}` output field `{}.{}` differs from its normalized Surface model column",
+                command_name, definition.name, field.name
+            ));
+        }
+    }
+    Ok(true)
 }
 
 fn validate_command_input_defaults(command: &SurfaceCommand) -> Result<(), String> {
@@ -1759,6 +1908,20 @@ fn validate_command_confirmations(
                 command.command_name
             ));
         }
+        Some(CommandConsistency::Projected) if command.projected_model.is_none() => {
+            return Err(format!(
+                "typed projected command `{}` is missing its compiler-retained relational model",
+                command.command_name
+            ));
+        }
+        Some(CommandConsistency::Accepted | CommandConsistency::Fact)
+            if command.projected_model.is_some() || command.direct_projection.is_some() =>
+        {
+            return Err(format!(
+                "typed non-projected command `{}` cannot carry direct projection metadata",
+                command.command_name
+            ));
+        }
         None if !command.confirmations.is_empty() => {
             return Err(format!(
                 "legacy command `{}` cannot declare typed projector confirmations",
@@ -1766,6 +1929,56 @@ fn validate_command_confirmations(
             ));
         }
         _ => {}
+    }
+    if let Some(projected) = &command.projected_model {
+        let model = models.get(&projected.model).ok_or_else(|| {
+            format!(
+                "typed projected command `{}` output references unknown model `{}`",
+                command.command_name, projected.model
+            )
+        })?;
+        if model.table_name != projected.table {
+            return Err(format!(
+                "typed projected command `{}` output model `{}` resolves to table `{}`, not `{}`",
+                command.command_name, projected.model, model.table_name, projected.table
+            ));
+        }
+        if let Some(partition) = &projected.partition {
+            validate_effect_expression(
+                command,
+                partition,
+                &ColumnField {
+                    name: "projector partition".into(),
+                    scalar: "String".into(),
+                    nullable: false,
+                },
+            )?;
+        }
+    }
+    if let Some(target) = &command.direct_projection {
+        let model = models.get(&target.model).ok_or_else(|| {
+            format!(
+                "typed projected command `{}` targets unknown model `{}`",
+                command.command_name, target.model
+            )
+        })?;
+        if model.table_name != target.table {
+            return Err(format!(
+                "typed projected command `{}` target model `{}` resolves to table `{}`, not `{}`",
+                command.command_name, target.model, model.table_name, target.table
+            ));
+        }
+        if let Some(partition) = &target.partition {
+            validate_effect_expression(
+                command,
+                partition,
+                &ColumnField {
+                    name: "projector partition".into(),
+                    scalar: "String".into(),
+                    nullable: false,
+                },
+            )?;
+        }
     }
     if command.confirmation_unavailable {
         return Err(format!(
@@ -1806,10 +2019,215 @@ fn validate_command_confirmations(
     Ok(())
 }
 
+fn bind_surface_direct_projection_targets(
+    commands: &mut [SurfaceCommand],
+    projectors: &[SurfaceProjector],
+    models: &BTreeMap<String, SurfaceModel>,
+) -> Result<(), String> {
+    let mut compiled_projectors = BTreeMap::new();
+    for projector in projectors {
+        let schemas = projector
+            .models
+            .iter()
+            .map(|model_name| {
+                models
+                    .get(model_name)
+                    .map(|model| &model.schema)
+                    .ok_or_else(|| {
+                        format!(
+                            "projector `{}` references unknown model `{model_name}`",
+                            projector.name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let compiled = compile_projection_topology(
+            &projector.name,
+            &projector.facts,
+            &projector.models,
+            &projector.partition,
+            schemas,
+        )
+        .map_err(|error| {
+            format!(
+                "projector `{}` has invalid compiled topology: {error}",
+                projector.name
+            )
+        })?;
+        compiled_projectors.insert(projector.name.clone(), compiled);
+    }
+
+    for command in commands {
+        for confirmation in &mut command.confirmations {
+            let projector = projectors
+                .iter()
+                .find(|projector| projector.name == confirmation.projector)
+                .ok_or_else(|| {
+                    format!(
+                        "typed command `{}` expects unknown projector `{}`",
+                        command.command_name, confirmation.projector
+                    )
+                })?;
+            if !confirmation.topology_matches(
+                &projector.name,
+                &projector.facts,
+                &projector.models,
+                &projector.partition,
+            ) {
+                return Err(format!(
+                    "typed command `{}` captured projector `{}` topology identity does not match the registered projector facts/models",
+                    command.command_name, confirmation.projector
+                ));
+            }
+            if !confirmation.partition_matches(&projector.partition) {
+                return Err(format!(
+                    "typed command `{}` confirmation for projector `{}` does not provide the partition mapping required by its declaration",
+                    command.command_name, confirmation.projector
+                ));
+            }
+            if !projector
+                .models
+                .iter()
+                .any(|model| model == &confirmation.model)
+            {
+                return Err(format!(
+                    "typed command `{}` expects projector `{}` to confirm model `{}`, but that model is not in the projector topology",
+                    command.command_name, confirmation.projector, confirmation.model
+                ));
+            }
+            let (topology, _) = compiled_projectors
+                .get(&projector.name)
+                .expect("every registered projector was compiled above");
+            confirmation.bind_protocol_topology(topology.clone());
+        }
+
+        if command.consistency != Some(CommandConsistency::Projected) {
+            continue;
+        }
+        let projected = command.projected_model.as_ref().ok_or_else(|| {
+            format!(
+                "typed projected command `{}` is missing its compiler-retained relational model",
+                command.command_name
+            )
+        })?;
+        let owners = projectors
+            .iter()
+            .filter(|projector| {
+                projector
+                    .models
+                    .iter()
+                    .any(|model| model == &projected.model)
+            })
+            .collect::<Vec<_>>();
+        let projector = match owners.as_slice() {
+            [projector] => *projector,
+            [] => {
+                return Err(format!(
+                    "typed projected command `{}` output model `{}` has no registered SurfaceProjector owner",
+                    command.command_name, projected.model
+                ))
+            }
+            _ => {
+                return Err(format!(
+                    "typed projected command `{}` output model `{}` has ambiguous SurfaceProjector ownership: {}",
+                    command.command_name,
+                    projected.model,
+                    owners
+                        .iter()
+                        .map(|owner| owner.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        };
+        if projector.change_epoch.is_none() {
+            return Err(format!(
+                "typed projected command `{}` owner `{}` has no registered change-log epoch",
+                command.command_name, projector.name
+            ));
+        }
+        let registered_schema = &models
+            .get(&projected.model)
+            .expect("projector ownership above requires a registered model")
+            .schema;
+        if projected.schema != registered_schema {
+            return Err(format!(
+                "typed projected command `{}` retained schema for `{}` differs from the registered full table schema",
+                command.command_name, projected.model
+            ));
+        }
+        if !projected.partition_matches(&projector.partition) {
+            return Err(format!(
+                "typed projected command `{}` does not provide the partition mapping required by projector `{}`",
+                command.command_name, projector.name
+            ));
+        }
+        let (protocol_topology, ownership) = compiled_projectors
+            .get(&projector.name)
+            .expect("every registered projector was compiled above");
+        command.direct_projection = Some(projected.bind(
+            &projector.name,
+            &projector.facts,
+            &projector.models,
+            &projector.partition,
+            projector.change_epoch.as_deref(),
+            ownership.clone(),
+            Some(protocol_topology.clone()),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_command_confirmation_topology(
     commands: &[SurfaceCommand],
     projectors: &[SurfaceProjector],
+    models: &BTreeMap<String, SurfaceModel>,
 ) -> Result<(), String> {
+    let mut compiled_projectors = BTreeMap::new();
+    let mut physical_owners = BTreeMap::new();
+    for projector in projectors {
+        let schemas = projector
+            .models
+            .iter()
+            .map(|model_name| {
+                models
+                    .get(model_name)
+                    .map(|model| &model.schema)
+                    .ok_or_else(|| {
+                        format!(
+                            "projector `{}` references unknown model `{model_name}`",
+                            projector.name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let compiled = compile_projection_topology(
+            &projector.name,
+            &projector.facts,
+            &projector.models,
+            &projector.partition,
+            schemas,
+        )
+        .map_err(|error| {
+            format!(
+                "projector `{}` has invalid compiled topology: {error}",
+                projector.name
+            )
+        })?;
+        for owner in &compiled.1 {
+            if let Some((existing_projector, existing_model)) = physical_owners.insert(
+                owner.table.clone(),
+                (projector.name.clone(), owner.model.clone()),
+            ) {
+                return Err(format!(
+                    "physical table `{}` has multiple projector owners: `{existing_projector}`/`{existing_model}` and `{}`/`{}`",
+                    owner.table, projector.name, owner.model
+                ));
+            }
+        }
+        compiled_projectors.insert(projector.name.clone(), compiled);
+    }
+
     for command in commands {
         for confirmation in &command.confirmations {
             let projector = projectors
@@ -1831,11 +2249,110 @@ fn validate_command_confirmation_topology(
                     command.command_name, confirmation.projector, confirmation.model
                 ));
             }
-            if !confirmation.topology_matches(&projector.name, &projector.facts, &projector.models)
-            {
+            if !confirmation.topology_matches(
+                &projector.name,
+                &projector.facts,
+                &projector.models,
+                &projector.partition,
+            ) {
                 return Err(format!(
                     "typed command `{}` captured projector `{}` topology identity does not match the registered projector facts/models",
                     command.command_name, confirmation.projector
+                ));
+            }
+            let (expected_topology, _) = compiled_projectors
+                .get(&projector.name)
+                .expect("every registered projector was compiled above");
+            if confirmation.protocol_topology() != Some(expected_topology) {
+                return Err(format!(
+                    "typed command `{}` confirmation for projector `{}` is not bound to the exact compiled schema topology",
+                    command.command_name, confirmation.projector
+                ));
+            }
+        }
+        if let Some(target) = &command.direct_projection {
+            let projector = projectors
+                .iter()
+                .find(|projector| projector.name == target.projector)
+                .ok_or_else(|| {
+                    format!(
+                        "typed projected command `{}` expects unknown direct projector `{}`",
+                        command.command_name, target.projector
+                    )
+                })?;
+            if !projector.models.iter().any(|model| model == &target.model) {
+                return Err(format!(
+                    "typed projected command `{}` direct projector `{}` does not own model `{}`",
+                    command.command_name, target.projector, target.model
+                ));
+            }
+            if !target.topology_matches(
+                &projector.name,
+                &projector.facts,
+                &projector.models,
+                &projector.partition,
+                projector.change_epoch.as_deref(),
+            ) {
+                return Err(format!(
+                    "typed projected command `{}` captured direct projector `{}` topology/change epoch does not match the registered owner",
+                    command.command_name, target.projector
+                ));
+            }
+            let (expected_topology, _) = compiled_projectors
+                .get(&projector.name)
+                .expect("every registered projector was compiled above");
+            if !target.protocol_topology_matches(expected_topology) {
+                return Err(format!(
+                    "typed projected command `{}` direct projector `{}` is not bound to the exact compiled schema topology",
+                    command.command_name, target.projector
+                ));
+            }
+            if projector.change_epoch.is_none() {
+                return Err(format!(
+                    "typed projected command `{}` direct projector `{}` has no registered change-log epoch",
+                    command.command_name, target.projector
+                ));
+            }
+            let mut expected_ownership = projector
+                .models
+                .iter()
+                .map(|model_name| {
+                    let model = models.get(model_name).ok_or_else(|| {
+                        format!(
+                            "typed projected command `{}` owner `{}` references unknown model `{model_name}`",
+                            command.command_name, projector.name
+                        )
+                    })?;
+                    ProjectionModelOwnership::new(model_name, &model.table_name)
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            expected_ownership.sort_by(|left, right| {
+                (left.model.as_str(), left.table.as_str())
+                    .cmp(&(right.model.as_str(), right.table.as_str()))
+            });
+            if target.ownership != expected_ownership {
+                return Err(format!(
+                    "typed projected command `{}` direct projector `{}` captured an incomplete or stale model/table ownership inventory",
+                    command.command_name, target.projector
+                ));
+            }
+
+            let physical_owners = projectors
+                .iter()
+                .flat_map(|candidate| {
+                    candidate.models.iter().filter_map(move |model_name| {
+                        models
+                            .get(model_name)
+                            .filter(|model| model.table_name == target.table)
+                            .map(|_| (candidate.name.as_str(), model_name.as_str()))
+                    })
+                })
+                .collect::<Vec<_>>();
+            if physical_owners.as_slice() != [(target.projector.as_str(), target.model.as_str())] {
+                return Err(format!(
+                    "typed projected command `{}` model `{}` has ambiguous direct projection ownership",
+                    command.command_name, target.model
                 ));
             }
         }
@@ -3040,6 +3557,72 @@ mod tests {
     }
 
     #[test]
+    fn projected_output_reuse_and_sdl_emission_use_the_same_exact_predicate() {
+        let schema: &'static TableSchema = Box::leak(Box::new(orders()));
+        let projected_model = CommandProjectedModel {
+            output_type_id: std::any::TypeId::of::<()>(),
+            model: "OrderView".into(),
+            table: "orders".into(),
+            schema,
+            partition: None,
+        };
+        let projected_command = |output: SurfaceTypeDef| SurfaceCommand {
+            command_name: "order.projected".into(),
+            field_name: "order_projected".into(),
+            roles: Vec::new(),
+            input: SurfaceCommandShape::Json,
+            output: SurfaceCommandShape::Typed(output),
+            consistency: Some(CommandConsistency::Projected),
+            input_defaults: Vec::new(),
+            effects: Some(CommandEffects::revalidate()),
+            confirmations: Vec::new(),
+            projected_model: Some(projected_model.clone()),
+            direct_projection: None,
+            confirmation_unavailable: false,
+        };
+        let one_string_field = |name: &str| SurfaceTypeDef {
+            name: name.into(),
+            fields: vec![SurfaceTypeField {
+                name: "order_id".into(),
+                type_name: "String".into(),
+                nullable: false,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            }],
+        };
+
+        let mut custom = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
+        custom.commands = vec![projected_command(one_string_field(
+            "CustomProjectedPayload",
+        ))];
+        validate_and_canonicalize_commands(
+            &custom.models,
+            &custom.comparison_ops,
+            &mut custom.commands,
+        )
+        .unwrap();
+        let sdl = crate::graphql::sdl::graphql_sdl_from_surface(&custom).unwrap();
+        assert!(
+            sdl.contains("type CustomProjectedPayload {"),
+            "a non-reused projected output must still be emitted: {sdl}"
+        );
+
+        let mut mismatched = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
+        mismatched.commands = vec![projected_command(one_string_field("OrderView"))];
+        let error = validate_and_canonicalize_commands(
+            &mismatched.models,
+            &mismatched.comparison_ops,
+            &mut mismatched.commands,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("does not match the normalized Surface model columns"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn surface_for_role_drops_ungranted_columns_and_models() {
         let full = build_surface(&[orders()], &SurfaceOptions::sqlite()).unwrap();
         let mut grants = BTreeMap::new();
@@ -3110,6 +3693,8 @@ mod tests {
                 }],
             }])),
             confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
             confirmation_unavailable: false,
         };
         let trusted_preset_command = SurfaceCommand {
@@ -3131,6 +3716,8 @@ mod tests {
                 }],
             }])),
             confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
             confirmation_unavailable: false,
         };
         let mut trusted = vec![trusted_preset_command];
@@ -3575,6 +4162,8 @@ mod tests {
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
             confirmation_unavailable: false,
         };
         let constant = |value| EffectExpression::Constant { value };
@@ -3628,6 +4217,8 @@ mod tests {
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
             confirmation_unavailable: false,
         };
         let key = EffectKey {

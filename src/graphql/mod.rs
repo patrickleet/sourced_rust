@@ -39,8 +39,9 @@ pub use command_contract::{
 };
 pub use command_contract::{
     typed_command, Accepted, CommandConsistency, CompiledCommandEffects, CompiledConfirmationPlan,
-    CompiledInputDefaults, Fact, PrepareCommandError, PreparedCommand, Projected, TypedCommand,
-    TypedEffectExpression, TypedEffectKey, TypedEffectRelationship,
+    CompiledDirectProjectionTarget, CompiledInputDefaults, Fact, PrepareCommandError,
+    PreparedCommand, Projected, TypedCommand, TypedEffectExpression, TypedEffectKey,
+    TypedEffectRelationship,
 };
 pub use naming::{
     aggregate_field, by_pk_field, comparison_op_fields, include_postgres_json_comparison_ops,

@@ -533,6 +533,14 @@ fn plan_projector() -> SurfaceProjector {
     SurfaceProjector::new("project_plan")
         .facts(["plan.changed"])
         .models(["PlanView"])
+        .partition_by(["id"])
+}
+
+fn direct_plan_projector() -> SurfaceProjector {
+    SurfaceProjector::new("project_plan")
+        .facts(["plan.changed"])
+        .models(["PlanView"])
+        .change_epoch("plan-direct-v1")
 }
 
 fn plan_confirmations() -> distributed::graphql::CompiledConfirmationPlan<PlanInput> {
@@ -628,18 +636,18 @@ fn two_confirmation_plan(
         .models(["PlanView"]);
     let second = SurfaceProjector::new("project_b")
         .facts(["plan.changed"])
-        .models(["PlanView"]);
+        .models(["ForgedView"]);
     if reverse {
         command_confirmations! {
             input: PlanInput;
-            confirm second -> PlanView { key { id: input.id } };
+            confirm second -> ForgedView { key { id: input.id } };
             confirm first -> PlanView { key { id: input.id } };
         }
     } else {
         command_confirmations! {
             input: PlanInput;
             confirm first -> PlanView { key { id: input.id } };
-            confirm second -> PlanView { key { id: input.id } };
+            confirm second -> ForgedView { key { id: input.id } };
         }
     }
 }
@@ -786,7 +794,9 @@ async fn projected_command_binding_rejects_a_raw_pool_source() {
     let route_repository = SqliteRepository::new(shared_pool.clone());
     let service = projected_service("plans", route_repository);
     let engine = GraphqlEngine::builder(shared_pool)
+        .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
+        .client_projectors([direct_plan_projector()])
         .build()
         .expect("a raw pool may build an engine before repository identity validation");
 
@@ -809,7 +819,9 @@ async fn projected_command_binding_rejects_an_independent_repository_over_the_sa
     let graphql_repository = SqliteRepository::new(shared_pool);
     let service = projected_service("plans", route_repository);
     let engine = GraphqlEngine::builder(&graphql_repository)
+        .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
+        .client_projectors([direct_plan_projector()])
         .build()
         .expect("the independently constructed repository still provides a valid pool");
 
@@ -831,7 +843,9 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
     let repository = SqliteRepository::new(shared_pool);
     let service = projected_service("plans", repository.clone());
     let engine = GraphqlEngine::builder(&repository)
+        .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
+        .client_projectors([direct_plan_projector()])
         .build()
         .expect("the repository-derived GraphQL pool should build");
 
@@ -844,7 +858,8 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
 async fn projector_topology_identity_drift_changes_service_binding_fingerprint() {
     let declared = SurfaceProjector::new("project_plan")
         .facts(["plan.changed"])
-        .models(["PlanView"]);
+        .models(["PlanView"])
+        .partition_by(["id"]);
     let engine_source = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
@@ -862,7 +877,8 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
 
     let drifted = SurfaceProjector::new("project_plan")
         .facts(["plan.renamed"])
-        .models(["PlanView"]);
+        .models(["PlanView"])
+        .partition_by(["id"]);
     let executable = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
@@ -1089,7 +1105,8 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
         .unwrap()
         .with_projectors([SurfaceProjector::new("some_other_projector")
             .facts(["plan.changed"])
-            .models(["PlanView"])])
+            .models(["PlanView"])
+            .partition_by(["id"])])
         .unwrap_err();
     assert!(unknown.contains("expects unknown projector `project_plan`"));
 
@@ -1100,11 +1117,15 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     .unwrap()
     .with_projectors([SurfaceProjector::new("project_plan")
         .facts(["plan.changed"])
-        .models(["ForgedView"])])
+        .models(["ForgedView"])
+        .partition_by(["id"])])
     .unwrap()
     .with_service(&make_service())
     .unwrap_err();
-    assert!(wrong_model.contains("not in the projector topology"));
+    assert!(
+        wrong_model.contains("topology identity does not match"),
+        "{wrong_model}"
+    );
 
     let wrong_facts = build_surface(&tables, &SurfaceOptions::sqlite())
         .unwrap()
@@ -1112,7 +1133,8 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
         .unwrap()
         .with_projectors([SurfaceProjector::new("project_plan")
             .facts(["some.other.fact"])
-            .models(["PlanView"])])
+            .models(["PlanView"])
+            .partition_by(["id"])])
         .unwrap_err();
     assert!(wrong_facts.contains("topology identity does not match"));
 
@@ -1125,13 +1147,15 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     .unwrap()
     .with_projectors([SurfaceProjector::new("project_plan")
         .facts(["plan.changed"])
-        .models(["PlanView", "ForgedView"])])
+        .models(["PlanView", "ForgedView"])
+        .partition_by(["id"])])
     .unwrap_err();
     assert!(changed_model_set.contains("topology identity does not match"));
 
     let captured_reordered = SurfaceProjector::new("project_plan")
         .facts(["plan.changed", "plan.created", "plan.changed"])
-        .models(["ForgedView", "PlanView", "PlanView"]);
+        .models(["ForgedView", "PlanView", "PlanView"])
+        .partition_by(["id"]);
     let service = Service::new().named("plans").routes(
         causal_routes()
             .typed_command(
@@ -1149,7 +1173,8 @@ fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     .unwrap()
     .with_projectors([SurfaceProjector::new("project_plan")
         .facts(["plan.created", "plan.changed"])
-        .models(["PlanView", "ForgedView"])])
+        .models(["PlanView", "ForgedView"])
+        .partition_by(["id"])])
     .expect("fact/model ordering and duplicates are not topology identity drift");
 }
 
@@ -1998,6 +2023,7 @@ async fn confirmation_set_order_does_not_change_manifest_fingerprint() {
         );
         GraphqlEngine::builder(pool())
             .model::<PlanView>(plan_permissions("anonymous"))
+            .model::<ForgedView>(ModelPermissions::new().grant("anonymous", read().all_columns()))
             .service(&service)
             .client_projectors([
                 SurfaceProjector::new("project_a")
@@ -2005,7 +2031,7 @@ async fn confirmation_set_order_does_not_change_manifest_fingerprint() {
                     .models(["PlanView"]),
                 SurfaceProjector::new("project_b")
                     .facts(["plan.changed"])
-                    .models(["PlanView"]),
+                    .models(["ForgedView"]),
             ])
             .build()
             .unwrap()
