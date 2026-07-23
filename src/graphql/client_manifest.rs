@@ -14,10 +14,11 @@ use sha2::{Digest, Sha256};
 
 use super::command_contract::{CommandConsistency, CommandEffectFallback};
 use super::filter::FilterExpr;
+use super::naming::{aggregate_fields_type_name, aggregate_type_name};
 use super::surface::{
     model_has_client_normalized_identity, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,
-    SurfaceCommandShape, SurfaceRelationshipKeys, SurfaceRowPolicy, SurfaceSelection,
-    SurfaceTypeDef,
+    SurfaceCommand, SurfaceCommandShape, SurfaceRelationshipKeys, SurfaceRowPolicy,
+    SurfaceSelection, SurfaceTypeDef,
 };
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
@@ -364,7 +365,6 @@ pub struct ClientRelationship {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRelationshipAggregate {
     pub name: String,
-    pub type_name: String,
     pub arguments: Vec<ClientArgument>,
     pub semantics: ClientAggregateSemantics,
     pub dependencies: Vec<String>,
@@ -490,6 +490,10 @@ pub struct ClientPaginationSemantics {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientAggregateSemantics {
+    /// Exact GraphQL wrapper object selected by this root or relationship.
+    pub wrapper_typename: String,
+    /// Exact GraphQL object returned by the wrapper's `aggregate` field.
+    pub fields_typename: String,
     pub count: bool,
     pub nodes: bool,
     pub sum: Vec<String>,
@@ -547,6 +551,8 @@ pub struct ClientCommandExtensionSlots {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consistency: Option<CommandConsistencyExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_projection: Option<CommandDirectProjectionExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_defaults: Option<CommandInputDefaultsExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<CommandEffectsExtension>,
@@ -558,6 +564,28 @@ pub struct ClientCommandExtensionSlots {
 pub struct CommandConsistencyExtension {
     pub version: u32,
     pub kind: String,
+}
+
+/// Opaque same-transaction target for one `Projected<T>` command.
+///
+/// The topology digest binds the scope-codec version, accepted facts, complete
+/// owned schemas, partition declaration, and physical ownership on the server.
+/// The role-selected client contract therefore needs only this exact identity,
+/// never the hidden topology inventory used to compile it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandDirectProjectionExtension {
+    pub topology: ClientProjectionTopologyIdentity,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<serde_json::Value>,
+    pub change_epoch: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientProjectionTopologyIdentity {
+    pub version: u32,
+    pub name: String,
+    pub digest: String,
 }
 
 /// Generators applied once to the canonical command input before dispatch.
@@ -690,6 +718,184 @@ fn query_footprint_supports_live_resume(surface: &Surface) -> bool {
             && owner.change_epoch.is_some()
             && projector_partition_matches_authorization(surface, owner)
     })
+}
+
+fn command_direct_projection_extension(
+    command: &SurfaceCommand,
+    surface: &Surface,
+) -> Result<Option<CommandDirectProjectionExtension>, ClientManifestError> {
+    let projected = matches!(command.consistency, Some(CommandConsistency::Projected));
+    let Some(target) = command.direct_projection.as_ref() else {
+        return if projected {
+            Err(ClientManifestError(format!(
+                "typed projected command `{}` is missing its bound direct projection target",
+                command.command_name
+            )))
+        } else {
+            Ok(None)
+        };
+    };
+    if !projected {
+        return Err(ClientManifestError(format!(
+            "typed non-projected command `{}` cannot export a direct projection target",
+            command.command_name
+        )));
+    }
+    let retained = command.projected_model.as_ref().ok_or_else(|| {
+        ClientManifestError(format!(
+            "typed projected command `{}` is missing its retained relational model",
+            command.command_name
+        ))
+    })?;
+    if target.model != retained.model {
+        return Err(ClientManifestError(format!(
+            "typed projected command `{}` direct target model `{}` differs from retained model `{}`",
+            command.command_name, target.model, retained.model
+        )));
+    }
+    let model = surface.models.get(&target.model).ok_or_else(|| {
+        ClientManifestError(format!(
+            "typed projected command `{}` direct target model `{}` is not authorized on this client surface",
+            command.command_name, target.model
+        ))
+    })?;
+    if !model_has_client_normalized_identity(model) {
+        return Err(ClientManifestError(format!(
+            "typed projected command `{}` direct target model `{}` has no complete authorized client identity",
+            command.command_name, target.model
+        )));
+    }
+    let SurfaceCommandShape::Typed(output) = &command.output else {
+        return Err(ClientManifestError(format!(
+            "typed projected command `{}` must return its exact relational model object",
+            command.command_name
+        )));
+    };
+    if output.name != model.object_name || output.fields.len() != model.columns.len() {
+        return Err(ClientManifestError(format!(
+            "typed projected command `{}` output does not match authorized model `{}`",
+            command.command_name, target.model
+        )));
+    }
+    for field in &output.fields {
+        let matches = model.columns.iter().any(|column| {
+            field.name == column.name
+                && field.type_name == column.scalar
+                && field.nullable == column.nullable
+                && !field.list
+                && !field.item_nullable
+                && field.nested.is_none()
+        });
+        if !matches {
+            return Err(ClientManifestError(format!(
+                "typed projected command `{}` output field `{}.{}` differs from authorized model `{}`",
+                command.command_name, output.name, field.name, target.model
+            )));
+        }
+    }
+
+    let topology = target.protocol_topology().ok_or_else(|| {
+        ClientManifestError(format!(
+            "typed projected command `{}` direct target is not bound to its compiled protocol topology",
+            command.command_name
+        ))
+    })?;
+    if topology.name() != target.projector {
+        return Err(ClientManifestError(format!(
+            "typed projected command `{}` direct target projector `{}` differs from bound topology `{}`",
+            command.command_name,
+            target.projector,
+            topology.name()
+        )));
+    }
+
+    let visible_owners = surface
+        .projectors
+        .iter()
+        .filter(|projector| projector.models.iter().any(|model| model == &target.model))
+        .collect::<Vec<_>>();
+    match visible_owners.as_slice() {
+        [] => {
+            if surface
+                .projectors
+                .iter()
+                .any(|projector| projector.name == topology.name())
+            {
+                return Err(ClientManifestError(format!(
+                    "typed projected command `{}` topology `{}` does not own model `{}` on this client surface",
+                    command.command_name,
+                    topology.name(),
+                    target.model
+                )));
+            }
+            // A role surface may omit the whole projector when the same
+            // topology also owns a denied model. The digest remains safe and
+            // exact without revealing that hidden ownership inventory.
+        }
+        [owner] if owner.name == topology.name() => {
+            if !target.topology_matches(
+                &owner.name,
+                &owner.facts,
+                &owner.models,
+                &owner.partition,
+                owner.change_epoch.as_deref(),
+            ) || !target.protocol_topology_matches(topology)
+            {
+                return Err(ClientManifestError(format!(
+                    "typed projected command `{}` direct target differs from visible owner `{}`",
+                    command.command_name, owner.name
+                )));
+            }
+        }
+        [owner] => {
+            return Err(ClientManifestError(format!(
+                "typed projected command `{}` names topology `{}` but visible owner `{}` owns model `{}`",
+                command.command_name,
+                topology.name(),
+                owner.name,
+                target.model
+            )));
+        }
+        owners => {
+            return Err(ClientManifestError(format!(
+                "typed projected command `{}` model `{}` has ambiguous visible ownership: {}",
+                command.command_name,
+                target.model,
+                owners
+                    .iter()
+                    .map(|owner| owner.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
+
+    let change_epoch = target.change_epoch.clone().ok_or_else(|| {
+        ClientManifestError(format!(
+            "typed projected command `{}` direct target has no registered change-log epoch",
+            command.command_name
+        ))
+    })?;
+    let partition = target
+        .partition
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let digest = topology
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(Some(CommandDirectProjectionExtension {
+        topology: ClientProjectionTopologyIdentity {
+            version: topology.version(),
+            name: topology.name().to_string(),
+            digest: format!("sha256:{digest}"),
+        },
+        model: target.model.clone(),
+        partition,
+        change_epoch,
+    }))
 }
 
 pub(crate) fn client_manifest_from_surface(
@@ -874,9 +1080,8 @@ pub(crate) fn client_manifest_from_surface(
                 aggregate: relationship.aggregate.as_ref().map(|aggregate| {
                     ClientRelationshipAggregate {
                         name: aggregate.name.clone(),
-                        type_name: aggregate.type_name.clone(),
                         arguments: aggregate.arguments.iter().map(argument_manifest).collect(),
-                        semantics: aggregate_semantics(),
+                        semantics: aggregate_semantics(target, aggregate.type_name.clone()),
                         dependencies: sorted_unique(aggregate.dependencies.clone()),
                     }
                 }),
@@ -936,7 +1141,8 @@ pub(crate) fn client_manifest_from_surface(
                         max_limit,
                         coverage: "window".into(),
                     });
-            let aggregate = matches!(root.kind, RootKind::Aggregate).then(aggregate_semantics);
+            let aggregate = matches!(root.kind, RootKind::Aggregate)
+                .then(|| aggregate_semantics(model, aggregate_type_name(&model.schema)));
             roots.push(ClientRoot {
                 id: format!(
                     "{}:{}",
@@ -992,6 +1198,7 @@ pub(crate) fn client_manifest_from_surface(
             }
             .into(),
         });
+        let direct_projection = command_direct_projection_extension(command, surface)?;
         let input_defaults = (!command.input_defaults.is_empty())
             .then(|| {
                 command
@@ -1061,6 +1268,7 @@ pub(crate) fn client_manifest_from_surface(
             extensions: ClientCommandExtensionSlots {
                 version: COMMAND_EXTENSION_SLOTS_VERSION,
                 consistency,
+                direct_projection,
                 input_defaults,
                 effects,
                 confirmations,
@@ -1388,8 +1596,13 @@ fn pagination_semantics(
     }
 }
 
-fn aggregate_semantics() -> ClientAggregateSemantics {
+fn aggregate_semantics(
+    model: &super::surface::SurfaceModel,
+    wrapper_typename: String,
+) -> ClientAggregateSemantics {
     ClientAggregateSemantics {
+        wrapper_typename,
+        fields_typename: aggregate_fields_type_name(&model.schema),
         count: true,
         nodes: true,
         sum: Vec::new(),
@@ -1597,8 +1810,8 @@ mod tests {
     use crate::graphql::{
         build_surface, claim, col, exposed_command, rel, surface_for_application, surface_for_role,
         typed_command, Accepted, GraphqlCommands, GraphqlInputType, GraphqlOutputType,
-        GraphqlTypeDef, GraphqlTypeField, PreparedCommand, RoleGrant, SurfaceOptions,
-        SurfaceProjector,
+        GraphqlTypeDef, GraphqlTypeField, PreparedCommand, RoleGrant, SurfaceCommand,
+        SurfaceOptions, SurfaceProjector, SurfaceTypeField,
     };
     use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
     use crate::table::{
@@ -1870,6 +2083,175 @@ mod tests {
                 .models(["UserView"]),
         ])
         .expect("projectors")
+    }
+
+    fn projected_surface() -> Surface {
+        use super::super::command_contract::{
+            CommandEffects, CommandProjectedModel, EffectExpression,
+        };
+
+        let todo_schema: &'static TableSchema = Box::leak(Box::new(todos()));
+        let mut surface = build_surface(&[todo_schema.clone(), users()], &SurfaceOptions::sqlite())
+            .expect("projected surface");
+        let todo_model = surface.models["TodoView"].clone();
+        let mut output_fields = todo_model
+            .columns
+            .iter()
+            .map(|column| SurfaceTypeField {
+                name: column.name.clone(),
+                type_name: column.scalar.clone(),
+                nullable: column.nullable,
+                list: false,
+                item_nullable: false,
+                nested: None,
+            })
+            .collect::<Vec<_>>();
+        output_fields.sort_by(|left, right| left.name.cmp(&right.name));
+        surface.commands = vec![SurfaceCommand {
+            command_name: "todo.project".into(),
+            field_name: "todo_project".into(),
+            roles: vec!["user".into()],
+            input: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: "ProjectTodoInput".into(),
+                fields: vec![SurfaceTypeField {
+                    name: "todo_id".into(),
+                    type_name: "String".into(),
+                    nullable: false,
+                    list: false,
+                    item_nullable: false,
+                    nested: None,
+                }],
+            }),
+            output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                name: todo_model.object_name,
+                fields: output_fields,
+            }),
+            consistency: Some(CommandConsistency::Projected),
+            input_defaults: Vec::new(),
+            effects: Some(CommandEffects::revalidate()),
+            confirmations: Vec::new(),
+            projected_model: Some(CommandProjectedModel {
+                output_type_id: TypeId::of::<()>(),
+                model: "TodoView".into(),
+                table: "todos".into(),
+                schema: todo_schema,
+                partition: Some(EffectExpression::Input {
+                    path: vec!["todo_id".into()],
+                }),
+            }),
+            direct_projection: None,
+            confirmation_unavailable: false,
+        }];
+        surface.commands_attached = true;
+        surface
+            .with_projectors([SurfaceProjector::new("project_todo_domain")
+                .facts(["todo.changed", "user.changed"])
+                .models(["TodoView", "UserView"])
+                .partition_by(["todo_id"])
+                .change_epoch("todo-domain-v1")])
+            .expect("projected topology")
+    }
+
+    #[test]
+    fn projected_command_exports_opaque_role_safe_direct_target() {
+        let full = projected_surface();
+        let selected = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([("TodoView".into(), RoleGrant::all_columns())]),
+        )
+        .expect("role selection");
+        assert!(
+            selected.projectors.is_empty(),
+            "the multi-model owner must be omitted when one owned model is denied"
+        );
+
+        let manifest = client_manifest_from_surface(
+            "todos-service",
+            ClientSurfaceIdentity::role("user"),
+            &selected,
+        )
+        .expect("projected client manifest");
+        let direct = manifest.commands[0]
+            .extensions
+            .direct_projection
+            .as_ref()
+            .expect("projected direct target");
+        assert_eq!(direct.topology.version, 1);
+        assert_eq!(direct.topology.name, "project_todo_domain");
+        assert_eq!(direct.topology.digest.len(), 71);
+        assert!(direct.topology.digest.starts_with("sha256:"));
+        assert!(direct.topology.digest[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert_eq!(direct.model, "TodoView");
+        assert_eq!(
+            direct.partition,
+            Some(serde_json::json!({"kind": "input", "path": ["todo_id"]}))
+        );
+        assert_eq!(direct.change_epoch, "todo-domain-v1");
+
+        let direct_wire = serde_json::to_value(direct).expect("direct target wire");
+        assert_eq!(
+            direct_wire
+                .as_object()
+                .expect("direct target object")
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["change_epoch", "model", "partition", "topology"])
+        );
+        let wire = serde_json::to_string(&manifest).expect("client manifest wire");
+        assert!(!wire.contains("UserView"));
+        assert!(!wire.contains("users"));
+        assert!(!wire.contains("user.changed"));
+    }
+
+    #[test]
+    fn projected_command_export_rejects_absent_or_wrong_direct_target() {
+        let full = projected_surface();
+        let mut selected = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([
+                ("TodoView".into(), RoleGrant::all_columns()),
+                ("UserView".into(), RoleGrant::all_columns()),
+            ]),
+        )
+        .expect("role selection");
+
+        selected.commands[0].direct_projection = None;
+        let error = client_manifest_from_surface(
+            "todos-service",
+            ClientSurfaceIdentity::role("user"),
+            &selected,
+        )
+        .expect_err("projected command cannot omit direct target");
+        assert!(error
+            .0
+            .contains("missing its bound direct projection target"));
+
+        let mut selected = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([
+                ("TodoView".into(), RoleGrant::all_columns()),
+                ("UserView".into(), RoleGrant::all_columns()),
+            ]),
+        )
+        .expect("role selection");
+        selected.commands[0]
+            .direct_projection
+            .as_mut()
+            .expect("bound target")
+            .model = "UserView".into();
+        let error = client_manifest_from_surface(
+            "todos-service",
+            ClientSurfaceIdentity::role("user"),
+            &selected,
+        )
+        .expect_err("direct target cannot name a different retained model");
+        assert!(error.0.contains("differs from retained model"));
     }
 
     #[test]
@@ -2602,8 +2984,32 @@ mod tests {
         );
         let aggregate = members.aggregate.as_ref().expect("aggregate grant");
         assert_eq!(aggregate.name, "members_aggregate");
+        assert_eq!(aggregate.semantics.wrapper_typename, "users_aggregate");
+        assert_eq!(
+            aggregate.semantics.fields_typename,
+            "users_aggregate_fields"
+        );
         assert!(aggregate.semantics.count && aggregate.semantics.nodes);
         assert_eq!(aggregate.dependencies, members.dependencies);
+        let users_aggregate = manifest
+            .roots
+            .iter()
+            .find(|root| {
+                root.operation == ClientRootOperation::Query && root.name == "users_aggregate"
+            })
+            .expect("aggregate root grant");
+        let users_aggregate_semantics = users_aggregate
+            .aggregate
+            .as_ref()
+            .expect("aggregate root semantics");
+        assert_eq!(
+            users_aggregate_semantics.wrapper_typename,
+            "users_aggregate"
+        );
+        assert_eq!(
+            users_aggregate_semantics.fields_typename,
+            "users_aggregate_fields"
+        );
         assert!(members.dependencies.contains(&"teams".into()));
         assert!(members.dependencies.contains(&"users".into()));
         assert!(members

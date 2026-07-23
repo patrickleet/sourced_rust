@@ -16,26 +16,64 @@ const ROLE_MANIFEST: &str = r#"{
     "kind": "role",
     "name": "user"
   },
-  "schema_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "schema_fingerprint": "sha256:759a74221b0e995a648ac10c6bb73fb75d66a345adee8ec06101535f32052e79",
   "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
   "capabilities": {
     "live_queries": false,
-    "causal_receipts": false
+    "record_revisions": false,
+    "tombstones": false,
+    "causal_receipts": false,
+    "live_resume": false,
+    "query_fallback": "revalidate",
+    "cache_scope": false,
+    "confirmed_persistence": false
   },
   "scalar_codecs": [
+    {
+      "scalar": "BigInt",
+      "codec": "json_number_precision_limited"
+    },
+    {
+      "scalar": "Boolean",
+      "codec": "boolean"
+    },
+    {
+      "scalar": "Bytea",
+      "codec": "base64"
+    },
+    {
+      "scalar": "Float",
+      "codec": "float64"
+    },
     {
       "scalar": "ID",
       "codec": "string"
     },
     {
+      "scalar": "Int",
+      "codec": "int32"
+    },
+    {
+      "scalar": "JSON",
+      "codec": "json"
+    },
+    {
       "scalar": "String",
       "codec": "string"
+    },
+    {
+      "scalar": "Timestamptz",
+      "codec": "string_unvalidated_timestamp"
     }
   ],
   "models": [
     {
       "id": "Todo",
       "typename": "Todo",
+      "source_table": "todos",
+      "dependencies": [
+        "todos"
+      ],
       "normalization": {
         "kind": "normalized",
         "fields": [
@@ -60,7 +98,12 @@ const ROLE_MANIFEST: &str = r#"{
           "nullable": false
         }
       ],
-      "relationships": []
+      "relationships": [],
+      "row_policy": {
+        "kind": "unrestricted"
+      },
+      "record_revisions": false,
+      "tombstones": false
     }
   ],
   "roots": [
@@ -71,11 +114,14 @@ const ROLE_MANIFEST: &str = r#"{
       "kind": "list",
       "model": "Todo",
       "arguments": [],
+      "filter": null,
+      "order": null,
+      "pagination": null,
+      "aggregate": null,
       "dependencies": [
-        "Todo"
+        "todos"
       ],
-      "live": false,
-      "pagination": null
+      "live": false
     }
   ],
   "commands": [],

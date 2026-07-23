@@ -56,20 +56,67 @@ fn client_manifest_uses_service_surface_export() {
     assert_eq!(manifest["surface"]["name"], "user");
     assert_eq!(
         manifest["schema_fingerprint"],
-        "sha256:34befe47e759e88eb5ad780426a636881207ebf308fcb3a03be74281ac93fee4"
+        "sha256:a062d2a28c627095d13889c82c7b4bbee61b5344e8b2ee41c5b068563b0a1afd"
     );
     assert_eq!(
         manifest["protocol_fingerprint"],
         "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc"
     );
     assert_eq!(manifest["models"][0]["id"], "OrderView");
-    assert_eq!(manifest["models"][0]["record_revisions"], false);
-    assert_eq!(manifest["models"][0]["tombstones"], false);
-    assert_eq!(manifest["capabilities"]["record_revisions"], false);
-    assert_eq!(manifest["capabilities"]["tombstones"], false);
-    assert_eq!(manifest["capabilities"]["live_resume"], false);
+    assert_eq!(manifest["models"][0]["record_revisions"], true);
+    assert_eq!(manifest["models"][0]["tombstones"], true);
+    assert_eq!(manifest["capabilities"]["record_revisions"], true);
+    assert_eq!(manifest["capabilities"]["tombstones"], true);
+    assert_eq!(manifest["capabilities"]["live_resume"], true);
     assert_eq!(manifest["capabilities"]["query_fallback"], "revalidate");
-    assert!(manifest["protocol_operations"]["command_status"].is_null());
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["consistency"]["kind"],
+        "projected"
+    );
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["direct_projection"]["topology"]["version"],
+        1
+    );
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["direct_projection"]["topology"]["name"],
+        "project_orders"
+    );
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["direct_projection"]["topology"]["digest"],
+        "sha256:32e51a5f5c3b7a83d27366f8dc889b87045e65f027f7b598421a6db765efe8a4"
+    );
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["direct_projection"]["model"],
+        "OrderView"
+    );
+    assert_eq!(
+        manifest["commands"][0]["extensions"]["direct_projection"]["change_epoch"],
+        "orders-v1"
+    );
+    assert!(manifest["commands"][0]["extensions"]["direct_projection"]
+        .get("partition")
+        .is_none());
+    assert!(manifest["protocol_operations"]["command_status"].is_object());
+}
+
+#[test]
+#[ignore = "compiles the fixture via the manifest harness; run in the integration job"]
+fn emitted_client_manifest_is_accepted_by_client_compiler() {
+    let json = dctl(&["client-manifest"]);
+    let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let project = distributed_cli::compile_client(distributed_cli::ClientCompileInput::new(
+        manifest,
+        distributed_cli::ClientSurfaceSelector::role("user"),
+        vec![distributed_cli::ClientDocument::new(
+            "src/routes/orders/+page.graphql",
+            "query Orders { orders { order_id status } }",
+        )],
+    ))
+    .expect("the compiler must consume the exact manifest emitted by the server crate");
+
+    assert_eq!(project.operations.len(), 1);
+    assert_eq!(project.operations[0].name, "Orders");
+    assert_eq!(project.schema_fingerprint.len(), 71);
 }
 
 #[test]
