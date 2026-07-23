@@ -264,12 +264,12 @@ fn aggregate_root() -> JsonValue {
 
 pub(super) fn manifest() -> JsonValue {
     let mut value = json!({
-        "manifest_version": 6,
+        "manifest_version": 7,
         "protocol_version": 2,
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
-        "protocol_fingerprint": "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc",
+        "protocol_fingerprint": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,
@@ -294,7 +294,7 @@ pub(super) fn manifest() -> JsonValue {
             "causal_receipts": false,
             "live_resume": true,
             "query_fallback": "revalidate",
-            "cache_scope": false,
+            "cache_scope": true,
             "confirmed_persistence": false
         },
         "scalar_codecs": scalar_codecs(),
@@ -484,7 +484,7 @@ fn projected_manifest() -> JsonValue {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 2,
+            "version": 3,
             "consistency": {"version": 1, "kind": "projected"},
             "direct_projection": {
                 "topology": {
@@ -534,7 +534,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": import,
             "operation_hash": fingerprint(import),
             "extensions": {
-                "version": 2,
+                "version": 3,
                 "consistency": {"version": 1, "kind": "accepted"}
             }
         }),
@@ -548,7 +548,7 @@ fn generated_command_types_manifest() -> JsonValue {
             "operation": ping,
             "operation_hash": fingerprint(ping),
             "extensions": {
-                "version": 2,
+                "version": 3,
                 "consistency": {"version": 1, "kind": "accepted"}
             }
         }),
@@ -1242,7 +1242,7 @@ fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies()
     assert!(generated.contains("\"maxInList\": 1000"));
     let provenance: JsonValue =
         serde_json::from_str(file(&project, "manifest.json")).expect("compiler manifest JSON");
-    assert_eq!(provenance["distributed_manifest_version"], 6);
+    assert_eq!(provenance["distributed_manifest_version"], 7);
     assert!(generated.contains(
         "\"target\": {\n              \"kind\": \"input\",\n              \"name\": \"todo_bool_exp\""
     ));
@@ -2244,7 +2244,7 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
-            "version": 2,
+            "version": 3,
             "consistency": {"version": 1, "kind": "fact"},
             "input_defaults": {
                 "version": 1,
@@ -2437,10 +2437,11 @@ fn projected_command_rejects_tampered_topology_and_wrong_owner() {
     let mut trusted_preset = projected_manifest();
     trusted_preset["commands"][0]["extensions"]["direct_projection"]["partition"] =
         json!({"kind": "trusted_preset", "name": "current_tenant"});
+    trusted_preset["commands"][0]["extensions"]["trusted_presets"] =
+        json!([{"name": "current_tenant", "codec": "string"}]);
     refresh_schema_fingerprint(&mut trusted_preset);
-    let error = ClientManifest::parse(trusted_preset, &ClientSurfaceSelector::role("user"))
-        .expect_err("unresolved trusted presets cannot define a direct target");
-    assert_eq!(error.code, "client.manifest.direct_projection_partition");
+    ClientManifest::parse(trusted_preset, &ClientSurfaceSelector::role("user"))
+        .expect("scope-bound trusted preset may define a direct target");
 }
 
 #[test]
@@ -2471,7 +2472,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
             "operation": operation,
             "operation_hash": fingerprint(operation),
             "extensions": {
-                "version": 2,
+                "version": 3,
                 "consistency": {"version": 1, "kind": "projected"},
                 "input_defaults": {
                     "version": 1,

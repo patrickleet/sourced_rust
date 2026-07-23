@@ -12,7 +12,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::command_contract::{CommandConsistency, CommandEffectFallback};
+use super::command_contract::{
+    CommandConsistency, CommandEffect, CommandEffectFallback, EffectExpression, EffectKey,
+};
 use super::complexity_contract::{default_weights, DEFAULT_MAX_COMPLEXITY, DEFAULT_MAX_DEPTH};
 use super::filter::FilterExpr;
 use super::naming::{aggregate_fields_type_name, aggregate_type_name};
@@ -24,13 +26,13 @@ use super::surface::{
 use crate::manifest::DistributedProjectManifest;
 use crate::table::RelationshipKind;
 
-pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 6;
+pub const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u32 = 7;
 pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
-// Manifest v6 extends only compiler-owned query metadata. Keep the causal
-// protocol fingerprint on the manifest epoch that introduced protocol v2 so
-// receipt/status/live envelopes do not become falsely incompatible.
+// Protocol v2 remains the wire family. The independent fingerprint below
+// changes when its generated command/scope contract changes, including the v7
+// trusted-preset descriptor slot.
 const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 4;
-const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 2;
+const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 3;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
 const PROTOCOL_OPERATIONS_VERSION: u32 = 1;
@@ -58,7 +60,7 @@ impl From<serde_json::Error> for ClientManifestError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientSurfaceIdentity {
     Role { name: String },
     Application { name: String, roles: Vec<String> },
@@ -690,6 +692,16 @@ pub struct ClientCommandExtensionSlots {
     pub effects: Option<CommandEffectsExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmations: Option<CommandConfirmationsExtension>,
+    /// Names and wire codecs only. Values are server-derived for the current
+    /// verified Session and are never frozen into a generated artifact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_presets: Vec<ClientTrustedPresetDescriptor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ClientTrustedPresetDescriptor {
+    pub name: String,
+    pub codec: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1413,6 +1425,7 @@ fn client_manifest_from_surface_with_execution(
             })
             .transpose()?
         };
+        let trusted_presets = command_trusted_preset_descriptors(command, surface)?;
         commands.push(ClientCommand {
             version: 1,
             name: command.command_name.clone(),
@@ -1429,6 +1442,7 @@ fn client_manifest_from_surface_with_execution(
                 input_defaults,
                 effects,
                 confirmations,
+                trusted_presets,
             },
         });
     }
@@ -1480,10 +1494,9 @@ fn client_manifest_from_surface_with_execution(
         causal_receipts: !commands.is_empty(),
         live_resume: query_footprint_supports_live_resume(surface),
         query_fallback: "revalidate".into(),
-        // Task 16 requires a scope envelope for generated causal receipts.
-        // Query-only scope generation, SSR, hydration, and persistence remain
-        // capability-disabled until task 10 wires that lifecycle end to end.
-        cache_scope: !commands.is_empty(),
+        // Every generated operation consumes one authoritative scope envelope,
+        // including query-only surfaces.
+        cache_scope: true,
         confirmed_persistence: false,
     };
     let protocol_fingerprint = protocol_fingerprint()?;
@@ -1534,6 +1547,159 @@ fn client_manifest_from_surface_with_execution(
         protocol_operations,
         projectors,
     })
+}
+
+fn command_trusted_preset_descriptors(
+    command: &SurfaceCommand,
+    surface: &Surface,
+) -> Result<Vec<ClientTrustedPresetDescriptor>, ClientManifestError> {
+    fn register(
+        out: &mut BTreeMap<String, String>,
+        expression: &EffectExpression,
+        codec: &str,
+        command: &SurfaceCommand,
+    ) -> Result<(), ClientManifestError> {
+        let EffectExpression::TrustedPreset { name } = expression else {
+            return Ok(());
+        };
+        match out.entry(name.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(codec.to_string());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if entry.get() == codec => {}
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                return Err(ClientManifestError(format!(
+                    "command `{}` trusted preset `{name}` is used with incompatible codecs `{}` and `{codec}`",
+                    command.command_name,
+                    entry.get()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn field_codec<'a>(
+        surface: &'a Surface,
+        model: &str,
+        field: &str,
+    ) -> Result<&'static str, ClientManifestError> {
+        let column = surface
+            .models
+            .get(model)
+            .and_then(|model| model.columns.iter().find(|column| column.name == field))
+            .ok_or_else(|| {
+                ClientManifestError(format!(
+                    "trusted preset target references absent field `{model}.{field}`"
+                ))
+            })?;
+        scalar_codec(&column.scalar).ok_or_else(|| {
+            ClientManifestError(format!(
+                "trusted preset target `{model}.{field}` uses unsupported scalar `{}`",
+                column.scalar
+            ))
+        })
+    }
+
+    fn collect_key(
+        out: &mut BTreeMap<String, String>,
+        key: &EffectKey,
+        model: &str,
+        command: &SurfaceCommand,
+        surface: &Surface,
+    ) -> Result<(), ClientManifestError> {
+        for field in &key.fields {
+            register(
+                out,
+                &field.value,
+                field_codec(surface, model, &field.field)?,
+                command,
+            )?;
+        }
+        Ok(())
+    }
+
+    let mut out = BTreeMap::new();
+    if let Some(effects) = &command.effects {
+        for operation in &effects.operations {
+            match operation {
+                CommandEffect::Upsert { model, key, fields }
+                | CommandEffect::Patch { model, key, fields } => {
+                    collect_key(&mut out, key, model, command, surface)?;
+                    for field in fields {
+                        register(
+                            &mut out,
+                            &field.value,
+                            field_codec(surface, model, &field.field)?,
+                            command,
+                        )?;
+                    }
+                }
+                CommandEffect::Delete { model, key } => {
+                    collect_key(&mut out, key, model, command, surface)?;
+                }
+                CommandEffect::Link {
+                    relationship,
+                    source,
+                    target,
+                }
+                | CommandEffect::Unlink {
+                    relationship,
+                    source,
+                    target,
+                } => {
+                    collect_key(
+                        &mut out,
+                        source,
+                        &relationship.source_model,
+                        command,
+                        surface,
+                    )?;
+                    collect_key(
+                        &mut out,
+                        target,
+                        &relationship.target_model,
+                        command,
+                        surface,
+                    )?;
+                }
+                CommandEffect::InvalidateRelationship {
+                    relationship,
+                    source,
+                } => {
+                    collect_key(
+                        &mut out,
+                        source,
+                        &relationship.source_model,
+                        command,
+                        surface,
+                    )?;
+                }
+                CommandEffect::InvalidateModel { .. } => {}
+            }
+        }
+    }
+    for confirmation in &command.confirmations {
+        collect_key(
+            &mut out,
+            &confirmation.key,
+            &confirmation.model,
+            command,
+            surface,
+        )?;
+        if let Some(partition) = &confirmation.partition {
+            register(&mut out, partition, "string", command)?;
+        }
+    }
+    if let Some(direct) = &command.direct_projection {
+        if let Some(partition) = &direct.partition {
+            register(&mut out, partition, "string", command)?;
+        }
+    }
+
+    Ok(out
+        .into_iter()
+        .map(|(name, codec)| ClientTrustedPresetDescriptor { name, codec })
+        .collect())
 }
 
 fn validate_surface_structure(surface: &Surface) -> Result<(), ClientManifestError> {
@@ -2412,6 +2578,64 @@ mod tests {
     }
 
     #[test]
+    fn trusted_preset_artifacts_expose_typed_descriptors_without_values() {
+        use super::super::command_contract::{
+            CommandEffect, CommandEffects, EffectExpression, EffectFieldValue, EffectKey,
+        };
+
+        let mut full = projected_surface();
+        full.commands[0].effects = Some(CommandEffects::new([CommandEffect::Patch {
+            model: "TodoView".into(),
+            key: EffectKey {
+                fields: vec![EffectFieldValue {
+                    field: "todo_id".into(),
+                    value: EffectExpression::Input {
+                        path: vec!["todo_id".into()],
+                    },
+                }],
+            },
+            fields: vec![EffectFieldValue {
+                field: "owner_id".into(),
+                value: EffectExpression::TrustedPreset {
+                    name: "x-user-id".into(),
+                },
+            }],
+        }]));
+        let selected = surface_for_role(
+            &full,
+            "user",
+            &BTreeMap::from([
+                ("TodoView".into(), RoleGrant::all_columns()),
+                ("UserView".into(), RoleGrant::all_columns()),
+            ]),
+        )
+        .expect("role selection");
+        let manifest = client_manifest_from_surface(
+            "todos-service",
+            ClientSurfaceIdentity::role("user"),
+            &selected,
+        )
+        .expect("trusted preset descriptor manifest");
+
+        assert_eq!(
+            manifest.commands[0].extensions.trusted_presets,
+            vec![ClientTrustedPresetDescriptor {
+                name: "x-user-id".into(),
+                codec: "string".into(),
+            }]
+        );
+        let wire = serde_json::to_value(manifest).expect("manifest JSON");
+        assert_eq!(
+            wire["commands"][0]["extensions"]["trusted_presets"],
+            serde_json::json!([{"name": "x-user-id", "codec": "string"}])
+        );
+        assert!(
+            !wire.to_string().contains("preset-value"),
+            "static artifacts must never freeze a runtime preset value"
+        );
+    }
+
+    #[test]
     fn projected_command_export_rejects_absent_or_wrong_direct_target() {
         let full = projected_surface();
         let mut selected = surface_for_role(
@@ -2553,15 +2777,15 @@ mod tests {
         let first = export.manifest().unwrap();
         let second = export.manifest().unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.manifest_version, 6);
+        assert_eq!(first.manifest_version, 7);
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:0e991fd37a1fe8f81cb9bba505592d7d7f257c685f71c58a3abbd5ec54fdf890"
+            "sha256:40cf8dfec7f35db48f281e326adb84acd47f030f45375037a453a74a506ef94e"
         );
         assert_eq!(
             first.protocol_fingerprint,
-            "sha256:50a3690689ff5aa7cefc88bb7b5d6f1e1a64615e7644d306403287c09b1e59dc"
+            "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3"
         );
 
         let user = first
@@ -3311,7 +3535,7 @@ mod tests {
         )
         .unwrap();
         assert!(!manifest.capabilities.causal_receipts);
-        assert!(!manifest.capabilities.cache_scope);
+        assert!(manifest.capabilities.cache_scope);
         assert!(manifest.protocol_operations.command_status.is_none());
         let members = manifest
             .models

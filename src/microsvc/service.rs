@@ -1379,11 +1379,11 @@ where
             let (input, wire, input_digest) = typed.into_parts();
             let projection_obligations = self
                 .contract
-                .resolve_projection_obligations(&wire)
+                .resolve_projection_obligations_from_session(&wire, Some(&session))
                 .map_err(|error| CausalDispatchError::Internal(error.to_string()))?;
             let direct_projection_target = self
                 .contract
-                .resolve_direct_projection_target(&wire)
+                .resolve_direct_projection_target_from_session(&wire, Some(&session))
                 .map_err(|error| CausalDispatchError::Internal(error.to_string()))?;
 
             let command_id = CommandId::parse(command_id)

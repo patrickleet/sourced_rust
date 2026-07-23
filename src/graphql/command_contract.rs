@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::types::{GraphqlInputType, GraphqlOutputType, GraphqlTypeDef};
+use crate::microsvc::Session;
 use crate::outbox::OutboxMessage;
 use crate::projection_protocol::{
     ProjectionEpoch, ProjectionModelOwnership, ProjectionPartition, ProjectionPartitionSpec,
@@ -1045,6 +1046,7 @@ impl CommandDirectProjectionTarget {
     pub(crate) fn resolve(
         &self,
         canonical_wire_input: &serde_json::Value,
+        session: Option<&Session>,
     ) -> Result<ResolvedDirectProjectionTarget, DirectProjectionTargetResolutionError> {
         let change_epoch = self.change_epoch.as_ref().ok_or_else(|| {
             DirectProjectionTargetResolutionError::InvalidTarget {
@@ -1088,6 +1090,8 @@ impl CommandDirectProjectionTarget {
                     self,
                     "partition",
                     expression,
+                    session,
+                    Some("String"),
                 )
             })
             .transpose()?;
@@ -1296,11 +1300,55 @@ impl std::fmt::Display for DirectProjectionTargetResolutionError {
 
 impl std::error::Error for DirectProjectionTargetResolutionError {}
 
+fn resolve_trusted_preset(
+    session: Option<&Session>,
+    name: &str,
+    scalar: &str,
+) -> Option<serde_json::Value> {
+    use base64::Engine as _;
+
+    let raw = session?.get(name)?;
+    match scalar {
+        "ID" | "String" | "Timestamptz" => Some(serde_json::Value::String(raw.to_string())),
+        "Bytea" => {
+            let decoded = base64::engine::general_purpose::STANDARD.decode(raw).ok()?;
+            (base64::engine::general_purpose::STANDARD.encode(decoded) == raw)
+                .then(|| serde_json::Value::String(raw.to_string()))
+        }
+        "Boolean" => match raw {
+            "true" => Some(serde_json::Value::Bool(true)),
+            "false" => Some(serde_json::Value::Bool(false)),
+            _ => None,
+        },
+        "Int" => raw
+            .parse::<i32>()
+            .ok()
+            .filter(|value| value.to_string() == raw)
+            .map(|value| serde_json::json!(value)),
+        "BigInt" => raw
+            .parse::<i64>()
+            .ok()
+            .filter(|value| (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(value))
+            .filter(|value| value.to_string() == raw)
+            .map(|value| serde_json::json!(value)),
+        "Float" => raw
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number),
+        "JSON" => serde_json::from_str(raw).ok(),
+        _ => None,
+    }
+}
+
 fn resolve_direct_projection_expression(
     canonical_wire_input: &serde_json::Value,
     target: &CommandDirectProjectionTarget,
     field: &str,
     expression: &EffectExpression,
+    session: Option<&Session>,
+    expected_scalar: Option<&str>,
 ) -> Result<serde_json::Value, DirectProjectionTargetResolutionError> {
     match expression {
         EffectExpression::Input { path } => {
@@ -1328,14 +1376,16 @@ fn resolve_direct_projection_expression(
         }
         EffectExpression::Constant { value } => Ok(value.clone()),
         EffectExpression::Null => Ok(serde_json::Value::Null),
-        EffectExpression::TrustedPreset { name } => Err(
-            DirectProjectionTargetResolutionError::TrustedPresetUnavailable {
-                projector: target.projector.clone(),
-                model: target.model.clone(),
-                target: field.to_string(),
-                preset: name.clone(),
-            },
-        ),
+        EffectExpression::TrustedPreset { name } => {
+            resolve_trusted_preset(session, name, expected_scalar.unwrap_or("String")).ok_or_else(
+                || DirectProjectionTargetResolutionError::TrustedPresetUnavailable {
+                    projector: target.projector.clone(),
+                    model: target.model.clone(),
+                    target: field.to_string(),
+                    preset: name.clone(),
+                },
+            )
+        }
         EffectExpression::InvalidConstant { error } => {
             Err(DirectProjectionTargetResolutionError::InvalidConstant {
                 projector: target.projector.clone(),
@@ -2060,6 +2110,20 @@ pub fn __effect_constant<T: Serialize>(value: T) -> TypedEffectExpression<T, Eff
     }
 }
 
+/// Declare a typed value supplied only by the server's verified Session.
+///
+/// The generated artifact retains this bounded descriptor name. It never
+/// embeds a value supplied by the caller.
+#[doc(hidden)]
+pub fn __effect_trusted<T>(name: &'static str) -> TypedEffectExpression<T, EffectWireLiteral> {
+    TypedEffectExpression {
+        expression: EffectExpression::TrustedPreset {
+            name: name.to_string(),
+        },
+        _value: PhantomData,
+    }
+}
+
 /// Explicit nullable constant for optional model fields.
 #[doc(hidden)]
 pub fn __effect_null<T>() -> TypedEffectExpression<Option<T>, EffectWireLiteral> {
@@ -2533,6 +2597,14 @@ impl TypedCommandContract {
         &self,
         canonical_wire_input: &serde_json::Value,
     ) -> Result<Vec<ResolvedProjectionObligation>, ProjectionObligationResolutionError> {
+        self.resolve_projection_obligations_from_session(canonical_wire_input, None)
+    }
+
+    pub(crate) fn resolve_projection_obligations_from_session(
+        &self,
+        canonical_wire_input: &serde_json::Value,
+        session: Option<&Session>,
+    ) -> Result<Vec<ResolvedProjectionObligation>, ProjectionObligationResolutionError> {
         self.confirmations
             .iter()
             .map(|confirmation| {
@@ -2547,6 +2619,18 @@ impl TypedCommandContract {
                             confirmation,
                             &target,
                             &field.value,
+                            session,
+                            confirmation
+                                .schema
+                                .and_then(|schema| {
+                                    schema
+                                        .columns
+                                        .iter()
+                                        .find(|column| column.column_name == field.field)
+                                })
+                                .and_then(|column| {
+                                    super::naming::scalar_type_name(&column.column_type)
+                                }),
                         )
                         .map(|value| ResolvedProjectionKeyField {
                             field: field.field.clone(),
@@ -2563,6 +2647,8 @@ impl TypedCommandContract {
                             confirmation,
                             "partition",
                             expression,
+                            session,
+                            Some("String"),
                         )
                     })
                     .transpose()?;
@@ -2621,9 +2707,17 @@ impl TypedCommandContract {
         &self,
         canonical_wire_input: &serde_json::Value,
     ) -> Result<Option<ResolvedDirectProjectionTarget>, DirectProjectionTargetResolutionError> {
+        self.resolve_direct_projection_target_from_session(canonical_wire_input, None)
+    }
+
+    pub(crate) fn resolve_direct_projection_target_from_session(
+        &self,
+        canonical_wire_input: &serde_json::Value,
+        session: Option<&Session>,
+    ) -> Result<Option<ResolvedDirectProjectionTarget>, DirectProjectionTargetResolutionError> {
         self.direct_projection
             .as_ref()
-            .map(|target| target.resolve(canonical_wire_input))
+            .map(|target| target.resolve(canonical_wire_input, session))
             .transpose()
     }
 
@@ -2667,6 +2761,8 @@ fn resolve_projection_obligation_expression(
     confirmation: &CommandProjectionConfirmation,
     target: &str,
     expression: &EffectExpression,
+    session: Option<&Session>,
+    expected_scalar: Option<&str>,
 ) -> Result<serde_json::Value, ProjectionObligationResolutionError> {
     match expression {
         EffectExpression::Input { path } => {
@@ -2694,14 +2790,16 @@ fn resolve_projection_obligation_expression(
         }
         EffectExpression::Constant { value } => Ok(value.clone()),
         EffectExpression::Null => Ok(serde_json::Value::Null),
-        EffectExpression::TrustedPreset { name } => Err(
-            ProjectionObligationResolutionError::TrustedPresetUnavailable {
-                projector: confirmation.projector.clone(),
-                model: confirmation.model.clone(),
-                target: target.to_string(),
-                preset: name.clone(),
-            },
-        ),
+        EffectExpression::TrustedPreset { name } => {
+            resolve_trusted_preset(session, name, expected_scalar.unwrap_or("String")).ok_or_else(
+                || ProjectionObligationResolutionError::TrustedPresetUnavailable {
+                    projector: confirmation.projector.clone(),
+                    model: confirmation.model.clone(),
+                    target: target.to_string(),
+                    preset: name.clone(),
+                },
+            )
+        }
         EffectExpression::InvalidConstant { error } => {
             Err(ProjectionObligationResolutionError::InvalidConstant {
                 projector: confirmation.projector.clone(),
@@ -3327,6 +3425,20 @@ mod tests {
                 preset,
                 ..
             }) if preset == "tenant"
+        ));
+        let mut session = Session::new();
+        session.set("tenant", "\"tenant-7\"");
+        let resolved = contract
+            .resolve_projection_obligations_from_session(&serde_json::json!({}), Some(&session))
+            .expect("server Session resolves the declared JSON-typed preset");
+        assert_eq!(resolved[0].key.fields[0].value, "tenant-7");
+        session.set("tenant", "not-json");
+        assert!(matches!(
+            contract.resolve_projection_obligations_from_session(
+                &serde_json::json!({}),
+                Some(&session),
+            ),
+            Err(ProjectionObligationResolutionError::TrustedPresetUnavailable { .. })
         ));
 
         contract.confirmations = vec![confirmation_with_key(

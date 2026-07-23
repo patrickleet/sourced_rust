@@ -28,7 +28,7 @@ use crate::{
 };
 
 const DISTRIBUTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 6;
+const DISTRIBUTED_CLIENT_MANIFEST_VERSION: u64 = 7;
 
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
@@ -246,7 +246,7 @@ pub struct ClientManifestArgs {
         .args(["role", "surface"])
 ))]
 pub struct ClientArgs {
-    /// Role/application-selected Distributed client manifest v6.
+    /// Role/application-selected Distributed client manifest v7.
     #[arg(long)]
     pub manifest: PathBuf,
     /// Verify that the manifest is selected for this concrete role.

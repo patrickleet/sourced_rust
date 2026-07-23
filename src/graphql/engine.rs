@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_graphql::{Request, Response, ServerError, Value};
 use futures_util::stream::{self, BoxStream};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::manifest::DistributedProjectManifest;
@@ -20,8 +20,8 @@ use crate::table::{
 };
 
 use super::client_manifest::{
-    ClientExecutionLimits, ClientManifestError, DistributedClientManifest,
-    DistributedClientSurfaceExport,
+    ClientExecutionLimits, ClientManifestError, ClientSurfaceIdentity,
+    ClientTrustedPresetDescriptor, DistributedClientManifest, DistributedClientSurfaceExport,
 };
 use super::command_contract::TypedServiceCommandBinding;
 use super::commands::GraphqlCommands;
@@ -36,15 +36,16 @@ use super::permissions::{
     read, role_grants_from_model_role_perms, ModelPermissions, ReadPermission,
 };
 use super::protocol::{
-    DistributedEnvelopeV2, DistributedLiveCursor, OpaqueProtocolToken, ProtocolResponseAccumulator,
-    ProtocolTokenCodec, ProtocolTokenPurpose, RequestedLiveResume, MAX_LIVE_RESUME_CURSORS,
+    DistributedEnvelopeV2, DistributedLiveCursor, DistributedTrustedPreset, OpaqueProtocolToken,
+    ProtocolResponseAccumulator, ProtocolTokenCodec, ProtocolTokenPurpose, RequestedLiveResume,
+    MAX_LIVE_RESUME_CURSORS,
 };
 use super::query_protocol::QueryProtocolRuntime;
 use super::schema as dyn_schema;
 use super::sdl::{graphql_sdl_for_tables_with_options, graphql_sdl_from_surface, SdlOptions};
 use super::surface::{
     build_surface, surface_for_application, surface_for_role, Surface, SurfaceDialect,
-    SurfaceOptions, SurfaceProjector,
+    SurfaceOptions, SurfaceProjector, SurfaceSelection,
 };
 
 #[derive(Clone)]
@@ -216,11 +217,23 @@ pub(crate) struct RoleModelPerm {
 }
 
 #[derive(Clone)]
-struct ProtocolRoleInfo {
+struct ProtocolSurfaceInfo {
     schema_fingerprint: String,
     protocol_fingerprint: String,
+    trusted_presets: Vec<ClientTrustedPresetDescriptor>,
+}
+
+#[derive(Clone)]
+struct ProtocolRoleInfo {
+    surface: ProtocolSurfaceInfo,
     authorization_fingerprint: String,
     claim_keys: Vec<String>,
+}
+
+#[derive(Clone)]
+struct ProtocolApplicationInfo {
+    roles: Vec<String>,
+    surface: ProtocolSurfaceInfo,
 }
 
 #[derive(Clone)]
@@ -229,6 +242,7 @@ struct ProtocolRuntime {
     namespace: String,
     service_id: String,
     roles: BTreeMap<String, ProtocolRoleInfo>,
+    applications: BTreeMap<String, ProtocolApplicationInfo>,
 }
 
 pub(crate) struct EngineInner {
@@ -264,6 +278,7 @@ pub(crate) struct EngineInner {
     /// by runtime schema, SDL, and client-manifest export.
     pub surface: Arc<Surface>,
     pub role_surfaces: BTreeMap<String, Arc<Surface>>,
+    pub application_surfaces: BTreeMap<String, Arc<Surface>>,
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
     pub change_hub: super::subscribe::ChangeHub,
     pub dialect: SqlDialect,
@@ -281,6 +296,7 @@ pub struct GraphqlEngineBuilder {
     service_id: Option<String>,
     protocol_token_key: Option<[u8; 32]>,
     protocol_namespace: Option<String>,
+    client_applications: BTreeMap<String, Vec<String>>,
     command_binding: Option<TypedServiceCommandBinding>,
     causal_storage_identity: Option<crate::command_ledger::CausalStorageIdentity>,
     pool: GraphqlPool,
@@ -415,28 +431,38 @@ impl GraphqlEngine {
         roles: &[&str],
     ) -> Result<DistributedClientSurfaceExport, ClientManifestError> {
         let service_id = self.client_export_service_id()?;
-        let roles: Vec<String> = roles.iter().map(|role| (*role).to_string()).collect();
-        let mut grants_by_role = BTreeMap::new();
-        for role in &roles {
-            if !self.inner.role_surfaces.contains_key(role) {
-                return Err(ClientManifestError(format!(
-                    "role `{role}` is not configured for GraphQL"
-                )));
-            }
-            grants_by_role.insert(
-                role.clone(),
-                role_grants_from_model_role_perms(
-                    role,
-                    self.inner
-                        .permissions
-                        .iter()
-                        .map(|(key, value)| (key, &value.permission)),
-                ),
-            );
+        let surface = self
+            .inner
+            .application_surfaces
+            .get(application)
+            .cloned()
+            .ok_or_else(|| {
+                ClientManifestError(format!(
+                    "application surface `{application}` is not registered"
+                ))
+            })?;
+        let mut requested_roles = roles
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect::<Vec<_>>();
+        requested_roles.sort();
+        requested_roles.dedup();
+        let SurfaceSelection::Application {
+            roles: registered_roles,
+            ..
+        } = &surface.selection
+        else {
+            return Err(ClientManifestError(format!(
+                "registered application surface `{application}` has invalid identity"
+            )));
+        };
+        if &requested_roles != registered_roles {
+            return Err(ClientManifestError(format!(
+                "application surface `{application}` is registered for roles [{}], not [{}]",
+                registered_roles.join(", "),
+                requested_roles.join(", ")
+            )));
         }
-        let surface =
-            surface_for_application(&self.inner.surface, application, &roles, &grants_by_role)
-                .map_err(ClientManifestError)?;
         DistributedClientSurfaceExport::from_selected_with_execution(
             service_id,
             surface,
@@ -572,6 +598,13 @@ impl GraphqlEngine {
             return Ok(None);
         };
         let role_info = runtime.roles.get(role).ok_or(())?;
+        let (surface_identity, surface_info) =
+            select_protocol_surface(runtime, role, request).map_err(|_| ())?;
+        let trusted_presets = surface_info
+            .trusted_presets
+            .iter()
+            .map(|descriptor| resolve_protocol_preset(session, descriptor).ok_or(()))
+            .collect::<Result<Vec<_>, _>>()?;
         let principal = request
             .data
             .get(&TypeId::of::<VerifiedPrincipal>())
@@ -591,12 +624,14 @@ impl GraphqlEngine {
             namespace: &'a str,
             service_id: &'a str,
             role: &'a str,
+            surface: &'a ClientSurfaceIdentity,
             schema_fingerprint: &'a str,
             protocol_fingerprint: &'a str,
             authorization_surface_fingerprint: &'a str,
             identity_mode: &'static str,
             verified_principal_partition: Option<&'a str>,
             session_authorization_context: Vec<(&'a str, Option<&'a str>)>,
+            trusted_presets: &'a [DistributedTrustedPreset],
         }
 
         // Only session values that can affect authorization enter the HMAC:
@@ -610,31 +645,176 @@ impl GraphqlEngine {
             namespace: &runtime.namespace,
             service_id: &runtime.service_id,
             role,
-            schema_fingerprint: &role_info.schema_fingerprint,
-            protocol_fingerprint: &role_info.protocol_fingerprint,
+            surface: &surface_identity,
+            schema_fingerprint: &surface_info.schema_fingerprint,
+            protocol_fingerprint: &surface_info.protocol_fingerprint,
             authorization_surface_fingerprint: &role_info.authorization_fingerprint,
             identity_mode: identity_mode_label(self.inner.identity.mode),
             verified_principal_partition: principal_partition.as_deref(),
             session_authorization_context,
+            trusted_presets: &trusted_presets,
         };
         let cache_scope = runtime
             .codec
             .issue(ProtocolTokenPurpose::CacheScope, &material)
             .map_err(|_| ())?;
         let envelope = DistributedEnvelopeV2::new(
-            role_info.schema_fingerprint.clone(),
+            surface_info.schema_fingerprint.clone(),
             cache_scope,
             // Generated artifacts submit this exact document. Hashing its
             // bytes matches manifest operation_hash and provides a useful
             // identity/drift fence without claiming APQ negotiation.
             Some(operation_fingerprint(&request.query)),
-        );
+        )
+        .with_trusted_presets(trusted_presets);
         let accumulator = ProtocolResponseAccumulator::new(envelope, runtime.codec.clone());
         accumulator
             .set_requested_live_resume(parse_requested_live_resume(request))
             .map_err(|_| ())?;
         Ok(Some(accumulator))
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RequestedProtocolClient {
+    surface: ClientSurfaceIdentity,
+    schema_hash: String,
+}
+
+fn requested_protocol_client(request: &Request) -> Result<Option<RequestedProtocolClient>, ()> {
+    let Some(distributed) = request.extensions.get("distributed") else {
+        return Ok(None);
+    };
+    let distributed = distributed.clone().into_json().map_err(|_| ())?;
+    let distributed = distributed.as_object().ok_or(())?;
+    let Some(client) = distributed.get("client") else {
+        return Ok(None);
+    };
+    serde_json::from_value(client.clone())
+        .map(Some)
+        .map_err(|_| ())
+}
+
+fn select_protocol_surface<'a>(
+    runtime: &'a ProtocolRuntime,
+    role: &str,
+    request: &Request,
+) -> Result<(ClientSurfaceIdentity, &'a ProtocolSurfaceInfo), ()> {
+    let Some(requested) = requested_protocol_client(request)? else {
+        let info = runtime.roles.get(role).ok_or(())?;
+        return Ok((ClientSurfaceIdentity::role(role), &info.surface));
+    };
+    match requested.surface {
+        ClientSurfaceIdentity::Role { name } => {
+            if name != role {
+                return Err(());
+            }
+            let info = runtime.roles.get(&name).ok_or(())?;
+            if requested.schema_hash != info.surface.schema_fingerprint {
+                return Err(());
+            }
+            Ok((ClientSurfaceIdentity::role(name), &info.surface))
+        }
+        ClientSurfaceIdentity::Application { name, roles } => {
+            let application = runtime.applications.get(&name).ok_or(())?;
+            if roles != application.roles
+                || roles
+                    .binary_search_by(|candidate| candidate.as_str().cmp(role))
+                    .is_err()
+                || requested.schema_hash != application.surface.schema_fingerprint
+            {
+                return Err(());
+            }
+            Ok((
+                ClientSurfaceIdentity::application(name, roles),
+                &application.surface,
+            ))
+        }
+    }
+}
+
+fn resolve_protocol_preset(
+    session: &Session,
+    descriptor: &ClientTrustedPresetDescriptor,
+) -> Option<DistributedTrustedPreset> {
+    use base64::Engine as _;
+
+    let raw = session.get(&descriptor.name)?;
+    let value = match descriptor.codec.as_str() {
+        "string" | "string_unvalidated_timestamp" => serde_json::Value::String(raw.to_string()),
+        "base64" => {
+            let decoded = base64::engine::general_purpose::STANDARD.decode(raw).ok()?;
+            if base64::engine::general_purpose::STANDARD.encode(decoded) != raw {
+                return None;
+            }
+            serde_json::Value::String(raw.to_string())
+        }
+        "boolean" => match raw {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            _ => return None,
+        },
+        "int32" => {
+            let parsed = raw.parse::<i32>().ok()?;
+            if parsed.to_string() != raw {
+                return None;
+            }
+            serde_json::Value::Number(parsed.into())
+        }
+        "json_number_precision_limited" => {
+            let parsed = raw.parse::<i64>().ok()?;
+            if !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&parsed)
+                || parsed.to_string() != raw
+            {
+                return None;
+            }
+            serde_json::Value::Number(parsed.into())
+        }
+        "float64" => {
+            let parsed = raw.parse::<f64>().ok()?;
+            if !parsed.is_finite() {
+                return None;
+            }
+            serde_json::Value::Number(serde_json::Number::from_f64(parsed)?)
+        }
+        "json" => serde_json::from_str(raw).ok()?,
+        _ => return None,
+    };
+    Some(DistributedTrustedPreset {
+        name: descriptor.name.clone(),
+        codec: descriptor.codec.clone(),
+        value,
+    })
+}
+
+fn protocol_trusted_presets(
+    manifest: &DistributedClientManifest,
+) -> Result<Vec<ClientTrustedPresetDescriptor>, GraphqlBuildError> {
+    let mut presets = BTreeMap::<String, String>::new();
+    for command in &manifest.commands {
+        for descriptor in &command.extensions.trusted_presets {
+            match presets.entry(descriptor.name.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(descriptor.codec.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get() == &descriptor.codec => {}
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    return Err(GraphqlBuildError(format!(
+                        "trusted preset `{}` uses incompatible codecs `{}` and `{}` across selected commands",
+                        descriptor.name,
+                        entry.get(),
+                        descriptor.codec
+                    )));
+                }
+            }
+        }
+    }
+    Ok(presets
+        .into_iter()
+        .map(|(name, codec)| ClientTrustedPresetDescriptor { name, codec })
+        .collect())
 }
 
 fn operation_fingerprint(document: &str) -> String {
@@ -1079,6 +1259,7 @@ impl GraphqlEngineBuilder {
             service_id: None,
             protocol_token_key: None,
             protocol_namespace: None,
+            client_applications: BTreeMap::new(),
             command_binding: None,
             causal_storage_identity: source.causal_storage_identity,
             pool: source.pool,
@@ -1331,6 +1512,57 @@ impl GraphqlEngineBuilder {
             return self;
         }
         self.protocol_namespace = Some(namespace);
+        self
+    }
+
+    /// Register one exact named application surface for generated clients.
+    ///
+    /// Runtime requests may select only this frozen name/role set. The server
+    /// still authorizes every request as its verified concrete role; the
+    /// application surface controls only the schema generation presented to
+    /// the client.
+    pub fn client_application_surface(
+        mut self,
+        application: impl Into<String>,
+        roles: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let application = application.into();
+        let mut roles = roles.into_iter().map(Into::into).collect::<Vec<String>>();
+        roles.sort();
+        roles.dedup();
+        if application.is_empty()
+            || application.len() > 128
+            || application.trim() != application
+            || application.chars().any(char::is_control)
+        {
+            self.pending_errors.push(
+                "GraphQL client application name must be 1..=128 bytes, have no surrounding whitespace, and contain no control characters"
+                    .into(),
+            );
+            return self;
+        }
+        if roles.is_empty()
+            || roles.iter().any(|role| {
+                role.is_empty()
+                    || role.len() > 128
+                    || role.trim() != role
+                    || role.chars().any(char::is_control)
+            })
+        {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` must declare one or more bounded non-empty roles"
+            ));
+            return self;
+        }
+        if self
+            .client_applications
+            .insert(application.clone(), roles)
+            .is_some()
+        {
+            self.pending_errors.push(format!(
+                "GraphQL client application `{application}` was registered more than once"
+            ));
+        }
         self
     }
 
@@ -1699,11 +1931,15 @@ impl GraphqlEngineBuilder {
                         "failed to derive GraphQL protocol surface for role `{role}`: {error}"
                     ))
                 })?;
+                let trusted_presets = protocol_trusted_presets(&manifest)?;
                 protocol_roles.insert(
                     role.clone(),
                     ProtocolRoleInfo {
-                        schema_fingerprint: manifest.schema_fingerprint,
-                        protocol_fingerprint: manifest.protocol_fingerprint,
+                        surface: ProtocolSurfaceInfo {
+                            schema_fingerprint: manifest.schema_fingerprint,
+                            protocol_fingerprint: manifest.protocol_fingerprint,
+                            trusted_presets,
+                        },
                         authorization_fingerprint,
                         claim_keys,
                     },
@@ -1711,6 +1947,73 @@ impl GraphqlEngineBuilder {
             }
             schemas.insert(role.clone(), schema);
             role_surfaces.insert(role.clone(), role_surface);
+        }
+
+        let mut application_surfaces = BTreeMap::new();
+        let mut protocol_applications = BTreeMap::new();
+        for (application, application_roles) in &self.client_applications {
+            let mut grants_by_role = BTreeMap::new();
+            for role in application_roles {
+                if !role_surfaces.contains_key(role) {
+                    return Err(GraphqlBuildError(format!(
+                        "client application surface `{application}` references unconfigured role `{role}`"
+                    )));
+                }
+                grants_by_role.insert(
+                    role.clone(),
+                    role_grants_from_model_role_perms(
+                        role,
+                        self.permissions
+                            .iter()
+                            .map(|(key, value)| (key, &value.permission)),
+                    ),
+                );
+            }
+            let application_surface = Arc::new(
+                surface_for_application(
+                    &full_surface,
+                    application,
+                    application_roles,
+                    &grants_by_role,
+                )
+                .map_err(GraphqlBuildError)?,
+            );
+            if self.protocol_token_key.is_some() {
+                let service_id = self
+                    .service_id
+                    .as_deref()
+                    .expect("protocol configuration validated a service ID");
+                let manifest = DistributedClientSurfaceExport::from_selected_with_execution(
+                    service_id,
+                    Arc::clone(&application_surface),
+                    ClientExecutionLimits::from_runtime(
+                        self.max_depth,
+                        self.max_complexity,
+                        self.max_bool_width,
+                        self.max_in_list,
+                    )
+                    .map_err(|error| GraphqlBuildError(error.to_string()))?,
+                )
+                .and_then(|export| export.manifest())
+                .map_err(|error| {
+                    GraphqlBuildError(format!(
+                        "failed to derive GraphQL protocol surface for application `{application}`: {error}"
+                    ))
+                })?;
+                let trusted_presets = protocol_trusted_presets(&manifest)?;
+                protocol_applications.insert(
+                    application.clone(),
+                    ProtocolApplicationInfo {
+                        roles: application_roles.clone(),
+                        surface: ProtocolSurfaceInfo {
+                            schema_fingerprint: manifest.schema_fingerprint,
+                            protocol_fingerprint: manifest.protocol_fingerprint,
+                            trusted_presets,
+                        },
+                    },
+                );
+            }
+            application_surfaces.insert(application.clone(), application_surface);
         }
 
         let change_hub = super::subscribe::ChangeHub::new();
@@ -1730,6 +2033,7 @@ impl GraphqlEngineBuilder {
                     .unwrap_or_else(|| service_id.clone()),
                 service_id,
                 roles: protocol_roles,
+                applications: protocol_applications,
             }
         });
         let inner = Arc::new(EngineInner {
@@ -1755,6 +2059,7 @@ impl GraphqlEngineBuilder {
             commands: self.commands,
             surface: full_surface,
             role_surfaces,
+            application_surfaces,
             schemas,
             change_hub,
             dialect,
@@ -2214,6 +2519,31 @@ mod client_surface_parity_tests {
     }
 
     #[cfg(feature = "sqlite")]
+    fn preset_protocol_engine() -> GraphqlEngine {
+        let mut engine = protocol_engine("preset-test");
+        Arc::get_mut(&mut engine.inner)
+            .expect("test owns the only engine Arc")
+            .protocol
+            .as_mut()
+            .expect("protocol")
+            .roles
+            .get_mut("user")
+            .expect("user protocol surface")
+            .surface
+            .trusted_presets = vec![
+            ClientTrustedPresetDescriptor {
+                name: "x-default-status".into(),
+                codec: "string".into(),
+            },
+            ClientTrustedPresetDescriptor {
+                name: "x-order-id".into(),
+                codec: "string".into(),
+            },
+        ];
+        engine
+    }
+
+    #[cfg(feature = "sqlite")]
     fn distributed_extension(response: &Response) -> serde_json::Value {
         serde_json::to_value(
             response
@@ -2263,9 +2593,12 @@ mod client_surface_parity_tests {
             .roles
             .get("user")
             .unwrap();
-        assert_eq!(role_info.schema_fingerprint, manifest.schema_fingerprint);
         assert_eq!(
-            role_info.protocol_fingerprint,
+            role_info.surface.schema_fingerprint,
+            manifest.schema_fingerprint
+        );
+        assert_eq!(
+            role_info.surface.protocol_fingerprint,
             manifest.protocol_fingerprint
         );
 
@@ -2302,6 +2635,37 @@ mod client_surface_parity_tests {
         assert!(scope.starts_with("v1.cache-scope."));
         assert!(!scope.contains("principal-a"));
         assert!(!scope.contains("tenant-a"));
+
+        let generated_role_request = |name: &str, schema_hash: &str| -> Request {
+            serde_json::from_value(serde_json::json!({
+                "query": "{ __typename }",
+                "extensions": {
+                    "distributed": {
+                        "client": {
+                            "surface": {"kind": "role", "name": name},
+                            "schemaHash": schema_hash
+                        }
+                    }
+                }
+            }))
+            .expect("generated role request")
+        };
+        let generated_response = engine
+            .execute(
+                &session,
+                generated_role_request("user", &manifest.schema_fingerprint)
+                    .data(principal.clone()),
+            )
+            .await;
+        assert_eq!(first, distributed_extension(&generated_response));
+        for invalid in [
+            generated_role_request("admin", &manifest.schema_fingerprint),
+            generated_role_request("user", "sha256:stale-generation"),
+        ] {
+            let response = engine.execute(&session, invalid).await;
+            assert!(response.is_err());
+            assert!(!response.extensions.contains_key("distributed"));
+        }
 
         let mut other_session = session.clone();
         other_session.set("user-agent", "a totally different browser");
@@ -2353,6 +2717,154 @@ mod client_surface_parity_tests {
             first["cacheScope"],
             distributed_extension(&namespaced_response)["cacheScope"]
         );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn named_application_protocol_selection_is_registered_exact_and_role_bound() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+        let engine = GraphqlEngine::from_manifest(&project, pool)
+            .unwrap()
+            .roles(&["admin", "user"])
+            .grant_all("admin")
+            .grant_all("user")
+            .client_application_surface("console", ["admin", "user"])
+            .protocol_token_key([7; 32])
+            .build()
+            .unwrap();
+        let manifest = engine
+            .client_manifest_for_application("console", &["user", "admin"])
+            .expect("registered application manifest");
+        assert!(engine
+            .client_manifest_for_application("console", &["user"])
+            .is_err());
+
+        let request = |schema_hash: &str, roles: serde_json::Value| -> Request {
+            serde_json::from_value(serde_json::json!({
+                "query": "{ __typename }",
+                "extensions": {
+                    "distributed": {
+                        "client": {
+                            "surface": {
+                                "kind": "application",
+                                "name": "console",
+                                "roles": roles
+                            },
+                            "schemaHash": schema_hash
+                        }
+                    }
+                }
+            }))
+            .expect("generated application request")
+        };
+
+        let mut user = Session::new();
+        user.set("x-role", "user");
+        user.set("x-user-id", "person-1");
+        let user_response = engine
+            .execute(
+                &user,
+                request(
+                    &manifest.schema_fingerprint,
+                    serde_json::json!(["admin", "user"]),
+                ),
+            )
+            .await;
+        let user_envelope = distributed_extension(&user_response);
+        assert_eq!(user_envelope["schemaHash"], manifest.schema_fingerprint);
+
+        let mut admin = user.clone();
+        admin.set("x-role", "admin");
+        let admin_response = engine
+            .execute(
+                &admin,
+                request(
+                    &manifest.schema_fingerprint,
+                    serde_json::json!(["admin", "user"]),
+                ),
+            )
+            .await;
+        let admin_envelope = distributed_extension(&admin_response);
+        assert_eq!(admin_envelope["schemaHash"], manifest.schema_fingerprint);
+        assert_ne!(
+            user_envelope["cacheScope"], admin_envelope["cacheScope"],
+            "one application schema never erases the concrete authorized role"
+        );
+
+        for invalid in [
+            request(
+                &manifest.schema_fingerprint,
+                serde_json::json!(["user", "admin"]),
+            ),
+            request(
+                "sha256:stale-generation",
+                serde_json::json!(["admin", "user"]),
+            ),
+        ] {
+            let response = engine.execute(&user, invalid).await;
+            assert!(response.is_err());
+            assert!(!response.extensions.contains_key("distributed"));
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn trusted_presets_are_session_derived_typed_and_scope_bound() {
+        let engine = preset_protocol_engine();
+        assert_eq!(
+            engine.inner.protocol.as_ref().unwrap().roles["user"]
+                .surface
+                .trusted_presets,
+            vec![
+                ClientTrustedPresetDescriptor {
+                    name: "x-default-status".into(),
+                    codec: "string".into(),
+                },
+                ClientTrustedPresetDescriptor {
+                    name: "x-order-id".into(),
+                    codec: "string".into(),
+                },
+            ]
+        );
+
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        session.set("x-user-id", "person-1");
+        session.set("x-order-id", "order-1");
+        session.set("x-default-status", "assigned");
+        let first = engine
+            .execute(&session, Request::new("{ __typename }"))
+            .await;
+        let first = distributed_extension(&first);
+        assert_eq!(
+            first["trustedPresets"],
+            serde_json::json!([
+                {"name": "x-default-status", "codec": "string", "value": "assigned"},
+                {"name": "x-order-id", "codec": "string", "value": "order-1"}
+            ])
+        );
+
+        let mut changed = session.clone();
+        changed.set("x-default-status", "queued");
+        let changed = engine
+            .execute(&changed, Request::new("{ __typename }"))
+            .await;
+        let changed = distributed_extension(&changed);
+        assert_ne!(first["cacheScope"], changed["cacheScope"]);
+        assert_eq!(changed["trustedPresets"][0]["value"], "queued");
+
+        let mut missing = Session::new();
+        missing.set("x-role", "user");
+        missing.set("x-user-id", "person-1");
+        missing.set("x-order-id", "order-1");
+        let response = engine
+            .execute(&missing, Request::new("{ __typename }"))
+            .await;
+        assert!(response.is_err());
+        assert!(!response.extensions.contains_key("distributed"));
     }
 
     #[cfg(feature = "sqlite")]
@@ -2606,7 +3118,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:d0cc6378447381edeacb4da65705adab53c7444d6f5d8d2bcd5c25d7c06260fb"
+            "sha256:9dec1857bed6f1f60305f9e51ed9b6c43ac38a4e579a3dc2e73aae6d336dcd9b"
         );
     }
 
@@ -3165,28 +3677,28 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:2d7da0fcbdf25cbeb473efd41d039df3024ddcaed6bbc8bf305f9812eadb9cee",
+        manifest: "sha256:aefcdcdd7e2f3e665c66eef66440db0426c95126e13fb564dc9e4f7ccd777aee",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:57260b2cb79d8a35512790a0cd862070935876c261a0f67b8f7bf2410f66fe56",
+        manifest: "sha256:8237fbe54158a63929bf0d458a76b7514f99b2845c85251b9236caa48b2e859d",
         static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
         runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:2d7da0fcbdf25cbeb473efd41d039df3024ddcaed6bbc8bf305f9812eadb9cee",
+        manifest: "sha256:aefcdcdd7e2f3e665c66eef66440db0426c95126e13fb564dc9e4f7ccd777aee",
         static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
         runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:42ec8306b1d212e688830902da9754330c4ef42c2b150df9d1fde1c773d725cb",
+        manifest: "sha256:2f651b27eb8dab51096ef10b8bd1c2706e6a3f34efb969d79a30cefcf1725573",
         static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
         runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
     };
