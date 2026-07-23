@@ -1,4 +1,9 @@
 import type { GqlError, GraphqlVariables } from '../types.js';
+import type {
+	DistributedCommandMetadata,
+	DistributedLiveCursor,
+	GraphqlResponseExtensions
+} from '../protocol.js';
 
 export type ReplicaRevision = number | string | bigint;
 export type ReplicaValue =
@@ -121,6 +126,15 @@ export type ReplicaOperationArtifact<
 	readonly id: string;
 	readonly document: string;
 	readonly roots: readonly ReplicaRootSelection[];
+	/**
+	 * Exact generated protocol binding. Manifest-v1 fixture artifacts may omit
+	 * it and continue through the explicitly noncausal compatibility path.
+	 */
+	readonly protocol?: {
+		readonly version: 2;
+		readonly schemaHash: string;
+		readonly operation: string;
+	};
 	readonly live?: {
 		readonly id: string;
 		readonly document: string;
@@ -135,7 +149,10 @@ export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'proje
 export type ReplicaResultEnvelope<TData = unknown> = {
 	readonly data?: TData | null;
 	readonly errors?: readonly GqlError[];
-	readonly revision: ReplicaRevision;
+	/** Legacy/noncausal checkpoint. V2 responses use scoped snapshot evidence. */
+	readonly revision?: ReplicaRevision;
+	/** Strictly parsed Distributed v2 response metadata. */
+	readonly extensions?: GraphqlResponseExtensions;
 };
 
 export type ReplicaTransportRequest<
@@ -147,6 +164,8 @@ export type ReplicaTransportRequest<
 	readonly document: string;
 	readonly variables: TVariables;
 	readonly artifact: ReplicaOperationArtifact<TData, TVariables>;
+	/** Latest server-issued cursors for the private generated resume extension. */
+	readonly resume?: readonly DistributedLiveCursor[];
 };
 
 export type ReplicaLiveObserver<TData = unknown> = {
@@ -325,7 +344,10 @@ export interface DistributedReplica {
 		id: string,
 		update: (writer: ReplicaOptimisticWriter) => void
 	): void;
-	markOptimisticLayerAccepted(id: string): boolean;
+	markOptimisticLayerAccepted(
+		id: string,
+		receipt?: DistributedCommandMetadata
+	): boolean;
 	confirmOptimisticLayer<T>(
 		id: string,
 		update: (writer: ReplicaBaseWriter) => T

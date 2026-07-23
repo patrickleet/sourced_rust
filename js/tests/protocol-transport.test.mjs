@@ -1,0 +1,458 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+	DISTRIBUTED_PROTOCOL_VERSION,
+	DistributedProtocolError,
+	parseDistributedProtocolEnvelope,
+	parseGraphqlResponseExtensions,
+	requestGraphql,
+	subscribe
+} from '@hops-ops/distributed';
+import { QueryCache } from '@hops-ops/distributed/cache';
+import {
+	bindCommands,
+	defineCommand,
+	defineCommands,
+	executeCommand
+} from '@hops-ops/distributed/commands';
+
+const COMMAND_DOCUMENT =
+	'mutation Change($input: ChangeInput!) { change(input: $input) { ok } }';
+
+function distributedEnvelope() {
+	return {
+		protocolVersion: DISTRIBUTED_PROTOCOL_VERSION,
+		schemaHash: 'sha256:schema-v2',
+		cacheScope: 'opaque:principal-and-grants',
+		operation: 'sha256:operation',
+		command: {
+			commandId: 'opaque-command-id',
+			causationId: 'opaque-causation-id',
+			state: 'accepted_pending_projection',
+			consistency: 'fact',
+			expects: [
+				{
+					projection: 'todos',
+					model: 'TodoView',
+					scopeToken: 'opaque:tenant-key-and-generation'
+				}
+			],
+			observations: [
+				{
+					causationId: 'opaque-causation-id',
+					projection: 'todos',
+					model: 'TodoView',
+					scopeToken: 'opaque:tenant-key-and-generation'
+				}
+			],
+			records: [
+				{
+					model: 'TodoView',
+					scopeToken: 'opaque:record-scope',
+					incarnation: '18446744073709551614',
+					revision: '18446744073709551615',
+					tombstone: false
+				}
+			]
+		},
+		snapshot: {
+			scopeToken: 'opaque:query-snapshot',
+			complete: true,
+			records: [
+				{
+					path: ['live'],
+					model: 'TodoView',
+					scopeToken: 'opaque:record-scope',
+					incarnation: '18446744073709551614',
+					revision: '18446744073709551615',
+					tombstone: false
+				}
+			],
+			indexes: [
+				{
+					projection: 'todos',
+					scopeToken: 'opaque:index-scope',
+					position: '18446744073709551615',
+					resume: {
+						projection: 'todos',
+						position: '18446744073709551615',
+						token: 'opaque:resume'
+					}
+				}
+			],
+			observations: []
+		},
+		live: {
+			supported: true,
+			reset: false,
+			cursors: [
+				{
+					projection: 'todos',
+					position: '18446744073709551615',
+					token: 'opaque:resume'
+				}
+			]
+		},
+		futureMetadata: { retained: true }
+	};
+}
+
+function responseExtensions() {
+	return {
+		traceId: 'trace-1',
+		distributed: distributedEnvelope()
+	};
+}
+
+test('protocol parser validates receipts while retaining future metadata opaquely', () => {
+	const extensions = parseGraphqlResponseExtensions(responseExtensions());
+	assert.deepEqual(extensions, responseExtensions());
+	assert.equal(
+		typeof extensions.distributed.snapshot.records[0].incarnation,
+		'string'
+	);
+	assert.equal(
+		extensions.distributed.snapshot.records[0].revision,
+		'18446744073709551615'
+	);
+	assert.equal(
+		extensions.distributed.command.expects[0].scopeToken,
+		'opaque:tenant-key-and-generation'
+	);
+	assert.equal(Object.isFrozen(extensions.distributed.command.expects), true);
+	assert.equal(Object.isFrozen(extensions.distributed.command.records), true);
+	assert.equal(Object.isFrozen(extensions.distributed.snapshot.indexes), true);
+	assert.equal(Object.isFrozen(extensions.distributed.live.cursors), true);
+	assert.equal(Object.isFrozen(extensions.distributed), true);
+
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...distributedEnvelope(),
+				protocolVersion: 3
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.code === 'DISTRIBUTED_PROTOCOL_VERSION_UNSUPPORTED' &&
+			!error.message.includes('3')
+	);
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...distributedEnvelope(),
+				command: {
+					...distributedEnvelope().command,
+					expects: [
+						{
+							projection: 'todos',
+							model: 'TodoView',
+							scopeToken: 9007199254740992
+						}
+					]
+				}
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.code === 'DISTRIBUTED_PROTOCOL_INVALID' &&
+			error.path.endsWith('.scopeToken')
+	);
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...distributedEnvelope(),
+				snapshot: {
+					...distributedEnvelope().snapshot,
+					indexes: [
+						{
+							...distributedEnvelope().snapshot.indexes[0],
+							position: '18446744073709551616'
+						}
+					]
+				}
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path.endsWith('.position')
+	);
+});
+
+test('protocol parser accepts 64 resume cursors and rejects 65', () => {
+	const cursors = Array.from({ length: 65 }, (_, index) => ({
+		projection: `projection-${index}`,
+		position: String(index + 1),
+		token: `opaque:resume-${index}`
+	}));
+	const indexes = cursors.map((cursor, index) => ({
+		projection: cursor.projection,
+		scopeToken: `opaque:index-${index}`,
+		position: cursor.position,
+		resume: cursor
+	}));
+	const envelope = distributedEnvelope();
+	const accepted = parseDistributedProtocolEnvelope({
+		...envelope,
+		snapshot: { ...envelope.snapshot, indexes: indexes.slice(0, 64) },
+		live: { supported: true, reset: false, cursors: cursors.slice(0, 64) }
+	});
+	assert.equal(accepted.live.cursors.length, 64);
+	assert.equal(accepted.snapshot.indexes.length, 64);
+
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...envelope,
+				live: { supported: true, reset: false, cursors }
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path === 'extensions.distributed.live.cursors'
+	);
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...envelope,
+				snapshot: { ...envelope.snapshot, indexes },
+				live: { supported: false, reset: true, cursors: [] }
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path === 'extensions.distributed.snapshot.indexes'
+	);
+});
+
+test('HTTP preserves a valid Distributed envelope without adding metadata to data', async () => {
+	const extensions = responseExtensions();
+	const result = await requestGraphql(
+		'/graphql',
+		'mutation Change { change { ok } }',
+		{},
+		{},
+		{
+			fetch: async () => ({
+				status: 202,
+				json: async () => ({
+					data: { change: { ok: true } },
+					extensions
+				})
+			})
+		}
+	);
+
+	assert.deepEqual(result, {
+		data: { change: { ok: true } },
+		errors: undefined,
+		extensions,
+		status: 202
+	});
+	assert.deepEqual(result.data.change, { ok: true });
+	assert.equal('distributed' in result.data.change, false);
+});
+
+test('HTTP rejects malformed or incompatible Distributed envelopes fail closed', async () => {
+	const incompatible = await requestGraphql(
+		'/graphql',
+		'query Read { item { id } }',
+		{},
+		{},
+		{
+			fetch: async () => ({
+				status: 200,
+				json: async () => ({
+					data: { item: { id: 'must-not-be-trusted' } },
+					extensions: {
+						distributed: {
+							...distributedEnvelope(),
+							protocolVersion: 99
+						}
+					}
+				})
+			})
+		}
+	);
+	assert.equal(incompatible.data, undefined);
+	assert.equal(
+		incompatible.errors[0].extensions.code,
+		'DISTRIBUTED_PROTOCOL_VERSION_UNSUPPORTED'
+	);
+	assert.equal('extensions' in incompatible, false);
+
+	const malformed = await requestGraphql(
+		'/graphql',
+		'query Read { item { id } }',
+		{},
+		{},
+		{
+			fetch: async () => ({
+				status: 200,
+				json: async () => ({
+					data: { item: { id: 'must-not-be-trusted' } },
+					extensions: {
+						distributed: {
+							...distributedEnvelope(),
+							cacheScope: { tenant: 'hidden' }
+						}
+					}
+				})
+			})
+		}
+	);
+	assert.equal(malformed.data, undefined);
+	assert.equal(
+		malformed.errors[0].extensions.code,
+		'DISTRIBUTED_PROTOCOL_INVALID'
+	);
+	assert.match(malformed.errors[0].message, /cacheScope$/);
+	assert.equal(malformed.errors[0].message.includes('hidden'), false);
+});
+
+class FakeWebSocket {
+	static OPEN = 1;
+	static instances = [];
+
+	constructor(url, protocol) {
+		this.url = url;
+		this.protocol = protocol;
+		this.readyState = 0;
+		this.sent = [];
+		this.closeCount = 0;
+		FakeWebSocket.instances.push(this);
+	}
+
+	send(value) {
+		this.sent.push(JSON.parse(value));
+	}
+
+	close() {
+		this.closeCount += 1;
+		this.readyState = 3;
+	}
+
+	open() {
+		this.readyState = FakeWebSocket.OPEN;
+		this.onopen?.({});
+	}
+
+	message(message) {
+		this.onmessage?.({ data: JSON.stringify(message) });
+	}
+}
+
+test('GraphQL-WS preserves valid envelopes and terminates on incompatible frames', () => {
+	FakeWebSocket.instances.length = 0;
+	const next = [];
+	const errors = [];
+	const stop = subscribe(
+		'subscription Live { live { id } }',
+		{},
+		{
+			onNext: (result) => next.push(result),
+			onError: (error) => errors.push(error)
+		},
+		{
+			webSocket: FakeWebSocket,
+			httpUrl: '/graphql',
+			resume: distributedEnvelope().live.cursors
+		}
+	);
+	const socket = FakeWebSocket.instances[0];
+	socket.open();
+	socket.message({ type: 'connection_ack' });
+	assert.deepEqual(socket.sent[1].payload.extensions, {
+		distributed: {
+			resume: {
+				cursors: distributedEnvelope().live.cursors
+			}
+		}
+	});
+	socket.message({
+		type: 'next',
+		id: '1',
+		payload: {
+			data: { live: { id: 'row-1' } },
+			extensions: responseExtensions()
+		}
+	});
+	assert.deepEqual(next[0], {
+		data: { live: { id: 'row-1' } },
+		extensions: responseExtensions()
+	});
+	assert.deepEqual(errors, []);
+	stop();
+
+	const rejectedNext = [];
+	const rejectedErrors = [];
+	subscribe(
+		'subscription Live { live { id } }',
+		{},
+		{
+			onNext: (result) => rejectedNext.push(result),
+			onError: (error) => rejectedErrors.push(error)
+		},
+		{ webSocket: FakeWebSocket, httpUrl: '/graphql' }
+	);
+	const rejectedSocket = FakeWebSocket.instances[1];
+	rejectedSocket.open();
+	rejectedSocket.message({ type: 'connection_ack' });
+	rejectedSocket.message({
+		type: 'next',
+		id: '1',
+		payload: {
+			data: { live: { id: 'must-not-be-trusted' } },
+			extensions: {
+				distributed: {
+					...distributedEnvelope(),
+					protocolVersion: 7
+				}
+			}
+		}
+	});
+
+	assert.deepEqual(rejectedNext, []);
+	assert.equal(rejectedErrors.length, 1);
+	assert.equal(
+		rejectedErrors[0].code,
+		'DISTRIBUTED_PROTOCOL_VERSION_UNSUPPORTED'
+	);
+	assert.deepEqual(rejectedSocket.sent.at(-1), {
+		type: 'complete',
+		id: '1'
+	});
+	assert.equal(rejectedSocket.closeCount, 1);
+});
+
+test('direct and pipelined command results preserve receipts while unwrapping only data', async () => {
+	const extensions = parseGraphqlResponseExtensions(responseExtensions());
+	const command = defineCommand({
+		field: 'change',
+		document: COMMAND_DOCUMENT,
+		hasInput: true
+	});
+	const client = {
+		async request() {
+			return {
+				data: { change: { ok: true } },
+				extensions,
+				status: 202
+			};
+		}
+	};
+
+	const direct = await executeCommand(client, command, { value: 'direct' });
+	assert.deepEqual(direct.data, { ok: true });
+	assert.equal('distributed' in direct.data, false);
+	assert.equal(direct.extensions, extensions);
+
+	const cache = new QueryCache();
+	const bound = bindCommands(
+		{ ...client, cache },
+		defineCommands({ change: command })
+	);
+	const pipelined = await bound.change(
+		{ value: 'pipeline' },
+		{ browser: false }
+	);
+	assert.deepEqual(pipelined.data, { ok: true });
+	assert.equal('distributed' in pipelined.data, false);
+	assert.equal(pipelined.extensions, extensions);
+});

@@ -47,8 +47,8 @@ by the command pipeline instead of being mistaken for read-model truth.
 
 ## Generated commands
 
-The Distributed service exports `commands.manifest.json`; the package CLI turns
-that service-owned manifest into typed app-owned artifacts:
+The Distributed service exports a role-selected client manifest; the package
+CLI turns that service-owned contract into typed app-owned artifacts:
 
 ```bash
 distributed-gen-commands \
@@ -58,11 +58,11 @@ distributed-gen-commands \
   --policies src/lib/api/commands.policies.generated.ts
 ```
 
-Manifest version 1 generates scalar command fields (`String`, `ID`, `Boolean`,
-`Int`, `Float`, `BigInt`, and `JSON`). The generator rejects nested objects,
-enums, and custom scalars with a field path instead of emitting incomplete
-TypeScript types or invalid GraphQL selections; those shapes require explicit
-type metadata in a future manifest version.
+Client manifest v3 carries nested command types, scalar codecs, the exact
+compiler-owned mutation documents, and one exact command-status operation. The
+generator validates operation hashes and emits those bytes verbatim; the
+runtime never guesses a status query or mutation field. Legacy command manifest
+v1 remains usable as an explicitly non-causal fallback.
 
 The generated module exports standalone functions and one `bindCommands`
 function. Bind once, then call commands without repeating transport or auth:
@@ -70,7 +70,7 @@ function. Bind once, then call commands without repeating transport or auth:
 ```ts
 const commands = bindCommands(gql, { cache, policies: commandPolicies });
 
-await commands.todosCreate(
+const result = await commands.todosCreate(
   { todo_id: crypto.randomUUID(), title: 'Ship it' },
   {
     optimistic: {
@@ -79,13 +79,32 @@ await commands.todosCreate(
     }
   }
 );
+
+if (result.errors?.length) {
+  showCommandErrors(result.errors);
+} else {
+  await result.receipt?.projected;
+}
 ```
 
 When commands are bound with a cache, the pipeline performs optimistic apply,
-one command request, rollback on failure, result-policy handling, UI effects,
-and explicit reconciliation. Without a cache, commands execute directly. The
-runtime never invents a complete projection row from an acknowledgement or
-partial fact.
+bounded same-ID transport recovery, result-policy handling, UI effects, and
+explicit reconciliation. A response loss preserves optimism because the
+command may have committed; an authoritative rejection rolls it back. Without
+a cache, commands execute directly.
+
+Generated causal results include a durable `receipt`. Its lazy `projected`
+promise resolves only after the server proves projection completion, and
+rejects with a typed safe error for rejection, projection failure, expiry,
+scope/schema drift, abort, or deadline. Accepted commands with no finite
+projection contract intentionally expose no `projected` promise. Pass a UUIDv7
+`commandId` in call options when independent callers need to submit the same
+identity; the runtime does not persist command identities or claim live resume.
+
+Projection evidence does not fabricate a browser row. The runtime never invents
+a complete projection from an acknowledgement, partial fact, or status result;
+apps use their generated query/live/refetch path to materialize authoritative
+read-model data.
 
 ## SvelteKit
 

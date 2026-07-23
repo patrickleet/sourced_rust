@@ -76,8 +76,7 @@ async fn seed_pool() -> sqlx::SqlitePool {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::env::var("GRAPHIQL_ADDR").unwrap_or_else(|_| "127.0.0.1:4000".into());
     let pool = seed_pool().await;
-    let manifest =
-        DistributedProjectManifest::new("graphiql-demo").table_schema(orders_schema());
+    let manifest = DistributedProjectManifest::new("graphiql-demo").table_schema(orders_schema());
 
     let engine = GraphqlEngine::from_manifest(&manifest, pool)?
         .roles(&["user", "anonymous"])
@@ -97,9 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!();
     println!("  Try:");
     println!("    {{ orders {{ order_id customer_id status total_cents }} }}");
-    println!(
-        "    {{ orders(where: {{ status: {{ _eq: \"open\" }} }}) {{ order_id status }} }}"
-    );
+    println!("    {{ orders(where: {{ status: {{ _eq: \"open\" }} }}) {{ order_id status }} }}");
     println!("    {{ orders_by_pk(order_id: \"o1\") {{ order_id status total_cents }} }}");
     println!("    {{ orders_aggregate {{ aggregate {{ count }} }} }}");
     println!();

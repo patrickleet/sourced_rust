@@ -133,7 +133,10 @@ async fn a12_rel_where_without_target_grant_is_unknown_field() {
             ),
         )
         .await;
-    assert!(!resp.errors.is_empty(), "rel where without grant must error");
+    assert!(
+        !resp.errors.is_empty(),
+        "rel where without grant must error"
+    );
     assert_no_sql_leak(&resp);
     let msgs = error_messages(&resp);
     assert!(
@@ -155,9 +158,7 @@ async fn s9_json_contains_on_sqlite_is_bad_request_without_sql_leak() {
     let resp = engine
         .execute(
             &s,
-            Request::new(
-                r#"{ orders(where: { note: { _contains: { a: 1 } } }) { order_id } }"#,
-            ),
+            Request::new(r#"{ orders(where: { note: { _contains: { a: 1 } } }) { order_id } }"#),
         )
         .await;
     assert!(!resp.errors.is_empty(), "sqlite must reject _contains");
@@ -185,7 +186,9 @@ async fn e4_missing_claim_header_is_stable_without_sql_leak() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["user"])
         .model::<OrderView>(
-            ModelPermissions::new().grant("user", read()
+            ModelPermissions::new().grant(
+                "user",
+                read()
                     .all_columns()
                     .rows(col("customer_id").eq(claim("x-user-id"))),
             ),

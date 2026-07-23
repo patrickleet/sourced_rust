@@ -47,7 +47,10 @@ async fn max_in_list_rejected() {
     let s = session("user", "x");
     let q = r#"{ orders(where: { order_id: { _in: ["a","b","c","d"] } }) { order_id } }"#;
     let resp = engine.execute(&s, Request::new(q)).await;
-    assert!(!resp.errors.is_empty(), "expected list-too-long style error");
+    assert!(
+        !resp.errors.is_empty(),
+        "expected list-too-long style error"
+    );
     assert_no_sql_leak(&resp);
 }
 
@@ -216,11 +219,11 @@ async fn d7_concurrent_with_timeout_bound_terminates() {
 /// staying under max_depth (proves weights, not only depth).
 #[tokio::test]
 async fn d8_nested_has_many_exceeds_complexity_budget() {
+    use distributed::graphql::{read, GraphqlEngine};
+    use distributed::ReadModel;
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{read, GraphqlEngine};
-    use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -333,11 +336,11 @@ async fn d8_nested_has_many_exceeds_complexity_budget() {
 /// Shallow nest stays under default complexity budget.
 #[tokio::test]
 async fn d8_shallow_nested_has_many_within_budget() {
+    use distributed::graphql::{read, GraphqlEngine};
+    use distributed::ReadModel;
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{read, GraphqlEngine};
-    use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -410,11 +413,11 @@ async fn d8_shallow_nested_has_many_within_budget() {
 /// Explicit low max_complexity rejects modest nests (budget knob works).
 #[tokio::test]
 async fn d8_low_max_complexity_rejects_single_nest() {
+    use distributed::graphql::{read, GraphqlEngine};
+    use distributed::ReadModel;
     use distributed::{
         DistributedProjectManifest, RelationalReadModel, RelationshipDef, RelationshipKind,
     };
-    use distributed::graphql::{read, GraphqlEngine};
-    use distributed::ReadModel;
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ReadModel)]
@@ -479,7 +482,10 @@ async fn d8_low_max_complexity_rejects_single_nest() {
             Request::new("{ parents { parent_id children { child_id name } } }"),
         )
         .await;
-    assert!(!resp.errors.is_empty(), "low budget must reject 1-level nest");
+    assert!(
+        !resp.errors.is_empty(),
+        "low budget must reject 1-level nest"
+    );
     assert_no_sql_leak(&resp);
     let msgs = error_messages(&resp);
     assert!(

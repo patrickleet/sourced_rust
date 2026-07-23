@@ -27,12 +27,12 @@ use crate::projection_protocol::{
     ProjectionObligationEvidence, ProjectionObligationEvidenceBatch,
     ProjectionObligationEvidenceBatchRequest, ProjectionObservation, ProjectionObservationKind,
     ProjectionObservationTarget, ProjectionPartition, ProjectionPartitionRuntimeState,
-    ProjectionPendingRetry, ProjectionProtocolError, ProjectionProtocolStore,
-    ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch, ProjectionQuerySnapshotBatchRequest,
-    ProjectionQuerySnapshotRequest, ProjectionRecordExpectation, ProjectionRecordMetadata,
-    ProjectionRecordScope, ProjectionSource, ProjectorTopologyId, RecordRevision,
-    SameTransactionProjectionBatch, SameTransactionProjectionEvidence, TrustedProjectionInput,
-    MAX_PROJECTION_POSITION,
+    ProjectionPartitionSnapshot, ProjectionPendingRetry, ProjectionProtocolError,
+    ProjectionProtocolStore, ProjectionQuerySnapshot, ProjectionQuerySnapshotBatch,
+    ProjectionQuerySnapshotBatchRequest, ProjectionQuerySnapshotRequest,
+    ProjectionRecordExpectation, ProjectionRecordMetadata, ProjectionRecordScope, ProjectionSource,
+    ProjectorTopologyId, RecordRevision, SameTransactionProjectionBatch,
+    SameTransactionProjectionEvidence, TrustedProjectionInput, MAX_PROJECTION_POSITION,
 };
 use crate::repository::RepositoryError;
 use crate::sqlx_repo::read_model::{
@@ -613,6 +613,48 @@ where
         .map_err(|error| protocol_storage_error::<DB>("load projection partition", error))?;
     row.map(|row| decode_partition_row::<DB>(&row, topology, partition))
         .transpose()
+}
+
+/// Read the exact durable live boundary using a caller-owned SQL snapshot.
+pub(crate) async fn read_projection_partition_snapshot_in_executor<DB>(
+    connection: &mut DB::Connection,
+    topology: &ProjectorTopologyId,
+    partition: &ProjectionPartition,
+    declared_epoch: &ProjectionEpoch,
+) -> Result<ProjectionPartitionSnapshot, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let Some(state) = load_partition_in_connection(connection, topology, partition).await? else {
+        return Ok(ProjectionPartitionSnapshot {
+            head: None,
+            compacted_through: 0,
+        });
+    };
+    if &state.change_epoch != declared_epoch {
+        return Err(ProjectionProtocolError::IncomparableInput);
+    }
+    let head = (state.change_head != 0)
+        .then(|| {
+            ProjectionChangeCursor::new(
+                topology.clone(),
+                partition.clone(),
+                state.change_epoch,
+                state.change_head,
+            )
+        })
+        .transpose()?;
+    Ok(ProjectionPartitionSnapshot {
+        head,
+        compacted_through: state.compacted_through,
+    })
 }
 
 /// Load the runtime fence and its immutable pending-retry identity from one
@@ -3778,7 +3820,7 @@ where
     for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
 {
     request.validate()?;
-    let schema = request.schema;
+    let schema = request.schema.as_ref();
     let physical_version_column = version_column(schema)?;
     let topology_hash = request.scope.topology().digest();
     let partition_hash = request.scope.projection_partition().digest();
@@ -5035,7 +5077,163 @@ where
     }
 }
 
-/// Read one resumable projection-change page from a single database snapshot.
+async fn read_projection_changes_in_executor_after_state<DB, AfterState>(
+    connection: &mut DB::Connection,
+    topology: &ProjectorTopologyId,
+    partition: &ProjectionPartition,
+    after: Option<&ProjectionChangeCursor>,
+    limit: usize,
+    after_state: AfterState,
+) -> Result<ProjectionChangeRead, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    AfterState: Future<Output = ()> + Send,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    let state = load_partition_in_connection(connection, topology, partition).await?;
+    after_state.await;
+    let Some(state) = state else {
+        return Ok(match after {
+            Some(_) => ProjectionChangeRead::ResetRequired {
+                head: None,
+                compacted_through: 0,
+            },
+            None => ProjectionChangeRead::Changes {
+                head: None,
+                compacted_through: 0,
+                changes: Vec::new(),
+            },
+        });
+    };
+    let head = if state.change_head == 0 {
+        None
+    } else {
+        Some(ProjectionChangeCursor::new(
+            topology.clone(),
+            partition.clone(),
+            state.change_epoch.clone(),
+            state.change_head,
+        )?)
+    };
+    if after.is_none() && state.compacted_through > 0 {
+        return Ok(ProjectionChangeRead::ResetRequired {
+            head,
+            compacted_through: state.compacted_through,
+        });
+    }
+    let start = match after {
+        Some(cursor)
+            if cursor.topology() != topology
+                || cursor.projection_partition() != partition
+                || cursor.epoch() != &state.change_epoch
+                || cursor.position() > state.change_head
+                || cursor.position() < state.compacted_through =>
+        {
+            return Ok(ProjectionChangeRead::ResetRequired {
+                head,
+                compacted_through: state.compacted_through,
+            });
+        }
+        Some(cursor) => cursor.position(),
+        None => state.compacted_through,
+    };
+    if limit == 0 || start == state.change_head {
+        return Ok(ProjectionChangeRead::Changes {
+            head,
+            compacted_through: state.compacted_through,
+            changes: Vec::new(),
+        });
+    }
+    let topology_hash = topology.digest();
+    let partition_hash = partition.digest();
+    let mut builder = QueryBuilder::<DB>::new(
+        "SELECT change_epoch, change_position, change_kind, causation_id, model_name, \
+         scope_kind, canonical_key_bytes, canonical_key_hash, incarnation, revision, \
+         failure_id FROM projection_changes WHERE topology_hash = ",
+    );
+    builder.push_bind(topology_hash.as_slice());
+    builder.push(" AND partition_hash = ");
+    builder.push_bind(partition_hash.as_slice());
+    builder.push(" AND change_epoch = ");
+    builder.push_bind(state.change_epoch.as_str());
+    builder.push(" AND change_position > ");
+    builder.push_bind(to_i64::<DB>(start, "projection change read position")?);
+    builder.push(" ORDER BY change_position ASC LIMIT ");
+    builder.push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+    let rows = builder
+        .build()
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| protocol_storage_error::<DB>("read projection changes", error))?;
+    let mut changes = Vec::with_capacity(rows.len());
+    let mut expected = checked_next(start, "projection change read")?;
+    for row in rows {
+        let change = decode_change_row::<DB>(&row, topology, partition, &state.change_epoch)?;
+        if change.cursor.position() != expected {
+            return Err(corrupt_storage(format!(
+                "projection change log expected position {expected} but found {}",
+                change.cursor.position()
+            )));
+        }
+        expected = if change.cursor.position() == state.change_head {
+            state.change_head
+        } else {
+            checked_next(change.cursor.position(), "projection change read")?
+        };
+        changes.push(change);
+    }
+    if changes.is_empty() {
+        return Err(corrupt_storage(format!(
+            "projection change log is missing retained position {}",
+            checked_next(start, "projection change read")?
+        )));
+    }
+    Ok(ProjectionChangeRead::Changes {
+        head,
+        compacted_through: state.compacted_through,
+        changes,
+    })
+}
+
+/// Read one durable resumable projection-change page using an existing
+/// database executor and therefore the caller's already-established snapshot.
+pub(crate) async fn read_projection_changes_in_executor<DB>(
+    connection: &mut DB::Connection,
+    topology: &ProjectorTopologyId,
+    partition: &ProjectionPartition,
+    after: Option<&ProjectionChangeCursor>,
+    limit: usize,
+) -> Result<ProjectionChangeRead, ProjectionProtocolError>
+where
+    DB: SqlxRepoBackend,
+    DB::Arguments: IntoArguments<DB>,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> String: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> Vec<u8>: Type<DB> + sqlx::Decode<'q, DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> &'q [u8]: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: sqlx::ColumnIndex<DB::Row>,
+{
+    read_projection_changes_in_executor_after_state::<DB, _>(
+        connection,
+        topology,
+        partition,
+        after,
+        limit,
+        std::future::ready(()),
+    )
+    .await
+}
+
+/// Read one resumable projection-change page from a new database snapshot.
 ///
 /// `after_state` is normally an immediately-ready future. Tests use it to
 /// commit compaction after the partition watermark has been observed but
@@ -5062,110 +5260,15 @@ where
 {
     with_projection_read_snapshot(pool, move |connection| {
         Box::pin(async move {
-            let state = load_partition_in_connection(connection, &topology, &partition).await?;
-            after_state.await;
-            let Some(state) = state else {
-                return Ok(match after {
-                    Some(_) => ProjectionChangeRead::ResetRequired {
-                        head: None,
-                        compacted_through: 0,
-                    },
-                    None => ProjectionChangeRead::Changes {
-                        head: None,
-                        compacted_through: 0,
-                        changes: Vec::new(),
-                    },
-                });
-            };
-            let head = if state.change_head == 0 {
-                None
-            } else {
-                Some(ProjectionChangeCursor::new(
-                    topology.clone(),
-                    partition.clone(),
-                    state.change_epoch.clone(),
-                    state.change_head,
-                )?)
-            };
-            if after.is_none() && state.compacted_through > 0 {
-                return Ok(ProjectionChangeRead::ResetRequired {
-                    head,
-                    compacted_through: state.compacted_through,
-                });
-            }
-            let start = match after.as_ref() {
-                Some(cursor)
-                    if cursor.topology() != &topology
-                        || cursor.projection_partition() != &partition
-                        || cursor.epoch() != &state.change_epoch
-                        || cursor.position() > state.change_head
-                        || cursor.position() < state.compacted_through =>
-                {
-                    return Ok(ProjectionChangeRead::ResetRequired {
-                        head,
-                        compacted_through: state.compacted_through,
-                    });
-                }
-                Some(cursor) => cursor.position(),
-                None => state.compacted_through,
-            };
-            if limit == 0 || start == state.change_head {
-                return Ok(ProjectionChangeRead::Changes {
-                    head,
-                    compacted_through: state.compacted_through,
-                    changes: Vec::new(),
-                });
-            }
-            let topology_hash = topology.digest();
-            let partition_hash = partition.digest();
-            let mut builder = QueryBuilder::<DB>::new(
-                "SELECT change_epoch, change_position, change_kind, causation_id, model_name, \
-                 scope_kind, canonical_key_bytes, canonical_key_hash, incarnation, revision, \
-                 failure_id FROM projection_changes WHERE topology_hash = ",
-            );
-            builder.push_bind(topology_hash.as_slice());
-            builder.push(" AND partition_hash = ");
-            builder.push_bind(partition_hash.as_slice());
-            builder.push(" AND change_epoch = ");
-            builder.push_bind(state.change_epoch.as_str());
-            builder.push(" AND change_position > ");
-            builder.push_bind(to_i64::<DB>(start, "projection change read position")?);
-            builder.push(" ORDER BY change_position ASC LIMIT ");
-            builder.push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
-            let rows = builder
-                .build()
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|error| protocol_storage_error::<DB>("read projection changes", error))?;
-            let mut changes = Vec::with_capacity(rows.len());
-            let mut expected = checked_next(start, "projection change read")?;
-            for row in rows {
-                let change =
-                    decode_change_row::<DB>(&row, &topology, &partition, &state.change_epoch)?;
-                if change.cursor.position() != expected {
-                    return Err(corrupt_storage(format!(
-                        "projection change log expected position {expected} but found {}",
-                        change.cursor.position()
-                    )));
-                }
-                expected = if change.cursor.position() == state.change_head {
-                    state.change_head
-                } else {
-                    checked_next(change.cursor.position(), "projection change read")?
-                };
-                changes.push(change);
-            }
-            if changes.is_empty() {
-                return Err(corrupt_storage(format!(
-                    "projection change log is missing retained position {}",
-                    checked_next(start, "projection change read")?
-                )));
-            }
-            Ok(ProjectionChangeRead::Changes {
-                head,
-                compacted_through: state.compacted_through,
-                changes,
-            })
+            read_projection_changes_in_executor_after_state::<DB, _>(
+                connection,
+                &topology,
+                &partition,
+                after.as_ref(),
+                limit,
+                after_state,
+            )
+            .await
         })
     })
     .await
@@ -8781,6 +8884,66 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_projection_change_executor_read_uses_existing_snapshot() {
+        let repository = repository().await;
+        let mut cursors = Vec::new();
+        for position in 1..=3 {
+            let result = repository
+                .commit_projection(batch(
+                    input(
+                        position,
+                        format!("executor-read-{position}").as_bytes(),
+                        &format!("executor-read-message-{position}"),
+                        &format!("executor-read-cause-{position}"),
+                        ProjectionGeneration::initial(),
+                    ),
+                    Vec::new(),
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+            cursors.push(result.changes[0].cursor.clone());
+        }
+
+        let read_topology = topology();
+        let read_partition = partition();
+        let resume_after = cursors[0].clone();
+        let read = with_projection_read_snapshot(repository.pool(), move |connection| {
+            Box::pin(async move {
+                read_projection_changes_in_executor::<sqlx::Sqlite>(
+                    connection,
+                    &read_topology,
+                    &read_partition,
+                    Some(&resume_after),
+                    100,
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap();
+
+        match read {
+            ProjectionChangeRead::Changes {
+                head,
+                compacted_through,
+                changes,
+            } => {
+                assert_eq!(head.as_ref().map(ProjectionChangeCursor::position), Some(3));
+                assert_eq!(compacted_through, 0);
+                assert_eq!(
+                    changes
+                        .iter()
+                        .map(|change| change.cursor.position())
+                        .collect::<Vec<_>>(),
+                    vec![2, 3]
+                );
+            }
+            other => panic!("executor read must return the retained suffix: {other:?}"),
+        }
     }
 
     #[tokio::test]

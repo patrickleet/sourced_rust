@@ -49,15 +49,27 @@ fn describe_emits_manifest_json() {
 fn client_manifest_uses_service_surface_export() {
     let json = dctl(&["client-manifest"]);
     let manifest: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(manifest["manifest_version"], 2);
+    assert_eq!(manifest["manifest_version"], 3);
+    assert_eq!(manifest["protocol_version"], 2);
     assert_eq!(manifest["service_id"], "orders");
     assert_eq!(manifest["surface"]["kind"], "role");
     assert_eq!(manifest["surface"]["name"], "user");
-    assert!(manifest["schema_fingerprint"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
+    assert_eq!(
+        manifest["schema_fingerprint"],
+        "sha256:9b97520bcc24a0c4f4dd6a33694dc53c2ddaa3302151fb62cf5ada84721e9b65"
+    );
+    assert_eq!(
+        manifest["protocol_fingerprint"],
+        "sha256:2ad00d4436516864f0f331f8421099b876e9a49eb4f19754ce80110836d6710b"
+    );
     assert_eq!(manifest["models"][0]["id"], "OrderView");
+    assert_eq!(manifest["models"][0]["record_revisions"], false);
+    assert_eq!(manifest["models"][0]["tombstones"], false);
+    assert_eq!(manifest["capabilities"]["record_revisions"], false);
+    assert_eq!(manifest["capabilities"]["tombstones"], false);
+    assert_eq!(manifest["capabilities"]["live_resume"], false);
+    assert_eq!(manifest["capabilities"]["query_fallback"], "revalidate");
+    assert!(manifest["protocol_operations"]["command_status"].is_null());
 }
 
 #[test]

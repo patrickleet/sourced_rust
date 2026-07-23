@@ -866,6 +866,19 @@ impl CommandProjectionConfirmation {
     }
 }
 
+pub(crate) fn validate_projection_confirmation_count(
+    command_name: &str,
+    count: usize,
+) -> Result<(), String> {
+    if count > crate::projection_protocol::MAX_PROJECTION_EVIDENCE_BATCH_ITEMS {
+        return Err(format!(
+            "typed command `{command_name}` declares {count} projector confirmations; maximum is {}",
+            crate::projection_protocol::MAX_PROJECTION_EVIDENCE_BATCH_ITEMS
+        ));
+    }
+    Ok(())
+}
+
 /// Compiler-retained relational identity for one ordinary `Projected<M>`
 /// declaration before the GraphQL Surface resolves its unique physical owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3104,6 +3117,16 @@ mod tests {
             protocol_topology: None,
             schema: None,
         }
+    }
+
+    #[test]
+    fn confirmation_inventory_matches_the_bounded_status_batch() {
+        let maximum = crate::projection_protocol::MAX_PROJECTION_EVIDENCE_BATCH_ITEMS;
+        validate_projection_confirmation_count("todo.update", maximum)
+            .expect("the adapter's exact maximum must be accepted");
+        let error = validate_projection_confirmation_count("todo.update", maximum + 1)
+            .expect_err("one more confirmation must fail before service traffic");
+        assert!(error.contains(&format!("maximum is {maximum}")), "{error}");
     }
 
     fn confirmation_with_key(

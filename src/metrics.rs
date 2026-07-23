@@ -582,7 +582,7 @@ impl MetricsRegistry {
                         .iter()
                         .map(|(key, histogram)| MetricSample::histogram(key.labels(), histogram))
                         .collect(),
-                )
+                ),
             ],
         }
     }
@@ -1182,4 +1182,3 @@ impl GraphqlHistogramKey {
         ]
     }
 }
-

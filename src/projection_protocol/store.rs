@@ -9,6 +9,7 @@
 use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -689,7 +690,7 @@ impl ProjectionCheckpointProbe {
 /// internal primitive without gaining authority to forge causal evidence.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProjectionQuerySnapshotRequest {
-    pub(crate) schema: &'static TableSchema,
+    pub(crate) schema: Arc<TableSchema>,
     pub(crate) key: RowKey,
     pub(crate) scope: ProjectionRecordScope,
     pub(crate) checkpoint_probes: Vec<ProjectionCheckpointProbe>,
@@ -703,7 +704,7 @@ impl ProjectionQuerySnapshotRequest {
         key: RowKey,
         checkpoint_probes: Vec<ProjectionCheckpointProbe>,
     ) -> Result<Self, ProjectionProtocolError> {
-        let schema = codec.registered_schema(model).map_err(|error| {
+        let schema = codec.registered_schema_owned(model).map_err(|error| {
             ProjectionProtocolError::InvalidBatch(format!(
                 "invalid projection query snapshot model: {error}"
             ))
@@ -743,7 +744,7 @@ impl ProjectionQuerySnapshotRequest {
                 field: "projection query model",
             });
         }
-        crate::table::validate_key(self.schema, &self.key)?;
+        crate::table::validate_key(&self.schema, &self.key)?;
 
         let mut probes = std::collections::HashSet::new();
         for probe in &self.checkpoint_probes {
@@ -786,6 +787,14 @@ pub(crate) struct ProjectionQuerySnapshot {
     pub(crate) record: Option<ProjectionRecordMetadata>,
     pub(crate) checkpoints: Vec<ProjectionCheckpointSnapshot>,
     pub(crate) change_head: Option<ProjectionChangeCursor>,
+    pub(crate) compacted_through: u64,
+}
+
+/// Sanitized live boundary for one exact projector partition, read inside the
+/// same adapter snapshot as a GraphQL query when used by Task 16.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectionPartitionSnapshot {
+    pub(crate) head: Option<ProjectionChangeCursor>,
     pub(crate) compacted_through: u64,
 }
 
@@ -939,7 +948,7 @@ pub(crate) struct ProjectionObligationEvidenceBatch {
 /// from durable metadata and proving that identity is unique.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProjectionLiveRecordRequest {
-    pub(crate) schema: &'static TableSchema,
+    pub(crate) schema: Arc<TableSchema>,
     pub(crate) topology: ProjectorTopologyId,
     pub(crate) key: RowKey,
     pub(crate) canonical_key_bytes: Vec<u8>,
@@ -952,12 +961,12 @@ impl ProjectionLiveRecordRequest {
         model: &str,
         key: RowKey,
     ) -> Result<Self, ProjectionProtocolError> {
-        let schema = codec.registered_schema(model).map_err(|error| {
+        let schema = codec.registered_schema_owned(model).map_err(|error| {
             ProjectionProtocolError::InvalidBatch(format!(
                 "invalid projection live-record model: {error}"
             ))
         })?;
-        crate::table::validate_key(schema, &key)?;
+        crate::table::validate_key(&schema, &key)?;
         let canonical_key_bytes =
             codec
                 .encode_unpartitioned_row_key(model, &key)
@@ -981,7 +990,7 @@ impl ProjectionLiveRecordRequest {
     }
 
     pub(crate) fn validate(&self) -> Result<(), ProjectionProtocolError> {
-        crate::table::validate_key(self.schema, &self.key)?;
+        crate::table::validate_key(&self.schema, &self.key)?;
         if self.canonical_key_bytes.is_empty()
             || self.canonical_key_bytes.len() > super::MAX_PROJECTION_RECORD_KEY_BYTES
         {
@@ -1193,7 +1202,7 @@ impl SameTransactionProjectionEvidence {
             .expect("same-transaction projection evidence contains only serializable primitives")
     }
 
-    pub(crate) fn validate_replay_value(value: &serde_json::Value) -> Result<(), String> {
+    pub(crate) fn from_replay_value(value: &serde_json::Value) -> Result<Self, String> {
         let decoded: SameTransactionReplayEnvelope = serde_json::from_value(value.clone())
             .map_err(|error| format!("direct projection evidence is invalid: {error}"))?;
         let evidence = decoded.into_evidence()?;
@@ -1204,7 +1213,11 @@ impl SameTransactionProjectionEvidence {
                 "direct projection evidence contains unknown or non-canonical fields".into(),
             );
         }
-        Ok(())
+        Ok(evidence)
+    }
+
+    pub(crate) fn validate_replay_value(value: &serde_json::Value) -> Result<(), String> {
+        Self::from_replay_value(value).map(|_| ())
     }
 }
 

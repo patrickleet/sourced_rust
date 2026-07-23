@@ -28,6 +28,7 @@ use tower::util::ServiceExt;
 
 static GRAPHQL_TYPED_GUARD_INVOKED: AtomicBool = AtomicBool::new(false);
 static GRAPHQL_TYPED_HANDLER_INVOKED: AtomicBool = AtomicBool::new(false);
+const TEST_PROTOCOL_TOKEN_KEY: [u8; 32] = [0x5a; 32];
 
 #[derive(Default)]
 struct FixtureAggregate {
@@ -794,6 +795,7 @@ async fn projected_command_binding_rejects_a_raw_pool_source() {
     let route_repository = SqliteRepository::new(shared_pool.clone());
     let service = projected_service("plans", route_repository);
     let engine = GraphqlEngine::builder(shared_pool)
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
         .client_projectors([direct_plan_projector()])
@@ -819,6 +821,7 @@ async fn projected_command_binding_rejects_an_independent_repository_over_the_sa
     let graphql_repository = SqliteRepository::new(shared_pool);
     let service = projected_service("plans", route_repository);
     let engine = GraphqlEngine::builder(&graphql_repository)
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
         .client_projectors([direct_plan_projector()])
@@ -843,6 +846,7 @@ async fn projected_command_binding_accepts_a_clone_of_the_same_repository_handle
     let repository = SqliteRepository::new(shared_pool);
     let service = projected_service("plans", repository.clone());
     let engine = GraphqlEngine::builder(&repository)
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .model::<PlanView>(plan_permissions("anonymous"))
         .service(&service)
         .client_projectors([direct_plan_projector()])
@@ -897,9 +901,30 @@ async fn projector_topology_identity_drift_changes_service_binding_fingerprint()
 }
 
 #[tokio::test]
+async fn matched_typed_inventory_rejects_attachment_without_protocol_tokens() {
+    let service = service_a("todos");
+    let engine = GraphqlEngine::builder(pool())
+        .service(&service)
+        .build()
+        .expect("typed inventory can be compiled before deployment protocol configuration");
+
+    let error = service
+        .try_with_graphql(engine)
+        .err()
+        .expect("causal mutations must not be served without opaque protocol tokens");
+    assert!(
+        error
+            .to_string()
+            .contains("require a configured GraphQL protocol token key"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn matched_typed_inventory_attaches_while_unverified_mutations_fail_closed() {
     let service = service_a("todos");
     let engine = GraphqlEngine::builder(pool())
+        .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
         .service(&service)
         .build()
         .unwrap();
@@ -938,6 +963,7 @@ async fn every_graphql_dispatch_path_fences_before_typed_guards_and_handlers() {
     let service = Arc::new(guarded_service_a("todos"));
     let engine = Arc::new(
         GraphqlEngine::builder(pool())
+            .protocol_token_key(TEST_PROTOCOL_TOKEN_KEY)
             .service(&service)
             .build()
             .unwrap(),
@@ -1260,7 +1286,7 @@ async fn manifest_populates_typed_consistency_and_revalidation_effects() {
     let effects = command.extensions.effects.as_ref().unwrap();
     assert!(effects.operations.is_empty());
     assert_eq!(effects.fallback, "revalidate");
-    assert!(!manifest.capabilities.causal_receipts);
+    assert!(manifest.capabilities.causal_receipts);
     assert!(!manifest.capabilities.confirmed_persistence);
 }
 

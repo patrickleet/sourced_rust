@@ -61,8 +61,7 @@ async fn strict_denied_where_column_errors() {
     let engine = GraphqlEngine::builder(pool)
         .roles(&["restricted"])
         .model::<OrderView>(
-            ModelPermissions::new().grant("restricted", read().columns(["order_id", "status"]),
-            ),
+            ModelPermissions::new().grant("restricted", read().columns(["order_id", "status"])),
         )
         .build()
         .unwrap();
@@ -158,6 +157,10 @@ async fn soft_skip_mode_is_opt_in_only() {
             Request::new(r#"{ orders(where: { status: { _eq: "open" } }) { order_id } }"#),
         )
         .await;
-    assert!(resp.errors.is_empty(), "valid query still works: {:?}", resp.errors);
+    assert!(
+        resp.errors.is_empty(),
+        "valid query still works: {:?}",
+        resp.errors
+    );
     let _ = extension_code;
 }

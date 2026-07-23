@@ -13,9 +13,7 @@ pub fn is_valid_graphql_name(name: &str) -> bool {
             }
             chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         }
-        Some(c) if c.is_ascii_alphabetic() => {
-            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
+        Some(c) if c.is_ascii_alphabetic() => chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
         _ => false,
     }
 }
@@ -99,8 +97,7 @@ pub const STRING_COMPARISON_OPS: &[&str] = &["_like", "_ilike"];
 
 /// Postgres `jsonb` operators — only on `JSON_comparison_exp` when the engine
 /// dialect is Postgres. **Must not** appear on SQLite schema or SDL.
-pub const POSTGRES_JSON_COMPARISON_OPS: &[&str] =
-    &["_contains", "_contained_in", "_has_key"];
+pub const POSTGRES_JSON_COMPARISON_OPS: &[&str] = &["_contains", "_contained_in", "_has_key"];
 
 /// Whether the GraphQL surface should advertise PG JSON comparison ops.
 ///
@@ -124,6 +121,25 @@ pub fn comparison_op_fields(scalar: &str, postgres_json_ops: bool) -> Vec<&'stat
 /// Custom scalars emitted once, alphabetically.
 pub const CUSTOM_SCALARS: &[&str] = &["BigInt", "Bytea", "JSON", "Timestamptz"];
 
+/// Framework-owned causal command-status query field.
+pub const COMMAND_STATUS_ROOT_FIELD: &str = "commandStatus";
+
+/// Framework-owned causal command-status object and state enum.
+pub const DISTRIBUTED_COMMAND_STATUS_TYPE: &str = "DistributedCommandStatus";
+pub const DISTRIBUTED_COMMAND_STATE_TYPE: &str = "DistributedCommandState";
+
+/// Stable public command-state vocabulary. Lowercase values are intentional.
+pub const DISTRIBUTED_COMMAND_STATE_VALUES: &[&str] = &[
+    "in_progress",
+    "accepted",
+    "accepted_pending_projection",
+    "projected",
+    "rejected",
+    "projection_failed",
+    "expired",
+    "unknown",
+];
+
 /// Built-in + custom scalars that are reserved and must not collide with
 /// generated type names.
 pub fn reserved_type_names() -> impl Iterator<Item = &'static str> {
@@ -141,6 +157,19 @@ pub fn reserved_type_names() -> impl Iterator<Item = &'static str> {
         "Bytea",
         "JSON",
         "Timestamptz",
+    ]
+    .into_iter()
+}
+
+/// Additional names reserved only on a selected Surface with causal commands.
+///
+/// Legacy/query-only surfaces retain their existing namespace. The SDL and
+/// runtime builders opt into this set after role/application selection proves
+/// at least one visible command with a consistency contract.
+pub fn causal_protocol_type_names() -> impl Iterator<Item = &'static str> {
+    [
+        DISTRIBUTED_COMMAND_STATE_TYPE,
+        DISTRIBUTED_COMMAND_STATUS_TYPE,
     ]
     .into_iter()
 }
@@ -195,5 +224,35 @@ mod tests {
         for op in POSTGRES_JSON_COMPARISON_OPS {
             assert!(json_ops.contains(op), "PG JSON comparison missing {op}");
         }
+    }
+
+    #[test]
+    fn causal_protocol_names_and_lowercase_states_are_frozen_separately() {
+        assert_eq!(
+            causal_protocol_type_names().collect::<Vec<_>>(),
+            [
+                DISTRIBUTED_COMMAND_STATE_TYPE,
+                DISTRIBUTED_COMMAND_STATUS_TYPE,
+            ]
+        );
+        assert!(!reserved_type_names().any(|name| {
+            name == DISTRIBUTED_COMMAND_STATE_TYPE || name == DISTRIBUTED_COMMAND_STATUS_TYPE
+        }));
+        assert_eq!(
+            DISTRIBUTED_COMMAND_STATE_VALUES,
+            &[
+                "in_progress",
+                "accepted",
+                "accepted_pending_projection",
+                "projected",
+                "rejected",
+                "projection_failed",
+                "expired",
+                "unknown",
+            ]
+        );
+        assert!(DISTRIBUTED_COMMAND_STATE_VALUES
+            .iter()
+            .all(|value| is_valid_graphql_name(value)));
     }
 }

@@ -9,8 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::table::{TableKind, TableSchema};
 
 use super::naming::{
-    comparison_exp_name, include_postgres_json_comparison_ops, is_valid_graphql_name,
-    order_by_enum_values, reserved_type_names, CUSTOM_SCALARS,
+    causal_protocol_type_names, comparison_exp_name, include_postgres_json_comparison_ops,
+    is_valid_graphql_name, order_by_enum_values, reserved_type_names, COMMAND_STATUS_ROOT_FIELD,
+    CUSTOM_SCALARS, DISTRIBUTED_COMMAND_STATE_TYPE, DISTRIBUTED_COMMAND_STATE_VALUES,
+    DISTRIBUTED_COMMAND_STATUS_TYPE,
 };
 
 /// Options controlling which surface slices the renderer emits.
@@ -118,6 +120,10 @@ pub fn graphql_sdl_for_role(
 
 /// Internal renderer over an already IR-filtered set of read models.
 fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<String, String> {
+    let has_causal_commands = surface
+        .commands
+        .iter()
+        .any(|command| command.consistency.is_some());
     // Type names and root field names are separate GraphQL namespaces (Hasura
     // reuses e.g. `players_aggregate` as both a root field and an object type).
     let mut type_names: BTreeSet<String> = BTreeSet::new();
@@ -125,6 +131,19 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     let mut subscription_fields: BTreeSet<String> = BTreeSet::new();
     for reserved in reserved_type_names() {
         type_names.insert(reserved.to_string());
+    }
+    if has_causal_commands {
+        for reserved in causal_protocol_type_names() {
+            type_names.insert(reserved.to_string());
+            if surface.commands.iter().any(|command| {
+                command_shape_uses_type_name(&command.input, reserved)
+                    || command_shape_uses_type_name(&command.output, reserved)
+            }) {
+                return Err(format!(
+                    "generated name `{reserved}` collides with a causal protocol type"
+                ));
+            }
+        }
     }
     for scalar in CUSTOM_SCALARS {
         if !is_valid_graphql_name(scalar) {
@@ -165,6 +184,9 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     }
     for root in &surface.query_fields {
         claim_name(&mut query_fields, &root.name)?;
+    }
+    if has_causal_commands {
+        claim_name(&mut query_fields, COMMAND_STATUS_ROOT_FIELD)?;
     }
     for root in &surface.subscription_fields {
         claim_name(&mut subscription_fields, &root.name)?;
@@ -210,12 +232,15 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     }
 
     emit_command_types(&mut out, &surface.commands, &surface.models)?;
+    if has_causal_commands {
+        emit_causal_command_protocol_types(&mut out);
+    }
 
     // Roots are emitted from the Surface inventory, not reconstructed from
     // schemas. This is what keeps hidden/partial by-PK identity and per-model
     // aggregate grants aligned with runtime and client manifest output.
     out.push_str("type Query {\n");
-    if surface.query_fields.is_empty() {
+    if surface.query_fields.is_empty() && !has_causal_commands {
         // async-graphql requires a non-empty Query object and the runtime uses
         // this same fail-closed sentinel for roles with no readable models.
         // It is intentionally not a client-manifest root.
@@ -224,6 +249,11 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
         for field in &surface.query_fields {
             out.push_str(&surface_root_sdl(field));
             out.push('\n');
+        }
+        if has_causal_commands {
+            out.push_str(&format!(
+                "  {COMMAND_STATUS_ROOT_FIELD}(commandId: ID!): {DISTRIBUTED_COMMAND_STATUS_TYPE}!\n"
+            ));
         }
     }
     out.push_str("}\n");
@@ -257,6 +287,39 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     }
 
     Ok(out)
+}
+
+fn emit_causal_command_protocol_types(out: &mut String) {
+    out.push_str(&format!("enum {DISTRIBUTED_COMMAND_STATE_TYPE} {{\n"));
+    for state in DISTRIBUTED_COMMAND_STATE_VALUES {
+        out.push_str(&format!("  {state}\n"));
+    }
+    out.push_str("}\n\n");
+    out.push_str(&format!("type {DISTRIBUTED_COMMAND_STATUS_TYPE} {{\n"));
+    out.push_str(&format!("  state: {DISTRIBUTED_COMMAND_STATE_TYPE}!\n"));
+    out.push_str("}\n\n");
+}
+
+fn command_shape_uses_type_name(shape: &super::surface::SurfaceCommandShape, name: &str) -> bool {
+    match shape {
+        super::surface::SurfaceCommandShape::None | super::surface::SurfaceCommandShape::Json => {
+            false
+        }
+        super::surface::SurfaceCommandShape::Typed(definition) => {
+            command_type_uses_name(definition, name)
+        }
+    }
+}
+
+fn command_type_uses_name(definition: &super::surface::SurfaceTypeDef, name: &str) -> bool {
+    definition.name == name
+        || definition.fields.iter().any(|field| {
+            field.type_name == name
+                || field
+                    .nested
+                    .as_deref()
+                    .is_some_and(|nested| command_type_uses_name(nested, name))
+        })
 }
 
 fn command_arguments_sdl(causal: bool, input: &super::surface::SurfaceCommandShape) -> String {
@@ -535,7 +598,48 @@ pub fn graphql_sdl_from_schemas(
 #[cfg(test)]
 mod causal_command_sdl_tests {
     use super::*;
+    use crate::graphql::command_contract::CommandConsistency;
     use crate::graphql::surface::{SurfaceCommandShape, SurfaceTypeDef};
+
+    fn command_surface(
+        consistency: Option<CommandConsistency>,
+    ) -> crate::graphql::surface::Surface {
+        use crate::graphql::surface::{Surface, SurfaceCommand, SurfaceDialect, SurfaceSelection};
+
+        Surface {
+            selection: SurfaceSelection::Role {
+                name: "user".into(),
+            },
+            dialect: SurfaceDialect::Sqlite,
+            aggregates: false,
+            subscriptions: false,
+            default_limit: 100,
+            max_limit: 1000,
+            catalog: BTreeMap::new(),
+            models: BTreeMap::new(),
+            query_fields: Vec::new(),
+            subscription_fields: Vec::new(),
+            comparison_ops: BTreeMap::new(),
+            commands: vec![SurfaceCommand {
+                command_name: "todo.complete".into(),
+                field_name: "todo_complete".into(),
+                roles: vec!["user".into()],
+                input: SurfaceCommandShape::None,
+                output: SurfaceCommandShape::Json,
+                consistency,
+                input_defaults: Vec::new(),
+                effects: None,
+                confirmations: Vec::new(),
+                projected_model: None,
+                direct_projection: None,
+                confirmation_unavailable: false,
+            }],
+            commands_attached: true,
+            projectors: Vec::new(),
+            projectors_attached: false,
+            service_binding: None,
+        }
+    }
 
     #[test]
     fn causal_mutations_require_framework_command_id_before_input() {
@@ -564,5 +668,65 @@ mod causal_command_sdl_tests {
             "(input: JSON!)"
         );
         assert_eq!(command_arguments_sdl(false, &SurfaceCommandShape::None), "");
+    }
+
+    #[test]
+    fn causal_surface_emits_status_root_and_lowercase_state_enum() {
+        let sdl =
+            graphql_sdl_from_surface(&command_surface(Some(CommandConsistency::Accepted))).unwrap();
+
+        assert!(sdl.contains("commandStatus(commandId: ID!): DistributedCommandStatus!"));
+        assert!(sdl.contains("type DistributedCommandStatus {\n  state: DistributedCommandState!"));
+        for state in DISTRIBUTED_COMMAND_STATE_VALUES {
+            assert!(
+                sdl.contains(&format!("\n  {state}\n")),
+                "missing status state `{state}`:\n{sdl}"
+            );
+        }
+        assert!(!sdl.contains("_empty: Boolean!"));
+    }
+
+    #[test]
+    fn legacy_only_surface_does_not_reserve_or_emit_status_protocol() {
+        let sdl = graphql_sdl_from_surface(&command_surface(None)).unwrap();
+
+        assert!(!sdl.contains(COMMAND_STATUS_ROOT_FIELD));
+        assert!(!sdl.contains(DISTRIBUTED_COMMAND_STATUS_TYPE));
+        assert!(!sdl.contains(DISTRIBUTED_COMMAND_STATE_TYPE));
+        assert!(sdl.contains("_empty: Boolean!"));
+    }
+
+    #[test]
+    fn causal_status_root_and_types_fail_closed_on_collisions() {
+        use crate::graphql::surface::{RootField, RootKind};
+
+        let mut root_collision = command_surface(Some(CommandConsistency::Accepted));
+        root_collision.query_fields.push(RootField {
+            name: COMMAND_STATUS_ROOT_FIELD.into(),
+            kind: RootKind::List,
+            object: "Unused".into(),
+            model_name: "Unused".into(),
+            arguments: Vec::new(),
+            dependencies: Vec::new(),
+            default_limit: None,
+            max_limit: None,
+        });
+        let error = graphql_sdl_from_surface(&root_collision).unwrap_err();
+        assert!(
+            error.contains("commandStatus") && error.contains("collides"),
+            "{error}"
+        );
+
+        let mut type_collision = command_surface(Some(CommandConsistency::Accepted));
+        type_collision.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
+            name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
+            fields: Vec::new(),
+        });
+        let error = graphql_sdl_from_surface(&type_collision).unwrap_err();
+        assert!(
+            error.contains(DISTRIBUTED_COMMAND_STATUS_TYPE)
+                && error.contains("causal protocol type"),
+            "{error}"
+        );
     }
 }

@@ -45,11 +45,7 @@ async fn e1_through_e8_live() {
     if audience != cust_id {
         oidc.extra_audiences.push(cust_id.clone());
     }
-    oidc.claim_map.role_claims = vec![
-        "realm_access.roles".into(),
-        "groups".into(),
-        "roles".into(),
-    ];
+    oidc.claim_map.role_claims = vec!["realm_access.roles".into(), "groups".into(), "roles".into()];
 
     common::run_e1_through_e8(
         oidc,
@@ -109,11 +105,8 @@ fn decode_sub(token: &str) -> Option<String> {
     while s.len() % 4 != 0 {
         s.push('=');
     }
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        s.as_bytes(),
-    )
-    .ok()?;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes()).ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
     v.get("sub")?.as_str().map(|s| s.to_string())
 }
@@ -122,7 +115,9 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }

@@ -5,6 +5,30 @@ export type {
 	GqlResult,
 	GraphqlVariables
 } from './types.js';
+export {
+	DISTRIBUTED_PROTOCOL_VERSION,
+	DistributedProtocolError,
+	compareDistributedDecimal,
+	distributedLiveResumeExtensions,
+	parseDistributedProtocolEnvelope,
+	parseGraphqlResponseExtensions,
+	type DistributedDecimalString,
+	type DistributedCommandConsistency,
+	type DistributedCommandMetadata,
+	type DistributedCommandState,
+	type DistributedIndexRevision,
+	type DistributedLiveCursor,
+	type DistributedLiveMetadata,
+	type DistributedLiveResumeExtensions,
+	type DistributedOpaqueString,
+	type DistributedProjectionExpectation,
+	type DistributedProjectionObservation,
+	type DistributedProtocolEnvelope,
+	type DistributedProtocolErrorCode,
+	type DistributedQuerySnapshot,
+	type DistributedRecordRevision,
+	type GraphqlResponseExtensions
+} from './protocol.js';
 export { documentToString, type GqlDocument } from './document.js';
 export {
 	applyWsDevHeaderParams,

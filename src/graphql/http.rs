@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use async_graphql::http::{GraphiQLSource, ALL_WEBSOCKET_PROTOCOLS};
-use async_graphql::{Data, Executor, Request, Response as GqlResponse};
+use async_graphql::parser::types::OperationType;
+use async_graphql::{Data, Executor, Request, Response as GqlResponse, ServerError};
 use async_graphql_axum::{GraphQLProtocol, GraphQLRequest, GraphQLResponse, GraphQLWebSocket};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, State};
@@ -61,6 +62,7 @@ pub struct GraphqlSessionExecutor {
     engine: Arc<GraphqlEngine>,
     session: Session,
     principal: Option<VerifiedPrincipal>,
+    service: Option<Arc<Service>>,
 }
 
 impl GraphqlSessionExecutor {
@@ -69,6 +71,7 @@ impl GraphqlSessionExecutor {
             engine,
             session,
             principal: None,
+            service: None,
         }
     }
 
@@ -76,11 +79,13 @@ impl GraphqlSessionExecutor {
         engine: Arc<GraphqlEngine>,
         session: Session,
         principal: Option<VerifiedPrincipal>,
+        service: Option<Arc<Service>>,
     ) -> Self {
         Self {
             engine,
             session,
             principal,
+            service,
         }
     }
 }
@@ -92,7 +97,11 @@ impl Executor for GraphqlSessionExecutor {
         self.engine
             .execute(
                 &self.session,
-                request_with_principal(request, self.principal.clone()),
+                request_with_context(
+                    request,
+                    self.principal.clone(),
+                    self.service.as_ref().map(Arc::clone),
+                ),
             )
             .await
     }
@@ -115,14 +124,65 @@ impl Executor for GraphqlSessionExecutor {
             .and_then(|principal| principal.downcast_ref::<VerifiedPrincipal>())
             .cloned()
             .or_else(|| self.principal.clone());
-        self.engine
-            .execute_stream(&session, request_with_principal(request, principal))
+        let operation_type = match websocket_operation_type(&request) {
+            Ok(operation_type) => operation_type,
+            Err(message) => {
+                return Box::pin(futures_util::stream::once(async move {
+                    GqlResponse::from_errors(vec![ServerError::new(message, None)])
+                }));
+            }
+        };
+        let service = self.service.as_ref().map(Arc::clone);
+        if operation_type == OperationType::Subscription {
+            return self
+                .engine
+                .execute_stream(&session, request_with_context(request, principal, service));
+        }
+
+        let engine = Arc::clone(&self.engine);
+        Box::pin(futures_util::stream::once(async move {
+            engine
+                .execute(&session, request_with_context(request, principal, service))
+                .await
+        }))
     }
+}
+
+fn websocket_operation_type(request: &Request) -> Result<OperationType, &'static str> {
+    let document = async_graphql::parser::parse_query(&request.query)
+        .map_err(|_| "invalid GraphQL document")?;
+    let mut operations = document.operations.iter();
+    if let Some(requested_name) = request.operation_name.as_deref() {
+        return operations
+            .find(|(name, _)| name.map(|name| name.as_str()) == Some(requested_name))
+            .map(|(_, operation)| operation.node.ty)
+            .ok_or("GraphQL operation name was not found");
+    }
+
+    let (_, operation) = operations
+        .next()
+        .ok_or("GraphQL document contains no operation")?;
+    if operations.next().is_some() {
+        return Err("GraphQL operation name is required for multi-operation documents");
+    }
+    Ok(operation.node.ty)
 }
 
 fn request_with_principal(request: Request, principal: Option<VerifiedPrincipal>) -> Request {
     match principal {
         Some(principal) => request.data(principal),
+        None => request,
+    }
+}
+
+fn request_with_context(
+    request: Request,
+    principal: Option<VerifiedPrincipal>,
+    service: Option<Arc<Service>>,
+) -> Request {
+    let request = request_with_principal(request, principal);
+    match service {
+        Some(service) => request.data(service),
         None => request,
     }
 }
@@ -278,7 +338,8 @@ pub async fn microsvc_graphql_get(State(service): State<Arc<Service>>) -> Respon
 /// `headers.Authorization`). Validate with the same OidcBearer path as HTTP.
 ///
 /// **DevHeaders (local):** identity from upgrade headers, query params, or
-/// GraphiQL `wsConnectionParams` (`x-user-id` / `x-role`).
+/// GraphiQL `wsConnectionParams` (`x-user-id` / `x-role`). Empty clients remain
+/// anonymous; the GraphiQL page sends its demo identity explicitly.
 pub async fn microsvc_graphql_ws(
     State(service): State<Arc<Service>>,
     headers: HeaderMap,
@@ -301,10 +362,7 @@ pub async fn microsvc_graphql_ws(
         ResolvedIdentity::unverified(Session::new())
     } else {
         match resolve_identity(&upgrade_headers, engine.identity_config()).await {
-            Ok(identity) => {
-                let (session, _) = identity.into_parts();
-                ResolvedIdentity::unverified(ensure_graphiql_dev_session(session, mode))
-            }
+            Ok(identity) => identity,
             Err(AuthError::Unauthorized) => return unauthorized_response(),
         }
     };
@@ -314,6 +372,7 @@ pub async fn microsvc_graphql_ws(
         Arc::clone(&engine),
         upgrade_session.clone(),
         upgrade_principal,
+        Some(Arc::clone(&service)),
     );
     let engine_for_init = Arc::clone(&engine);
     upgrade
@@ -418,19 +477,6 @@ fn bearer_from_connection_init(payload: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn ensure_graphiql_dev_session(mut session: Session, mode: IdentityMode) -> Session {
-    if mode != IdentityMode::DevHeaders {
-        return session;
-    }
-    if session.user_id().is_none() {
-        session.set(USER_ID_KEY, GRAPHIQL_DEV_USER);
-    }
-    if session.role().is_none() {
-        session.set(ROLE_KEY, GRAPHIQL_DEV_ROLE);
-    }
-    session
-}
-
 /// Merge `connection_init` / GraphiQL wsConnectionParams into the upgrade session.
 fn session_from_connection_init(
     mut session: Session,
@@ -482,7 +528,7 @@ fn session_from_connection_init(
         }
     }
 
-    ensure_graphiql_dev_session(session, mode)
+    session
 }
 
 fn merge_identity_query_params(headers: &mut HeaderMap, query: Option<&str>) {
@@ -550,6 +596,58 @@ mod connection_init_tests {
     use super::*;
     use crate::graphql::IdentityMode;
     use serde_json::json;
+    use std::any::TypeId;
+
+    #[test]
+    fn websocket_request_context_retains_attached_service() {
+        let service = Arc::new(Service::new());
+        let request = request_with_context(
+            Request::new("{ __typename }"),
+            None,
+            Some(Arc::clone(&service)),
+        );
+        let stored = request
+            .data
+            .get(&TypeId::of::<Arc<Service>>())
+            .and_then(|service| service.downcast_ref::<Arc<Service>>())
+            .expect("service request data");
+        assert!(Arc::ptr_eq(stored, &service));
+    }
+
+    #[test]
+    fn websocket_operation_routing_is_explicit_and_unambiguous() {
+        assert_eq!(
+            websocket_operation_type(&Request::new("{ __typename }")),
+            Ok(OperationType::Query)
+        );
+        assert_eq!(
+            websocket_operation_type(&Request::new("mutation Named { __typename }")),
+            Ok(OperationType::Mutation)
+        );
+        assert_eq!(
+            websocket_operation_type(
+                &Request::new("query Read { __typename } subscription Watch { __typename }")
+                    .operation_name("Watch")
+            ),
+            Ok(OperationType::Subscription)
+        );
+        assert_eq!(
+            websocket_operation_type(&Request::new(
+                "query Read { __typename } mutation Write { __typename }"
+            )),
+            Err("GraphQL operation name is required for multi-operation documents")
+        );
+        assert_eq!(
+            websocket_operation_type(
+                &Request::new("query Read { __typename }").operation_name("Missing")
+            ),
+            Err("GraphQL operation name was not found")
+        );
+        assert_eq!(
+            websocket_operation_type(&Request::new("not graphql")),
+            Err("invalid GraphQL document")
+        );
+    }
 
     #[test]
     fn connection_init_sets_dev_headers() {
@@ -574,11 +672,11 @@ mod connection_init_tests {
     }
 
     #[test]
-    fn empty_init_gets_graphiql_defaults_in_dev() {
+    fn empty_init_remains_anonymous_in_dev() {
         let session =
             session_from_connection_init(Session::new(), &json!({}), IdentityMode::DevHeaders);
-        assert_eq!(session.user_id(), Some(GRAPHIQL_DEV_USER));
-        assert_eq!(session.role(), Some(GRAPHIQL_DEV_ROLE));
+        assert_eq!(session.user_id(), None);
+        assert_eq!(session.role(), None);
     }
 
     #[test]

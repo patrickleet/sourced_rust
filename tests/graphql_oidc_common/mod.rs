@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use base64::Engine as _;
 use distributed::graphql::{
-    graphql_router, resolve_session, read, AuthError, GraphqlEngine, IdentityConfig,
-    IdentityMode, ModelPermissions, OidcConfig, OidcValidator, ValidationError,
+    graphql_router, read, resolve_session, AuthError, GraphqlEngine, IdentityConfig, IdentityMode,
+    ModelPermissions, OidcConfig, OidcValidator, ValidationError,
 };
 use distributed::ReadModel;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -79,7 +79,9 @@ pub async fn engine_oidc(oidc: OidcConfig) -> Arc<GraphqlEngine> {
             .roles(&["customer", "admin", "user"])
             .model::<OidcE2eItem>(
                 ModelPermissions::new()
-                    .grant("customer", read().all_columns().rows(
+                    .grant(
+                        "customer",
+                        read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
@@ -151,12 +153,10 @@ pub async fn run_e1_through_e8(
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TABLE oidc_e2e_items (id TEXT PRIMARY KEY, owner TEXT NOT NULL);",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("CREATE TABLE oidc_e2e_items (id TEXT PRIMARY KEY, owner TEXT NOT NULL);")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO oidc_e2e_items VALUES (?1, ?2), (?3, ?4)")
         .bind("1")
         .bind(&sub_a)
@@ -175,12 +175,16 @@ pub async fn run_e1_through_e8(
             .roles(&["customer", "admin", "user"])
             .model::<OidcE2eItem>(
                 ModelPermissions::new()
-                    .grant("customer", read().all_columns().rows(
+                    .grant(
+                        "customer",
+                        read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
                     )
-                    .grant("user", read().all_columns().rows(
+                    .grant(
+                        "user",
+                        read().all_columns().rows(
                             distributed::graphql::col("owner")
                                 .eq(distributed::graphql::claim("x-user-id")),
                         ),
@@ -217,7 +221,10 @@ pub async fn run_e1_through_e8(
         .await;
         assert_eq!(status, StatusCode::OK, "E1 status: {v}");
         assert!(
-            v.get("errors").and_then(|e| e.as_array()).map(|a| a.is_empty()).unwrap_or(true),
+            v.get("errors")
+                .and_then(|e| e.as_array())
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
             "E1 GraphQL errors (role surface empty?): {v}"
         );
         let arr = v["data"]["oidc_e2e_items"]
@@ -299,8 +306,8 @@ pub async fn run_e1_through_e8(
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(keys.kid.clone());
         let expired_token = encode(&header, &claims, &keys.encoding).expect("E5 sign");
-        let mut exp_cfg = OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience)
-            .with_static_jwks(&keys.jwks_json);
+        let mut exp_cfg =
+            OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience).with_static_jwks(&keys.jwks_json);
         exp_cfg.clock_skew = std::time::Duration::from_secs(0);
         let err = OidcValidator::new(exp_cfg)
             .validate_token(&expired_token)
@@ -314,14 +321,12 @@ pub async fn run_e1_through_e8(
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query(
-            "CREATE TABLE oidc_e2e_items (id TEXT PRIMARY KEY, owner TEXT NOT NULL);",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let mut http_cfg = OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience)
-            .with_static_jwks(&keys.jwks_json);
+        sqlx::query("CREATE TABLE oidc_e2e_items (id TEXT PRIMARY KEY, owner TEXT NOT NULL);")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut http_cfg =
+            OidcConfig::new(&oidc_cfg.issuer, &oidc_cfg.audience).with_static_jwks(&keys.jwks_json);
         http_cfg.require_auth = true;
         http_cfg.clock_skew = std::time::Duration::from_secs(0);
         http_cfg.claim_map.engine_roles = vec!["admin".into(), "customer".into(), "user".into()];
@@ -396,7 +401,8 @@ pub async fn run_e1_through_e8(
         assert_eq!(status, StatusCode::UNAUTHORIZED, "E8 status");
         let body = v.to_string();
         assert!(
-            !body.contains(token_a.as_str()) && !body.contains(secret.trim_start_matches("Bearer ")),
+            !body.contains(token_a.as_str())
+                && !body.contains(secret.trim_start_matches("Bearer ")),
             "E8 must not echo tokens: {body}"
         );
         eprintln!("E8 ok");
