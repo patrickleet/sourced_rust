@@ -1,13 +1,12 @@
 //! Command: `blob.start` — create game + demo level. Owner = session user.
 
 use blob_domain::BlobGame;
-use distributed::microsvc::{Context, HandlerError};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use distributed::graphql::{PreparedCommand, Projected};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_readmodels::{map_blob_fact, BlobGameView};
+use serde::Deserialize;
 
-use crate::deps::BlobDeps;
-use crate::handlers::commands::blob_cmd::{commit_blob_event, fact_json, map_domain};
-use crate::handlers::util::{require_user, session_has_user};
+use crate::handlers::commands::blob_cmd::{map_domain, stage_blob_event};
 
 pub const COMMAND: &str = "blob.start";
 
@@ -16,49 +15,25 @@ pub struct BlobStartInput {
     pub game_id: String,
 }
 
-#[derive(Debug, Serialize, distributed::GraphqlOutput)]
-pub struct BlobGamePayload {
-    pub game_id: String,
-    pub owner_id: String,
-    pub score: i64,
-    pub player_dead: bool,
-    pub current_level: i64,
-    pub current_level_completed: bool,
-    pub map_json: String,
-    pub status: String,
-}
+pub type BlobGamePayload = BlobGameView;
 
-pub fn guard<R, L, S>(ctx: &Context<BlobDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: crate::bounds::ReadStore,
-{
-    ctx.has_fields(&["game_id"]) && session_has_user(ctx.session())
-}
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, BlobGame>,
+    input: BlobStartInput,
+) -> Result<PreparedCommand<Projected<BlobGamePayload>>, HandlerError> {
+    let owner = ctx.user_id()?.to_string();
 
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, BlobDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: crate::bounds::ReadStore,
-{
-    let owner = require_user(ctx.session())?;
-    let input = ctx.input::<BlobStartInput>()?;
-
-    if ctx.repo().get(&input.game_id).await?.is_some() {
+    if ctx.load(&input.game_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "game {} already exists",
             input.game_id
         )));
     }
 
-    let mut game = BlobGame::default();
+    let mut game = ctx.create();
     game.start_with_demo(&input.game_id, &owner)
         .map_err(map_domain)?;
 
-    let fact = commit_blob_event(ctx, &mut game, "blob.started").await?;
-    Ok(fact_json(&fact))
+    let fact = stage_blob_event(ctx, game, "blob.started")?;
+    ctx.projected(map_blob_fact(&fact))
 }

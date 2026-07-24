@@ -135,6 +135,23 @@ Rules that prevent real bugs:
 
 ## Command handlers
 
+For a browser-facing GraphQL service, use the typed causal command path instead
+of exposing a raw `Context`/`serde_json::Value` handler as the mutation contract:
+
+- declare `.typed_command(typed_command::<Input, Accepted<Payload> | Fact<Payload> | Projected<Model>>(...))`
+  on the executable route;
+- implement the handler with `CausalCommandContext` and return a
+  `PreparedCommand<_>` so the framework owns commit, ledger, outbox, and
+  projection atomicity;
+- bind that exact `Service` through `GraphqlEngineBuilder::service`, configure
+  public OIDC, and call `.without_http_command_routes()` so browser writes use
+  only the GraphQL command proxy;
+- generate the strictly typed client with `dctl client`.
+
+Use the `distributed-graphql` skill for the complete route, consistency,
+authorization, and client-generation contract. The raw handler form below
+remains valid for intentional non-GraphQL transports.
+
 One module per handler, exporting `COMMAND` (or `EVENT`/`EVENTS`), a `guard`,
 and an async `handle`:
 
@@ -228,9 +245,10 @@ Gotchas:
   replica of one deployment. `namespace(..)` scopes broker topology per
   app/environment. Names are validated: portable IDs only (`A-Za-z0-9_-`,
   `.` also allowed in namespaces, max 128 bytes).
-- `microsvc` does **not** authenticate. Deploy behind a trusted proxy that
-  strips client-supplied identity headers and injects authenticated claims
-  (`Session` is an opaque map; `x-user-id` / `x-role` are convenience keys only).
+- Generic `microsvc` command routes do **not** authenticate themselves. Protect
+  intentional non-GraphQL routes at a trusted edge. Public GraphQL scaffolds
+  instead wire `OidcBearer` validation and disable generic command POST routes;
+  never trust client-supplied identity headers.
 - `connect_and_migrate` applies migrations; plain `connect` does not create
   tables.
 
@@ -255,6 +273,10 @@ Rules the fixture demonstrates:
 - **Owner from session**, never from untrusted create body
 - **Projectors only** write read models (commands commit aggregate + outbox)
 - GraphQL row filter: `owner_id = claim(x-user-id)` for role `user`
+- **Typed causal GraphQL commands** run through the OIDC command proxy; generic
+  direct command POST routes are disabled
+- **Generated client**: `dctl client` produces the typed replica/query/command
+  artifacts consumed by the SvelteKit app
 - **Subscriptions**: wire `SqliteRepository::read_model_changes()` into
   `GraphqlEngineBuilder::change_stream`; clients use WebSocket `/graphql/ws`
 

@@ -164,10 +164,10 @@ fn command() -> ManifestCommand {
         operation_hash: hash_bytes(operation.as_bytes()),
         extensions: ManifestCommandExtensions {
             version: 3,
-            consistency: Some(ManifestCommandConsistency {
+            consistency: ManifestCommandConsistency {
                 version: 1,
                 kind: ManifestConsistencyKind::Fact,
-            }),
+            },
             direct_projection: None,
             input_defaults: Some(ManifestInputDefaults {
                 version: 1,

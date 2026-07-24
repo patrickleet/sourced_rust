@@ -1,15 +1,12 @@
 //! Command: `blob.move` — direction up|down|left|right.
 
-use blob_domain::Direction;
-use distributed::microsvc::{Context, HandlerError};
+use blob_domain::{BlobGame, Direction};
+use distributed::graphql::{PreparedCommand, Projected};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
+use e2e_readmodels::{map_blob_fact, BlobGameView};
 use serde::Deserialize;
-use serde_json::Value;
 
-use crate::deps::BlobDeps;
-use crate::handlers::commands::blob_cmd::{
-    commit_blob_event, fact_json, load_game, map_domain,
-};
-use crate::handlers::util::{require_user, session_has_user};
+use crate::handlers::commands::blob_cmd::{load_game, map_domain, stage_blob_event};
 
 pub const COMMAND: &str = "blob.move";
 
@@ -19,25 +16,11 @@ pub struct BlobMoveInput {
     pub direction: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<BlobDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: crate::bounds::ReadStore,
-{
-    ctx.has_fields(&["game_id", "direction"]) && session_has_user(ctx.session())
-}
-
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, BlobDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: crate::bounds::ReadStore,
-{
-    let owner = require_user(ctx.session())?;
-    let input = ctx.input::<BlobMoveInput>()?;
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, BlobGame>,
+    input: BlobMoveInput,
+) -> Result<PreparedCommand<Projected<BlobGameView>>, HandlerError> {
+    let owner = ctx.user_id()?.to_string();
     let dir = Direction::parse(&input.direction).ok_or_else(|| {
         HandlerError::Rejected(format!(
             "invalid direction `{}` (use up|down|left|right)",
@@ -48,6 +31,6 @@ where
     let mut game = load_game(ctx, &input.game_id).await?;
     game.move_dir(&owner, dir).map_err(map_domain)?;
 
-    let fact = commit_blob_event(ctx, &mut game, "blob.moved").await?;
-    Ok(fact_json(&fact))
+    let fact = stage_blob_event(ctx, game, "blob.moved")?;
+    ctx.projected(map_blob_fact(&fact))
 }

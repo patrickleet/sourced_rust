@@ -26,8 +26,8 @@ pub use map::{
     MACHINE_CREATED,
 };
 pub use scrape::{
-    scrape_users_to_outbox, spawn_scrape_loop, ZitadelScrapeConfig, ScrapeReport, INTERVAL_ENV,
-    ON_START_ENV, TOKEN_ENV, API_URL_ENV,
+    scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig, API_URL_ENV,
+    INTERVAL_ENV, ON_START_ENV, TOKEN_ENV,
 };
 
 /// Provider event names published by this ingestor (never domain forgeries).

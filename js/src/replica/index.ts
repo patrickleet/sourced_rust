@@ -1,5 +1,46 @@
 export { createDistributedReplica } from './distributed-replica.js';
 export {
+	createReplicaDevelopmentCapability,
+	createReplicaDiagnostics,
+	inspectReplicaCommandArtifact,
+	inspectReplicaOperationArtifact
+} from './diagnostics.js';
+export type {
+	ReplicaArtifactSourceLocation,
+	ReplicaCommandArtifactInspection,
+	ReplicaCommandEffectInspection,
+	ReplicaDevelopmentCapability,
+	ReplicaDiagnosticEvent,
+	ReplicaDiagnosticEventInput,
+	ReplicaDiagnosticFieldValueContext,
+	ReplicaDiagnosticFieldValuePolicy,
+	ReplicaDiagnosticIndex,
+	ReplicaDiagnosticIndexInput,
+	ReplicaDiagnosticLayer,
+	ReplicaDiagnosticLayerInput,
+	ReplicaDiagnosticReceipt,
+	ReplicaDiagnosticReceiptExpectationInput,
+	ReplicaDiagnosticReceiptInput,
+	ReplicaDiagnosticRecord,
+	ReplicaDiagnosticRecordInput,
+	ReplicaDiagnosticReasonContext,
+	ReplicaDiagnosticReasonPolicy,
+	ReplicaDiagnostics,
+	ReplicaDiagnosticsOptions,
+	ReplicaDiagnosticsSink,
+	ReplicaDiagnosticsSnapshot,
+	ReplicaDiagnosticScopeInput,
+	ReplicaDiagnosticStateInput,
+	ReplicaOperationArtifactInspection,
+	ReplicaOperationIndexInspection,
+	ReplicaOperationInjectedFieldInspection
+} from './diagnostics.js';
+export { createReplicaGraphqlTransport } from './graphql-transport.js';
+export type {
+	ReplicaGraphqlTransport,
+	ReplicaGraphqlTransportOptions
+} from './graphql-transport.js';
+export {
 	canonicalizeOperationVariables,
 	replicaIndexKey,
 	replicaRecordKey
@@ -9,6 +50,40 @@ export {
 	ReplicaCommandContractError,
 	verifyReplicaCommandReceipt
 } from './commands.js';
+export {
+	createReplicaCommandRuntime,
+	ReplicaCommandRuntimeError
+} from './command-runtime.js';
+export {
+	createReplicaIndexedDbPersistence,
+	REPLICA_OFFLINE_COMMAND_OUTBOX_SUPPORTED
+} from './persistence.js';
+export type {
+	ReplicaBoundCommand,
+	ReplicaBoundCommands,
+	ReplicaCommandCallOptions,
+	ReplicaCommandProjectedOutcome,
+	ReplicaCommandReceipt,
+	ReplicaCommandRecoveryReceipt,
+	ReplicaCommandRevalidationReason,
+	ReplicaCommandRevalidationRequest,
+	ReplicaCommandRuntime,
+	ReplicaCommandRuntimeErrorCode,
+	ReplicaCommandRuntimeOptions,
+	ReplicaCommandStatus,
+	ReplicaCommandStatusArtifact,
+	ReplicaCommandStatusRequest,
+	ReplicaCommandTransport,
+	ReplicaCommandTransportRequest,
+	ReplicaCommandTransportResult
+} from './command-runtime.js';
+export type {
+	ReplicaIndexedDbFactory,
+	ReplicaIndexedDbPersistence,
+	ReplicaIndexedDbPersistenceOptions,
+	ReplicaPersistenceModelPolicy,
+	ReplicaPersistencePolicy
+} from './persistence.js';
 export type {
 	PrepareReplicaCommandOptions,
 	ReplicaCommandArtifact,
@@ -31,6 +106,7 @@ export type {
 	ReplicaCommandTypeDefinition,
 	ReplicaCommandTypeField,
 	ReplicaCommandVariables,
+	ReplicaTrustedPresetDescriptor,
 	ReplicaPreparedCommand,
 	ReplicaPreparedCommandEffect,
 	ReplicaPreparedConfirmation,
@@ -44,6 +120,25 @@ export {
 	decideReplicaPaginationMaintenance,
 	evaluateReplicaFilter
 } from './query-plan.js';
+export {
+	createReplicaIndexMaintenanceRegistry,
+	formatReplicaIndexStaleReason
+} from './index-maintenance.js';
+export type {
+	ReplicaIndexDependencyChange,
+	ReplicaIndexMaintenanceDecision,
+	ReplicaIndexMaintenanceIndex,
+	ReplicaIndexMaintenanceReason,
+	ReplicaIndexMaintenanceReasonCode,
+	ReplicaIndexMaintenanceRecord,
+	ReplicaIndexMaintenanceRegistry,
+	ReplicaIndexMaintenanceSnapshot,
+	ReplicaIndexPlanRegistration,
+	ReplicaIndexRecordChange,
+	ReplicaIndexRelationshipChange,
+	ReplicaIndexSemanticChange,
+	ReplicaIndexSemanticLayer
+} from './index-maintenance.js';
 export type {
 	ReplicaFilterEvaluation,
 	ReplicaFilterEvaluationOptions,
@@ -60,10 +155,12 @@ export type {
 	DistributedReplica,
 	ReplicaArgumentsArtifact,
 	ReplicaArgumentValue,
+	ReplicaAuthoritativeScope,
 	ReplicaBaseWriter,
 	ReplicaBranchSemantic,
+	ReplicaClientSurface,
 	ReplicaCoverageArtifact,
-	ReplicaEntitySelection,
+	ReplicaDehydratedState,
 	ReplicaFilterArtifact,
 	ReplicaFilterExpression,
 	ReplicaFilterFieldArtifact,
@@ -83,8 +180,8 @@ export type {
 	ReplicaObjectMember,
 	ReplicaObjectSelection,
 	ReplicaObjectValue,
-	ReplicaLegacyOperationArtifact,
 	ReplicaOperationArtifact,
+	ReplicaOperationSourceLocation,
 	ReplicaOperationProtocol,
 	ReplicaOrderArtifact,
 	ReplicaOrderFieldArtifact,
@@ -96,7 +193,6 @@ export type {
 	ReplicaRecordInspection,
 	ReplicaRecordPatch,
 	ReplicaRevision,
-	ReplicaRelationshipSelection,
 	ReplicaRelationshipArtifact,
 	ReplicaRelationshipKeyMapping,
 	ReplicaRelationshipKind,

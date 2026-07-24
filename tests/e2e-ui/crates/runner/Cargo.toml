@@ -9,14 +9,6 @@ description = "Thin runner: SQLite + SqliteBus + HTTP + GraphQL"
 name = "e2e-ui"
 path = "src/main.rs"
 
-[[bin]]
-name = "e2e-export-sdl"
-path = "src/bin/export_sdl.rs"
-
-[[bin]]
-name = "e2e-export-commands"
-path = "src/bin/export_commands.rs"
-
 [dependencies]
 distributed = { workspace = true }
 e2e-service = { path = "../service" }

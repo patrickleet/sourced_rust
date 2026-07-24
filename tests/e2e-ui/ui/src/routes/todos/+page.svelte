@@ -1,16 +1,12 @@
 <script lang="ts">
 	/**
-	 * Field notes — document store + command pipeline.
-	 * Writes: optimistic → network → fact; no immediate refetch (async projectors).
-	 * Soft delayed refetch only so cache eventually matches RM.
+	 * Field notes — generated operation state + generated causal commands.
+	 *
+	 * There is no app cache adapter or manual optimistic recipe here. The
+	 * compiler artifact tells the replica how command facts affect this query.
 	 */
-	import { onDestroy } from 'svelte';
-	import { useGraphql, fx } from '$lib/gql';
+	import { Todos, useCommands } from '$distributed';
 	import { sessionDisplayName } from '$lib/session';
-	import { sortTodos, todos as todosResource } from './todos.resource';
-	import type { TodoRow } from './todos.resource';
-
-	type Todo = TodoRow;
 
 	let { data } = $props();
 
@@ -18,155 +14,81 @@
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
 
-	const me = $derived(data.session?.user?.id ?? '');
 	const who = $derived(sessionDisplayName(data.session));
 
-	const gql = useGraphql(() => data, {
-		runEffects: (effects) => {
-			for (const e of effects) {
-				if (e.kind === 'alert') actionError = e.message;
-			}
-		}
-	});
+	const list = Todos.use();
+	const commands = useCommands();
 
-	const list = gql.store({
-		document: todosResource.query,
-		list: { at: 'todos', by: 'todo_id' },
-		initialData: { todos: sortTodos(data.todos ?? []) },
-		select: (d: { todos?: Todo[] }) => sortTodos(d?.todos ?? [])
-	});
-
-	$effect(() => {
-		list.seed({ todos: sortTodos(data.todos ?? []) });
-	});
-
-	onDestroy(() => list.destroy());
-
-	const open = $derived($list.data.filter((t) => t.status === 'open'));
-	const done = $derived($list.data.filter((t) => t.status === 'completed'));
-	const archived = $derived($list.data.filter((t) => t.status === 'archived'));
-
-	function newTodoId() {
-		const rand =
-			typeof crypto !== 'undefined' && 'randomUUID' in crypto
-				? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
-				: `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
-		return `t-${rand}`;
-	}
+	// The generated query/index plan owns collection order. Components only
+	// derive presentation groups from the reactive result.
+	const rows = $derived($list.complete ? $list.data.todos : []);
+	const open = $derived(rows.filter((todo) => todo.status === 'open'));
+	const done = $derived(rows.filter((todo) => todo.status === 'completed'));
+	const archived = $derived(rows.filter((todo) => todo.status === 'archived'));
 
 	async function onCreate(e: Event) {
 		e.preventDefault();
 		const text = title.trim();
 		if (!text || busy) return;
 
-		const todo_id = newTodoId();
 		actionError = null;
 		busy = true;
 		title = '';
-
-		const result = await gql.commands.todosCreate(
-			{ todo_id, title: text },
-			{
-				optimistic: {
-					targets: [list.target('todos', 'todo_id')],
-					row: {
-						todo_id,
-						owner_id: me || 'me',
-						title: text,
-						status: 'open'
-					}
-				},
-				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'create failed')]
-			}
-		);
-
-		busy = false;
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'create failed';
-			return;
+		try {
+			await commands.todo.create({ title: text });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'create failed';
+		} finally {
+			busy = false;
 		}
-		list.scheduleCatchUp();
 	}
 
 	async function onComplete(todo_id: string) {
 		if (busy) return;
-		const target = $list.data.find((t) => t.todo_id === todo_id);
+		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'open') return;
 
 		actionError = null;
 		busy = true;
-
-		const result = await gql.commands.todosComplete(
-			{ todo_id },
-			{
-				optimistic: {
-					targets: [list.target('todos', 'todo_id')],
-					row: { ...target, status: 'completed' }
-				},
-				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'complete failed')]
-			}
-		);
-
-		busy = false;
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'complete failed';
-			return;
+		try {
+			await commands.todo.complete({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'complete failed';
+		} finally {
+			busy = false;
 		}
-		list.scheduleCatchUp();
 	}
 
 	async function onReopen(todo_id: string) {
 		if (busy) return;
-		const target = $list.data.find((t) => t.todo_id === todo_id);
+		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status !== 'completed') return;
 
 		actionError = null;
 		busy = true;
-
-		const result = await gql.commands.todosReopen(
-			{ todo_id },
-			{
-				optimistic: {
-					targets: [list.target('todos', 'todo_id')],
-					row: { ...target, status: 'open' }
-				},
-				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'reopen failed')]
-			}
-		);
-
-		busy = false;
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'reopen failed';
-			return;
+		try {
+			await commands.todo.reopen({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'reopen failed';
+		} finally {
+			busy = false;
 		}
-		list.scheduleCatchUp();
 	}
 
 	async function onArchive(todo_id: string) {
 		if (busy) return;
-		const target = $list.data.find((t) => t.todo_id === todo_id);
+		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
 		busy = true;
-
-		const result = await gql.commands.todosArchive(
-			{ todo_id },
-			{
-				optimistic: {
-					targets: [list.target('todos', 'todo_id')],
-					row: { ...target, status: 'archived' }
-				},
-				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'archive failed')]
-			}
-		);
-
-		busy = false;
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'archive failed';
-			return;
+		try {
+			await commands.todo.archive({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'archive failed';
+		} finally {
+			busy = false;
 		}
-		list.scheduleCatchUp();
 	}
 </script>
 
@@ -178,9 +100,9 @@
 		</div>
 		<h1 class="fn-title">Field notes</h1>
 		<p class="fn-lede">
-			Tasks for <strong>{who}</strong>. List via <code>gql.store</code>
-			(<code>$list.data</code>); writes via <code>gql.commands.*</code>
-			(optimistic → fact, no immediate refetch).
+			Tasks for <strong>{who}</strong>. One generated <code>@load</code> operation feeds
+			SSR, navigation, and cache reads; typed commands update that same state
+			optimistically and retire it when projection catches up.
 		</p>
 	</header>
 

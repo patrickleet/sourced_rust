@@ -1,12 +1,12 @@
 //! Command: `todo.complete` — owner-only (aggregate enforces).
 
-use distributed::microsvc::{Context, HandlerError};
+use distributed::graphql::{Fact, PreparedCommand};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::Deserialize;
-use serde_json::Value;
+use todo_domain::Todo;
 
-use crate::deps::TodoDeps;
-use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain, status_json};
-use crate::handlers::util::{require_user, session_has_user};
+use crate::handlers::commands::payloads::TodoStatusPayload;
+use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
 
 pub const COMMAND: &str = "todo.complete";
 
@@ -15,27 +15,17 @@ pub struct TodoCompleteInput {
     pub todo_id: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    ctx.has_fields(&["todo_id"]) && session_has_user(ctx.session())
-}
-
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, TodoDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    let owner = require_user(ctx.session())?;
-    let input = ctx.input::<TodoCompleteInput>()?;
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, Todo>,
+    input: TodoCompleteInput,
+) -> Result<PreparedCommand<Fact<TodoStatusPayload>>, HandlerError> {
+    let owner = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
     todo.complete(&owner).map_err(map_domain)?;
-    let fact = commit_todo_event(ctx, &mut todo, "todo.completed").await?;
-    Ok(status_json(&fact))
+    let fact = stage_todo_event(ctx, todo, "todo.completed")?;
+    PreparedCommand::<Fact<TodoStatusPayload>>::prepare(TodoStatusPayload {
+        todo_id: fact.todo_id,
+        status: fact.status,
+    })
+    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

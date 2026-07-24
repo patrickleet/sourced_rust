@@ -9,7 +9,7 @@ use super::{ClientCompileError, ClientSurfaceSelector};
 const MANIFEST_VERSION: u64 = 7;
 const PROTOCOL_VERSION: u64 = 2;
 const PROTOCOL_FINGERPRINT: &str =
-    "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3";
+    "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientManifest {
@@ -23,6 +23,9 @@ pub(crate) struct ClientManifest {
     pub(crate) models: BTreeMap<String, ManifestModel>,
     pub(crate) roots: BTreeMap<(RootOperation, String), ManifestRoot>,
     pub(crate) commands: Vec<ManifestCommand>,
+    /// Exact scope-wide descriptor inventory derived from command-local
+    /// presets plus every client-visible row-policy claim/column codec.
+    pub(crate) trusted_presets: Vec<ManifestTrustedPresetDescriptor>,
     pub(crate) commands_requiring_revalidation: BTreeSet<String>,
     pub(crate) protocol_operations: ManifestProtocolOperations,
     pub(crate) projectors: Vec<ManifestProjector>,
@@ -236,7 +239,7 @@ impl Serialize for ManifestFilterExpr {
             }
         }
 
-        wire_value(self).serialize(serializer)
+        canonical_json_value(wire_value(self)).serialize(serializer)
     }
 }
 
@@ -478,7 +481,6 @@ pub(crate) struct ManifestCommand {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManifestCommandShape {
     None,
-    Json { codec: String },
     Object { definition: ManifestTypeDef },
 }
 
@@ -507,8 +509,7 @@ pub(crate) struct ManifestTypeField {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestCommandExtensions {
     pub(crate) version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) consistency: Option<ManifestCommandConsistency>,
+    pub(crate) consistency: ManifestCommandConsistency,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) direct_projection: Option<ManifestDirectProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -977,6 +978,7 @@ impl ClientManifest {
                 &models,
                 &projectors,
             )?);
+        let trusted_presets = derive_trusted_preset_descriptors(&models, &commands)?;
         validate_derived_capabilities(&wire.capabilities, &roots, &commands)?;
         if wire.schema_fingerprint != computed_schema_fingerprint {
             return Err(ClientCompileError::manifest(
@@ -999,6 +1001,7 @@ impl ClientManifest {
             models,
             roots,
             commands,
+            trusted_presets,
             commands_requiring_revalidation: command_validation.commands_requiring_revalidation,
             protocol_operations: wire.protocol_operations,
             projectors,
@@ -1038,7 +1041,7 @@ fn schema_fingerprint(wire: &ManifestWire) -> Result<String, ClientCompileError>
 #[cfg(test)]
 pub(crate) fn refresh_schema_fingerprint(value: &mut JsonValue) {
     let wire: ManifestWire =
-        serde_json::from_value(value.clone()).expect("test manifest must match the v5 wire shape");
+        serde_json::from_value(value.clone()).expect("test manifest must match the v7 wire shape");
     value["schema_fingerprint"] =
         JsonValue::String(schema_fingerprint(&wire).expect("test manifest must be serializable"));
 }
@@ -2307,6 +2310,158 @@ fn validate_row_policy(
     }
 }
 
+fn derive_trusted_preset_descriptors(
+    models: &BTreeMap<String, ManifestModel>,
+    commands: &[ManifestCommand],
+) -> Result<Vec<ManifestTrustedPresetDescriptor>, ClientCompileError> {
+    let mut descriptors = BTreeMap::<String, String>::new();
+    for command in commands {
+        for descriptor in &command.extensions.trusted_presets {
+            insert_trusted_preset_descriptor(
+                &mut descriptors,
+                descriptor,
+                &format!("command `{}`", command.name),
+            )?;
+        }
+    }
+    for model in models.values() {
+        if let ManifestRowPolicy::Predicate { expression } = &model.row_policy {
+            collect_row_policy_trusted_presets(expression, model, models, &mut descriptors)?;
+        }
+    }
+    Ok(descriptors
+        .into_iter()
+        .map(|(name, codec)| ManifestTrustedPresetDescriptor { name, codec })
+        .collect())
+}
+
+fn collect_row_policy_trusted_presets(
+    expression: &ManifestFilterExpr,
+    model: &ManifestModel,
+    models: &BTreeMap<String, ManifestModel>,
+    descriptors: &mut BTreeMap<String, String>,
+) -> Result<(), ClientCompileError> {
+    match expression {
+        ManifestFilterExpr::And(expressions) | ManifestFilterExpr::Or(expressions) => {
+            for expression in expressions {
+                collect_row_policy_trusted_presets(expression, model, models, descriptors)?;
+            }
+        }
+        ManifestFilterExpr::Not(expression) => {
+            collect_row_policy_trusted_presets(expression, model, models, descriptors)?;
+        }
+        ManifestFilterExpr::Cmp {
+            column,
+            rhs: ManifestOperand::Claim(claim),
+            ..
+        } => {
+            insert_row_policy_trusted_preset(model, column, &claim.header, descriptors)?;
+        }
+        ManifestFilterExpr::In { column, values, .. } => {
+            for value in values {
+                if let ManifestOperand::Claim(claim) = value {
+                    insert_row_policy_trusted_preset(model, column, &claim.header, descriptors)?;
+                }
+            }
+        }
+        ManifestFilterExpr::Rel { field, predicate } => {
+            let relationship = model.relationship(field).ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.manifest.row_policy_relationship",
+                    format!(
+                        "model `{}` row policy references absent relationship `{field}`",
+                        model.id
+                    ),
+                )
+            })?;
+            let target = models.get(&relationship.target_model).ok_or_else(|| {
+                ClientCompileError::manifest(
+                    "client.manifest.row_policy_relationship",
+                    format!(
+                        "model `{}` row policy relationship `{field}` targets absent model `{}`",
+                        model.id, relationship.target_model
+                    ),
+                )
+            })?;
+            collect_row_policy_trusted_presets(predicate, target, models, descriptors)?;
+        }
+        ManifestFilterExpr::Cmp { .. } | ManifestFilterExpr::IsNull { .. } => {}
+    }
+    Ok(())
+}
+
+fn insert_row_policy_trusted_preset(
+    model: &ManifestModel,
+    column: &str,
+    name: &str,
+    descriptors: &mut BTreeMap<String, String>,
+) -> Result<(), ClientCompileError> {
+    let field = model.field(column).ok_or_else(|| {
+        ClientCompileError::manifest(
+            "client.manifest.row_policy_column",
+            format!(
+                "model `{}` row policy references absent field `{column}`",
+                model.id
+            ),
+        )
+    })?;
+    if matches!(field.codec.as_str(), "base64" | "json") {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.row_policy_portability",
+            format!(
+                "model `{}` row-policy claim `{name}` targets `{column}` with non-local codec `{}`",
+                model.id, field.codec
+            ),
+        ));
+    }
+    insert_trusted_preset_descriptor(
+        descriptors,
+        &ManifestTrustedPresetDescriptor {
+            name: name.into(),
+            codec: field.codec.clone(),
+        },
+        &format!("model `{}` row policy field `{column}`", model.id),
+    )
+}
+
+fn insert_trusted_preset_descriptor(
+    descriptors: &mut BTreeMap<String, String>,
+    descriptor: &ManifestTrustedPresetDescriptor,
+    owner: &str,
+) -> Result<(), ClientCompileError> {
+    validate_trusted_preset_name(&descriptor.name, "trusted preset name")?;
+    match descriptors.entry(descriptor.name.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(descriptor.codec.clone());
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &descriptor.codec => {
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            return Err(ClientCompileError::manifest(
+                "client.manifest.trusted_preset_inventory",
+                format!(
+                    "trusted preset `{}` uses incompatible codecs `{}` and `{}` across the selected client surface ({owner})",
+                    descriptor.name,
+                    entry.get(),
+                    descriptor.codec
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_trusted_preset_name(value: &str, description: &str) -> Result<(), ClientCompileError> {
+    validate_nonempty(value, description)?;
+    if value.len() > 128 || value.trim() != value || value.chars().any(char::is_control) {
+        return Err(ClientCompileError::manifest(
+            "client.manifest.trusted_preset_name",
+            format!("{description} must be 1..=128 bytes with no surrounding whitespace or control characters"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_filter_expression(
     expression: &ManifestFilterExpr,
     model: &ManifestModel,
@@ -2392,11 +2547,8 @@ fn validate_operand(operand: &ManifestOperand) -> Result<(), ClientCompileError>
     }
 
     if let ManifestOperand::Claim(claim) = operand {
-        validate_nonempty(&claim.header, "row policy claim header")?;
-        return Err(ClientCompileError::manifest(
-            "client.manifest.row_policy_portability",
-            "client-visible row policies cannot contain claim-dependent predicates",
-        ));
+        validate_trusted_preset_name(&claim.header, "row policy claim header")?;
+        return Ok(());
     }
     let portable = match operand {
         ManifestOperand::Claim(_) => unreachable!("claim returned above"),
@@ -2785,14 +2937,10 @@ fn validate_direct_projections(
 ) -> Result<BTreeSet<String>, ClientCompileError> {
     let mut requiring_revalidation = BTreeSet::new();
     for command in commands {
-        let consistency = command
-            .extensions
-            .consistency
-            .as_ref()
-            .map(|consistency| consistency.kind);
+        let consistency = command.extensions.consistency.kind;
         let direct = command.extensions.direct_projection.as_ref();
         match (consistency, direct) {
-            (Some(ManifestConsistencyKind::Projected), None) => {
+            (ManifestConsistencyKind::Projected, None) => {
                 return Err(ClientCompileError::manifest(
                     "client.manifest.direct_projection_required",
                     format!(
@@ -2801,7 +2949,7 @@ fn validate_direct_projections(
                     ),
                 ));
             }
-            (Some(ManifestConsistencyKind::Projected), Some(direct)) => {
+            (ManifestConsistencyKind::Projected, Some(direct)) => {
                 if validate_direct_projection(command, direct, models, projectors)? {
                     requiring_revalidation.insert(command.name.clone());
                 }
@@ -3286,5 +3434,29 @@ pub(crate) fn canonical_json_value(value: JsonValue) -> JsonValue {
             JsonValue::Object(sorted.into_iter().collect())
         }
         scalar => scalar,
+    }
+}
+
+#[cfg(test)]
+mod canonical_wire_tests {
+    use super::{ManifestFilterExpr, ManifestLitValue, ManifestOperand};
+
+    #[test]
+    fn filter_expr_serialization_is_canonical_across_map_backends() {
+        let mut value = serde_json::Map::new();
+        value.insert("z".into(), serde_json::json!(2));
+        value.insert("a".into(), serde_json::json!(1));
+        let expression = ManifestFilterExpr::In {
+            column: "metadata".into(),
+            values: vec![ManifestOperand::Lit(ManifestLitValue::Json(
+                serde_json::Value::Object(value),
+            ))],
+            negated: false,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&expression).unwrap(),
+            r#"{"kind":"in","value":{"column":"metadata","negated":false,"values":[{"kind":"lit","value":{"kind":"json","value":{"a":1,"z":2}}}]}}"#
+        );
     }
 }

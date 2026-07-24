@@ -2,8 +2,10 @@ import type { GqlError, GraphqlVariables } from '../types.js';
 import type {
 	DistributedCommandMetadata,
 	DistributedLiveCursor,
+	DistributedTrustedPresetCodec,
 	GraphqlResponseExtensions
 } from '../protocol.js';
+import type { ReplicaDiagnosticsSink } from './diagnostics.js';
 
 export type ReplicaRevision = number | string | bigint;
 export type ReplicaValue =
@@ -13,6 +15,42 @@ export type ReplicaValue =
 	| string
 	| readonly ReplicaValue[]
 	| { readonly [key: string]: ReplicaValue };
+
+export type ReplicaIndexRecordChange =
+	| {
+			readonly kind: 'upsert';
+			readonly model: string;
+			readonly key: string;
+			readonly fields: Readonly<Record<string, ReplicaValue>>;
+			readonly dependencies?: readonly string[];
+	  }
+	| {
+			readonly kind: 'delete';
+			readonly model: string;
+			readonly key: string;
+			readonly dependencies?: readonly string[];
+	  };
+
+export type ReplicaIndexRelationshipChange = {
+	readonly kind: 'link' | 'unlink';
+	readonly sourceModel: string;
+	readonly field: string;
+	readonly targetModel: string;
+	readonly sourceKey: string;
+	readonly targetKey: string;
+	readonly dependencies: readonly string[];
+};
+
+export type ReplicaIndexDependencyChange = {
+	readonly kind: 'invalidate';
+	readonly dependencies: readonly string[];
+};
+
+/** Compiler/runtime semantic evidence carried by one optimistic layer. */
+export type ReplicaIndexSemanticChange =
+	| ReplicaIndexRecordChange
+	| ReplicaIndexRelationshipChange
+	| ReplicaIndexDependencyChange;
 
 export type ReplicaIndexCoverage =
 	| { readonly kind: 'complete' }
@@ -319,8 +357,8 @@ export type ReplicaOrderTieBreakerArtifact = {
 	readonly field: string;
 	readonly scalar: string;
 	readonly codec: string;
-	/** Generated identity fields are always non-null; omission is accepted for hand-written fixtures. */
-	readonly nullable?: false;
+	/** Generated identity fields are always non-null. */
+	readonly nullable: false;
 };
 
 export type ReplicaOrderArtifact = {
@@ -375,10 +413,10 @@ export type ReplicaScalarSelection = {
 	readonly responseKey: string;
 	/** Canonical schema/read-model field name. */
 	readonly field: string;
-	/** Exact scalar codec and nullability emitted by compiler manifest v6. */
-	readonly codec?: string;
-	readonly nullable?: boolean;
-	/** Wire-only identity/revision fields set this false. Defaults to true. */
+	/** Exact scalar codec and nullability emitted by the client compiler. */
+	readonly codec: string;
+	readonly nullable: boolean;
+	/** Wire-only identity fields set this false. */
 	readonly expose?: boolean;
 };
 
@@ -396,7 +434,7 @@ export type ReplicaBranchSemantic =
 	| 'aggregate_fields'
 	| 'aggregate_nodes';
 
-/** Recursive compiler-owned object algebra used by manifest v6 artifacts. */
+/** Recursive compiler-owned object algebra used by manifest v7 artifacts. */
 export type ReplicaObjectSelection = {
 	readonly typename: string;
 	readonly storage: ReplicaSelectionStorage;
@@ -430,45 +468,18 @@ export type ReplicaObjectBranch =
 
 export type ReplicaObjectMember = ReplicaScalarSelection | ReplicaObjectBranch;
 
-export type ReplicaEntitySelection = {
-	readonly model: ReplicaModelArtifact;
-	readonly fields: readonly ReplicaScalarSelection[];
-	readonly relationships?: readonly ReplicaRelationshipSelection[];
-	/** Optional injected row revision field; otherwise the envelope revision wins. */
-	readonly revisionResponseKey?: string;
-	/** Optional injected incarnation field; otherwise the cache derives it. */
-	readonly incarnationResponseKey?: string;
-};
-
-export type ReplicaRelationshipSelection = {
-	readonly kind: 'relationship';
-	readonly responseKey: string;
-	readonly field: string;
-	readonly cardinality: 'one' | 'many';
-	readonly arguments?: ReplicaArgumentsArtifact;
-	readonly dependencies: readonly string[];
-	readonly coverage?: ReplicaCoverageArtifact;
-	readonly filter?: ReplicaFilterArtifact;
-	readonly order?: ReplicaOrderArtifact;
-	readonly pagination?: ReplicaPaginationArtifact;
-	readonly relationship: ReplicaRelationshipArtifact;
-	readonly selection: ReplicaEntitySelection;
-	readonly expose?: boolean;
-};
-
 export type ReplicaRootSelection = {
 	readonly responseKey: string;
 	readonly field: string;
 	readonly cardinality: 'one' | 'many';
-	readonly nullable?: boolean;
+	readonly nullable: boolean;
 	readonly arguments?: ReplicaArgumentsArtifact;
 	readonly dependencies: readonly string[];
 	readonly coverage?: ReplicaCoverageArtifact;
 	readonly filter?: ReplicaFilterArtifact;
 	readonly order?: ReplicaOrderArtifact;
 	readonly pagination?: ReplicaPaginationArtifact;
-	readonly selection: ReplicaEntitySelection | ReplicaObjectSelection;
-	readonly expose?: boolean;
+	readonly selection: ReplicaObjectSelection;
 };
 
 /**
@@ -483,6 +494,8 @@ type ReplicaOperationArtifactBase<
 > = {
 	readonly id: string;
 	readonly document: string;
+	/** Normalized compiler-owned provenance for diagnostics and support tooling. */
+	readonly source?: ReplicaOperationSourceLocation;
 	readonly roots: readonly ReplicaRootSelection[];
 	readonly live?: {
 		readonly id: string;
@@ -493,11 +506,43 @@ type ReplicaOperationArtifactBase<
 	readonly __variables?: TVariables;
 };
 
+export type ReplicaOperationSourceLocation = {
+	readonly path: string;
+	readonly line: number;
+	readonly column: number;
+};
+
 export type ReplicaOperationProtocol = {
 	readonly version: 2;
+	/** Opaque service schema fingerprint, compared byte-for-byte. */
 	readonly schemaHash: string;
+	readonly surface: ReplicaClientSurface;
+	/** Opaque operation identity, required to match the artifact id exactly. */
 	readonly operation: string;
+	/**
+	 * Exact descriptor union for the selected client surface. Generated
+	 * artifacts repeat this small static contract so every query can validate
+	 * scope-bound preset values without depending on command registration.
+	 */
+	readonly trustedPresets: readonly ReplicaSurfaceTrustedPresetDescriptor[];
 };
+
+export type ReplicaSurfaceTrustedPresetDescriptor = {
+	readonly name: string;
+	readonly codec: DistributedTrustedPresetCodec;
+};
+
+/** Exact static client surface selected at code-generation time. */
+export type ReplicaClientSurface =
+	| {
+			readonly kind: 'role';
+			readonly name: string;
+	  }
+	| {
+			readonly kind: 'application';
+			readonly name: string;
+			readonly roles: readonly string[];
+	  };
 
 /** Compiler-owned causal artifact. Protocol and variable identity are inseparable. */
 export type ReplicaProtocolOperationArtifact<
@@ -509,30 +554,16 @@ export type ReplicaProtocolOperationArtifact<
 	readonly variableCodec: ReplicaVariableCodecArtifact;
 };
 
-/** Explicit noncausal compatibility shape for hand-written manifest-v1 fixtures. */
-export type ReplicaLegacyOperationArtifact<
-	TData = Record<string, unknown>,
-	TVariables extends GraphqlVariables = GraphqlVariables
-> = ReplicaOperationArtifactBase<TData, TVariables> & {
-	readonly protocol?: undefined;
-	/** Legacy artifacts may opt into compiler-equivalent canonicalization. */
-	readonly variableCodec?: ReplicaVariableCodecArtifact;
-};
-
 export type ReplicaOperationArtifact<
 	TData = Record<string, unknown>,
 	TVariables extends GraphqlVariables = GraphqlVariables
-> =
-	| ReplicaProtocolOperationArtifact<TData, TVariables>
-	| ReplicaLegacyOperationArtifact<TData, TVariables>;
+> = ReplicaProtocolOperationArtifact<TData, TVariables>;
 
 export type ReplicaWriteSource = 'network' | 'live' | 'ssr' | 'restore' | 'projected';
 
 export type ReplicaResultEnvelope<TData = unknown> = {
 	readonly data?: TData | null;
 	readonly errors?: readonly GqlError[];
-	/** Legacy/noncausal checkpoint. V2 responses use scoped snapshot evidence. */
-	readonly revision?: ReplicaRevision;
 	/** Strictly parsed Distributed v2 response metadata. */
 	readonly extensions?: GraphqlResponseExtensions;
 };
@@ -546,6 +577,13 @@ export type ReplicaTransportRequest<
 	readonly document: string;
 	readonly variables: TVariables;
 	readonly artifact: ReplicaOperationArtifact<TData, TVariables>;
+	/** Generated surface/schema selector forwarded as GraphQL request extensions. */
+	readonly extensions?: Readonly<Record<string, unknown>>;
+	/**
+	 * Authorization-generation cancellation. Transports must forward this to
+	 * their underlying HTTP request when they support cancellation.
+	 */
+	readonly signal?: AbortSignal;
 	/** Latest server-issued cursors for the private generated resume extension. */
 	readonly resume?: readonly DistributedLiveCursor[];
 };
@@ -633,6 +671,27 @@ export type WatchReplicaOptions = {
 export type DistributedReplicaOptions = {
 	readonly transport?: ReplicaTransport;
 	readonly onObserverError?: (error: AggregateError) => void;
+	/** Opt-in framework-neutral diagnostics; absent in production by default. */
+	readonly diagnostics?: ReplicaDiagnosticsSink;
+};
+
+/** Server-issued authorization/cache namespace. Client-decoded claims never create one. */
+export type ReplicaAuthoritativeScope = {
+	readonly protocolVersion: 2;
+	readonly schemaHash: string;
+	readonly cacheScope: string;
+};
+
+/**
+ * Opaque, engine-independent SSR transfer owned by Distributed.
+ *
+ * `payload` is intentionally not a public cache-engine schema. Applications
+ * pass the value back to `hydrate` without interpreting it.
+ */
+export type ReplicaDehydratedState = {
+	readonly version: 1;
+	readonly scope: ReplicaAuthoritativeScope;
+	readonly payload: unknown;
 };
 
 export type ReplicaRecordInspection = {
@@ -707,6 +766,10 @@ export interface ReplicaBaseWriter {
 }
 
 export interface DistributedReplica {
+	/** The current server-issued scope, absent until authoritative evidence arrives. */
+	readonly scope: ReplicaAuthoritativeScope | undefined;
+	/** Monotonic local fence for authorization changes and server scope changes. */
+	readonly authorizationGeneration: number;
 	read<TData, TVariables extends GraphqlVariables>(
 		artifact: ReplicaOperationArtifact<TData, TVariables>,
 		variables: TVariables
@@ -722,9 +785,29 @@ export interface DistributedReplica {
 		envelope: ReplicaResultEnvelope<TData>,
 		source: ReplicaWriteSource
 	): void;
+	/**
+	 * Proactively closes the current authorization generation.
+	 *
+	 * Token/session changes may call this before the next server response, but
+	 * they cannot choose or restore a cache scope.
+	 */
+	invalidateAuthorization(): void;
+	/** Serialize confirmed state reachable from operations rendered by this replica. */
+	dehydrate(): ReplicaDehydratedState;
+	/**
+	 * Restore a server-rendered payload against the independently authoritative
+	 * scope for the current SSR response. Returns false on scope/schema mismatch
+	 * and never partially restores malformed state. Persisted state must wait for
+	 * a fresh server scope and pass that scope here.
+	 */
+	hydrate(
+		state: ReplicaDehydratedState,
+		authoritativeScope: ReplicaAuthoritativeScope
+	): boolean;
 	createOptimisticLayer(
 		id: string,
-		update: (writer: ReplicaOptimisticWriter) => void
+		update: (writer: ReplicaOptimisticWriter) => void,
+		semanticChanges?: readonly ReplicaIndexSemanticChange[]
 	): void;
 	markOptimisticLayerAccepted(
 		id: string,

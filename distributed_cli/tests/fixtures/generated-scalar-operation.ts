@@ -20,6 +20,11 @@ export const Operation_RustRuntimeBridgeDocument = "query RustRuntimeBridge($id:
 export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_RustRuntimeBridge_Data, Operation_RustRuntimeBridge_Variables> = {
   "id": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878",
   "document": "query RustRuntimeBridge($id: ID!, $tenantId: ID!) {\n  todo(id: $id, tenantId: $tenantId) {\n    id\n    title\n    _distributed_tenantId: tenantId\n    _distributed_typename: __typename\n  }\n}\n",
+  "source": {
+    "path": "src/routes/runtime-bridge/+page.graphql",
+    "line": 2,
+    "column": 3
+  },
   "variableCodec": {
     "version": 2,
     "limits": {
@@ -117,6 +122,7 @@ export const Operation_RustRuntimeBridge: ReplicaOperationArtifact<Operation_Rus
       "kind": "role",
       "name": "user"
     },
-    "operation": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878"
+    "operation": "sha256:8cd0dd25a9328638e46aa285dc34bbc36be7738616a81bfa26e973ad41ab2878",
+    "trustedPresets": []
   }
 };

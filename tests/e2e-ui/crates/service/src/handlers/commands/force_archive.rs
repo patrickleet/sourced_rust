@@ -4,13 +4,12 @@
 //! trails can tell admin intervention from self-service archive. Projector
 //! still upserts the same read-model shape.
 
-use distributed::microsvc::{Context, HandlerError};
+use distributed::graphql::{Fact, PreparedCommand};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use todo_domain::Todo;
 
-use crate::deps::TodoDeps;
-use crate::handlers::commands::todo_cmd::{commit_todo_event, load_todo, map_domain};
-use crate::handlers::util::{require_user, session_has_user, session_is_admin};
+use crate::handlers::commands::todo_cmd::{load_todo, map_domain, stage_todo_event};
 
 pub const COMMAND: &str = "todo.force_archive";
 
@@ -31,38 +30,23 @@ pub struct TodoForceArchivePayload {
     pub archived_by: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    ctx.has_fields(&["todo_id"])
-        && session_has_user(ctx.session())
-        && session_is_admin(ctx.session())
-}
-
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, TodoDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    let admin = require_user(ctx.session())?;
-    let input = ctx.input::<TodoForceArchiveInput>()?;
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, Todo>,
+    input: TodoForceArchiveInput,
+) -> Result<PreparedCommand<Fact<TodoForceArchivePayload>>, HandlerError> {
+    let admin = ctx.user_id()?.to_string();
     let mut todo = load_todo(ctx, &input.todo_id).await?;
 
     // Domain archive is owner-scoped; use the aggregate's real owner (not admin id).
     let owner = todo.owner_id.clone();
     todo.archive(&owner).map_err(map_domain)?;
-    let fact = commit_todo_event(ctx, &mut todo, FORCE_ARCHIVED_EVENT).await?;
+    let fact = stage_todo_event(ctx, todo, FORCE_ARCHIVED_EVENT)?;
 
-    Ok(json!({
-        "todo_id": fact.todo_id,
-        "owner_id": fact.owner_id,
-        "status": fact.status,
-        "archived_by": admin,
-    }))
+    PreparedCommand::<Fact<TodoForceArchivePayload>>::prepare(TodoForceArchivePayload {
+        todo_id: fact.todo_id,
+        owner_id: fact.owner_id,
+        status: fact.status,
+        archived_by: admin,
+    })
+    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

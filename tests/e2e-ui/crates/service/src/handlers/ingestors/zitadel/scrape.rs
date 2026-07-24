@@ -11,9 +11,7 @@ use e2e_readmodels::{ZitadelEmail, ZitadelUserPayload};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::map::{
-    MappedDelivery, HUMAN_DEACTIVATED, HUMAN_UPDATED, MACHINE_CREATED,
-};
+use super::map::{MappedDelivery, HUMAN_DEACTIVATED, HUMAN_UPDATED, MACHINE_CREATED};
 use super::publish::publish_mapped_delivery;
 
 /// Env: Management API base (no trailing slash). Falls back to `OIDC_ISSUER`.
@@ -306,11 +304,7 @@ fn map_mgmt_user(user: &MgmtUser) -> Option<MappedDelivery> {
     let change = user
         .change_date
         .clone()
-        .or_else(|| {
-            user.details
-                .as_ref()
-                .and_then(|d| d.change_date.clone())
-        })
+        .or_else(|| user.details.as_ref().and_then(|d| d.change_date.clone()))
         .unwrap_or_else(|| "0".into());
     // Stable when profile unchanged so re-scrape can skip duplicate outbox ids.
     let fingerprint = simple_fingerprint(&[&email, &display_name, state, &user_kind, &change]);

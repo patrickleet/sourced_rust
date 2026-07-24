@@ -797,7 +797,6 @@ where
     })
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres", test))]
 fn live_resume_cursor_budget_allows(projector_count: usize) -> bool {
     projector_count <= MAX_LIVE_RESUME_CURSORS
 }

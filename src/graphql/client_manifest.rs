@@ -16,7 +16,7 @@ use super::command_contract::{
     CommandConsistency, CommandEffect, CommandEffectFallback, EffectExpression, EffectKey,
 };
 use super::complexity_contract::{default_weights, DEFAULT_MAX_COMPLEXITY, DEFAULT_MAX_DEPTH};
-use super::filter::FilterExpr;
+use super::filter::{FilterExpr, Operand};
 use super::naming::{aggregate_fields_type_name, aggregate_type_name};
 use super::surface::{
     model_has_client_normalized_identity, RootKind, Surface, SurfaceArgument, SurfaceArgumentKind,
@@ -31,7 +31,7 @@ pub const DISTRIBUTED_CLIENT_PROTOCOL_VERSION: u32 = 2;
 // Protocol v2 remains the wire family. The independent fingerprint below
 // changes when its generated command/scope contract changes, including the v7
 // trusted-preset descriptor slot.
-const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 4;
+const DISTRIBUTED_CLIENT_PROTOCOL_MANIFEST_EPOCH: u32 = 6;
 const COMMAND_EXTENSION_SLOTS_VERSION: u32 = 3;
 const COMMAND_CONFIRMATIONS_VERSION: u32 = 1;
 const PROJECTOR_ENTRY_VERSION: u32 = 1;
@@ -247,10 +247,7 @@ fn validate_service_provenance(
     service_id: &str,
     surface: &Surface,
 ) -> Result<(), ClientManifestError> {
-    let has_typed_commands = surface
-        .commands
-        .iter()
-        .any(|command| command.consistency.is_some());
+    let has_typed_commands = !surface.commands.is_empty();
     match (&surface.service_binding, has_typed_commands) {
         (Some(binding), _) if binding.service_id != service_id => Err(ClientManifestError(
             format!(
@@ -392,7 +389,7 @@ pub struct ClientCapabilities {
     /// Safe behavior whenever exact query evidence or resume is unavailable.
     pub query_fallback: String,
     pub cache_scope: bool,
-    /// Durable restore of confirmed normalized state (task 11).
+    /// Durable restore of confirmed normalized state.
     pub confirmed_persistence: bool,
 }
 
@@ -654,7 +651,6 @@ pub struct ClientCommand {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientCommandShape {
     None,
-    Json { codec: String },
     Object { definition: ClientTypeDef },
 }
 
@@ -677,13 +673,11 @@ pub struct ClientTypeField {
     pub nested: Option<Box<ClientTypeDef>>,
 }
 
-/// Versioned slots intentionally left empty by task 3. Task 4 owns their typed
-/// declaration and population; absence means no guessed client semantics.
+/// Versioned typed command semantics exported from the executable service.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCommandExtensionSlots {
     pub version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub consistency: Option<CommandConsistencyExtension>,
+    pub consistency: CommandConsistencyExtension,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_projection: Option<CommandDirectProjectionExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -868,7 +862,7 @@ fn command_direct_projection_extension(
     command: &SurfaceCommand,
     surface: &Surface,
 ) -> Result<Option<CommandDirectProjectionExtension>, ClientManifestError> {
-    let projected = matches!(command.consistency, Some(CommandConsistency::Projected));
+    let projected = command.consistency == CommandConsistency::Projected;
     let Some(target) = command.direct_projection.as_ref() else {
         return if projected {
             Err(ClientManifestError(format!(
@@ -1023,7 +1017,7 @@ fn command_direct_projection_extension(
     let partition = target
         .partition
         .as_ref()
-        .map(serde_json::to_value)
+        .map(|partition| serde_json::to_value(partition).map(canonical_json_value))
         .transpose()?;
     let digest = topology
         .digest()
@@ -1345,35 +1339,28 @@ fn client_manifest_from_surface_with_execution(
     roots.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut commands = Vec::new();
-    for command in surface
-        .commands
-        .iter()
-        .filter(|command| command.consistency.is_some())
-    {
-        // Legacy GraphqlCommands may still be useful for server-only schema
-        // migration, but they are not bound to the executable typed causal
-        // inventory and therefore never enter a generated client contract.
+    for command in &surface.commands {
         let input = command_shape(&command.input)?;
         let output = command_shape(&command.output)?;
         let grants = sorted_unique(command.roles.clone());
         let operation = command_operation(&command.field_name, &input, &output);
         let operation_hash = hash_bytes(operation.as_bytes());
-        let consistency = command.consistency.map(|kind| CommandConsistencyExtension {
+        let consistency = CommandConsistencyExtension {
             version: 1,
-            kind: match kind {
+            kind: match command.consistency {
                 CommandConsistency::Accepted => "accepted",
                 CommandConsistency::Fact => "fact",
                 CommandConsistency::Projected => "projected",
             }
             .into(),
-        });
+        };
         let direct_projection = command_direct_projection_extension(command, surface)?;
         let input_defaults = (!command.input_defaults.is_empty())
             .then(|| {
                 command
                     .input_defaults
                     .iter()
-                    .map(serde_json::to_value)
+                    .map(|default| serde_json::to_value(default).map(canonical_json_value))
                     .collect::<Result<Vec<_>, _>>()
                     .map(|defaults| CommandInputDefaultsExtension {
                         version: 1,
@@ -1388,7 +1375,7 @@ fn client_manifest_from_surface_with_execution(
                 let operations = effects
                     .operations
                     .iter()
-                    .map(serde_json::to_value)
+                    .map(|operation| serde_json::to_value(operation).map(canonical_json_value))
                     .collect::<Result<Vec<_>, _>>()?;
                 let fallback = match effects.fallback {
                     CommandEffectFallback::Revalidate => "revalidate",
@@ -1408,22 +1395,23 @@ fn client_manifest_from_surface_with_execution(
                 fallback: "revalidate".into(),
             })
         } else {
-            (!command.confirmations.is_empty()
-                || matches!(command.consistency, Some(CommandConsistency::Fact)))
-            .then(|| {
-                command
-                    .confirmations
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|expected| CommandConfirmationsExtension {
-                        version: COMMAND_CONFIRMATIONS_VERSION,
-                        kind: "finite".into(),
-                        expected,
-                        fallback: "revalidate".into(),
-                    })
-            })
-            .transpose()?
+            (!command.confirmations.is_empty() || command.consistency == CommandConsistency::Fact)
+                .then(|| {
+                    command
+                        .confirmations
+                        .iter()
+                        .map(|confirmation| {
+                            serde_json::to_value(confirmation).map(canonical_json_value)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|expected| CommandConfirmationsExtension {
+                            version: COMMAND_CONFIRMATIONS_VERSION,
+                            kind: "finite".into(),
+                            expected,
+                            fallback: "revalidate".into(),
+                        })
+                })
+                .transpose()?
         };
         let trusted_presets = command_trusted_preset_descriptors(command, surface)?;
         commands.push(ClientCommand {
@@ -1516,7 +1504,7 @@ fn client_manifest_from_surface_with_execution(
         protocol_operations: &'a ClientProtocolOperations,
         projectors: &'a [ClientProjector],
     }
-    let schema_fingerprint = hash_json(&SchemaMaterial {
+    let schema_material = SchemaMaterial {
         manifest_version: DISTRIBUTED_CLIENT_MANIFEST_VERSION,
         protocol_version: DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
         service_id,
@@ -1529,9 +1517,10 @@ fn client_manifest_from_surface_with_execution(
         commands: &commands,
         protocol_operations: &protocol_operations,
         projectors: &projectors,
-    })?;
+    };
+    let schema_fingerprint = hash_json(&schema_material)?;
 
-    Ok(DistributedClientManifest {
+    let manifest = DistributedClientManifest {
         manifest_version: DISTRIBUTED_CLIENT_MANIFEST_VERSION,
         protocol_version: DISTRIBUTED_CLIENT_PROTOCOL_VERSION,
         service_id: service_id.into(),
@@ -1546,7 +1535,163 @@ fn client_manifest_from_surface_with_execution(
         commands,
         protocol_operations,
         projectors,
-    })
+    };
+    // Validate the one exact scope-wide descriptor union while the complete
+    // role-selected manifest is still available. The serialized manifest need
+    // not duplicate this deterministic derivation.
+    trusted_preset_descriptors(&manifest)?;
+    Ok(manifest)
+}
+
+pub(crate) fn trusted_preset_descriptors(
+    manifest: &DistributedClientManifest,
+) -> Result<Vec<ClientTrustedPresetDescriptor>, ClientManifestError> {
+    let models: BTreeMap<&str, &ClientModel> = manifest
+        .models
+        .iter()
+        .map(|model| (model.id.as_str(), model))
+        .collect();
+    let mut descriptors = BTreeMap::<String, String>::new();
+
+    for command in &manifest.commands {
+        for descriptor in &command.extensions.trusted_presets {
+            insert_trusted_preset_descriptor(
+                &mut descriptors,
+                descriptor,
+                &format!("command `{}`", command.name),
+            )?;
+        }
+    }
+    for model in &manifest.models {
+        if let ClientRowPolicy::Predicate { expression } = &model.row_policy {
+            collect_row_policy_trusted_presets(expression, model, &models, &mut descriptors)?;
+        }
+    }
+
+    Ok(descriptors
+        .into_iter()
+        .map(|(name, codec)| ClientTrustedPresetDescriptor { name, codec })
+        .collect())
+}
+
+fn collect_row_policy_trusted_presets(
+    expression: &FilterExpr,
+    model: &ClientModel,
+    models: &BTreeMap<&str, &ClientModel>,
+    descriptors: &mut BTreeMap<String, String>,
+) -> Result<(), ClientManifestError> {
+    match expression {
+        FilterExpr::And(expressions) | FilterExpr::Or(expressions) => {
+            for expression in expressions {
+                collect_row_policy_trusted_presets(expression, model, models, descriptors)?;
+            }
+        }
+        FilterExpr::Not(expression) => {
+            collect_row_policy_trusted_presets(expression, model, models, descriptors)?;
+        }
+        FilterExpr::Cmp {
+            column,
+            rhs: Operand::Claim(claim),
+            ..
+        } => {
+            insert_row_policy_trusted_preset(model, column, &claim.header, descriptors)?;
+        }
+        FilterExpr::In { column, values, .. } => {
+            for value in values {
+                if let Operand::Claim(claim) = value {
+                    insert_row_policy_trusted_preset(model, column, &claim.header, descriptors)?;
+                }
+            }
+        }
+        FilterExpr::Rel { field, predicate } => {
+            let relationship = model
+                .relationships
+                .iter()
+                .find(|relationship| relationship.name == *field)
+                .ok_or_else(|| {
+                    ClientManifestError(format!(
+                        "model `{}` client-visible row policy references absent relationship `{field}`",
+                        model.id
+                    ))
+                })?;
+            let target = models
+                .get(relationship.target_model.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    ClientManifestError(format!(
+                        "model `{}` client-visible row policy relationship `{field}` targets absent model `{}`",
+                        model.id, relationship.target_model
+                    ))
+                })?;
+            collect_row_policy_trusted_presets(predicate, target, models, descriptors)?;
+        }
+        FilterExpr::Cmp { .. } | FilterExpr::IsNull { .. } => {}
+    }
+    Ok(())
+}
+
+fn insert_row_policy_trusted_preset(
+    model: &ClientModel,
+    column: &str,
+    name: &str,
+    descriptors: &mut BTreeMap<String, String>,
+) -> Result<(), ClientManifestError> {
+    let field = model
+        .fields
+        .iter()
+        .find(|field| field.name == column)
+        .ok_or_else(|| {
+            ClientManifestError(format!(
+                "model `{}` client-visible row policy references absent field `{column}`",
+                model.id
+            ))
+        })?;
+    if matches!(field.codec.as_str(), "base64" | "json") {
+        return Err(ClientManifestError(format!(
+            "model `{}` row-policy claim `{name}` targets `{column}` with non-local codec `{}`",
+            model.id, field.codec
+        )));
+    }
+    insert_trusted_preset_descriptor(
+        descriptors,
+        &ClientTrustedPresetDescriptor {
+            name: name.into(),
+            codec: field.codec.clone(),
+        },
+        &format!("model `{}` row policy field `{column}`", model.id),
+    )
+}
+
+fn insert_trusted_preset_descriptor(
+    descriptors: &mut BTreeMap<String, String>,
+    descriptor: &ClientTrustedPresetDescriptor,
+    owner: &str,
+) -> Result<(), ClientManifestError> {
+    if descriptor.name.is_empty()
+        || descriptor.name.len() > 128
+        || descriptor.name.trim() != descriptor.name
+        || descriptor.name.chars().any(char::is_control)
+    {
+        return Err(ClientManifestError(format!(
+            "{owner} has an invalid trusted preset name"
+        )));
+    }
+    match descriptors.entry(descriptor.name.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(descriptor.codec.clone());
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &descriptor.codec => {
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            return Err(ClientManifestError(format!(
+                "trusted preset `{}` uses incompatible codecs `{}` and `{}` across the selected client surface ({owner})",
+                descriptor.name,
+                entry.get(),
+                descriptor.codec
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn command_trusted_preset_descriptors(
@@ -2002,9 +2147,6 @@ fn argument_manifest(argument: &SurfaceArgument) -> ClientArgument {
 fn command_shape(shape: &SurfaceCommandShape) -> Result<ClientCommandShape, ClientManifestError> {
     match shape {
         SurfaceCommandShape::None => Ok(ClientCommandShape::None),
-        SurfaceCommandShape::Json => Ok(ClientCommandShape::Json {
-            codec: scalar_codec("JSON").expect("JSON codec").into(),
-        }),
         SurfaceCommandShape::Typed(definition) => Ok(ClientCommandShape::Object {
             definition: client_type(definition)?,
         }),
@@ -2061,10 +2203,6 @@ fn command_operation(
             "($commandId: ID!)".to_string(),
             "(commandId: $commandId)".to_string(),
         ),
-        ClientCommandShape::Json { .. } => (
-            "($commandId: ID!, $input: JSON!)".to_string(),
-            "(commandId: $commandId, input: $input)".to_string(),
-        ),
         ClientCommandShape::Object { definition } => (
             format!("($commandId: ID!, $input: {}!)", definition.name),
             "(commandId: $commandId, input: $input)".to_string(),
@@ -2074,7 +2212,7 @@ fn command_operation(
         ClientCommandShape::Object { definition } => {
             format!(" {{ {} }}", command_selection(definition))
         }
-        ClientCommandShape::None | ClientCommandShape::Json { .. } => String::new(),
+        ClientCommandShape::None => String::new(),
     };
     format!("mutation {operation_name}{variables} {{ {mutation_field}{arguments}{selection} }}")
 }
@@ -2163,6 +2301,27 @@ fn hash_json(value: &impl Serialize) -> Result<String, ClientManifestError> {
     Ok(hash_bytes(&bytes))
 }
 
+/// Canonicalize opaque manifest JSON before it enters a fingerprinted slot.
+///
+/// `serde_json::Value` object order otherwise depends on whether another crate
+/// enabled serde_json's `preserve_order` feature in the final Cargo graph.
+/// Client-manifest bytes must be identical in the server harness and dctl.
+fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonical_json_value).collect())
+        }
+        serde_json::Value::Object(values) => {
+            let sorted = values
+                .into_iter()
+                .map(|(key, value)| (key, canonical_json_value(value)))
+                .collect::<BTreeMap<_, _>>();
+            serde_json::Value::Object(sorted.into_iter().collect())
+        }
+        scalar => scalar,
+    }
+}
+
 fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("sha256:{digest:x}")
@@ -2178,10 +2337,10 @@ fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::graphql::{
-        build_surface, claim, col, exposed_command, rel, surface_for_application, surface_for_role,
-        typed_command, Accepted, GraphqlCommands, GraphqlInputType, GraphqlOutputType,
-        GraphqlTypeDef, GraphqlTypeField, PreparedCommand, RoleGrant, SurfaceCommand,
-        SurfaceOptions, SurfaceProjector, SurfaceTypeField,
+        build_surface, claim, col, rel, surface_for_application, surface_for_role, typed_command,
+        Accepted, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+        PreparedCommand, RoleGrant, SurfaceCommand, SurfaceOptions, SurfaceProjector,
+        SurfaceTypeField,
     };
     use crate::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
     use crate::table::{
@@ -2496,7 +2655,7 @@ mod tests {
                 name: todo_model.object_name,
                 fields: output_fields,
             }),
-            consistency: Some(CommandConsistency::Projected),
+            consistency: CommandConsistency::Projected,
             input_defaults: Vec::new(),
             effects: Some(CommandEffects::revalidate()),
             confirmations: Vec::new(),
@@ -2682,42 +2841,6 @@ mod tests {
         assert!(error.0.contains("differs from retained model"));
     }
 
-    #[test]
-    fn client_manifest_exports_only_bound_typed_causal_commands() {
-        let mut commands = GraphqlCommands::from_typed_contracts(&[typed_command::<
-            CompleteInput,
-            Accepted<CompletePayload>,
-        >("todo.complete")
-        .into_contract()])
-        .expect("typed command");
-        commands = commands.command(
-            "legacy.internal",
-            exposed_command()
-                .input::<CompleteInput>()
-                .output::<CompletePayload>(),
-        );
-        let catalog = build_surface(&[], &SurfaceOptions::sqlite())
-            .unwrap()
-            .with_commands(&commands)
-            .unwrap();
-        let selected = surface_for_role(&catalog, "anonymous", &BTreeMap::new()).unwrap();
-        let manifest = client_manifest_from_surface(
-            "todos",
-            ClientSurfaceIdentity::role("anonymous"),
-            &selected,
-        )
-        .unwrap();
-
-        assert_eq!(
-            manifest
-                .commands
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["todo.complete"]
-        );
-    }
-
     fn grants() -> BTreeMap<String, BTreeMap<String, RoleGrant>> {
         BTreeMap::from([
             (
@@ -2781,11 +2904,11 @@ mod tests {
         assert_eq!(first.schema_fingerprint, second.schema_fingerprint);
         assert_eq!(
             first.schema_fingerprint,
-            "sha256:40cf8dfec7f35db48f281e326adb84acd47f030f45375037a453a74a506ef94e"
+            "sha256:d73aafab6e4f2ec095387a8a0617488efd69d4fa157a6a87615e3d7e18b57966"
         );
         assert_eq!(
             first.protocol_fingerprint,
-            "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3"
+            "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf"
         );
 
         let user = first
@@ -2808,7 +2931,19 @@ mod tests {
             .find(|model| model.id == "TodoView")
             .unwrap();
         assert!(todo.record_revisions && todo.tombstones);
-        assert_eq!(todo.row_policy, ClientRowPolicy::ServerOnly);
+        assert_eq!(
+            todo.row_policy,
+            ClientRowPolicy::Predicate {
+                expression: col("owner_id").eq(claim("x-user-id")),
+            }
+        );
+        assert_eq!(
+            trusted_preset_descriptors(&first).unwrap(),
+            vec![ClientTrustedPresetDescriptor {
+                name: "x-user-id".into(),
+                codec: "string".into(),
+            }]
+        );
         let owner = todo
             .relationships
             .iter()
@@ -2869,11 +3004,7 @@ mod tests {
             .any(|command| command.name == "todo.force_archive"));
         assert_eq!(first.commands[0].grants, vec!["user"]);
         assert!(first.commands.iter().all(|command| {
-            command
-                .extensions
-                .consistency
-                .as_ref()
-                .is_some_and(|consistency| consistency.kind == "accepted")
+            command.extensions.consistency.kind == "accepted"
                 && command.extensions.effects.as_ref().is_some_and(|effects| {
                     effects.operations.is_empty() && effects.fallback == "revalidate"
                 })
@@ -2884,7 +3015,10 @@ mod tests {
         assert!(!json.contains("secret"));
         assert!(!json.contains("user_id"));
         assert!(!json.contains("force_archive"));
-        assert!(!json.contains("x-user-id"));
+        assert!(
+            json.contains("x-user-id"),
+            "portable row policies expose only the static claim name, never its value"
+        );
     }
 
     #[test]

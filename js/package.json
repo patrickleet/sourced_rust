@@ -1,7 +1,7 @@
 {
   "name": "@hops-ops/distributed",
   "version": "0.1.0",
-  "description": "Typed GraphQL client, cache, command runtime, and SvelteKit adapter for Distributed services",
+  "description": "Typed GraphQL client, causal replica, command runtime, and framework adapters for Distributed services",
   "type": "module",
   "license": "UNLICENSED",
   "sideEffects": false,
@@ -14,51 +14,67 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./cache": {
-      "types": "./dist/cache/index.d.ts",
-      "import": "./dist/cache/index.js"
-    },
-    "./commands": {
-      "types": "./dist/commands.d.ts",
-      "import": "./dist/commands.js"
-    },
     "./replica": {
       "types": "./dist/replica/index.d.ts",
       "import": "./dist/replica/index.js"
     },
-    "./codegen": {
-      "types": "./dist/codegen.d.ts",
-      "import": "./dist/codegen.js"
+    "./diagnostics": {
+      "types": "./dist/diagnostics.d.ts",
+      "import": "./dist/diagnostics.js"
     },
     "./sveltekit": {
       "types": "./dist/sveltekit/index.d.ts",
       "import": "./dist/sveltekit/index.js"
     },
+    "./sveltekit/vite": {
+      "types": "./dist/sveltekit/vite.d.ts",
+      "import": "./dist/sveltekit/vite.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
     "./package.json": "./package.json"
-  },
-  "bin": {
-    "distributed-gen-commands": "dist/bin/distributed-gen-commands.js"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json",
-    "postbuild": "node -e \"require('node:fs').chmodSync('dist/bin/distributed-gen-commands.js', 0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit && npm run check:generated",
     "check:generated": "tsc -p tsconfig.generated-tests.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "measure:cache-engines": "node scripts/measure-cache-engines.mjs",
     "pack:smoke": "node scripts/pack-smoke.mjs",
-    "quality": "npm run check && npm test && npm run pack:smoke",
+    "publint": "publint",
+    "release:dry-run": "npm publish --dry-run",
+    "quality": "npm run check && npm test && npm run pack:smoke && npm run publint",
     "prepack": "npm run build"
   },
   "dependencies": {
     "@graphql-typed-document-node/core": "^3.2.0",
     "graphql": "^16.14.0"
   },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
+    "svelte": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@apollo/client": "^4.2.7",
     "@types/node": "^20.0.0",
+    "@types/react": "19.2.17",
     "esbuild": "^0.25.12",
+    "publint": "^0.3.22",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-test-renderer": "19.2.8",
+    "svelte": "5.56.7",
     "typescript": "5.8.3"
   },
   "engines": {

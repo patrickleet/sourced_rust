@@ -8,7 +8,7 @@ type SessionLike = {
 		email?: string | null;
 	} | null;
 	accessToken?: string | null;
-} | null;
+} | null | undefined;
 
 /** Display label for UI chrome (username → name → email → fallback). */
 export function sessionDisplayName(session: SessionLike, fallback = 'you'): string {

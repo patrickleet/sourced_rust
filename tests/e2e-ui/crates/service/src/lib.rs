@@ -11,13 +11,14 @@ pub mod handlers;
 mod oidc_layer;
 mod service;
 
-pub use oidc_layer::serve_with_oidc;
-pub use service::{
-    build_graphql_engine, build_service, dev_identity, graphql_commands, identity_from_env,
-    oidc_bearer_config,
-};
 pub use e2e_readmodels::distributed_manifest;
 /// Zitadel Management API scrape (reconcile missed Action events).
 pub use handlers::ingestors::zitadel::{
-    scrape_users_to_outbox, spawn_scrape_loop, ZitadelScrapeConfig, ScrapeReport,
+    scrape_users_to_outbox, spawn_scrape_loop, ScrapeReport, ZitadelScrapeConfig,
+};
+pub use oidc_layer::serve_with_oidc;
+pub use service::{
+    build_graphql_engine, build_service, dev_identity, distributed_admin_client_surface,
+    distributed_client_surface, identity_from_env, oidc_bearer_config,
+    DISTRIBUTED_ADMIN_CLIENT_SURFACE, DISTRIBUTED_CLIENT_SURFACE,
 };

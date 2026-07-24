@@ -71,11 +71,10 @@ export function normalizeReplicaResult<
 	artifact: ReplicaOperationArtifact<TData, TVariables>,
 	variables: TVariables,
 	envelope: ReplicaResultEnvelope<TData>,
-	protocol?: ReplicaNormalizationProtocol
+	protocol: ReplicaNormalizationProtocol
 ): ReplicaNormalizationSummary {
 	validateArtifact(artifact);
-	const snapshotRevision =
-		protocol?.indexRevision ?? requireLegacyRevision(envelope.revision);
+	const snapshotRevision = protocol.indexRevision;
 	const errors = collectErrorPaths(envelope.errors ?? []);
 	if (errors.global || envelope.data === undefined) {
 		return Object.freeze({ wrote: false, partial: errors.global, indexKeys: [] });
@@ -104,7 +103,7 @@ export function normalizeReplicaResult<
 		const rawValue = hasValue ? envelope.data[root.responseKey] : undefined;
 		if (blocked || !hasValue || (rawValue === null && hasErrors)) {
 			wrote =
-				(protocol?.writeIndexes ?? true)
+				protocol.writeIndexes
 					? writer.markIndexStale(
 							key,
 							hasErrors ? 'graphql-partial-error' : 'incomplete-result',
@@ -131,7 +130,7 @@ export function normalizeReplicaResult<
 		const rootPartial =
 			branch.partial ||
 			hasErrors ||
-			(protocol !== undefined && !protocol.indexesComplete);
+			!protocol.indexesComplete;
 		const metadata = indexMetadata(
 			root,
 			argumentsValue,
@@ -140,7 +139,7 @@ export function normalizeReplicaResult<
 			hasErrors
 		);
 		if (
-			(protocol?.writeIndexes ?? true) &&
+			protocol.writeIndexes &&
 			writer.writeIndex({
 				key,
 				revision: snapshotRevision,
@@ -171,7 +170,7 @@ function normalizeBranch(
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
 	errors: ErrorPaths,
-	protocol: ReplicaNormalizationProtocol | undefined,
+	protocol: ReplicaNormalizationProtocol,
 	indexKeys: string[]
 ): NormalizedBranch {
 	if (value === null) {
@@ -256,7 +255,7 @@ function normalizeObject(
 	snapshotRevision: Revision,
 	variables: GraphqlVariables,
 	errors: ErrorPaths,
-	protocol: ReplicaNormalizationProtocol | undefined,
+	protocol: ReplicaNormalizationProtocol,
 	indexKeys: string[]
 ): { key?: RecordKey; partial: boolean } {
 	if (pathBlocked(errors, path)) return { partial: true };
@@ -328,45 +327,19 @@ function normalizeObject(
 			},
 			identity
 		);
-		if (
-			(selection.revisionResponseKey !== undefined &&
-				pathHasErrors(errors, [...path, selection.revisionResponseKey])) ||
-			(selection.incarnationResponseKey !== undefined &&
-				pathHasErrors(errors, [...path, selection.incarnationResponseKey]))
-		) {
-			return { key, partial: true };
-		}
-		resolution = protocol?.record(
+		resolution = protocol.record(
 			path.map(String),
 			selection.storage.model,
 			key
 		);
-		if (protocol !== undefined && resolution === undefined) {
+		if (resolution === undefined) {
 			return { key, partial: true };
 		}
 		if (resolution?.evidence.tombstone) {
 			throw new TypeError('live GraphQL row carries tombstone record evidence');
 		}
-		const resolvedRevision =
-			resolution?.evidence.revision ??
-			responseRevision(
-				value,
-				selection.revisionResponseKey,
-				snapshotRevision,
-				'row revision'
-			);
-		if (resolvedRevision === undefined) {
-			throw new TypeError('row revision is missing');
-		}
-		revision = resolvedRevision;
-		incarnation =
-			resolution?.evidence.incarnation ??
-			responseRevision(
-				value,
-				selection.incarnationResponseKey,
-				undefined,
-				'row incarnation'
-			);
+		revision = resolution.evidence.revision;
+		incarnation = resolution.evidence.incarnation;
 	} else {
 		// Embedded output is an operation-local replacement snapshot, not a
 		// normalized server record. Its synthetic incarnation deliberately
@@ -415,7 +388,7 @@ function normalizeObject(
 		});
 		indexKeys.push(branchIndexKey);
 		if (!hasValue || blocked || (rawValue === null && hasErrors)) {
-			if (protocol?.writeIndexes ?? true) {
+			if (protocol.writeIndexes) {
 				writer.markIndexStale(
 					branchIndexKey,
 					hasErrors ? 'graphql-partial-error' : 'incomplete-result',
@@ -441,8 +414,8 @@ function normalizeObject(
 		const branchPartial =
 			branch.partial ||
 			hasErrors ||
-			(protocol !== undefined && !protocol.indexesComplete);
-		if (protocol?.writeIndexes ?? true) {
+			!protocol.indexesComplete;
+		if (protocol.writeIndexes) {
 			writer.writeIndex({
 				key: branchIndexKey,
 				revision: snapshotRevision,
@@ -463,15 +436,6 @@ function normalizeObject(
 	}
 
 	return { key, partial };
-}
-
-function requireLegacyRevision(value: ReplicaRevision | undefined): ReplicaRevision {
-	if (value === undefined) {
-		throw new TypeError(
-			'replica result requires either Distributed v2 snapshot evidence or a legacy revision'
-		);
-	}
-	return value;
 }
 
 function indexMetadata(
@@ -499,27 +463,6 @@ function indexMetadata(
 			: {}),
 		nullValue: branch.nullValue
 	});
-}
-
-function responseRevision(
-	value: Readonly<Record<string, unknown>>,
-	responseKey: string | undefined,
-	fallback: Revision | undefined,
-	description: string
-): Revision | undefined {
-	if (responseKey === undefined) return fallback;
-	if (!Object.prototype.hasOwnProperty.call(value, responseKey)) {
-		throw new TypeError(`${description} field ${responseKey} is missing`);
-	}
-	const revision = value[responseKey];
-	if (
-		typeof revision !== 'string' &&
-		typeof revision !== 'number' &&
-		typeof revision !== 'bigint'
-	) {
-		throw new TypeError(`${description} must be a string, number, or bigint`);
-	}
-	return revision;
 }
 
 function collectErrorPaths(errors: readonly GqlError[]): ErrorPaths {

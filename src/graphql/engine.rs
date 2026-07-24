@@ -20,11 +20,11 @@ use crate::table::{
 };
 
 use super::client_manifest::{
-    ClientExecutionLimits, ClientManifestError, ClientSurfaceIdentity,
+    trusted_preset_descriptors, ClientExecutionLimits, ClientManifestError, ClientSurfaceIdentity,
     ClientTrustedPresetDescriptor, DistributedClientManifest, DistributedClientSurfaceExport,
 };
 use super::command_contract::TypedServiceCommandBinding;
-use super::commands::GraphqlCommands;
+use super::commands::TypedCommandInventory;
 use super::compile::{SqlDialect, SqlPlan};
 use super::execute;
 use super::filter::{validate_row_policy_operand_literal, FilterExpr, Operand};
@@ -273,10 +273,7 @@ pub(crate) struct EngineInner {
     pub introspection_for_anonymous: bool,
     pub statement_timeout: Duration,
     pub graphiql: bool,
-    pub commands: GraphqlCommands,
-    /// Pool-free complete inventory and the exact role-filtered instances used
-    /// by runtime schema, SDL, and client-manifest export.
-    pub surface: Arc<Surface>,
+    pub(crate) typed_commands: TypedCommandInventory,
     pub role_surfaces: BTreeMap<String, Arc<Surface>>,
     pub application_surfaces: BTreeMap<String, Arc<Surface>>,
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
@@ -315,7 +312,7 @@ pub struct GraphqlEngineBuilder {
     introspection_for_anonymous: bool,
     statement_timeout: Duration,
     graphiql: bool,
-    commands: GraphqlCommands,
+    typed_commands: TypedCommandInventory,
     projectors: Vec<SurfaceProjector>,
     change_rx: Option<tokio::sync::broadcast::Receiver<ReadModelChange>>,
     pending_errors: Vec<String>,
@@ -353,8 +350,9 @@ impl GraphqlEngine {
 
     /// Dep-free **surface IR** role SDL (A11 production path).
     ///
-    /// Preferred for codegen / `export_sdl`. Uses the same catalog grants as the
-    /// engine build (A12 mapper). Runtime dump is still available via [`Self::sdl_for_role`].
+    /// Preferred for deterministic SDL generation and schema-drift checks. Uses
+    /// the same catalog grants as the engine build (A12 mapper). Runtime dump is
+    /// still available via [`Self::sdl_for_role`].
     pub fn ir_sdl_for_role(&self, role: &str) -> Result<String, String> {
         let surface = self
             .inner
@@ -385,7 +383,7 @@ impl GraphqlEngine {
     pub(crate) fn typed_command_contracts_for_service(
         &self,
     ) -> Result<Vec<super::command_contract::TypedCommandContract>, String> {
-        self.inner.commands.typed_contracts_for_binding()
+        Ok(self.inner.typed_commands.contracts_for_binding())
     }
 
     pub(crate) fn causal_storage_identity(
@@ -740,7 +738,11 @@ fn resolve_protocol_preset(
 ) -> Option<DistributedTrustedPreset> {
     use base64::Engine as _;
 
-    let raw = session.get(&descriptor.name)?;
+    // Match SQL row-policy claim lookup exactly: applications commonly
+    // normalize HTTP header names to lowercase before constructing Session.
+    let raw = session
+        .get(&descriptor.name)
+        .or_else(|| session.get(&descriptor.name.to_ascii_lowercase()))?;
     let value = match descriptor.codec.as_str() {
         "string" | "string_unvalidated_timestamp" => serde_json::Value::String(raw.to_string()),
         "base64" => {
@@ -791,30 +793,7 @@ fn resolve_protocol_preset(
 fn protocol_trusted_presets(
     manifest: &DistributedClientManifest,
 ) -> Result<Vec<ClientTrustedPresetDescriptor>, GraphqlBuildError> {
-    let mut presets = BTreeMap::<String, String>::new();
-    for command in &manifest.commands {
-        for descriptor in &command.extensions.trusted_presets {
-            match presets.entry(descriptor.name.clone()) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(descriptor.codec.clone());
-                }
-                std::collections::btree_map::Entry::Occupied(entry)
-                    if entry.get() == &descriptor.codec => {}
-                std::collections::btree_map::Entry::Occupied(entry) => {
-                    return Err(GraphqlBuildError(format!(
-                        "trusted preset `{}` uses incompatible codecs `{}` and `{}` across selected commands",
-                        descriptor.name,
-                        entry.get(),
-                        descriptor.codec
-                    )));
-                }
-            }
-        }
-    }
-    Ok(presets
-        .into_iter()
-        .map(|(name, codec)| ClientTrustedPresetDescriptor { name, codec })
-        .collect())
+    trusted_preset_descriptors(manifest).map_err(|error| GraphqlBuildError(error.to_string()))
 }
 
 fn operation_fingerprint(document: &str) -> String {
@@ -1280,7 +1259,7 @@ impl GraphqlEngineBuilder {
             introspection_for_anonymous: true,
             statement_timeout: Duration::from_secs(5),
             graphiql: false,
-            commands: GraphqlCommands::new(),
+            typed_commands: TypedCommandInventory::empty(),
             projectors: Vec::new(),
             change_rx: None,
             pending_errors: Vec::new(),
@@ -1576,14 +1555,6 @@ impl GraphqlEngineBuilder {
                 .push("GraphQL service command inventory was configured more than once".into());
             return self;
         }
-        if self.commands.command_names().next().is_some() {
-            self.pending_errors.push(
-                "cannot combine GraphqlEngineBuilder::service with a separate GraphqlCommands registry"
-                    .into(),
-            );
-            return self;
-        }
-
         let binding = match service.typed_command_binding() {
             Ok(binding) => binding,
             Err(error) => {
@@ -1601,8 +1572,8 @@ impl GraphqlEngineBuilder {
             }
         }
         let contracts = service.typed_command_contracts();
-        match GraphqlCommands::from_typed_contracts(&contracts) {
-            Ok(commands) => self.commands = commands,
+        match TypedCommandInventory::from_contracts(&contracts) {
+            Ok(commands) => self.typed_commands = commands,
             Err(error) => {
                 self.pending_errors.push(error);
                 return self;
@@ -1652,15 +1623,6 @@ impl GraphqlEngineBuilder {
     }
     pub fn introspection_for_anonymous(mut self, on: bool) -> Self {
         self.introspection_for_anonymous = on;
-        self
-    }
-    pub fn commands(mut self, c: GraphqlCommands) -> Self {
-        if self.command_binding.is_some() {
-            self.pending_errors
-                .push("cannot replace commands derived from GraphqlEngineBuilder::service".into());
-            return self;
-        }
-        self.commands = c;
         self
     }
     /// Declare projector topology for client invalidation planning. The model
@@ -1728,7 +1690,7 @@ impl GraphqlEngineBuilder {
             .iter()
             .map(|(model, entry)| (model.clone(), entry.schema.clone()))
             .collect::<BTreeMap<_, _>>();
-        self.commands
+        self.typed_commands
             .bind_direct_projection_targets(&self.projectors, &model_schemas)
             .map_err(GraphqlBuildError)?;
 
@@ -1738,10 +1700,7 @@ impl GraphqlEngineBuilder {
                     "bound typed command inventory is missing its GraphQL service ID".into(),
                 )
             })?;
-            let contracts = self
-                .commands
-                .typed_contracts_for_binding()
-                .map_err(GraphqlBuildError)?;
+            let contracts = self.typed_commands.contracts_for_binding();
             let actual = TypedServiceCommandBinding::from_contracts(service_id, &contracts)
                 .map_err(GraphqlBuildError)?;
             // The builder copied this exact private command inventory from the
@@ -1868,7 +1827,7 @@ impl GraphqlEngineBuilder {
         let full_surface = Arc::new(
             build_surface(&tables, &surface_options)
                 .map_err(GraphqlBuildError)?
-                .with_commands(&self.commands)
+                .with_typed_commands(&self.typed_commands)
                 .map_err(GraphqlBuildError)?
                 .with_service_binding(self.command_binding.clone())
                 .with_projectors(self.projectors.clone())
@@ -2056,8 +2015,7 @@ impl GraphqlEngineBuilder {
             introspection_for_anonymous: self.introspection_for_anonymous,
             statement_timeout: self.statement_timeout,
             graphiql: self.graphiql,
-            commands: self.commands,
-            surface: full_surface,
+            typed_commands: self.typed_commands,
             role_surfaces,
             application_surfaces,
             schemas,
@@ -2407,16 +2365,19 @@ pub fn core_sdl_for_catalog(tables: &[TableSchema]) -> Result<String, String> {
 
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 mod client_surface_parity_tests {
+    use std::any::TypeId;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::graphql::command_contract::{CommandEffects, TypedCommandContract};
+    use crate::graphql::commands::TypedCommandInventory;
     #[cfg(feature = "sqlite")]
     use crate::graphql::ModelNormalization;
     use crate::graphql::{
-        claim, col, exposed_command, ClientRootOperation, DistributedClientSurfaceExport,
+        claim, col, ClientRootOperation, CommandConsistency, DistributedClientSurfaceExport,
         GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField, RoleGrant,
     };
     #[cfg(feature = "sqlite")]
@@ -2445,6 +2406,40 @@ mod client_surface_parity_tests {
             relationships: Vec::new(),
             kind: TableKind::ReadModel,
         }
+    }
+
+    fn test_command<I, O>(
+        command_name: &str,
+        field_name: &str,
+        roles: &[&str],
+    ) -> TypedCommandContract
+    where
+        I: GraphqlInputType + 'static,
+        O: GraphqlOutputType + 'static,
+    {
+        TypedCommandContract {
+            name: command_name.into(),
+            field_name: field_name.into(),
+            roles: roles.iter().map(|role| (*role).into()).collect(),
+            input: I::graphql_type().with_type_id(TypeId::of::<I>()),
+            output: O::graphql_type().with_type_id(TypeId::of::<O>()),
+            input_type_id: TypeId::of::<I>(),
+            output_type_id: TypeId::of::<O>(),
+            consistency: CommandConsistency::Accepted,
+            input_defaults: Vec::new(),
+            effects: CommandEffects::revalidate(),
+            confirmations: Vec::new(),
+            projected_model: None,
+            direct_projection: None,
+        }
+    }
+
+    fn test_service_binding(
+        service_id: &str,
+        commands: &TypedCommandInventory,
+    ) -> TypedServiceCommandBinding {
+        TypedServiceCommandBinding::from_contracts(service_id, &commands.contracts_for_binding())
+            .unwrap()
     }
 
     fn type_field_names(sdl: &str, type_name: &str) -> BTreeSet<String> {
@@ -2869,6 +2864,38 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn row_policy_presets_follow_sql_claim_case_normalization() {
+        let engine = policy_protocol_engine("mixed-case-policy", "X-Tenant");
+        assert_eq!(
+            engine.inner.protocol.as_ref().unwrap().roles["user"]
+                .surface
+                .trusted_presets,
+            vec![ClientTrustedPresetDescriptor {
+                name: "X-Tenant".into(),
+                codec: "string".into(),
+            }]
+        );
+
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        session.set("x-user-id", "person-1");
+        // `operand_to_bind` accepts the normalized lowercase header for this
+        // mixed-case policy claim. The cache-scope envelope must expose the
+        // same resolved value or client policy evaluation would fail closed.
+        session.set("x-tenant", "tenant-1");
+        let response = engine
+            .execute(&session, Request::new("{ __typename }"))
+            .await;
+        assert_eq!(
+            distributed_extension(&response)["trustedPresets"],
+            serde_json::json!([
+                {"name": "X-Tenant", "codec": "string", "value": "tenant-1"}
+            ])
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
     async fn cache_scope_tracks_only_relevant_claims_and_private_policy() {
         use crate::graphql::identity::VerifiedPrincipal;
 
@@ -3007,24 +3034,27 @@ mod client_surface_parity_tests {
             .connect_lazy("sqlite::memory:")
             .unwrap();
         let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
-        let commands = GraphqlCommands::new().command(
+        let commands = TypedCommandInventory::from_contracts(&[test_command::<
+            ChangeOrderInput,
+            ChangeOrderPayload,
+        >(
             "order.refresh",
-            exposed_command()
-                .field_name("orders_refresh")
-                .roles(["user"]),
-        );
-        let engine = GraphqlEngine::from_manifest(&project, pool)
+            "orders_refresh",
+            &["user"],
+        )])
+        .unwrap();
+        let mut builder = GraphqlEngine::from_manifest(&project, pool)
             .unwrap()
             .roles(&["user"])
             .grant_all("user")
             .default_limit(7)
             .max_limit(19)
-            .commands(commands)
             .client_projectors([SurfaceProjector::new("project_orders")
                 .facts(["order.changed"])
-                .models(["OrderView"])])
-            .build()
-            .unwrap();
+                .models(["OrderView"])]);
+        builder.command_binding = Some(test_service_binding("orders-service", &commands));
+        builder.typed_commands = commands;
+        let engine = builder.build().unwrap();
 
         let stored = engine.surface_for_role("user").unwrap();
         assert_eq!(engine.service_id(), Some("orders-service"));
@@ -3063,14 +3093,25 @@ mod client_surface_parity_tests {
             .filter(|root| root.operation == ClientRootOperation::Subscription)
             .map(|root| root.name.clone())
             .collect();
-        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        let runtime_query_roots = type_field_names(&runtime_sdl, "Query")
+            .into_iter()
+            .filter(|field| field != "commandStatus")
+            .collect();
+        assert_eq!(query_roots, runtime_query_roots);
         assert_eq!(
             subscription_roots,
             type_field_names(&runtime_sdl, "Subscription")
         );
-        assert!(
-            manifest.commands.is_empty(),
-            "legacy raw commands are server-only and excluded from manifest v2"
+        assert_eq!(manifest.commands.len(), 1);
+        assert_eq!(manifest.commands[0].name, "order.refresh");
+        assert_eq!(
+            manifest
+                .protocol_operations
+                .command_status
+                .as_ref()
+                .unwrap()
+                .name,
+            "Distributed_CommandStatus"
         );
         assert_eq!(
             type_field_names(&runtime_sdl, "Mutation"),
@@ -3118,7 +3159,7 @@ mod client_surface_parity_tests {
         }
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:9dec1857bed6f1f60305f9e51ed9b6c43ac38a4e579a3dc2e73aae6d336dcd9b"
+            "sha256:ab2e533efd19ce48b480deb8fd80895f631f43dd72d3d9b38823df8eb738110b"
         );
     }
 
@@ -3211,7 +3252,11 @@ mod client_surface_parity_tests {
             .filter(|root| root.operation == ClientRootOperation::Query)
             .map(|root| root.name.clone())
             .collect();
-        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        let runtime_query_roots = type_field_names(&runtime_sdl, "Query")
+            .into_iter()
+            .filter(|field| field != "commandStatus")
+            .collect();
+        assert_eq!(query_roots, runtime_query_roots);
         assert_eq!(
             manifest.models[0]
                 .fields
@@ -3249,7 +3294,7 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.service_id, "orders-service");
         assert_eq!(
             manifest.schema_fingerprint,
-            "sha256:a1cf7ce0949361a14f912f032da79bcd832db5899db2ffd2824f5825ebb84a7f"
+            "sha256:9b2118ae9fc68ebdcaf0029452bb5e3f3448a6774963c99f2fb20718817a608a"
         );
     }
 
@@ -3340,24 +3385,20 @@ mod client_surface_parity_tests {
             .table_schema(customers())
     }
 
-    fn matrix_commands() -> GraphqlCommands {
-        GraphqlCommands::new()
-            .command(
+    fn matrix_commands() -> TypedCommandInventory {
+        TypedCommandInventory::from_contracts(&[
+            test_command::<ChangeOrderInput, ChangeOrderPayload>(
                 "order.change",
-                exposed_command()
-                    .field_name("orders_change")
-                    .input::<ChangeOrderInput>()
-                    .output::<ChangeOrderPayload>()
-                    .roles(["restricted", "admin"]),
-            )
-            .command(
+                "orders_change",
+                &["restricted", "admin"],
+            ),
+            test_command::<ChangeOrderInput, ChangeOrderPayload>(
                 "order.force_archive",
-                exposed_command()
-                    .field_name("orders_force_archive")
-                    .input::<ChangeOrderInput>()
-                    .output::<ChangeOrderPayload>()
-                    .roles(["admin"]),
-            )
+                "orders_force_archive",
+                &["admin"],
+            ),
+        ])
+        .unwrap()
     }
 
     fn matrix_projectors() -> Vec<SurfaceProjector> {
@@ -3397,8 +3438,10 @@ mod client_surface_parity_tests {
             .roles(&["restricted", "admin"])
             .default_limit(11)
             .max_limit(23)
-            .commands(matrix_commands())
             .client_projectors(matrix_projectors());
+        let commands = matrix_commands();
+        builder.command_binding = Some(test_service_binding("acceptance-service", &commands));
+        builder.typed_commands = commands;
         insert_permission(&mut builder, "OrderView", "restricted", restricted_read());
         insert_permission(
             &mut builder,
@@ -3424,10 +3467,12 @@ mod client_surface_parity_tests {
             default_limit: 11,
             max_limit: 23,
         };
+        let commands = matrix_commands();
         let full = build_surface(&project.tables, &options)
             .unwrap()
-            .with_commands(&matrix_commands())
+            .with_typed_commands(&commands)
             .unwrap()
+            .with_service_binding(Some(test_service_binding("acceptance-service", &commands)))
             .with_projectors(matrix_projectors())
             .unwrap();
         let grants = match role {
@@ -3544,14 +3589,25 @@ mod client_surface_parity_tests {
             .filter(|root| root.operation == ClientRootOperation::Subscription)
             .map(|root| root.name.clone())
             .collect();
-        assert_eq!(query_roots, type_field_names(&runtime_sdl, "Query"));
+        let runtime_read_roots = type_field_names(&runtime_sdl, "Query")
+            .into_iter()
+            .filter(|field| field != "commandStatus")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(query_roots, runtime_read_roots);
         assert_eq!(
             subscription_roots,
             type_field_names(&runtime_sdl, "Subscription")
         );
-        assert!(
-            manifest.commands.is_empty(),
-            "legacy raw commands are server-only and excluded from manifest v2"
+        let expected_commands = if role == "admin" { 2 } else { 1 };
+        assert_eq!(manifest.commands.len(), expected_commands);
+        assert_eq!(
+            manifest
+                .protocol_operations
+                .command_status
+                .as_ref()
+                .unwrap()
+                .name,
+            "Distributed_CommandStatus"
         );
         for model in &manifest.models {
             let expected_fields: BTreeSet<String> = model
@@ -3599,7 +3655,7 @@ mod client_surface_parity_tests {
         match role {
             "restricted" => {
                 assert_eq!(model_ids, BTreeSet::from(["OrderView"]));
-                assert!(command_names.is_empty());
+                assert_eq!(command_names, BTreeSet::from(["order.change"]));
                 assert_eq!(
                     type_field_names(&runtime_sdl, "Mutation"),
                     BTreeSet::from(["orders_change".into()])
@@ -3622,7 +3678,10 @@ mod client_surface_parity_tests {
             }
             "admin" => {
                 assert_eq!(model_ids, BTreeSet::from(["CustomerView", "OrderView"]));
-                assert!(command_names.is_empty());
+                assert_eq!(
+                    command_names,
+                    BTreeSet::from(["order.change", "order.force_archive"])
+                );
                 assert_eq!(
                     type_field_names(&runtime_sdl, "Mutation"),
                     BTreeSet::from(["orders_change".into(), "orders_force_archive".into()])
@@ -3650,12 +3709,13 @@ mod client_surface_parity_tests {
     }
 
     async fn assert_nested_command_validates(engine: &GraphqlEngine) {
-        let operation = "mutation Client_orders_change($input: ChangeOrderInput!) { orders_change(input: $input) { accepted order { order_id status } warnings } }";
+        let operation = "mutation Client_orders_change($commandId: ID!, $input: ChangeOrderInput!) { orders_change(commandId: $commandId, input: $input) { accepted order { order_id status } warnings } }";
         async_graphql::parser::parse_query(operation)
             .expect("generated command operation must parse");
 
         let request = Request::new(operation).variables(async_graphql::Variables::from_json(
             serde_json::json!({
+                "commandId": "0190a000-0000-7000-8000-000000000042",
                 "input": {
                     "order_id": "order-1",
                     "patch": {
@@ -3677,30 +3737,30 @@ mod client_surface_parity_tests {
 
     #[cfg(feature = "sqlite")]
     const SQLITE_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:aefcdcdd7e2f3e665c66eef66440db0426c95126e13fb564dc9e4f7ccd777aee",
-        static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
-        runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
+        manifest: "sha256:a142da405f0d5b4dd0f388f6158f6b70a0f7ade3f360cecccd14f07412abe331",
+        static_sdl: "sha256:c94afb7de76b34c6e36b897643d9523afa8872fa480bf104d8f54f95ef73ea0a",
+        runtime_sdl: "sha256:cf35a2fd5309ab6ca893b5820f4a5efdd9eef1df83013dbf6ac0ffdf63710e8e",
     };
 
     #[cfg(feature = "sqlite")]
     const SQLITE_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:8237fbe54158a63929bf0d458a76b7514f99b2845c85251b9236caa48b2e859d",
-        static_sdl: "sha256:c7ca9c2b5422b549c1dd7ef06b6d8e4829f85079b268e6d6e43fc826622efd8c",
-        runtime_sdl: "sha256:b946d896eb06e5255e3d98598b8bfd8c900ceffa4ffd062b085e89abcfdcfd9c",
+        manifest: "sha256:d4cb632b88d7c3779d0cb373858b8dfb5907cb31bbf64ea0f41f2b03f43b8dfa",
+        static_sdl: "sha256:8ffed8116b16792ab8f81940999489d73b51615eb863d32b1640446535913b89",
+        runtime_sdl: "sha256:d94970d5e6ca8745ec97a286332f7cf1a372e47f5e8e10df10bd67fd779d54e1",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_RESTRICTED_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:aefcdcdd7e2f3e665c66eef66440db0426c95126e13fb564dc9e4f7ccd777aee",
-        static_sdl: "sha256:61606997d88666d73b6333bdd7426811adfa16f380ee713229ac8e604394c3f5",
-        runtime_sdl: "sha256:5387017f10cbd0b4deb3d9fb80248b091c96d4d38a47c1190122a954665b891d",
+        manifest: "sha256:a142da405f0d5b4dd0f388f6158f6b70a0f7ade3f360cecccd14f07412abe331",
+        static_sdl: "sha256:c94afb7de76b34c6e36b897643d9523afa8872fa480bf104d8f54f95ef73ea0a",
+        runtime_sdl: "sha256:cf35a2fd5309ab6ca893b5820f4a5efdd9eef1df83013dbf6ac0ffdf63710e8e",
     };
 
     #[cfg(feature = "postgres")]
     const POSTGRES_ADMIN_GOLDENS: ArtifactGoldens = ArtifactGoldens {
-        manifest: "sha256:2f651b27eb8dab51096ef10b8bd1c2706e6a3f34efb969d79a30cefcf1725573",
-        static_sdl: "sha256:26be9784f7f165b4c7f6f9d71d73bc7592f96d154028006b040b64e7e4f2c5e4",
-        runtime_sdl: "sha256:d55f4164340de7a78056c11d809144e51b3206429708f6fe70c156be46a9c0ba",
+        manifest: "sha256:679e700c97004d6aeacb34595a10ddbf1b939b2d3fa8bb175aa63b8a78513016",
+        static_sdl: "sha256:5d3416d9926a5374ee95408c38e74bfd03b1b7ef4e2f7ee1f81752a102c4a989",
+        runtime_sdl: "sha256:08e621d86f6606260e653c67d27899f9c93a2ac4545ec0741d78445981d3d46f",
     };
 
     #[cfg(feature = "sqlite")]

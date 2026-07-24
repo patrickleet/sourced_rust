@@ -120,10 +120,7 @@ pub fn graphql_sdl_for_role(
 
 /// Internal renderer over an already IR-filtered set of read models.
 fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<String, String> {
-    let has_causal_commands = surface
-        .commands
-        .iter()
-        .any(|command| command.consistency.is_some());
+    let has_causal_commands = !surface.commands.is_empty();
     // Type names and root field names are separate GraphQL namespaces (Hasura
     // reuses e.g. `players_aggregate` as both a root field and an object type).
     let mut type_names: BTreeSet<String> = BTreeSet::new();
@@ -270,7 +267,7 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
     if !surface.commands.is_empty() {
         out.push_str("\ntype Mutation {\n");
         for command in &surface.commands {
-            let input = command_arguments_sdl(command.consistency.is_some(), &command.input);
+            let input = command_arguments_sdl(&command.input);
             let output = match &command.output {
                 super::surface::SurfaceCommandShape::None => {
                     return Err(format!(
@@ -278,7 +275,6 @@ fn graphql_sdl_from_read_models(surface: &super::surface::Surface) -> Result<Str
                         command.command_name
                     ));
                 }
-                super::surface::SurfaceCommandShape::Json => "JSON",
                 super::surface::SurfaceCommandShape::Typed(definition) => &definition.name,
             };
             out.push_str(&format!("  {}{}: {}!\n", command.field_name, input, output));
@@ -302,9 +298,7 @@ fn emit_causal_command_protocol_types(out: &mut String) {
 
 fn command_shape_uses_type_name(shape: &super::surface::SurfaceCommandShape, name: &str) -> bool {
     match shape {
-        super::surface::SurfaceCommandShape::None | super::surface::SurfaceCommandShape::Json => {
-            false
-        }
+        super::surface::SurfaceCommandShape::None => false,
         super::surface::SurfaceCommandShape::Typed(definition) => {
             command_type_uses_name(definition, name)
         }
@@ -322,14 +316,10 @@ fn command_type_uses_name(definition: &super::surface::SurfaceTypeDef, name: &st
         })
 }
 
-fn command_arguments_sdl(causal: bool, input: &super::surface::SurfaceCommandShape) -> String {
-    let mut arguments = Vec::new();
-    if causal {
-        arguments.push("commandId: ID!".to_string());
-    }
+fn command_arguments_sdl(input: &super::surface::SurfaceCommandShape) -> String {
+    let mut arguments = vec!["commandId: ID!".to_string()];
     match input {
         super::surface::SurfaceCommandShape::None => {}
-        super::surface::SurfaceCommandShape::Json => arguments.push("input: JSON!".to_string()),
         super::surface::SurfaceCommandShape::Typed(definition) => {
             arguments.push(format!("input: {}!", definition.name));
         }
@@ -598,12 +588,10 @@ pub fn graphql_sdl_from_schemas(
 #[cfg(test)]
 mod causal_command_sdl_tests {
     use super::*;
-    use crate::graphql::command_contract::CommandConsistency;
+    use crate::graphql::command_contract::{CommandConsistency, CommandEffects};
     use crate::graphql::surface::{SurfaceCommandShape, SurfaceTypeDef};
 
-    fn command_surface(
-        consistency: Option<CommandConsistency>,
-    ) -> crate::graphql::surface::Surface {
+    fn command_surface() -> crate::graphql::surface::Surface {
         use crate::graphql::surface::{Surface, SurfaceCommand, SurfaceDialect, SurfaceSelection};
 
         Surface {
@@ -624,11 +612,31 @@ mod causal_command_sdl_tests {
                 command_name: "todo.complete".into(),
                 field_name: "todo_complete".into(),
                 roles: vec!["user".into()],
-                input: SurfaceCommandShape::None,
-                output: SurfaceCommandShape::Json,
-                consistency,
+                input: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                    name: "CompleteTodoInput".into(),
+                    fields: vec![crate::graphql::surface::SurfaceTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    }],
+                }),
+                output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                    name: "CompleteTodoPayload".into(),
+                    fields: vec![crate::graphql::surface::SurfaceTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    }],
+                }),
+                consistency: CommandConsistency::Accepted,
                 input_defaults: Vec::new(),
-                effects: None,
+                effects: Some(CommandEffects::revalidate()),
                 confirmations: Vec::new(),
                 projected_model: None,
                 direct_projection: None,
@@ -648,32 +656,14 @@ mod causal_command_sdl_tests {
             fields: Vec::new(),
         });
         assert_eq!(
-            command_arguments_sdl(true, &typed),
+            command_arguments_sdl(&typed),
             "(commandId: ID!, input: CompleteTodoInput!)"
         );
-        assert_eq!(
-            command_arguments_sdl(true, &SurfaceCommandShape::Json),
-            "(commandId: ID!, input: JSON!)"
-        );
-        assert_eq!(
-            command_arguments_sdl(true, &SurfaceCommandShape::None),
-            "(commandId: ID!)"
-        );
-    }
-
-    #[test]
-    fn legacy_mutation_arguments_are_unchanged() {
-        assert_eq!(
-            command_arguments_sdl(false, &SurfaceCommandShape::Json),
-            "(input: JSON!)"
-        );
-        assert_eq!(command_arguments_sdl(false, &SurfaceCommandShape::None), "");
     }
 
     #[test]
     fn causal_surface_emits_status_root_and_lowercase_state_enum() {
-        let sdl =
-            graphql_sdl_from_surface(&command_surface(Some(CommandConsistency::Accepted))).unwrap();
+        let sdl = graphql_sdl_from_surface(&command_surface()).unwrap();
 
         assert!(sdl.contains("commandStatus(commandId: ID!): DistributedCommandStatus!"));
         assert!(sdl.contains("type DistributedCommandStatus {\n  state: DistributedCommandState!"));
@@ -687,20 +677,10 @@ mod causal_command_sdl_tests {
     }
 
     #[test]
-    fn legacy_only_surface_does_not_reserve_or_emit_status_protocol() {
-        let sdl = graphql_sdl_from_surface(&command_surface(None)).unwrap();
-
-        assert!(!sdl.contains(COMMAND_STATUS_ROOT_FIELD));
-        assert!(!sdl.contains(DISTRIBUTED_COMMAND_STATUS_TYPE));
-        assert!(!sdl.contains(DISTRIBUTED_COMMAND_STATE_TYPE));
-        assert!(sdl.contains("_empty: Boolean!"));
-    }
-
-    #[test]
     fn causal_status_root_and_types_fail_closed_on_collisions() {
         use crate::graphql::surface::{RootField, RootKind};
 
-        let mut root_collision = command_surface(Some(CommandConsistency::Accepted));
+        let mut root_collision = command_surface();
         root_collision.query_fields.push(RootField {
             name: COMMAND_STATUS_ROOT_FIELD.into(),
             kind: RootKind::List,
@@ -717,7 +697,7 @@ mod causal_command_sdl_tests {
             "{error}"
         );
 
-        let mut type_collision = command_surface(Some(CommandConsistency::Accepted));
+        let mut type_collision = command_surface();
         type_collision.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
             name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
             fields: Vec::new(),

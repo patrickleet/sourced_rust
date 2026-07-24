@@ -22,9 +22,7 @@ where
     true
 }
 
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, AuthDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
+pub async fn handle<R, L, S>(ctx: &Context<'_, AuthDeps<R, L, S>>) -> Result<Value, HandlerError>
 where
     R: crate::bounds::EventStore,
     L: crate::bounds::Locks,

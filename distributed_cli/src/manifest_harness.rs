@@ -70,7 +70,14 @@ pub(crate) fn run_manifest_harness(
         .unwrap_or_else(|| Ok(format!("{crate_ident}::{}", mode.default_entrypoint())))?;
     validate_rust_path(&entrypoint)?;
 
-    let harness_root = package.directory.join("target/dctl-manifest-harness");
+    // Keep the standalone harness beside workspace packages, never underneath
+    // one. A harness nested below a package that uses `workspace = true`
+    // dependencies becomes that package's nearest workspace ancestor and Cargo
+    // resolves its inherited dependencies against the generated harness.
+    let harness_root = package
+        .target_directory
+        .join("dctl-manifest-harness")
+        .join(&package.name);
     let harness_dir = harness_root.join(mode.cache_key());
     fs::create_dir_all(harness_dir.join("src"))?;
     fs::write(
@@ -226,6 +233,7 @@ fn resolve_target_manifest_path(
 struct CargoPackage {
     name: String,
     directory: PathBuf,
+    target_directory: PathBuf,
 }
 
 fn cargo_package(
@@ -248,6 +256,7 @@ fn cargo_package(
     }
 
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+    let target_directory = PathBuf::from(&metadata.target_directory);
     let selected = if let Some(package_name) = package_name {
         metadata
             .packages
@@ -279,12 +288,14 @@ fn cargo_package(
     Ok(CargoPackage {
         name: selected.name,
         directory,
+        target_directory,
     })
 }
 
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {
     packages: Vec<CargoMetadataPackage>,
+    target_directory: String,
 }
 
 #[derive(Debug, Deserialize)]

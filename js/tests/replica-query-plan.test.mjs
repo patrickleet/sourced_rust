@@ -519,11 +519,11 @@ test('row policies are conjoined and never read ambient claims', () => {
 		expression: {
 			kind: 'cmp',
 			value: {
-				column: 'id',
+				column: 'priority',
 				op: 'eq',
 				rhs: {
 					kind: 'claim',
-					value: { header: 'x-distributed-user-id' }
+					value: { header: 'x-distributed-priority' }
 				}
 			}
 		}
@@ -531,6 +531,95 @@ test('row policies are conjoined and never read ambient claims', () => {
 	assert.equal(
 		evaluateReplicaFilter(filterArtifact(undefined, claimPolicy), record).reason.code,
 		'claim_operand'
+	);
+	const descriptor = Object.freeze({
+		name: 'x-distributed-priority',
+		codec: 'int32'
+	});
+	const scoped = (value) =>
+		Object.freeze({
+			trustedPresets: Object.freeze({
+				descriptors: Object.freeze([descriptor]),
+				values: Object.freeze([
+					Object.freeze({
+						...descriptor,
+						value
+					})
+				])
+			})
+		});
+	assert.equal(
+		result(
+			evaluateReplicaFilter(
+				filterArtifact(undefined, claimPolicy),
+				record,
+				{},
+				scoped(3)
+			)
+		),
+		'match'
+	);
+	assert.equal(
+		result(
+			evaluateReplicaFilter(
+				filterArtifact(undefined, claimPolicy),
+				record,
+				{},
+				scoped(4)
+			)
+		),
+		'no_match'
+	);
+	assert.equal(
+		evaluateReplicaFilter(
+			filterArtifact(undefined, claimPolicy),
+			record,
+			{},
+			{
+				trustedPresets: {
+					descriptors: [descriptor],
+					values: []
+				}
+			}
+		).reason.code,
+		'claim_inventory'
+	);
+	assert.equal(
+		evaluateReplicaFilter(
+			filterArtifact(undefined, claimPolicy),
+			record,
+			{},
+			{
+				trustedPresets: {
+					descriptors: [descriptor],
+					values: [
+						{ ...descriptor, value: 3 },
+						{ name: 'x-forged-extra', codec: 'string', value: 'forged' }
+					]
+				}
+			}
+		).reason.code,
+		'claim_inventory'
+	);
+	assert.equal(
+		evaluateReplicaFilter(
+			filterArtifact(undefined, claimPolicy),
+			record,
+			{},
+			{
+				trustedPresets: {
+					descriptors: [descriptor],
+					values: [
+						{
+							name: descriptor.name,
+							codec: 'string',
+							value: '3'
+						}
+					]
+				}
+			}
+		).reason.code,
+		'claim_inventory'
 	);
 	assert.equal(
 		evaluateReplicaFilter(
@@ -876,7 +965,8 @@ function orderArtifact(
 		{
 			field: 'sequence',
 			scalar: 'BigInt',
-			codec: 'json_number_precision_limited'
+			codec: 'json_number_precision_limited',
+			nullable: false
 		}
 	]
 ) {
@@ -1018,6 +1108,13 @@ const OFFSET_PAGINATION = Object.freeze({
 	reorder: 'revalidate',
 	stableUpdate: 'local'
 });
+const LOCAL_OFFSET_PAGINATION = Object.freeze({
+	kind: 'offset',
+	insert: 'local',
+	delete: 'local',
+	reorder: 'local',
+	stableUpdate: 'local'
+});
 
 test('pagination plans make complete and offset maintenance decisions explicit', () => {
 	const complete = { kind: 'complete' };
@@ -1075,11 +1172,11 @@ test('pagination refuses unknown, mismatched, unsafe offset, and unproven cursor
 	);
 	assert.equal(
 		decideReplicaPaginationMaintenance(
-			{ ...OFFSET_PAGINATION, insert: 'local' },
+			LOCAL_OFFSET_PAGINATION,
 			{ kind: 'offset', offset: 0 },
 			{ kind: 'insert' }
 		).reason.code,
-		'invalid_pagination_policy'
+		'insert_changes_offset_window'
 	);
 	assert.equal(
 		decideReplicaPaginationMaintenance(
@@ -1099,7 +1196,7 @@ test('pagination refuses unknown, mismatched, unsafe offset, and unproven cursor
 		decideReplicaPaginationMaintenance(
 			{
 				kind: 'cursor',
-				// A forged legacy boolean is not a versioned proof IR.
+				// A forged boolean is not a versioned proof IR.
 				certified: true,
 				insert: 'local',
 				delete: 'local',
@@ -1125,4 +1222,45 @@ test('pagination refuses unknown, mismatched, unsafe offset, and unproven cursor
 		).reason.code,
 		'invalid_pagination_policy'
 	);
+});
+
+test('offset locality requires a proven non-full first page', () => {
+	const safe = { kind: 'offset', offset: 0, limit: 10, returned: 9 };
+	for (const kind of ['insert', 'delete', 'reorder', 'stable_update']) {
+		assert.equal(
+			decideReplicaPaginationMaintenance(
+				LOCAL_OFFSET_PAGINATION,
+				safe,
+				{ kind }
+			).decision,
+			'local'
+		);
+	}
+
+	for (const [coverage, kind, code] of [
+		[
+			{ kind: 'offset', offset: 0, limit: 10, returned: 10 },
+			'insert',
+			'insert_changes_offset_window'
+		],
+		[
+			{ kind: 'offset', offset: 1, limit: 10, returned: 1 },
+			'delete',
+			'delete_changes_offset_window'
+		],
+		[
+			{ kind: 'offset', offset: 0, limit: 10 },
+			'reorder',
+			'reorder_changes_offset_window'
+		]
+	]) {
+		assert.equal(
+			decideReplicaPaginationMaintenance(
+				LOCAL_OFFSET_PAGINATION,
+				coverage,
+				{ kind }
+			).reason.code,
+			code
+		);
+	}
 });

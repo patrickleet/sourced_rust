@@ -10,7 +10,10 @@
     "noEmit": true,
     "outDir": "./dist-type-tests",
     "paths": {
-      "@hops-ops/distributed/replica": ["./src/replica/index.ts"]
+      "@hops-ops/distributed/replica": ["./src/replica/index.ts"],
+      "@hops-ops/distributed/react": ["./src/react/index.ts"],
+      "@hops-ops/distributed/sveltekit": ["./src/sveltekit/index.ts"],
+      "@hops-ops/distributed/sveltekit/vite": ["./src/sveltekit/vite.ts"]
     },
     "rootDir": ".."
   },

@@ -9,16 +9,6 @@ import {
 	requestGraphql,
 	subscribe
 } from '@hops-ops/distributed';
-import { QueryCache } from '@hops-ops/distributed/cache';
-import {
-	bindCommands,
-	defineCommand,
-	defineCommands,
-	executeCommand
-} from '@hops-ops/distributed/commands';
-
-const COMMAND_DOCUMENT =
-	'mutation Change($input: ChangeInput!) { change(input: $input) { ok } }';
 
 function distributedEnvelope() {
 	return {
@@ -94,6 +84,7 @@ function distributedEnvelope() {
 				}
 			]
 		},
+		trustedPresets: [],
 		futureMetadata: { retained: true }
 	};
 }
@@ -419,40 +410,4 @@ test('GraphQL-WS preserves valid envelopes and terminates on incompatible frames
 		id: '1'
 	});
 	assert.equal(rejectedSocket.closeCount, 1);
-});
-
-test('direct and pipelined command results preserve receipts while unwrapping only data', async () => {
-	const extensions = parseGraphqlResponseExtensions(responseExtensions());
-	const command = defineCommand({
-		field: 'change',
-		document: COMMAND_DOCUMENT,
-		hasInput: true
-	});
-	const client = {
-		async request() {
-			return {
-				data: { change: { ok: true } },
-				extensions,
-				status: 202
-			};
-		}
-	};
-
-	const direct = await executeCommand(client, command, { value: 'direct' });
-	assert.deepEqual(direct.data, { ok: true });
-	assert.equal('distributed' in direct.data, false);
-	assert.equal(direct.extensions, extensions);
-
-	const cache = new QueryCache();
-	const bound = bindCommands(
-		{ ...client, cache },
-		defineCommands({ change: command })
-	);
-	const pipelined = await bound.change(
-		{ value: 'pipeline' },
-		{ browser: false }
-	);
-	assert.deepEqual(pipelined.data, { ok: true });
-	assert.equal('distributed' in pipelined.data, false);
-	assert.equal(pipelined.extensions, extensions);
 });
