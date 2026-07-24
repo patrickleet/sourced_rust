@@ -22,4 +22,59 @@ test.describe('chat (alice)', () => {
 			timeout: 20_000
 		});
 	});
+
+	test('sending preserves the rendered log while revalidating', async ({ page }) => {
+		await page.goto('/chat');
+		await expect(page.getByRole('heading', { name: /lobby/i })).toBeVisible({
+			timeout: 20_000
+		});
+
+		const baseline = `continuity baseline ${Date.now()}`;
+		await page.locator('#chat-body').fill(baseline);
+		await page.getByRole('button', { name: /send/i }).click();
+		await expect(page.locator('.ch-msg', { hasText: baseline })).toBeVisible({
+			timeout: 20_000
+		});
+
+		const navigations: string[] = [];
+		page.on('framenavigated', (frame) => {
+			if (frame === page.mainFrame()) navigations.push(frame.url());
+		});
+		await page.evaluate(() => {
+			const samples = [document.querySelectorAll('.ch-msg').length];
+			const observer = new MutationObserver(() => {
+				samples.push(document.querySelectorAll('.ch-msg').length);
+			});
+			observer.observe(document.querySelector('.ch-log')!, {
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+			Object.assign(globalThis, {
+				__distributedChatContinuitySamples: samples,
+				__distributedChatContinuityObserver: observer
+			});
+		});
+
+		const body = `continuity message ${Date.now()}`;
+		await page.locator('#chat-body').fill(body);
+		await page.getByRole('button', { name: /send/i }).click();
+		await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
+			timeout: 20_000
+		});
+
+		const samples = await page.evaluate(() => {
+			const state = globalThis as typeof globalThis & {
+				__distributedChatContinuitySamples: number[];
+				__distributedChatContinuityObserver: MutationObserver;
+			};
+			state.__distributedChatContinuityObserver.disconnect();
+			return state.__distributedChatContinuitySamples;
+		});
+		expect(navigations, 'commands must not navigate or reload the page').toEqual([]);
+		expect(
+			Math.min(...samples),
+			'stale-while-revalidate must never replace the known log with an empty view'
+		).toBeGreaterThan(0);
+	});
 });
