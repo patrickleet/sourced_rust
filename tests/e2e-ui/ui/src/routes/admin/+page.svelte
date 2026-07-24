@@ -104,7 +104,7 @@
 				</thead>
 				<tbody>
 					{#each rows as t (t.todo_id)}
-						<tr>
+						<tr data-todo-id={t.todo_id}>
 							<td class="ad-owner">{t.owner_id}</td>
 							<td>{t.title}</td>
 							<td><span class="ad-status" data-status={t.status}>{t.status}</span></td>

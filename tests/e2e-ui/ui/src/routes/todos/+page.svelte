@@ -169,7 +169,7 @@
 			{:else}
 				<ul class="fn-list">
 					{#each open as t, i (t.todo_id)}
-						<li class="fn-item" style="--i: {i}">
+						<li class="fn-item" style="--i: {i}" data-todo-id={t.todo_id}>
 							<div class="fn-item-main">
 								<button
 									class="fn-check"
@@ -217,7 +217,11 @@
 			{:else}
 				<ul class="fn-list">
 					{#each done as t, i (t.todo_id)}
-						<li class="fn-item fn-item-done" style="--i: {i}">
+						<li
+							class="fn-item fn-item-done"
+							style="--i: {i}"
+							data-todo-id={t.todo_id}
+						>
 							<div class="fn-item-main">
 								<button
 									class="fn-check fn-check-on"
@@ -270,7 +274,7 @@
 			<summary>Archived ({archived.length})</summary>
 			<ul class="fn-list fn-list-compact">
 				{#each archived as t (t.todo_id)}
-					<li class="fn-item fn-item-archived">
+					<li class="fn-item fn-item-archived" data-todo-id={t.todo_id}>
 						<span class="fn-item-title">{t.title}</span>
 						<span class="fn-badge">archived</span>
 					</li>

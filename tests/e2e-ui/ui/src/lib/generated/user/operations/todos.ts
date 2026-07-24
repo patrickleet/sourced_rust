@@ -144,7 +144,20 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
         ],
         "relationships": [],
         "rowPolicy": {
-          "kind": "server_only"
+          "kind": "predicate",
+          "expression": {
+            "kind": "cmp",
+            "value": {
+              "column": "owner_id",
+              "op": "eq",
+              "rhs": {
+                "kind": "claim",
+                "value": {
+                  "header": "x-user-id"
+                }
+              }
+            }
+          }
         }
       },
       "order": {
@@ -253,12 +266,11 @@ export const Operation_Todos: ReplicaOperationArtifact<Operation_Todos_Data, Ope
   ],
   "protocol": {
     "version": 2,
-    "schemaHash": "sha256:cd1201527455a499a61d6537490e2114e16d643a0f8837dc9725b207d862d57c",
+    "schemaHash": "sha256:f1e1cd1eb4ca15250e60ba37871293992ad68668804cddd12aba9bc4518d08c0",
     "surface": {
       "kind": "application",
       "name": "fieldnote",
       "roles": [
-        "admin",
         "user"
       ]
     },

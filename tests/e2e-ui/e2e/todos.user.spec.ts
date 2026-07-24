@@ -1,5 +1,23 @@
 import { test, expect } from '@playwright/test';
 
+async function visibleTodoOrders(page: import('@playwright/test').Page) {
+	return page.locator('.fn-list').evaluateAll((lists) =>
+		lists.map((list) =>
+			[...list.querySelectorAll<HTMLElement>('[data-todo-id]')].map(
+				(item) => item.dataset.todoId ?? ''
+			)
+		)
+	);
+}
+
+function expectBinarySorted(orders: string[][]) {
+	for (const ids of orders) {
+		expect(ids, `todo ids must stay in generated binary order: ${ids.join(', ')}`).toEqual(
+			[...ids].sort()
+		);
+	}
+}
+
 test.describe('todos (alice)', () => {
 	test('create, complete, reopen, archive', async ({ page }) => {
 		const title = `e2e todo ${Date.now()}`;
@@ -125,5 +143,56 @@ test.describe('todos (alice)', () => {
 			Math.min(...samples),
 			'stale-while-revalidate must never replace known rows with an empty view'
 		).toBeGreaterThan(0);
+	});
+
+	test('optimistic and authoritative states keep the same generated order', async ({
+		page
+	}) => {
+		await page.goto('/todos');
+		await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible();
+
+		await page.route('**/graphql', async (route) => {
+			const body = route.request().postData() ?? '';
+			if (!body.includes('todos_create') && !body.includes('todos_complete')) {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			await new Promise((resolve) => setTimeout(resolve, 700));
+			await route.fulfill({ response });
+		});
+
+		const title = `ordered optimism ${Date.now()}`;
+		await page.locator('#todo-title').fill(title);
+		const createResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('todos_create')
+		);
+		await page.getByRole('button', { name: /^add$/i }).click();
+		const openItem = page
+			.locator('.fn-panel')
+			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
+			.locator('.fn-item', { hasText: title });
+		await expect(openItem).toBeVisible({ timeout: 400 });
+		expectBinarySorted(await visibleTodoOrders(page));
+		await createResponse;
+		await expect(openItem).toBeVisible();
+		expectBinarySorted(await visibleTodoOrders(page));
+
+		const completeResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('todos_complete')
+		);
+		await openItem.getByRole('button', { name: /^done$/i }).click();
+		const doneItem = page
+			.locator('.fn-panel')
+			.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
+			.locator('.fn-item', { hasText: title });
+		await expect(doneItem).toBeVisible({ timeout: 400 });
+		expectBinarySorted(await visibleTodoOrders(page));
+		await completeResponse;
+		await expect(doneItem).toBeVisible();
+		expectBinarySorted(await visibleTodoOrders(page));
+		await page.unrouteAll({ behavior: 'wait' });
 	});
 });

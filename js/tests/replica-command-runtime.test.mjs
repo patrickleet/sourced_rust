@@ -656,6 +656,10 @@ test('binder registers the exact preset union and retries one frozen prepared un
 		async dispatch(request) {
 			requests.push(request);
 			assert.equal(replica.visible(Todo, GENERATED_ID).fields.owner, 'user-1');
+			assert.equal(
+				replica.visible(Todo, GENERATED_ID).fields.__typename,
+				Todo.id
+			);
 			if (requests.length === 1) throw new Error('ambiguous disconnect');
 			acceptedEnvelope = commandEnvelope(request.commandId, {
 				observations: [
@@ -926,6 +930,43 @@ test('explicit rejection removes only its own layer and rebases later work', asy
 	assert.equal(replica.layers.has(COMMAND_A), false);
 	assert.equal(replica.layers.has(COMMAND_B), true);
 	assert.equal(replica.visible(Todo, 'todo-1').fields.title, 'B');
+	runtime.dispose();
+});
+
+test('scoped GraphQL domain rejection without a receipt is not a protocol failure', async () => {
+	const replica = new FakeReplica();
+	replica.base.set(replicaRecordKey(Todo, 'todo-1'), {
+		revision: '1',
+		incarnation: '1',
+		fields: { id: 'todo-1', title: 'base' }
+	});
+	const response = commandEnvelope(COMMAND_A, {
+		data: null,
+		errors: [
+			{
+				message: 'rejected: cannot move: row already 0',
+				extensions: { code: 'REJECTED', status: 422 }
+			}
+		]
+	});
+	delete response.extensions.distributed.command;
+	const runtime = createReplicaCommandRuntime(
+		replica,
+		{ dispatch: () => Promise.resolve(response) },
+		{ createTodo: artifact() }
+	);
+
+	await assert.rejects(
+		runtime.commands.createTodo(
+			{ id: 'todo-1', title: 'optimistic' },
+			{ commandId: COMMAND_A }
+		),
+		(error) =>
+			error instanceof ReplicaCommandRuntimeError &&
+			error.code === 'REPLICA_COMMAND_REJECTED' &&
+			error.cause?.message === 'rejected: cannot move: row already 0'
+	);
+	assert.equal(replica.layers.has(COMMAND_A), false);
 	runtime.dispose();
 });
 
