@@ -401,6 +401,16 @@ pub fn build_graphql_engine(
     identity: IdentityConfig,
     change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
 ) -> Result<GraphqlEngine, String> {
+    build_graphql_engine_with_graphiql(pool, service, identity, change_rx, graphiql_enabled())
+}
+
+fn build_graphql_engine_with_graphiql(
+    pool: impl Into<GraphqlPoolSource>,
+    service: &Service,
+    identity: IdentityConfig,
+    change_rx: Option<tokio::sync::broadcast::Receiver<distributed::ReadModelChange>>,
+    graphiql: bool,
+) -> Result<GraphqlEngine, String> {
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
@@ -446,7 +456,7 @@ pub fn build_graphql_engine(
         .identity(identity)
         // GraphiQL is a local template convenience. Disable with GRAPHIQL=0
         // (never ship a public edge with GraphiQL + DevHeaders).
-        .graphiql(graphiql_enabled());
+        .graphiql(graphiql);
     if let Some(rx) = change_rx {
         b = b.change_stream(rx);
     }
@@ -542,5 +552,62 @@ mod client_surface_tests {
         distributed_admin_client_surface()
             .manifest()
             .expect("elevated application client manifest");
+    }
+
+    #[tokio::test]
+    async fn graphiql_does_not_change_the_postgres_runtime_client_manifest() {
+        let generated = distributed_client_surface().manifest().unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/distributed")
+            .unwrap();
+        let repository = distributed::PostgresRepository::new(pool.clone());
+        let service = build_service(
+            repository.clone(),
+            distributed::PostgresLockManager::new(pool),
+            repository.clone(),
+        );
+        let engine =
+            build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
+                .expect("engine");
+        let runtime = engine
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user", "admin"])
+            .unwrap();
+
+        assert_eq!(generated, runtime);
+
+        let request = serde_json::from_value(serde_json::json!({
+            "query": "{ todos @skip(if: true) { todo_id } }",
+            "extensions": {
+                "distributed": {
+                    "client": {
+                        "surface": {
+                            "kind": "application",
+                            "name": DISTRIBUTED_CLIENT_SURFACE,
+                            "roles": ["admin", "user"]
+                        },
+                        "schemaHash": generated.schema_fingerprint
+                    }
+                }
+            }
+        }))
+        .expect("generated application request");
+        let mut session = distributed::microsvc::Session::new();
+        session.set("x-role", "user");
+        session.set("x-user-id", "person-1");
+        let response = engine.execute(&session, request).await;
+        assert!(
+            !response.is_err(),
+            "the runtime must accept the generated application surface: {:?}",
+            response.errors
+        );
+        let envelope = response
+            .extensions
+            .get("distributed")
+            .expect("distributed protocol envelope");
+        let envelope = serde_json::to_value(envelope).expect("serialized protocol envelope");
+        assert_eq!(
+            envelope["schemaHash"], generated.schema_fingerprint,
+            "the authoritative response must attest the generated schema"
+        );
     }
 }
