@@ -627,17 +627,29 @@ type ReplicaSnapshotState = {
 };
 
 /**
- * A complete snapshot carries the generated result type. Loading, stale, and
- * partial-error snapshots accurately expose a deep sparse result instead.
+ * A structurally complete snapshot carries the generated result type even
+ * while its freshness is stale or a refresh failed. Only snapshots missing
+ * selected fields or index structure expose a deep sparse result.
  */
 export type ReplicaSnapshot<TData> = ReplicaSnapshotState &
 	(
-		| {
+		| ({
 				readonly data: TData;
-				readonly status: 'ready' | 'error';
-				readonly stale: false;
 				readonly complete: true;
-		  }
+		  } & (
+				| {
+						readonly status: 'ready';
+						readonly stale: false;
+				  }
+				| {
+						readonly status: 'stale';
+						readonly stale: true;
+				  }
+				| {
+						readonly status: 'error';
+						readonly stale: boolean;
+				  }
+		  ))
 		| {
 				readonly data: ReplicaSparse<TData>;
 				readonly status: 'loading';

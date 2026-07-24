@@ -65,4 +65,65 @@ test.describe('todos (alice)', () => {
 		const add = page.getByRole('button', { name: /^add$/i });
 		await expect(add).toBeDisabled();
 	});
+
+	test('commands preserve rendered cache while revalidating', async ({ page }) => {
+		await page.goto('/todos');
+		await expect(page.getByRole('heading', { name: /field notes/i })).toBeVisible();
+
+		// Establish one row that must remain visible while later commands update.
+		const baseline = `continuity baseline ${Date.now()}`;
+		await page.locator('#todo-title').fill(baseline);
+		await page.getByRole('button', { name: /^add$/i }).click();
+		await expect(page.locator('.fn-item', { hasText: baseline })).toBeVisible();
+
+		const navigations: string[] = [];
+		page.on('framenavigated', (frame) => {
+			if (frame === page.mainFrame()) navigations.push(frame.url());
+		});
+		await page.evaluate(() => {
+			const samples = [document.querySelectorAll('.fn-item').length];
+			const observer = new MutationObserver(() => {
+				samples.push(document.querySelectorAll('.fn-item').length);
+			});
+			observer.observe(document.querySelector('.fn-board')!, {
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+			Object.assign(globalThis, {
+				__distributedContinuitySamples: samples,
+				__distributedContinuityObserver: observer
+			});
+		});
+
+		const changed = `continuity changed ${Date.now()}`;
+		await page.locator('#todo-title').fill(changed);
+		await page.getByRole('button', { name: /^add$/i }).click();
+		const openItem = page
+			.locator('.fn-panel')
+			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
+			.locator('.fn-item', { hasText: changed });
+		await expect(openItem).toBeVisible();
+		await openItem.getByRole('button', { name: /^done$/i }).click();
+		await expect(
+			page
+				.locator('.fn-panel')
+				.filter({ has: page.getByRole('heading', { name: /^done$/i }) })
+				.locator('.fn-item', { hasText: changed })
+		).toBeVisible();
+
+		const samples = await page.evaluate(() => {
+			const state = globalThis as typeof globalThis & {
+				__distributedContinuitySamples: number[];
+				__distributedContinuityObserver: MutationObserver;
+			};
+			state.__distributedContinuityObserver.disconnect();
+			return state.__distributedContinuitySamples;
+		});
+		expect(navigations, 'commands must not navigate or reload the page').toEqual([]);
+		expect(
+			Math.min(...samples),
+			'stale-while-revalidate must never replace known rows with an empty view'
+		).toBeGreaterThan(0);
+	});
 });

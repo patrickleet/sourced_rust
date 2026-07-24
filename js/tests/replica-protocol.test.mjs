@@ -555,9 +555,10 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 	replica.markOptimisticLayerAccepted('cmd-server-only');
 	assert.equal(
 		watch.get().complete,
-		false,
-		'the unprovable optimistic membership must remain fail-closed'
+		true,
+		'the structurally complete optimistic view must remain renderable'
 	);
+	assert.equal(watch.get().stale, true);
 
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(fetches.length, 2);
@@ -568,7 +569,8 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 		])
 	);
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(watch.get().complete, false);
+	assert.equal(watch.get().complete, true);
+	assert.equal(watch.get().stale, true);
 	assert.deepEqual(watch.get().data.todos, [
 		{ id: 'todo-1', title: 'base' },
 		{ id: 'todo-2', title: 'optimistic' }
@@ -591,11 +593,13 @@ test('authoritative revalidation succeeds against confirmed data while a server-
 
 	assert.equal(
 		watch.get().complete,
-		false,
-		'the visible policy-safe overlay remains stale until command retirement'
+		true,
+		'the visible policy-safe overlay remains renderable until command retirement'
 	);
+	assert.equal(watch.get().stale, true);
 	replica.confirmOptimisticLayer('cmd-server-only', () => undefined);
 	assert.equal(watch.get().complete, true);
+	assert.equal(watch.get().stale, false);
 	assert.deepEqual(watch.get().data.todos, [
 		{ id: 'todo-1', title: 'base' },
 		{ id: 'todo-2', title: 'projected' }

@@ -46,9 +46,42 @@ test.describe('admin (admin user)', () => {
 			test.skip(true, 'no non-archived todos to force-archive');
 		}
 
+		const navigations: string[] = [];
+		page.on('framenavigated', (frame) => {
+			if (frame === page.mainFrame()) navigations.push(frame.url());
+		});
+		await page.evaluate(() => {
+			const samples = [document.querySelectorAll('.ad-table tbody tr').length];
+			const observer = new MutationObserver(() => {
+				samples.push(document.querySelectorAll('.ad-table tbody tr').length);
+			});
+			observer.observe(document.querySelector('.ad-table-wrap')!, {
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+			Object.assign(globalThis, {
+				__distributedAdminContinuitySamples: samples,
+				__distributedAdminContinuityObserver: observer
+			});
+		});
+
 		await forceBtn.click();
 		await expect(forceBtn).toBeHidden({ timeout: 15_000 }).catch(async () => {
 			await expect(page.getByText(/archived/i).first()).toBeVisible();
 		});
+		const samples = await page.evaluate(() => {
+			const state = globalThis as typeof globalThis & {
+				__distributedAdminContinuitySamples: number[];
+				__distributedAdminContinuityObserver: MutationObserver;
+			};
+			state.__distributedAdminContinuityObserver.disconnect();
+			return state.__distributedAdminContinuitySamples;
+		});
+		expect(navigations, 'force archive must not navigate or reload the page').toEqual([]);
+		expect(
+			Math.min(...samples),
+			'stale-while-revalidate must never replace known admin rows with an empty view'
+		).toBeGreaterThan(0);
 	});
 });

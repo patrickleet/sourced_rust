@@ -214,7 +214,11 @@ test('derived stale/delete decisions are overlays and accepted-state changes rec
 	);
 	assert.equal(engine.markOptimisticLayerAccepted('lifecycle'), true);
 	const stale = engine.read((reader) => reader.index(TODOS));
-	assert.equal(stale.complete, false);
+	assert.equal(
+		stale.complete,
+		true,
+		'freshness uncertainty must retain structurally complete visible data'
+	);
 	assert.equal(stale.metadata.staleReason, 'awaiting-projection');
 	assert.equal(delivered.length, 1);
 

@@ -555,6 +555,16 @@ export async function assertReplicaAdapterConformance({ mount }) {
 			'stale transition must start a fresh revalidation'
 		);
 		assert.equal(adapter.getSnapshot().status, 'stale');
+		assert.equal(
+			adapter.getSnapshot().complete,
+			true,
+			'stale complete data must remain renderable during revalidation'
+		);
+		assert.equal(
+			currentTitle(adapter.getSnapshot()),
+			'live',
+			'stale-while-revalidate must retain the last materialized view'
+		);
 		assert.equal(adapter.getSnapshot().fetching, true);
 		const staleFetch = transport.fetches.at(-1);
 		await adapter.settle(() => {
