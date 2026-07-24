@@ -2430,11 +2430,11 @@ function waitForProjectionPoll(
 			resolve();
 		};
 		timer = setTimeout(finish, delay);
-		(
-			timer as unknown as {
-				unref?: () => void;
-			}
-		).unref?.();
+		/*
+		 * This poll owns the unresolved projected lifecycle. Keep Node's timer
+		 * referenced until projection settlement or runtime disposal calls
+		 * `finish`, which clears the timer and every abort listener.
+		 */
 		for (const signal of signals) {
 			signal.addEventListener('abort', finish, { once: true });
 		}
