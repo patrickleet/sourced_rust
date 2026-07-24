@@ -1948,7 +1948,7 @@ test('authority invalidation during required status revalidation rejects stale s
 	runtime.dispose();
 });
 
-test('disposing a pending fact clears its scheduled durable-status timer', async () => {
+test('a pending fact owns its durable-status timer until disposal clears it', async () => {
 	const originalSetTimeout = globalThis.setTimeout;
 	const originalClearTimeout = globalThis.clearTimeout;
 	const scheduled = [];
@@ -1988,6 +1988,11 @@ test('disposing a pending fact clears its scheduled durable-status timer', async
 		);
 		const poll = scheduled.find(({ delay }) => delay === 25);
 		assert.ok(poll, 'accepted fact must schedule its first status poll');
+		assert.equal(
+			poll.timer.hasRef(),
+			true,
+			'pending projected work must keep Node alive until lifecycle settlement'
+		);
 
 		runtime.dispose();
 		await projectionFailure;
