@@ -48,6 +48,11 @@ use super::surface::{
     SurfaceOptions, SurfaceProjector, SurfaceSelection,
 };
 
+const GRAPHIQL_INTROSPECTION_MAX_DEPTH_FLOOR: usize = 15;
+const GRAPHIQL_INTROSPECTION_MAX_COMPLEXITY_FLOOR: usize = 10_000;
+const REQUEST_ANALYSIS_MAX_DEPTH: usize = 128;
+const REQUEST_ANALYSIS_MAX_SELECTIONS: usize = 4_096;
+
 #[derive(Clone)]
 pub enum GraphqlPool {
     #[cfg(feature = "postgres")]
@@ -277,6 +282,10 @@ pub(crate) struct EngineInner {
     pub role_surfaces: BTreeMap<String, Arc<Surface>>,
     pub application_surfaces: BTreeMap<String, Arc<Surface>>,
     pub schemas: HashMap<String, async_graphql::dynamic::Schema>,
+    /// Relaxed schemas selected only for pure introspection while GraphiQL is
+    /// enabled. Application operations always use `schemas` and its exact
+    /// manifest-fingerprinted execution limits.
+    pub graphiql_schemas: HashMap<String, async_graphql::dynamic::Schema>,
     pub change_hub: super::subscribe::ChangeHub,
     pub dialect: SqlDialect,
     /// Identity mode for HTTP session construction (see `identity` module).
@@ -506,15 +515,24 @@ impl GraphqlEngine {
         self.inner.strict_where
     }
 
-    pub async fn execute(&self, session: &Session, request: Request) -> Response {
+    pub async fn execute(&self, session: &Session, mut request: Request) -> Response {
         let role = resolve_role(session, &self.inner.anonymous_role);
-        let Some(schema) = self.inner.schemas.get(&role) else {
+        let introspection = self.inner.graphiql && is_pure_introspection_request(&mut request);
+        let schema = if introspection {
+            self.inner
+                .graphiql_schemas
+                .get(&role)
+                .or_else(|| self.inner.schemas.get(&role))
+        } else {
+            self.inner.schemas.get(&role)
+        };
+        let Some(schema) = schema else {
             return Response::from_errors(vec![ServerError::new(
                 format!("role `{role}` is not configured for GraphQL"),
                 None,
             )]);
         };
-        if has_multiple_protocol_query_roots(&self.inner, &role, &request) {
+        if has_multiple_protocol_query_roots(&self.inner, &role, &mut request) {
             return protocol_multi_root_error_response();
         }
 
@@ -522,6 +540,11 @@ impl GraphqlEngine {
             Ok(accumulator) => accumulator,
             Err(()) => return protocol_internal_error_response(),
         };
+        if introspection {
+            // The relaxed schema is defense-in-depth restricted even if a
+            // future classifier or request extension behaves unexpectedly.
+            request = request.only_introspection();
+        }
         let mut request = request.data(session.clone()).data(Arc::clone(&self.inner));
         if let Some(accumulator) = &accumulator {
             request = request.data(accumulator.clone());
@@ -547,10 +570,19 @@ impl GraphqlEngine {
     pub fn execute_stream(
         &self,
         session: &Session,
-        request: Request,
+        mut request: Request,
     ) -> BoxStream<'static, async_graphql::Response> {
         let role = resolve_role(session, &self.inner.anonymous_role);
-        let Some(schema) = self.inner.schemas.get(&role).cloned() else {
+        let introspection = self.inner.graphiql && is_pure_introspection_request(&mut request);
+        let schema = if introspection {
+            self.inner
+                .graphiql_schemas
+                .get(&role)
+                .or_else(|| self.inner.schemas.get(&role))
+        } else {
+            self.inner.schemas.get(&role)
+        };
+        let Some(schema) = schema.cloned() else {
             return stream::once(async move {
                 Response::from_errors(vec![ServerError::new(
                     format!("role `{role}` is not configured for GraphQL"),
@@ -559,7 +591,7 @@ impl GraphqlEngine {
             })
             .boxed();
         };
-        if has_multiple_protocol_query_roots(&self.inner, &role, &request) {
+        if has_multiple_protocol_query_roots(&self.inner, &role, &mut request) {
             return stream::once(async { protocol_multi_root_error_response() }).boxed();
         }
         let accumulator = match self.protocol_accumulator(&role, session, &request) {
@@ -573,6 +605,9 @@ impl GraphqlEngine {
             .is_some_and(|accumulator| accumulator.begin_stream().is_err())
         {
             return stream::once(async { protocol_internal_error_response() }).boxed();
+        }
+        if introspection {
+            request = request.only_introspection();
         }
         let mut request = request
             .data(session.clone())
@@ -800,11 +835,123 @@ fn operation_fingerprint(document: &str) -> String {
     format!("sha256:{:x}", Sha256::digest(document.as_bytes()))
 }
 
+/// True only when the selected query operation contains introspection root
+/// fields and nothing application-owned.
+///
+/// GraphiQL needs a deeper schema-introspection budget than application
+/// operations. Selection is deliberately fail-closed: mixed roots, missing or
+/// recursive fragments, over-budget documents, ambiguous operations,
+/// mutations, and subscriptions all stay on the normal
+/// manifest-fingerprinted schema.
+fn is_pure_introspection_request(request: &mut Request) -> bool {
+    if request.introspection_mode == async_graphql::IntrospectionMode::Disabled {
+        return false;
+    }
+    let operation_name = request.operation_name.clone();
+    // `Request::set_parsed_query` is public and async-graphql executes that
+    // cached AST when present. Inspect (and, for ordinary requests, populate)
+    // the exact AST execution will consume rather than reparsing `query`.
+    let Ok(document) = request.parsed_query() else {
+        return false;
+    };
+    let mut operations = document.operations.iter();
+    let operation = if let Some(requested) = operation_name.as_deref() {
+        operations
+            .find(|(name, _)| name.map(|name| name.as_str()) == Some(requested))
+            .map(|(_, operation)| operation)
+    } else {
+        let first = operations.next().map(|(_, operation)| operation);
+        if operations.next().is_some() {
+            None
+        } else {
+            first
+        }
+    };
+    let Some(operation) = operation else {
+        return false;
+    };
+    if operation.node.ty != async_graphql::parser::types::OperationType::Query {
+        return false;
+    }
+
+    fn selection_is_introspection_only(
+        selection: &async_graphql::parser::types::SelectionSet,
+        document: &async_graphql::parser::types::ExecutableDocument,
+        visiting: &mut BTreeSet<String>,
+        completed: &mut HashMap<String, bool>,
+        remaining_selections: &mut usize,
+        depth: usize,
+    ) -> bool {
+        if depth > REQUEST_ANALYSIS_MAX_DEPTH
+            || selection.items.is_empty()
+            || selection.items.len() > *remaining_selections
+        {
+            return false;
+        }
+        *remaining_selections -= selection.items.len();
+        selection.items.iter().all(|item| match &item.node {
+            async_graphql::parser::types::Selection::Field(field) => matches!(
+                field.node.name.node.as_str(),
+                "__schema" | "__type" | "__typename"
+            ),
+            async_graphql::parser::types::Selection::InlineFragment(fragment) => {
+                selection_is_introspection_only(
+                    &fragment.node.selection_set.node,
+                    document,
+                    visiting,
+                    completed,
+                    remaining_selections,
+                    depth + 1,
+                )
+            }
+            async_graphql::parser::types::Selection::FragmentSpread(spread) => {
+                let name = spread.node.fragment_name.node.to_string();
+                if let Some(valid) = completed.get(&name) {
+                    return *valid;
+                }
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let valid = document
+                    .fragments
+                    .get(&spread.node.fragment_name.node)
+                    .is_some_and(|fragment| {
+                        selection_is_introspection_only(
+                            &fragment.node.selection_set.node,
+                            document,
+                            visiting,
+                            completed,
+                            remaining_selections,
+                            depth + 1,
+                        )
+                    });
+                visiting.remove(&name);
+                completed.insert(name, valid);
+                valid
+            }
+        })
+    }
+
+    let mut remaining_selections = REQUEST_ANALYSIS_MAX_SELECTIONS;
+    selection_is_introspection_only(
+        &operation.node.selection_set.node,
+        &document,
+        &mut BTreeSet::new(),
+        &mut HashMap::new(),
+        &mut remaining_selections,
+        0,
+    )
+}
+
 /// Until the query executor owns an operation-wide database transaction, two
 /// independent read roots cannot truthfully share one causal snapshot. Fail
 /// closed instead of merging separately observed rows and duplicate index
 /// vectors into an envelope that generated clients would treat as atomic.
-fn has_multiple_protocol_query_roots(inner: &EngineInner, role: &str, request: &Request) -> bool {
+fn has_multiple_protocol_query_roots(
+    inner: &EngineInner,
+    role: &str,
+    request: &mut Request,
+) -> bool {
     if inner.protocol.is_none() {
         return false;
     }
@@ -819,11 +966,12 @@ fn has_multiple_protocol_query_roots(inner: &EngineInner, role: &str, request: &
         return false;
     }
 
-    let Ok(document) = async_graphql::parser::parse_query(&request.query) else {
+    let operation_name = request.operation_name.clone();
+    let Ok(document) = request.parsed_query() else {
         return false;
     };
     let mut operations = document.operations.iter();
-    let operation = if let Some(requested) = request.operation_name.as_deref() {
+    let operation = if let Some(requested) = operation_name.as_deref() {
         operations
             .find(|(name, _)| name.map(|name| name.as_str()) == Some(requested))
             .map(|(_, operation)| operation)
@@ -847,12 +995,18 @@ fn has_multiple_protocol_query_roots(inner: &EngineInner, role: &str, request: &
         document: &'a async_graphql::parser::types::ExecutableDocument,
         query_roots: &BTreeSet<&str>,
         visiting: &mut BTreeSet<String>,
+        completed: &mut BTreeSet<String>,
+        remaining_selections: &mut usize,
         response_keys: &mut BTreeSet<String>,
         depth: usize,
-    ) {
-        if depth > 128 || response_keys.len() > 1 {
-            return;
+    ) -> Result<(), ()> {
+        if response_keys.len() > 1 {
+            return Ok(());
         }
+        if depth > REQUEST_ANALYSIS_MAX_DEPTH || selection.items.len() > *remaining_selections {
+            return Err(());
+        }
+        *remaining_selections -= selection.items.len();
         for item in &selection.items {
             match &item.node {
                 async_graphql::parser::types::Selection::Field(field) => {
@@ -866,42 +1020,59 @@ fn has_multiple_protocol_query_roots(inner: &EngineInner, role: &str, request: &
                         document,
                         query_roots,
                         visiting,
+                        completed,
+                        remaining_selections,
                         response_keys,
                         depth + 1,
-                    );
+                    )?;
                 }
                 async_graphql::parser::types::Selection::FragmentSpread(spread) => {
                     let name = spread.node.fragment_name.node.to_string();
-                    if !visiting.insert(name.clone()) {
+                    if completed.contains(&name) {
                         continue;
                     }
-                    if let Some(fragment) = document.fragments.get(&spread.node.fragment_name.node)
-                    {
-                        collect_root_keys(
-                            &fragment.node.selection_set.node,
-                            document,
-                            query_roots,
-                            visiting,
-                            response_keys,
-                            depth + 1,
-                        );
+                    if !visiting.insert(name.clone()) {
+                        return Err(());
                     }
+                    let Some(fragment) = document.fragments.get(&spread.node.fragment_name.node)
+                    else {
+                        return Err(());
+                    };
+                    let result = collect_root_keys(
+                        &fragment.node.selection_set.node,
+                        document,
+                        query_roots,
+                        visiting,
+                        completed,
+                        remaining_selections,
+                        response_keys,
+                        depth + 1,
+                    );
                     visiting.remove(&name);
+                    result?;
+                    completed.insert(name);
                 }
             }
+            if response_keys.len() > 1 {
+                return Ok(());
+            }
         }
+        Ok(())
     }
 
     let mut response_keys = BTreeSet::new();
-    collect_root_keys(
+    let mut remaining_selections = REQUEST_ANALYSIS_MAX_SELECTIONS;
+    let analysis = collect_root_keys(
         &operation.node.selection_set.node,
         &document,
         &query_roots,
         &mut BTreeSet::new(),
+        &mut BTreeSet::new(),
+        &mut remaining_selections,
         &mut response_keys,
         0,
     );
-    response_keys.len() > 1
+    analysis.is_err() || response_keys.len() > 1
 }
 
 fn protocol_multi_root_error_response() -> Response {
@@ -1640,23 +1811,11 @@ impl GraphqlEngineBuilder {
     }
     /// Enable the GraphiQL IDE on `GET /graphql`.
     ///
-    /// Also raises depth/complexity floors so GraphiQL's full introspection
-    /// query succeeds. The production default `max_depth` (8) is intentional
-    /// for client queries; GraphiQL's `TypeRef` fragment nests `ofType` seven
-    /// levels deep under `__schema.types.fields.type`, which exceeds 8 and
-    /// surfaces as "Query is nested too deep" / "Error fetching schema".
+    /// GraphiQL's full introspection query receives an isolated depth/complexity
+    /// allowance. Enabling an operational IDE never changes application query
+    /// limits, generated client manifests, or schema fingerprints.
     pub fn graphiql(mut self, on: bool) -> Self {
         self.graphiql = on;
-        if on {
-            // Classic GraphiQL IntrospectionQuery depth is ~12–15.
-            if self.max_depth < 15 {
-                self.max_depth = 15;
-            }
-            // Full schema dump is large; keep a generous budget for the IDE only.
-            if self.max_complexity < 10_000 {
-                self.max_complexity = 10_000;
-            }
-        }
         self
     }
     /// Configure GraphQL HTTP identity mode (TrustedProxy / OidcBearer / Hybrid / DevHeaders).
@@ -1847,6 +2006,7 @@ impl GraphqlEngineBuilder {
 
         // Build per-role dynamic schemas.
         let mut schemas = HashMap::new();
+        let mut graphiql_schemas = HashMap::new();
         let mut role_surfaces = BTreeMap::new();
         let mut protocol_roles = BTreeMap::new();
         for role in &roles {
@@ -1866,6 +2026,17 @@ impl GraphqlEngineBuilder {
                 role == &anonymous && !self.introspection_for_anonymous,
             )
             .map_err(GraphqlBuildError)?;
+            if self.graphiql {
+                let graphiql_schema = dyn_schema::build_role_schema(
+                    &role_surface,
+                    self.max_depth.max(GRAPHIQL_INTROSPECTION_MAX_DEPTH_FLOOR),
+                    self.max_complexity
+                        .max(GRAPHIQL_INTROSPECTION_MAX_COMPLEXITY_FLOOR),
+                    role == &anonymous && !self.introspection_for_anonymous,
+                )
+                .map_err(GraphqlBuildError)?;
+                graphiql_schemas.insert(role.clone(), graphiql_schema);
+            }
             if self.protocol_token_key.is_some() {
                 let service_id = self
                     .service_id
@@ -2019,6 +2190,7 @@ impl GraphqlEngineBuilder {
             role_surfaces,
             application_surfaces,
             schemas,
+            graphiql_schemas,
             change_hub,
             dialect,
             identity: self.identity,
@@ -2408,6 +2580,19 @@ mod client_surface_parity_tests {
         }
     }
 
+    fn duplicated_introspection_fragment_dag(depth: usize) -> String {
+        let mut document = String::from("query Introspection { ...F0 }\n");
+        for index in 0..depth {
+            document.push_str(&format!(
+                "fragment F{index} on Query {{ ...F{} ...F{} }}\n",
+                index + 1,
+                index + 1
+            ));
+        }
+        document.push_str(&format!("fragment F{depth} on Query {{ __typename }}\n"));
+        document
+    }
+
     fn test_command<I, O>(
         command_name: &str,
         field_name: &str,
@@ -2571,6 +2756,195 @@ mod client_surface_parity_tests {
         assert_eq!(manifest.execution.complexity.version, 1);
         assert_eq!(manifest.execution.complexity.scalar, 1);
         assert_eq!(manifest.execution.complexity.list_fanout, 5);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn graphiql_isolated_introspection_does_not_change_the_client_contract() {
+        let build = |graphiql| {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap();
+            let project = DistributedProjectManifest::new("orders-service").table_schema(orders());
+            GraphqlEngine::from_manifest(&project, pool)
+                .unwrap()
+                .roles(&["user"])
+                .grant_all("user")
+                .client_application_surface("console", ["user"])
+                .protocol_token_key([7; 32])
+                .graphiql(graphiql)
+                .build()
+                .unwrap()
+        };
+        let without_graphiql = build(false);
+        let with_graphiql = build(true);
+        let generated = without_graphiql
+            .client_manifest_for_application("console", &["user"])
+            .unwrap();
+        let runtime = with_graphiql
+            .client_manifest_for_application("console", &["user"])
+            .unwrap();
+
+        assert_eq!(generated, runtime);
+        assert_eq!(runtime.execution.max_depth, 8);
+        assert_eq!(runtime.execution.max_complexity, 500);
+        assert_eq!(
+            with_graphiql.inner.schemas.get("user").unwrap().sdl(),
+            with_graphiql
+                .inner
+                .graphiql_schemas
+                .get("user")
+                .unwrap()
+                .sdl()
+        );
+
+        let mut session = Session::new();
+        session.set("x-role", "user");
+        let deep_introspection = r#"
+            query GraphiqlIntrospection {
+              __type(name: "OrderView") {
+                fields {
+                  type {
+                    ofType {
+                      ofType {
+                        ofType {
+                          ofType {
+                            ofType {
+                              ofType {
+                                ofType {
+                                  name
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let strict = without_graphiql
+            .execute(&session, Request::new(deep_introspection))
+            .await;
+        assert!(
+            strict.is_err(),
+            "the normal schema must retain the manifest-fingerprinted depth limit"
+        );
+        let relaxed = with_graphiql
+            .execute(&session, Request::new(deep_introspection))
+            .await;
+        assert!(
+            !relaxed.is_err(),
+            "pure GraphiQL introspection should use its isolated allowance: {:?}",
+            relaxed.errors
+        );
+
+        let mut dag_request = Request::new(duplicated_introspection_fragment_dag(32));
+        assert!(
+            !has_multiple_protocol_query_roots(&with_graphiql.inner, "user", &mut dag_request),
+            "protocol root analysis must memoize shared fragment DAGs"
+        );
+        let executable_dag = duplicated_introspection_fragment_dag(12);
+        let dag_response = with_graphiql
+            .execute(&session, Request::new(&executable_dag))
+            .await;
+        assert!(
+            !dag_response.is_err(),
+            "memoized introspection DAG should execute: {:?}",
+            dag_response.errors
+        );
+        let dag_stream = with_graphiql
+            .execute_stream(&session, Request::new(executable_dag))
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(dag_stream.len(), 1);
+        assert!(
+            !dag_stream[0].is_err(),
+            "memoized introspection DAG should execute through the streaming path"
+        );
+
+        let disabled = with_graphiql
+            .execute(
+                &session,
+                Request::new("{ __schema { queryType { name } } }").disable_introspection(),
+            )
+            .await;
+        assert_eq!(
+            disabled.data,
+            Value::Null,
+            "GraphiQL must not override request-level introspection denial"
+        );
+        let streamed = with_graphiql
+            .execute_stream(
+                &session,
+                Request::new("{ __schema { queryType { name } } }").disable_introspection(),
+            )
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(streamed.len(), 1);
+        assert_eq!(
+            streamed[0].data,
+            Value::Null,
+            "the streaming path must preserve request-level introspection denial"
+        );
+    }
+
+    #[test]
+    fn graphiql_relaxation_is_selected_only_for_pure_introspection() {
+        let classify = |mut request| is_pure_introspection_request(&mut request);
+        assert!(classify(Request::new(
+            "query Introspection { __schema { queryType { name } } }"
+        )));
+        assert!(classify(
+            Request::new(
+                "query App { orders { order_id } } query Introspection { __type(name: \"OrderView\") { name } }"
+            )
+            .operation_name("Introspection")
+        ));
+        assert!(classify(Request::new(
+            "query ThroughFragment { ...Introspection } fragment Introspection on Query { __schema { queryType { name } } }"
+        )));
+        assert!(!classify(Request::new(
+            "query Mixed { __typename orders { order_id } }"
+        )));
+        assert!(!classify(Request::new(
+            "query App { orders { order_id } } query Introspection { __schema { queryType { name } } }"
+        )));
+        assert!(!classify(Request::new(
+            "mutation NotIntrospection { __typename }"
+        )));
+        assert!(!classify(Request::new(
+            "query ThroughFragment { ...Missing }"
+        )));
+        assert!(!classify(
+            Request::new("{ __schema { queryType { name } } }").disable_introspection()
+        ));
+
+        let mut cached_application =
+            Request::new("query Introspection { __schema { queryType { name } } }");
+        cached_application.set_parsed_query(
+            async_graphql::parser::parse_query("query App { orders { order_id } }").unwrap(),
+        );
+        assert!(
+            !is_pure_introspection_request(&mut cached_application),
+            "classification must inspect the same cached AST async-graphql executes"
+        );
+
+        assert!(
+            classify(Request::new(duplicated_introspection_fragment_dag(32))),
+            "shared fragment DAGs must be memoized rather than expanded exponentially"
+        );
+
+        let over_budget = (0..=REQUEST_ANALYSIS_MAX_SELECTIONS)
+            .map(|index| format!("f{index}: __typename"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !classify(Request::new(format!("query TooWide {{ {over_budget} }}"))),
+            "untrusted classifier work must remain explicitly bounded"
+        );
     }
 
     #[cfg(feature = "sqlite")]
