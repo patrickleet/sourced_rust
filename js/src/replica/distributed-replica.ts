@@ -45,9 +45,11 @@ import type {
 } from './diagnostics.js';
 import {
 	replicaCommandAuthority,
+	replicaCommandDirectProjection,
 	replicaResultObservation,
 	type ReplicaCommandAuthorityRegistration,
 	type ReplicaCommandAuthoritySnapshot,
+	type ReplicaCommandDirectProjection,
 	type ReplicaCommandSurfaceContract,
 	type ReplicaResultObservationRegistration
 } from './command-runtime.js';
@@ -435,6 +437,56 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				this.#resultObservers.delete(observer);
 			}
 		});
+	}
+
+	[replicaCommandDirectProjection](
+		commandId: string,
+		projection: ReplicaCommandDirectProjection
+	): void {
+		const { model, identity, evidence, fields } = projection;
+		if (evidence.model !== model.id || evidence.tombstone) {
+			protocolInvalid('extensions.distributed.command.records');
+		}
+		const recordKey = replicaRecordKey(model, identity);
+		const pendingRecordClocks = new Map<string, RecordProtocolClock>();
+		const pendingRecordScopes = new Map<DistributedOpaqueString, string>();
+		const pendingAnonymousRecordClocks = new Map<
+			DistributedOpaqueString,
+			AnonymousRecordProtocolClock
+		>();
+		const consumedAnonymousRecordClocks = new Set<DistributedOpaqueString>();
+		const apply = this.#resolveRecordEvidence(
+			recordKey,
+			evidence,
+			pendingRecordClocks,
+			pendingRecordScopes,
+			pendingAnonymousRecordClocks,
+			consumedAnonymousRecordClocks
+		);
+
+		this.confirmOptimisticLayer(commandId, (writer) => {
+			if (!apply) return false;
+			return writer.writeRecord(model, identity, evidence.revision, {
+				incarnation: evidence.incarnation,
+				fields
+			});
+		});
+
+		for (const [key, clock] of pendingRecordClocks) {
+			this.#recordClocks.set(key, clock);
+			this.#recordKeysByScope.set(clock.scopeToken, key);
+		}
+		for (const [scopeToken, key] of pendingRecordScopes) {
+			this.#recordKeysByScope.set(scopeToken, key);
+		}
+		for (const [scopeToken, clock] of pendingAnonymousRecordClocks) {
+			if (!consumedAnonymousRecordClocks.has(scopeToken)) {
+				this.#anonymousRecordClocks.set(scopeToken, clock);
+			}
+		}
+		for (const scopeToken of consumedAnonymousRecordClocks) {
+			this.#anonymousRecordClocks.delete(scopeToken);
+		}
 	}
 
 	read<TData, TVariables extends GraphqlVariables>(

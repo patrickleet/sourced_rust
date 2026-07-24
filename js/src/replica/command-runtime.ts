@@ -4,6 +4,7 @@ import {
 	type DistributedCommandMetadata,
 	type DistributedCommandState,
 	type DistributedProtocolEnvelope,
+	type DistributedRecordRevision,
 	type DistributedTrustedPreset
 } from '../protocol.js';
 import type { GqlError } from '../types.js';
@@ -26,6 +27,7 @@ import type {
 	ReplicaAuthoritativeScope,
 	ReplicaBaseWriter,
 	ReplicaClientSurface,
+	ReplicaIdentity,
 	ReplicaModelArtifact,
 	ReplicaOptimisticWriter,
 	ReplicaResultEnvelope,
@@ -58,6 +60,18 @@ export const replicaCommandAuthority = Symbol('distributed.replica.command-autho
 export const replicaResultObservation = Symbol(
 	'distributed.replica.result-observation'
 );
+/**
+ * Package-private direct-projection commit implemented by DistributedReplica.
+ *
+ * The replica must advance its protocol record clock in the same confirmation
+ * path as the base-cache write. Otherwise an older query response can be
+ * mistaken for an incomplete write after the cache correctly rejects it.
+ *
+ * @internal
+ */
+export const replicaCommandDirectProjection = Symbol(
+	'distributed.replica.command-direct-projection'
+);
 /** @internal Package-private; intentionally absent from the public barrel. */
 export const replicaCommandProjectedLifecycle = Symbol(
 	'distributed.replica.command-projected-lifecycle'
@@ -88,6 +102,13 @@ export type ReplicaResultObservationRegistration = Readonly<{
 	dispose(): void;
 }>;
 
+export type ReplicaCommandDirectProjection = Readonly<{
+	model: ReplicaModelArtifact;
+	identity: ReplicaIdentity;
+	evidence: DistributedRecordRevision;
+	fields: Readonly<Record<string, ReplicaValue>>;
+}>;
+
 export type ReplicaCommandAuthorityHost = DistributedReplica & {
 	readonly [replicaCommandAuthority]?: (
 		contract: ReplicaCommandSurfaceContract
@@ -95,6 +116,10 @@ export type ReplicaCommandAuthorityHost = DistributedReplica & {
 	readonly [replicaResultObservation]?: (
 		observer: (envelope: ReplicaResultEnvelope<unknown>) => void
 	) => ReplicaResultObservationRegistration;
+	readonly [replicaCommandDirectProjection]?: (
+		commandId: string,
+		projection: ReplicaCommandDirectProjection
+	) => void;
 };
 
 export type ReplicaCommandTransportRequest = Readonly<{
@@ -2318,7 +2343,7 @@ function cloneOutputJson(
 }
 
 function confirmDirectProjection<TInput, TOutput>(
-	replica: DistributedReplica,
+	replica: ReplicaCommandAuthorityHost,
 	prepared: ReplicaPreparedCommand<TInput, TOutput>,
 	output: TOutput,
 	metadata: DistributedCommandMetadata
@@ -2368,6 +2393,16 @@ function confirmDirectProjection<TInput, TOutput>(
 		new Set(),
 		0
 	) as Readonly<Record<string, ReplicaValue>>;
+	const confirmProtocolProjection = replica[replicaCommandDirectProjection];
+	if (confirmProtocolProjection !== undefined) {
+		confirmProtocolProjection.call(replica, prepared.commandId, {
+			model,
+			identity: Object.freeze(identity),
+			evidence: record,
+			fields
+		});
+		return;
+	}
 	replica.confirmOptimisticLayer(prepared.commandId, (writer: ReplicaBaseWriter) =>
 		writer.writeRecord(model, Object.freeze(identity), record.revision, {
 			incarnation: record.incarnation,
