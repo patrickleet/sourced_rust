@@ -81,7 +81,13 @@ function materializeBranch(
 		};
 	}
 	const stale = index.metadata.staleReason !== undefined;
-	const indexComplete = index.complete && !stale;
+	/*
+	 * Completeness and freshness are independent. A stale complete index still
+	 * has a structurally materializable result and remains visible during
+	 * stale-while-revalidate. Partial/lifecycle-invalidated indexes explicitly
+	 * carry `complete=false` and remain sparse.
+	 */
+	const indexComplete = index.complete;
 	if (index.metadata.nullValue) {
 		return {
 			value: null,

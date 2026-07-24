@@ -1068,7 +1068,12 @@ class PurposeBuiltCacheEngine implements CacheEngine {
 		if (operation.kind === 'mark-index-stale') {
 			const index = indexes.get(operation.key);
 			if (!index || index.deleted) return;
-			index.complete = false;
+			/*
+			 * Staleness is a freshness claim, not structural data loss. Keep a
+			 * previously complete visible index renderable while the owner
+			 * revalidates it. Operations that actually remove membership or
+			 * records explicitly clear `complete` in their own lifecycle path.
+			 */
 			if (
 				index.staleRevision === undefined ||
 				index.staleRevision < index.revision
