@@ -591,6 +591,7 @@ export type ReplicaTransportRequest<
 export type ReplicaLiveObserver<TData = unknown> = {
 	next(result: ReplicaResultEnvelope<TData>): void;
 	error(error: unknown): void;
+	complete(): void;
 };
 
 export type ReplicaTransport = {
@@ -718,6 +719,23 @@ export type ReplicaIndexInspection = {
 
 export type ReplicaIdentity = ReplicaValue | readonly ReplicaValue[];
 
+/** Exact relationship identity used to target authoritative query revalidation. */
+export type ReplicaRevalidationRelationship = {
+	readonly sourceModel: string;
+	readonly field: string;
+	readonly targetModel: string;
+};
+
+/**
+ * Compiler-owned inventory used to find active operations affected by a
+ * command. An empty inventory conservatively targets every active operation.
+ */
+export type ReplicaRevalidationPlan = {
+	readonly dependencies: readonly string[];
+	readonly models: readonly string[];
+	readonly relationships: readonly ReplicaRevalidationRelationship[];
+};
+
 export type ReplicaIndexTarget = {
 	readonly parent?: string;
 	readonly field: string;
@@ -785,6 +803,11 @@ export interface DistributedReplica {
 		envelope: ReplicaResultEnvelope<TData>,
 		source: ReplicaWriteSource
 	): void;
+	/**
+	 * Force deduplicated authoritative reads for active operations selected by a
+	 * compiler-owned dependency/model/relationship inventory.
+	 */
+	revalidate(plan: ReplicaRevalidationPlan): Promise<void>;
 	/**
 	 * Proactively closes the current authorization generation.
 	 *

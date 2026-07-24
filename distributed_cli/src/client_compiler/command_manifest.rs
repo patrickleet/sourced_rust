@@ -947,6 +947,11 @@ fn validate_confirmations(
         _ => {}
     }
     let Some(confirmations) = confirmations else {
+        if command.extensions.consistency.kind == ManifestConsistencyKind::Accepted {
+            report
+                .commands_requiring_revalidation
+                .insert(command.name.clone());
+        }
         return Ok(());
     };
     if confirmations.version != 1 {

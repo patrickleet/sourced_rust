@@ -108,7 +108,8 @@ function todosFrame(revision, data, errors = undefined) {
 				trustedPresets: [],
 				snapshot: {
 					scopeToken: 'snapshot:todos',
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: rows.map((row, index) => ({
 						path: ['todos', String(index)],
 						model: Todo.id,

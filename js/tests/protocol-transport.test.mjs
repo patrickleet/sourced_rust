@@ -48,7 +48,8 @@ function distributedEnvelope() {
 		},
 		snapshot: {
 			scopeToken: 'opaque:query-snapshot',
-			complete: true,
+			recordsComplete: true,
+			indexesComparable: true,
 			records: [
 				{
 					path: ['live'],
@@ -166,6 +167,140 @@ test('protocol parser validates receipts while retaining future metadata opaquel
 			error instanceof DistributedProtocolError &&
 			error.path.endsWith('.position')
 	);
+
+	const {
+		recordsComplete: _recordsComplete,
+		indexesComparable: _indexesComparable,
+		...legacySnapshot
+	} = distributedEnvelope().snapshot;
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...distributedEnvelope(),
+				snapshot: { ...legacySnapshot, complete: true }
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path ===
+				'extensions.distributed.snapshot.recordsComplete'
+	);
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...distributedEnvelope(),
+				snapshot: {
+					...distributedEnvelope().snapshot,
+					indexesComparable: undefined
+				}
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path ===
+				'extensions.distributed.snapshot.indexesComparable'
+	);
+});
+
+test('protocol parser requires exact live snapshot alignment', () => {
+	const envelope = distributedEnvelope();
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...envelope,
+				snapshot: undefined,
+				live: { supported: false, reset: true, cursors: [] }
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path === 'extensions.distributed.snapshot'
+	);
+	assert.throws(
+		() =>
+			parseDistributedProtocolEnvelope({
+				...envelope,
+				snapshot: {
+					...envelope.snapshot,
+					indexesComparable: false,
+					indexes: [],
+					observations: []
+				},
+				live: { supported: true, reset: true, cursors: [] }
+			}),
+		(error) =>
+			error instanceof DistributedProtocolError &&
+			error.path ===
+				'extensions.distributed.snapshot.indexesComparable'
+	);
+
+	const mismatches = [
+		[
+			'empty supported cursor inventory',
+			{
+				...envelope,
+				snapshot: { ...envelope.snapshot, indexes: [] },
+				live: { ...envelope.live, cursors: [] }
+			}
+		],
+		[
+			'cursor count',
+			{
+				...envelope,
+				live: { ...envelope.live, cursors: [] }
+			}
+		],
+		[
+			'cursor projection',
+			{
+				...envelope,
+				live: {
+					...envelope.live,
+					cursors: [
+						{ ...envelope.live.cursors[0], projection: 'other-projector' }
+					]
+				}
+			}
+		],
+		[
+			'cursor position',
+			{
+				...envelope,
+				live: {
+					...envelope.live,
+					cursors: [{ ...envelope.live.cursors[0], position: '1' }]
+				}
+			}
+		],
+		[
+			'cursor token',
+			{
+				...envelope,
+				live: {
+					...envelope.live,
+					cursors: [{ ...envelope.live.cursors[0], token: 'opaque:other' }]
+				}
+			}
+		],
+		[
+			'missing snapshot resume',
+			{
+				...envelope,
+				snapshot: {
+					...envelope.snapshot,
+					indexes: envelope.snapshot.indexes.map(
+						({ resume: _resume, ...index }) => index
+					)
+				}
+			}
+		]
+	];
+	for (const [description, invalidEnvelope] of mismatches) {
+		assert.throws(
+			() => parseDistributedProtocolEnvelope(invalidEnvelope),
+			(error) =>
+				error instanceof DistributedProtocolError &&
+				error.path === 'extensions.distributed.live.cursors',
+			description
+		);
+	}
 });
 
 test('protocol parser accepts 64 resume cursors and rejects 65', () => {

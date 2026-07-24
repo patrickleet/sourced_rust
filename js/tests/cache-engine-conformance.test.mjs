@@ -435,6 +435,52 @@ test('missing index checkpoints survive extract/restore without inventing member
 	assert.deepEqual(zeroRestored.read((reader) => reader.index(zero)?.records), [TODO]);
 });
 
+test('confirmed index fences include visible, stale, and hidden base checkpoints', () => {
+	const engine = createCacheEngine();
+	const stale = cacheIndexKey({ field: 'stale_todos', arguments: {} });
+	const deleted = cacheIndexKey({ field: 'deleted_todos', arguments: {} });
+	const hiddenStale = cacheIndexKey({
+		field: 'hidden_stale_todos',
+		arguments: {}
+	});
+	const missing = cacheIndexKey({ field: 'missing_todos', arguments: {} });
+	engine.batch((writer) => {
+		writer.writeIndex({
+			key: ALL,
+			revision: 5,
+			records: [TODO],
+			complete: true
+		});
+		writer.writeIndex({
+			key: stale,
+			revision: 4,
+			records: [TODO],
+			complete: true
+		});
+		writer.markIndexStale(stale, 'partial-error', 7);
+		writer.deleteIndex(deleted, 9);
+		writer.markIndexStale(hiddenStale, 'missing-result', 11);
+	});
+
+	assert.deepEqual(
+		[...engine.confirmedIndexFences([
+			ALL,
+			stale,
+			deleted,
+			hiddenStale,
+			missing
+		])],
+		[
+			[ALL, '5'],
+			[stale, '7'],
+			[deleted, '9'],
+			[hiddenStale, '11']
+		]
+	);
+	assert.equal(engine.read((reader) => reader.index(deleted)), undefined);
+	assert.equal(engine.read((reader) => reader.index(hiddenStale)), undefined);
+});
+
 test('one authoritative batch may rewrite lifecycle-invalidated membership at its checkpoint', () => {
 	const engine = createCacheEngine();
 	const metadata = {

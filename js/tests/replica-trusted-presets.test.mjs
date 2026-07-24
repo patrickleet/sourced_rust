@@ -91,7 +91,7 @@ function presetArtifact(overrides = {}) {
 		],
 		revalidation: {
 			version: 1,
-			required: false,
+			required: true,
 			dependencies: ['todo_rows'],
 			models: ['Todo'],
 			relationships: []

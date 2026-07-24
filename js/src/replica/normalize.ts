@@ -43,6 +43,12 @@ export type ReplicaNormalizationProtocol = {
 	readonly indexRevision: ReplicaRevision;
 	readonly writeIndexes: boolean;
 	readonly indexesComplete: boolean;
+	/**
+	 * Missing causal record evidence may use operation-local snapshot storage.
+	 * Such rows remain renderable without impersonating a shared normalized
+	 * identity.
+	 */
+	readonly allowSnapshotOnlyRecords: boolean;
 	readonly record: (
 		path: readonly string[],
 		model: string,
@@ -333,13 +339,26 @@ function normalizeObject(
 			key
 		);
 		if (resolution === undefined) {
-			return { key, partial: true };
+			if (!protocol.allowSnapshotOnlyRecords) {
+				return { key, partial: true };
+			}
+			/*
+			 * This row came from an exact authorized query, but the selected
+			 * surface has no safely comparable record clock for its model.
+			 * Scope the storage to this operation/index position so a later
+			 * snapshot can replace it without corrupting causally normalized
+			 * state shared by another operation.
+			 */
+			key = embeddedRecordKey(artifactId, enclosingIndexKey, ordinal);
+			revision = snapshotRevision;
+			incarnation = snapshotRevision;
+		} else {
+			if (resolution.evidence.tombstone) {
+				throw new TypeError('live GraphQL row carries tombstone record evidence');
+			}
+			revision = resolution.evidence.revision;
+			incarnation = resolution.evidence.incarnation;
 		}
-		if (resolution?.evidence.tombstone) {
-			throw new TypeError('live GraphQL row carries tombstone record evidence');
-		}
-		revision = resolution.evidence.revision;
-		incarnation = resolution.evidence.incarnation;
 	} else {
 		// Embedded output is an operation-local replacement snapshot, not a
 		// normalized server record. Its synthetic incarnation deliberately

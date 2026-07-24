@@ -307,10 +307,19 @@ fn trusted_presets_require_an_exact_typed_descriptor() {
 }
 
 #[test]
-fn missing_effects_and_unavailable_confirmation_require_revalidation() {
+fn missing_effects_and_nonfinite_confirmations_require_revalidation() {
     let mut missing_effects = command();
     missing_effects.extensions.effects = None;
     let report = validate(&missing_effects).expect("effects may be withheld");
+    assert!(report
+        .commands_requiring_revalidation
+        .contains("CreateTodo"));
+
+    let mut accepted_without_confirmations = command();
+    accepted_without_confirmations.extensions.consistency.kind = ManifestConsistencyKind::Accepted;
+    accepted_without_confirmations.extensions.confirmations = None;
+    let report = validate(&accepted_without_confirmations)
+        .expect("accepted effects may omit a finite confirmation contract");
     assert!(report
         .commands_requiring_revalidation
         .contains("CreateTodo"));
