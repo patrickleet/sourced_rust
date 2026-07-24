@@ -19,6 +19,7 @@
 		deadBySuicide: 3,
 		deadByHole: 4
 	} as const;
+	type Direction = 'up' | 'down' | 'left' | 'right';
 
 	let { data } = $props();
 	let actionError = $state<string | null>(null);
@@ -113,8 +114,34 @@
 		}
 	}
 
-	async function move(direction: string) {
+	function canMove(direction: Direction): boolean {
+		let playerRow = -1;
+		let playerCol = -1;
+		for (const [rowIndex, row] of board.entries()) {
+			const colIndex = row.indexOf(TILE.player);
+			if (colIndex >= 0) {
+				playerRow = rowIndex;
+				playerCol = colIndex;
+				break;
+			}
+		}
+		if (playerRow < 0 || playerCol < 0) return true;
+		return (
+			(direction !== 'up' || playerRow > 0) &&
+			(direction !== 'down' || playerRow < board.length - 1) &&
+			(direction !== 'left' || playerCol > 0) &&
+			(direction !== 'right' || playerCol < cols - 1)
+		);
+	}
+
+	async function move(direction: Direction) {
 		if (!selected || playerDead || levelComplete || !hasBoard || commandPending) return;
+		// The replica already contains enough board state to recognize an edge.
+		// Treat it as a game no-op instead of dispatching a predictably rejected command.
+		if (!canMove(direction)) {
+			actionError = null;
+			return;
+		}
 		commandPending = true;
 		actionError = null;
 		try {
@@ -146,7 +173,7 @@
 	}
 
 	function onKey(e: KeyboardEvent) {
-		const map: Record<string, string> = {
+		const map: Record<string, Direction> = {
 			ArrowUp: 'up',
 			ArrowDown: 'down',
 			ArrowLeft: 'left',
@@ -197,7 +224,7 @@
 				type="button"
 				data-testid="blob-new-game"
 				onclick={() => void startGame()}
-				disabled={commandPending || !hydrated}
+				disabled={!hydrated}
 			>
 				New game
 			</button>
@@ -290,7 +317,7 @@
 			</div>
 
 			<div class="blob-pad" aria-label="Move controls">
-				<button type="button" class="pad-btn" onclick={() => void move('up')} disabled={commandPending || playerDead || levelComplete}
+				<button type="button" class="pad-btn" onclick={() => void move('up')} disabled={playerDead || levelComplete}
 					>↑</button
 				>
 				<div class="pad-row">
@@ -298,19 +325,19 @@
 						type="button"
 						class="pad-btn"
 						onclick={() => void move('left')}
-						disabled={commandPending || playerDead || levelComplete}>←</button
+						disabled={playerDead || levelComplete}>←</button
 					>
 					<button
 						type="button"
 						class="pad-btn"
 						onclick={() => void move('down')}
-						disabled={commandPending || playerDead || levelComplete}>↓</button
+						disabled={playerDead || levelComplete}>↓</button
 					>
 					<button
 						type="button"
 						class="pad-btn"
 						onclick={() => void move('right')}
-						disabled={commandPending || playerDead || levelComplete}>→</button
+						disabled={playerDead || levelComplete}>→</button
 					>
 				</div>
 			</div>

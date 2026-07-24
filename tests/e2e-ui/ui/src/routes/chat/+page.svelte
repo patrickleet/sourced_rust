@@ -72,6 +72,9 @@
 		const message_id = `m-${now.toString(16)}`;
 		sendError = null;
 		busy = true;
+		// Clear only the submitted draft. Anything typed while this command is
+		// pending belongs to the next message and must survive its completion.
+		draft = '';
 		try {
 			await commands.chat.post({
 				message_id,
@@ -79,8 +82,8 @@
 				room_id: LOBBY_ROOM,
 				created_at: String(now)
 			});
-			draft = '';
 		} catch (error) {
+			if (!draft.trim()) draft = body;
 			sendError = error instanceof Error ? error.message : 'send failed';
 		} finally {
 			busy = false;

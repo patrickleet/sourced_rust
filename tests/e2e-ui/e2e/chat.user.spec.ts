@@ -31,10 +31,15 @@ test.describe('chat (alice)', () => {
 
 		const baseline = `continuity baseline ${Date.now()}`;
 		await page.locator('#chat-body').fill(baseline);
+		const baselineResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('chat_messages_post')
+		);
 		await page.getByRole('button', { name: /send/i }).click();
 		await expect(page.locator('.ch-msg', { hasText: baseline })).toBeVisible({
 			timeout: 20_000
 		});
+		await baselineResponse;
 
 		const navigations: string[] = [];
 		page.on('framenavigated', (frame) => {
@@ -56,12 +61,28 @@ test.describe('chat (alice)', () => {
 			});
 		});
 
+		await page.route('**/graphql', async (route) => {
+			if (!(route.request().postData() ?? '').includes('chat_messages_post')) {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			await new Promise((resolve) => setTimeout(resolve, 700));
+			await route.fulfill({ response });
+		});
+
 		const body = `continuity message ${Date.now()}`;
 		await page.locator('#chat-body').fill(body);
+		const commandResponse = page.waitForResponse(
+			(response) =>
+				(response.request().postData() ?? '').includes('chat_messages_post')
+		);
 		await page.getByRole('button', { name: /send/i }).click();
 		await expect(page.locator('.ch-msg', { hasText: body })).toBeVisible({
-			timeout: 20_000
+			timeout: 400
 		});
+		await commandResponse;
+		await page.unrouteAll({ behavior: 'wait' });
 
 		const samples = await page.evaluate(() => {
 			const state = globalThis as typeof globalThis & {

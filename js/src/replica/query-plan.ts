@@ -151,6 +151,7 @@ const FILTER_MATCH = Object.freeze({ result: 'match' as const });
 const FILTER_NO_MATCH = Object.freeze({ result: 'no_match' as const });
 const ORDER_EQUAL = Object.freeze({ result: 'equal' as const });
 const PAGINATION_LOCAL = Object.freeze({ decision: 'local' as const });
+const UTF8_ENCODER = new TextEncoder();
 
 export function evaluateReplicaFilter(
 	artifact: ReplicaFilterArtifact,
@@ -996,16 +997,10 @@ function compareOrderField(
 		comparison =
 			a.value === b.value ? 0 : a.value === false && b.value === true ? -1 : 1;
 	} else if (codec === 'string') {
-		if (a.value !== b.value) {
-			return orderUnknown(
-				reason(
-					'collation_not_portable',
-					path,
-					`string order for ${field} requires an explicit server collation contract`
-				)
-			);
-		}
-		comparison = 0;
+		comparison = compareUtf8(
+			a.value as string,
+			b.value as string
+		);
 	} else {
 		return orderUnknown(
 			reason(
@@ -1075,6 +1070,24 @@ function validateComparableValues(
 		path,
 		`codec ${codec} has no certified replica comparison semantics`
 	);
+}
+
+/**
+ * Protocol v2 orders strings by their unsigned UTF-8 bytes. The GraphQL SQL
+ * compiler emits the matching binary collation for every textual ORDER BY,
+ * making optimistic index maintenance identical on SQLite and PostgreSQL.
+ */
+function compareUtf8(left: string, right: string): -1 | 0 | 1 {
+	if (left === right) return 0;
+	const leftBytes = UTF8_ENCODER.encode(left);
+	const rightBytes = UTF8_ENCODER.encode(right);
+	const length = Math.min(leftBytes.length, rightBytes.length);
+	for (let index = 0; index < length; index += 1) {
+		const a = leftBytes[index]!;
+		const b = rightBytes[index]!;
+		if (a !== b) return a < b ? -1 : 1;
+	}
+	return leftBytes.length < rightBytes.length ? -1 : 1;
 }
 
 function validateRowPolicyLiteral(

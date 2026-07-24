@@ -36,6 +36,24 @@ test.describe('blob game (alice)', () => {
 		// Score starts at 0
 		await expect(page.locator('.blob-hud')).toContainText(/score/i);
 
+		// Generated levels start at the top-left. A known boundary is a local
+		// no-op: no rejected command and no framework error should escape.
+		let wallMoveRequests = 0;
+		const countWallMoves = (request: import('@playwright/test').Request) => {
+			if (
+				request.url().includes('/graphql') &&
+				(request.postData() ?? '').includes('blob_games_move')
+			) {
+				wallMoveRequests += 1;
+			}
+		};
+		page.on('request', countWallMoves);
+		await page.keyboard.press('ArrowUp');
+		await page.waitForTimeout(250);
+		page.off('request', countWallMoves);
+		expect(wallMoveRequests, 'a board-edge move should not reach GraphQL').toBe(0);
+		await expect(page.locator('.fn-alert')).toHaveCount(0);
+
 		const navigations: string[] = [];
 		page.on('framenavigated', (frame) => {
 			if (frame === page.mainFrame()) navigations.push(frame.url());
@@ -56,19 +74,44 @@ test.describe('blob game (alice)', () => {
 			});
 		});
 
+		let releaseMove!: () => void;
+		const releaseMovePromise = new Promise<void>((resolve) => {
+			releaseMove = resolve;
+		});
+		let moveReachedServer!: () => void;
+		const moveReachedServerPromise = new Promise<void>((resolve) => {
+			moveReachedServer = resolve;
+		});
+		await page.route('**/graphql', async (route) => {
+			if (!(route.request().postData() ?? '').includes('blob_games_move')) {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			moveReachedServer();
+			await releaseMovePromise;
+			await route.fulfill({ response });
+		});
+
 		// Move right (pad or keyboard). Either score increments or stays at an
 		// edge/wall, but the cached board must remain mounted throughout.
-		const [moveResp] = await Promise.all([
-			page.waitForResponse(
-				(r) =>
-					r.url().includes('/graphql') &&
-					r.request().method() === 'POST' &&
-					(r.request().postData() ?? '').includes('blob_games_move'),
-				{ timeout: 20_000 }
-			),
-			page.keyboard.press('ArrowRight')
-		]);
+		const moveResponsePromise = page.waitForResponse(
+			(r) =>
+				r.url().includes('/graphql') &&
+				r.request().method() === 'POST' &&
+				(r.request().postData() ?? '').includes('blob_games_move'),
+			{ timeout: 20_000 }
+		);
+		await page.keyboard.press('ArrowRight');
+		await moveReachedServerPromise;
+		await expect(page.getByTestId('blob-new-game')).toBeEnabled();
+		for (const button of await page.locator('.pad-btn').all()) {
+			await expect(button).toBeEnabled();
+		}
+		releaseMove();
+		const moveResp = await moveResponsePromise;
 		expect(moveResp.ok(), `blob_games_move HTTP ${moveResp.status()}`).toBeTruthy();
+		await page.unrouteAll({ behavior: 'wait' });
 		await expect(board).toBeVisible();
 		await expect(page.locator('.fn-alert, .blob-empty')).toHaveCount(0);
 

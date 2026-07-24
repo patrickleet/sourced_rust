@@ -7,11 +7,10 @@
     "kind": "application",
     "name": "fieldnote",
     "roles": [
-      "admin",
       "user"
     ]
   },
-  "schema_fingerprint": "sha256:cd1201527455a499a61d6537490e2114e16d643a0f8837dc9725b207d862d57c",
+  "schema_fingerprint": "sha256:f1e1cd1eb4ca15250e60ba37871293992ad68668804cddd12aba9bc4518d08c0",
   "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
   "scalar_codecs": {
     "BigInt": "json_number_precision_limited",

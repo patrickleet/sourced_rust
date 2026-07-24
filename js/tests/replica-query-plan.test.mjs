@@ -1003,7 +1003,7 @@ test('order comparison follows declared priority then exact identity tie-breaker
 	);
 });
 
-test('order comparison validates entry shape, directions, null placement, and collation', () => {
+test('order comparison validates entry shape, directions, and null placement', () => {
 	const left = { priority: 1, score: null, title: 'a', payload: {}, sequence: 1 };
 	const right = { priority: 1, score: 2, title: 'b', payload: {}, sequence: 2 };
 	assert.equal(
@@ -1037,13 +1037,33 @@ test('order comparison validates entry shape, directions, null placement, and co
 	);
 	assert.equal(
 		compareReplicaOrder(orderArtifact(literal([{ title: 'asc' }])), left, right)
-			.reason.code,
-		'collation_not_portable'
+			.result,
+		'less'
 	);
 	assert.equal(
 		compareReplicaOrder(orderArtifact(literal([{ payload: 'asc' }])), left, right)
 			.reason.code,
 		'unsupported_codec'
+	);
+});
+
+test('string order uses unsigned UTF-8 bytes including supplementary code points', () => {
+	const order = orderArtifact(literal([{ title: 'asc' }]));
+	assert.equal(
+		compareReplicaOrder(
+			order,
+			{ title: '\u{10000}', sequence: 1 },
+			{ title: '\u{e000}', sequence: 2 }
+		).result,
+		'greater'
+	);
+	assert.equal(
+		compareReplicaOrder(
+			order,
+			{ title: 'same', sequence: 1 },
+			{ title: 'same', sequence: 2 }
+		).result,
+		'less'
 	);
 });
 
