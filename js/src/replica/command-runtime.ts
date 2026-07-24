@@ -948,6 +948,36 @@ export function createReplicaCommandRuntime<
 			);
 		}
 
+		const rejection = graphqlCommandRejection(result);
+		if (rejection !== undefined) {
+			try {
+				const rejectionEnvelope = requireCommandRejectionEnvelope(
+					result,
+					prepared,
+					authority
+				);
+				matchReplicaTrustedPresetInventory(
+					contract.trustedPresets,
+					rejectionEnvelope.trustedPresets
+				);
+			} catch (error) {
+				revalidateInBackground(prepared, authority);
+				throw new ReplicaCommandRuntimeError(
+					'REPLICA_COMMAND_PROTOCOL_INVALID',
+					{
+						commandId: prepared.commandId,
+						cause: error,
+						recovery: recoveryForRetainedLayer()
+					}
+				);
+			}
+			rejectUnmanagedLayer(prepared.commandId);
+			throw new ReplicaCommandRuntimeError('REPLICA_COMMAND_REJECTED', {
+				commandId: prepared.commandId,
+				cause: new Error(rejection.message)
+			});
+		}
+
 		let distributed: DistributedProtocolEnvelope;
 		try {
 			distributed = requireCommandEnvelope(result, prepared, authority);
@@ -1613,7 +1643,7 @@ function applyOptimisticEffects(
 			case 'patch': {
 				const model = modelFromKey(effect.model, effect.key);
 				writer.writeRecord(model, identityFromKey(effect.key), {
-					fields: fieldsFromEffect(effect.key, effect.fields)
+					fields: fieldsFromEffect(effect.model, effect.key, effect.fields)
 				});
 				break;
 			}
@@ -1708,6 +1738,7 @@ function identityFromKey(
 }
 
 function fieldsFromEffect(
+	model: string,
 	key: ReplicaPreparedEffectKey,
 	fields: readonly { readonly field: string; readonly value: ReplicaValue }[]
 ): Readonly<Record<string, ReplicaValue>> {
@@ -1715,7 +1746,11 @@ function fieldsFromEffect(
 		string,
 		ReplicaValue
 	>;
-	for (const field of [...key.fields, ...fields]) {
+	for (const field of [
+		{ field: '__typename', value: model },
+		...key.fields,
+		...fields
+	]) {
 		Object.defineProperty(result, field.field, {
 			enumerable: true,
 			configurable: false,
@@ -1824,6 +1859,52 @@ function requireCommandEnvelope<TInput, TOutput>(
 	}
 	verifyReplicaCommandReceipt(prepared, distributed.command);
 	return distributed;
+}
+
+/**
+ * Domain rejection happens before a command receipt exists, so GraphQL cannot
+ * attach `distributed.command`. It still has to prove the exact generated
+ * operation and authoritative cache scope before the runtime may classify the
+ * response as a normal rejection instead of a protocol failure.
+ */
+function requireCommandRejectionEnvelope<TInput, TOutput>(
+	result: ReplicaCommandTransportResult,
+	prepared: ReplicaPreparedCommand<TInput, TOutput>,
+	authority: CapturedAuthority
+): DistributedProtocolEnvelope {
+	const distributed = parseGraphqlResponseExtensions(result.extensions)?.distributed;
+	if (
+		!Number.isSafeInteger(result.status) ||
+		result.status < 200 ||
+		result.status >= 300 ||
+		result.data !== null ||
+		graphqlCommandRejection(result) === undefined ||
+		distributed === undefined ||
+		distributed.command !== undefined ||
+		distributed.operation !== prepared.transport.operationHash ||
+		distributed.protocolVersion !== authority.scope.protocolVersion ||
+		distributed.schemaHash !== authority.scope.schemaHash ||
+		distributed.cacheScope !== authority.scope.cacheScope
+	) {
+		throw new Error('command rejection does not match its generated scope');
+	}
+	return distributed;
+}
+
+function graphqlCommandRejection(
+	result: ReplicaCommandTransportResult
+): GqlError | undefined {
+	const errors = result.errors;
+	if (
+		parseGraphqlResponseExtensions(result.extensions)?.distributed?.command !==
+			undefined ||
+		errors === undefined ||
+		errors.length === 0 ||
+		!errors.every((error) => error.extensions?.code === 'REJECTED')
+	) {
+		return undefined;
+	}
+	return errors[0];
 }
 
 function requireStatusEnvelope<TInput, TOutput>(

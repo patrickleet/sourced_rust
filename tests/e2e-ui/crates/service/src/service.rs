@@ -116,7 +116,7 @@ fn pool_free_client_surface(application: &str, roles: &[&str]) -> DistributedCli
 
 /// Pool-free normal application export consumed by `dctl client-manifest`.
 pub fn distributed_client_surface() -> DistributedClientSurfaceExport {
-    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["user", "admin"])
+    pool_free_client_surface(DISTRIBUTED_CLIENT_SURFACE, &["user"])
 }
 
 /// Pool-free elevated application export for admin-only routes.
@@ -414,7 +414,7 @@ fn build_graphql_engine_with_graphiql(
     let mut b = GraphqlEngine::builder(pool)
         .protocol_token_key(E2E_PROTOCOL_TOKEN_KEY)
         .roles(&["user", "admin"])
-        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["user", "admin"])
+        .client_application_surface(DISTRIBUTED_CLIENT_SURFACE, ["user"])
         .client_application_surface(DISTRIBUTED_ADMIN_CLIENT_SURFACE, ["admin"])
         // user: only own rows. admin: all owners (UI: /admin all-notes view).
         .model::<TodoView>(
@@ -570,7 +570,7 @@ mod client_surface_tests {
             build_graphql_engine_with_graphiql(&repository, &service, dev_identity(), None, true)
                 .expect("engine");
         let runtime = engine
-            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user", "admin"])
+            .client_manifest_for_application(DISTRIBUTED_CLIENT_SURFACE, &["user"])
             .unwrap();
 
         assert_eq!(generated, runtime);
@@ -583,7 +583,7 @@ mod client_surface_tests {
                         "surface": {
                             "kind": "application",
                             "name": DISTRIBUTED_CLIENT_SURFACE,
-                            "roles": ["admin", "user"]
+                            "roles": ["user"]
                         },
                         "schemaHash": generated.schema_fingerprint
                     }
