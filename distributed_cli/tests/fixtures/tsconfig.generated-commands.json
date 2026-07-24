@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "baseUrl": "../../..",
+    "paths": {
+      "@hops-ops/distributed/replica": ["js/src/replica/index.ts"]
+    }
+  },
+  "files": [
+    "generated-commands.ts",
+    "generated-commands-consumer.ts",
+    "protocol.d.ts"
+  ]
+}

@@ -51,7 +51,7 @@ export function materializeReplicaOperation<
 		const indexKey = replicaIndexKey({ field: root.field, arguments: argumentsValue });
 		const index = reader.index(indexKey);
 		const branch = materializeBranch(reader, root, index, variables);
-		if (root.expose !== false && branch.present) {
+		if (branch.present) {
 			defineOutputValue(output, root.responseKey, branch.value);
 		}
 		complete &&= branch.complete;

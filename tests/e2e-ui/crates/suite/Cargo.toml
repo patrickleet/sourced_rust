@@ -22,6 +22,8 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 sqlx = { workspace = true }
+uuid = { workspace = true }
+jsonwebtoken = { workspace = true }
 
 [dev-dependencies]
 distributed = { workspace = true }
@@ -29,5 +31,3 @@ e2e-service = { path = "../service" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
-jsonwebtoken = { workspace = true }
-

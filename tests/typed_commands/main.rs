@@ -12,9 +12,8 @@ use axum::http::Request as HttpRequest;
 use distributed::graphql::{
     build_surface, graphql_router_with_service, read, surface_for_role, typed_command, Accepted,
     DistributedClientSurfaceExport, EffectInputFieldMarker, EffectModelFieldMarker, Fact,
-    GraphqlCommands, GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef,
-    GraphqlTypeField, ModelPermissions, PreparedCommand, Projected, RoleGrant, SurfaceOptions,
-    SurfaceProjector,
+    GraphqlEngine, GraphqlInputType, GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField,
+    ModelPermissions, PreparedCommand, Projected, RoleGrant, SurfaceOptions, SurfaceProjector,
 };
 use distributed::microsvc::{CausalCommandContext, HandlerError, Routes, Service};
 use distributed::microsvc::{Context, Session};
@@ -724,20 +723,6 @@ async fn service_id_mismatch_fails_in_both_builder_call_orders() {
 }
 
 #[tokio::test]
-async fn bound_commands_cannot_be_replaced_even_with_an_empty_registry() {
-    let service = service_a("todos");
-    let error = GraphqlEngine::builder(pool())
-        .service(&service)
-        .commands(GraphqlCommands::new())
-        .build()
-        .err()
-        .expect("bound mutation inventory must not be clearable");
-    assert!(error
-        .to_string()
-        .contains("cannot replace commands derived"));
-}
-
-#[tokio::test]
 async fn attachment_checks_exact_rust_types_after_structural_parity() {
     let engine_source = service_a("todos");
     let engine = GraphqlEngine::builder(pool())
@@ -1077,28 +1062,6 @@ fn pool_free_typed_export_preserves_service_provenance_and_rejects_relabeling() 
 }
 
 #[test]
-fn pool_free_service_command_inventory_is_exclusive_in_both_call_orders() {
-    let service = service_a("todos");
-    let empty = GraphqlCommands::new();
-
-    let service_then_registry = build_surface(&[], &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_service(&service)
-        .unwrap()
-        .with_commands(&empty)
-        .unwrap_err();
-    assert!(service_then_registry.contains("frozen after attachment from the executable Service"));
-
-    let registry_then_service = build_surface(&[], &SurfaceOptions::sqlite())
-        .unwrap()
-        .with_commands(&empty)
-        .unwrap()
-        .with_service(&service)
-        .unwrap_err();
-    assert!(registry_then_service.contains("cannot replace an already attached command inventory"));
-}
-
-#[test]
 fn pool_free_service_and_projector_topology_validate_in_both_call_orders() {
     let make_service = || {
         Service::new().named("plans").routes(
@@ -1279,10 +1242,7 @@ async fn manifest_populates_typed_consistency_and_revalidation_effects() {
         .find(|command| command.name == "todo.create")
         .unwrap();
 
-    assert_eq!(
-        command.extensions.consistency.as_ref().unwrap().kind,
-        "accepted"
-    );
+    assert_eq!(command.extensions.consistency.kind, "accepted");
     let effects = command.extensions.effects.as_ref().unwrap();
     assert!(effects.operations.is_empty());
     assert_eq!(effects.fallback, "revalidate");

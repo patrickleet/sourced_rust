@@ -210,25 +210,6 @@ pub fn graphql_router_with_service(engine: Arc<GraphqlEngine>, service: Arc<Serv
         .validate_graphql_engine(&engine)
         .unwrap_or_else(|error| panic!("cannot serve GraphQL with this service: {error}"));
 
-    // Validate command names are registered.
-    let registered: std::collections::HashSet<String> = service
-        .command_names()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
-    let mut missing = Vec::new();
-    for name in engine.inner.commands.command_names() {
-        if !registered.contains(name) {
-            missing.push(name.to_string());
-        }
-    }
-    if !missing.is_empty() {
-        panic!(
-            "graphql command mutations reference unregistered commands: {}",
-            missing.join(", ")
-        );
-    }
-
     let graphiql = engine.graphiql_enabled();
     let state = GraphqlHttpState {
         engine,

@@ -1,20 +1,38 @@
 export { authFromPageData, type PageGraphqlData } from './auth.js';
 export {
-	createUseGraphql,
-	type CommandBinder,
-	type CreateUseGraphqlOptions,
-	type ReadonlySveltekitGraphqlClient,
-	type SveltekitGraphqlClient,
-	type UseGraphqlOptions
-} from './use-graphql.js';
+	defineDistributedSvelteKitOperation,
+	provideDistributedSvelteKitClient,
+	useDistributedSvelteKitClient,
+	useDistributedSvelteKitCommands
+} from './context.js';
 export {
-	createLoadQuery,
-	type CreateLoadQueryOptions,
-	type LoadQueryRequest,
-	type ServerLoadEventLike,
-	type SveltekitSession
-} from './load-query.js';
+	bindSveltekitOperation,
+	createPageDataSessionSource,
+	createDistributedSvelteKit,
+	sessionSourceFromPageData,
+	type CreateDistributedSvelteKitOptions,
+	type DistributedSvelteKitClient,
+	type SveltekitBoundOperation,
+	type SveltekitCommandRuntimeFactory,
+	type SveltekitCommandRuntimeFactoryOptions,
+	type SveltekitCommandRuntimeLike,
+	type SveltekitDistributedPageData,
+	type SveltekitPageDataSessionSource,
+	type SveltekitPageDataSource,
+	type SveltekitQuerySnapshot,
+	type SveltekitQueryStore,
+	type SveltekitReplicaAuthority,
+	type SveltekitReplicaHydration,
+	type SveltekitSessionSource,
+	type UseSveltekitOperationOptions
+} from './replica.js';
 export {
-	distributedGraphqlProxy,
-	type DistributedGraphqlProxyOptions
-} from './vite.js';
+	createDistributedSvelteKitServer,
+	registerDistributedRoute,
+	type CreateDistributedSvelteKitServerOptions,
+	type DistributedRouteOperation,
+	type DistributedRoutePlan,
+	type DistributedRouteVariables,
+	type DistributedSvelteKitServer,
+	type SveltekitServerLoadEventLike
+} from './server-replica.js';

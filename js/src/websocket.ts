@@ -46,6 +46,11 @@ export type SubscribeOptions<
 	 * @internal Application code must not synthesize resume tokens.
 	 */
 	resume?: readonly DistributedLiveCursor[];
+	/**
+	 * Framework-owned GraphQL request extensions.
+	 * @internal Generated transports, not application code, supply this value.
+	 */
+	extensions?: Readonly<Record<string, unknown>>;
 	/** Override the runtime's global WebSocket constructor. */
 	webSocket?: WebSocketConstructor;
 };
@@ -152,10 +157,14 @@ export function subscribe<
 
 		switch (message.type) {
 			case 'connection_ack':
-				const extensions =
+				const resumeExtensions =
 					options.resume === undefined || options.resume.length === 0
 						? undefined
 						: distributedLiveResumeExtensions(options.resume);
+				const extensions = mergeRequestExtensions(
+					options.extensions,
+					resumeExtensions
+				);
 				socket.send(
 					JSON.stringify({
 						type: 'subscribe',
@@ -214,6 +223,50 @@ export function subscribe<
 		}
 		socket.close();
 	};
+}
+
+function mergeRequestExtensions(
+	base: Readonly<Record<string, unknown>> | undefined,
+	resume: Readonly<Record<string, unknown>> | undefined
+): Readonly<Record<string, unknown>> | undefined {
+	if (base === undefined) return resume;
+	if (resume === undefined) return base;
+	const baseDistributed = requestExtensionRecord(
+		base.distributed,
+		'request.extensions.distributed'
+	);
+	const resumeDistributed = requestExtensionRecord(
+		resume.distributed,
+		'request.extensions.distributed'
+	);
+	for (const key of Object.keys(resumeDistributed)) {
+		if (Object.hasOwn(baseDistributed, key)) {
+			throw new DistributedProtocolError(
+				'DISTRIBUTED_PROTOCOL_INVALID',
+				`request.extensions.distributed.${key}`
+			);
+		}
+	}
+	return Object.freeze({
+		...base,
+		distributed: Object.freeze({
+			...baseDistributed,
+			...resumeDistributed
+		})
+	});
+}
+
+function requestExtensionRecord(
+	value: unknown,
+	path: string
+): Readonly<Record<string, unknown>> {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		throw new DistributedProtocolError(
+			'DISTRIBUTED_PROTOCOL_INVALID',
+			path
+		);
+	}
+	return value as Readonly<Record<string, unknown>>;
 }
 
 function parseNextPayload<TData>(value: unknown): GqlWsResult<TData> {

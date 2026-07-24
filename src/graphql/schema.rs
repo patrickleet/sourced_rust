@@ -30,10 +30,7 @@ pub fn build_role_schema(
     max_complexity: usize,
     disable_introspection: bool,
 ) -> Result<Schema, String> {
-    let has_causal_commands = role_surface
-        .commands
-        .iter()
-        .any(|command| command.consistency.is_some());
+    let has_causal_commands = !role_surface.commands.is_empty();
     if has_causal_commands {
         validate_causal_protocol_names(role_surface)?;
     }
@@ -215,31 +212,23 @@ pub fn build_role_schema(
                         cmd.command_name
                     ));
                 }
-                SurfaceCommandShape::Json => "JSON",
                 SurfaceCommandShape::Typed(t) => {
                     ensure_command_output(&mut registered_objects, t);
                     t.name.as_str()
                 }
             };
             let cmd_name = cmd.command_name.clone();
-            let causal = cmd.consistency.is_some();
             let mut field = Field::new(
                 cmd.field_name.clone(),
                 TypeRef::named_nn(output_type),
                 move |ctx| {
                     let cmd_name = cmd_name.clone();
-                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name, causal).await })
+                    FieldFuture::new(async move { resolve_command(&ctx, &cmd_name).await })
                 },
-            );
-            if causal {
-                field =
-                    field.argument(InputValue::new("commandId", TypeRef::named_nn(TypeRef::ID)));
-            }
+            )
+            .argument(InputValue::new("commandId", TypeRef::named_nn(TypeRef::ID)));
             match &cmd.input {
                 SurfaceCommandShape::None => {}
-                SurfaceCommandShape::Json => {
-                    field = field.argument(InputValue::new("input", TypeRef::named_nn("JSON")));
-                }
                 SurfaceCommandShape::Typed(tdef) => {
                     // Register nested input type if needed
                     ensure_command_input(&mut registered_inputs, tdef);
@@ -388,7 +377,7 @@ fn validate_causal_protocol_names(surface: &Surface) -> Result<(), String> {
 
 fn command_shape_uses_type_name(shape: &SurfaceCommandShape, name: &str) -> bool {
     match shape {
-        SurfaceCommandShape::None | SurfaceCommandShape::Json => false,
+        SurfaceCommandShape::None => false,
         SurfaceCommandShape::Typed(definition) => command_type_uses_name(definition, name),
     }
 }
@@ -852,34 +841,6 @@ mod execute_err_mapping_tests {
     }
 
     #[test]
-    fn command_status_code_maps_http_to_frozen_codes() {
-        use super::command_status_code;
-        assert_eq!(command_status_code(400), "BAD_REQUEST");
-        assert_eq!(command_status_code(401), "UNAUTHORIZED");
-        assert_eq!(command_status_code(403), "FORBIDDEN");
-        assert_eq!(command_status_code(404), "NOT_FOUND");
-        assert_eq!(command_status_code(422), "REJECTED");
-        // Undocumented 4xx (e.g. 409) → BAD_REQUEST, never CONFLICT
-        assert_eq!(command_status_code(409), "BAD_REQUEST");
-        assert_eq!(command_status_code(418), "BAD_REQUEST");
-        assert_eq!(command_status_code(500), "INTERNAL");
-        assert_eq!(command_status_code(503), "INTERNAL");
-        for code in [
-            command_status_code(400),
-            command_status_code(401),
-            command_status_code(404),
-            command_status_code(422),
-            command_status_code(409),
-            command_status_code(500),
-        ] {
-            assert!(
-                ENGINE_ERROR_CODES.contains(&code),
-                "command_status_code emitted undocumented code {code}"
-            );
-        }
-    }
-
-    #[test]
     fn statement_timeout_maps_to_timeout_code() {
         let err = client_error_for_execute_err("statement timeout");
         assert_eq!(err.message, "statement timeout");
@@ -959,9 +920,8 @@ mod execute_err_mapping_tests {
 async fn resolve_command(
     ctx: &async_graphql::dynamic::ResolverContext<'_>,
     command_name: &str,
-    causal: bool,
 ) -> Result<Option<Value>, async_graphql::Error> {
-    use crate::microsvc::{CommandRequest, Service};
+    use crate::microsvc::Service;
 
     let session = ctx
         .data_opt::<Session>()
@@ -983,71 +943,44 @@ async fn resolve_command(
         .map_err(|e| client_error("BAD_REQUEST", format!("invalid command input: {e:?}")))?
         .unwrap_or(serde_json::json!({}));
 
-    if causal {
-        let protocol = ctx
-            .data_opt::<ProtocolResponseAccumulator>()
-            .cloned()
-            .ok_or_else(|| {
-                client_error(
-                    "INTERNAL",
-                    "causal command protocol is not configured for this endpoint",
-                )
-            })?;
-        protocol
-            .claim_dispatch()
-            .map_err(|error| client_error("BAD_REQUEST", error.to_string()))?;
-        let command_id = ctx
-            .args
-            .get("commandId")
-            .ok_or_else(|| client_error("BAD_REQUEST", "missing commandId"))?
-            .deserialize::<String>()
-            .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
-        let principal = ctx
-            .data_opt::<VerifiedPrincipal>()
-            .cloned()
-            .ok_or_else(|| {
-                client_error_with_status(
-                    "UNAUTHORIZED",
-                    401,
-                    "durable commands require a verified OIDC bearer",
-                )
-            })?;
-        let result = service
-            .dispatch_causal_with_receipt(command_name, &command_id, input, session, principal)
-            .await
-            .map_err(|error| {
-                client_error_with_status(error.code(), error.status_code(), error.client_message())
-            })?;
-        protocol
-            .record_receipt(&result.receipt)
-            .map_err(|_| client_error("INTERNAL", "causal receipt encoding failed"))?;
-        return Value::from_json(result.payload)
-            .map(Some)
-            .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")));
-    }
-
-    let request = CommandRequest {
-        command: command_name.to_string(),
-        input,
-        session_variables: session.variables().clone(),
-    };
-    let response = service.dispatch_request(&request).await;
-    // Map status → GraphQL error with extensions.code (+ status) — frozen v1 contract.
-    if response.status >= 400 {
-        let code = command_status_code(response.status);
-        let msg = if response.status >= 500 {
-            "internal error".to_string()
-        } else {
-            response
-                .body
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("request failed")
-                .to_string()
-        };
-        return Err(client_error_with_status(code, response.status, msg));
-    }
-    Value::from_json(response.body)
+    let protocol = ctx
+        .data_opt::<ProtocolResponseAccumulator>()
+        .cloned()
+        .ok_or_else(|| {
+            client_error(
+                "INTERNAL",
+                "causal command protocol is not configured for this endpoint",
+            )
+        })?;
+    protocol
+        .claim_dispatch()
+        .map_err(|error| client_error("BAD_REQUEST", error.to_string()))?;
+    let command_id = ctx
+        .args
+        .get("commandId")
+        .ok_or_else(|| client_error("BAD_REQUEST", "missing commandId"))?
+        .deserialize::<String>()
+        .map_err(|_| client_error("BAD_REQUEST", "invalid commandId"))?;
+    let principal = ctx
+        .data_opt::<VerifiedPrincipal>()
+        .cloned()
+        .ok_or_else(|| {
+            client_error_with_status(
+                "UNAUTHORIZED",
+                401,
+                "durable commands require a verified OIDC bearer",
+            )
+        })?;
+    let result = service
+        .dispatch_causal_with_receipt(command_name, &command_id, input, session, principal)
+        .await
+        .map_err(|error| {
+            client_error_with_status(error.code(), error.status_code(), error.client_message())
+        })?;
+    protocol
+        .record_receipt(&result.receipt)
+        .map_err(|_| client_error("INTERNAL", "causal receipt encoding failed"))?;
+    Value::from_json(result.payload)
         .map(Some)
         .map_err(|e| client_error("INTERNAL", format!("response encode: {e}")))
 }
@@ -1111,29 +1044,13 @@ async fn resolve_command_status(
     Ok(Some(Value::Object(value)))
 }
 
-/// Map HTTP command status → frozen `extensions.code` (see security/http specs).
-///
-/// 400→BAD_REQUEST, 401→UNAUTHORIZED, 404→NOT_FOUND, 422→REJECTED,
-/// other 4xx→BAD_REQUEST, 5xx→INTERNAL. No undocumented codes (e.g. CONFLICT).
-pub(crate) fn command_status_code(status: u16) -> &'static str {
-    match status {
-        400 => "BAD_REQUEST",
-        401 => "UNAUTHORIZED",
-        403 => "FORBIDDEN",
-        404 => "NOT_FOUND",
-        422 => "REJECTED",
-        s if (400..500).contains(&s) => "BAD_REQUEST",
-        _ => "INTERNAL",
-    }
-}
-
 #[cfg(test)]
 mod causal_command_schema_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use super::*;
-    use crate::graphql::command_contract::CommandConsistency;
+    use crate::graphql::command_contract::{CommandConsistency, CommandEffects};
     use crate::graphql::protocol::{
         DistributedEnvelopeV2, ProtocolResponseAccumulator, ProtocolTokenCodec,
         ProtocolTokenPurpose,
@@ -1144,7 +1061,7 @@ mod causal_command_schema_tests {
     };
     use crate::microsvc::Service;
 
-    fn command_surface(consistency: Option<CommandConsistency>) -> Surface {
+    fn command_surface() -> Surface {
         Surface {
             selection: SurfaceSelection::Role {
                 name: "user".into(),
@@ -1163,11 +1080,31 @@ mod causal_command_schema_tests {
                 command_name: "todo.complete".into(),
                 field_name: "todo_complete".into(),
                 roles: vec!["user".into()],
-                input: SurfaceCommandShape::None,
-                output: SurfaceCommandShape::Json,
-                consistency,
+                input: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                    name: "CompleteTodoInput".into(),
+                    fields: vec![SurfaceTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    }],
+                }),
+                output: SurfaceCommandShape::Typed(SurfaceTypeDef {
+                    name: "CompleteTodoPayload".into(),
+                    fields: vec![SurfaceTypeField {
+                        name: "id".into(),
+                        type_name: "String".into(),
+                        nullable: false,
+                        list: false,
+                        item_nullable: false,
+                        nested: None,
+                    }],
+                }),
+                consistency: CommandConsistency::Accepted,
                 input_defaults: Vec::new(),
-                effects: None,
+                effects: Some(CommandEffects::revalidate()),
                 confirmations: Vec::new(),
                 projected_model: None,
                 direct_projection: None,
@@ -1202,7 +1139,7 @@ mod causal_command_schema_tests {
 
     #[test]
     fn causal_runtime_and_static_sdl_share_status_protocol() {
-        let surface = command_surface(Some(CommandConsistency::Accepted));
+        let surface = command_surface();
         let static_sdl = graphql_sdl_from_surface(&surface).unwrap();
         let runtime_sdl = runtime_sdl(&surface);
 
@@ -1234,34 +1171,8 @@ mod causal_command_schema_tests {
     }
 
     #[test]
-    fn legacy_runtime_and_static_sdl_do_not_reserve_status_protocol() {
-        let surface = command_surface(None);
-        let static_sdl = graphql_sdl_from_surface(&surface).unwrap();
-        let runtime_sdl = runtime_sdl(&surface);
-
-        for unexpected in [
-            COMMAND_STATUS_ROOT_FIELD,
-            DISTRIBUTED_COMMAND_STATE_TYPE,
-            DISTRIBUTED_COMMAND_STATUS_TYPE,
-        ] {
-            assert!(!static_sdl.contains(unexpected));
-            assert!(!runtime_sdl.contains(unexpected));
-        }
-        assert!(static_sdl.contains("_empty: Boolean!"));
-        assert!(runtime_sdl.contains("_empty: Boolean!"));
-
-        let mut reusable = surface;
-        reusable.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
-            name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
-            fields: Vec::new(),
-        });
-        build_role_schema(&reusable, 32, 1_000, false)
-            .expect("legacy-only surfaces must retain the pre-protocol namespace");
-    }
-
-    #[test]
     fn causal_runtime_schema_fails_closed_on_root_and_type_collisions() {
-        let mut root_collision = command_surface(Some(CommandConsistency::Accepted));
+        let mut root_collision = command_surface();
         root_collision.query_fields.push(RootField {
             name: COMMAND_STATUS_ROOT_FIELD.into(),
             kind: RootKind::List,
@@ -1278,7 +1189,7 @@ mod causal_command_schema_tests {
             "{error}"
         );
 
-        let mut type_collision = command_surface(Some(CommandConsistency::Accepted));
+        let mut type_collision = command_surface();
         type_collision.commands[0].input = SurfaceCommandShape::Typed(SurfaceTypeDef {
             name: DISTRIBUTED_COMMAND_STATUS_TYPE.into(),
             fields: Vec::new(),
@@ -1293,13 +1204,7 @@ mod causal_command_schema_tests {
 
     #[tokio::test]
     async fn command_status_requires_verified_principal() {
-        let schema = build_role_schema(
-            &command_surface(Some(CommandConsistency::Accepted)),
-            32,
-            1_000,
-            false,
-        )
-        .unwrap();
+        let schema = build_role_schema(&command_surface(), 32, 1_000, false).unwrap();
         let response = schema
             .execute(format!(
                 "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ state }} }}",
@@ -1328,13 +1233,7 @@ mod causal_command_schema_tests {
 
     #[tokio::test]
     async fn authorized_unknown_status_returns_only_public_state() {
-        let schema = build_role_schema(
-            &command_surface(Some(CommandConsistency::Accepted)),
-            32,
-            1_000,
-            false,
-        )
-        .unwrap();
+        let schema = build_role_schema(&command_surface(), 32, 1_000, false).unwrap();
         let request = async_graphql::Request::new(format!(
             "{{ {COMMAND_STATUS_ROOT_FIELD}(commandId: \"{}\") {{ s: state }} }}",
             uuid::Uuid::now_v7()

@@ -1,0 +1,9 @@
+# Compiler-owned SSR seed for the owner-scoped user surface.
+query Todos @load {
+  todos(order_by: [{ status: asc }, { todo_id: asc }]) {
+    todo_id
+    owner_id
+    title
+    status
+  }
+}

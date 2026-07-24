@@ -1,72 +1,40 @@
 <script lang="ts">
 	/**
-	 * Admin: document store + force-archive command pipeline.
+	 * Admin: separate elevated generated surface + causal command runtime.
 	 */
-	import { onDestroy } from 'svelte';
-	import { useGraphql, fx } from '$lib/gql';
+	import { AdminAllTodos, useCommands } from '$distributed/admin';
 	import { sessionDisplayName } from '$lib/session';
-	import { adminTodos, sortAdminTodos } from './admin.resource';
-	import type { AdminTodoRow } from './admin.resource';
 
 	let { data } = $props();
-
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
 
 	const who = $derived(sessionDisplayName(data.session));
-	const listLimit = $derived(data.listLimit ?? 100);
+	const listLimit = 100;
 
-	const gql = useGraphql(() => data, {
-		runEffects: (effects) => {
-			for (const e of effects) {
-				if (e.kind === 'alert') actionError = e.message;
-			}
-		}
-	});
+	const list = AdminAllTodos.use();
+	const commands = useCommands();
 
-	const list = gql.store({
-		document: adminTodos.query,
-		list: { at: 'todos', by: 'todo_id' },
-		initialData: { todos: sortAdminTodos(data.todos ?? []) },
-		select: (d: { todos?: AdminTodoRow[] }) => sortAdminTodos(d?.todos ?? [])
-	});
-
-	$effect(() => {
-		list.seed({ todos: sortAdminTodos(data.todos ?? []) });
-	});
-
-	onDestroy(() => list.destroy());
-
-	const owners = $derived([...new Set($list.data.map((t) => t.owner_id))].sort());
-	const open = $derived($list.data.filter((t) => t.status !== 'archived'));
-	const atCap = $derived($list.data.length >= listLimit);
+	// The generated query/index plan owns collection order.
+	const rows = $derived($list.complete ? $list.data.todos : []);
+	const owners = $derived([...new Set(rows.map((todo) => todo.owner_id))].sort());
+	const open = $derived(rows.filter((todo) => todo.status !== 'archived'));
+	const atCap = $derived(rows.length >= listLimit);
 
 	async function forceArchive(todo_id: string) {
 		if (busy) return;
-		const target = $list.data.find((t) => t.todo_id === todo_id);
+		const target = rows.find((todo) => todo.todo_id === todo_id);
 		if (!target || target.status === 'archived') return;
 
 		actionError = null;
 		busy = true;
-		const result = await gql.commands.todosForceArchive(
-			{ todo_id },
-			{
-				optimistic: {
-					targets: [list.target('todos', 'todo_id')],
-					row: { ...target, status: 'archived' }
-				},
-				onError: ({ errors }) => [
-					fx.alert(errors[0]?.message ?? 'force archive failed')
-				]
-			}
-		);
-		busy = false;
-
-		if (result.errors?.length || !result.data) {
-			if (!actionError) actionError = result.errors?.[0]?.message ?? 'force archive failed';
-			return;
+		try {
+			await commands.todo.force_archive({ todo_id });
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'force archive failed';
+		} finally {
+			busy = false;
 		}
-		list.scheduleCatchUp();
 	}
 </script>
 
@@ -79,11 +47,9 @@
 		<h1 class="ad-title">All field notes</h1>
 		<p class="ad-lede">
 			Signed in as <strong>{who}</strong> with engine role
-			<code>{data.engineRole}</code>. Query uses the same
-			<code>todos</code> field without the owner filter.
-			<strong>Force archive</strong> calls
-			<code>todos_force_archive</code> — registered only for role
-			<code>admin</code> (missing from the user GraphQL schema).
+			<code>{data.engineRole}</code>. This nested layout installs a separate
+			<code>fieldnote-admin</code> client, so elevated query and command artifacts
+			cannot leak into the normal application bundle.
 		</p>
 	</header>
 
@@ -102,7 +68,7 @@
 
 	<div class="ad-stats">
 		<div class="ad-stat">
-			<span class="ad-stat-n">{$list.data.length}</span>
+			<span class="ad-stat-n">{rows.length}</span>
 			<span class="ad-stat-l">notes</span>
 		</div>
 		<div class="ad-stat">
@@ -118,11 +84,11 @@
 	{#if atCap}
 		<p class="ad-cap" role="status">
 			Showing first {listLimit} notes (bounded admin query). Refine filters or raise limit in
-			<code>admin.gql</code> if needed.
+			<code>+page.graphql</code> if needed.
 		</p>
 	{/if}
 
-	{#if $list.data.length === 0}
+	{#if rows.length === 0}
 		<p class="ad-empty">No notes in the read model yet. Create some as alice/bob on /todos.</p>
 	{:else}
 		<div class="ad-table-wrap">
@@ -137,7 +103,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each $list.data as t (t.todo_id)}
+					{#each rows as t (t.todo_id)}
 						<tr>
 							<td class="ad-owner">{t.owner_id}</td>
 							<td>{t.title}</td>
@@ -165,8 +131,9 @@
 	{/if}
 
 	<p class="ad-foot">
-		<code>user</code> role cannot call <code>todos_force_archive</code> (field absent from user
-		SDL). Suite T2c asserts that; admin mutation archives any owner's note.
+		The normal <code>fieldnote</code> surface cannot even name
+		<code>todo.force_archive</code>. The elevated artifact is generated only for this
+		admin-gated component tree.
 	</p>
 </section>
 

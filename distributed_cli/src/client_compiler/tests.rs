@@ -269,7 +269,7 @@ pub(super) fn manifest() -> JsonValue {
         "service_id": "todos-service",
         "surface": {"kind": "role", "name": "user"},
         "schema_fingerprint": fingerprint("schema"),
-        "protocol_fingerprint": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
+        "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
         "execution": {
             "max_depth": 8,
             "max_complexity": 500,
@@ -519,8 +519,9 @@ fn projected_manifest() -> JsonValue {
 }
 
 fn generated_command_types_manifest() -> JsonValue {
-    let import = "mutation Client_importTodos($commandId: ID!, $input: JSON!) { importTodos(commandId: $commandId, input: $input) }";
-    let ping = "mutation Client_pingTodos($commandId: ID!) { pingTodos(commandId: $commandId) }";
+    let import = "mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) { result } }";
+    let ping =
+        "mutation Client_pingTodos($commandId: ID!) { pingTodos(commandId: $commandId) { ok } }";
     let mut value = projected_manifest();
     value["commands"][0]["name"] = json!("todo.project");
     value["commands"].as_array_mut().expect("commands").extend([
@@ -529,8 +530,34 @@ fn generated_command_types_manifest() -> JsonValue {
             "name": "todo.import",
             "mutation_field": "importTodos",
             "grants": ["user"],
-            "input": {"kind": "json", "codec": "json"},
-            "output": {"kind": "json", "codec": "json"},
+            "input": {
+                "kind": "object",
+                "definition": {
+                    "name": "ImportTodosInput",
+                    "fields": [{
+                        "name": "source",
+                        "type_name": "JSON",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "json"
+                    }]
+                }
+            },
+            "output": {
+                "kind": "object",
+                "definition": {
+                    "name": "ImportTodosPayload",
+                    "fields": [{
+                        "name": "result",
+                        "type_name": "JSON",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "json"
+                    }]
+                }
+            },
             "operation": import,
             "operation_hash": fingerprint(import),
             "extensions": {
@@ -544,7 +571,20 @@ fn generated_command_types_manifest() -> JsonValue {
             "mutation_field": "pingTodos",
             "grants": ["user"],
             "input": {"kind": "none"},
-            "output": {"kind": "json", "codec": "json"},
+            "output": {
+                "kind": "object",
+                "definition": {
+                    "name": "PingTodosPayload",
+                    "fields": [{
+                        "name": "ok",
+                        "type_name": "Boolean",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "boolean"
+                    }]
+                }
+            },
             "operation": ping,
             "operation_hash": fingerprint(ping),
             "extensions": {
@@ -555,6 +595,19 @@ fn generated_command_types_manifest() -> JsonValue {
     ]);
     refresh_schema_fingerprint(&mut value);
     value
+}
+
+#[test]
+fn rejects_legacy_top_level_json_command_shapes() {
+    for slot in ["input", "output"] {
+        let mut value = projected_manifest();
+        value["commands"][0][slot] = json!({"kind": "json", "codec": "json"});
+
+        let error = ClientManifest::parse(value, &ClientSurfaceSelector::role("user"))
+            .expect_err("top-level JSON command shapes were removed in manifest v7");
+        assert_eq!(error.code, "client.manifest.invalid");
+        assert!(error.message.contains("unknown variant `json`"));
+    }
 }
 
 fn input(source: &str) -> ClientCompileInput {
@@ -613,6 +666,32 @@ fn custom_scalar_project() -> super::GeneratedClientProject {
         CUSTOM_SCALAR_QUERY,
     ))
     .expect("compile recursive custom-scalar inputs")
+}
+
+fn row_policy_claim_manifest() -> JsonValue {
+    let mut value = manifest();
+    let policy = json!({
+        "kind": "predicate",
+        "expression": {
+            "kind": "cmp",
+            "value": {
+                "column": "tenantId",
+                "op": "eq",
+                "rhs": {
+                    "kind": "claim",
+                    "value": {"header": "x-tenant-id"}
+                }
+            }
+        }
+    });
+    value["models"][0]["row_policy"] = policy.clone();
+    for root in value["roots"].as_array_mut().expect("manifest roots") {
+        if !root["filter"].is_null() {
+            root["filter"]["row_policy"] = policy.clone();
+        }
+    }
+    refresh_schema_fingerprint(&mut value);
+    value
 }
 
 fn file<'a>(project: &'a super::GeneratedClientProject, path: &str) -> &'a str {
@@ -694,6 +773,22 @@ fn compiles_aliases_composite_wire_identity_live_and_load() {
     assert_eq!(
         project.routes[0].discovery,
         ClientRouteDiscovery::Convention
+    );
+}
+
+#[test]
+fn operation_artifact_carries_normalized_source_provenance() {
+    let project = compile_client(input("query SourceLocated { todos { id } }"))
+        .expect("compile source-located operation");
+    let artifact = operation_artifact(&project);
+
+    assert_eq!(
+        artifact["source"],
+        json!({
+            "path": "src/routes/todos/+page.graphql",
+            "line": 1,
+            "column": 1
+        })
     );
 }
 
@@ -1225,9 +1320,9 @@ fn emits_executable_filter_order_and_pagination_plans_with_hidden_dependencies()
     assert!(generated.contains("\"order\": {"));
     assert!(generated.contains("\"tieBreakers\": ["));
     assert!(generated.contains("\"pagination\": {"));
-    assert!(generated.contains("\"insert\": \"revalidate\""));
-    assert!(generated.contains("\"delete\": \"revalidate\""));
-    assert!(generated.contains("\"reorder\": \"revalidate\""));
+    assert!(generated.contains("\"insert\": \"local\""));
+    assert!(generated.contains("\"delete\": \"local\""));
+    assert!(generated.contains("\"reorder\": \"local\""));
     assert!(generated.contains("\"stableUpdate\": \"local\""));
     assert!(generated.contains("type Operation_Planned_Input_todo_bool_exp = {"));
     assert!(generated.contains(
@@ -1286,6 +1381,7 @@ fn generated_variable_codec_types_recursive_inputs_and_custom_scalars() {
     assert!(!generated.contains("Readonly<Record<string, unknown>>"));
 
     let artifact = operation_artifact(&project);
+    assert_eq!(artifact["protocol"]["trustedPresets"], json!([]));
     assert_eq!(artifact["variableCodec"]["version"], 2);
     assert_eq!(
         artifact["variableCodec"]["limits"],
@@ -1328,6 +1424,25 @@ fn generated_variable_codec_types_recursive_inputs_and_custom_scalars() {
     assert_eq!(
         artifact["variableCodec"]["inputs"]["todo_bool_exp"]["relationships"][0]["target"]["kind"],
         "input"
+    );
+}
+
+#[test]
+fn generated_query_carries_row_policy_claim_contract_without_a_command_runtime() {
+    let project = compile_client(input_with_manifest(
+        row_policy_claim_manifest(),
+        "query Todos { todos { id tenantId } }",
+    ))
+    .expect("compile client-visible row-policy claim");
+    let artifact = operation_artifact(&project);
+    assert_eq!(
+        artifact["protocol"]["trustedPresets"],
+        json!([{"name": "x-tenant-id", "codec": "string"}])
+    );
+    assert_eq!(
+        artifact["roots"][0]["filter"]["rowPolicy"]["expression"]["value"]["rhs"]["value"]
+            ["header"],
+        "x-tenant-id"
     );
 }
 
@@ -1883,6 +1998,54 @@ fn explicit_load_registration_is_the_documented_fallback() {
     .expect("explicit route");
     assert_eq!(project.routes[0].route, "/todos");
     assert_eq!(project.routes[0].discovery, ClientRouteDiscovery::Explicit);
+    let routes = file(&project, "routes.ts");
+    assert!(routes.contains("import { Operation_Todos } from './operations/todos.js';"));
+    assert!(routes.contains("export const DISTRIBUTED_ROUTE_OPERATIONS"));
+    assert!(routes.contains("plan: DISTRIBUTED_ROUTES[0], artifact: Operation_Todos"));
+    let sveltekit = file(&project, "sveltekit.ts");
+    assert!(
+        sveltekit.contains(
+            "export const Todos = defineDistributedSvelteKitOperation(DistributedOperation_0);"
+        ),
+        "{sveltekit}"
+    );
+    assert!(sveltekit.contains("export function provideDistributed("));
+    assert!(sveltekit.contains("export function useCommands(): GeneratedCommands"));
+    assert!(
+        !sveltekit.contains("const client ="),
+        "generated modules must not retain a module-global client: {sveltekit}"
+    );
+}
+
+#[test]
+fn sveltekit_wrapper_names_cannot_shadow_generated_runtime_exports() {
+    let error = compile_client(input(
+        r#"
+          query useCommands {
+            todos { id }
+          }
+        "#,
+    ))
+    .expect_err("reserved generated SvelteKit export");
+    assert_eq!(error.code, "client.operation.sveltekit_export_collision");
+    assert!(error.message.contains("useCommands"));
+}
+
+#[test]
+fn sveltekit_wrapper_names_fail_closed_on_typescript_keywords() {
+    for name in ["default", "await"] {
+        let error = compile_client(input(&format!("query {name} {{ todos {{ id }} }}")))
+            .expect_err("TypeScript keyword must not become a generated value binding");
+        assert_eq!(error.code, "client.operation.sveltekit_identifier");
+        assert!(error.message.contains(name), "{error}");
+        let source = error.source.expect("keyword error is source-located");
+        assert_eq!(source.path, "src/routes/todos/+page.graphql");
+        assert_eq!(source.line, 1);
+    }
+
+    let project = compile_client(input("query awaited { todos { id } }"))
+        .expect("near-keyword operation remains valid");
+    assert!(file(&project, "sveltekit.ts").contains("export const awaited ="));
 }
 
 #[test]
@@ -2197,7 +2360,7 @@ fn live_companion_fails_closed_on_dependency_or_pagination_drift() {
 
 #[test]
 fn command_protocol_and_extensions_are_preserved_exactly() {
-    let mutation = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) }";
+    let mutation = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) { id } }";
     let status =
         "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
     let mut value = manifest();
@@ -2240,7 +2403,20 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
                 ]
             }
         },
-        "output": {"kind": "json", "codec": "json"},
+        "output": {
+            "kind": "object",
+            "definition": {
+                "name": "CreateTodoPayload",
+                "fields": [{
+                    "name": "id",
+                    "type_name": "ID",
+                    "nullable": false,
+                    "list": false,
+                    "item_nullable": false,
+                    "codec": "string"
+                }]
+            }
+        },
         "operation": mutation,
         "operation_hash": fingerprint(mutation),
         "extensions": {
@@ -2326,7 +2502,8 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     let commands = file(&project, "commands.ts");
     let protocol = file(&project, "protocol.ts");
     assert!(commands.contains(mutation));
-    assert!(commands.contains("import { prepareReplicaCommand }"));
+    assert!(commands.contains("createReplicaCommandRuntime"));
+    assert!(commands.contains("import type {\n  DistributedReplica,"));
     assert!(commands.contains("export type Command_createTodo_Input"));
     assert!(commands.contains("readonly \"id\"?: string;"));
     assert!(commands.contains("readonly \"tenantId\": string;"));
@@ -2336,16 +2513,42 @@ fn command_protocol_and_extensions_are_preserved_exactly() {
     assert!(commands.contains("\"confirmations\""));
     assert!(commands.contains("\"consistency\": \"fact\""));
     assert!(commands.contains("\"revalidation\""));
+    assert!(commands.contains("\"trustedPresets\": []"));
     assert!(commands.contains("export function prepareCommand_createTodo"));
-    assert!(commands.contains("\"todo.create\": { artifact: Command_createTodo"));
+    assert!(commands.contains("export const COMMAND_ARTIFACTS = [Command_createTodo] as const;"));
+    assert!(commands.contains("export const COMMANDS = {"));
+    assert!(commands.contains("\"todo.create\": Command_createTodo"));
+    assert!(commands
+        .contains("export type GeneratedCommandRuntime = ReplicaCommandRuntime<typeof COMMANDS>;"));
+    assert!(
+        commands.contains("export type GeneratedCommands = GeneratedCommandRuntime['commands'];")
+    );
+    assert!(commands.contains(
+        "export type GeneratedCommandRuntimeOptions = Omit<ReplicaCommandRuntimeOptions, 'status'>;"
+    ));
+    assert!(commands.contains("export function createCommands("));
+    assert!(commands.contains("import { COMMAND_STATUS } from './protocol.js';"));
+    assert!(commands.contains(
+        "return createReplicaCommandRuntime(replica, transport, COMMANDS, {\n    ...options,\n    status: COMMAND_STATUS\n  });"
+    ));
+    assert!(!commands.contains("export const commands ="));
+    assert!(!commands.contains("{ artifact: Command_createTodo"));
     assert!(!commands.contains("Command_todo.create"));
     assert!(!commands.contains("\"extensions\""));
     assert!(protocol.contains(status));
     assert!(protocol.contains(&fingerprint(status)));
+    assert!(protocol.contains("import type { ReplicaCommandStatusArtifact }"));
+    assert!(protocol.contains("export const COMMAND_STATUS: ReplicaCommandStatusArtifact"));
+    assert!(protocol.contains("\"document\": \"query Distributed_CommandStatus"));
+    assert!(protocol.contains("\"schemaHash\":"));
+    assert!(protocol.contains("\"protocolHash\":"));
+    assert!(protocol.contains("\"surface\": {"));
+    assert!(protocol.contains("\"trustedPresets\": []"));
+    assert!(protocol.contains("\ttrustedPresets: []"));
 }
 
 #[test]
-fn generated_command_typescript_covers_object_json_and_no_input_wrappers() {
+fn generated_command_typescript_covers_typed_json_fields_and_no_input_wrappers() {
     let project = compile_client(ClientCompileInput::new(
         generated_command_types_manifest(),
         ClientSurfaceSelector::role("user"),
@@ -2360,6 +2563,28 @@ fn generated_command_typescript_covers_object_json_and_no_input_wrappers() {
         commands,
         include_str!("../../tests/fixtures/generated-commands.ts")
     );
+}
+
+#[test]
+fn generated_command_namespaces_reject_prefix_collisions() {
+    let mut value = generated_command_types_manifest();
+    value["commands"][0]["name"] = json!("todo");
+    value["commands"][1]["name"] = json!("todo.complete");
+    refresh_schema_fingerprint(&mut value);
+
+    let error = compile_client(ClientCompileInput::new(
+        value,
+        ClientSurfaceSelector::role("user"),
+        vec![ClientDocument::new(
+            "src/routes/todos/+page.graphql",
+            "query Todos { todos { id } }",
+        )],
+    ))
+    .expect_err("a command path cannot also be a namespace");
+    assert_eq!(error.code, "client.command.namespace_collision");
+    assert!(error.message.contains("`todo`"));
+    assert!(error.message.contains("`todo.complete`"));
+    assert!(error.message.contains("prefixes"));
 }
 
 #[test]
@@ -2440,13 +2665,23 @@ fn projected_command_rejects_tampered_topology_and_wrong_owner() {
     trusted_preset["commands"][0]["extensions"]["trusted_presets"] =
         json!([{"name": "current_tenant", "codec": "string"}]);
     refresh_schema_fingerprint(&mut trusted_preset);
-    ClientManifest::parse(trusted_preset, &ClientSurfaceSelector::role("user"))
+    ClientManifest::parse(trusted_preset.clone(), &ClientSurfaceSelector::role("user"))
         .expect("scope-bound trusted preset may define a direct target");
+    let project = compile_client(input_with_manifest(
+        trusted_preset,
+        "query Todos { todos { id } }",
+    ))
+    .expect("compile trusted-preset client surface");
+    assert_eq!(
+        operation_artifact(&project)["protocol"]["trustedPresets"],
+        json!([{"name": "current_tenant", "codec": "string"}]),
+        "every query artifact carries the exact surface-wide preset contract"
+    );
 }
 
 #[test]
 fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
-    let valid = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) }";
+    let valid = "mutation Client_createTodo($commandId: ID!, $input: CreateTodoInput!) { createTodo(commandId: $commandId, input: $input) { id } }";
     let status = "query Distributed_CommandStatus($commandId: ID!) { commandStatus(commandId: $commandId) { state } }";
     let command = |operation: &str, generator: &str| {
         json!({
@@ -2468,7 +2703,20 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
                     }]
                 }
             },
-            "output": {"kind": "json", "codec": "json"},
+            "output": {
+                "kind": "object",
+                "definition": {
+                    "name": "CreateTodoPayload",
+                    "fields": [{
+                        "name": "id",
+                        "type_name": "ID",
+                        "nullable": false,
+                        "list": false,
+                        "item_nullable": false,
+                        "codec": "string"
+                    }]
+                }
+            },
             "operation": operation,
             "operation_hash": fingerprint(operation),
             "extensions": {
@@ -2505,7 +2753,7 @@ fn rejects_commands_without_causal_identity_or_normative_input_defaults() {
     };
 
     let without_id =
-        "mutation Client_createTodo($input: CreateTodoInput!) { createTodo(input: $input) }";
+        "mutation Client_createTodo($input: CreateTodoInput!) { createTodo(input: $input) { id } }";
     assert_eq!(
         compile(command(without_id, "uuid_v7"))
             .expect_err("missing causal identity")
@@ -2712,5 +2960,9 @@ fn source_paths_cannot_inject_generated_typescript() {
 
     assert!(module.starts_with("/** GENERATED by dctl client. Do not edit. */\n"));
     assert!(!module.contains("compromised"));
+    assert!(
+        !module.contains("\"source\""),
+        "unsafe provenance must be omitted from executable artifacts"
+    );
     assert!(file(&project, "manifest.json").contains("\\nexport const compromised"));
 }

@@ -60,10 +60,25 @@ const CREATE_TYPE = Object.freeze({
 	])
 });
 
-const OUTPUT = Object.freeze({ kind: 'json', codec: 'json' });
+const OUTPUT = Object.freeze({
+	kind: 'object',
+	definition: Object.freeze({
+		name: 'CommandResult',
+		fields: Object.freeze([
+			scalarField('value', 'JSON', 'json', { nullable: true })
+		])
+	})
+});
 const INPUT = Object.freeze({
 	kind: 'object',
 	definition: CREATE_TYPE
+});
+const JSON_IMPORT_INPUT = Object.freeze({
+	kind: 'object',
+	definition: Object.freeze({
+		name: 'ImportTodosInput',
+		fields: Object.freeze([scalarField('payload', 'JSON', 'json')])
+	})
 });
 const PROJECTED_OUTPUT = Object.freeze({
 	kind: 'object',
@@ -99,7 +114,9 @@ function baseArtifact(overrides = {}) {
 			version: 2,
 			schemaHash: HASH_B,
 			protocolHash: HASH_C,
-			operation: HASH_A
+			surface: { kind: 'role', name: 'user' },
+			operation: HASH_A,
+			trustedPresets: []
 		},
 		input: INPUT,
 		output: OUTPUT,
@@ -282,7 +299,7 @@ test('real default generators produce canonical values', () => {
 	assert.match(prepared.input.code, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
 });
 
-test('none and JSON inputs produce exact canonical transport variables', () => {
+test('none inputs and typed JSON fields produce exact canonical transport variables', () => {
 	const noInput = prepareReplicaCommand(
 		baseArtifact({
 			name: 'todo.rebuild',
@@ -313,8 +330,8 @@ test('none and JSON inputs produce exact canonical transport variables', () => {
 			name: 'todo.import',
 			mutationField: 'importTodos',
 			document:
-				'mutation Client_importTodos($commandId: ID!, $input: JSON!) { importTodos(commandId: $commandId, input: $input) }',
-			input: { kind: 'json', codec: 'json' },
+				'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
+			input: JSON_IMPORT_INPUT,
 			inputDefaults: undefined,
 			consistency: 'accepted',
 			effects: { version: 1, operations: [], fallback: 'revalidate' },
@@ -327,11 +344,12 @@ test('none and JSON inputs produce exact canonical transport variables', () => {
 				relationships: []
 			}
 		}),
-		{ z: [2, 1], a: { y: true, x: null } },
+		{ payload: { z: [2, 1], a: { y: true, x: null } } },
 		{ commandId: COMMAND_ID }
 	);
-	assert.deepEqual(Object.keys(json.input), ['a', 'z']);
-	assert.deepEqual(Object.keys(json.input.a), ['x', 'y']);
+	assert.deepEqual(Object.keys(json.input), ['payload']);
+	assert.deepEqual(Object.keys(json.input.payload), ['a', 'z']);
+	assert.deepEqual(Object.keys(json.input.payload.a), ['x', 'y']);
 	assert.equal(json.transport.variables.input, json.input);
 
 	const cyclic = {};
@@ -343,8 +361,8 @@ test('none and JSON inputs produce exact canonical transport variables', () => {
 					name: 'todo.import',
 					mutationField: 'importTodos',
 					document:
-						'mutation Client_importTodos($commandId: ID!, $input: JSON!) { importTodos(commandId: $commandId, input: $input) }',
-					input: { kind: 'json', codec: 'json' },
+						'mutation Client_importTodos($commandId: ID!, $input: ImportTodosInput!) { importTodos(commandId: $commandId, input: $input) }',
+					input: JSON_IMPORT_INPUT,
 					inputDefaults: undefined,
 					consistency: 'accepted',
 					effects: { version: 1, operations: [], fallback: 'revalidate' },
@@ -357,7 +375,7 @@ test('none and JSON inputs produce exact canonical transport variables', () => {
 						relationships: []
 					}
 				}),
-				cyclic,
+				{ payload: cyclic },
 				{ commandId: COMMAND_ID }
 			),
 		(error) =>
@@ -554,7 +572,28 @@ test('unknown generators/effects and unresolved trusted presets fail before opti
 						version: 2,
 						schemaHash: HASH_B,
 						protocolHash: HASH_C,
-						operation: HASH_B
+						operation: HASH_A,
+						trustedPresets: []
+					}
+				}),
+				input,
+				options
+			),
+		(error) =>
+			error instanceof ReplicaCommandContractError &&
+			error.path === 'artifact.protocol.surface'
+	);
+	assert.throws(
+		() =>
+			prepareReplicaCommand(
+				baseArtifact({
+					protocol: {
+						version: 2,
+						schemaHash: HASH_B,
+						protocolHash: HASH_C,
+						surface: { kind: 'role', name: 'user' },
+						operation: HASH_B,
+						trustedPresets: []
 					}
 				}),
 				input,
@@ -870,7 +909,7 @@ test('projected command identity facts reject missing, unknown, and duplicate fi
 		(error) =>
 			error instanceof ReplicaCommandContractError &&
 			error.code === 'REPLICA_COMMAND_ARTIFACT_INVALID' &&
-			error.path === 'artifact.directProjection.identityFields'
+			error.path === 'artifact.directProjection.identityFields[0]'
 	);
 });
 

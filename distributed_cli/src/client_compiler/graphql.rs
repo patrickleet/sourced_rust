@@ -28,6 +28,8 @@ const MAX_EXPANDED_SELECTIONS: usize = 10_000;
 pub(crate) struct CompiledOperation {
     pub(crate) name: String,
     pub(crate) source_path: String,
+    pub(crate) source_line: usize,
+    pub(crate) source_column: usize,
     pub(crate) module_path: String,
     pub(crate) export_name: String,
     pub(crate) query_document: String,
@@ -592,6 +594,8 @@ pub(crate) fn compile_document(
     Ok(CompiledOperation {
         name: name.clone(),
         source_path: document.path.clone(),
+        source_line: operation.pos.line.max(1),
+        source_column: operation.pos.column.max(1),
         module_path: format!("operations/{module_stem}.ts"),
         export_name: format!("Operation_{name}"),
         query_document,
@@ -2743,9 +2747,12 @@ fn compiled_pagination_plan(coverage: &CompiledCoverage) -> CompiledPaginationPl
         },
         "offset" => CompiledPaginationPlan {
             kind: "offset".into(),
-            insert: "revalidate".into(),
-            delete: "revalidate".into(),
-            reorder: "revalidate".into(),
+            // Runtime locality is still fail-closed: these operations are
+            // applied only when observed coverage proves a non-full first
+            // page. Full, shifted, or ambiguous windows revalidate.
+            insert: "local".into(),
+            delete: "local".into(),
+            reorder: "local".into(),
             stable_update: "local".into(),
         },
         other => CompiledPaginationPlan {

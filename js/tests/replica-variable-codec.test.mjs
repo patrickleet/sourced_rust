@@ -166,13 +166,16 @@ const CodecArtifact = Object.freeze({
 	protocol: Object.freeze({
 		version: 2,
 		schemaHash: 'schema-one',
-		operation: 'query:codec-items'
+		surface: Object.freeze({ kind: 'role', name: 'user' }),
+		operation: 'query:codec-items',
+		trustedPresets: Object.freeze([])
 	}),
 	roots: Object.freeze([
 		Object.freeze({
 			responseKey: 'items',
 			field: 'items',
 			cardinality: 'many',
+			nullable: false,
 			arguments: Object.freeze({
 				id: Object.freeze({ kind: 'variable', name: 'id' }),
 				offset: Object.freeze({ kind: 'variable', name: 'offset' }),
@@ -187,19 +190,31 @@ const CodecArtifact = Object.freeze({
 			}),
 			dependencies: Object.freeze(['items']),
 			selection: Object.freeze({
-				model: Item,
-				fields: Object.freeze([
-					Object.freeze({ kind: 'scalar', responseKey: 'id', field: 'id' }),
-					Object.freeze({ kind: 'scalar', responseKey: 'title', field: 'title' })
+				typename: Item.id,
+				storage: Object.freeze({
+					kind: 'normalized',
+					model: Item.id,
+					identityFields: Item.identityFields
+				}),
+				members: Object.freeze([
+					Object.freeze({
+						kind: 'scalar',
+						responseKey: 'id',
+						field: 'id',
+						codec: 'ID',
+						nullable: false
+					}),
+					Object.freeze({
+						kind: 'scalar',
+						responseKey: 'title',
+						field: 'title',
+						codec: 'String',
+						nullable: false
+					})
 				])
 			})
 		})
 	])
-});
-
-const LegacyCodecArtifact = Object.freeze({
-	...CodecArtifact,
-	protocol: undefined
 });
 
 const singletonVariables = Object.freeze({
@@ -336,15 +351,12 @@ test('scalar canonicalization is deterministic and preserves omission versus nul
 test('canonical write and read variables share normalized index identity', () => {
 	const replica = createDistributedReplica();
 	replica.writeResult(
-		LegacyCodecArtifact,
+		CodecArtifact,
 		singletonVariables,
-		{
-			revision: 1,
-			data: { items: [{ id: 'item-1', title: 'canonical' }] }
-		},
+		codecWireFrame('canonical'),
 		'network'
 	);
-	const snapshot = replica.read(LegacyCodecArtifact, expandedVariables);
+	const snapshot = replica.read(CodecArtifact, expandedVariables);
 	assert.equal(snapshot.status, 'ready');
 	assert.deepEqual(snapshot.data, {
 		items: [{ id: 'item-1', title: 'canonical' }]
@@ -701,6 +713,18 @@ test('protocol artifacts require a codec before binding, cache access, or transp
 		...CodecArtifact,
 		variableCodec: undefined
 	});
+	const unboundWithCodec = Object.freeze({
+		...CodecArtifact,
+		protocol: undefined
+	});
+	assert.throws(
+		() =>
+			canonicalizeOperationVariables(
+				unboundWithCodec,
+				singletonVariables
+			),
+		/replica artifact protocol binding is invalid/
+	);
 	for (const useArtifact of [
 		() => canonicalizeOperationVariables(missingCodec, singletonVariables),
 		() => replica.read(missingCodec, singletonVariables),
@@ -729,7 +753,65 @@ test('protocol artifacts require a codec before binding, cache access, or transp
 	assert.equal(replica.read(otherSchema, expandedVariables).complete, false);
 });
 
-test('replica rejects schema and legacy mixing before cache reads without purging', () => {
+test('generated protocol identity is mandatory before cache identity or transport', async () => {
+	const fetches = [];
+	const replica = createDistributedReplica({
+		transport: {
+			fetch(request) {
+				fetches.push(request);
+				return new Promise(() => undefined);
+			}
+		}
+	});
+	const malformed = [
+		[
+			Object.freeze({ ...CodecArtifact, protocol: undefined }),
+			/replica artifact protocol binding is invalid/
+		],
+		[
+			Object.freeze({
+				...CodecArtifact,
+				protocol: Object.freeze({
+					...CodecArtifact.protocol,
+					surface: undefined
+				})
+			}),
+			/replica artifact client surface is invalid/
+		],
+		[
+			Object.freeze({
+				...CodecArtifact,
+				protocol: Object.freeze({
+					...CodecArtifact.protocol,
+					trustedPresets: undefined
+				})
+			}),
+			/replica artifact trusted preset contract is invalid/
+		],
+		[
+			Object.freeze({
+				...CodecArtifact,
+				protocol: Object.freeze({
+					...CodecArtifact.protocol,
+					operation: 'query:not-the-artifact'
+				})
+			}),
+			/replica artifact protocol binding is invalid/
+		]
+	];
+	for (const [artifact, expected] of malformed) {
+		assert.throws(
+			() => canonicalizeOperationVariables(artifact, singletonVariables),
+			expected
+		);
+		assert.throws(() => replica.read(artifact, singletonVariables), expected);
+		assert.throws(() => replica.watch(artifact, singletonVariables), expected);
+	}
+	await flushMicrotasks();
+	assert.equal(fetches.length, 0);
+});
+
+test('replica rejects schema and unbound artifact mixing before cache reads without purging', () => {
 	const replica = createDistributedReplica();
 	replica.writeResult(
 		CodecArtifact,
@@ -752,9 +834,13 @@ test('replica rejects schema and legacy mixing before cache reads without purgin
 		() => replica.read(otherSchema, expandedVariables),
 		/does not match the active replica binding/
 	);
+	const unboundArtifact = Object.freeze({
+		...CodecArtifact,
+		protocol: undefined
+	});
 	assert.throws(
-		() => replica.read(LegacyCodecArtifact, expandedVariables),
-		/does not match the active replica binding/
+		() => replica.read(unboundArtifact, expandedVariables),
+		/replica artifact protocol binding is invalid/
 	);
 	assert.throws(
 		() =>
@@ -769,25 +855,6 @@ test('replica rejects schema and legacy mixing before cache reads without purgin
 	assert.deepEqual(replica.read(CodecArtifact, expandedVariables).data, {
 		items: [{ id: 'item-1', title: 'schema one' }]
 	});
-
-	const legacyReplica = createDistributedReplica();
-	legacyReplica.writeResult(
-		LegacyCodecArtifact,
-		singletonVariables,
-		{
-			revision: 1,
-			data: { items: [{ id: 'item-1', title: 'legacy' }] }
-		},
-		'network'
-	);
-	assert.throws(
-		() => legacyReplica.read(CodecArtifact, expandedVariables),
-		/does not match the active replica binding/
-	);
-	assert.deepEqual(
-		legacyReplica.read(LegacyCodecArtifact, expandedVariables).data,
-		{ items: [{ id: 'item-1', title: 'legacy' }] }
-	);
 });
 
 test('an invalid write source cannot bind a replica', () => {

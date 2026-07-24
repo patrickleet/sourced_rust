@@ -9,12 +9,11 @@ use std::time::Duration;
 use distributed::bus::{InMemoryBus, RunOptions};
 use distributed::microsvc::serve;
 use distributed::{SqliteLockManager, SqliteRepository};
-use e2e_service::{
-    build_graphql_engine, build_service, dev_identity, distributed_manifest,
-};
+use e2e_service::{build_graphql_engine, build_service, distributed_manifest};
 use e2e_suite::{
-    assert_http_commands_disabled, cases, graphql, graphql_raw, todos_archive, todos_complete,
-    todos_create, todos_force_archive, todos_rename, todos_reopen, wait_ready,
+    assert_http_commands_disabled, cases, graphql, graphql_raw, new_command_id,
+    offline_oidc_identity, todos_archive, todos_complete, todos_create, todos_force_archive,
+    todos_rename, todos_reopen, wait_ready,
 };
 
 async fn ensure_target() -> String {
@@ -46,14 +45,12 @@ async fn ensure_target() -> String {
     let bus = InMemoryBus::new();
 
     let change_rx = repo.read_model_changes();
-    // Offline suite always uses DevHeaders (ignore ambient OIDC_* from make up).
-    let gql = build_graphql_engine(repo.pool().clone(), dev_identity(), Some(change_rx))
+    // Offline suite uses a synthetic signed static-JWKS bearer. Durable command
+    // tests exercise the same VerifiedPrincipal fence as production.
+    let service = build_service(repo.clone(), locks.clone(), repo.clone()).with_bus(bus.clone());
+    let gql = build_graphql_engine(&repo, &service, offline_oidc_identity(), Some(change_rx))
         .expect("gql");
-    let service = Arc::new(
-        build_service(repo.clone(), locks.clone(), repo.clone())
-            .with_bus(bus.clone())
-            .with_graphql(gql),
-    );
+    let service = Arc::new(service.try_with_graphql(gql).expect("bind gql"));
 
     // Projector consumer (eventual consistency path — no command-side dual-write).
     let consumer_repo = repo.clone();
@@ -67,7 +64,21 @@ async fn ensure_target() -> String {
                 consumer_repo.clone(),
             )
             .with_bus(bus_c.clone());
-            let _ = service.run(RunOptions::idempotent()).await;
+            if let Err(error) = service.run(RunOptions::idempotent()).await {
+                eprintln!("offline projector loop: {error}");
+                if let Ok(Some((code, detail))) = sqlx::query_as::<_, (String, Vec<u8>)>(
+                    "SELECT failure_code, failure_bytes FROM projection_failures LIMIT 1",
+                )
+                .fetch_optional(consumer_repo.pool())
+                .await
+                {
+                    eprintln!(
+                        "offline projector failure {code}: {}",
+                        String::from_utf8_lossy(&detail)
+                    );
+                }
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     });
@@ -170,10 +181,11 @@ async fn t1b_create_via_graphql_mutation() {
 async fn t1c_create_owner_from_session_not_input() {
     let base = ensure_target().await;
     let tid = id("towner");
+    let command_id = new_command_id();
     // Extra owner_id field must not be accepted as spoof — schema rejects or ignores.
     let spoof = format!(
         r#"mutation {{
-          todos_create(input: {{ todo_id: "{tid}", title: "owned", owner_id: "evil" }}) {{
+          todos_create(commandId: "{command_id}", input: {{ todo_id: "{tid}", title: "owned", owner_id: "evil" }}) {{
             todo_id owner_id
           }}
         }}"#
@@ -235,14 +247,9 @@ async fn t2_owner_isolation_graphql() {
     assert!(poll_todo(&base, "alice", &alice_id).await.is_some());
     assert!(poll_todo(&base, "bob", &bob_id).await.is_some());
 
-    let v = graphql(
-        &base,
-        "{ todos { todo_id owner_id } }",
-        "alice",
-        "user",
-    )
-    .await
-    .expect(cases::OWNER_ISOLATION);
+    let v = graphql(&base, "{ todos { todo_id owner_id } }", "alice", "user")
+        .await
+        .expect(cases::OWNER_ISOLATION);
     let arr = v["data"]["todos"].as_array().expect("todos array");
     assert!(
         arr.iter().all(|r| r["owner_id"] == "alice"),
@@ -288,10 +295,7 @@ async fn t2b_admin_sees_all_owners() {
     .await
     .expect(cases::ADMIN_SEES_ALL);
     let arr = v["data"]["todos"].as_array().expect("todos array");
-    let owners: Vec<&str> = arr
-        .iter()
-        .filter_map(|r| r["owner_id"].as_str())
-        .collect();
+    let owners: Vec<&str> = arr.iter().filter_map(|r| r["owner_id"].as_str()).collect();
     assert!(
         arr.iter().any(|r| r["todo_id"] == alice_id),
         "{}: admin missing alice todo: {v}",
@@ -333,7 +337,8 @@ async fn t2c_admin_force_archive() {
         .await
         .expect("todo exists after denied force-archive");
     assert_ne!(
-        after_deny["status"], "archived",
+        after_deny["status"],
+        "archived",
         "{}: user force-archive must not change status",
         cases::ADMIN_FORCE_ARCHIVE
     );
@@ -374,7 +379,9 @@ async fn t2d_sdl_role_split_force_archive() {
     repo.bootstrap_table_schema_for_dev(&registry)
         .await
         .expect("bootstrap");
-    let engine = build_graphql_engine(repo.pool().clone(), dev_identity(), None).expect("gql");
+    let locks = distributed::SqliteLockManager::new(repo.pool().clone());
+    let service = build_service(repo.clone(), locks, repo.clone());
+    let engine = build_graphql_engine(&repo, &service, offline_oidc_identity(), None).expect("gql");
     let user_sdl = engine.sdl_for_role("user").expect("user sdl");
     let admin_sdl = engine.sdl_for_role("admin").expect("admin sdl");
     assert!(
@@ -502,9 +509,10 @@ async fn t4_not_owner_rejected() {
 async fn t5_unauthenticated_rejected() {
     let base = ensure_target().await;
     let tid = id("tu");
+    let command_id = new_command_id();
     let doc = format!(
         r#"mutation {{
-          todos_create(input: {{ todo_id: "{tid}", title: "no user" }}) {{
+          todos_create(commandId: "{command_id}", input: {{ todo_id: "{tid}", title: "no user" }}) {{
             todo_id
           }}
         }}"#

@@ -1,4 +1,5 @@
 import type { GraphqlVariables } from '../types.js';
+import type { DistributedTrustedPreset } from '../protocol.js';
 import type {
 	ReplicaArgumentValue,
 	ReplicaFilterArtifact,
@@ -14,6 +15,7 @@ import type {
 	ReplicaPaginationDisposition,
 	ReplicaRelationshipArtifact,
 	ReplicaRelationshipKeyMapping,
+	ReplicaSurfaceTrustedPresetDescriptor,
 	ReplicaValue
 } from './types.js';
 import { resolveReplicaArgumentValue } from './identity.js';
@@ -23,6 +25,7 @@ export type ReplicaQueryPlanPath = readonly (string | number)[];
 export type ReplicaQueryPlanReasonCode =
 	| 'ambiguous_order_entry'
 	| 'claim_operand'
+	| 'claim_inventory'
 	| 'collation_not_portable'
 	| 'coverage_mismatch'
 	| 'cursor_not_certified'
@@ -86,6 +89,15 @@ export type ReplicaFilterEvaluationOptions = {
 	readonly resolveRelationship?: (
 		request: ReplicaRelationshipFilterRequest
 	) => ReplicaFilterEvaluation;
+	/**
+	 * Static compiler-owned descriptor union paired with the current
+	 * server-derived, cache-scope-bound values. The evaluator never reads
+	 * ambient token claims or caller headers.
+	 */
+	readonly trustedPresets?: {
+		readonly descriptors: readonly ReplicaSurfaceTrustedPresetDescriptor[];
+		readonly values: readonly DistributedTrustedPreset[];
+	};
 };
 
 export type ReplicaOrderComparison =
@@ -122,7 +134,8 @@ type ResolvedOperand =
 	| {
 			readonly kind: 'value';
 			readonly value: ReplicaValue;
-			readonly literalKind: ReplicaFilterLiteral['kind'];
+			readonly literalKind?: ReplicaFilterLiteral['kind'];
+			readonly source: 'literal' | 'trusted_preset';
 	  }
 	| { readonly kind: 'unknown'; readonly reason: ReplicaQueryPlanReason };
 
@@ -200,7 +213,7 @@ export function compareReplicaOrder(
 		if (
 			!isName(tieBreaker.field) ||
 			!isScalarCodecPair(tieBreaker.scalar, tieBreaker.codec) ||
-			(tieBreaker.nullable !== undefined && tieBreaker.nullable !== false) ||
+			tieBreaker.nullable !== false ||
 			tieBreakerFields.has(tieBreaker.field)
 		) {
 			return orderUnknown(
@@ -362,14 +375,42 @@ export function decideReplicaPaginationMaintenance(
 	}
 
 	const policy = policyForChange(artifact, change);
-	if (policy === 'local') return PAGINATION_LOCAL;
+	if (policy === 'local') {
+		if (
+			artifact.kind !== 'offset' ||
+			change.kind === 'stable_update'
+		) {
+			return PAGINATION_LOCAL;
+		}
+		if (
+			coverage.kind === 'offset' &&
+			coverage.offset === 0 &&
+			coverage.limit !== undefined &&
+			coverage.returned !== undefined &&
+			coverage.returned < coverage.limit
+		) {
+			// A non-full first page proves that the server returned the complete
+			// ordered set. The index runtime can therefore apply all optimistic
+			// membership/order changes and truncate back to the declared limit.
+			return PAGINATION_LOCAL;
+		}
+	}
 	const [code, message]: readonly [ReplicaQueryPlanReasonCode, string] =
 		change.kind === 'insert'
-			? ['insert_changes_offset_window', 'an insert can change window membership']
+			? [
+					'insert_changes_offset_window',
+					'an insert is local only for a proven non-full first offset page'
+				]
 			: change.kind === 'delete'
-				? ['delete_changes_offset_window', 'a delete can change window membership']
+				? [
+						'delete_changes_offset_window',
+						'a delete is local only for a proven non-full first offset page'
+					]
 				: change.kind === 'reorder'
-					? ['reorder_changes_offset_window', 'a reorder can change window membership']
+					? [
+							'reorder_changes_offset_window',
+							'a reorder is local only for a proven non-full first offset page'
+						]
 					: [
 							'invalid_pagination_policy',
 							'the artifact requires stable updates to revalidate'
@@ -719,7 +760,12 @@ function evaluatePolicyExpression(
 				)
 			);
 		}
-		const operand = resolveOperand(expression.value.rhs, [...columnPath, 'rhs']);
+		const operand = resolveOperand(
+			expression.value.rhs,
+			field,
+			options,
+			[...columnPath, 'rhs']
+		);
 		if (operand.kind === 'unknown') return filterUnknown(operand.reason);
 		const literalValidity = validateRowPolicyLiteral(
 			field,
@@ -752,7 +798,7 @@ function evaluatePolicyExpression(
 		const values: ReplicaValue[] = [];
 		for (const [index, operand] of expression.value.values.entries()) {
 			const operandPath = [...columnPath, 'values', index];
-			const resolved = resolveOperand(operand, operandPath);
+			const resolved = resolveOperand(operand, field, options, operandPath);
 			if (resolved.kind === 'unknown') return filterUnknown(resolved.reason);
 			const literalValidity = validateRowPolicyLiteral(
 				field,
@@ -1037,7 +1083,16 @@ function validateRowPolicyLiteral(
 	path: ReplicaQueryPlanPath,
 	operator?: ReplicaFilterOperator
 ): ReplicaQueryPlanReason | undefined {
-	if (operand.literalKind === 'null') return undefined;
+	if (operand.source === 'trusted_preset') return undefined;
+	const literalKind = operand.literalKind;
+	if (literalKind === undefined) {
+		return reason(
+			'invalid_artifact',
+			path,
+			'row-policy literal is missing its tagged kind'
+		);
+	}
+	if (literalKind === 'null') return undefined;
 	const expected: readonly ReplicaFilterLiteral['kind'][] | undefined =
 		field.scalar === 'ID' ||
 		field.scalar === 'String' ||
@@ -1054,13 +1109,13 @@ function validateRowPolicyLiteral(
 								? ['string']
 								: ['json']
 							: undefined;
-	if (expected?.includes(operand.literalKind)) return undefined;
+	if (expected?.includes(literalKind)) return undefined;
 	return reason(
 		'invalid_artifact',
 		path,
 		expected === undefined
 			? `scalar ${field.scalar} has no non-null row-policy literal encoding`
-			: `row-policy literal kind ${operand.literalKind} cannot target ${field.scalar}; expected ${expected.join(' or ')}`
+			: `row-policy literal kind ${literalKind} cannot target ${field.scalar}; expected ${expected.join(' or ')}`
 	);
 }
 
@@ -1309,17 +1364,17 @@ function resolveInput(
 
 function resolveOperand(
 	operand: ReplicaFilterOperand,
+	field: ReplicaFilterFieldArtifact,
+	options: ReplicaFilterEvaluationOptions,
 	path: ReplicaQueryPlanPath
 ): ResolvedOperand {
 	if (operand.kind === 'claim') {
-		return {
-			kind: 'unknown',
-			reason: reason(
-				'claim_operand',
-				path,
-				`claim ${operand.value.header} is trusted server input and is unavailable locally`
-			)
-		};
+		return resolveTrustedPresetOperand(
+			operand.value.header,
+			field,
+			options,
+			path
+		);
 	}
 	if (operand.kind !== 'lit' || !isRecord(operand.value)) {
 		return {
@@ -1329,7 +1384,12 @@ function resolveOperand(
 	}
 	const literal = operand.value;
 	if (literal.kind === 'null') {
-		return { kind: 'value', value: null, literalKind: literal.kind };
+		return {
+			kind: 'value',
+			value: null,
+			literalKind: literal.kind,
+			source: 'literal'
+		};
 	}
 	if (
 		literal.kind === 'string' &&
@@ -1338,14 +1398,16 @@ function resolveOperand(
 		return {
 			kind: 'value',
 			value: literal.value,
-			literalKind: literal.kind
+			literalKind: literal.kind,
+			source: 'literal'
 		};
 	}
 	if (literal.kind === 'bool' && typeof literal.value === 'boolean') {
 		return {
 			kind: 'value',
 			value: literal.value,
-			literalKind: literal.kind
+			literalKind: literal.kind,
+			source: 'literal'
 		};
 	}
 	if (
@@ -1355,14 +1417,16 @@ function resolveOperand(
 		return {
 			kind: 'value',
 			value: literal.value,
-			literalKind: literal.kind
+			literalKind: literal.kind,
+			source: 'literal'
 		};
 	}
 	if (literal.kind === 'json' && isReplicaValue(literal.value)) {
 		return {
 			kind: 'value',
 			value: literal.value,
-			literalKind: literal.kind
+			literalKind: literal.kind,
+			source: 'literal'
 		};
 	}
 	return {
@@ -1372,6 +1436,116 @@ function resolveOperand(
 			path,
 			'row-policy literal is not a portable JSON value'
 		)
+	};
+}
+
+function resolveTrustedPresetOperand(
+	name: string,
+	field: ReplicaFilterFieldArtifact,
+	options: ReplicaFilterEvaluationOptions,
+	path: ReplicaQueryPlanPath
+): ResolvedOperand {
+	const inventory = options.trustedPresets;
+	if (inventory === undefined) {
+		return {
+			kind: 'unknown',
+			reason: reason(
+				'claim_operand',
+				path,
+				`claim ${name} has no authoritative scope-bound preset inventory`
+			)
+		};
+	}
+	const descriptors = new Map<string, ReplicaSurfaceTrustedPresetDescriptor>();
+	for (const [index, descriptor] of inventory.descriptors.entries()) {
+		if (
+			typeof descriptor?.name !== 'string' ||
+			descriptor.name.length === 0 ||
+			typeof descriptor.codec !== 'string' ||
+			descriptors.has(descriptor.name)
+		) {
+			return {
+				kind: 'unknown',
+				reason: reason(
+					'claim_inventory',
+					[...path, 'descriptors', index],
+					'trusted preset descriptor inventory is malformed or duplicated'
+				)
+			};
+		}
+		descriptors.set(descriptor.name, descriptor);
+	}
+	const values = new Map<string, DistributedTrustedPreset>();
+	for (const [index, preset] of inventory.values.entries()) {
+		if (
+			typeof preset?.name !== 'string' ||
+			preset.name.length === 0 ||
+			typeof preset.codec !== 'string' ||
+			values.has(preset.name)
+		) {
+			return {
+				kind: 'unknown',
+				reason: reason(
+					'claim_inventory',
+					[...path, 'values', index],
+					'trusted preset value inventory is malformed or duplicated'
+				)
+			};
+		}
+		values.set(preset.name, preset);
+	}
+	if (
+		descriptors.size !== values.size ||
+		[...descriptors].some(
+			([presetName, descriptor]) =>
+				values.get(presetName)?.codec !== descriptor.codec
+		)
+	) {
+		return {
+			kind: 'unknown',
+			reason: reason(
+				'claim_inventory',
+				path,
+				'trusted preset descriptors and scope-bound values do not form an exact union'
+			)
+		};
+	}
+	const descriptor = descriptors.get(name);
+	const preset = values.get(name);
+	if (descriptor === undefined || preset === undefined) {
+		return {
+			kind: 'unknown',
+			reason: reason(
+				'claim_operand',
+				path,
+				`claim ${name} is absent from the selected client surface`
+			)
+		};
+	}
+	if (descriptor.codec !== field.codec) {
+		return {
+			kind: 'unknown',
+			reason: reason(
+				'claim_operand',
+				path,
+				`claim ${name} codec ${descriptor.codec} cannot target ${field.field}:${field.codec}`
+			)
+		};
+	}
+	if (!isReplicaValue(preset.value)) {
+		return {
+			kind: 'unknown',
+			reason: reason(
+				'claim_inventory',
+				path,
+				`claim ${name} is not a portable replica value`
+			)
+		};
+	}
+	return {
+		kind: 'value',
+		value: preset.value,
+		source: 'trusted_preset'
 	};
 }
 
@@ -1496,10 +1670,7 @@ function validatePaginationPolicies(
 		artifact.kind === 'complete'
 			? values.every(([, value]) => value === 'local')
 			: artifact.kind === 'offset'
-				? artifact.insert === 'revalidate' &&
-					artifact.delete === 'revalidate' &&
-					artifact.reorder === 'revalidate' &&
-					artifact.stableUpdate === 'local'
+				? artifact.stableUpdate === 'local'
 				: true;
 	return exact
 		? undefined

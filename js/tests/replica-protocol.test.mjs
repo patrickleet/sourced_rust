@@ -33,7 +33,9 @@ const Todos = Object.freeze({
 	protocol: Object.freeze({
 		version: 2,
 		schemaHash: 'schema-a',
-		operation: 'query:todos'
+		surface: Object.freeze({ kind: 'role', name: 'user' }),
+		operation: 'query:todos',
+		trustedPresets: Object.freeze([])
 	}),
 	variableCodec: NoVariables,
 	live: Object.freeze({
@@ -45,19 +47,29 @@ const Todos = Object.freeze({
 			responseKey: 'todos',
 			field: 'todos',
 			cardinality: 'many',
+			nullable: false,
 			dependencies: Object.freeze(['todos']),
 			selection: Object.freeze({
-				model: Todo,
-				fields: Object.freeze([
+				typename: Todo.id,
+				storage: Object.freeze({
+					kind: 'normalized',
+					model: Todo.id,
+					identityFields: Todo.identityFields
+				}),
+				members: Object.freeze([
 					Object.freeze({
 						kind: 'scalar',
 						responseKey: 'id',
-						field: 'id'
+						field: 'id',
+						codec: 'ID',
+						nullable: false
 					}),
 					Object.freeze({
 						kind: 'scalar',
 						responseKey: 'title',
-						field: 'title'
+						field: 'title',
+						codec: 'String',
+						nullable: false
 					})
 				])
 			})
@@ -71,7 +83,9 @@ const TodosOtherOperation = Object.freeze({
 	protocol: Object.freeze({
 		version: 2,
 		schemaHash: 'schema-a',
-		operation: 'query:todos-other'
+		surface: Object.freeze({ kind: 'role', name: 'user' }),
+		operation: 'query:todos-other',
+		trustedPresets: Object.freeze([])
 	}),
 	live: undefined
 });
@@ -586,39 +600,9 @@ test('scope and schema generations purge old state before accepting fresh eviden
 		DistributedProtocolError
 	);
 	assert.equal(replica.read(Todos, {}).complete, false);
-
-	const looseArtifact = Object.freeze({
-		...Todos,
-		id: 'loose:todos',
-		protocol: undefined
-	});
-	const loose = createDistributedReplica();
-	assert.throws(
-		() =>
-			write(
-				loose,
-				{
-					operation: 'loose:operation',
-					rows: [{ id: 'todo-1', title: 'must reject v2' }]
-				},
-				'network',
-				looseArtifact
-			),
-		DistributedProtocolError
-	);
-	loose.writeResult(
-		looseArtifact,
-		{},
-		{
-			data: { todos: [{ id: 'todo-1', title: 'legacy only' }] },
-			revision: '1'
-		},
-		'network'
-	);
-	assert.equal(loose.read(looseArtifact, {}).data.todos[0].title, 'legacy only');
 });
 
-test('protocol-bound artifacts reject unscoped legacy results', () => {
+test('protocol-bound artifacts reject results without a v2 envelope', () => {
 	const replica = createDistributedReplica();
 	assert.throws(
 		() =>

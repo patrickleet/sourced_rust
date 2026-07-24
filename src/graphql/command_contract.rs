@@ -624,7 +624,7 @@ where
 }
 
 /// Generator evaluated exactly once into the canonical command input before
-/// hashing, optimistic overlay evaluation, or dispatch (runtime task 9).
+/// hashing, optimistic overlay evaluation, or dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum InputDefaultGenerator {
@@ -806,18 +806,18 @@ impl ProjectorTopologyIdentity {
     }
 
     fn canonical_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        canonical_json(&serde_json::json!({
             "name": self.name,
             "facts": self.facts,
             "models": self.models,
             "partition": self.partition,
-        })
+        }))
     }
 }
 
 impl CommandProjectionConfirmation {
     pub(crate) fn canonical_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        canonical_json(&serde_json::json!({
             "projector": self.projector,
             "projector_topology": self.projector_topology.canonical_value(),
             "protocol_topology": self.protocol_topology.as_ref().map(|topology| serde_json::json!({
@@ -828,7 +828,7 @@ impl CommandProjectionConfirmation {
             "model": self.model,
             "key": self.key,
             "partition": self.partition,
-        })
+        }))
     }
 
     pub(crate) fn topology_matches(
@@ -903,11 +903,11 @@ impl CommandProjectedModel {
     }
 
     fn canonical_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        canonical_json(&serde_json::json!({
             "model": self.model,
             "table": self.table,
             "partition": self.partition,
-        })
+        }))
     }
 
     pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
@@ -985,7 +985,7 @@ pub(crate) struct CommandDirectProjectionTarget {
 
 impl CommandDirectProjectionTarget {
     pub(crate) fn canonical_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        canonical_json(&serde_json::json!({
             "projector": self.projector,
             "projector_topology": self.projector_topology.canonical_value(),
             "protocol_topology": self.protocol_topology.as_ref().map(|topology| serde_json::json!({
@@ -1001,7 +1001,7 @@ impl CommandDirectProjectionTarget {
                 "model": owner.model,
                 "table": owner.table,
             })).collect::<Vec<_>>(),
-        })
+        }))
     }
 
     pub(crate) fn topology_matches(
@@ -1028,19 +1028,6 @@ impl CommandDirectProjectionTarget {
     /// server-private.
     pub(crate) fn protocol_topology(&self) -> Option<&ProjectorTopologyId> {
         self.protocol_topology.as_ref()
-    }
-
-    pub(crate) fn partition_matches(&self, partition: &ProjectionPartitionSpec) -> bool {
-        match partition {
-            ProjectionPartitionSpec::Unit => self.partition.is_none(),
-            ProjectionPartitionSpec::Constant { value } => {
-                self.partition
-                    == Some(EffectExpression::Constant {
-                        value: value.clone(),
-                    })
-            }
-            ProjectionPartitionSpec::InputPath { .. } => self.partition.is_some(),
-        }
     }
 
     pub(crate) fn resolve(
@@ -2571,7 +2558,7 @@ impl TypedCommandContract {
             .projected_model
             .as_ref()
             .map(CommandProjectedModel::canonical_value);
-        serde_json::json!({
+        canonical_json(&serde_json::json!({
             "name": self.name,
             "field_name": self.field_name,
             "roles": roles,
@@ -2583,7 +2570,7 @@ impl TypedCommandContract {
             "confirmations": confirmations,
             "projected_model": projected_model,
             "direct_projection": direct_projection,
-        })
+        }))
     }
 
     /// Resolve the finite declaration-owned projection plan from the exact
@@ -2701,13 +2688,6 @@ impl TypedCommandContract {
                 })
             })
             .collect()
-    }
-
-    pub(crate) fn resolve_direct_projection_target(
-        &self,
-        canonical_wire_input: &serde_json::Value,
-    ) -> Result<Option<ResolvedDirectProjectionTarget>, DirectProjectionTargetResolutionError> {
-        self.resolve_direct_projection_target_from_session(canonical_wire_input, None)
     }
 
     pub(crate) fn resolve_direct_projection_target_from_session(
@@ -2994,11 +2974,12 @@ impl TypedServiceCommandBinding {
             canonical.push(contract.canonical_value());
         }
 
-        let bytes = serde_json::to_vec(&serde_json::json!({
+        let material = canonical_json(&serde_json::json!({
             "service_id": service_id,
             "commands": canonical,
-        }))
-        .expect("serializing canonical command inventory cannot fail");
+        }));
+        let bytes = serde_json::to_vec(&material)
+            .expect("serializing canonical command inventory cannot fail");
         Ok(Self {
             service_id: service_id.to_string(),
             structural_fingerprint: format!("sha256:{:x}", Sha256::digest(bytes)),
@@ -3563,6 +3544,73 @@ mod tests {
 
         assert_eq!(first.fingerprint_bytes(), reordered.fingerprint_bytes());
         assert_ne!(first.fingerprint_bytes(), renamed.fingerprint_bytes());
+    }
+
+    #[test]
+    fn command_fingerprints_canonicalize_nested_json_object_keys() {
+        fn contract_with_constant(order: [&str; 2]) -> TypedCommandContract {
+            let mut value = serde_json::Map::new();
+            for key in order {
+                value.insert(
+                    key.into(),
+                    serde_json::json!(if key == "a" { 1 } else { 2 }),
+                );
+            }
+            let mut contract =
+                typed_command::<Input, Accepted<Payload>>("todo.update").into_contract();
+            contract.effects = CommandEffects::new([CommandEffect::Patch {
+                model: "Todo".into(),
+                key: EffectKey {
+                    fields: vec![EffectFieldValue {
+                        field: "id".into(),
+                        value: EffectExpression::Input {
+                            path: vec!["id".into()],
+                        },
+                    }],
+                },
+                fields: vec![EffectFieldValue {
+                    field: "metadata".into(),
+                    value: EffectExpression::Constant {
+                        value: serde_json::Value::Object(value),
+                    },
+                }],
+            }]);
+            contract
+        }
+
+        let reverse_insertion = contract_with_constant(["z", "a"]);
+        let sorted_insertion = contract_with_constant(["a", "z"]);
+        assert_eq!(
+            reverse_insertion.fingerprint_bytes(),
+            sorted_insertion.fingerprint_bytes()
+        );
+
+        let route_fingerprint = format!(
+            "sha256:{}",
+            reverse_insertion
+                .fingerprint_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let reverse_binding =
+            TypedServiceCommandBinding::from_contracts("todos", &[reverse_insertion]).unwrap();
+        let sorted_binding =
+            TypedServiceCommandBinding::from_contracts("todos", &[sorted_insertion]).unwrap();
+        assert_eq!(
+            reverse_binding.structural_fingerprint,
+            sorted_binding.structural_fingerprint
+        );
+        assert_eq!(
+            (
+                route_fingerprint.as_str(),
+                reverse_binding.structural_fingerprint.as_str(),
+            ),
+            (
+                "sha256:1414f9c1c33dc256953744dc606d4d15879577c52fa2bbbe1fa24ad0103433e3",
+                "sha256:f40799bf6540528956fc50722ef607ed731d0707b8ebe0c169ef55bc2805d456",
+            )
+        );
     }
 
     #[test]

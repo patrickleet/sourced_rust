@@ -67,7 +67,7 @@ static SKILLS: [EmbeddedSkill; 4] = [
     },
     EmbeddedSkill {
         name: "distributed-graphql",
-        description: "Expose auto-generated read-only GraphQL over Distributed read models (permissions, dctl schema --format graphql, with_graphql, command mutations). Use when adding a GraphQL query API, roles, model exposure, subscriptions, or command mutations.",
+        description: "Expose generated GraphQL queries and typed causal commands over Distributed services. Use when adding a GraphQL API, roles, model exposure, subscriptions, command mutations, or generated clients.",
         files: &[EmbeddedFile {
             relative_path: "SKILL.md",
             contents: include_str!("../skills/distributed-graphql/SKILL.md"),

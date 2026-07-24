@@ -76,7 +76,7 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
     }
 
     pub(super) fn lib_rs(&self) -> String {
-        let models = if !self.models.is_empty() {
+        let models = if !self.models.is_empty() || (self.query_api && !self.commands.is_empty()) {
             "pub mod models;\n"
         } else {
             ""
@@ -242,6 +242,9 @@ pub fn service_manifest() -> ServiceManifest {{
         if self.tracing {
             manifest_imports.push("TracingManifest");
         }
+        if self.query_api && !self.commands.is_empty() {
+            manifest_imports.push("AggregateRepository");
+        }
         let manifest_imports = manifest_imports.join(", ");
         let registrations = self
             .commands
@@ -253,6 +256,41 @@ pub fn service_manifest() -> ServiceManifest {{
                     .map(|handler| format!("        event handlers::{},\n", handler.module_ident)),
             )
             .collect::<String>();
+        let event_registrations = self
+            .events
+            .iter()
+            .map(|handler| format!("        event handlers::{},\n", handler.module_ident))
+            .collect::<String>();
+        let typed_route_attachments = self
+            .commands
+            .iter()
+            .map(|handler| {
+                let model_type = self
+                    .command_model(handler)
+                    .map(|model| model.type_ident.as_str())
+                    .unwrap_or("CommandAggregate");
+                format!(
+                    r#"    let service = service.routes(
+        Routes::new()
+            .with_repo(AggregateRepository::<_, crate::models::{model_type}>::new(repo.clone()))
+            .typed_command(handlers::{module}::command())
+            .handle(handlers::{module}::handle),
+    );
+"#,
+                    module = handler.module_ident,
+                )
+            })
+            .collect::<String>();
+        let event_route_attachment = if self.events.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"    let service = service.routes(distributed::routes!(
+        Routes::new().with_dependencies(repo.clone()),
+{event_registrations}    ));
+"#
+            )
+        };
         let manifest_commands = self
             .commands
             .iter()
@@ -296,6 +334,49 @@ pub fn service_manifest() -> ServiceManifest {{
                 ),
                 _ => ("SqliteRepository", r#""sqlite::memory:""#),
             };
+            let protocol_key_read = if self.commands.is_empty() {
+                String::new()
+            } else {
+                "    let protocol_token_key = graphql_protocol_token_key()?;\n".into()
+            };
+            let protocol_key_argument = if self.commands.is_empty() {
+                ""
+            } else {
+                ", protocol_token_key"
+            };
+            let protocol_key_helper = if self.commands.is_empty() {
+                String::new()
+            } else {
+                r#"
+fn graphql_protocol_token_key(
+) -> Result<[u8; 32], Box<dyn std::error::Error + Send + Sync>> {
+    use std::io::{Error, ErrorKind};
+
+    let secret = std::env::var("DISTRIBUTED_GRAPHQL_PROTOCOL_TOKEN_KEY").map_err(|_| {
+        Error::new(
+            ErrorKind::NotFound,
+            "DISTRIBUTED_GRAPHQL_PROTOCOL_TOKEN_KEY must be a stable 32-byte deployment secret",
+        )
+    })?;
+    let bytes = secret.into_bytes();
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "DISTRIBUTED_GRAPHQL_PROTOCOL_TOKEN_KEY must be exactly 32 UTF-8 bytes",
+        )
+    })?;
+    if key.iter().all(|byte| *byte == 0) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "DISTRIBUTED_GRAPHQL_PROTOCOL_TOKEN_KEY must not be all zero",
+        )
+        .into());
+    }
+    Ok(key)
+}
+"#
+                .to_string()
+            };
             return format!(
                 r#"use std::sync::Arc;
 
@@ -306,10 +387,14 @@ use crate::handlers;
 pub type ServiceRepo = {repo_ty};
 
 pub fn build(repo: ServiceRepo) -> Arc<Service> {{
-    let routes = distributed::routes!(
-        Routes::new().with_dependencies(repo),
-{registrations}    );
-    Arc::new(Service::new().named({service_name}).routes(routes))
+    Arc::new(build_service(repo))
+}}
+
+fn build_service(repo: ServiceRepo) -> Service {{
+    let service = Service::new()
+        .named({service_name})
+        .without_http_command_routes();
+{typed_route_attachments}{event_route_attachment}    service
 }}
 
 /// Build the service with GraphQL mounted at `POST /graphql`.
@@ -319,17 +404,12 @@ pub async fn build_with_graphql() -> Result<Arc<Service>, Box<dyn std::error::Er
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| {connect_default}.to_string());
     let repo = ServiceRepo::connect_and_migrate(&database_url).await?;
-    let engine = crate::query::build_engine(&repo)?;
-    let routes = distributed::routes!(
-        Routes::new().with_dependencies(repo),
-{registrations}    );
-    Ok(Arc::new(
-        Service::new()
-            .named({service_name})
-            .routes(routes)
-            .with_graphql(engine),
-    ))
+    let service = build_service(repo.clone());
+{protocol_key_read}    let engine = crate::query::build_engine(&repo, &service{protocol_key_argument})?;
+    Ok(Arc::new(service.try_with_graphql(engine)?))
 }}
+
+{protocol_key_helper}
 
 pub fn manifest() -> ServiceManifest {{
     ServiceManifest::new({service_name})
@@ -385,17 +465,63 @@ pub fn manifest() -> ServiceManifest {{
             .collect::<Vec<_>>()
             .join("");
 
+        let fallback_aggregate =
+            if self.query_api && self.models.is_empty() && !self.commands.is_empty() {
+                r#"
+use distributed::{sourced, Entity, Snapshot};
+
+#[derive(Default, Snapshot)]
+pub struct CommandAggregate {
+    pub entity: Entity,
+    pub name: Option<String>,
+    pub status: String,
+}
+
+#[sourced(entity)]
+impl CommandAggregate {
+    #[event("service.command_recorded")]
+    pub fn record_command(&mut self, command: String, id: String, name: Option<String>) {
+        self.entity.set_id(&id);
+        self.name = name;
+        self.status = command;
+    }
+}
+"#
+            } else {
+                ""
+            };
+
+        let command_types = if self.query_api {
+            r#"#[derive(Clone, Debug, Deserialize, distributed::GraphqlInput)]
+pub struct CommandInput {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, distributed::GraphqlOutput)]
+pub struct CommandOutput {
+    pub command: String,
+    pub id: String,
+    pub model: String,
+    pub name: Option<String>,
+}
+"#
+        } else {
+            r#"#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandInput {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+"#
+        };
+
         format!(
             r#"{modules}
 use serde::{{Deserialize, Serialize}};
 
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandInput {{
-    pub id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-}}
+{fallback_aggregate}
+{command_types}
 "#
         )
     }
@@ -438,6 +564,48 @@ impl {model_struct} {{
     }
 
     pub(super) fn command_handler_rs(&self, handler: &MessageHandler) -> String {
+        if self.query_api {
+            let (model_type, model_name) = self
+                .command_model(handler)
+                .map(|model| (model.type_ident.as_str(), model.name.as_str()))
+                .unwrap_or(("CommandAggregate", "CommandAggregate"));
+            return format!(
+                r#"use distributed::graphql::{{typed_command, Accepted, PreparedCommand, TypedCommand}};
+use distributed::microsvc::{{CausalCommandContext, HandlerError}};
+
+use crate::models::{{CommandInput, CommandOutput, {model_type}}};
+
+pub const COMMAND: &str = {message_name};
+pub const MODEL: &str = {model_name};
+
+pub fn command() -> TypedCommand<CommandInput, Accepted<CommandOutput>> {{
+    typed_command::<CommandInput, Accepted<CommandOutput>>(COMMAND).roles(["user"])
+}}
+
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, {model_type}>,
+    input: CommandInput,
+) -> Result<PreparedCommand<Accepted<CommandOutput>>, HandlerError> {{
+    let mut aggregate = match ctx.load(&input.id).await? {{
+        Some(aggregate) => aggregate,
+        None => ctx.create(),
+    }};
+    aggregate.record_command(COMMAND.to_string(), input.id.clone(), input.name.clone())?;
+    ctx.stage(aggregate)?;
+    PreparedCommand::<Accepted<CommandOutput>>::prepare(CommandOutput {{
+        command: COMMAND.to_string(),
+        id: input.id,
+        model: MODEL.to_string(),
+        name: input.name,
+    }})
+    .map_err(|error| HandlerError::Other(Box::new(error)))
+}}
+"#,
+                message_name = rust_string(&handler.message_name),
+                model_name = rust_string(model_name),
+            );
+        }
+
         if let Some(model) = self.command_model(handler) {
             format!(
                 r#"use distributed::{{
@@ -576,16 +744,26 @@ use serde::{{Deserialize, Serialize}};
                 "// Tighten grants by replacing grant_all with:\n//   distributed::graphql_models!(builder, {names})\n// after filling permissions() in each model module.\n"
             )
         };
+        let protocol_key_parameter = if self.commands.is_empty() {
+            ""
+        } else {
+            ",\n    protocol_token_key: [u8; 32]"
+        };
+        let protocol_key_builder = if self.commands.is_empty() {
+            ""
+        } else {
+            "\n        .protocol_token_key(protocol_token_key)"
+        };
         format!(
             r#"//! GraphQL query exposure (deny-by-default permissions).
 //!
-//! One module per exposed read model. Register roles in `roles` and command
-//! mutations in `commands`.
+//! One module per exposed read model. Command mutations are derived from the
+//! executable service's typed causal inventory.
 
-{mods}pub mod commands;
-pub mod roles;
+{mods}pub mod roles;
 
 use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource}};
+use distributed::microsvc::Service;
 
 /// Build the GraphQL engine for this service.
 ///
@@ -593,6 +771,7 @@ use distributed::graphql::{{GraphqlBuildError, GraphqlEngine, GraphqlPoolSource}
 /// in-memory SQLite database when unset (dev only).
 pub fn build_engine(
     source: impl Into<GraphqlPoolSource>,
+    service: &Service{protocol_key_parameter},
 ) -> Result<GraphqlEngine, GraphqlBuildError> {{
 {tighten_hint}    // GraphiQL policy lives in `distributed::graphql::graphiql_enabled_from_env`
     // (GRAPHIQL override; RUST_ENV/ENV/APP_ENV production → off; else on).
@@ -603,9 +782,9 @@ pub fn build_engine(
     // GraphiQL ambient headers only, pass IdentityMode::DevHeaders explicitly.
     let identity = distributed::graphql::public_oidc_identity_from_env();
     GraphqlEngine::from_manifest(&crate::distributed_manifest(), source)?
+        .service(service){protocol_key_builder}
         .roles(roles::ALL)
         .grant_all(roles::USER)
-        .commands(commands::commands())
         .graphiql(graphiql)
         .identity(identity)
         .build()
@@ -622,20 +801,6 @@ pub const ANONYMOUS: &str = "anonymous";
 
 /// Roles declared on the engine builder.
 pub const ALL: &[&str] = &[USER, ANONYMOUS];
-"#
-        .to_string()
-    }
-
-    pub(super) fn query_commands_rs(&self) -> String {
-        r#"//! GraphQL command mutations (Hasura-actions parity).
-//!
-//! Register commands with `.command("name", exposed_command()...)`.
-
-use distributed::graphql::GraphqlCommands;
-
-pub fn commands() -> GraphqlCommands {
-    GraphqlCommands::new()
-}
 "#
         .to_string()
     }

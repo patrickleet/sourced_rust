@@ -153,13 +153,7 @@ fn validate_command(
             "extensions.version must be 3",
         ));
     }
-    let consistency = extensions.consistency.as_ref().ok_or_else(|| {
-        command_error(
-            command,
-            "client.manifest.command_consistency",
-            "requires typed consistency metadata",
-        )
-    })?;
+    let consistency = &extensions.consistency;
     if consistency.version != 1 {
         return Err(command_error(
             command,
@@ -270,7 +264,7 @@ fn projected_output_typename<'a>(
             return Some(model.typename.as_str());
         }
     }
-    let consistency = command.extensions.consistency.as_ref()?;
+    let consistency = &command.extensions.consistency;
     if consistency.kind != ManifestConsistencyKind::Projected {
         return None;
     }
@@ -340,7 +334,6 @@ fn validate_shape(
 ) -> Result<(), ClientCompileError> {
     match shape {
         ManifestCommandShape::None => Ok(()),
-        ManifestCommandShape::Json { codec } => validate_codec("JSON", codec, scalar_codecs, label),
         ManifestCommandShape::Object { definition } => validate_type_def(
             definition,
             kind,
@@ -482,10 +475,6 @@ fn canonical_command_operation(command: &ManifestCommand) -> String {
     let operation_name = format!("Client_{}", command.mutation_field);
     let (variables, arguments) = match &command.input {
         ManifestCommandShape::None => ("($commandId: ID!)".to_string(), "(commandId: $commandId)"),
-        ManifestCommandShape::Json { .. } => (
-            "($commandId: ID!, $input: JSON!)".to_string(),
-            "(commandId: $commandId, input: $input)",
-        ),
         ManifestCommandShape::Object { definition } => (
             format!("($commandId: ID!, $input: {}!)", definition.name),
             "(commandId: $commandId, input: $input)",
@@ -495,7 +484,7 @@ fn canonical_command_operation(command: &ManifestCommand) -> String {
         ManifestCommandShape::Object { definition } => {
             format!(" {{ {} }}", command_selection(definition))
         }
-        ManifestCommandShape::None | ManifestCommandShape::Json { .. } => String::new(),
+        ManifestCommandShape::None => String::new(),
     };
     format!(
         "mutation {operation_name}{variables} {{ {}{arguments}{selection} }}",
@@ -940,18 +929,15 @@ fn validate_confirmations(
     use super::manifest::ManifestConsistencyKind;
 
     let confirmations = command.extensions.confirmations.as_ref();
-    match (
-        command.extensions.consistency.as_ref().map(|c| c.kind),
-        confirmations,
-    ) {
-        (Some(ManifestConsistencyKind::Fact), None) => {
+    match (command.extensions.consistency.kind, confirmations) {
+        (ManifestConsistencyKind::Fact, None) => {
             return Err(command_error(
                 command,
                 "client.manifest.command_confirmations",
                 "fact consistency requires confirmations",
             ));
         }
-        (Some(ManifestConsistencyKind::Projected), Some(_)) => {
+        (ManifestConsistencyKind::Projected, Some(_)) => {
             return Err(command_error(
                 command,
                 "client.manifest.command_confirmations",

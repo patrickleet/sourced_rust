@@ -256,7 +256,9 @@ fn resolve_message_name(event_type: &str, user_kind: Option<&str>) -> Option<&'s
     if t.contains("human") && (t.contains("added") || t.contains("created")) {
         return Some(HUMAN_CREATED);
     }
-    if t.contains("created") || t.contains("create") || (t.ends_with(".added") && !t.contains("grant"))
+    if t.contains("created")
+        || t.contains("create")
+        || (t.ends_with(".added") && !t.contains("grant"))
     {
         return if kind_machine {
             Some(MACHINE_CREATED)

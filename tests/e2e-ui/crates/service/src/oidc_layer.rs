@@ -18,7 +18,7 @@ use axum::Json;
 use distributed::graphql::{
     resolve_session, AuthError, IdentityConfig, IdentityMode, DEFAULT_IDENTITY_STRIP_HEADERS,
 };
-use distributed::microsvc::{HandlerError, Session, Service};
+use distributed::microsvc::{HandlerError, Service, Session};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use tower::{Layer, Service as TowerService};
@@ -56,11 +56,7 @@ fn skip_oidc_gate(method: &Method, path: &str) -> bool {
     // Zitadel Action ingress uses shared-secret authenticity (not OIDC bearer).
     matches!(
         path,
-        "/health"
-            | "/metrics"
-            | "/graphql/ws"
-            | "/zitadel.ingress.v1"
-            | "/zitadel.scrape.v1"
+        "/health" | "/metrics" | "/graphql/ws" | "/zitadel.ingress.v1" | "/zitadel.scrape.v1"
     ) || (path == "/graphql" && *method == Method::GET)
 }
 
@@ -133,10 +129,8 @@ where
                         }
                     } else if session.user_id().is_some() {
                         // Authenticated but no role claim → default user.
-                        req.headers_mut().insert(
-                            "x-role",
-                            axum::http::HeaderValue::from_static("user"),
-                        );
+                        req.headers_mut()
+                            .insert("x-role", axum::http::HeaderValue::from_static("user"));
                     }
                     inner.call(req).await
                 }

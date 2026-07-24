@@ -17,7 +17,7 @@ const ROLE_MANIFEST: &str = r#"{
     "name": "user"
   },
   "schema_fingerprint": "sha256:0d721d983c42fb732e10e8a2d45f0ab06497fb77fcddb9c9305f779b86c086c9",
-  "protocol_fingerprint": "sha256:a3b12d91f7d60ab279cfffe6bb708852b6e9f6641d6aa0311cce2103600ccdc3",
+  "protocol_fingerprint": "sha256:7631d15b16e327ff08d728e97ac5f90f5150d00774938e720bbbc6830b77e0cf",
   "execution": {
     "max_depth": 8,
     "max_complexity": 500,
@@ -399,6 +399,7 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
         "operations/todos.ts",
         "protocol.ts",
         "routes.ts",
+        "sveltekit.ts",
     ] {
         assert!(
             project.join("generated").join(expected).is_file(),
@@ -417,6 +418,33 @@ fn generate_then_check_accepts_the_exact_artifact_tree() {
             && operation.contains("\"defaultLimit\": 100")
             && operation.contains("\"maxLimit\": 1000"),
         "list operations must encode filter, stable identity ordering, and bounded offset-window maintenance"
+    );
+    let commands =
+        fs::read_to_string(project.join("generated/commands.ts")).expect("read command bindings");
+    assert!(
+        commands.contains("export const COMMAND_ARTIFACTS = [] as const;")
+            && commands.contains("export const COMMANDS = {\n\n} as const;"),
+        "a query-only surface must retain inspectable empty inventories"
+    );
+    assert!(
+        !commands.contains("@hops-ops/distributed/replica")
+            && !commands.contains("createCommands")
+            && !commands.contains("COMMAND_STATUS"),
+        "a query-only surface must not emit unusable command runtime imports or factories"
+    );
+    let sveltekit = fs::read_to_string(project.join("generated/sveltekit.ts"))
+        .expect("read SvelteKit bindings");
+    assert!(
+        sveltekit.contains(
+            "export const Todos = defineDistributedSvelteKitOperation(DistributedOperation_0);"
+        ) && sveltekit.contains(
+            "export type GeneratedCommands = Readonly<Record<never, never>>;"
+        ),
+        "the virtual-module target must expose an SSR-safe generated operation wrapper: {sveltekit}"
+    );
+    assert!(
+        !sveltekit.contains("createGeneratedCommands"),
+        "query-only surfaces must not invent a command runtime: {sveltekit}"
     );
 
     let checked = generate(&project, "queries/*.graphql", &["--check"]);
@@ -543,6 +571,11 @@ fn explicit_route_is_the_load_fallback_outside_route_conventions() {
     assert!(
         routes.contains("\"discovery\": \"explicit\""),
         "routes.ts: {routes}"
+    );
+    assert!(
+        routes.contains("DISTRIBUTED_ROUTE_OPERATIONS")
+            && routes.contains("artifact: Operation_Todos"),
+        "routes.ts must statically bind discovered ownership to its artifact: {routes}"
     );
 }
 

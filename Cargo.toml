@@ -1,5 +1,6 @@
 [workspace]
 members = ["distributed_macros", "distributed_cli"]
+exclude = ["tests/e2e-ui"]
 resolver = "2"
 
 [workspace.package]

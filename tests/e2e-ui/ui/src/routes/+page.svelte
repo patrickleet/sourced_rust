@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * Distributed framework template home.
-	 * Living map of how e2e-ui actually works: OIDC → GraphQL RLS → document cache →
+	 * Living map of how e2e-ui actually works: OIDC → GraphQL RLS → replica cache →
 	 * typed commands → aggregates → projectors (or same-tx RM for blob) → reads.
 	 */
 	import { page } from '$app/state';
@@ -78,7 +78,7 @@
 		},
 		{
 			title: 'Register once, ship everywhere',
-			body: 'A command or read model should not be re-described in three hand-maintained places. You register it on the service; generation fans out schemas, client helpers, and checks. When something drifts, CI fails on purpose — better than a quiet production mismatch.'
+			body: 'A command or read model should not be re-described in three hand-maintained places. You register it in the typed Service inventory; generation fans out the GraphQL surface, operation artifacts, command helpers, and checks. When something drifts, CI fails on purpose — better than a quiet production mismatch.'
 		},
 		{
 			title: 'Familiar patterns, short handles',
@@ -98,7 +98,7 @@
 		},
 		{
 			title: 'One registration, many surfaces',
-			body: 'You describe a command or a readable table once on the service. Code generation turns that into GraphQL for each role, typed helpers for the UI, and checks that fail if someone forgets to regenerate. You stop maintaining three catalogs that slowly disagree.'
+			body: 'You describe commands and readable tables once in the typed Rust Service inventory. Generation turns the selected application surface into GraphQL operations, typed UI helpers, optimistic behavior, and checks that fail on drift. You stop maintaining parallel catalogs that slowly disagree.'
 		},
 		{
 			title: 'Patterns as short, swappable verbs',
@@ -118,11 +118,11 @@
 		},
 		{
 			title: 'One client story for data',
-			body: 'This app binds the page once, then uses a shared document cache for lists and live rooms. Avoid a second parallel array in local state for the same list — that is how the board and the history get out of sync.'
+			body: 'This app creates one client in the root layout, then reads every route through its replica cache. SSR hydration, HTTP reads, live frames, command results, and optimistic effects all update that same state.'
 		},
 		{
 			title: 'Let the server say how the UI should catch up',
-			body: 'Some commands return a full projected row (blob). Some return a small fact and expect a soft refresh or a live subscription (todos, chat). That contract is declared with the command so the client does not guess wrong per screen.'
+			body: 'Some commands return a full projected row (blob). Others return a fact and wait for a projection or live frame (todos, chat). The typed Service declares that result and optimistic contract so screens do not invent reconciliation logic.'
 		},
 		{
 			title: 'Roles are real, not decorative',
@@ -171,81 +171,80 @@
 	}> = [
 		{
 			n: 'C1',
-			title: 'Bind the page once',
-			why: 'The server already put your session (and access token) on the page. One binder turns that into “how we talk to GraphQL” — queries, live updates, and commands — so each route does not invent its own client.',
-			path: 'ui/src/lib/gql/use-graphql.ts',
-			label: 'Client binder',
+			title: 'Declare reads beside the route',
+			why: 'A page owns a small GraphQL document and marks when it should load or stay live. The compiler discovers those directives and emits the typed operation plus a static route registry — there is no second list of loaders to maintain.',
+			path: 'routes/**/+page.graphql · generated/user/routes.ts',
+			label: '@load + @live',
 			blocks: [
 				{
-					file: 'routes/todos/+page.svelte',
-					label: 'useGraphql',
-					code: `const gql = useGraphql(() => data, {
-  runEffects: (effects) => {
-    for (const e of effects) {
-      if (e.kind === 'alert') actionError = e.message;
-    }
+					file: 'routes/chat/+page.graphql',
+					label: 'Co-located read',
+					code: `query ChatMessages @load @live {
+  chat_messages(where: { room_id: { _eq: "lobby" } }) {
+    message_id
+    body
+    author_id
+    author { display_name }
   }
-});
-// Then: gql.store / gql.live / gql.commands`
+}`
+				},
+				{
+					file: '$distributed',
+					label: 'Compiler output',
+					code: `export const ChatMessages =
+  defineDistributedSvelteKitOperation(Operation_ChatMessages);
+export { DISTRIBUTED_ROUTE_OPERATIONS } from './routes.js';
+export function provideDistributed(options) { … }
+export function useCommands() { … }`
 				}
 			]
 		},
 		{
 			n: 'C2',
-			title: 'First paint matches the server',
-			why: 'The list should not flash empty and refill. The server loads todos; the client seeds the same document so HTML and client state agree. When the server load runs again, re-seed — never throw away the list and start from [].',
-			path: 'todos/+page.server.ts · todos.resource.ts · +page.svelte',
-			label: 'SSR + store',
+			title: 'The root layout owns SSR',
+			why: 'The server adapter matches the current route against the generated registry, runs each declared read once, and serializes reachable replica state. Routes with no declared read do no GraphQL work.',
+			path: 'routes/+layout.server.ts',
+			label: 'Static route loader',
 			blocks: [
 				{
-					file: 'todos/+page.server.ts',
-					label: 'SSR load',
-					code: `const session = await locals.auth();
-const result = await loadQuery(todos.query, {
-  accessToken: session?.accessToken
-});
-// props: todos, session, accessToken, …`
-				},
-				{
-					file: 'todos/+page.svelte',
-					label: 'Document store',
-					code: `const list = gql.store({
-  document: todosResource.query,
-  list: { at: 'todos', by: 'todo_id' },
-  initialData: { todos: sortTodos(data.todos ?? []) },
-  select: (d) => sortTodos(d?.todos ?? [])
+					file: 'routes/+layout.server.ts',
+					label: 'createDistributedSvelteKitServer',
+					code: `const distributed = createDistributedSvelteKitServer({
+  routes: DISTRIBUTED_ROUTE_OPERATIONS,
+  getSession: (event) => event.locals.auth(),
+  getRole: (session) =>
+    engineRoleFromGroups(session?.user?.groups),
+  getUrl: graphqlHttpUrl
 });
 
-$effect(() => {
-  list.seed({ todos: sortTodos(data.todos ?? []) });
-});
-onDestroy(() => list.destroy());
-// Template: {$list.data}`
+export const load = distributed.load;
+// Returns replica hydration and a separate authority proof.`
 				}
 			]
 		},
 		{
 			n: 'C3',
-			title: 'Live rooms stay live',
-			why: 'Chat needs push, not only poll. Use the same shape of data as the query, then open a live subscription into the same cache. Browsers cannot put your token on the WebSocket upgrade the way they do on HTTP — it rides in the first message after connect.',
-			path: '@hops-ops/distributed · /graphql/ws',
-			label: 'Live store',
+			title: 'Hydrate one browser replica',
+			why: 'The root layout creates one client and one session source for reads, live transport, commands, and authorization invalidation. Trusted SSR state becomes the first browser snapshot, so subscribing does not repeat the HTTP read.',
+			path: 'routes/+layout.svelte · $distributed',
+			label: 'One client',
 			blocks: [
 				{
-					file: 'chat/+page.svelte',
-					label: 'gql.live',
-					code: `const lobby = gql.live({
-  document: chat.subscription ?? chat.query,
-  list: { at: 'chat_messages', by: 'message_id' },
-  initialData: { chat_messages: data.messages ?? [] },
-  select: (d) => sortChatMessages(d?.chat_messages ?? [])
-});
-// {$lobby.data}  {$lobby.status}`
+					file: 'routes/+layout.svelte',
+					label: 'provideDistributed',
+					code: `const pageData = createPageDataSessionSource(data);
+const client = provideDistributed({
+  session: pageData.session,
+  browser,
+  hydration: data.distributed,
+  authority: data.distributedAuthority
+});`
 				},
 				{
 					file: 'WS auth',
 					label: 'connection_init',
-					code: `// Token is not on the upgrade headers — first WS message:
+					code: `// The same session source supplies HTTP, WS, and commands.
+// A browser token is sent in the first WS message:
 { type: 'connection_init',
   payload: { authorization: \`Bearer \${accessToken}\` } }`
 				}
@@ -253,36 +252,31 @@ onDestroy(() => list.destroy());
 		},
 		{
 			n: 'C4',
-			title: 'Writes feel instant, then converge',
-			why: 'Call a typed command (generated from the server registry), optimistically update the row you already show, and let policy decide how truth catches up — soft refresh, live subscription, or “the response already is the row” for blob.',
-			path: 'commands.generated.ts · commands.policies.generated.ts',
-			label: 'Command pipeline',
+			title: 'Read and write through generated artifacts',
+			why: 'A route consumes its generated operation with one use call. Generated commands carry optimistic and causal projection metadata into the same replica, so every mounted view observes the change without page-specific cache surgery.',
+			path: 'routes/todos/+page.svelte · $distributed',
+			label: 'Operation + commands',
 			blocks: [
 				{
 					file: 'todos/+page.svelte',
-					label: 'Optimistic complete',
-					code: `await gql.commands.todosComplete(
-  { todo_id },
-  {
-    optimistic: {
-      targets: [list.target('todos', 'todo_id')],
-      row: { ...target, status: 'completed' }
-    },
-    onError: ({ errors }) => [
-      fx.alert(errors[0]?.message ?? 'complete failed')
-    ]
-  }
-);
-// Soft delayed refetch so cache matches the projector:
-list.scheduleCatchUp();`
+					label: 'Replica read',
+					code: `import { Todos, useCommands } from '$distributed';
+
+const todos = Todos.use();
+const commands = useCommands();
+
+// Template reads the tree-local shared replica: {$todos.data.todos}`
 				},
 				{
-					file: 'commands.policies.generated.ts',
-					label: 'Server default catch-up',
-					code: `// Declared next to each command on the server, then generated:
-todosComplete:   fact + soft catch-up at the call site
-chatMessagesPost: fact + open subscription is the catch-up
-blobGamesMove:   full projected row in the response`
+					file: 'todos/+page.svelte',
+					label: 'Causal command',
+					code: `const receipt = await commands.todo.complete({
+  todo_id
+});
+
+// Optimism is already visible in every matching Todos view.
+// Await this only when later work requires the projection:
+await receipt.projected;`
 				}
 			]
 		}
@@ -348,17 +342,16 @@ callbacks: {
 )`
 				},
 				{
-					file: 'todos.gql',
+					file: 'todos/+page.graphql',
 					label: 'Co-located query',
-					code: `query Todos {
+					code: `query Todos @load {
   todos(order_by: [{ status: asc }, { todo_id: asc }]) {
     todo_id
     owner_id
     title
     status
   }
-}
-// Commands live in $lib/api/commands.operations.gql (generated).`
+}`
 				}
 			]
 		},
@@ -366,22 +359,18 @@ callbacks: {
 			n: '03',
 			title: 'Mutations are commands, not table edits',
 			why: 'When the UI says “create todo,” the server runs the domain command and records history. It does not treat GraphQL as a free-form UPDATE of the todos table. Owner always comes from the session.',
-			path: 'graphql_commands · handlers/commands/*',
+			path: 'typed Service inventory · handlers/commands/*',
 			label: 'Commands',
 			blocks: [
 				{
-					file: 'GraphQL (generated)',
-					label: 'todos_create',
-					code: `mutation {
-  todos_create(input: { todo_id: "t-1", title: "Ship it" }) {
-    todo_id
-    status
-  }
-}
-// Also: complete, reopen, archive, rename
-// Admin-only: todos_force_archive (not in user SDL)
-// Blob: blob_games_start | move | start_level
-// Chat: chat_messages_post
+					file: '$distributed',
+					label: 'Generated command tree',
+					code: `const commands = useCommands();
+await commands.todo.create({ title: "Ship it" });
+// Also: todo.complete | reopen | archive | rename
+// Admin-only: todo.force_archive (only in fieldnote-admin)
+// Blob: blob.start | move | start_level
+// Chat: chat.post
 // owner_id / author_id are NOT client inputs.`
 				},
 				{
@@ -448,13 +437,15 @@ pub author: Option<AuthUserView>,
 // Query selects author { display_name email status }`
 				},
 				{
-					file: 'chat.gql',
+					file: 'chat/+page.graphql',
 					label: 'Selection',
-					code: `chat_messages(where: { room_id: { _eq: "lobby" } }) {
-  message_id
-  body
-  author_id
-  author { user_id display_name email status }
+					code: `query ChatMessages @load @live {
+  chat_messages(where: { room_id: { _eq: "lobby" } }) {
+    message_id
+    body
+    author_id
+    author { user_id display_name email status }
+  }
 }`
 				}
 			]
@@ -596,7 +587,7 @@ pub author: Option<AuthUserView>,
 				<span class="wf-label">How DX stays simple</span>
 				<h3>Three ways the stack carries weight for you</h3>
 				<p>
-					You should not re-implement “save history,” “sync three schemas,” or “build a mini
+					You should not re-implement “save history,” “sync parallel inventories,” or “build a mini
 					framework” for every feature. Three layers share that work. You write intent; the stack
 					expands it.
 				</p>
@@ -764,7 +755,7 @@ Service::new()
 					<h3>Prove it</h3>
 					<p>
 						<code>make test</code> · <code>make test-live</code> ·
-						<code>make check-gql && make check-commands</code>
+						<code>make check-client</code>
 					</p>
 				</div>
 			</div>
@@ -900,20 +891,20 @@ Service
 				<span class="wf-label">Client GraphQL DX</span>
 				<h2>How the browser is supposed to feel</h2>
 				<p>
-					You should not wire a new HTTP client per page. Bind once from the page’s session, seed
-					lists so the first paint matches the server, open a live room when you need push, and call
-					typed commands that update the same cache the list already uses. Query documents live next
-					to the route; commands are generated from the server so you do not hand-copy mutation
-					strings forever.
+					You should not wire a new HTTP client per page. The root layout creates one replica from
+					one session source; the server hydrates it, <code>@live</code> operations continue it, and
+					typed commands update it optimistically before causal projection catches up. Query
+					documents live next to routes, while command and optimistic contracts come from the same
+					typed Rust Service inventory the API runs.
 				</p>
 			</div>
 			<ol class="wf-flow-map">
-				<li>Bind the page from session data once</li>
-				<li>Seed lists so SSR HTML and client state match</li>
-				<li>Use a live subscription for rooms that must push</li>
-				<li>Write through typed commands + optimistic rows</li>
-				<li>Share the same query document between server and browser</li>
-				<li>One cache for a list — not a second parallel array</li>
+				<li>Declare route reads with <code>@load</code> and <code>@live</code></li>
+				<li>Let the generated static registry drive SSR</li>
+				<li>Hydrate one browser replica with separate authority proof</li>
+				<li>Read with generated <code>Todos.use()</code></li>
+				<li>Write through generated nested commands</li>
+				<li>Let one auth source fence HTTP, WebSocket, commands, and cached scope</li>
 			</ol>
 
 			<div class="wf-chapter">
@@ -967,8 +958,8 @@ Service
 					<h3>Todos — feel instant, settle a moment later</h3>
 					<p>
 						Completing a note can paint as done immediately. The server still records history first;
-						the query table catches up shortly. A soft refresh lines the cache up with the
-						projector without fighting the optimistic row.
+						the generated optimistic effect remains in the replica until a causal result or later
+						projection proves the query table caught up.
 					</p>
 				</div>
 				<div class="wf-card">
@@ -1033,33 +1024,37 @@ Service
 		<div class="wf-band-inner">
 			<div class="wf-section-head">
 				<span class="wf-label">Keeping the UI honest</span>
-				<h2>Regenerate so humans do not dual-maintain contracts</h2>
+				<h2>One inventory in, one complete client out</h2>
 				<p>
-					The GraphQL the browser sees should come from the same engine the API runs — including
-					which mutations exist for which role. When you change a command or a query document,
-					regenerate. Drift should fail a check, not surprise you in production.
+					The typed Rust Service inventory defines readable models, commands, permissions, results,
+					and optimistic effects. <code>dctl client-manifest</code> extracts a selected application
+					surface without a database; <code>dctl client</code> combines it with co-located route
+					reads. Drift fails a check instead of becoming a production surprise.
 				</p>
 			</div>
 			<div class="wf-cards wf-cards-tight">
 				<div class="wf-card">
-					<h3>Readable schema for each role</h3>
+					<h3>Application surfaces are capabilities</h3>
 					<p>
-						Export what a normal user may call vs what an admin may call. After you edit
-						co-located query files, regenerate typed documents so the UI and the engine agree.
+						The pool-free <code>distributed_client_surface</code> exports
+						<code>fieldnote</code> for admin and user roles. A separate
+						<code>fieldnote-admin</code> export is consumed only by the nested admin layout.
 					</p>
 				</div>
 				<div class="wf-card">
-					<h3>Commands as functions, not copy-paste</h3>
+					<h3>Routes declare reads, Rust declares writes</h3>
 					<p>
-						Register the command on the server once. Generation gives the UI typed helpers and
-						default “how do we catch up?” policies so screens do not invent their own.
+						Use <code>+page.graphql</code> with <code>@load</code> or
+						<code>@live</code>. Generation emits inspectable artifacts, tree-local operation
+						wrappers, the static route registry, and causal command bindings.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>After you change the contract</h3>
 					<p>
-						Run the check targets, commit the generated files, move on. Do not hand-edit generated
-						artifacts as if they were source — the next regeneration will fight you.
+						Run <code>make gen-client</code>, inspect and commit the generated artifacts, then let
+						<code>make check-client</code> enforce byte and file-set drift. Durable design belongs
+						in the Distributed GitKB; this fixture stays an executable example.
 					</p>
 				</div>
 			</div>
@@ -1068,13 +1063,19 @@ Service
 					<span>What a day-to-day write looks like</span>
 					<em>UI</em>
 				</div>
-				<pre><code>{`const gql = useGraphql(() => data);
-await gql.commands.todosCreate({ todo_id, title });
-await gql.commands.todosReopen({ todo_id });
-await gql.commands.chatMessagesPost({ message_id, body, room_id });
-await gql.commands.blobGamesMove({ game_id, direction: 'up' });
-// Only when signed in as admin:
-await gql.commands.todosForceArchive({ todo_id });`}</code></pre>
+				<pre><code>{`import { Todos, useCommands } from '$distributed';
+
+const todos = Todos.use();
+const commands = useCommands();
+
+await commands.todo.create({ title }); // todo_id defaults to uuid_v7()
+await commands.todo.reopen({ todo_id });
+await commands.chat.post({ message_id, body, room_id, created_at });
+await commands.blob.move({ game_id, direction: 'up' });
+
+// Inside the nested admin tree:
+import { useCommands as useAdminCommands } from '$distributed/admin';
+await useAdminCommands().todo.force_archive({ todo_id });`}</code></pre>
 			</div>
 		</div>
 	</section>
@@ -1134,14 +1135,15 @@ await gql.commands.todosForceArchive({ todo_id });`}</code></pre>
 					<h3>Two lists for the same data</h3>
 					<p>
 						A local array “for convenience” plus the shared cache for the same list is how board
-						and history disagree. One document store per list.
+						and history disagree. Use one replica-backed operation view for that data.
 					</p>
 				</div>
 				<div class="wf-card">
 					<h3>Hard refetch that yanks the optimistic UI</h3>
 					<p>
 						Blasting a full reload the instant a command returns can flash, reorder, or erase the
-						row you just painted. Optimistic patch, then soft catch-up or a live room.
+						row you just painted. Let generated causal optimism remain until the replica observes
+						projection or a live frame.
 					</p>
 				</div>
 				<div class="wf-card">
@@ -1178,11 +1180,11 @@ await gql.commands.todosForceArchive({ todo_id });`}</code></pre>
 			<ol class="wf-flow-map">
 				<li>Model the rules in a pure domain crate with tests</li>
 				<li>Describe how those facts look when queried (and any joins)</li>
-				<li>Thin command handler + register it with a catch-up policy</li>
+				<li>Thin command handler + register its typed result and optimistic contract</li>
 				<li>Projector — unless you deliberately write the query row in-request</li>
 				<li>Permissions: who may read which rows</li>
-				<li>Regenerate client helpers and schemas</li>
-				<li>Small UI path: seed, command, optimistic update</li>
+				<li>Add a co-located <code>+page.graphql</code> and regenerate client artifacts</li>
+				<li>Small UI path: generated <code>View.use()</code> + generated command</li>
 				<li>A test that would fail if you regressed the story</li>
 			</ol>
 		</div>

@@ -53,12 +53,10 @@ async fn run_sqlite(
     bus.ensure_tables().await?;
 
     let change_rx = repo.read_model_changes();
-    let gql = build_graphql_engine(repo.pool().clone(), identity.clone(), Some(change_rx))?;
-    let http_service = Arc::new(
-        build_service(repo.clone(), locks.clone(), repo.clone())
-            .with_bus(SqliteBus::new(repo.pool().clone()).group(BUS_GROUP))
-            .with_graphql(gql),
-    );
+    let service = build_service(repo.clone(), locks.clone(), repo.clone())
+        .with_bus(SqliteBus::new(repo.pool().clone()).group(BUS_GROUP));
+    let gql = build_graphql_engine(&repo, &service, identity.clone(), Some(change_rx))?;
+    let http_service = Arc::new(service.try_with_graphql(gql)?);
 
     spawn_outbox_sqlite(repo.clone());
     spawn_consumer_sqlite(repo.clone(), locks);
@@ -85,12 +83,10 @@ async fn run_postgres(
     bus.ensure_tables().await?;
 
     let change_rx = repo.read_model_changes();
-    let gql = build_graphql_engine(repo.pool().clone(), identity.clone(), Some(change_rx))?;
-    let http_service = Arc::new(
-        build_service(repo.clone(), locks.clone(), repo.clone())
-            .with_bus(PostgresBus::new(repo.pool().clone()).group(BUS_GROUP))
-            .with_graphql(gql),
-    );
+    let service = build_service(repo.clone(), locks.clone(), repo.clone())
+        .with_bus(PostgresBus::new(repo.pool().clone()).group(BUS_GROUP));
+    let gql = build_graphql_engine(&repo, &service, identity.clone(), Some(change_rx))?;
+    let http_service = Arc::new(service.try_with_graphql(gql)?);
 
     spawn_outbox_postgres(repo.clone());
     spawn_consumer_postgres(repo.clone(), locks);

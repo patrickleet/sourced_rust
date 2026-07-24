@@ -1,13 +1,12 @@
 //! Command: `chat.post` — author is always the authenticated session user.
 
 use chat_domain::{ChatMessage, ChatMessagePosted};
-use distributed::microsvc::{Context, HandlerError};
+use distributed::graphql::{Fact, PreparedCommand};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
 use distributed::OutboxMessage;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
-use crate::deps::ChatDeps;
-use crate::handlers::util::{rejected, require_user, session_has_user};
+use crate::handlers::util::rejected;
 
 pub const COMMAND: &str = "chat.post";
 
@@ -15,7 +14,10 @@ pub const COMMAND: &str = "chat.post";
 pub struct ChatPostInput {
     pub message_id: String,
     pub body: String,
-    pub room_id: Option<String>,
+    pub room_id: String,
+    /// Client-generated unix milliseconds used by the optimistic row and
+    /// accepted only when it is close to server time.
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, distributed::GraphqlOutput)]
@@ -27,37 +29,24 @@ pub struct ChatPostPayload {
     pub created_at: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<ChatDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    ctx.has_fields(&["message_id", "body"]) && session_has_user(ctx.session())
-}
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, ChatMessage>,
+    input: ChatPostInput,
+) -> Result<PreparedCommand<Fact<ChatPostPayload>>, HandlerError> {
+    let author = ctx.user_id()?.to_string();
+    let created_at = canonical_near_unix_millis(&input.created_at)?;
 
-pub async fn handle<R, L, S>(ctx: &Context<'_, ChatDeps<R, L, S>>) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    let author = require_user(ctx.session())?;
-    let input = ctx.input::<ChatPostInput>()?;
-    let room_id = input.room_id.as_deref().unwrap_or("lobby");
-
-    if ctx.repo().get(&input.message_id).await?.is_some() {
+    if ctx.load(&input.message_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "message {} already exists",
             input.message_id
         )));
     }
 
-    let created_at = chrono_lite_now();
-    let mut msg = ChatMessage::default();
+    let mut msg = ctx.create();
     msg.post(
         &input.message_id,
-        room_id,
+        &input.room_id,
         &author,
         &input.body,
         &created_at,
@@ -65,33 +54,45 @@ where
     .map_err(rejected)?;
 
     let fact = ChatMessagePosted::from_message(&msg);
-    let outbox = OutboxMessage::encode(
+    let payload =
+        serde_json::to_vec(&fact).map_err(|error| HandlerError::Other(Box::new(error)))?;
+    let outbox = OutboxMessage::create(
         format!(
             "{}:chat_message.posted:{}",
             msg.message_id,
             msg.entity.version()
         ),
         "chat_message.posted",
-        &fact,
+        payload,
     )
     .map_err(|e| HandlerError::Other(Box::new(e)))?;
 
-    ctx.repo().outbox(outbox).commit(&mut msg).await?;
+    ctx.stage_outbox(outbox)?;
+    ctx.stage(msg)?;
 
-    Ok(json!({
-        "message_id": fact.message_id,
-        "room_id": fact.room_id,
-        "author_id": fact.author_id,
-        "body": fact.body,
-        "created_at": fact.created_at,
-    }))
+    PreparedCommand::<Fact<ChatPostPayload>>::prepare(ChatPostPayload {
+        message_id: fact.message_id,
+        room_id: fact.room_id,
+        author_id: fact.author_id,
+        body: fact.body,
+        created_at: fact.created_at,
+    })
+    .map_err(|error| HandlerError::Other(Box::new(error)))
 }
 
-fn chrono_lite_now() -> String {
+fn canonical_near_unix_millis(value: &str) -> Result<String, HandlerError> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    // Unix epoch seconds as a sortable string (no chrono dep in the fixture).
-    format!("{}", d.as_millis())
+        .unwrap_or_default()
+        .as_millis();
+    let millis = value
+        .parse::<u128>()
+        .map_err(|_| rejected("created_at must be canonical unix milliseconds"))?;
+    if millis.to_string() != value || millis.abs_diff(now) > 300_000 {
+        return Err(rejected(
+            "created_at must be canonical unix milliseconds within five minutes of server time",
+        ));
+    }
+    Ok(value.to_string())
 }

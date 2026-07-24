@@ -4,16 +4,68 @@ use std::sync::Arc;
 
 use async_graphql::Request;
 use distributed::graphql::{
-    exposed_command, graphiql_enabled_from_env_vars, read, GraphqlCommands, GraphqlEngine,
-    ModelPermissions,
+    graphiql_enabled_from_env_vars, read, typed_command, Accepted, GraphqlEngine, ModelPermissions,
+    PreparedCommand,
 };
-use distributed::microsvc::{router, Service, Session};
-use distributed::ReadModel;
+use distributed::microsvc::{router, CausalCommandContext, HandlerError, Routes, Service, Session};
+use distributed::{
+    Aggregate, AggregateRepository, Entity, EventRecord, InMemoryRepository, ReadModel,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 use tower::util::ServiceExt;
 
 use super::common::{seed_orders, session, OrderView};
+
+#[derive(Default)]
+struct T4Aggregate {
+    entity: Entity,
+}
+
+impl Aggregate for T4Aggregate {
+    type ReplayError = String;
+
+    fn aggregate_type() -> &'static str {
+        "graphql-harden-t4"
+    }
+
+    fn entity(&self) -> &Entity {
+        &self.entity
+    }
+
+    fn entity_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+
+    fn replay_event(&mut self, _event: &EventRecord) -> Result<(), Self::ReplayError> {
+        Ok(())
+    }
+}
+
+#[derive(Deserialize, distributed::GraphqlInput)]
+struct T4CommandInput {
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize, distributed::GraphqlOutput)]
+struct T4CommandOutput {
+    id: String,
+    name: String,
+}
+
+async fn t4_command_handler(
+    _context: &CausalCommandContext<'_, T4Aggregate>,
+    input: T4CommandInput,
+) -> Result<PreparedCommand<Accepted<T4CommandOutput>>, HandlerError> {
+    Ok(
+        PreparedCommand::<Accepted<T4CommandOutput>>::prepare(T4CommandOutput {
+            id: input.id,
+            name: input.name,
+        })
+        .expect("fixture output is serializable"),
+    )
+}
 
 /// T3a: anonymous introspection disabled at engine level (existing harden-12).
 #[tokio::test]
@@ -162,22 +214,25 @@ async fn t4_mutation_absent_without_command_grant() {
     .await
     .unwrap();
 
-    let cmds = GraphqlCommands::new().command(
-        "item.create",
-        exposed_command()
-            .field_name("createItem")
-            .input_json()
-            .roles(["admin"]), // only admin
-    );
+    let routes: Routes<AggregateRepository<InMemoryRepository, T4Aggregate>> = Routes::new()
+        .with_repo(AggregateRepository::new(InMemoryRepository::new()))
+        .typed_command(
+            typed_command::<T4CommandInput, Accepted<T4CommandOutput>>("item.create")
+                .field_name("createItem")
+                .roles(["admin"]),
+        )
+        .handle(t4_command_handler);
+    let service = Service::new().named("graphql-harden-t4").routes(routes);
 
     let engine = GraphqlEngine::builder(pool)
+        .service(&service)
+        .protocol_token_key([0x44; 32])
         .roles(&["user", "admin"])
         .model::<Item>(
             ModelPermissions::new()
                 .grant("user", read().all_columns())
                 .grant("admin", read().all_columns()),
         )
-        .commands(cmds)
         .build()
         .unwrap();
 
@@ -186,7 +241,9 @@ async fn t4_mutation_absent_without_command_grant() {
     let resp = engine
         .execute(
             &user,
-            Request::new(r#"mutation { createItem(input: { id: "2", name: "x" }) }"#),
+            Request::new(
+                r#"mutation { createItem(commandId: "019bde25-03a7-7cc5-a8f0-627d2f540001", input: { id: "2", name: "x" }) { id } }"#,
+            ),
         )
         .await;
     assert!(

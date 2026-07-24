@@ -2559,9 +2559,8 @@ impl Service {
     /// may attach and serve reads and durable typed mutations only when its
     /// opaque causal protocol tokens are configured. `Projected` commands
     /// additionally require the engine and command repository to carry the
-    /// same opaque causal-storage identity. A service with no typed commands
-    /// may still attach a manual legacy catalog; that path remains explicitly
-    /// noncausal and cannot bind typed command metadata.
+    /// same opaque causal-storage identity. Services with no typed commands
+    /// may attach a read-only engine.
     #[cfg(feature = "graphql")]
     pub fn try_with_graphql(
         mut self,
@@ -4007,57 +4006,6 @@ mod tests {
         assert_eq!(
             crate::bus::MessageRouter::consumer_group(&service),
             Some("todo-api")
-        );
-    }
-
-    #[cfg(all(feature = "graphql", feature = "sqlite"))]
-    #[tokio::test]
-    async fn manual_legacy_graphql_attachment_remains_explicitly_noncausal() {
-        let service = Service::new().named("legacy-tests").routes(
-            Routes::new()
-                .command("legacy.echo")
-                .handle(|context: &Context<'_, ()>| {
-                    let input = context.raw_input().clone();
-                    async move { Ok(input) }
-                }),
-        );
-        assert!(
-            service.typed_command_contracts().is_empty(),
-            "legacy routes must not acquire causal command contracts"
-        );
-
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect_lazy("sqlite::memory:")
-            .expect("in-memory GraphQL pool");
-        let commands = crate::graphql::GraphqlCommands::new().command(
-            "legacy.echo",
-            crate::graphql::exposed_command()
-                .field_name("legacy_echo")
-                .input::<TypedInput>()
-                .output::<TypedOutput>()
-                .roles(["anonymous"]),
-        );
-        let engine = crate::graphql::GraphqlEngine::builder(pool)
-            .service_id("legacy-tests")
-            .roles(&["anonymous"])
-            .commands(commands)
-            .build()
-            .expect("manual legacy GraphQL engine");
-        assert!(
-            engine.typed_command_binding().is_none(),
-            "manual GraphQL catalogs must not forge a typed service binding"
-        );
-
-        let service = service
-            .try_with_graphql(engine)
-            .expect("an explicitly legacy service may attach a manual noncausal catalog");
-        assert!(service.graphql_engine().is_some());
-        assert_eq!(
-            service
-                .dispatch("legacy.echo", json!({ "id": "legacy-1" }), Session::new(),)
-                .await
-                .expect("legacy dispatch remains available"),
-            json!({ "id": "legacy-1" })
         );
     }
 

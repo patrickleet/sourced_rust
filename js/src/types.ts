@@ -1,6 +1,5 @@
 /** Shared GraphQL client types for browser and server runtimes. */
 import type { GraphqlResponseExtensions } from './protocol.js';
-import type { CausalCommandReceipt } from './causal.js';
 
 /** Variables accepted by an untyped GraphQL operation. */
 export type GraphqlVariables = Record<string, unknown>;
@@ -19,14 +18,12 @@ export type GqlError = {
 	extensions?: Record<string, unknown> & { code?: string };
 };
 
-/** Result returned by {@link requestGraphql} and {@link GraphqlClient.request}. */
+/** Result returned by {@link requestGraphql}. */
 export type GqlResult<TData> = {
 	data?: TData;
 	errors?: GqlError[];
 	/** Validated GraphQL response extensions, including Distributed receipts. */
 	extensions?: GraphqlResponseExtensions;
-	/** Generated causal commands attach their recovery handle here. */
-	receipt?: CausalCommandReceipt;
 	status: number;
 };
 

@@ -3,14 +3,12 @@
 //! GraphQL: exposed as mutation field `todos_create` (roles: user, admin).
 //! Owner cannot be spoofed via input — only `require_user(session)` is written.
 
-use distributed::microsvc::{Context, HandlerError};
+use distributed::graphql::{Fact, PreparedCommand};
+use distributed::microsvc::{CausalCommandContext, HandlerError};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use todo_domain::Todo;
 
-use crate::deps::TodoDeps;
-use crate::handlers::commands::todo_cmd::{commit_todo_event, map_domain};
-use crate::handlers::util::{require_user, session_has_user};
+use crate::handlers::commands::todo_cmd::{map_domain, stage_todo_event};
 
 pub const COMMAND: &str = "todo.create";
 
@@ -30,44 +28,31 @@ pub struct TodoCreatePayload {
     pub status: String,
 }
 
-pub fn guard<R, L, S>(ctx: &Context<TodoDeps<R, L, S>>) -> bool
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
-    ctx.has_fields(&["todo_id", "title"]) && session_has_user(ctx.session())
-}
-
-pub async fn handle<R, L, S>(
-    ctx: &Context<'_, TodoDeps<R, L, S>>,
-) -> Result<Value, HandlerError>
-where
-    R: crate::bounds::EventStore,
-    L: crate::bounds::Locks,
-    S: Send + Sync + 'static,
-{
+pub async fn handle(
+    ctx: &CausalCommandContext<'_, Todo>,
+    input: TodoCreateInput,
+) -> Result<PreparedCommand<Fact<TodoCreatePayload>>, HandlerError> {
     // Owner is always the authenticated principal — not client-supplied.
-    let owner = require_user(ctx.session())?;
-    let input = ctx.input::<TodoCreateInput>()?;
+    let owner = ctx.user_id()?.to_string();
 
-    if ctx.repo().get(&input.todo_id).await?.is_some() {
+    if ctx.load(&input.todo_id).await?.is_some() {
         return Err(HandlerError::Rejected(format!(
             "todo {} already exists",
             input.todo_id
         )));
     }
 
-    let mut todo = Todo::default();
+    let mut todo = ctx.create();
     todo.create(&input.todo_id, &owner, &input.title)
         .map_err(map_domain)?;
 
-    let fact = commit_todo_event(ctx, &mut todo, "todo.created").await?;
+    let fact = stage_todo_event(ctx, todo, "todo.created")?;
 
-    Ok(json!({
-        "todo_id": fact.todo_id,
-        "owner_id": fact.owner_id,
-        "title": fact.title,
-        "status": fact.status,
-    }))
+    PreparedCommand::<Fact<TodoCreatePayload>>::prepare(TodoCreatePayload {
+        todo_id: fact.todo_id,
+        owner_id: fact.owner_id,
+        title: fact.title,
+        status: fact.status,
+    })
+    .map_err(|error| HandlerError::Other(Box::new(error)))
 }

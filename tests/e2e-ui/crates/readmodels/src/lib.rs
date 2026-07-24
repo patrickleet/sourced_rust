@@ -4,7 +4,7 @@
 pub mod models;
 
 pub use models::{
-    map_blob_fact, map_chat_posted, map_fact, map_todo_fact, map_zitadel_user_status,
+    map_blob_fact, map_chat_posted, map_todo_fact, map_zitadel_user_status,
     map_zitadel_user_upsert, AuthUserView, BlobGameView, ChatMessageView, TodoView, ZitadelEmail,
     ZitadelUserPayload,
 };
@@ -37,7 +37,7 @@ mod tests {
         assert_eq!(after.game_id, "g1");
         assert_eq!(after.owner_id, "alice");
         assert!(after.map_json.contains("2")); // visited tile
-        // Map JSON must differ from pre-move
+                                               // Map JSON must differ from pre-move
         assert_ne!(before.map_json, after.map_json);
         // Demo map player moved off origin
         let map: Vec<Vec<u8>> = serde_json::from_str(&after.map_json).unwrap();

@@ -17,6 +17,7 @@ import type {
 	ReplicaVariableOrderInputDefinition,
 	ReplicaValue
 } from './types.js';
+import { validateReplicaOperationBinding } from './operation-binding.js';
 
 const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
 const MAX_VARIABLE_CODEC_DEPTH = 64;
@@ -147,12 +148,10 @@ export function canonicalizeOperationVariables<
 	artifact: ReplicaOperationArtifact<TData, TVariables>,
 	variables: TVariables
 ): TVariables {
+	validateReplicaOperationBinding(artifact);
 	const codec = artifact.variableCodec;
 	if (codec === undefined) {
-		if (artifact.protocol !== undefined) {
-			throw new TypeError('protocol-v2 replica artifact requires variableCodec');
-		}
-		return cloneJsonObject(variables) as TVariables;
+		throw new TypeError('protocol-v2 replica artifact requires variableCodec');
 	}
 
 	const registry = validateVariableCodec(codec);

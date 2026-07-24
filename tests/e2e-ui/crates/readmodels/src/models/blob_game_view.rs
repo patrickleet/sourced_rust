@@ -1,4 +1,5 @@
 use blob_domain::BlobGameFact;
+use distributed::graphql::{GraphqlOutputType, GraphqlTypeDef, GraphqlTypeField};
 use distributed::ReadModel;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,37 @@ pub struct BlobGameView {
     pub status: String,
     #[readmodel(belongs_to = "AuthUserView", foreign_key = "owner_id")]
     pub owner: Option<AuthUserView>,
+}
+
+impl GraphqlOutputType for BlobGameView {
+    fn graphql_type() -> GraphqlTypeDef {
+        let scalar = |name: &str, type_name: &str| GraphqlTypeField {
+            name: name.into(),
+            type_name: type_name.into(),
+            nullable: false,
+            list: false,
+            item_nullable: false,
+            nested: None,
+        };
+        GraphqlTypeDef::new(
+            // `Projected<BlobGameView>` is a direct replica write. Its output
+            // identity must be the retained model identity so the typed
+            // Service binder can prove command/result topology without a
+            // hand-authored alias.
+            "BlobGameView",
+            vec![
+                scalar("game_id", "String"),
+                scalar("owner_id", "String"),
+                scalar("score", "BigInt"),
+                scalar("player_dead", "Boolean"),
+                scalar("current_level", "BigInt"),
+                scalar("current_level_completed", "Boolean"),
+                scalar("map_json", "String"),
+                scalar("status", "String"),
+            ],
+        )
+        .with_type_id(std::any::TypeId::of::<Self>())
+    }
 }
 
 pub fn map_blob_fact(e: &BlobGameFact) -> BlobGameView {

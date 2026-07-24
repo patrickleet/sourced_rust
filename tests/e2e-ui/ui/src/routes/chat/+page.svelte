@@ -1,14 +1,22 @@
 <script lang="ts">
 	/**
-	 * Lobby chat — Houdini-style document store (cache is transparent).
-	 * Live list: `gql.live(...)` → `$lobby.data` / `$lobby.status`
-	 * Posts: command pipeline with optimistic row against the same store document.
+	 * Lobby chat — one generated `@load @live` operation.
+	 *
+	 * SSR, normalized reads, reconnect, and command facts converge through the
+	 * package replica. The page declares no cache keys or subscription document.
 	 */
-	import { onDestroy, tick } from 'svelte';
-	import { useGraphql, fx } from '$lib/gql';
+	import { tick } from 'svelte';
+
+	import {
+		ChatMessages,
+		useCommands,
+		type Operation_ChatMessages_Data
+	} from '$distributed';
 	import { isOwnAuthor, sessionDisplayName, sessionPrincipalId } from '$lib/session';
-	import { chat, sortChatMessages } from './chat.resource';
-	import type { ChatMsg } from './chat.resource';
+
+	type ChatMsg = Operation_ChatMessages_Data['chat_messages'][number];
+
+	const LOBBY_ROOM = 'lobby';
 
 	let { data } = $props();
 	let sendError = $state<string | null>(null);
@@ -22,31 +30,10 @@
 	);
 	const displayName = $derived(sessionDisplayName(data.session));
 
-	const gql = useGraphql(() => data, {
-		runEffects: (effects) => {
-			for (const e of effects) {
-				if (e.kind === 'alert') sendError = e.message;
-			}
-		}
-	});
-
-	const subDoc = chat.subscription ?? chat.query;
-
-	/** Cache + live subscription — no manual seed/subscribe/sync. */
-	const lobby = gql.live({
-		document: subDoc,
-		list: { at: 'chat_messages', by: 'message_id' },
-		initialData: { chat_messages: data.messages ?? [] },
-		select: (d: { chat_messages?: ChatMsg[] }) =>
-			sortChatMessages(d?.chat_messages ?? [])
-	});
-
-	// Keep seed in sync if load re-runs (navigation / invalidate).
-	$effect(() => {
-		lobby.seed({ chat_messages: data.messages ?? [] });
-	});
-
-	onDestroy(() => lobby.destroy());
+	/** `use()` defaults live because the artifact has a generated companion. */
+	const lobby = ChatMessages.use();
+	const commands = useCommands();
+	const messages = $derived($lobby.complete ? $lobby.data.chat_messages : []);
 
 	async function scrollBottom() {
 		await tick();
@@ -54,7 +41,7 @@
 	}
 
 	$effect(() => {
-		$lobby.data;
+		messages;
 		void scrollBottom();
 	});
 
@@ -74,51 +61,30 @@
 	}
 
 	function messageIsMine(m: ChatMsg): boolean {
-		return isOwnAuthor(m.author_id, me, {
-			authorUserId: m.author?.user_id,
-			username: data.session?.user?.username,
-			displayName: m.author?.display_name
-		});
+		return isOwnAuthor(m.author_id, me);
 	}
 
 	async function onSend(e: Event) {
 		e.preventDefault();
 		const body = draft.trim();
 		if (!body || busy) return;
-		const message_id = `m-${Date.now().toString(16)}`;
+		const now = Date.now();
+		const message_id = `m-${now.toString(16)}`;
 		sendError = null;
 		busy = true;
-		const optimisticRow = {
-			message_id,
-			room_id: data.room,
-			author_id: me || 'me',
-			body,
-			created_at: new Date().toISOString(),
-			// Join target filled by server when auth_users has this user_id.
-			author: {
-				user_id: me || 'me',
-				display_name: displayName || 'You',
-				email: '',
-				status: 'active'
-			}
-		};
-		const result = await gql.commands.chatMessagesPost(
-			{ message_id, body, room_id: data.room },
-			{
-				// Policies default fact + subscription; sub is already live.
-				optimistic: {
-					targets: [lobby.target('chat_messages', 'message_id')],
-					row: optimisticRow
-				},
-				onError: ({ errors }) => [fx.alert(errors[0]?.message ?? 'send failed')]
-			}
-		);
-		busy = false;
-		if (result.errors?.length || !result.data) {
-			if (!sendError) sendError = result.errors?.[0]?.message ?? 'send failed';
-			return;
+		try {
+			await commands.chat.post({
+				message_id,
+				body,
+				room_id: LOBBY_ROOM,
+				created_at: String(now)
+			});
+			draft = '';
+		} catch (error) {
+			sendError = error instanceof Error ? error.message : 'send failed';
+		} finally {
+			busy = false;
 		}
-		draft = '';
 	}
 </script>
 
@@ -126,16 +92,16 @@
 	<header class="ch-header">
 		<div class="ch-title-row">
 			<div>
-				<div class="ch-kicker">Room · {data.room}</div>
+				<div class="ch-kicker">Room · {LOBBY_ROOM}</div>
 				<h1 class="ch-title">Lobby</h1>
 			</div>
-			<div class="ch-status" data-state={$lobby.status}>
+			<div class="ch-status" data-state={$lobby.live}>
 				<span class="ch-pulse" aria-hidden="true"></span>
-				{#if $lobby.status === 'live'}
+				{#if $lobby.live === 'active'}
 					Live
-				{:else if $lobby.status === 'connecting'}
+				{:else if $lobby.live === 'connecting'}
 					Connecting…
-				{:else if $lobby.status === 'error'}
+				{:else if $lobby.live === 'error'}
 					Offline
 				{:else}
 					Idle
@@ -143,8 +109,8 @@
 			</div>
 		</div>
 		<p class="ch-lede">
-			<code>gql.live</code> owns the list (cache + subscription write-through). Posts use
-			<code>gql.commands.*</code> with optimistic rows against the same document. Signed in as
+			The generated <code>@load @live</code> artifact owns SSR and reconnect. A typed
+			<code>chat.post</code> command updates the same normalized state. Signed in as
 			<strong>{displayName}</strong>.
 		</p>
 	</header>
@@ -158,8 +124,8 @@
 	{#if $lobby.error}
 		<div class="ch-alert" role="alert">
 			<strong>Subscription</strong>
-			<span>{$lobby.error}</span>
-			<button type="button" class="ch-link-btn" onclick={() => lobby.connect()}>Retry</button>
+			<span>{$lobby.error.message}</span>
+			<button type="button" class="ch-link-btn" onclick={() => void lobby.refetch()}>Retry</button>
 		</div>
 	{/if}
 	{#if sendError}
@@ -171,17 +137,15 @@
 
 	<div class="ch-shell">
 		<div class="ch-log" bind:this={logEl} role="log" aria-live="polite" aria-relevant="additions">
-			{#if $lobby.data.length === 0}
+			{#if messages.length === 0}
 				<div class="ch-empty">
 					<div class="ch-empty-icon" aria-hidden="true">◇</div>
 					<p>No messages yet. Say hello to the lobby.</p>
 				</div>
 			{:else}
-				{#each $lobby.data as m, i (m.message_id)}
+				{#each messages as m, i (m.message_id)}
 					{@const mine = messageIsMine(m)}
-					{@const authorLabel = mine
-						? 'You'
-						: m.author?.display_name || m.author?.email || shortId(m.author_id)}
+					{@const authorLabel = mine ? 'You' : shortId(m.author_id)}
 					<article class="ch-msg" class:mine style="--i: {i}">
 						<header class="ch-msg-meta">
 							<span class="ch-author" title={m.author_id}>{authorLabel}</span>

@@ -1,9 +1,13 @@
-import type {
-	DistributedCommandConsistency,
-	DistributedCommandMetadata
+import {
+	isDistributedTrustedPresetCodec,
+	parseDistributedTrustedPresetInventory,
+	type DistributedTrustedPreset,
+	type DistributedTrustedPresetCodec,
+	type DistributedCommandConsistency,
+	type DistributedCommandMetadata
 } from '../protocol.js';
-import { createCommandId } from '../causal.js';
-import type { ReplicaValue } from './types.js';
+import type { ReplicaClientSurface, ReplicaValue } from './types.js';
+import { createReplicaCommandId } from './command-id.js';
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const UUID_V7 =
@@ -13,19 +17,16 @@ const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const MAX_TYPE_DEPTH = 64;
 
-export type ReplicaCommandScalarCodec =
-	| 'string'
-	| 'string_unvalidated_timestamp'
-	| 'base64'
-	| 'boolean'
-	| 'int32'
-	| 'float64'
-	| 'json_number_precision_limited'
-	| 'json';
+export type ReplicaCommandScalarCodec = DistributedTrustedPresetCodec;
+
+/** Static name/codec declaration emitted without a server-derived value. */
+export type ReplicaTrustedPresetDescriptor = {
+	readonly name: string;
+	readonly codec: ReplicaCommandScalarCodec;
+};
 
 export type ReplicaCommandShape =
 	| { readonly kind: 'none' }
-	| { readonly kind: 'json'; readonly codec: 'json' }
 	| {
 			readonly kind: 'object';
 			readonly definition: ReplicaCommandTypeDefinition;
@@ -176,7 +177,10 @@ export type ReplicaCommandArtifact<TInput = void, TOutput = unknown> = {
 		readonly version: 2;
 		readonly schemaHash: string;
 		readonly protocolHash: string;
+		readonly surface: ReplicaClientSurface;
 		readonly operation: string;
+		/** Exact scope-wide preset inventory for this generated client surface. */
+		readonly trustedPresets: readonly ReplicaTrustedPresetDescriptor[];
 	};
 	readonly input: ReplicaCommandShape;
 	readonly output: ReplicaCommandShape;
@@ -185,6 +189,7 @@ export type ReplicaCommandArtifact<TInput = void, TOutput = unknown> = {
 	readonly effects: ReplicaCommandEffects;
 	readonly confirmations?: ReplicaCommandConfirmations;
 	readonly directProjection?: ReplicaCommandDirectProjection;
+	readonly trustedPresets?: readonly ReplicaTrustedPresetDescriptor[];
 	readonly revalidation: ReplicaCommandRevalidationPlan;
 	/** Phantom slots preserve generated input/output types. */
 	readonly __input?: TInput;
@@ -294,6 +299,19 @@ export type PrepareReplicaCommandOptions = {
 	readonly generators?: ReplicaCommandGenerators;
 };
 
+/**
+ * Exact immutable command-local view over a server-derived scope inventory.
+ *
+ * The backing lookup is intentionally not exposed as a mutable Map.
+ *
+ * @internal
+ */
+export type ReplicaMatchedTrustedPresetInventory = Readonly<{
+	descriptors: readonly ReplicaTrustedPresetDescriptor[];
+	values: readonly DistributedTrustedPreset[];
+	resolve(name: string): ReplicaValue;
+}>;
+
 export type ReplicaReceiptVerification =
 	| {
 			readonly kind: 'matched';
@@ -312,7 +330,8 @@ export type ReplicaReceiptVerification =
 export type ReplicaCommandContractErrorCode =
 	| 'REPLICA_COMMAND_ARTIFACT_INVALID'
 	| 'REPLICA_COMMAND_INPUT_INVALID'
-	| 'REPLICA_COMMAND_RECEIPT_MISMATCH';
+	| 'REPLICA_COMMAND_RECEIPT_MISMATCH'
+	| 'REPLICA_COMMAND_TRUSTED_PRESET_MISMATCH';
 
 /** Safe fail-closed error from a generated command descriptor seam. */
 export class ReplicaCommandContractError extends Error {
@@ -339,7 +358,51 @@ export function prepareReplicaCommand<TInput, TOutput>(
 	input: TInput,
 	options: PrepareReplicaCommandOptions = {}
 ): ReplicaPreparedCommand<TInput, TOutput> {
-	validateArtifact(artifact);
+	return prepareReplicaCommandInternal(artifact, input, options);
+}
+
+/**
+ * Finalize a command with values obtained from the replica's current
+ * authoritative scope generation.
+ *
+ * The incoming inventory is scope-wide, so values owned by other commands are
+ * ignored. Every descriptor consumed by this artifact must nevertheless have
+ * one exact name/codec match before defaults, optimism, or transport state is
+ * created.
+ *
+ * This seam is package-internal and deliberately omitted from the public
+ * `@hops-ops/distributed/replica` entry point.
+ *
+ * @internal
+ */
+export function prepareReplicaCommandWithTrustedPresets<TInput, TOutput>(
+	artifact: ReplicaCommandArtifact<TInput, TOutput>,
+	input: TInput,
+	authoritativePresets: readonly DistributedTrustedPreset[],
+	options: PrepareReplicaCommandOptions = {}
+): ReplicaPreparedCommand<TInput, TOutput> {
+	return prepareReplicaCommandInternal(
+		artifact,
+		input,
+		options,
+		authoritativePresets
+	);
+}
+
+function prepareReplicaCommandInternal<TInput, TOutput>(
+	artifact: ReplicaCommandArtifact<TInput, TOutput>,
+	input: TInput,
+	options: PrepareReplicaCommandOptions,
+	authoritativePresets?: readonly DistributedTrustedPreset[]
+): ReplicaPreparedCommand<TInput, TOutput> {
+	const descriptors = validateArtifact(
+		artifact,
+		authoritativePresets !== undefined
+	);
+	const trustedPresets =
+		authoritativePresets === undefined
+			? undefined
+			: selectReplicaTrustedPresetInventory(descriptors, authoritativePresets);
 	const defaults = artifact.inputDefaults?.defaults ?? [];
 	const finalizedInput = materializeInput(
 		artifact.input,
@@ -348,7 +411,7 @@ export function prepareReplicaCommand<TInput, TOutput>(
 		options.generators
 	) as DeepReadonly<TInput>;
 	const commandId = validateUuidV7(
-		options.commandId ?? createCommandId(),
+		options.commandId ?? createReplicaCommandId(),
 		'options.commandId',
 		'REPLICA_COMMAND_INPUT_INVALID'
 	);
@@ -358,18 +421,31 @@ export function prepareReplicaCommand<TInput, TOutput>(
 	}) as ReplicaCommandVariables<TInput>;
 	const operations = Object.freeze(
 		artifact.effects.operations.map((effect, index) =>
-			resolveEffect(effect, finalizedInput, `artifact.effects.operations[${index}]`)
+			resolveEffect(
+				effect,
+				finalizedInput,
+				`artifact.effects.operations[${index}]`,
+				trustedPresets
+			)
 		)
 	);
 	const confirmations = resolveConfirmations(
 		artifact.confirmations,
-		finalizedInput
+		finalizedInput,
+		trustedPresets
 	);
 	const directProjection = resolveDirectProjection(
 		artifact.directProjection,
-		finalizedInput
+		finalizedInput,
+		trustedPresets
 	);
-	const protocol = Object.freeze({ ...artifact.protocol });
+	const protocol = Object.freeze({
+		...artifact.protocol,
+		surface: cloneClientSurface(artifact.protocol.surface),
+		trustedPresets: cloneTrustedPresetDescriptors(
+			artifact.protocol.trustedPresets
+		)
+	});
 	const revalidation = cloneRevalidation(artifact.revalidation);
 
 	return Object.freeze({
@@ -393,6 +469,73 @@ export function prepareReplicaCommand<TInput, TOutput>(
 		...(directProjection === undefined ? {} : { directProjection }),
 		revalidation
 	}) as ReplicaPreparedCommand<TInput, TOutput>;
+}
+
+/**
+ * Match two command-local inventories as exact name/codec sets.
+ *
+ * Both sides are reparsed instead of trusting TypeScript annotations. Missing,
+ * extra, duplicate, unsupported, or codec-mismatched entries fail closed.
+ *
+ * @internal
+ */
+export function matchReplicaTrustedPresetInventory(
+	expected: readonly ReplicaTrustedPresetDescriptor[],
+	authoritative: readonly DistributedTrustedPreset[]
+): ReplicaMatchedTrustedPresetInventory {
+	const descriptors = parseReplicaTrustedPresetDescriptors(expected);
+	let values: readonly DistributedTrustedPreset[];
+	try {
+		values = parseDistributedTrustedPresetInventory(
+			authoritative,
+			'authoritativePresets'
+		);
+	} catch {
+		trustedPresetMismatch('authoritativePresets');
+	}
+	if (descriptors.length !== values.length) {
+		trustedPresetMismatch('authoritativePresets');
+	}
+	const byName = new Map(values.map((preset) => [preset.name, preset] as const));
+	for (let index = 0; index < descriptors.length; index += 1) {
+		const descriptor = descriptors[index]!;
+		const value = byName.get(descriptor.name);
+		if (value === undefined || value.codec !== descriptor.codec) {
+			trustedPresetMismatch(`authoritativePresets.${descriptor.name}`);
+		}
+	}
+	const resolve = (name: string): ReplicaValue => {
+		const value = byName.get(name);
+		if (value === undefined) {
+			trustedPresetMismatch(`authoritativePresets.${name}`);
+		}
+		return value.value as ReplicaValue;
+	};
+	return Object.freeze({
+		descriptors,
+		values,
+		resolve
+	});
+}
+
+function selectReplicaTrustedPresetInventory(
+	expected: readonly ReplicaTrustedPresetDescriptor[],
+	authoritative: readonly DistributedTrustedPreset[]
+): ReplicaMatchedTrustedPresetInventory {
+	let values: readonly DistributedTrustedPreset[];
+	try {
+		values = parseDistributedTrustedPresetInventory(
+			authoritative,
+			'authoritativePresets'
+		);
+	} catch {
+		trustedPresetMismatch('authoritativePresets');
+	}
+	const names = new Set(expected.map(({ name }) => name));
+	return matchReplicaTrustedPresetInventory(
+		expected,
+		values.filter(({ name }) => names.has(name))
+	);
 }
 
 /**
@@ -444,8 +587,9 @@ export function verifyReplicaCommandReceipt<TInput, TOutput>(
 }
 
 function validateArtifact<TInput, TOutput>(
-	artifact: ReplicaCommandArtifact<TInput, TOutput>
-): void {
+	artifact: ReplicaCommandArtifact<TInput, TOutput>,
+	allowTrustedPresets: boolean
+): readonly ReplicaTrustedPresetDescriptor[] {
 	if (artifact.version !== 1) artifactInvalid('artifact.version');
 	nonempty(artifact.name, 'artifact.name');
 	if (!GRAPHQL_NAME.test(artifact.mutationField)) {
@@ -456,8 +600,29 @@ function validateArtifact<TInput, TOutput>(
 	if (artifact.protocol.version !== 2) artifactInvalid('artifact.protocol.version');
 	hash(artifact.protocol.schemaHash, 'artifact.protocol.schemaHash');
 	hash(artifact.protocol.protocolHash, 'artifact.protocol.protocolHash');
+	validateClientSurface(artifact.protocol.surface, 'artifact.protocol.surface');
 	if (artifact.protocol.operation !== artifact.operationHash) {
 		artifactInvalid('artifact.protocol.operation');
+	}
+	const surfaceTrustedPresets = parseReplicaTrustedPresetDescriptors(
+		artifact.protocol.trustedPresets,
+		'artifact.protocol.trustedPresets'
+	);
+	const trustedPresets = parseReplicaTrustedPresetDescriptors(
+		artifact.trustedPresets ?? [],
+		'artifact.trustedPresets'
+	);
+	const surfaceByName = new Map(
+		surfaceTrustedPresets.map((descriptor) => [
+			descriptor.name,
+			descriptor.codec
+		] as const)
+	);
+	for (let index = 0; index < trustedPresets.length; index += 1) {
+		const descriptor = trustedPresets[index]!;
+		if (surfaceByName.get(descriptor.name) !== descriptor.codec) {
+			artifactInvalid(`artifact.trustedPresets[${index}]`);
+		}
 	}
 	validateShape(artifact.input, 'artifact.input', 0, new Set());
 	validateShape(artifact.output, 'artifact.output', 0, new Set());
@@ -487,6 +652,183 @@ function validateArtifact<TInput, TOutput>(
 	validateConfirmations(artifact);
 	validateDirectProjection(artifact);
 	validateRevalidation(artifact);
+	validateTrustedPresetReferences(
+		artifact,
+		trustedPresets,
+		allowTrustedPresets
+	);
+	return trustedPresets;
+}
+
+function validateClientSurface(
+	surface: ReplicaClientSurface,
+	path: string
+): void {
+	if (surface === null || typeof surface !== 'object') artifactInvalid(path);
+	requiredString(surface.name, `${path}.name`);
+	if (surface.kind === 'role') return;
+	if (
+		surface.kind !== 'application' ||
+		!Array.isArray(surface.roles) ||
+		surface.roles.length === 0
+	) {
+		artifactInvalid(path);
+	}
+	const roles = new Set<string>();
+	for (let index = 0; index < surface.roles.length; index += 1) {
+		const role = requiredString(surface.roles[index], `${path}.roles[${index}]`);
+		if (roles.has(role)) artifactInvalid(`${path}.roles[${index}]`);
+		roles.add(role);
+	}
+}
+
+function cloneClientSurface(surface: ReplicaClientSurface): ReplicaClientSurface {
+	return surface.kind === 'role'
+		? Object.freeze({ kind: 'role' as const, name: surface.name })
+		: Object.freeze({
+				kind: 'application' as const,
+				name: surface.name,
+				roles: Object.freeze([...surface.roles])
+			});
+}
+
+function parseReplicaTrustedPresetDescriptors(
+	value: unknown,
+	path = 'artifact.trustedPresets'
+): readonly ReplicaTrustedPresetDescriptor[] {
+	if (!Array.isArray(value)) artifactInvalid(path);
+	const names = new Set<string>();
+	return Object.freeze(
+		value.map((candidate, index) => {
+			const itemPath = `${path}[${index}]`;
+			if (!isPlainRecord(candidate)) artifactInvalid(itemPath);
+			const name = trustedPresetName(candidate.name, `${itemPath}.name`);
+			if (names.has(name)) artifactInvalid(`${itemPath}.name`);
+			names.add(name);
+			if (!isDistributedTrustedPresetCodec(candidate.codec)) {
+				artifactInvalid(`${itemPath}.codec`);
+			}
+			return Object.freeze({
+				name,
+				codec: candidate.codec
+			});
+		})
+	);
+}
+
+function cloneTrustedPresetDescriptors(
+	value: readonly ReplicaTrustedPresetDescriptor[]
+): readonly ReplicaTrustedPresetDescriptor[] {
+	return Object.freeze(
+		value.map(({ name, codec }) => Object.freeze({ name, codec }))
+	);
+}
+
+function trustedPresetName(value: unknown, path: string): string {
+	if (
+		typeof value !== 'string' ||
+		value.length === 0 ||
+		value.length > 128 ||
+		value.trim() !== value ||
+		/[\u0000-\u001f\u007f-\u009f]/.test(value)
+	) {
+		artifactInvalid(path);
+	}
+	return value;
+}
+
+type TrustedPresetReference = Readonly<{ name: string; path: string }>;
+
+function validateTrustedPresetReferences<TInput, TOutput>(
+	artifact: ReplicaCommandArtifact<TInput, TOutput>,
+	descriptors: readonly ReplicaTrustedPresetDescriptor[],
+	allowTrustedPresets: boolean
+): void {
+	const references = collectTrustedPresetReferences(artifact);
+	const declared = new Set(descriptors.map(({ name }) => name));
+	for (const reference of references) {
+		if (!declared.has(reference.name)) artifactInvalid(reference.path);
+	}
+	const referenced = new Set(references.map(({ name }) => name));
+	for (let index = 0; index < descriptors.length; index += 1) {
+		if (!referenced.has(descriptors[index]!.name)) {
+			artifactInvalid(`artifact.trustedPresets[${index}]`);
+		}
+	}
+	if (!allowTrustedPresets && references.length !== 0) {
+		artifactInvalid(references[0]!.path);
+	}
+}
+
+function collectTrustedPresetReferences<TInput, TOutput>(
+	artifact: ReplicaCommandArtifact<TInput, TOutput>
+): readonly TrustedPresetReference[] {
+	const out: TrustedPresetReference[] = [];
+	const expression = (
+		value: ReplicaCommandEffectExpression,
+		path: string
+	): void => {
+		if (value.kind === 'trusted_preset') {
+			out.push(Object.freeze({ name: value.name, path }));
+		}
+	};
+	const fields = (
+		value: readonly ReplicaCommandEffectField[],
+		path: string
+	): void => {
+		for (let index = 0; index < value.length; index += 1) {
+			expression(value[index]!.value, `${path}[${index}].value`);
+		}
+	};
+	const key = (value: ReplicaCommandEffectKey, path: string): void => {
+		fields(value.fields, `${path}.fields`);
+	};
+
+	for (let index = 0; index < artifact.effects.operations.length; index += 1) {
+		const effect = artifact.effects.operations[index]!;
+		const path = `artifact.effects.operations[${index}]`;
+		switch (effect.kind) {
+			case 'upsert':
+			case 'patch':
+				key(effect.key, `${path}.key`);
+				fields(effect.fields, `${path}.fields`);
+				break;
+			case 'delete':
+				key(effect.key, `${path}.key`);
+				break;
+			case 'link':
+			case 'unlink':
+				key(effect.source, `${path}.source`);
+				key(effect.target, `${path}.target`);
+				break;
+			case 'invalidate_relationship':
+				key(effect.source, `${path}.source`);
+				break;
+			case 'invalidate_model':
+				break;
+		}
+	}
+	if (artifact.confirmations?.kind === 'finite') {
+		for (
+			let index = 0;
+			index < artifact.confirmations.expected.length;
+			index += 1
+		) {
+			const confirmation = artifact.confirmations.expected[index]!;
+			const path = `artifact.confirmations.expected[${index}]`;
+			key(confirmation.key, `${path}.key`);
+			if (confirmation.partition !== undefined) {
+				expression(confirmation.partition, `${path}.partition`);
+			}
+		}
+	}
+	if (artifact.directProjection?.partition !== undefined) {
+		expression(
+			artifact.directProjection.partition,
+			'artifact.directProjection.partition'
+		);
+	}
+	return Object.freeze(out);
 }
 
 function validateShape(
@@ -498,9 +840,6 @@ function validateShape(
 	if (depth > MAX_TYPE_DEPTH) artifactInvalid(path);
 	switch (shape.kind) {
 		case 'none':
-			return;
-		case 'json':
-			if (shape.codec !== 'json') artifactInvalid(`${path}.codec`);
 			return;
 		case 'object':
 			validateDefinition(shape.definition, `${path}.definition`, depth, active);
@@ -841,8 +1180,8 @@ function validateExpressionArtifact(
 		case 'null':
 			return;
 		case 'trusted_preset':
-			// Task 10 owns installing a cache-scope-bound preset inventory.
-			artifactInvalid(path);
+			trustedPresetName(expression.name, `${path}.name`);
+			return;
 		case undefined:
 		default:
 			artifactInvalid(`${path}.kind`);
@@ -920,9 +1259,6 @@ function materializeInput(
 		case 'none':
 			if (input !== undefined) inputInvalid('input');
 			return undefined;
-		case 'json':
-			if (input === undefined) inputInvalid('input');
-			return cloneJson(input, 'input');
 		case 'object':
 			return cloneDefinitionValue(
 				shape.definition,
@@ -1153,7 +1489,8 @@ function cloneJson(
 function resolveEffect(
 	effect: ReplicaCommandEffect,
 	input: unknown,
-	path: string
+	path: string,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): ReplicaPreparedCommandEffect {
 	switch (effect.kind) {
 		case 'upsert':
@@ -1161,14 +1498,19 @@ function resolveEffect(
 			return Object.freeze({
 				kind: effect.kind,
 				model: requiredString(effect.model, `${path}.model`),
-				key: resolveKey(effect.key, input, `${path}.key`),
-				fields: resolveFields(effect.fields, input, `${path}.fields`)
+				key: resolveKey(effect.key, input, `${path}.key`, trustedPresets),
+				fields: resolveFields(
+					effect.fields,
+					input,
+					`${path}.fields`,
+					trustedPresets
+				)
 			});
 		case 'delete':
 			return Object.freeze({
 				kind: effect.kind,
 				model: requiredString(effect.model, `${path}.model`),
-				key: resolveKey(effect.key, input, `${path}.key`)
+				key: resolveKey(effect.key, input, `${path}.key`, trustedPresets)
 			});
 		case 'link':
 		case 'unlink':
@@ -1178,8 +1520,18 @@ function resolveEffect(
 					effect.relationship,
 					`${path}.relationship`
 				),
-				source: resolveKey(effect.source, input, `${path}.source`),
-				target: resolveKey(effect.target, input, `${path}.target`)
+				source: resolveKey(
+					effect.source,
+					input,
+					`${path}.source`,
+					trustedPresets
+				),
+				target: resolveKey(
+					effect.target,
+					input,
+					`${path}.target`,
+					trustedPresets
+				)
 			});
 		case 'invalidate_model':
 			return Object.freeze({
@@ -1193,7 +1545,12 @@ function resolveEffect(
 					effect.relationship,
 					`${path}.relationship`
 				),
-				source: resolveKey(effect.source, input, `${path}.source`)
+				source: resolveKey(
+					effect.source,
+					input,
+					`${path}.source`,
+					trustedPresets
+				)
 			});
 		default:
 			artifactInvalid(`${path}.kind`);
@@ -1203,7 +1560,8 @@ function resolveEffect(
 function resolveKey(
 	key: ReplicaCommandEffectKey,
 	input: unknown,
-	path: string
+	path: string,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): ReplicaPreparedEffectKey {
 	if (
 		key === null ||
@@ -1214,14 +1572,20 @@ function resolveKey(
 		artifactInvalid(path);
 	}
 	return Object.freeze({
-		fields: resolveFields(key.fields, input, `${path}.fields`)
+		fields: resolveFields(
+			key.fields,
+			input,
+			`${path}.fields`,
+			trustedPresets
+		)
 	});
 }
 
 function resolveFields(
 	fields: readonly ReplicaCommandEffectField[],
 	input: unknown,
-	path: string
+	path: string,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): readonly ReplicaPreparedEffectField[] {
 	if (!Array.isArray(fields)) artifactInvalid(path);
 	const names = new Set<string>();
@@ -1233,7 +1597,12 @@ function resolveFields(
 			names.add(name);
 			return Object.freeze({
 				field: name,
-				value: resolveExpression(field.value, input, `${fieldPath}.value`)
+				value: resolveExpression(
+					field.value,
+					input,
+					`${fieldPath}.value`,
+					trustedPresets
+				)
 			});
 		})
 	);
@@ -1242,7 +1611,8 @@ function resolveFields(
 function resolveExpression(
 	expression: ReplicaCommandEffectExpression,
 	input: unknown,
-	path: string
+	path: string,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): ReplicaValue {
 	switch (expression.kind) {
 		case 'input':
@@ -1252,7 +1622,8 @@ function resolveExpression(
 		case 'null':
 			return null;
 		case 'trusted_preset':
-			artifactInvalid(path);
+			if (trustedPresets === undefined) artifactInvalid(path);
+			return trustedPresets.resolve(expression.name);
 		default:
 			artifactInvalid(`${path}.kind`);
 	}
@@ -1286,7 +1657,8 @@ function resolveInputPath(
 
 function resolveConfirmations(
 	confirmations: ReplicaCommandConfirmations | undefined,
-	input: unknown
+	input: unknown,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): ReplicaPreparedConfirmations | undefined {
 	if (confirmations === undefined) return undefined;
 	if (confirmations.kind === 'unavailable') {
@@ -1303,7 +1675,8 @@ function resolveConfirmations(
 						: resolveExpression(
 								confirmation.partition,
 								input,
-								`${path}.partition`
+								`${path}.partition`,
+								trustedPresets
 							);
 				return Object.freeze({
 					projector: requiredString(
@@ -1311,7 +1684,12 @@ function resolveConfirmations(
 						`${path}.projector`
 					),
 					model: requiredString(confirmation.model, `${path}.model`),
-					key: resolveKey(confirmation.key, input, `${path}.key`),
+					key: resolveKey(
+						confirmation.key,
+						input,
+						`${path}.key`,
+						trustedPresets
+					),
 					...(partition === undefined ? {} : { partition })
 				});
 			})
@@ -1321,7 +1699,8 @@ function resolveConfirmations(
 
 function resolveDirectProjection(
 	direct: ReplicaCommandDirectProjection | undefined,
-	input: unknown
+	input: unknown,
+	trustedPresets: ReplicaMatchedTrustedPresetInventory | undefined
 ): ReplicaPreparedCommand<unknown>['directProjection'] | undefined {
 	if (direct === undefined) return undefined;
 	const partition =
@@ -1330,7 +1709,8 @@ function resolveDirectProjection(
 			: resolveExpression(
 					direct.partition,
 					input,
-					'artifact.directProjection.partition'
+					'artifact.directProjection.partition',
+					trustedPresets
 				);
 	return Object.freeze({
 		topology: Object.freeze({ ...direct.topology }),
@@ -1401,12 +1781,12 @@ function generateDefault(
 	path: string
 ): string {
 	switch (entry.generator) {
-		case 'uuid_v7':
-			return validateUuidV7(
-				(generators?.uuidV7 ?? createCommandId)(),
-				path,
-				'REPLICA_COMMAND_INPUT_INVALID'
-			);
+			case 'uuid_v7':
+				return validateUuidV7(
+					(generators?.uuidV7 ?? createReplicaCommandId)(),
+					path,
+					'REPLICA_COMMAND_INPUT_INVALID'
+				);
 		case 'ulid':
 			return validateUlid(
 				(generators?.ulid ?? createUlid)(),
@@ -1488,16 +1868,7 @@ function samePath(left: readonly string[], right: readonly string[]): boolean {
 }
 
 function isSupportedCodec(value: string): value is ReplicaCommandScalarCodec {
-	return (
-		value === 'string' ||
-		value === 'string_unvalidated_timestamp' ||
-		value === 'base64' ||
-		value === 'boolean' ||
-		value === 'int32' ||
-		value === 'float64' ||
-		value === 'json_number_precision_limited' ||
-		value === 'json'
-	);
+	return isDistributedTrustedPresetCodec(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -1552,6 +1923,13 @@ function receiptMismatch(path: string): never {
 	);
 }
 
+function trustedPresetMismatch(path: string): never {
+	throw new ReplicaCommandContractError(
+		'REPLICA_COMMAND_TRUSTED_PRESET_MISMATCH',
+		path
+	);
+}
+
 function commandErrorMessage(
 	code: ReplicaCommandContractErrorCode,
 	path: string
@@ -1563,5 +1941,7 @@ function commandErrorMessage(
 			return `Invalid replica command input at ${path}`;
 		case 'REPLICA_COMMAND_RECEIPT_MISMATCH':
 			return `Replica command receipt does not match ${path}`;
+		case 'REPLICA_COMMAND_TRUSTED_PRESET_MISMATCH':
+			return `Authoritative trusted preset inventory does not match ${path}`;
 	}
 }

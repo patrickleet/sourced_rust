@@ -172,7 +172,26 @@ impl Serialize for FilterExpr {
                 }),
             }
         }
-        value(self).serialize(serializer)
+        canonical_json_value(value(self)).serialize(serializer)
+    }
+}
+
+fn canonical_json_value(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(values) => {
+            JsonValue::Array(values.into_iter().map(canonical_json_value).collect())
+        }
+        JsonValue::Object(values) => {
+            let mut entries = values.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            JsonValue::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonical_json_value(value)))
+                    .collect(),
+            )
+        }
+        scalar => scalar,
     }
 }
 
@@ -443,11 +462,11 @@ impl FilterExpr {
 
         fn operand_is_portable(operand: &Operand) -> bool {
             match operand {
-                // Client-visible claim presets are not authoritative until the
-                // server binds them to the cache scope (task 10). Treat claim-
-                // dependent authorization as server-only instead of inviting
-                // callers to evaluate it from a decoded or forged token.
-                Operand::Claim(_) => false,
+                // Claim values are locally usable only after the selected
+                // Surface binds their exact typed descriptor/value inventory to
+                // the server-issued cache scope. Field visibility and codec
+                // compatibility are validated while that inventory is derived.
+                Operand::Claim(_) => true,
                 Operand::Lit(LitValue::I64(value)) => {
                     value.unsigned_abs() <= JS_MAX_SAFE_INTEGER as u64
                 }
@@ -597,6 +616,25 @@ mod tests {
             panic!("expected f32 literal operand to promote to f64");
         };
         assert!((value - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn row_policy_wire_json_is_canonical_across_map_backends() {
+        let mut value = serde_json::Map::new();
+        value.insert("z".into(), serde_json::json!(2));
+        value.insert("a".into(), serde_json::json!(1));
+        let expression = FilterExpr::In {
+            column: "metadata".into(),
+            values: vec![Operand::Lit(LitValue::Json(serde_json::Value::Object(
+                value,
+            )))],
+            negated: false,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&expression).unwrap(),
+            r#"{"kind":"in","value":{"column":"metadata","negated":false,"values":[{"kind":"lit","value":{"kind":"json","value":{"a":1,"z":2}}}]}}"#
+        );
     }
 
     #[test]
@@ -760,6 +798,9 @@ mod tests {
         };
         assert!(!unsafe_json.is_client_portable());
 
-        assert!(!col("owner_id").eq(claim("x-user-id")).is_client_portable());
+        assert!(
+            col("owner_id").eq(claim("x-user-id")).is_client_portable(),
+            "typed claim operands are portable once the selected surface binds their values"
+        );
     }
 }
