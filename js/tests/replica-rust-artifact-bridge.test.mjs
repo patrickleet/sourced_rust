@@ -62,7 +62,8 @@ function protocolEnvelope(root) {
 				operation: artifact.id,
 				snapshot: {
 					scopeToken: 'runtime-bridge-snapshot',
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: [
 						{
 							path: [root.responseKey],

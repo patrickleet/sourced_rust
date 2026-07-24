@@ -132,6 +132,7 @@ test('replica GraphQL live work merges surface binding with resume and closes on
 	const controller = new AbortController();
 	const next = [];
 	const errors = [];
+	let completions = 0;
 	const transport = createReplicaGraphqlTransport({
 		getUrl: () => '/graphql',
 		getAuth: () => ({ userId: 'alice', role: 'user' }),
@@ -148,21 +149,26 @@ test('replica GraphQL live work merges surface binding with resume and closes on
 	const resume = [
 		{ projection: 'todos', position: '7', token: 'resume-token' }
 	];
-	const stop = transport.subscribe(
-		{
-			operation: 'live',
-			operationId: 'live:todos',
-			document: 'subscription TodosLive { todos { id } }',
-			variables: { room: 'lobby' },
-			artifact: { id: 'query:todos', document: '', roots: [] },
-			extensions,
-			resume,
-			signal: controller.signal
-		},
-		{
-			next: (value) => next.push(value),
-			error: (error) => errors.push(error)
+	const liveRequest = {
+		operation: 'live',
+		operationId: 'live:todos',
+		document: 'subscription TodosLive { todos { id } }',
+		variables: { room: 'lobby' },
+		artifact: { id: 'query:todos', document: '', roots: [] },
+		extensions,
+		resume,
+		signal: controller.signal
+	};
+	const observer = {
+		next: (value) => next.push(value),
+		error: (error) => errors.push(error),
+		complete: () => {
+			completions += 1;
 		}
+	};
+	const stop = transport.subscribe(
+		liveRequest,
+		observer
 	);
 	await tick();
 
@@ -194,11 +200,26 @@ test('replica GraphQL live work merges surface binding with resume and closes on
 	socket.message({ type: 'next', payload: { data: { todos: [{ id: '1' }] } } });
 	assert.deepEqual(next, [{ data: { todos: [{ id: '1' }] } }]);
 	assert.deepEqual(errors, []);
+	socket.message({ type: 'complete', id: '1' });
+	assert.equal(completions, 1);
+	assert.equal(socket.closed, true);
+
+	const stopError = transport.subscribe(liveRequest, observer);
+	await tick();
+	const errorSocket = FakeWebSocket.instances[1];
+	errorSocket.open();
+	errorSocket.message({ type: 'error', id: '1', payload: 'terminal error' });
+	assert.deepEqual(errors, ['terminal error']);
+	assert.equal(errorSocket.closed, true);
+	assert.equal(completions, 1);
 
 	controller.abort();
 	assert.equal(socket.closed, true);
 	stop();
+	stopError();
 	assert.equal(socket.closed, true);
+	assert.equal(errorSocket.closed, true);
+	assert.equal(completions, 1);
 });
 
 test('canceling a live request before async auth resolves prevents a socket', async () => {
@@ -224,7 +245,11 @@ test('canceling a live request before async auth resolves prevents a socket', as
 			variables: {},
 			artifact: { id: 'query', document: '', roots: [] }
 		},
-		{ next: () => undefined, error: () => undefined }
+		{
+			next: () => undefined,
+			error: () => undefined,
+			complete: () => undefined
+		}
 	);
 	stop();
 	release({});

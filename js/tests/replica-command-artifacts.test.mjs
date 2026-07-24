@@ -826,6 +826,41 @@ test('unavailable confirmation contracts always force conservative revalidation'
 	);
 });
 
+test('accepted commands without finite confirmations require canonical revalidation', () => {
+	const invalid = baseArtifact({
+		consistency: 'accepted',
+		confirmations: undefined
+	});
+	const input = { meta: { count: 1 }, title: 'No finite fence' };
+	const options = {
+		commandId: COMMAND_ID,
+		generators: {
+			uuidV7: () => GENERATED_UUID,
+			ulid: () => GENERATED_ULID
+		}
+	};
+
+	assert.throws(
+		() => prepareReplicaCommand(invalid, input, options),
+		(error) =>
+			error instanceof ReplicaCommandContractError &&
+			error.path === 'artifact.revalidation.required'
+	);
+
+	const valid = baseArtifact({
+		consistency: 'accepted',
+		confirmations: undefined,
+		revalidation: {
+			...invalid.revalidation,
+			required: true
+		}
+	});
+	assert.equal(
+		prepareReplicaCommand(valid, input, options).revalidation.required,
+		true
+	);
+});
+
 test('projected commands close the direct projection partition from finalized input', () => {
 	const artifact = projectedArtifact();
 	const prepared = prepareReplicaCommand(

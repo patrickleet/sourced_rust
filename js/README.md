@@ -387,9 +387,12 @@ explicit redactor.
 
 Every accepted artifact and response is protocol v2 and carries an exact
 schema/client-surface binding. Every response is also bound to a server-issued
-cache scope, operation ID, trusted-preset inventory, record clocks, and index
-vector. Missing, malformed, stale-schema, cross-surface, or incomparable
-evidence fails closed before data becomes visible.
+cache scope, operation ID, and trusted-preset inventory; any supplied record
+clocks or index vector are bound to that same scope. Missing, malformed,
+stale-schema, or cross-surface evidence fails closed. An exact authorized
+payload without a safely comparable index vector may render, but it cannot
+advance index clocks/vectors, observations, live resume, or optimistic
+confirmation. Independently valid record clocks remain usable.
 
 OIDC credentials authorize transport requests; decoded client claims never
 create cache authority. GraphQL remains the API and command proxy layer, while

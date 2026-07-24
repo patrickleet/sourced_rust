@@ -68,6 +68,7 @@ import {
 	type ReplicaNormalizationProtocol,
 	type ReplicaProtocolRecordResolution
 } from './normalize.js';
+import { createReplicaRevalidationMatcher } from './revalidation.js';
 import {
 	validateReplicaOperationBinding as validatedArtifactBinding,
 	type ValidatedReplicaOperationBinding
@@ -81,6 +82,7 @@ import {
 	type ReplicaIndexSemanticLayer
 } from './index-maintenance.js';
 import {
+	embeddedRecordKey,
 	runtimeRoot,
 	type RuntimeObjectBranch,
 	type RuntimeObjectSelection,
@@ -101,6 +103,7 @@ import type {
 	ReplicaOptimisticWriter,
 	ReplicaRecordInspection,
 	ReplicaRecordPatch,
+	ReplicaRevalidationPlan,
 	ReplicaRevision,
 	ReplicaResultEnvelope,
 	ReplicaSnapshot,
@@ -244,6 +247,12 @@ type OptimisticReceiptState = {
 };
 
 type IndexDisposition = 'fresh' | 'equal' | 'higher' | 'lower' | 'incomparable';
+
+type SharedIndexDisposition = {
+	readonly compared: boolean;
+	readonly disposition?: 'equal' | 'higher' | 'lower';
+	readonly indexRevision?: string;
+};
 
 const EMPTY_ERRORS: readonly GqlError[] = Object.freeze([]);
 /** Matches protocol.ts MAX_EVIDENCE_ITEMS without making it public API. */
@@ -461,6 +470,102 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		this.#bindArtifact(artifact);
 		const stableVariables = canonicalizeOperationVariables(artifact, variables);
 		this.#writeCanonicalResult(artifact, stableVariables, envelope, source);
+	}
+
+	revalidate(plan: ReplicaRevalidationPlan): Promise<void> {
+		const matches = createReplicaRevalidationMatcher(plan);
+		const generation = this.#protocolGenerationSequence;
+		const active = new Map<
+			string,
+			ReplicaWatchState<unknown, GraphqlVariables>
+		>();
+		for (const [key, watches] of this.#watches) {
+			const watch = watches.values().next().value;
+			if (watch !== undefined && matches(watch.artifact)) {
+				active.set(key, watch);
+			}
+		}
+		/*
+		 * A command-status observation may arrive while an older query is
+		 * already in flight. Drain that request first; the authoritative
+		 * revalidation below must start after the command fence.
+		 */
+		const prior = [...active.keys()].flatMap((key) => {
+			const request = this.#inFlight.get(key);
+			return request === undefined ? [] : [request];
+		});
+		return Promise.all(prior)
+			.then(() => {
+				if (this.#protocolGenerationSequence !== generation) return [];
+
+				/*
+				 * Stale every rendered matching root before fetching. This both
+				 * starts active watches through their normal coordinator and
+				 * leaves inactive SSR/read consumers fail-closed until a future
+				 * watch can refresh them.
+				 */
+				const rootKeys = new Set<string>();
+				for (const rendered of this.#renderedOperations.values()) {
+					if (!matches(rendered.artifact)) continue;
+					for (const root of rendered.artifact.roots) {
+						rootKeys.add(
+							replicaIndexKey({
+								field: root.field,
+								arguments: resolveArguments(
+									root.arguments,
+									rendered.variables,
+									root.coverage
+								)
+							})
+						);
+					}
+				}
+				for (const key of rootKeys) {
+					this.#engine.batch((writer) =>
+						writer.markIndexStale(
+							key,
+							'command-authoritative-revalidation'
+						)
+					);
+				}
+
+				// One operation key may have several component subscribers. The
+				// existing fetch coordinator owns deduplication and response fences.
+				return [...active.values()].map((watch) =>
+					this._fetch(watch, true).then(() => watch)
+				);
+			})
+			.then((requests) => Promise.all(requests))
+			.then((watches) => {
+				if (this.#protocolGenerationSequence !== generation) return;
+				const failed = watches.some((watch) => {
+					const state = this.#queryState(watch.key);
+					/*
+					 * Revalidation proves that the authoritative HTTP response
+					 * refreshed the confirmed graph. A surviving accepted layer
+					 * may deliberately keep the visible index stale when its row
+					 * policy cannot be evaluated locally; the command runtime
+					 * retires that layer only after this proof succeeds.
+					 */
+					const confirmed = this.#engine.readConfirmed((reader) =>
+						materializeReplicaOperation(
+							reader,
+							watch.artifact,
+							watch.variables
+						)
+					);
+					return (
+						state.errors.length > 0 ||
+						!confirmed.complete ||
+						confirmed.stale
+					);
+				});
+				if (failed) {
+					throw new Error(
+						'authoritative command revalidation did not produce a complete result'
+					);
+				}
+			});
 	}
 
 	invalidateAuthorization(): void {
@@ -903,8 +1008,9 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		artifact: ReplicaOperationArtifact<TData, TVariables>,
 		stableVariables: TVariables,
 		envelope: ReplicaResultEnvelope<TData>,
-		source: ReplicaWriteSource
-	): void {
+		source: ReplicaWriteSource,
+		requestRevision?: string
+	): DistributedProtocolEnvelope {
 		const extensions = parseGraphqlResponseExtensions(envelope.extensions);
 		const parsedEnvelope: ReplicaResultEnvelope<TData> = Object.freeze({
 			...envelope,
@@ -921,9 +1027,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			stableVariables,
 			parsedEnvelope,
 			source,
-			distributed
+			distributed,
+			requestRevision
 		);
 		if (accepted) this.#notifyResultObservers(parsedEnvelope);
+		return distributed;
 	}
 
 	#writeProtocolResult<TData, TVariables extends GraphqlVariables>(
@@ -932,7 +1040,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		stableVariables: TVariables,
 		envelope: ReplicaResultEnvelope<TData>,
 		source: ReplicaWriteSource,
-		distributed: DistributedProtocolEnvelope
+		distributed: DistributedProtocolEnvelope,
+		requestRevision: string | undefined
 	): boolean {
 			this.#validateProtocolBinding(artifact, distributed, source);
 			const previousProtocolGeneration = this.#protocolGeneration;
@@ -980,8 +1089,21 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 
 		this.#validateLiveSnapshot(snapshot, live);
+		const unsupportedLive =
+			source === 'live' && live?.supported === false;
 		const reset = live?.reset === true;
 		const group = this.#operationProtocols.get(key)!;
+		/*
+		 * An unsupported subscription response is an authorized fallback
+		 * snapshot, not a live source. In particular, a row-filtered snapshot
+		 * has no comparable index vector, so retaining live ownership here
+		 * would reject every later query handoff. Relinquish any prior live
+		 * ownership without advancing the generation; the forced HTTP fallback
+		 * starts against the generation that remains after this frame.
+		 */
+		if (unsupportedLive && group.active === 'live') {
+			group.active = undefined;
+		}
 		const previousActiveSource = group.active;
 		const handoff =
 			previousActiveSource !== undefined &&
@@ -997,10 +1119,22 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			handoff && activeState !== undefined
 				? compareSnapshotToOperationState(activeState, snapshot)
 				: 'fresh';
+		const sharedDisposition = this.#sharedIndexDisposition(
+			key,
+			replicaResultIndexKeys(
+				artifact,
+				stableVariables,
+				envelope,
+				snapshot
+			),
+			snapshot,
+			requestRevision,
+			source
+		);
 		const handoffBlocked =
 			handoff &&
 			(
-				!snapshot.complete ||
+				!snapshot.indexesComparable ||
 				!isComparableHandoffDisposition(ownDisposition) ||
 				!isComparableHandoffDisposition(activeDisposition)
 			);
@@ -1011,7 +1145,18 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					? ownDisposition
 					: 'incomparable'
 			: ownDisposition;
+		if (
+			!handoffBlocked &&
+			isComparableHandoffDisposition(disposition) &&
+			sharedDisposition.compared
+		) {
+			disposition =
+				sharedDisposition.disposition === 'lower'
+					? 'lower'
+					: sharedDisposition.disposition ?? disposition;
+		}
 		const sourceSwitched =
+			!unsupportedLive &&
 			!handoffBlocked &&
 			isComparableHandoffDisposition(disposition) &&
 			this.#activateOperationSource(
@@ -1021,7 +1166,10 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				stableVariables
 			);
 		const rejectedHandoff = handoff && !sourceSwitched;
-		if (reset || ownDisposition === 'incomparable') {
+		if (
+			snapshot.indexesComparable &&
+			(reset || ownDisposition === 'incomparable')
+		) {
 			if (rejectedHandoff) {
 				this.#resetOperationState(operationState);
 			} else {
@@ -1039,17 +1187,24 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			disposition = 'fresh';
 		}
 
-		if (!snapshot.complete) {
+		if (!snapshot.indexesComparable) {
 			if (rejectedHandoff) {
 				this.#resetOperationState(operationState);
 			} else {
-				this.#discardOperationSnapshot(
-					operationState,
-					artifact,
-					stableVariables
-				);
+				/*
+				 * The server-authorized GraphQL payload is still an exact
+				 * replacement result. Only its partition-wide causal vector is
+				 * unavailable (most commonly because exposing that position
+				 * would leak denied-row activity). Preserve local membership,
+				 * while dropping every capability that requires comparison.
+				 */
+				this.#resetOperationCausalState(operationState);
 			}
-			disposition = 'incomparable';
+			disposition = rejectedHandoff
+				? 'incomparable'
+				: sharedDisposition.disposition === 'lower'
+					? 'lower'
+					: 'fresh';
 		} else if (disposition === 'incomparable') {
 			if (rejectedHandoff) {
 				this.#resetOperationState(operationState);
@@ -1063,13 +1218,32 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		}
 
 		const writeIndexes =
-			snapshot.complete &&
+			!rejectedHandoff &&
 			disposition !== 'lower' &&
 			disposition !== 'incomparable';
+		/*
+		 * Revision zero is the cache engine's lowest legal checkpoint. It lets
+		 * an unsupported live response fill an empty cache immediately while
+		 * guaranteeing that any HTTP request revision can replace it.
+		 */
 		const indexRevision =
-			disposition === 'equal' && operationState.indexRevision !== undefined
-				? operationState.indexRevision
-				: this.#allocateIndexRevision();
+			unsupportedLive
+				? '0'
+				: writeIndexes &&
+					  (
+							sourceSwitched ||
+							sharedDisposition.disposition === 'higher'
+						)
+					? this.#allocateIndexRevision()
+					: writeIndexes &&
+						  sharedDisposition.disposition === 'equal' &&
+						  sharedDisposition.indexRevision !== undefined
+						? sharedDisposition.indexRevision
+				: snapshot.indexesComparable &&
+					  disposition === 'equal' &&
+					  operationState.indexRevision !== undefined
+					? operationState.indexRevision
+					: (requestRevision ?? this.#allocateIndexRevision());
 		const recordEvidence = prepareRecordEvidence(
 			snapshot,
 			distributed.command?.records ?? Object.freeze([])
@@ -1086,7 +1260,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		const pendingPathRecords = new Map<string, string>();
 		const consumedRecordPaths = new Set<string>();
 		const observationsAdmissible =
-			snapshot.complete &&
+			snapshot.recordsComplete &&
+				snapshot.indexesComparable &&
 				disposition !== 'incomparable' &&
 				(disposition !== 'lower' ||
 					this.#operationProtocols.get(key)?.active ===
@@ -1102,7 +1277,13 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		const normalizationProtocol: ReplicaNormalizationProtocol = {
 			indexRevision,
 			writeIndexes,
-			indexesComplete: snapshot.complete,
+			/*
+			 * This is cache-membership completeness, not causal-vector
+			 * comparability. normalizeReplicaResult independently downgrades
+			 * GraphQL path errors and missing selected fields.
+			 */
+			indexesComplete: true,
+			allowSnapshotOnlyRecords: !snapshot.recordsComplete,
 			record: (
 				path,
 				model,
@@ -1111,7 +1292,7 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				const encodedPath = responsePathKey(path);
 				const evidence = recordEvidence.byPath.get(encodedPath);
 				if (evidence === undefined) {
-					if (snapshot.complete) {
+					if (snapshot.recordsComplete) {
 						protocolInvalid(
 							'extensions.distributed.snapshot.records'
 						);
@@ -1257,17 +1438,25 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			}
 		}
 		if (writeIndexes) {
-			operationState.snapshotScope = snapshot.scopeToken;
-			operationState.indexClocks = indexClockMap(snapshot.indexes);
 			operationState.indexRevision = indexRevision;
 			for (const indexKey of summary.indexKeys) {
 				operationState.indexKeys.add(indexKey);
 			}
-			operationState.cursors = latestCursors(snapshot, live);
-		} else if (live?.reset === true || !snapshot.complete) {
+			if (snapshot.indexesComparable) {
+				operationState.snapshotScope = snapshot.scopeToken;
+				operationState.indexClocks = indexClockMap(snapshot.indexes);
+				operationState.cursors = latestCursors(snapshot, live);
+			} else {
+				this.#resetOperationCausalState(operationState);
+				operationState.indexRevision = indexRevision;
+				for (const indexKey of summary.indexKeys) {
+					operationState.indexKeys.add(indexKey);
+				}
+			}
+		} else if (live?.reset === true || !snapshot.indexesComparable) {
 			operationState.cursors = Object.freeze([]);
 		}
-		if (source === 'live') {
+		if (source === 'live' && !unsupportedLive) {
 			this.#advanceOperationGeneration(key);
 		}
 			if (source !== 'live' && sourceSwitched) {
@@ -1303,7 +1492,9 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 						kind: 'index-decision',
 						index: indexKey,
 						decision:
-							!writeIndexes || disposition === 'incomparable'
+							!writeIndexes ||
+							!snapshot.indexesComparable ||
+							disposition === 'incomparable'
 								? ('revalidate' as const)
 								: staleReason === undefined
 									? ('maintained' as const)
@@ -2133,23 +2324,62 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		const previous = group.active;
 		if (previous === source) return false;
 		if (previous !== undefined) {
-			const keys = new Set<string>();
+			const discardedStates = new Set(
+				[group.query, group.live].filter(
+					(state): state is OperationProtocolState =>
+						state !== undefined
+				)
+			);
+			const revisionsByKey = new Map<string, Set<string>>();
 			for (const state of [group.query, group.live]) {
-				for (const indexKey of state?.indexKeys ?? []) keys.add(indexKey);
+				if (state?.indexRevision === undefined) continue;
+				for (const indexKey of state.indexKeys) {
+					let revisions = revisionsByKey.get(indexKey);
+					if (revisions === undefined) {
+						revisions = new Set();
+						revisionsByKey.set(indexKey, revisions);
+					}
+					revisions.add(state.indexRevision);
+				}
 			}
 			for (const root of artifact.roots) {
-				keys.add(
-					replicaIndexKey({
-						field: root.field,
-						arguments: resolveArguments(
-							root.arguments,
-							variables,
-							root.coverage
-						)
-					})
-				);
+				const indexKey = replicaIndexKey({
+					field: root.field,
+					arguments: resolveArguments(
+						root.arguments,
+						variables,
+						root.coverage
+					)
+				});
+				let revisions = revisionsByKey.get(indexKey);
+				if (revisions === undefined) {
+					revisions = new Set();
+					revisionsByKey.set(indexKey, revisions);
+				}
+				for (const state of [group.query, group.live]) {
+					if (state?.indexRevision !== undefined) {
+						revisions.add(state.indexRevision);
+					}
+				}
 			}
-			this.#engine.discardIndexes([...keys]);
+			const confirmedFences = this.#confirmedIndexFences(
+				revisionsByKey.keys()
+			);
+			const ownedKeys = [...revisionsByKey].flatMap(
+				([indexKey, revisions]) => {
+					const revision = confirmedFences.get(indexKey);
+					return revision !== undefined &&
+						revisions.has(revision) &&
+						!this.#indexClaimedByAnotherOperationState(
+							indexKey,
+							revision,
+							discardedStates
+						)
+						? [indexKey]
+						: [];
+				}
+			);
+			this.#engine.discardIndexes(ownedKeys);
 		}
 		group.active = source;
 		this.#advanceOperationGeneration(key);
@@ -2158,6 +2388,146 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 
 	#operationGeneration(key: string): number {
 		return this.#operationGenerations.get(key) ?? 0;
+	}
+
+	#indexClaimedByAnotherOperationState(
+		indexKey: string,
+		revision: string,
+		excluded: ReadonlySet<OperationProtocolState>
+	): boolean {
+		for (const group of this.#operationProtocols.values()) {
+			for (const state of [group.query, group.live]) {
+				if (
+					state !== undefined &&
+					!excluded.has(state) &&
+					state.indexRevision === revision &&
+					state.indexKeys.has(indexKey)
+				) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	#confirmedIndexFences(
+		indexKeys: Iterable<string>
+	): ReadonlyMap<string, string> {
+		return this.#engine.confirmedIndexFences([...indexKeys]);
+	}
+
+	#sharedIndexDisposition(
+		currentKey: string,
+		incomingIndexKeys: ReadonlySet<string>,
+		snapshot: DistributedQuerySnapshot,
+		requestRevision: string | undefined,
+		source: ReplicaWriteSource
+	): SharedIndexDisposition {
+		if (incomingIndexKeys.size === 0) return { compared: false };
+		const confirmedRevisions =
+			this.#confirmedIndexFences(incomingIndexKeys);
+		let compared = false;
+		let lower = false;
+		let higher = false;
+		let incomparable = false;
+		let equalRevision: string | undefined;
+		let latestOwnerRevision: string | undefined;
+		for (const [key, group] of this.#operationProtocols) {
+			if (key === currentKey) continue;
+			for (const state of [group.query, group.live]) {
+				if (state?.indexRevision === undefined) continue;
+				let ownsIncomingIndex = false;
+				for (const indexKey of state.indexKeys) {
+					if (
+						incomingIndexKeys.has(indexKey) &&
+						confirmedRevisions.get(indexKey) === state.indexRevision
+					) {
+						ownsIncomingIndex = true;
+						break;
+					}
+				}
+				if (!ownsIncomingIndex) continue;
+				latestOwnerRevision =
+					latestOwnerRevision === undefined ||
+					compareCanonicalDecimalStrings(
+						state.indexRevision,
+						latestOwnerRevision
+					) > 0
+						? state.indexRevision
+						: latestOwnerRevision;
+				/*
+				 * Snapshot scope is bound to one operation plan instance and is
+				 * not a cross-artifact identity. Shared semantic indexes are
+				 * comparable through their projection/scope/position vector.
+				 */
+				const disposition =
+					!snapshot.indexesComparable
+						? 'incomparable'
+						: state.indexClocks.size === 0 ||
+							  snapshot.indexes.length === 0
+							? state.indexClocks.size === snapshot.indexes.length
+								? 'equal'
+								: 'incomparable'
+							: compareIndexVector(
+									state.indexClocks,
+									snapshot.indexes
+								);
+				if (
+					disposition === 'fresh' ||
+					disposition === 'incomparable'
+				) {
+					incomparable = true;
+					continue;
+				}
+				compared = true;
+				if (disposition === 'lower') lower = true;
+				else if (disposition === 'higher') higher = true;
+				else {
+					equalRevision =
+						equalRevision === undefined ||
+						compareCanonicalDecimalStrings(
+							state.indexRevision,
+							equalRevision
+						) > 0
+							? state.indexRevision
+							: equalRevision;
+				}
+			}
+		}
+		/*
+		 * One response is a coherent replacement graph. If its vector straddles
+		 * the owners of two shared indexes, accepting only part would fabricate
+		 * a snapshot the server never produced, so preserve the current graph.
+		 */
+		if (lower) return { compared: true, disposition: 'lower' };
+		if (incomparable) {
+			/*
+			 * A comparable sibling must not promote an incomparable membership
+			 * to response-arrival order. Fall back to request-start order for
+			 * the whole graph, and reject it atomically when that request began
+			 * before any owner it would replace. Independent live streams have
+			 * no shared request-start fence, so they cannot safely replace it;
+			 * explicit synchronous ingress retains its caller-defined order.
+			 */
+			if (requestRevision === undefined && source === 'live') {
+				return { compared: true, disposition: 'lower' };
+			}
+			if (requestRevision === undefined) return { compared: false };
+			return latestOwnerRevision !== undefined &&
+				compareCanonicalDecimalStrings(requestRevision, latestOwnerRevision) <
+					0
+				? { compared: true, disposition: 'lower' }
+				: { compared: false };
+		}
+		if (!compared) return { compared: false };
+		if (higher) return { compared: true, disposition: 'higher' };
+		return {
+			compared: true,
+			disposition: 'equal',
+			...(equalRevision === undefined
+				? {}
+				: { indexRevision: equalRevision })
+		};
 	}
 
 	#advanceOperationGeneration(key: string): void {
@@ -2198,16 +2568,35 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 				})
 			);
 		}
-		this.#engine.discardIndexes([...keys]);
+		const indexRevision = state.indexRevision;
+		const discardedStates = new Set([state]);
+		const confirmedFence = this.#confirmedIndexFences(keys);
+		const ownedKeys =
+			indexRevision === undefined
+				? []
+				: [...keys].filter(
+						(key) =>
+							confirmedFence.get(key) === indexRevision &&
+							!this.#indexClaimedByAnotherOperationState(
+								key,
+								indexRevision,
+								discardedStates
+							)
+					);
+		this.#engine.discardIndexes(ownedKeys);
 		this.#resetOperationState(state);
 	}
 
 	#resetOperationState(state: OperationProtocolState): void {
-		state.snapshotScope = undefined;
-		state.indexClocks = new Map();
+		this.#resetOperationCausalState(state);
 		state.indexRevision = undefined;
 		state.indexKeys.clear();
 		state.pathRecords.clear();
+	}
+
+	#resetOperationCausalState(state: OperationProtocolState): void {
+		state.snapshotScope = undefined;
+		state.indexClocks = new Map();
 		state.cursors = Object.freeze([]);
 	}
 
@@ -2496,6 +2885,11 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		live: DistributedProtocolEnvelope['live']
 	): void {
 		if (live === undefined || !live.supported) return;
+		if (!snapshot.indexesComparable) {
+			protocolInvalid(
+				'extensions.distributed.snapshot.indexesComparable'
+			);
+		}
 		const indexes = new Map(
 			snapshot.indexes.map((index) => [index.projection, index])
 		);
@@ -2706,6 +3100,13 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 		this.#emitState(watch.key, false);
 		const operationGeneration = this.#operationGeneration(watch.key);
 		const authorizationGeneration = this.#protocolGenerationSequence;
+		/*
+		 * Reserve local ordering when the request starts, not when it finishes.
+		 * Distinct operation artifacts may share the same semantic index key;
+		 * a slower earlier request must not replace a later-started result merely
+		 * because its response arrived last.
+		 */
+		const requestRevision = this.#allocateIndexRevision();
 		const controller = new AbortController();
 		const request = Object.freeze({
 			operation: 'query' as const,
@@ -2763,7 +3164,8 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 					watch.artifact,
 					watch.variables,
 					result,
-					'network'
+					'network',
+					requestRevision
 				);
 			})
 			.catch((error: unknown) => {
@@ -2886,17 +3288,38 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 							}
 							return;
 						}
-						state.live = 'active';
+						let unsupportedLive = false;
 						try {
-							this.#writeCanonicalResult(
+							unsupportedLive =
+								parseGraphqlResponseExtensions(result.extensions)
+									?.distributed?.live?.supported === false;
+							if (unsupportedLive) state.live = 'off';
+							const distributed = this.#writeCanonicalResult(
 								watch.artifact,
 								watch.variables,
 								result,
 								'live'
 							);
+							if (distributed.live?.supported === false) {
+								this.#fallbackFromLive(watch, entry);
+								return;
+							}
+							state.live = 'active';
 							entry.operationGeneration =
 								this.#operationGeneration(watch.key);
 						} catch (error) {
+							if (
+								unsupportedLive &&
+								error instanceof CacheRevisionConflictError
+							) {
+								/*
+								 * Revision zero is shared by provisional fallbacks.
+								 * Another operation may already have filled the same
+								 * semantic index differently; HTTP remains authoritative.
+								 */
+								this.#fallbackFromLive(watch, entry);
+								return;
+							}
 							state.live = 'error';
 							state.errors = stableErrors(state.errors, [graphqlError(error)]);
 							this.#emitState(watch.key, false);
@@ -2906,15 +3329,31 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 						if (!entry.active || this.#lives.get(watch.key) !== entry) return;
 						entry.active = false;
 						this.#lives.delete(watch.key);
+						const unsubscribe = entry.unsubscribe;
+						entry.unsubscribe = () => undefined;
+						try {
+							unsubscribe();
+						} catch {
+							// The terminal stream is fenced; cleanup is best effort.
+						}
 						state.live = 'error';
 						state.errors = stableErrors(state.errors, [graphqlError(error)]);
 						this.#emitState(watch.key, false);
+					},
+					complete: () => {
+						if (!entry.active || this.#lives.get(watch.key) !== entry) return;
+						this.#fallbackFromLive(watch, entry);
 					}
 				}
 			);
 			entry.unsubscribe = unsubscribe;
 			if (!entry.active || this.#lives.get(watch.key) !== entry) {
-				unsubscribe();
+				entry.unsubscribe = () => undefined;
+				try {
+					unsubscribe();
+				} catch {
+					// A closed/superseded subscription is already fenced.
+				}
 				return;
 			}
 			state.live = 'active';
@@ -2925,6 +3364,61 @@ class DistributedReplicaImpl implements DistributedReplicaApi {
 			state.errors = stableErrors(state.errors, [graphqlError(error)]);
 		}
 		this.#emitState(watch.key, false);
+	}
+
+	#fallbackFromLive<TData, TVariables extends GraphqlVariables>(
+		watch: ReplicaWatchState<TData, TVariables>,
+		entry: LiveEntry
+	): void {
+		if (this.#lives.get(watch.key) !== entry) {
+			void this._fetch(watch, true);
+			return;
+		}
+		const protocol = this.#operationProtocols.get(watch.key);
+		if (protocol?.active === 'live') protocol.active = undefined;
+		entry.active = false;
+		const unsubscribe = entry.unsubscribe;
+		entry.unsubscribe = () => undefined;
+		try {
+			unsubscribe();
+		} catch {
+			// The inactive stream is fenced; transport cleanup is best effort.
+		}
+		const state = this.#queryState(watch.key);
+		state.live = 'off';
+		this.#emitState(watch.key, false);
+		const authorizationGeneration = this.#protocolGenerationSequence;
+		const supersededFlight =
+			entry.operationGeneration === undefined
+				? undefined
+				: this.#inFlight.get(watch.key);
+		const refresh = (): void => {
+			if (
+				this.#protocolGenerationSequence !== authorizationGeneration ||
+				this.#lives.get(watch.key) !== entry ||
+				entry.active
+			) {
+				return;
+			}
+			void this._fetch(watch, true);
+		};
+		/*
+		 * Keep the inactive entry as an authorization-generation-scoped
+		 * sentinel. Query ingestion calls #resumeLiveWatches(); deleting this
+		 * entry would otherwise reopen an unsupported or completed stream
+		 * immediately. Authorization invalidation clears it and may retry.
+		 *
+		 * A supported live frame advances the operation generation. Any HTTP
+		 * request that was already running is therefore doomed by its response
+		 * fence; drain it before starting the authoritative fallback. A first
+		 * unsupported frame never advances the generation, so its overlapping
+		 * HTTP request remains valid and can be reused directly.
+		 */
+		if (supersededFlight === undefined) {
+			refresh();
+		} else {
+			void supersededFlight.then(refresh, refresh);
+		}
 	}
 
 	#restartLive(key: string): void {
@@ -3016,6 +3510,258 @@ function prepareRecordEvidence(
 		pathless: Object.freeze(pathless),
 		livePaths
 	};
+}
+
+function replicaResultIndexKeys<
+	TData,
+	TVariables extends GraphqlVariables
+>(
+	artifact: ReplicaOperationArtifact<TData, TVariables>,
+	variables: TVariables,
+	envelope: ReplicaResultEnvelope<TData>,
+	snapshot: DistributedQuerySnapshot
+): ReadonlySet<string> {
+	const keys = new Set<string>();
+	if (
+		envelope.data === undefined ||
+		envelope.data === null ||
+		!isReplicaResultObject(envelope.data) ||
+		(envelope.errors ?? []).some(
+			(error) => !Array.isArray(error.path) || error.path.length === 0
+		)
+	) {
+		return keys;
+	}
+	const errorPaths = (envelope.errors ?? []).flatMap((error) =>
+		Array.isArray(error.path) && error.path.length > 0
+			? [error.path]
+			: []
+	);
+	const evidencePaths = new Set(
+		snapshot.records.flatMap((record) =>
+			record.path === undefined || record.tombstone
+				? []
+				: [responsePathKey(record.path)]
+		)
+	);
+	for (const artifactRoot of artifact.roots) {
+		const root = runtimeRoot(artifactRoot);
+		const rootPath: readonly (string | number)[] = [root.responseKey];
+		const rootKey = replicaIndexKey({
+			field: root.field,
+			arguments: resolveArguments(
+				root.arguments,
+				variables,
+				root.coverage
+			)
+		});
+		keys.add(rootKey);
+		if (
+			resultPathBlocked(errorPaths, rootPath) ||
+			!Object.prototype.hasOwnProperty.call(
+				envelope.data,
+				root.responseKey
+			)
+		) {
+			continue;
+		}
+		const value = envelope.data[root.responseKey];
+		if (
+			value === null &&
+			resultPathHasErrors(errorPaths, rootPath)
+		) {
+			continue;
+		}
+		collectResultBranchIndexKeys(
+			artifact.id,
+			root,
+			value,
+			rootPath,
+			rootKey,
+			variables,
+			errorPaths,
+			evidencePaths,
+			keys
+		);
+	}
+	return keys;
+}
+
+function collectResultBranchIndexKeys(
+	artifactId: string,
+	selection: RuntimeRootSelection | RuntimeObjectBranch,
+	value: unknown,
+	path: readonly (string | number)[],
+	enclosingIndexKey: string,
+	variables: GraphqlVariables,
+	errorPaths: readonly (readonly (string | number)[])[],
+	evidencePaths: ReadonlySet<string>,
+	keys: Set<string>
+): void {
+	if (value === null || value === undefined) return;
+	if (selection.cardinality === 'one') {
+		collectResultObjectIndexKeys(
+			artifactId,
+			selection.selection,
+			value,
+			path,
+			enclosingIndexKey,
+			undefined,
+			variables,
+			errorPaths,
+			evidencePaths,
+			keys
+		);
+		return;
+	}
+	if (!Array.isArray(value)) return;
+	for (const [ordinal, entry] of value.entries()) {
+		if (entry === null || entry === undefined) continue;
+		collectResultObjectIndexKeys(
+			artifactId,
+			selection.selection,
+			entry,
+			[...path, ordinal],
+			enclosingIndexKey,
+			ordinal,
+			variables,
+			errorPaths,
+			evidencePaths,
+			keys
+		);
+	}
+}
+
+function collectResultObjectIndexKeys(
+	artifactId: string,
+	selection: RuntimeObjectSelection,
+	value: unknown,
+	path: readonly (string | number)[],
+	enclosingIndexKey: string,
+	ordinal: number | undefined,
+	variables: GraphqlVariables,
+	errorPaths: readonly (readonly (string | number)[])[],
+	evidencePaths: ReadonlySet<string>,
+	keys: Set<string>
+): void {
+	if (resultPathBlocked(errorPaths, path) || !isReplicaResultObject(value)) {
+		return;
+	}
+	const fields = new Map<string, CacheValue>();
+	for (const member of selection.members) {
+		if (member.kind !== 'scalar') continue;
+		const fieldPath = [...path, member.responseKey];
+		if (
+			resultPathBlocked(errorPaths, fieldPath) ||
+			!Object.prototype.hasOwnProperty.call(value, member.responseKey)
+		) {
+			continue;
+		}
+		const rawValue = value[member.responseKey];
+		if (rawValue === null && !member.nullable) continue;
+		if (!fields.has(member.field)) {
+			fields.set(
+				member.field,
+				cloneJsonValue(rawValue) as CacheValue
+			);
+		}
+	}
+	let parentKey: string;
+	if (
+		selection.storage.kind === 'normalized' &&
+		evidencePaths.has(responsePathKey(path.map(String)))
+	) {
+		const identity = selection.storage.identityFields.flatMap((field) => {
+			const value = fields.get(field);
+			return value === undefined || value === null ? [] : [value];
+		});
+		if (identity.length !== selection.storage.identityFields.length) return;
+		parentKey = replicaRecordKey(
+			{
+				id: selection.storage.model,
+				identityFields: selection.storage.identityFields
+			},
+			identity
+		);
+	} else {
+		parentKey = embeddedRecordKey(
+			artifactId,
+			enclosingIndexKey,
+			ordinal
+		);
+	}
+	for (const member of selection.members) {
+		if (member.kind !== 'branch') continue;
+		const branchPath = [...path, member.responseKey];
+		const branchKey = replicaIndexKey({
+			parent: parentKey,
+			field: member.field,
+			arguments: resolveArguments(
+				member.arguments,
+				variables,
+				member.coverage
+			)
+		});
+		keys.add(branchKey);
+		if (
+			resultPathBlocked(errorPaths, branchPath) ||
+			!Object.prototype.hasOwnProperty.call(value, member.responseKey)
+		) {
+			continue;
+		}
+		const branchValue = value[member.responseKey];
+		if (
+			branchValue === null &&
+			resultPathHasErrors(errorPaths, branchPath)
+		) {
+			continue;
+		}
+		collectResultBranchIndexKeys(
+			artifactId,
+			member,
+			branchValue,
+			branchPath,
+			branchKey,
+			variables,
+			errorPaths,
+			evidencePaths,
+			keys
+		);
+	}
+}
+
+function resultPathBlocked(
+	errorPaths: readonly (readonly (string | number)[])[],
+	path: readonly (string | number)[]
+): boolean {
+	return errorPaths.some((errorPath) => resultPathPrefix(errorPath, path));
+}
+
+function resultPathHasErrors(
+	errorPaths: readonly (readonly (string | number)[])[],
+	path: readonly (string | number)[]
+): boolean {
+	return errorPaths.some(
+		(errorPath) =>
+			resultPathPrefix(path, errorPath) ||
+			resultPathPrefix(errorPath, path)
+	);
+}
+
+function resultPathPrefix(
+	prefix: readonly (string | number)[],
+	value: readonly (string | number)[]
+): boolean {
+	return (
+		prefix.length <= value.length &&
+		prefix.every((entry, index) => entry === value[index])
+	);
+}
+
+function isReplicaResultObject(
+	value: unknown
+): value is Readonly<Record<string, unknown>> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function sameRecordRevision(
@@ -3277,6 +4023,17 @@ function incrementCanonicalDecimal(value: string): string {
 	}
 	if (carry) digits.unshift('1');
 	return digits.join('');
+}
+
+function compareCanonicalDecimalStrings(
+	left: string,
+	right: string
+): number {
+	return left.length === right.length
+		? left.localeCompare(right)
+		: left.length < right.length
+			? -1
+			: 1;
 }
 
 function protocolInvalid(path: string): never {

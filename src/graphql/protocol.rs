@@ -386,17 +386,37 @@ pub(crate) struct DistributedIndexRevision {
 
 /// Evidence attached to one exact operation instance.
 ///
-/// `complete=false` is the explicit conservative fallback for legacy data,
-/// mixed ownership, or a projector partition that a query cannot derive. The
-/// client may consume safe record evidence but must revalidate the index.
+/// These two completeness dimensions are deliberately independent:
+///
+/// - `recordsComplete=false` means some returned normalized record lacks
+///   usable causal revision evidence.
+/// - `indexesComparable=false` means the server cannot expose one safe,
+///   complete projector-position vector for this authorized query.
+///
+/// A row-filtered query can therefore return complete authorized record
+/// evidence while keeping its partition-wide index positions private. Clients
+/// may treat that server-authorized payload as exact renderable membership, but
+/// must not use it for causal index comparison, live handoff/resume, local
+/// membership proofs, observations, or optimistic confirmation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DistributedQuerySnapshot {
     pub(crate) scope_token: OpaqueProtocolToken,
-    pub(crate) complete: bool,
+    pub(crate) records_complete: bool,
+    pub(crate) indexes_comparable: bool,
     pub(crate) records: Vec<DistributedRecordRevision>,
     pub(crate) indexes: Vec<DistributedIndexRevision>,
     pub(crate) observations: Vec<DistributedProjectionObservation>,
+}
+
+impl DistributedQuerySnapshot {
+    fn discard_incomparable_index_evidence(&mut self) {
+        if self.indexes_comparable {
+            return;
+        }
+        self.indexes.clear();
+        self.observations.clear();
+    }
 }
 
 /// Per-frame resumability decision for a live operation.
@@ -1042,9 +1062,10 @@ impl ProtocolResponseAccumulator {
     /// immutable GraphQL-WS frame envelope.
     pub(crate) fn record_query_metadata(
         &self,
-        snapshot: DistributedQuerySnapshot,
+        mut snapshot: DistributedQuerySnapshot,
         live: Option<DistributedLiveMetadata>,
     ) -> Result<(), ProtocolAccumulatorError> {
+        snapshot.discard_incomparable_index_evidence();
         let mut envelope = self
             .inner
             .envelope
@@ -1067,10 +1088,12 @@ impl ProtocolResponseAccumulator {
         match &mut envelope.snapshot {
             None => envelope.snapshot = Some(snapshot),
             Some(existing) if existing.scope_token == snapshot.scope_token => {
-                existing.complete &= snapshot.complete;
+                existing.records_complete &= snapshot.records_complete;
+                existing.indexes_comparable &= snapshot.indexes_comparable;
                 existing.records.extend(snapshot.records);
                 existing.indexes.extend(snapshot.indexes);
                 existing.observations.extend(snapshot.observations);
+                existing.discard_incomparable_index_evidence();
             }
             Some(_) => return Err(ProtocolAccumulatorError::IncomparableSnapshot),
         }
@@ -1372,7 +1395,8 @@ mod tests {
         let cursor = change_cursor(position);
         DistributedQuerySnapshot {
             scope_token: scope_token.clone(),
-            complete: true,
+            records_complete: true,
+            indexes_comparable: true,
             records: Vec::new(),
             indexes: vec![DistributedIndexRevision {
                 projection: "todos".into(),
@@ -1620,6 +1644,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(expectation, observed);
+    }
+
+    #[test]
+    fn query_snapshot_merge_preserves_comparable_indexes_when_only_records_are_incomplete() {
+        let accumulator = accumulator(47, "principal-a", "sha256:schema-a");
+        let mut record_incomplete = query_snapshot(&accumulator, "operation-a", 1);
+        record_incomplete.records_complete = false;
+        let mut record_complete = query_snapshot(&accumulator, "operation-a", 2);
+        record_complete.indexes.clear();
+
+        accumulator
+            .record_query_metadata(record_incomplete, None)
+            .unwrap();
+        accumulator
+            .record_query_metadata(record_complete, None)
+            .unwrap();
+
+        let snapshot = accumulator.snapshot().unwrap().snapshot.unwrap();
+        assert!(!snapshot.records_complete);
+        assert!(snapshot.indexes_comparable);
+        assert_eq!(snapshot.indexes.len(), 1);
+        let wire = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(wire["recordsComplete"], false);
+        assert_eq!(wire["indexesComparable"], true);
+        assert!(wire.get("complete").is_none());
+    }
+
+    #[test]
+    fn query_snapshot_merge_discards_index_evidence_when_any_index_is_incomparable() {
+        let accumulator = accumulator(49, "principal-a", "sha256:schema-a");
+        let comparable = query_snapshot(&accumulator, "operation-a", 1);
+        let mut incomparable = query_snapshot(&accumulator, "operation-a", 2);
+        incomparable.indexes_comparable = false;
+        incomparable.observations = vec![DistributedProjectionObservation {
+            causation_id: "causation-private".into(),
+            projection: "todos".into(),
+            model: "TodoView".into(),
+            scope_token: incomparable.indexes[0].scope_token.clone(),
+        }];
+
+        accumulator.record_query_metadata(comparable, None).unwrap();
+        accumulator
+            .record_query_metadata(incomparable, None)
+            .unwrap();
+
+        let snapshot = accumulator.snapshot().unwrap().snapshot.unwrap();
+        assert!(snapshot.records_complete);
+        assert!(!snapshot.indexes_comparable);
+        assert!(snapshot.indexes.is_empty());
+        assert!(snapshot.observations.is_empty());
+        let wire = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(wire["recordsComplete"], true);
+        assert_eq!(wire["indexesComparable"], false);
+        assert_eq!(wire["indexes"], serde_json::json!([]));
+        assert_eq!(wire["observations"], serde_json::json!([]));
     }
 
     #[test]

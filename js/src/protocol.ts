@@ -118,11 +118,20 @@ export type DistributedIndexRevision = Readonly<
 	}
 >;
 
-/** Record, index, and causation evidence for one exact operation instance. */
+/**
+ * Record and causal-index evidence for one exact operation instance.
+ *
+ * The GraphQL payload itself is the authoritative query snapshot. These flags
+ * describe whether the server could additionally prove every normalized record
+ * clock and expose a safely comparable projection vector. Row-filtered
+ * authorization commonly makes `indexesComparable` false without making the
+ * authorized payload partial.
+ */
 export type DistributedQuerySnapshot = Readonly<
 	Record<string, unknown> & {
 		scopeToken: DistributedOpaqueString;
-		complete: boolean;
+		recordsComplete: boolean;
+		indexesComparable: boolean;
 		records: readonly DistributedRecordRevision[];
 		indexes: readonly DistributedIndexRevision[];
 		observations: readonly DistributedProjectionObservation[];
@@ -304,6 +313,7 @@ export function parseDistributedProtocolEnvelope(
 		envelope.live === undefined
 			? undefined
 			: parseLive(envelope.live);
+	validateLiveSnapshot(snapshot, live);
 	const trustedPresets = parseDistributedTrustedPresetInventory(
 		envelope.trustedPresets
 	);
@@ -474,7 +484,12 @@ function parseCommand(value: unknown): DistributedCommandMetadata {
 function parseSnapshot(value: unknown): DistributedQuerySnapshot {
 	const path = 'extensions.distributed.snapshot';
 	const snapshot = record(value, path);
-	if (typeof snapshot.complete !== 'boolean') invalid(`${path}.complete`);
+	if (typeof snapshot.recordsComplete !== 'boolean') {
+		invalid(`${path}.recordsComplete`);
+	}
+	if (typeof snapshot.indexesComparable !== 'boolean') {
+		invalid(`${path}.indexesComparable`);
+	}
 	const records = parseRequiredEvidenceArray(
 		snapshot.records,
 		`${path}.records`,
@@ -500,11 +515,18 @@ function parseSnapshot(value: unknown): DistributedQuerySnapshot {
 	) {
 		invalid(`${path}.indexes`);
 	}
+	if (
+		!snapshot.indexesComparable &&
+		(indexes.length > 0 || observations.length > 0)
+	) {
+		invalid(`${path}.indexesComparable`);
+	}
 
 	return Object.freeze({
 		...snapshot,
 		scopeToken: opaqueString(snapshot.scopeToken, `${path}.scopeToken`),
-		complete: snapshot.complete,
+		recordsComplete: snapshot.recordsComplete,
+		indexesComparable: snapshot.indexesComparable,
 		records,
 		indexes,
 		observations
@@ -540,6 +562,38 @@ function parseLive(value: unknown): DistributedLiveMetadata {
 		reset: live.reset,
 		cursors
 	}) as DistributedLiveMetadata;
+}
+
+function validateLiveSnapshot(
+	snapshot: DistributedQuerySnapshot | undefined,
+	live: DistributedLiveMetadata | undefined
+): void {
+	if (live === undefined) return;
+	if (snapshot === undefined) invalid('extensions.distributed.snapshot');
+	if (!live.supported) return;
+	if (!snapshot.indexesComparable) {
+		invalid('extensions.distributed.snapshot.indexesComparable');
+	}
+	if (
+		live.cursors.length === 0 ||
+		snapshot.indexes.length !== live.cursors.length
+	) {
+		invalid('extensions.distributed.live.cursors');
+	}
+	const indexes = new Map(
+		snapshot.indexes.map((index) => [index.projection, index])
+	);
+	for (const cursor of live.cursors) {
+		const index = indexes.get(cursor.projection);
+		if (
+			index === undefined ||
+			index.position !== cursor.position ||
+			index.resume === undefined ||
+			index.resume.token !== cursor.token
+		) {
+			invalid('extensions.distributed.live.cursors');
+		}
+	}
 }
 
 function parseRecordRevision(

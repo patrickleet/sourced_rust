@@ -261,7 +261,8 @@ function codecWireFrame(title = 'schema one') {
 				operation: CodecArtifact.id,
 				snapshot: {
 					scopeToken: 'snapshot:codec-items',
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: [
 						{
 							path: ['items', '0'],

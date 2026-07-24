@@ -1070,7 +1070,8 @@ function validateRevalidation<TInput, TOutput>(
 	}
 	if (
 		(artifact.effects.operations.length === 0 ||
-			artifact.confirmations?.kind === 'unavailable') &&
+			(artifact.consistency !== 'projected' &&
+				artifact.confirmations?.kind !== 'finite')) &&
 		!plan.required
 	) {
 		artifactInvalid('artifact.revalidation.required');

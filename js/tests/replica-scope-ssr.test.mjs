@@ -159,7 +159,8 @@ function frame(
 				trustedPresets,
 				snapshot: {
 					scopeToken: snapshotScope,
-					complete: true,
+					recordsComplete: true,
+					indexesComparable: true,
 					records: recordEvidence,
 					indexes: [
 						{
