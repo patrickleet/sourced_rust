@@ -354,6 +354,42 @@ test('semantic layers recompute from confirmed state when an earlier layer disap
 	);
 });
 
+test('a stale complete index keeps a later patch ordered during rebase', () => {
+	const earlier = record(Todo, 'earlier', {
+		id: 'earlier',
+		active: true,
+		rank: 1,
+		tenantId: 'tenant-1'
+	});
+	const target = record(Todo, 'target', {
+		id: 'target',
+		active: true,
+		rank: 2,
+		tenantId: 'tenant-1'
+	});
+	const registry = createReplicaIndexMaintenanceRegistry();
+	registry.registerOperation(todoArtifact(), { owner: 'owner-1' });
+	const root = index('todos', [earlier.key, target.key], {
+		arguments: { owner: 'owner-1' },
+		staleReason: 'command-authoritative-revalidation'
+	});
+
+	const decisions = registry.evaluate(snapshot([earlier, target], [root]), [
+		layer('later-rank-change', [
+			upsert(Todo, 'target', {
+				rank: 0
+			})
+		])
+	]);
+
+	assert.deepEqual(decisions[0], {
+		kind: 'write',
+		indexKey: root.key,
+		records: [target.key, earlier.key],
+		complete: true
+	});
+});
+
 test('one record change updates every distinct exact root index once', () => {
 	const registry = createReplicaIndexMaintenanceRegistry();
 	const openArtifact = todoArtifact({

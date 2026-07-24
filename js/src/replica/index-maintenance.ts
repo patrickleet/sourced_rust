@@ -621,13 +621,19 @@ function evaluatePlan(
 			)
 		);
 	}
-	if (!index.complete || index.metadata.staleReason !== undefined) {
+	/*
+	 * Freshness and structure are independent. Revalidation deliberately marks
+	 * a complete index stale while retaining its last authoritative membership.
+	 * Pending semantic layers must keep rebasing over that membership; the
+	 * derived write preserves the stale metadata until the network result lands.
+	 */
+	if (!index.complete) {
 		return stale(
 			index.key,
 			reason(
 				'index_incomplete',
 				['indexes', index.key],
-				'only a fresh complete index can be maintained locally'
+				'only a structurally complete index can be maintained locally'
 			)
 		);
 	}
