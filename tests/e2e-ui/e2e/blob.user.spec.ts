@@ -163,4 +163,155 @@ test.describe('blob game (alice)', () => {
 		// 6×6 generated maps → at least 16 cells
 		expect(await cells.count()).toBeGreaterThanOrEqual(16);
 	});
+
+	test('an older revalidation cannot roll back a newer projected move', async ({ page }) => {
+		await page.goto('/blob');
+		await expect(page.locator('[data-blob-hydrated="1"]')).toBeVisible({ timeout: 15_000 });
+		const start = page.getByTestId('blob-start-game');
+		await expect(start).toBeEnabled({ timeout: 10_000 });
+		const [startResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.url().includes('/graphql') &&
+					(response.request().postData() ?? '').includes('blob_games_start'),
+				{ timeout: 20_000 }
+			),
+			start.click()
+		]);
+		expect(startResponse.ok()).toBeTruthy();
+		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c0'
+		);
+		const gameId = decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1)!);
+
+		let releaseHeldQuery!: () => void;
+		const heldQueryRelease = new Promise<void>((resolve) => {
+			releaseHeldQuery = resolve;
+		});
+		let heldQueryReady!: () => void;
+		const heldQuery = new Promise<void>((resolve) => {
+			heldQueryReady = resolve;
+		});
+		let newerQueryReady!: () => void;
+		const newerQuery = new Promise<void>((resolve) => {
+			newerQueryReady = resolve;
+		});
+		let held = false;
+		let released = false;
+
+		await page.route('**/graphql', async (route) => {
+			const requestBody = route.request().postData() ?? '';
+			if (!requestBody.includes('query BlobGames')) {
+				await route.continue();
+				return;
+			}
+			const response = await route.fetch();
+			const payload = (await response.json()) as {
+				data?: {
+					blob_games?: Array<{ game_id: string; map_json: string }>;
+				};
+			};
+			const game = payload.data?.blob_games?.find((row) => row.game_id === gameId);
+			let playerColumn = -1;
+			if (game !== undefined) {
+				const rows = JSON.parse(game.map_json) as number[][];
+				playerColumn = rows[0]?.indexOf(9) ?? -1;
+			}
+			if (!held && playerColumn === 2) {
+				held = true;
+				heldQueryReady();
+				await heldQueryRelease;
+			} else if (released && playerColumn >= 3) {
+				newerQueryReady();
+			}
+			await route.fulfill({
+				response,
+				body: JSON.stringify(payload),
+				headers: {
+					...response.headers(),
+					'content-type': 'application/json'
+				}
+			});
+		});
+
+		await page.evaluate(() => {
+			const samples: number[] = [];
+			const sample = () => {
+				const label = document
+					.querySelector('.blob-board .tile-player')
+					?.getAttribute('aria-label');
+				const match = label?.match(/^r0 c(\d+)$/);
+				samples.push(match === null || match === undefined ? -1 : Number(match[1]));
+			};
+			sample();
+			const observer = new MutationObserver(sample);
+			observer.observe(document.querySelector('.blob-page')!, {
+				attributes: true,
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+			Object.assign(globalThis, {
+				__distributedBlobRaceSamples: samples,
+				__distributedBlobRaceObserver: observer
+			});
+		});
+
+		const moveRight = async (column: number) => {
+			const response = page.waitForResponse(
+				(candidate) =>
+					candidate.url().includes('/graphql') &&
+					(candidate.request().postData() ?? '').includes('blob_games_move'),
+				{ timeout: 20_000 }
+			);
+			await page.keyboard.press('ArrowRight');
+			expect((await response).ok()).toBeTruthy();
+			await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+				'aria-label',
+				`r0 c${column}`
+			);
+		};
+
+		await moveRight(1);
+		await moveRight(2);
+		await heldQuery;
+		await moveRight(3);
+		const releaseSampleIndex = await page.evaluate(
+			() =>
+				(
+					globalThis as typeof globalThis & {
+						__distributedBlobRaceSamples: number[];
+					}
+				).__distributedBlobRaceSamples.length
+		);
+		released = true;
+		releaseHeldQuery();
+		await newerQuery;
+		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c3'
+		);
+
+		const postReleaseSamples = await page.evaluate((startIndex) => {
+			const state = globalThis as typeof globalThis & {
+				__distributedBlobRaceSamples: number[];
+				__distributedBlobRaceObserver: MutationObserver;
+			};
+			state.__distributedBlobRaceObserver.disconnect();
+			return state.__distributedBlobRaceSamples.slice(startIndex);
+		}, releaseSampleIndex);
+		expect(
+			postReleaseSamples,
+			'an older query response must never hide or move the projected player'
+		).not.toContain(-1);
+		expect(Math.min(...postReleaseSamples)).toBeGreaterThanOrEqual(3);
+
+		await page.reload();
+		await expect(page.locator('.blob-board .tile-player')).toHaveAttribute(
+			'aria-label',
+			'r0 c3'
+		);
+		await page.unrouteAll({ behavior: 'wait' });
+	});
 });
