@@ -10,12 +10,92 @@ async function visibleTodoOrders(page: import('@playwright/test').Page) {
 	);
 }
 
+async function todoOrderInPanel(
+	page: import('@playwright/test').Page,
+	heading: RegExp
+) {
+	return page
+		.locator('.fn-panel')
+		.filter({ has: page.getByRole('heading', { name: heading }) })
+		.locator('[data-todo-id]')
+		.evaluateAll((items) =>
+			items.map((item) => (item as HTMLElement).dataset.todoId ?? '')
+		);
+}
+
+type TodoOrderFrame = {
+	open: string[];
+	done: string[];
+};
+
+async function startTodoOrderTrace(page: import('@playwright/test').Page) {
+	await page.evaluate(() => {
+		const state = globalThis as typeof globalThis & {
+			__todoOrderTrace?: {
+				frames: TodoOrderFrame[];
+				frame: number;
+			};
+		};
+		const frames: TodoOrderFrame[] = [];
+		const orderFor = (name: string) => {
+			const panel = [...document.querySelectorAll<HTMLElement>('.fn-panel')].find(
+				(candidate) =>
+					candidate.querySelector('h2')?.textContent?.trim().toLowerCase() ===
+					name
+			);
+			return panel
+				? [...panel.querySelectorAll<HTMLElement>('[data-todo-id]')].map(
+						(item) => item.dataset.todoId ?? ''
+					)
+				: [];
+		};
+		const sample = () => {
+			const order = { open: orderFor('open'), done: orderFor('done') };
+			const previous = frames.at(-1);
+			if (
+				previous === undefined ||
+				JSON.stringify(previous) !== JSON.stringify(order)
+			) {
+				frames.push(order);
+			}
+			state.__todoOrderTrace!.frame = requestAnimationFrame(sample);
+		};
+		state.__todoOrderTrace = {
+			frames,
+			frame: requestAnimationFrame(sample)
+		};
+	});
+}
+
+async function stopTodoOrderTrace(page: import('@playwright/test').Page) {
+	return page.evaluate(() => {
+		const state = globalThis as typeof globalThis & {
+			__todoOrderTrace?: {
+				frames: TodoOrderFrame[];
+				frame: number;
+			};
+		};
+		const trace = state.__todoOrderTrace;
+		if (trace === undefined) return [];
+		cancelAnimationFrame(trace.frame);
+		delete state.__todoOrderTrace;
+		return trace.frames;
+	});
+}
+
 function expectBinarySorted(orders: string[][]) {
 	for (const ids of orders) {
 		expect(ids, `todo ids must stay in generated binary order: ${ids.join(', ')}`).toEqual(
 			[...ids].sort()
 		);
 	}
+}
+
+function sameTodoOrder(left: TodoOrderFrame, right: TodoOrderFrame) {
+	return (
+		JSON.stringify(left.open) === JSON.stringify(right.open) &&
+		JSON.stringify(left.done) === JSON.stringify(right.done)
+	);
 }
 
 test.describe('todos (alice)', () => {
@@ -153,7 +233,11 @@ test.describe('todos (alice)', () => {
 
 		await page.route('**/graphql', async (route) => {
 			const body = route.request().postData() ?? '';
-			if (!body.includes('todos_create') && !body.includes('todos_complete')) {
+			if (
+				!body.includes('todos_create') &&
+				!body.includes('todos_complete') &&
+				!body.includes('todos_reopen')
+			) {
 				await route.continue();
 				return;
 			}
@@ -188,7 +272,17 @@ test.describe('todos (alice)', () => {
 		await createResponse;
 		await expect(openItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
-
+		const todoId = await openItem.getAttribute('data-todo-id');
+		expect(todoId).not.toBeNull();
+		const beforeComplete = {
+			open: await todoOrderInPanel(page, /^open$/i),
+			done: await todoOrderInPanel(page, /^done$/i)
+		};
+		const afterComplete = {
+			open: beforeComplete.open.filter((id) => id !== todoId),
+			done: [...beforeComplete.done, todoId!].sort()
+		};
+		await startTodoOrderTrace(page);
 		const completeResponse = page.waitForResponse(
 			(response) =>
 				(response.request().postData() ?? '').includes('todos_complete')
@@ -214,6 +308,82 @@ test.describe('todos (alice)', () => {
 		).toBe(1);
 		await expect(doneItem).toBeVisible();
 		expectBinarySorted(await visibleTodoOrders(page));
+		await page.waitForTimeout(750);
+		const completeOrderFrames = await stopTodoOrderTrace(page);
+		expect(
+			completeOrderFrames.every(
+				(order) =>
+					sameTodoOrder(order, beforeComplete) ||
+					sameTodoOrder(order, afterComplete)
+			),
+			`complete rendered an intermediate non-generated order: ${JSON.stringify(completeOrderFrames)}`
+		).toBe(true);
+
+		await startTodoOrderTrace(page);
+		const reopenResponse = page.waitForResponse((response) =>
+			(response.request().postData() ?? '').includes('todos_reopen')
+		);
+		await doneItem.getByRole('button', { name: /^reopen$/i }).click();
+		const reopenedItem = page
+			.locator('.fn-panel')
+			.filter({ has: page.getByRole('heading', { name: /^open$/i }) })
+			.locator('.fn-item', { hasText: title });
+		await expect(reopenedItem).toBeVisible({ timeout: 400 });
+		expect(
+			await todoOrderInPanel(page, /^open$/i),
+			'reopen must preserve the generated order before command convergence'
+		).toEqual(beforeComplete.open);
+		await reopenResponse;
+		await page.waitForTimeout(750);
+		const reopenOrderFrames = await stopTodoOrderTrace(page);
+		expect(
+			reopenOrderFrames.every(
+				(order) =>
+					sameTodoOrder(order, afterComplete) ||
+					sameTodoOrder(order, beforeComplete)
+			),
+			`reopen rendered an intermediate non-generated order: ${JSON.stringify(reopenOrderFrames)}`
+		).toBe(true);
+		await expect(reopenedItem).toBeVisible();
+		expect(await todoOrderInPanel(page, /^open$/i)).toEqual(beforeComplete.open);
+
+		// Repeat after both earlier commands have converged so the invariant also
+		// covers a row that is fully authoritative before the next transition.
+		await startTodoOrderTrace(page);
+		const authoritativeCompleteResponse = page.waitForResponse((response) =>
+			(response.request().postData() ?? '').includes('todos_complete')
+		);
+		await reopenedItem.getByRole('button', { name: /^done$/i }).click();
+		await authoritativeCompleteResponse;
+		await page.waitForTimeout(750);
+		const authoritativeCompleteFrames = await stopTodoOrderTrace(page);
+		expect(
+			authoritativeCompleteFrames.every(
+				(order) =>
+					sameTodoOrder(order, beforeComplete) ||
+					sameTodoOrder(order, afterComplete)
+			),
+			`authoritative complete rendered an intermediate order: ${JSON.stringify(authoritativeCompleteFrames)}`
+		).toBe(true);
+
+		await startTodoOrderTrace(page);
+		const authoritativeReopenResponse = page.waitForResponse((response) =>
+			(response.request().postData() ?? '').includes('todos_reopen')
+		);
+		await doneItem.getByRole('button', { name: /^reopen$/i }).click();
+		await authoritativeReopenResponse;
+		await page.waitForTimeout(750);
+		const authoritativeReopenFrames = await stopTodoOrderTrace(page);
+		expect(
+			authoritativeReopenFrames.every(
+				(order) =>
+					sameTodoOrder(order, afterComplete) ||
+					sameTodoOrder(order, beforeComplete)
+			),
+			`authoritative reopen rendered an intermediate order: ${JSON.stringify(authoritativeReopenFrames)}`
+		).toBe(true);
+		await expect(reopenedItem).toBeVisible();
+		expect(await todoOrderInPanel(page, /^open$/i)).toEqual(beforeComplete.open);
 		await page.unrouteAll({ behavior: 'wait' });
 	});
 });
